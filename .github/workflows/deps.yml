@@ -9,6 +9,7 @@ on:
     paths:
       - justfile
       - Cargo.lock
+      - Cargo.toml
       - deny.toml
       - .github/workflows/deps.yml
 
