@@ -25,6 +25,13 @@ default = "deny"
 # [possible values: any between 0.0 and 1.0].
 confidence-threshold = 0.8
 
+[[licenses.exceptions]]
+# Ignore Unicode-DFS-2016 because we don't bundle the generated files from
+# the unicode-ident dependency. See https://github.com/dtolnay/unicode-ident/pull/9/files
+allow = ["Unicode-DFS-2016"]
+name = "unicode-ident"
+version = "1.0.6"
+
 [licenses.private]
 # If true, ignores workspace crates that aren't published, or are only
 # published to private registries.
