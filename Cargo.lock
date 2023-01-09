@@ -50,7 +50,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing"
+name = "tracing-instrumentation"
 version = "0.1.0"
 
 [[package]]
@@ -115,5 +115,4 @@ name = "worker"
 version = "0.1.0"
 dependencies = [
  "tokio",
- "tracing",
 ]

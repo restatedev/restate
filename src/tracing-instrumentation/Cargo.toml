@@ -1,5 +1,5 @@
 [package]
-name = "tracing"
+name = "tracing-instrumentation"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
