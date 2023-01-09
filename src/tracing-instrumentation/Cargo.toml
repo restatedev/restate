@@ -10,3 +10,11 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+clap = { workspace = true }
+opentelemetry = { version = "0.18", features = ["rt-tokio-current-thread", "rt-tokio"] }
+opentelemetry-jaeger = { version = "0.17", features = ["rt-tokio-current-thread", "rt-tokio"] }
+opentelemetry-semantic-conventions = "0.10"
+thiserror = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-opentelemetry = "0.18"

@@ -12,6 +12,7 @@ repository = "https://github.com/restatedev/restate"
 
 [workspace.dependencies]
 bytes = "1.3"
+clap = { version = "4.0", features = ["derive", "env"] }
 serde = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
