@@ -54,6 +54,9 @@ check-fmt:
 clippy: (_target-installed _target)
     cargo clippy {{ _target-option }} --all-targets -- -D warnings
 
+# Runs all lints (fmt, clippy, deny)
+lint: check-fmt clippy check-deny
+
 build *flags: (_target-installed _target)
     cargo build {{ _target-option }} {{ _features }} {{ flags }}
 
@@ -62,6 +65,9 @@ run *flags: (_target-installed _target)
 
 test: (_target-installed _target)
     cargo test {{ _target-option }} --all --all-features --all-targets
+
+# Runs lints and tests
+verify: lint test
 
 docker:
     docker buildx build . --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}'
