@@ -13,10 +13,11 @@ repository = "https://github.com/restatedev/restate"
 [workspace.dependencies]
 bytes = "1.3"
 clap = { version = "4.0", features = ["derive", "env"] }
+drain = "0.1.1"
 serde = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
-tokio = "1.23"
+tokio = { version = "1.24", features = ["rt-multi-thread", "signal", "macros"] }
 
 # Own crates
 config = { path = "src/config" }
