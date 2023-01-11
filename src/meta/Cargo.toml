@@ -10,3 +10,10 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = { workspace = true }
+axum = "0.6.2"
+clap = { workspace = true }
+drain = { workspace = true }
+hyper = "0.14.23"
+tokio = { workspace = true }
+tracing = { workspace = true }

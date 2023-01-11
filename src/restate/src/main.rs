@@ -1,4 +1,3 @@
-use crate::app::Application;
 use clap::Parser;
 use tracing::{info, warn};
 
@@ -14,6 +13,9 @@ struct Options {
 
     #[command(flatten)]
     tracing: tracing_instrumentation::Options,
+
+    #[command(flatten)]
+    application: app::Options,
 }
 
 fn main() {
@@ -29,7 +31,7 @@ fn main() {
 
         info!(?options, "Running Restate.");
 
-        let app = Application::default();
+        let app = options.application.build();
 
         let drain_signal = app.run();
 
