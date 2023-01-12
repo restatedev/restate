@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 clap = { workspace = true }
 drain = { workspace = true }
+futures-util = { workspace = true }
 humantime = "2.1.0"
 meta = { workspace = true }
 tokio = { workspace = true }

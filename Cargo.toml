@@ -14,6 +14,7 @@ repository = "https://github.com/restatedev/restate"
 anyhow = "1.0.68"
 bytes = "1.3"
 clap = { version = "4.0", features = ["derive", "env"] }
+futures-util = "0.3.25"
 drain = "0.1.1"
 serde = "1.0"
 thiserror = "1.0"
