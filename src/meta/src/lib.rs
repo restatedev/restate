@@ -9,8 +9,13 @@ use tracing::debug;
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
 pub struct Options {
-    #[arg(long, env = "META_REST_ADDRESS", default_value = "0.0.0.0:8081")]
-    meta_rest_addr: SocketAddr,
+    /// Address of the REST endpoint
+    #[arg(
+        long = "meta-rest-addr",
+        env = "META_REST_ADDRESS",
+        default_value = "0.0.0.0:8081"
+    )]
+    rest_addr: SocketAddr,
 }
 
 pub struct Meta {
@@ -20,7 +25,7 @@ pub struct Meta {
 impl Options {
     pub fn build(self) -> Meta {
         let meta_api = Router::new().route("/", get(index));
-        let server = Server::bind(&self.meta_rest_addr).serve(meta_api.into_make_service());
+        let server = Server::bind(&self.rest_addr).serve(meta_api.into_make_service());
 
         Meta { server }
     }

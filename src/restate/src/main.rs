@@ -7,8 +7,10 @@ mod rt;
 mod signal;
 
 #[derive(Debug, clap::Parser)]
+#[command(author, version, about)]
 #[group(skip)]
 struct Options {
+    /// Shutdown grace period before terminating the process
     #[arg(long, env = "SHUTDOWN_GRACE_PERIOD", default_value = "1 min")]
     shutdown_grace_period: humantime::Duration,
 

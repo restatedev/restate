@@ -9,6 +9,7 @@ edition = "2021"
 rust-version = "1.66"
 license = "BUSL-1.1"
 repository = "https://github.com/restatedev/restate"
+description = "Restate makes distributed applications easy!"
 
 [workspace.dependencies]
 anyhow = "1.0.68"

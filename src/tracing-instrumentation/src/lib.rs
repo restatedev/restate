@@ -17,10 +17,12 @@ pub type TracingResult<T> = Result<T, Error>;
 
 #[derive(Debug, clap::Parser, Default)]
 pub struct Options {
-    #[arg(long, env = "JAEGER_ENDPOINT")]
+    /// Specify to expose OTEL spans to Jaeger
+    #[arg(long = "tracing-jaeger-endpoint", env = "TRACING_JAEGER_ENDPOINT")]
     jaeger_endpoint: Option<String>,
 
-    #[arg(long, env = "DISABLE_ANSI_LOG")]
+    /// Disable ANSI colors for formatted output
+    #[arg(long = "tracing-disable-ansi-log", env = "TRACING_DISABLE_ANSI_LOG")]
     disable_ansi_log: bool,
 }
 
