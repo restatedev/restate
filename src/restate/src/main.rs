@@ -2,6 +2,7 @@ use clap::Parser;
 use tracing::{info, warn};
 
 mod app;
+mod future_util;
 mod rt;
 mod signal;
 

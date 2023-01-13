@@ -1,8 +1,6 @@
-use futures_util::TryFutureExt;
+use crate::future_util::TryProcessAbortFuture;
 use meta::Meta;
 use std::fmt::Debug;
-use std::process;
-use tracing::error;
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
@@ -27,10 +25,7 @@ impl Application {
     pub(crate) fn run(self) -> drain::Signal {
         let (signal, watch) = drain::channel();
 
-        tokio::spawn(self.meta_service.run(watch).map_err(|err| {
-            error!(error = ?err, "Meta failed");
-            process::abort();
-        }));
+        tokio::spawn(self.meta_service.run(watch).abort_on_err(Some("Meta")));
 
         signal
     }

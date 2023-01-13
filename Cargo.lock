@@ -870,6 +870,7 @@ dependencies = [
  "futures-util",
  "humantime",
  "meta",
+ "pin-project-lite",
  "tokio",
  "tracing",
  "tracing-instrumentation",
