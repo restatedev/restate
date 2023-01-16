@@ -1,14 +1,23 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+use tracing::debug;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod error;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+type WorkerResult = Result<(), error::Error>;
+
+#[derive(Default)]
+pub struct Worker;
+
+impl Worker {
+    pub async fn run(self, drain: drain::Watch) -> WorkerResult {
+
+        let shutdown = drain.signaled();
+
+        tokio::select! {
+            _ = shutdown => {
+                debug!("Shutting down the worker component.")
+            }
+        }
+
+        Ok(())
     }
 }
