@@ -10,7 +10,8 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+futures = { workspace = true }
 drain = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tracing = { workspace = true }

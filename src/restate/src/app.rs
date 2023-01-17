@@ -18,9 +18,12 @@ pub(crate) struct Application {
 impl Options {
     pub(crate) fn build(self) -> Application {
         let meta_service = self.meta_options.build();
-        let worker = Worker::default();
+        let worker = Worker::build();
 
-        Application { meta_service, worker }
+        Application {
+            meta_service,
+            worker,
+        }
     }
 }
 
@@ -28,9 +31,13 @@ impl Application {
     pub(crate) fn run(self) -> drain::Signal {
         let (signal, watch) = drain::channel();
 
-        tokio::spawn(self.meta_service.run(watch.clone()).abort_on_err(Some("Meta")));
+        tokio::spawn(
+            self.meta_service
+                .run(watch.clone())
+                .abort_on_err(Some("Meta")),
+        );
 
-        tokio::spawn(self.worker.run(watch).abort_on_err(Some("Worker")));
+        tokio::spawn(self.worker.run(watch));
 
         signal
     }

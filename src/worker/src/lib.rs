@@ -1,23 +1,30 @@
-use tracing::debug;
+use crate::partition::PartitionProcessor;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
-mod error;
+mod fsm;
+mod partition;
 
-type WorkerResult = Result<(), error::Error>;
-
-#[derive(Default)]
-pub struct Worker;
+#[derive(Debug)]
+pub struct Worker {
+    processor: PartitionProcessor<ReceiverStream<fsm::Command>>,
+}
 
 impl Worker {
-    pub async fn run(self, drain: drain::Watch) -> WorkerResult {
+    pub fn build() -> Self {
+        let (_command_tx, command_rx) = mpsc::channel(1);
+        let processor = PartitionProcessor::build(command_rx.into());
 
-        let shutdown = drain.signaled();
+        Self { processor }
+    }
+
+    pub async fn run(self, drain: drain::Watch) {
+        let processor_handle = tokio::spawn(self.processor.run(drain));
 
         tokio::select! {
-            _ = shutdown => {
-                debug!("Shutting down the worker component.")
+            processor_result = processor_handle => {
+                processor_result.expect("partition processor panicked");
             }
         }
-
-        Ok(())
     }
 }

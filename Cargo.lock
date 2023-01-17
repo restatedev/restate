@@ -1441,7 +1441,8 @@ name = "worker"
 version = "0.1.0"
 dependencies = [
  "drain",
- "thiserror",
+ "futures",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
