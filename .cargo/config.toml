@@ -1,0 +1,3 @@
+[build]
+# Include full unwind tables when aborting on panic
+rustflags = ["-C", "force-unwind-tables"]

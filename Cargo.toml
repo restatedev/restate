@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [workspace]
 members = [
     "src/*"]
@@ -35,4 +37,10 @@ worker = { path = "src/worker" }
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+# Let's be defensive and abort on every panic
+panic = "abort"
+
+[profile.dev]
+# Let's be defensive and abort on every panic
+panic = "abort"
 
