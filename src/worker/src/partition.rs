@@ -1,29 +1,33 @@
 use crate::fsm;
 use crate::fsm::{Effects, Fsm};
-use futures::{Stream, StreamExt};
+use futures::{Sink, Stream, StreamExt};
 use tracing::{debug, info};
 
 #[derive(Debug)]
-pub(super) struct PartitionProcessor<C> {
+pub(super) struct PartitionProcessor<C, P> {
     command_stream: C,
+    _proposal_sink: P,
     fsm: Fsm,
 }
 
-impl<C> PartitionProcessor<C>
+impl<C, P> PartitionProcessor<C, P>
 where
     C: Stream<Item = consensus::Command<fsm::Command>>,
+    P: Sink<fsm::Command>,
 {
-    pub(super) fn build(command_stream: C) -> Self {
+    pub(super) fn build(command_stream: C, proposal_sink: P) -> Self {
         Self {
             command_stream,
+            _proposal_sink: proposal_sink,
             fsm: Fsm::default(),
         }
     }
 
     pub(super) async fn run(self) {
-        let Self {
+        let PartitionProcessor {
             command_stream,
             fsm,
+            ..
         } = self;
         tokio::pin!(command_stream);
 

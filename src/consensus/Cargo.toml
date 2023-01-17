@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 drain = { workspace = true }
+futures = { workspace = true }
 futures-sink = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

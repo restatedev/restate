@@ -161,6 +161,7 @@ name = "consensus"
 version = "0.1.0"
 dependencies = [
  "drain",
+ "futures",
  "futures-sink",
  "tokio",
  "tracing",

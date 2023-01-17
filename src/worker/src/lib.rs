@@ -10,15 +10,24 @@ mod partition;
 
 #[derive(Debug)]
 pub struct Worker {
-    consensus: Consensus<PollSender<consensus::Command<fsm::Command>>, fsm::Command>,
-    processor: PartitionProcessor<ReceiverStream<consensus::Command<fsm::Command>>>,
+    consensus: Consensus<
+        PollSender<consensus::Command<fsm::Command>>,
+        fsm::Command,
+        ReceiverStream<fsm::Command>,
+    >,
+    processor: PartitionProcessor<
+        ReceiverStream<consensus::Command<fsm::Command>>,
+        PollSender<fsm::Command>,
+    >,
 }
 
 impl Worker {
     pub fn build() -> Self {
         let (command_tx, command_rx) = mpsc::channel(1);
-        let consensus = Consensus::build(PollSender::new(command_tx));
-        let processor = PartitionProcessor::build(command_rx.into());
+        let (proposal_tx, proposal_rx) = mpsc::channel(64);
+
+        let consensus = Consensus::build(PollSender::new(command_tx), proposal_rx.into());
+        let processor = PartitionProcessor::build(command_rx.into(), PollSender::new(proposal_tx));
 
         Self {
             consensus,
