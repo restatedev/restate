@@ -3,17 +3,26 @@ use std::marker::PhantomData;
 use tracing::debug;
 
 #[derive(Debug)]
-pub struct Consensus<S, T>
-where
-    S: Sink<T>,
-{
-    _command_sink: S,
-    phantom_data: PhantomData<T>,
+pub enum Command<T> {
+    Commit(T),
+    CreateSnapshot,
+    ApplySnapshot,
+    Leader,
+    Follower,
 }
 
-impl<S, T> Consensus<S, T>
+#[derive(Debug)]
+pub struct Consensus<S, C>
 where
-    S: Sink<T>,
+    S: Sink<Command<C>>,
+{
+    _command_sink: S,
+    phantom_data: PhantomData<C>,
+}
+
+impl<S, C> Consensus<S, C>
+where
+    S: Sink<Command<C>>,
 {
     pub fn build(command_sink: S) -> Self {
         Self {

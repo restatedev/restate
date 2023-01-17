@@ -10,8 +10,8 @@ mod partition;
 
 #[derive(Debug)]
 pub struct Worker {
-    consensus: Consensus<PollSender<fsm::Command>, fsm::Command>,
-    processor: PartitionProcessor<ReceiverStream<fsm::Command>>,
+    consensus: Consensus<PollSender<consensus::Command<fsm::Command>>, fsm::Command>,
+    processor: PartitionProcessor<ReceiverStream<consensus::Command<fsm::Command>>>,
 }
 
 impl Worker {

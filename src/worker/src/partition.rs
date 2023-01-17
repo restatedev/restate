@@ -1,7 +1,7 @@
 use crate::fsm;
 use crate::fsm::{Effects, Fsm};
 use futures::{Stream, StreamExt};
-use tracing::debug;
+use tracing::{debug, info};
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<C> {
@@ -11,7 +11,7 @@ pub(super) struct PartitionProcessor<C> {
 
 impl<C> PartitionProcessor<C>
 where
-    C: Stream<Item = fsm::Command>,
+    C: Stream<Item = consensus::Command<fsm::Command>>,
 {
     pub(super) fn build(command_stream: C) -> Self {
         Self {
@@ -31,8 +31,24 @@ where
             tokio::select! {
                 command = command_stream.next() => {
                     if let Some(command) = command {
-                        let effects = fsm.on_apply(command);
-                        Self::apply_effects(effects);
+                        match command {
+                            consensus::Command::Commit(fsm_command) => {
+                                let effects = fsm.on_apply(fsm_command);
+                                Self::apply_effects(effects);
+                            }
+                            consensus::Command::Leader => {
+                                info!("Become leader.");
+                            }
+                            consensus::Command::Follower => {
+                                info!("Become follower.");
+                            },
+                            consensus::Command::ApplySnapshot => {
+                                unimplemented!("Not supported yet.");
+                            }
+                            consensus::Command::CreateSnapshot => {
+                                unimplemented!("Not supported yet.");
+                            }
+                        }
                     } else {
                         break;
                     }
