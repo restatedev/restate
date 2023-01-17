@@ -1,0 +1,15 @@
+[package]
+name = "consensus"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+drain = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
