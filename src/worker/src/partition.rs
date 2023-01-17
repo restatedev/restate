@@ -20,14 +20,11 @@ where
         }
     }
 
-    pub(super) async fn run(self, drain: drain::Watch) {
+    pub(super) async fn run(self) {
         let Self {
             command_stream,
             fsm,
         } = self;
-        let shutdown = drain.signaled();
-
-        tokio::pin!(shutdown);
         tokio::pin!(command_stream);
 
         loop {
@@ -39,9 +36,6 @@ where
                     } else {
                         break;
                     }
-                }
-                _ = &mut shutdown => {
-                    break;
                 }
             }
         }
