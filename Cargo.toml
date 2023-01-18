@@ -33,6 +33,7 @@ config = { path = "src/config" }
 common = { path = "src/common" }
 consensus = { path = "src/consensus" }
 meta = { path = "src/meta" }
+network = { path = "src/network" }
 protocol = { path = "src/protocol" }
 storage = { path = "src/storage" }
 tracing-instrumentation = { path = "src/tracing-instrumentation" }

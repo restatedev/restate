@@ -1,5 +1,5 @@
 [package]
-name = "consensus"
+name = "network"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -12,7 +12,5 @@ publish = false
 [dependencies]
 drain = { workspace = true }
 futures = { workspace = true }
-futures-sink = { workspace = true }
-network = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -163,6 +163,7 @@ dependencies = [
  "drain",
  "futures",
  "futures-sink",
+ "network",
  "tokio",
  "tracing",
 ]
@@ -574,6 +575,16 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "network"
+version = "0.1.0"
+dependencies = [
+ "drain",
+ "futures",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1467,6 +1478,7 @@ dependencies = [
  "consensus",
  "drain",
  "futures",
+ "network",
  "tokio",
  "tokio-stream",
  "tokio-util",

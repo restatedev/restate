@@ -11,8 +11,9 @@ publish = false
 
 [dependencies]
 consensus = { workspace = true }
-futures = { workspace = true }
 drain = { workspace = true }
+futures = { workspace = true }
+network = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
