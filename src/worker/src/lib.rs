@@ -56,7 +56,7 @@ impl Worker {
     }
 
     pub async fn run(self, drain: drain::Watch) {
-        let consensus_handle = tokio::spawn(self.consensus.run(drain.clone()));
+        let consensus_handle = tokio::spawn(self.consensus.run());
         let processor_handle = tokio::spawn(self.processor.run());
         let network_handle = tokio::spawn(self.network.run(drain));
 

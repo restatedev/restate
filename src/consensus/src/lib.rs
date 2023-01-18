@@ -48,7 +48,7 @@ where
         }
     }
 
-    pub async fn run(self, drain: drain::Watch) {
+    pub async fn run(self) {
         let Consensus {
             proposal_in,
             command_out,
@@ -58,8 +58,6 @@ where
 
         info!("Running the consensus driver.");
 
-        let shutdown = drain.signaled();
-        tokio::pin!(shutdown);
         tokio::pin!(proposal_in);
         tokio::pin!(command_out);
         tokio::pin!(raft_in);
@@ -78,11 +76,10 @@ where
                     if let Some(raft_msg) = raft_msg {
                         // TODO: Introduce safe_unwrap call
                         let _ = command_out.send(Command::Commit(raft_msg)).await;
+                    } else {
+                        debug!("Shutting consensus down.");
+                        break;
                     }
-                }
-                _ = &mut shutdown => {
-                    debug!("Shutting down Consensus.");
-                    break;
                 }
             }
         }

@@ -41,7 +41,7 @@ impl Meta {
                 result.map_err(Into::into)
             },
             _ = shutdown => {
-                debug!("Shutting down the meta component.");
+                debug!("Shutting meta down.");
                 Ok(())
             }
         }

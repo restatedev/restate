@@ -45,6 +45,7 @@ where
                 },
                 _ = &mut shutdown => {
                     debug!("Shutting network down.");
+                    break;
                 }
             }
         }
