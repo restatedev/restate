@@ -58,7 +58,10 @@ impl Worker {
     pub async fn run(self, drain: drain::Watch) {
         let consensus_handle = tokio::spawn(self.consensus.run());
         let processor_handle = tokio::spawn(self.processor.run());
-        let network_handle = tokio::spawn(self.network.run(drain));
+        let network_handle = tokio::spawn(self.network.run(drain.clone()));
+
+        // Only signal shutdown once all handles have been completed
+        let _release_shutdown = drain.ignore_signaled();
 
         try_join!(consensus_handle, processor_handle, network_handle)
             .expect("Worker component failed");
