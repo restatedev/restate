@@ -3,8 +3,11 @@ use crate::fsm::{Effects, Fsm};
 use futures::{Sink, Stream, StreamExt};
 use tracing::{debug, info};
 
+pub(super) type Id = usize;
+
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<C, P> {
+    id: usize,
     command_stream: C,
     _proposal_sink: P,
     fsm: Fsm,
@@ -15,8 +18,9 @@ where
     C: Stream<Item = consensus::Command<fsm::Command>>,
     P: Sink<fsm::Command>,
 {
-    pub(super) fn build(command_stream: C, proposal_sink: P) -> Self {
+    pub(super) fn build(id: Id, command_stream: C, proposal_sink: P) -> Self {
         Self {
+            id,
             command_stream,
             _proposal_sink: proposal_sink,
             fsm: Fsm::default(),
@@ -25,6 +29,7 @@ where
 
     pub(super) async fn run(self) {
         let PartitionProcessor {
+            id,
             command_stream,
             fsm,
             ..
@@ -41,10 +46,10 @@ where
                                 Self::apply_effects(effects);
                             }
                             consensus::Command::Leader => {
-                                info!("Become leader.");
+                                info!(%id, "Become leader.");
                             }
                             consensus::Command::Follower => {
-                                info!("Become follower.");
+                                info!(%id, "Become follower.");
                             },
                             consensus::Command::ApplySnapshot => {
                                 unimplemented!("Not supported yet.");
@@ -60,7 +65,7 @@ where
             }
         }
 
-        debug!("Shutting partition processor down.");
+        debug!(%id, "Shutting partition processor down.");
     }
 
     fn apply_effects(_effects: Effects) {}
