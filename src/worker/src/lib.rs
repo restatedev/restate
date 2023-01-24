@@ -22,7 +22,7 @@ pub struct Worker {
         PollSender<fsm::Command>,
     >,
     processors: Vec<PartitionProcessor<ReceiverStream<ConsensusCommand>, PollSender<fsm::Command>>>,
-    network: Network<PollSender<fsm::Command>, fsm::Command>,
+    network: Network<fsm::Command, PollSender<fsm::Command>>,
 }
 
 impl Worker {

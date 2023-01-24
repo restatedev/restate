@@ -8,7 +8,7 @@ use tracing::debug;
 pub type ConsensusSender<T> = PollSender<T>;
 
 #[derive(Debug)]
-pub struct Network<ConOut, ConMsg> {
+pub struct Network<ConMsg, ConOut> {
     consensus_rx: mpsc::Receiver<ConMsg>,
     consensus_out: ConOut,
 
@@ -18,7 +18,7 @@ pub struct Network<ConOut, ConMsg> {
     _phantom_data: PhantomData<ConMsg>,
 }
 
-impl<ConOut, ConMsg> Network<ConOut, ConMsg>
+impl<ConMsg, ConOut> Network<ConMsg, ConOut>
 where
     ConMsg: Send + 'static,
     ConOut: Sink<ConMsg>,
