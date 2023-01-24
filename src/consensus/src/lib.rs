@@ -18,7 +18,7 @@ pub enum Command<T> {
 pub type ProposalSender<T> = PollSender<T>;
 
 #[derive(Debug)]
-pub struct Consensus<CmdOut, FsmCmd, NetIn, NetOut>
+pub struct Consensus<FsmCmd, CmdOut, NetIn, NetOut>
 where
     CmdOut: Sink<Command<FsmCmd>>,
 {
@@ -32,7 +32,7 @@ where
     phantom_data: PhantomData<FsmCmd>,
 }
 
-impl<CmdOut, FsmCmd, RaftIn, RaftOut> Consensus<CmdOut, FsmCmd, RaftIn, RaftOut>
+impl<FsmCmd, CmdOut, RaftIn, RaftOut> Consensus<FsmCmd, CmdOut, RaftIn, RaftOut>
 where
     CmdOut: Sink<Command<FsmCmd>>,
     FsmCmd: Send + Debug + 'static,

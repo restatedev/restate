@@ -12,8 +12,8 @@ mod partition;
 #[derive(Debug)]
 pub struct Worker {
     consensus: Consensus<
-        PollSender<consensus::Command<fsm::Command>>,
         fsm::Command,
+        PollSender<consensus::Command<fsm::Command>>,
         ReceiverStream<fsm::Command>,
         PollSender<fsm::Command>,
     >,
