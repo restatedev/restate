@@ -1,6 +1,5 @@
-use crate::fsm::Command;
 use crate::partition::{Id, PartitionProcessor};
-use consensus::{Command, Consensus, ProposalSender};
+use consensus::{Consensus, ProposalSender};
 use futures::stream::FuturesUnordered;
 use futures::TryStreamExt;
 use network::Network;
@@ -12,37 +11,30 @@ use tokio_util::sync::PollSender;
 mod fsm;
 mod partition;
 
+type ConsensusCommand = consensus::Command<fsm::Command>;
+
 #[derive(Debug)]
 pub struct Worker {
     consensus: Consensus<
         fsm::Command,
-        PollSender<consensus::Command<fsm::Command>>,
+        PollSender<ConsensusCommand>,
         ReceiverStream<fsm::Command>,
         PollSender<fsm::Command>,
     >,
-    processors: Vec<
-        PartitionProcessor<
-            ReceiverStream<consensus::Command<fsm::Command>>,
-            PollSender<fsm::Command>,
-        >,
-    >,
-    network: Network<ReceiverStream<fsm::Command>, PollSender<fsm::Command>, fsm::Command>,
+    processors: Vec<PartitionProcessor<ReceiverStream<ConsensusCommand>, PollSender<fsm::Command>>>,
+    network: Network<PollSender<fsm::Command>, fsm::Command>,
 }
 
 impl Worker {
     pub fn build() -> Self {
         let num_partition_processors = 10;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(64);
-        let (raft_out_tx, raft_out_rx) = mpsc::channel(64);
 
-        let network = Network::build(
-            ReceiverStream::new(raft_out_rx),
-            PollSender::new(raft_in_tx),
-        );
+        let network = Network::build(PollSender::new(raft_in_tx));
 
         let mut consensus = Consensus::build(
             ReceiverStream::new(raft_in_rx),
-            PollSender::new(raft_out_tx),
+            network.create_consensus_sender(),
         );
 
         let (command_senders, processors) = (0..num_partition_processors)
@@ -63,10 +55,10 @@ impl Worker {
 
     fn create_partition_processor(
         idx: Id,
-        proposal_sender: ProposalSender<Command>,
+        proposal_sender: ProposalSender<fsm::Command>,
     ) -> (
-        PollSender<Command<Command>>,
-        PartitionProcessor<ReceiverStream<Command<Command>>, ProposalSender<Command>>,
+        PollSender<ConsensusCommand>,
+        PartitionProcessor<ReceiverStream<ConsensusCommand>, ProposalSender<fsm::Command>>,
     ) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor =
