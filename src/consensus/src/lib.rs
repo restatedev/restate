@@ -21,14 +21,14 @@ pub type ProposalSender<T> = PollSender<T>;
 pub type Targeted<T> = (PeerId, T);
 
 #[derive(Debug)]
-pub struct Consensus<FsmCmd, CmdOut, NetIn, NetOut>
+pub struct Consensus<FsmCmd, CmdOut, RaftIn, RaftOut>
 where
     CmdOut: Sink<Command<FsmCmd>>,
 {
     command_senders: HashMap<PeerId, CmdOut>,
     proposal_rx: mpsc::Receiver<Targeted<FsmCmd>>,
-    raft_in: NetIn,
-    _raft_out: NetOut,
+    raft_in: RaftIn,
+    _raft_out: RaftOut,
 
     // used to create the ProposalSenders
     proposal_tx: mpsc::Sender<Targeted<FsmCmd>>,
@@ -41,8 +41,8 @@ where
     CmdOut: Sink<Command<FsmCmd>> + Unpin,
     CmdOut::Error: Debug,
     FsmCmd: Send + Debug + 'static,
-    RaftIn: Stream<Item = FsmCmd>,
-    RaftOut: Sink<FsmCmd>,
+    RaftIn: Stream<Item = Targeted<FsmCmd>>,
+    RaftOut: Sink<Targeted<FsmCmd>>,
 {
     pub fn build(raft_in: RaftIn, raft_out: RaftOut) -> Self {
         let (proposal_tx, proposal_rx) = mpsc::channel(64);
@@ -92,9 +92,11 @@ where
                     }
                 },
                 raft_msg = raft_in.next() => {
-                    if let Some(raft_msg) = raft_msg {
-                        // TODO: Introduce safe_unwrap call
-                        let _ = command_senders.get_mut(&0).unwrap().send(Command::Commit(raft_msg)).await;
+                    if let Some((target, raft_msg)) = raft_msg {
+
+                        if let Some(command_sender) = command_senders.get_mut(&target) {
+                            command_sender.send(Command::Commit(raft_msg)).await.expect("The command receiver should exist as long as Consensus exists.");
+                        }
                     } else {
                         debug!("Shutting consensus down.");
                         break;

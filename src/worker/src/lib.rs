@@ -16,17 +16,18 @@ mod util;
 type ConsensusCommand = consensus::Command<fsm::Command>;
 type PartitionProcessor =
     partition::PartitionProcessor<ReceiverStream<ConsensusCommand>, IdentitySender<fsm::Command>>;
+type TargetedFsmCommand = Targeted<fsm::Command>;
 
 #[derive(Debug)]
 pub struct Worker {
     consensus: Consensus<
         fsm::Command,
         PollSender<ConsensusCommand>,
-        ReceiverStream<fsm::Command>,
-        PollSender<fsm::Command>,
+        ReceiverStream<TargetedFsmCommand>,
+        PollSender<TargetedFsmCommand>,
     >,
     processors: Vec<PartitionProcessor>,
-    network: Network<fsm::Command, PollSender<fsm::Command>>,
+    network: Network<TargetedFsmCommand, PollSender<TargetedFsmCommand>>,
 }
 
 impl Worker {
@@ -59,7 +60,7 @@ impl Worker {
 
     fn create_partition_processor(
         id: PeerId,
-        proposal_sender: ProposalSender<Targeted<fsm::Command>>,
+        proposal_sender: ProposalSender<TargetedFsmCommand>,
     ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::build(
