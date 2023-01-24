@@ -10,10 +10,12 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+common = { workspace = true }
 consensus = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 network = { workspace = true }
+pin-project-lite = "0.2.9"
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }

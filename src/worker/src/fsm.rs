@@ -1,3 +1,5 @@
+use tracing::debug;
+
 #[derive(Debug, Default)]
 pub(super) struct Fsm;
 
@@ -8,7 +10,8 @@ pub(super) enum Command {}
 pub(super) struct Effects;
 
 impl Fsm {
-    pub(super) fn on_apply(&self, _command: Command) -> Effects {
+    pub(super) fn on_apply(&self, command: Command) -> Effects {
+        debug!(?command, "Apply");
         Effects::default()
     }
 }

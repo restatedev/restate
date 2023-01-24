@@ -1,13 +1,12 @@
 use crate::fsm;
 use crate::fsm::{Effects, Fsm};
+use common::types::PeerId;
 use futures::{Sink, Stream, StreamExt};
 use tracing::{debug, info};
 
-pub(super) type Id = usize;
-
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<C, P> {
-    id: usize,
+    id: PeerId,
     command_stream: C,
     _proposal_sink: P,
     fsm: Fsm,
@@ -18,7 +17,7 @@ where
     C: Stream<Item = consensus::Command<fsm::Command>>,
     P: Sink<fsm::Command>,
 {
-    pub(super) fn build(id: Id, command_stream: C, proposal_sink: P) -> Self {
+    pub(super) fn build(id: PeerId, command_stream: C, proposal_sink: P) -> Self {
         Self {
             id,
             command_stream,

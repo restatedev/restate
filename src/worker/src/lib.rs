@@ -1,5 +1,5 @@
-use crate::partition::{Id, PartitionProcessor};
-use consensus::{Consensus, ProposalSender};
+use common::types::PeerId;
+use consensus::{Consensus, ProposalSender, Targeted};
 use futures::stream::FuturesUnordered;
 use futures::TryStreamExt;
 use network::Network;
@@ -7,11 +7,15 @@ use tokio::sync::mpsc;
 use tokio::try_join;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::PollSender;
+use util::IdentitySender;
 
 mod fsm;
 mod partition;
+mod util;
 
 type ConsensusCommand = consensus::Command<fsm::Command>;
+type PartitionProcessor =
+    partition::PartitionProcessor<ReceiverStream<ConsensusCommand>, IdentitySender<fsm::Command>>;
 
 #[derive(Debug)]
 pub struct Worker {
@@ -21,7 +25,7 @@ pub struct Worker {
         ReceiverStream<fsm::Command>,
         PollSender<fsm::Command>,
     >,
-    processors: Vec<PartitionProcessor<ReceiverStream<ConsensusCommand>, PollSender<fsm::Command>>>,
+    processors: Vec<PartitionProcessor>,
     network: Network<fsm::Command, PollSender<fsm::Command>>,
 }
 
@@ -37,7 +41,7 @@ impl Worker {
             network.create_consensus_sender(),
         );
 
-        let (command_senders, processors) = (0..num_partition_processors)
+        let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {
                 let proposal_sender = consensus.create_proposal_sender();
                 Self::create_partition_processor(idx, proposal_sender)
@@ -54,17 +58,17 @@ impl Worker {
     }
 
     fn create_partition_processor(
-        idx: Id,
-        proposal_sender: ProposalSender<fsm::Command>,
-    ) -> (
-        PollSender<ConsensusCommand>,
-        PartitionProcessor<ReceiverStream<ConsensusCommand>, ProposalSender<fsm::Command>>,
-    ) {
+        id: PeerId,
+        proposal_sender: ProposalSender<Targeted<fsm::Command>>,
+    ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
-        let processor =
-            PartitionProcessor::build(idx, ReceiverStream::new(command_rx), proposal_sender);
+        let processor = PartitionProcessor::build(
+            id,
+            ReceiverStream::new(command_rx),
+            IdentitySender::new(id, proposal_sender),
+        );
 
-        (PollSender::new(command_tx), processor)
+        ((id, PollSender::new(command_tx)), processor)
     }
 
     pub async fn run(self, drain: drain::Watch) {
