@@ -6,13 +6,17 @@ use tracing::debug;
 
 pub type ConsensusSender<T> = PollSender<T>;
 
+/// Component which is responsible for routing messages from different components.
+///
+/// It receives messages from the connected [`Consensus`] component via `consensus_in_rx`
+/// and can send message to it via `consensus_out`.
 #[derive(Debug)]
 pub struct Network<ConMsg, ConOut> {
-    consensus_rx: mpsc::Receiver<ConMsg>,
+    consensus_in_rx: mpsc::Receiver<ConMsg>,
     consensus_out: ConOut,
 
     // used for creating the ConsensusSender
-    consensus_tx: mpsc::Sender<ConMsg>,
+    consensus_in_tx: mpsc::Sender<ConMsg>,
 }
 
 impl<ConMsg, ConOut> Network<ConMsg, ConOut>
@@ -22,22 +26,22 @@ where
     <ConOut as Sink<ConMsg>>::Error: Debug,
 {
     pub fn new(consensus_out: ConOut) -> Self {
-        let (consensus_tx, consensus_rx) = mpsc::channel(64);
+        let (consensus_in_tx, consensus_in_rx) = mpsc::channel(64);
 
         Self {
             consensus_out,
-            consensus_rx,
-            consensus_tx,
+            consensus_in_rx,
+            consensus_in_tx,
         }
     }
 
     pub fn create_consensus_sender(&self) -> ConsensusSender<ConMsg> {
-        PollSender::new(self.consensus_tx.clone())
+        PollSender::new(self.consensus_in_tx.clone())
     }
 
     pub async fn run(self, drain: drain::Watch) {
         let Network {
-            mut consensus_rx,
+            mut consensus_in_rx,
             consensus_out,
             ..
         } = self;
@@ -48,7 +52,7 @@ where
 
         loop {
             tokio::select! {
-                message = consensus_rx.recv() => {
+                message = consensus_in_rx.recv() => {
                     let message = message.expect("Network owns the consensus sender, that's why the receiver will never be closed.");
                     consensus_out.send(message).await.expect("Consensus component must be running.");
                 },

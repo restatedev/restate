@@ -51,7 +51,7 @@ impl Worker {
             })
             .unzip();
 
-        consensus.register_command_senders(command_senders);
+        consensus.register_state_machines(command_senders);
 
         Self {
             consensus,

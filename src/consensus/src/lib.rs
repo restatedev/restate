@@ -7,42 +7,52 @@ use tokio::sync::mpsc;
 use tokio_util::sync::PollSender;
 use tracing::{debug, info};
 
+/// Consensus commands that are sent to an associated state machine.
 #[derive(Debug)]
 pub enum Command<T> {
-    Commit(T),
+    /// Apply the given message to the state machine.
+    Apply(T),
     CreateSnapshot,
     ApplySnapshot,
-    Leader,
-    Follower,
+    BecomeLeader,
+    BecomeFollower,
 }
 
 pub type ProposalSender<T> = PollSender<T>;
-pub type Targeted<T> = (PeerId, T);
 
+/// Wrapper that extends a message with its target peer to which the message should be sent.
+pub type Targeted<Msg> = (PeerId, Msg);
+
+/// Component which is responsible for running the consensus algorithm for multiple replicated
+/// state machines.
+///
+/// Consensus replicates messages of type `Cmd`. It is connected to the state machines via sinks
+/// of type `SmSink`. It can communicate with other consensus instances via `raft_in` and
+/// `raft_out`. Proposals for an associated state machine are received via `proposal_rx`.
 #[derive(Debug)]
-pub struct Consensus<FsmCmd, CmdOut, RaftIn, RaftOut> {
-    command_senders: HashMap<PeerId, CmdOut>,
-    proposal_rx: mpsc::Receiver<Targeted<FsmCmd>>,
+pub struct Consensus<Cmd, SmSink, RaftIn, RaftOut> {
+    state_machines: HashMap<PeerId, SmSink>,
+    proposal_rx: mpsc::Receiver<Targeted<Cmd>>,
     raft_in: RaftIn,
     _raft_out: RaftOut,
 
     // used to create the ProposalSenders
-    proposal_tx: mpsc::Sender<Targeted<FsmCmd>>,
+    proposal_tx: mpsc::Sender<Targeted<Cmd>>,
 }
 
-impl<FsmCmd, CmdOut, RaftIn, RaftOut> Consensus<FsmCmd, CmdOut, RaftIn, RaftOut>
+impl<Cmd, SmSink, RaftIn, RaftOut> Consensus<Cmd, SmSink, RaftIn, RaftOut>
 where
-    CmdOut: Sink<Command<FsmCmd>> + Unpin,
-    CmdOut::Error: Debug,
-    FsmCmd: Send + Debug + 'static,
-    RaftIn: Stream<Item = Targeted<FsmCmd>>,
-    RaftOut: Sink<Targeted<FsmCmd>>,
+    Cmd: Send + Debug + 'static,
+    SmSink: Sink<Command<Cmd>> + Unpin,
+    SmSink::Error: Debug,
+    RaftIn: Stream<Item = Targeted<Cmd>>,
+    RaftOut: Sink<Targeted<Cmd>>,
 {
     pub fn new(raft_in: RaftIn, raft_out: RaftOut) -> Self {
         let (proposal_tx, proposal_rx) = mpsc::channel(64);
 
         Self {
-            command_senders: HashMap::new(),
+            state_machines: HashMap::new(),
             proposal_rx,
             raft_in,
             _raft_out: raft_out,
@@ -50,21 +60,21 @@ where
         }
     }
 
-    pub fn create_proposal_sender(&self) -> ProposalSender<Targeted<FsmCmd>> {
+    pub fn create_proposal_sender(&self) -> ProposalSender<Targeted<Cmd>> {
         PollSender::new(self.proposal_tx.clone())
     }
 
-    pub fn register_command_senders(
+    pub fn register_state_machines(
         &mut self,
-        command_senders: impl IntoIterator<Item = (PeerId, CmdOut)>,
+        state_machines: impl IntoIterator<Item = (PeerId, SmSink)>,
     ) {
-        self.command_senders.extend(command_senders);
+        self.state_machines.extend(state_machines);
     }
 
     pub async fn run(self) {
         let Consensus {
             mut proposal_rx,
-            mut command_senders,
+            mut state_machines,
             raft_in,
             ..
         } = self;
@@ -80,15 +90,15 @@ where
 
                     let (target, proposal) = proposal.expect("Consensus owns the proposal sender, that's why the receiver should never be closed.");
 
-                    if let Some(command_sender) = command_senders.get_mut(&target) {
-                        command_sender.send(Command::Commit(proposal)).await.expect("The command receiver should exist as long as Consensus exists.");
+                    if let Some(state_machine) = state_machines.get_mut(&target) {
+                        state_machine.send(Command::Apply(proposal)).await.expect("The state machine should exist as long as Consensus exists.");
                     }
                 },
                 raft_msg = raft_in.next() => {
                     if let Some((target, raft_msg)) = raft_msg {
 
-                        if let Some(command_sender) = command_senders.get_mut(&target) {
-                            command_sender.send(Command::Commit(raft_msg)).await.expect("The command receiver should exist as long as Consensus exists.");
+                        if let Some(state_machine) = state_machines.get_mut(&target) {
+                            state_machine.send(Command::Apply(raft_msg)).await.expect("The state machine should exist as long as Consensus exists.");
                         }
                     } else {
                         debug!("Shutting consensus down.");

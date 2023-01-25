@@ -45,15 +45,15 @@ where
                 command = command_stream.next() => {
                     if let Some(command) = command {
                         match command {
-                            consensus::Command::Commit(fsm_command) => {
+                            consensus::Command::Apply(fsm_command) => {
                                 effects.clear();
                                 state_machine.on_apply(fsm_command, &mut effects);
                                 Self::apply_effects(&effects);
                             }
-                            consensus::Command::Leader => {
+                            consensus::Command::BecomeLeader => {
                                 info!(%id, "Become leader.");
                             }
-                            consensus::Command::Follower => {
+                            consensus::Command::BecomeFollower => {
                                 info!(%id, "Become follower.");
                             },
                             consensus::Command::ApplySnapshot => {
