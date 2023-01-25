@@ -20,10 +20,7 @@ pub type ProposalSender<T> = PollSender<T>;
 pub type Targeted<T> = (PeerId, T);
 
 #[derive(Debug)]
-pub struct Consensus<FsmCmd, CmdOut, RaftIn, RaftOut>
-where
-    CmdOut: Sink<Command<FsmCmd>>,
-{
+pub struct Consensus<FsmCmd, CmdOut, RaftIn, RaftOut> {
     command_senders: HashMap<PeerId, CmdOut>,
     proposal_rx: mpsc::Receiver<Targeted<FsmCmd>>,
     raft_in: RaftIn,
