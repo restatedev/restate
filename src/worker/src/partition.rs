@@ -35,14 +35,17 @@ where
         } = self;
         tokio::pin!(command_stream);
 
+        let mut effects = Effects::default();
+
         loop {
             tokio::select! {
                 command = command_stream.next() => {
                     if let Some(command) = command {
                         match command {
                             consensus::Command::Commit(fsm_command) => {
-                                let effects = fsm.on_apply(fsm_command);
-                                Self::apply_effects(effects);
+                                effects.clear();
+                                state_machine.on_apply(fsm_command, &mut effects);
+                                Self::apply_effects(&effects);
                             }
                             consensus::Command::Leader => {
                                 info!(%id, "Become leader.");
@@ -67,5 +70,5 @@ where
         debug!(%id, "Shutting partition processor down.");
     }
 
-    fn apply_effects(_effects: Effects) {}
+    fn apply_effects(_effects: &Effects) {}
 }
