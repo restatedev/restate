@@ -7,12 +7,12 @@ use tracing::debug;
 pub type ConsensusSender<T> = PollSender<T>;
 
 /// Component which is responsible for routing messages from different components.
-///
-/// It receives messages from the connected [`Consensus`] component via `consensus_in_rx`
-/// and can send message to it via `consensus_out`.
 #[derive(Debug)]
 pub struct Network<ConMsg, ConOut> {
+    /// Receiver for messages from the consensus module
     consensus_in_rx: mpsc::Receiver<ConMsg>,
+
+    /// Sender for messages to the consensus module
     consensus_out: ConOut,
 
     // used for creating the ConsensusSender

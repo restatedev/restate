@@ -24,16 +24,19 @@ pub type ProposalSender<T> = PollSender<T>;
 pub type Targeted<Msg> = (PeerId, Msg);
 
 /// Component which is responsible for running the consensus algorithm for multiple replicated
-/// state machines.
-///
-/// Consensus replicates messages of type `Cmd`. It is connected to the state machines via sinks
-/// of type `SmSink`. It can communicate with other consensus instances via `raft_in` and
-/// `raft_out`. Proposals for an associated state machine are received via `proposal_rx`.
+/// state machines. Consensus replicates messages of type `Cmd`.
 #[derive(Debug)]
 pub struct Consensus<Cmd, SmSink, RaftIn, RaftOut> {
+    /// Sinks to send replicated commands to the associated state machines
     state_machines: HashMap<PeerId, SmSink>,
+
+    /// Receiver of proposals from all associated state machines
     proposal_rx: mpsc::Receiver<Targeted<Cmd>>,
+
+    /// Receiver of incoming raft messages
     raft_in: RaftIn,
+
+    /// Sender for outgoing raft messages
     _raft_out: RaftOut,
 
     // used to create the ProposalSenders
