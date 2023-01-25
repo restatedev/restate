@@ -1,19 +1,19 @@
 use tracing::debug;
 
 #[derive(Debug, Default)]
-pub(super) struct Fsm;
+pub(super) struct StateMachine;
 
 #[derive(Debug)]
-pub(super) enum Command {}
+pub(crate) enum Command {}
 
 #[derive(Debug, Default)]
 pub(super) struct Effects;
 
 impl Effects {
-    pub(crate) fn clear(&mut self) {}
+    pub(super) fn clear(&mut self) {}
 }
 
-impl Fsm {
+impl StateMachine {
     /// Applies the given command and returns effects via the provided effects struct
     ///
     /// We pass in the effects message as a mutable borrow to be able to reuse it across

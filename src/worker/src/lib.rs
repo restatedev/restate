@@ -9,19 +9,20 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::PollSender;
 use util::IdentitySender;
 
-mod fsm;
 mod partition;
 mod util;
 
-type ConsensusCommand = consensus::Command<fsm::Command>;
-type PartitionProcessor =
-    partition::PartitionProcessor<ReceiverStream<ConsensusCommand>, IdentitySender<fsm::Command>>;
-type TargetedFsmCommand = Targeted<fsm::Command>;
+type ConsensusCommand = consensus::Command<partition::Command>;
+type PartitionProcessor = partition::PartitionProcessor<
+    ReceiverStream<ConsensusCommand>,
+    IdentitySender<partition::Command>,
+>;
+type TargetedFsmCommand = Targeted<partition::Command>;
 
 #[derive(Debug)]
 pub struct Worker {
     consensus: Consensus<
-        fsm::Command,
+        partition::Command,
         PollSender<ConsensusCommand>,
         ReceiverStream<TargetedFsmCommand>,
         PollSender<TargetedFsmCommand>,
