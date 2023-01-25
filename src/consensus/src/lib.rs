@@ -41,7 +41,7 @@ where
     RaftIn: Stream<Item = Targeted<FsmCmd>>,
     RaftOut: Sink<Targeted<FsmCmd>>,
 {
-    pub fn build(raft_in: RaftIn, raft_out: RaftOut) -> Self {
+    pub fn new(raft_in: RaftIn, raft_out: RaftOut) -> Self {
         let (proposal_tx, proposal_rx) = mpsc::channel(64);
 
         Self {

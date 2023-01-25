@@ -21,7 +21,7 @@ where
     ConOut: Sink<ConMsg>,
     <ConOut as Sink<ConMsg>>::Error: Debug,
 {
-    pub fn build(consensus_out: ConOut) -> Self {
+    pub fn new(consensus_out: ConOut) -> Self {
         let (consensus_tx, consensus_rx) = mpsc::channel(64);
 
         Self {

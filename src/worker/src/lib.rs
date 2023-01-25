@@ -31,13 +31,14 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn build() -> Self {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
         let num_partition_processors = 10;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(64);
 
-        let network = Network::build(PollSender::new(raft_in_tx));
+        let network = Network::new(PollSender::new(raft_in_tx));
 
-        let mut consensus = Consensus::build(
+        let mut consensus = Consensus::new(
             ReceiverStream::new(raft_in_rx),
             network.create_consensus_sender(),
         );
@@ -63,7 +64,7 @@ impl Worker {
         proposal_sender: ProposalSender<TargetedFsmCommand>,
     ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
-        let processor = PartitionProcessor::build(
+        let processor = PartitionProcessor::new(
             id,
             ReceiverStream::new(command_rx),
             IdentitySender::new(id, proposal_sender),

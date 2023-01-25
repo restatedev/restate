@@ -18,7 +18,7 @@ pub(crate) struct Application {
 impl Options {
     pub(crate) fn build(self) -> Application {
         let meta_service = self.meta_options.build();
-        let worker = Worker::build();
+        let worker = Worker::new();
 
         Application {
             meta_service,

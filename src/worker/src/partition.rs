@@ -17,7 +17,7 @@ where
     C: Stream<Item = consensus::Command<fsm::Command>>,
     P: Sink<fsm::Command>,
 {
-    pub(super) fn build(id: PeerId, command_stream: C, proposal_sink: P) -> Self {
+    pub(super) fn new(id: PeerId, command_stream: C, proposal_sink: P) -> Self {
         Self {
             id,
             command_stream,
