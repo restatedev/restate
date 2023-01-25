@@ -3,7 +3,6 @@ use futures::{SinkExt, Stream, StreamExt};
 use futures_sink::Sink;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::marker::PhantomData;
 use tokio::sync::mpsc;
 use tokio_util::sync::PollSender;
 use tracing::{debug, info};
@@ -32,8 +31,6 @@ where
 
     // used to create the ProposalSenders
     proposal_tx: mpsc::Sender<Targeted<FsmCmd>>,
-
-    phantom_data: PhantomData<FsmCmd>,
 }
 
 impl<FsmCmd, CmdOut, RaftIn, RaftOut> Consensus<FsmCmd, CmdOut, RaftIn, RaftOut>
@@ -53,7 +50,6 @@ where
             raft_in,
             _raft_out: raft_out,
             proposal_tx,
-            phantom_data: PhantomData::default(),
         }
     }
 

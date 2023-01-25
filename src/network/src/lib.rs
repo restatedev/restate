@@ -1,6 +1,5 @@
 use futures::{Sink, SinkExt};
 use std::fmt::Debug;
-use std::marker::PhantomData;
 use tokio::sync::mpsc;
 use tokio_util::sync::PollSender;
 use tracing::debug;
@@ -14,8 +13,6 @@ pub struct Network<ConMsg, ConOut> {
 
     // used for creating the ConsensusSender
     consensus_tx: mpsc::Sender<ConMsg>,
-
-    _phantom_data: PhantomData<ConMsg>,
 }
 
 impl<ConMsg, ConOut> Network<ConMsg, ConOut>
@@ -31,7 +28,6 @@ where
             consensus_out,
             consensus_rx,
             consensus_tx,
-            _phantom_data: PhantomData::default(),
         }
     }
 
