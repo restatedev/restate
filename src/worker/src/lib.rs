@@ -19,6 +19,18 @@ type PartitionProcessor = partition::PartitionProcessor<
 >;
 type TargetedFsmCommand = Targeted<partition::Command>;
 
+#[derive(Debug, clap::Parser)]
+#[group(skip)]
+pub struct Options {
+    /// Bounded channel size
+    #[arg(
+        long = "worker-channel-size",
+        env = "WORKER_CHANNEL_SIZE",
+        default_value = "64"
+    )]
+    channel_size: usize,
+}
+
 #[derive(Debug)]
 pub struct Worker {
     consensus: Consensus<
@@ -31,11 +43,19 @@ pub struct Worker {
     network: Network<TargetedFsmCommand, PollSender<TargetedFsmCommand>>,
 }
 
+impl Options {
+    pub fn build(self) -> Worker {
+        Worker::new(self)
+    }
+}
+
 impl Worker {
     #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
+    pub fn new(opts: Options) -> Self {
+        let Options { channel_size, .. } = opts;
+
         let num_partition_processors = 10;
-        let (raft_in_tx, raft_in_rx) = mpsc::channel(64);
+        let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
         let network = Network::new(PollSender::new(raft_in_tx));
 
