@@ -19,5 +19,5 @@ meta = { workspace = true }
 pin-project-lite = "0.2.9"
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-instrumentation = { workspace = true }
+tracing_instrumentation = { workspace = true }
 worker = { workspace = true }

@@ -8,6 +8,9 @@ use worker::Worker;
 pub(crate) struct Options {
     #[command(flatten)]
     meta_options: meta::Options,
+
+    #[command(flatten)]
+    worker_options: worker::Options,
 }
 
 pub(crate) struct Application {
@@ -18,7 +21,7 @@ pub(crate) struct Application {
 impl Options {
     pub(crate) fn build(self) -> Application {
         let meta_service = self.meta_options.build();
-        let worker = Worker::new();
+        let worker = self.worker_options.build();
 
         Application {
             meta_service,

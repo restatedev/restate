@@ -35,8 +35,9 @@ consensus = { path = "src/consensus" }
 meta = { path = "src/meta" }
 network = { path = "src/network" }
 protocol = { path = "src/protocol" }
-storage = { path = "src/storage" }
-tracing-instrumentation = { path = "src/tracing-instrumentation" }
+storage_api = {path = "src/storage_api"}
+storage_rocksdb = { path = "src/storage_rocksdb" }
+tracing_instrumentation = { path = "src/tracing_instrumentation" }
 worker = { path = "src/worker" }
 
 [profile.release]
