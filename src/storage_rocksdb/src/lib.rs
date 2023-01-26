@@ -7,9 +7,9 @@ type DB = rocksdb::DBWithThreadMode<rocksdb::SingleThreaded>;
 pub struct Options {
     ///  Storage path
     #[arg(
-    long = "worker-storage-path",
-    env = "WORKER_STORAGE_PATH",
-    default_value = "db/"
+        long = "worker-storage-path",
+        env = "WORKER_STORAGE_PATH",
+        default_value = "db/"
     )]
     path: String,
 }
