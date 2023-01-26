@@ -1660,6 +1660,7 @@ dependencies = [
  "futures",
  "network",
  "pin-project-lite",
+ "storage_rocksdb",
  "tokio",
  "tokio-stream",
  "tokio-util",

@@ -29,6 +29,9 @@ pub struct Options {
         default_value = "64"
     )]
     channel_size: usize,
+
+    #[command(flatten)]
+    storage_rocksdb: storage_rocksdb::Options,
 }
 
 #[derive(Debug)]
