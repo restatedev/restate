@@ -3,6 +3,7 @@ use consensus::{Consensus, ProposalSender, Targeted};
 use futures::stream::FuturesUnordered;
 use futures::TryStreamExt;
 use network::Network;
+use storage_rocksdb::Storage;
 use tokio::sync::mpsc;
 use tokio::try_join;
 use tokio_stream::wrappers::ReceiverStream;
@@ -44,6 +45,7 @@ pub struct Worker {
     >,
     processors: Vec<PartitionProcessor>,
     network: Network<TargetedFsmCommand, PollSender<TargetedFsmCommand>>,
+    _storage: Storage,
 }
 
 impl Options {
@@ -55,8 +57,13 @@ impl Options {
 impl Worker {
     #[allow(clippy::new_without_default)]
     pub fn new(opts: Options) -> Self {
-        let Options { channel_size, .. } = opts;
+        let Options {
+            channel_size,
+            storage_rocksdb,
+            ..
+        } = opts;
 
+        let storage = storage_rocksdb.build();
         let num_partition_processors = 10;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
@@ -70,7 +77,7 @@ impl Worker {
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {
                 let proposal_sender = consensus.create_proposal_sender();
-                Self::create_partition_processor(idx, proposal_sender)
+                Self::create_partition_processor(idx, proposal_sender, storage.clone())
             })
             .unzip();
 
@@ -80,12 +87,14 @@ impl Worker {
             consensus,
             processors,
             network,
+            _storage: storage,
         }
     }
 
     fn create_partition_processor(
         id: PeerId,
         proposal_sender: ProposalSender<TargetedFsmCommand>,
+        _storage: Storage,
     ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(
