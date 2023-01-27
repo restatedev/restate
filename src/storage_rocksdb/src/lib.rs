@@ -1,5 +1,5 @@
 use crate::TableKind::{Dedup, Fsm, Inbox, Outbox, State, Timers};
-use rocksdb::{WriteBatch};
+use rocksdb::WriteBatch;
 use std::sync::Arc;
 use tracing::info;
 
@@ -101,12 +101,10 @@ impl Storage {
         key: K,
     ) -> Option<V> {
         let table = self.table_handle(table);
-        self
-            .db
+        self.db
             .get_pinned_cf(&table, key)
             .expect("Unexpected database error")
-        .map(|slice| V::from_bytes(slice.as_ref()))
-
+            .map(|slice| V::from_bytes(slice.as_ref()))
     }
 
     pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, table: TableKind, key: K, value: V) {
@@ -116,7 +114,7 @@ impl Storage {
             .expect("Unexpected database error");
     }
 
-    pub fn scan_prefix_into<P: AsRef<[u8]>, KD: StorageDeserializer, VD: StorageDeserializer>(
+    pub fn copy_prefix_into<P: AsRef<[u8]>, KD: StorageDeserializer, VD: StorageDeserializer>(
         &self,
         table: TableKind,
         key_prefix: P,
@@ -124,14 +122,16 @@ impl Storage {
     ) {
         let prefix = key_prefix.as_ref();
         let table = self.table_handle(table);
-        let iterator = self
-            .db
-            .prefix_iterator_cf(&table, prefix.as_ref())
-            .map(|kv| kv.expect("Unexpected database error"))
-            .take_while(|kv| kv.0.starts_with(prefix))
-            .map(|(k, v)| (KD::from_bytes(k), VD::from_bytes(v)));
 
-        storage.extend(iterator);
+        let mut iterator = self.db.raw_iterator_cf(&table);
+        iterator.seek(prefix);
+        while let Some((k, v)) = iterator.item() {
+            if !k.starts_with(prefix) {
+                break;
+            }
+            storage.push((KD::from_bytes(k), VD::from_bytes(v)));
+            iterator.next();
+        }
     }
 
     pub fn transaction(&self) -> WriteTransaction {
