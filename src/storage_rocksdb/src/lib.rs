@@ -1,5 +1,5 @@
 use crate::TableKind::{Dedup, Fsm, Inbox, Outbox, State, Timers};
-use rocksdb::{Error, WriteBatch};
+use rocksdb::{WriteBatch};
 use std::sync::Arc;
 use tracing::info;
 
@@ -64,6 +64,10 @@ pub struct Storage {
     db: Arc<DB>,
 }
 
+pub trait StorageDeserializer {
+    fn from_bytes(bytes: impl AsRef<[u8]>) -> Self;
+}
+
 impl Storage {
     fn new(opts: Options) -> Self {
         let Options { path, .. } = opts;
@@ -91,10 +95,49 @@ impl Storage {
         Self { db: Arc::new(db) }
     }
 
+    pub fn get<K: AsRef<[u8]>, V: StorageDeserializer>(
+        &self,
+        table: TableKind,
+        key: K,
+    ) -> Option<V> {
+        let table = self.table_handle(table);
+        self
+            .db
+            .get_pinned_cf(&table, key)
+            .expect("Unexpected database error")
+        .map(|slice| V::from_bytes(slice.as_ref()))
+
+    }
+
+    pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, table: TableKind, key: K, value: V) {
+        let table = self.table_handle(table);
+        self.db
+            .put_cf(&table, key, value)
+            .expect("Unexpected database error");
+    }
+
+    pub fn scan_prefix_into<P: AsRef<[u8]>, KD: StorageDeserializer, VD: StorageDeserializer>(
+        &self,
+        table: TableKind,
+        key_prefix: P,
+        mut storage: Vec<(KD, VD)>,
+    ) {
+        let prefix = key_prefix.as_ref();
+        let table = self.table_handle(table);
+        let iterator = self
+            .db
+            .prefix_iterator_cf(&table, prefix.as_ref())
+            .map(|kv| kv.expect("Unexpected database error"))
+            .take_while(|kv| kv.0.starts_with(prefix))
+            .map(|(k, v)| (KD::from_bytes(k), VD::from_bytes(v)));
+
+        storage.extend(iterator);
+    }
+
     pub fn transaction(&self) -> WriteTransaction {
         WriteTransaction {
             write_batch: WriteBatch::default(),
-            storage: &self,
+            storage: self,
         }
     }
 
@@ -111,7 +154,7 @@ pub struct WriteTransaction<'a> {
 }
 
 impl<'a> WriteTransaction<'a> {
-    pub fn add<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, table: TableKind, key: K, value: V) {
+    pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, table: TableKind, key: K, value: V) {
         let table = self.storage.table_handle(table);
         self.write_batch.put_cf(&table, key, value);
     }
@@ -125,7 +168,10 @@ impl<'a> WriteTransaction<'a> {
         self.write_batch.clear();
     }
 
-    pub fn commit(self) -> Result<(), Error> {
-        self.storage.db.write(self.write_batch)
+    pub fn commit(self) {
+        self.storage
+            .db
+            .write(self.write_batch)
+            .expect("Unexpected database error");
     }
 }
