@@ -115,7 +115,7 @@ impl Storage {
         &self,
         table: TableKind,
         start: P,
-        prefix_bytes: usize,
+        prefix_len: usize,
         target: &mut Vec<(K, V)>,
     ) where
         P: AsRef<[u8]>,
@@ -123,7 +123,7 @@ impl Storage {
         V: StorageDeserializer,
     {
         let start = start.as_ref();
-        let prefix = &start[..prefix_bytes];
+        let prefix = &start[..prefix_len];
         let table = self.table_handle(table);
 
         let mut iterator = self.db.raw_iterator_cf(&table);
@@ -165,10 +165,6 @@ impl<'a> WriteTransaction<'a> {
     pub fn delete(&mut self, table: TableKind, key: impl AsRef<[u8]>) {
         let table = self.storage.table_handle(table);
         self.write_batch.delete_cf(&table, key);
-    }
-
-    pub fn reset(&mut self) {
-        self.write_batch.clear();
     }
 
     pub fn commit(self) {
