@@ -3,7 +3,7 @@ use consensus::{Consensus, ProposalSender, Targeted};
 use futures::stream::FuturesUnordered;
 use futures::TryStreamExt;
 use network::Network;
-use storage_rocksdb::Storage;
+use storage_rocksdb::RocksDBStorage;
 use tokio::sync::mpsc;
 use tokio::try_join;
 use tokio_stream::wrappers::ReceiverStream;
@@ -17,6 +17,7 @@ type ConsensusCommand = consensus::Command<partition::Command>;
 type PartitionProcessor = partition::PartitionProcessor<
     ReceiverStream<ConsensusCommand>,
     IdentitySender<partition::Command>,
+    RocksDBStorage,
 >;
 type TargetedFsmCommand = Targeted<partition::Command>;
 
@@ -45,7 +46,7 @@ pub struct Worker {
     >,
     processors: Vec<PartitionProcessor>,
     network: Network<TargetedFsmCommand, PollSender<TargetedFsmCommand>>,
-    _storage: Storage,
+    _storage: RocksDBStorage,
 }
 
 impl Options {
@@ -94,13 +95,14 @@ impl Worker {
     fn create_partition_processor(
         id: PeerId,
         proposal_sender: ProposalSender<TargetedFsmCommand>,
-        _storage: Storage,
+        _storage: RocksDBStorage,
     ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(
             id,
             ReceiverStream::new(command_rx),
             IdentitySender::new(id, proposal_sender),
+            _storage,
         );
 
         ((id, PollSender::new(command_tx)), processor)

@@ -21,4 +21,5 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+storage_api = { workspace = true}
 storage_rocksdb = { workspace = true}

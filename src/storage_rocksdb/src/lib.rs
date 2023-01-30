@@ -1,17 +1,9 @@
 use rocksdb::WriteBatch;
 use std::sync::Arc;
-use TableKind::{Dedup, Fsm, Inbox, Outbox, State, Timers};
+use storage_api::TableKind::{Deduplication, Inbox, Outbox, PartitionStateMachine, State, Timers};
+use storage_api::{Storage, StorageDeserializer, StorageReader, TableKind, WriteTransaction};
 
 type DB = rocksdb::DBWithThreadMode<rocksdb::SingleThreaded>;
-
-pub enum TableKind {
-    State,
-    Inbox,
-    Outbox,
-    Dedup,
-    Fsm,
-    Timers,
-}
 
 const STATE_TABLE_NAME: &str = "state";
 const INBOX_TABLE_NAME: &str = "inbox";
@@ -20,28 +12,15 @@ const DEDUP_TABLE_NAME: &str = "dedup";
 const FSM_TABLE_NAME: &str = "fsm";
 const TIMERS_TABLE_NAME: &str = "timers";
 
-impl From<TableKind> for &'static str {
-    fn from(kind: TableKind) -> Self {
-        match kind {
-            State => STATE_TABLE_NAME,
-            Inbox => INBOX_TABLE_NAME,
-            Outbox => OUTBOX_TABLE_NAME,
-            Dedup => DEDUP_TABLE_NAME,
-            Fsm => FSM_TABLE_NAME,
-            Timers => TIMERS_TABLE_NAME,
-        }
+fn cf_name(kind: TableKind) -> &'static str {
+    match kind {
+        State => STATE_TABLE_NAME,
+        Inbox => INBOX_TABLE_NAME,
+        Outbox => OUTBOX_TABLE_NAME,
+        Deduplication => DEDUP_TABLE_NAME,
+        PartitionStateMachine => FSM_TABLE_NAME,
+        Timers => TIMERS_TABLE_NAME,
     }
-}
-
-impl From<TableKind> for String {
-    fn from(value: TableKind) -> Self {
-        let s: &'static str = value.into();
-        String::from(s)
-    }
-}
-
-pub trait StorageDeserializer {
-    fn from_bytes(bytes: impl AsRef<[u8]>) -> Self;
 }
 
 #[derive(Debug, clap::Parser)]
@@ -57,17 +36,17 @@ pub struct Options {
 }
 
 impl Options {
-    pub fn build(self) -> Storage {
-        Storage::new(self)
+    pub fn build(self) -> RocksDBStorage {
+        RocksDBStorage::new(self)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Storage {
+pub struct RocksDBStorage {
     db: Arc<DB>,
 }
 
-impl Storage {
+impl RocksDBStorage {
     fn new(opts: Options) -> Self {
         let Options { path, .. } = opts;
 
@@ -78,25 +57,31 @@ impl Storage {
         // TODO: set rocksdb options from opts.
         //
         let tables = [
-            rocksdb::ColumnFamilyDescriptor::new(State, db_options.clone()),
-            rocksdb::ColumnFamilyDescriptor::new(Inbox, db_options.clone()),
-            rocksdb::ColumnFamilyDescriptor::new(Outbox, db_options.clone()),
-            rocksdb::ColumnFamilyDescriptor::new(Dedup, db_options.clone()),
-            rocksdb::ColumnFamilyDescriptor::new(Fsm, db_options.clone()),
-            rocksdb::ColumnFamilyDescriptor::new(Timers, db_options.clone()),
+            rocksdb::ColumnFamilyDescriptor::new(cf_name(State), db_options.clone()),
+            rocksdb::ColumnFamilyDescriptor::new(cf_name(Inbox), db_options.clone()),
+            rocksdb::ColumnFamilyDescriptor::new(cf_name(Outbox), db_options.clone()),
+            rocksdb::ColumnFamilyDescriptor::new(cf_name(Deduplication), db_options.clone()),
+            rocksdb::ColumnFamilyDescriptor::new(
+                cf_name(PartitionStateMachine),
+                db_options.clone(),
+            ),
+            rocksdb::ColumnFamilyDescriptor::new(cf_name(Timers), db_options.clone()),
         ];
 
         let db = DB::open_cf_descriptors(&db_options, path, tables)
-            .expect("unable to open the database");
+            .expect("Unable to open the database");
 
         Self { db: Arc::new(db) }
     }
 
-    pub fn get<K: AsRef<[u8]>, V: StorageDeserializer>(
-        &self,
-        table: TableKind,
-        key: K,
-    ) -> Option<V> {
+    fn table_handle(&self, table: TableKind) -> impl rocksdb::AsColumnFamilyRef + '_ {
+        let name = cf_name(table);
+        self.db.cf_handle(name).expect("missing table name.")
+    }
+}
+
+impl StorageReader for RocksDBStorage {
+    fn get<K: AsRef<[u8]>, V: StorageDeserializer>(&self, table: TableKind, key: K) -> Option<V> {
         let table = self.table_handle(table);
         self.db
             .get_pinned_cf(&table, key)
@@ -104,14 +89,7 @@ impl Storage {
             .map(|slice| V::from_bytes(slice.as_ref()))
     }
 
-    pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, table: TableKind, key: K, value: V) {
-        let table = self.table_handle(table);
-        self.db
-            .put_cf(&table, key, value)
-            .expect("Unexpected database error");
-    }
-
-    pub fn copy_prefix_into<P, K, V>(
+    fn copy_prefix_into<P, K, V>(
         &self,
         table: TableKind,
         start: P,
@@ -136,38 +114,44 @@ impl Storage {
             iterator.next();
         }
     }
+}
 
-    pub fn transaction(&self) -> WriteTransaction {
-        WriteTransaction {
+impl Storage for RocksDBStorage {
+    type WriteTransactionType<'a> = RocksDBWriteTransaction<'a>;
+
+    fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, table: TableKind, key: K, value: V) {
+        let table = self.table_handle(table);
+        self.db
+            .put_cf(&table, key, value)
+            .expect("Unexpected database error");
+    }
+
+    #[allow(clippy::needless_lifetimes)]
+    fn transaction<'a>(&'a self) -> Self::WriteTransactionType<'a> {
+        RocksDBWriteTransaction {
             write_batch: WriteBatch::default(),
             storage: self,
         }
     }
-
-    fn table_handle(&self, table: TableKind) -> impl rocksdb::AsColumnFamilyRef + '_ {
-        self.db
-            .cf_handle(table.into())
-            .expect("missing table name.")
-    }
 }
 
-pub struct WriteTransaction<'a> {
+pub struct RocksDBWriteTransaction<'a> {
     write_batch: WriteBatch,
-    storage: &'a Storage,
+    storage: &'a RocksDBStorage,
 }
 
-impl<'a> WriteTransaction<'a> {
-    pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, table: TableKind, key: K, value: V) {
+impl<'a> WriteTransaction<'a> for RocksDBWriteTransaction<'a> {
+    fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, table: TableKind, key: K, value: V) {
         let table = self.storage.table_handle(table);
         self.write_batch.put_cf(&table, key, value);
     }
 
-    pub fn delete(&mut self, table: TableKind, key: impl AsRef<[u8]>) {
+    fn delete(&mut self, table: TableKind, key: impl AsRef<[u8]>) {
         let table = self.storage.table_handle(table);
         self.write_batch.delete_cf(&table, key);
     }
 
-    pub fn commit(self) {
+    fn commit(self) {
         self.storage
             .db
             .write(self.write_batch)
@@ -201,19 +185,7 @@ mod tess {
         }
     }
 
-    #[test]
-    fn test_hello() {
-        eprintln!("hell");
-        println!("hello")
-    }
-
-    #[test]
-    fn test_add() {
-        let opts = Options {
-            path: "db/".to_string(),
-        };
-        let storage = Storage::new(opts);
-
+    fn hello<S: Storage>(storage: S) {
         let mut txn = storage.transaction();
 
         txn.put(State, "abcc-a", "1");
@@ -233,5 +205,14 @@ mod tess {
         storage.copy_prefix_into(State, "abcd-b", 4, &mut vec);
 
         println!("hello {vec:?}");
+    }
+
+    #[test]
+    fn test_add() {
+        let opts = Options {
+            path: "db/".to_string(),
+        };
+        let storage = RocksDBStorage::new(opts);
+        hello(storage);
     }
 }

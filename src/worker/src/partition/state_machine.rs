@@ -1,3 +1,4 @@
+use storage_api::StorageReader;
 use tracing::debug;
 
 #[derive(Debug, Default)]
@@ -18,7 +19,12 @@ impl StateMachine {
     ///
     /// We pass in the effects message as a mutable borrow to be able to reuse it across
     /// invocations of this methods which lies on the hot path.
-    pub(super) fn on_apply(&self, command: Command, _effects: &mut Effects) {
+    pub(super) fn on_apply<S: StorageReader>(
+        &self,
+        command: Command,
+        _effects: &mut Effects,
+        _storage: &S,
+    ) {
         debug!(?command, "Apply");
     }
 }
