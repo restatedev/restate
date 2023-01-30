@@ -1,7 +1,6 @@
-use crate::TableKind::{Dedup, Fsm, Inbox, Outbox, State, Timers};
 use rocksdb::WriteBatch;
 use std::sync::Arc;
-use tracing::info;
+use TableKind::{Dedup, Fsm, Inbox, Outbox, State, Timers};
 
 type DB = rocksdb::DBWithThreadMode<rocksdb::SingleThreaded>;
 
@@ -41,6 +40,10 @@ impl From<TableKind> for String {
     }
 }
 
+pub trait StorageDeserializer {
+    fn from_bytes(bytes: impl AsRef<[u8]>) -> Self;
+}
+
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
 pub struct Options {
@@ -64,10 +67,6 @@ pub struct Storage {
     db: Arc<DB>,
 }
 
-pub trait StorageDeserializer {
-    fn from_bytes(bytes: impl AsRef<[u8]>) -> Self;
-}
-
 impl Storage {
     fn new(opts: Options) -> Self {
         let Options { path, .. } = opts;
@@ -87,10 +86,8 @@ impl Storage {
             rocksdb::ColumnFamilyDescriptor::new(Timers, db_options.clone()),
         ];
 
-        let db = DB::open_cf_descriptors(&db_options, &path, tables)
+        let db = DB::open_cf_descriptors(&db_options, path, tables)
             .expect("unable to open the database");
-
-        info!(?path, "Database opened successfully.");
 
         Self { db: Arc::new(db) }
     }
@@ -114,22 +111,28 @@ impl Storage {
             .expect("Unexpected database error");
     }
 
-    pub fn copy_prefix_into<P: AsRef<[u8]>, KD: StorageDeserializer, VD: StorageDeserializer>(
+    pub fn copy_prefix_into<P, K, V>(
         &self,
         table: TableKind,
-        key_prefix: P,
-        mut storage: Vec<(KD, VD)>,
-    ) {
-        let prefix = key_prefix.as_ref();
+        start: P,
+        prefix_bytes: usize,
+        target: &mut Vec<(K, V)>,
+    ) where
+        P: AsRef<[u8]>,
+        K: StorageDeserializer,
+        V: StorageDeserializer,
+    {
+        let start = start.as_ref();
+        let prefix = &start[..prefix_bytes];
         let table = self.table_handle(table);
 
         let mut iterator = self.db.raw_iterator_cf(&table);
-        iterator.seek(prefix);
+        iterator.seek(start);
         while let Some((k, v)) = iterator.item() {
             if !k.starts_with(prefix) {
                 break;
             }
-            storage.push((KD::from_bytes(k), VD::from_bytes(v)));
+            target.push((K::from_bytes(k), V::from_bytes(v)));
             iterator.next();
         }
     }
@@ -173,5 +176,66 @@ impl<'a> WriteTransaction<'a> {
             .db
             .write(self.write_batch)
             .expect("Unexpected database error");
+    }
+}
+
+#[cfg(test)]
+mod tess {
+    use super::*;
+
+    #[derive(Debug)]
+    struct MyMessage(String);
+
+    impl From<&str> for MyMessage {
+        fn from(value: &str) -> Self {
+            MyMessage(value.to_string())
+        }
+    }
+
+    impl StorageDeserializer for MyMessage {
+        fn from_bytes(bytes: impl AsRef<[u8]>) -> Self {
+            let b = bytes.as_ref().to_vec();
+            MyMessage(String::from_utf8(b).unwrap())
+        }
+    }
+
+    impl AsRef<[u8]> for MyMessage {
+        fn as_ref(&self) -> &[u8] {
+            self.0.as_bytes()
+        }
+    }
+
+    #[test]
+    fn test_hello() {
+        eprintln!("hell");
+        println!("hello")
+    }
+
+    #[test]
+    fn test_add() {
+        let opts = Options {
+            path: "db/".to_string(),
+        };
+        let storage = Storage::new(opts);
+
+        let mut txn = storage.transaction();
+
+        txn.put(State, "abcc-a", "1");
+        txn.put(State, "abcc-b", "2");
+
+        txn.put(State, "abcd-a", "a");
+        txn.put(State, "abcd-b", "b");
+        txn.put(State, "abcd-c", "c");
+
+        txn.put(State, "abce-d", "d");
+        txn.put(State, "abce-a", "3");
+        txn.put(State, "abce-b", "4");
+
+        txn.commit();
+
+        let mut vec: Vec<(MyMessage, MyMessage)> = Vec::with_capacity(4);
+        storage.copy_prefix_into(State, "abcd-b", 4, &mut vec);
+
+        println!("hello {vec:?}");
     }
 }

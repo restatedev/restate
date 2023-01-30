@@ -1186,7 +1186,6 @@ dependencies = [
  "clap",
  "rocksdb",
  "storage_api",
- "tracing",
 ]
 
 [[package]]
