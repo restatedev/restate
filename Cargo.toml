@@ -37,7 +37,7 @@ network = { path = "src/network" }
 protocol = { path = "src/protocol" }
 storage_api = {path = "src/storage_api"}
 storage_rocksdb = { path = "src/storage_rocksdb" }
-tracing-instrumentation = { path = "src/tracing-instrumentation" }
+tracing_instrumentation = { path = "src/tracing_instrumentation" }
 worker = { path = "src/worker" }
 
 [profile.release]
