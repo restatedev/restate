@@ -33,6 +33,7 @@ uuid = { version = "1.3.0", features = ["v7"] }
 config = { path = "src/config" }
 common = { path = "src/common" }
 consensus = { path = "src/consensus" }
+invoker = { path = "src/invoker" }
 meta = { path = "src/meta" }
 network = { path = "src/network" }
 protocol = { path = "src/protocol" }
