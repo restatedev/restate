@@ -46,7 +46,8 @@ impl Options {
     /// }
     ///
     /// #[tokio::main]
-    /// async fn main() {     /// use tracing_instrumentation::TokioRuntime;
+    /// async fn main() {
+    /// use tracing_instrumentation::TokioRuntime;
     /// let options = Options::parse();
     ///     options
     ///         .tracing
