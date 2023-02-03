@@ -36,7 +36,7 @@ impl Options {
     /// panic if it is executed outside of a Tokio runtime.
     ///
     /// Example:
-    /// ```ignore
+    /// ```
     /// use clap::Parser;
     ///
     /// #[derive(Debug, clap::Parser)]
