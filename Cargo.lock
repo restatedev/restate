@@ -525,6 +525,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02"
 
 [[package]]
+name = "invoker"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "drain",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "io-lifetimes"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1680,6 +1691,7 @@ dependencies = [
  "consensus",
  "drain",
  "futures",
+ "invoker",
  "network",
  "pin-project-lite",
  "storage_api",

@@ -5,7 +5,9 @@ use tracing::debug;
 pub(super) struct StateMachine;
 
 #[derive(Debug)]
-pub(crate) enum Command {}
+pub(crate) enum Command {
+    Invoker(invoker::Output),
+}
 
 #[derive(Debug, Default)]
 pub(super) struct Effects;

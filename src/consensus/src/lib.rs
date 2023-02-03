@@ -1,4 +1,4 @@
-use common::types::PeerId;
+use common::types::{LeaderEpoch, PeerId};
 use futures::{SinkExt, Stream, StreamExt};
 use futures_sink::Sink;
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ pub enum Command<T> {
     Apply(T),
     CreateSnapshot,
     ApplySnapshot,
-    BecomeLeader,
+    BecomeLeader(LeaderEpoch),
     BecomeFollower,
 }
 
@@ -84,6 +84,8 @@ where
 
         info!("Running the consensus driver.");
 
+        Self::announce_leadership(&mut state_machines).await;
+
         tokio::pin!(raft_in);
 
         loop {
@@ -91,17 +93,17 @@ where
                 proposal = proposal_rx.recv() => {
                     debug!(?proposal, "Received proposal");
 
-                    let (target, proposal) = proposal.expect("Consensus owns the proposal sender, that's why the receiver should never be closed.");
+                    let (target, proposal) = proposal.expect("Consensus owns the proposal sender, that's why the receiver should never be closed");
 
                     if let Some(state_machine) = state_machines.get_mut(&target) {
-                        state_machine.send(Command::Apply(proposal)).await.expect("The state machine should exist as long as Consensus exists.");
+                        state_machine.send(Command::Apply(proposal)).await.expect("The state machine should exist as long as Consensus exists");
                     }
                 },
                 raft_msg = raft_in.next() => {
                     if let Some((target, raft_msg)) = raft_msg {
 
                         if let Some(state_machine) = state_machines.get_mut(&target) {
-                            state_machine.send(Command::Apply(raft_msg)).await.expect("The state machine should exist as long as Consensus exists.");
+                            state_machine.send(Command::Apply(raft_msg)).await.expect("The state machine should exist as long as Consensus exists");
                         }
                     } else {
                         debug!("Shutting consensus down.");
@@ -109,6 +111,15 @@ where
                     }
                 }
             }
+        }
+    }
+
+    async fn announce_leadership(state_machines: &mut HashMap<PeerId, SmSink>) {
+        debug!("Announcing leadership.");
+        for sink in state_machines.values_mut() {
+            sink.send(Command::BecomeLeader(1))
+                .await
+                .expect("The state machine should exist as long as Consensus exists");
         }
     }
 }
