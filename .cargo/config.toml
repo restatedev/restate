@@ -1,3 +1,5 @@
 [build]
-# Include full unwind tables when aborting on panic
-rustflags = ["-C", "force-unwind-tables"]
+rustflags = [
+    "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
+    "--cfg", "uuid_unstable", # Enable unstable Uuid
+]
