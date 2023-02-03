@@ -18,8 +18,8 @@ pub trait StorageReader {
     fn copy_prefix_into<P, K, V>(
         &self,
         table: TableKind,
-        start: P,
-        prefix_len: usize,
+        start_key: P,
+        start_key_prefix_len: usize,
         target: &mut Vec<(K, V)>,
     ) where
         P: AsRef<[u8]>,

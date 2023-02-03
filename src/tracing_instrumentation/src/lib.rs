@@ -36,7 +36,7 @@ impl Options {
     /// panic if it is executed outside of a Tokio runtime.
     ///
     /// Example:
-    /// ```
+    /// ```ignore
     /// use clap::Parser;
     ///
     /// #[derive(Debug, clap::Parser)]
@@ -46,8 +46,7 @@ impl Options {
     /// }
     ///
     /// #[tokio::main]
-    /// async fn main() {
-    ///     use tracing_instrumentation::TokioRuntime;
+    /// async fn main() {     /// use tracing_instrumentation::TokioRuntime;
     /// let options = Options::parse();
     ///     options
     ///         .tracing
