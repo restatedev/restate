@@ -28,6 +28,9 @@ jobs:
           # need to provide a toolchain version because this action cannot read rust-toolchain.toml. See https://github.com/actions-rs/toolchain/issues/126
           toolchain: stable
 
+      - name: Install protoc
+        uses: ./.github/actions/install-protoc
+
       - name: Setup just
         uses: extractions/setup-just@v1
 
