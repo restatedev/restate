@@ -1,0 +1,147 @@
+syntax = "proto3";
+
+package dev.restate.service.protocol;
+
+import "google/protobuf/empty.proto";
+
+option java_package = "dev.restate.generated.service.protocol";
+option go_package = "restate.dev/sdk-go/pb/service/protocol";
+
+// --- Core frames ---
+
+// Type: 0x0000 + 0
+message StartMessage {
+  bytes invocation_id = 1;
+  bytes instance_key = 2;
+
+  uint32 known_service_version = 3;
+
+  uint32 known_entries = 4;
+}
+
+// Type: 0x0000 + 1
+// Note: Completions that are simply acks will use this frame without sending back any result
+message CompletionMessage {
+  uint32 entry_index = 1;
+
+  oneof result {
+    google.protobuf.Empty empty = 13;
+    bytes value = 14;
+    Failure failure = 15;
+  };
+}
+
+// --- Journal Entries ---
+
+// Every Completable JournalEntry has a result field, filled only and only if the entry is in DONE state.
+// Depending on the semantics of the corresponding syscall, the entry can represent the result field with any of these three types:
+//
+//   * google.protobuf.Empty empty = 13 for cases when we need to propagate to user code the distinction between default value or no value.
+//   * bytes value = 14 for carrying the result value
+//   * Failure failure = 15 for carrying a failure
+//
+// The tag numbers 13, 14 and 15 are reserved and shouldn't be used for other fields.
+
+// ------ Input and output ------
+
+// Kind: Completable JournalEntry
+// Type: 0x0400 + 0
+message PollInputStreamEntryMessage {
+  bytes value = 14;
+}
+
+// Kind: Ack-able JournalEntry
+// Type: 0x0400 + 1
+message OutputStreamEntryMessage {
+  oneof result {
+    bytes value = 14;
+    Failure failure = 15;
+  };
+}
+
+// ------ State access ------
+
+// Kind: Completable JournalEntry
+// Type: 0x0800 + 0
+message GetStateEntryMessage {
+  bytes key = 1;
+
+  oneof result {
+    google.protobuf.Empty empty = 13;
+    bytes value = 14;
+  };
+}
+
+// Kind: Ack-able JournalEntry
+// Type: 0x0800 + 1
+message SetStateEntryMessage {
+  bytes key = 1;
+  bytes value = 3;
+}
+
+// Kind: Ack-able JournalEntry
+// Type: 0x0800 + 2
+message ClearStateEntryMessage {
+  bytes key = 1;
+}
+
+// ------ Syscalls ------
+
+// Kind: Completable JournalEntry
+// Type: 0x0C00 + 0
+message SleepEntryMessage {
+  // Duration since UNIX Epoch
+  int64 wake_up_time = 1;
+
+  google.protobuf.Empty result = 13;
+}
+
+// Kind: Completable JournalEntry
+// Type: 0x0C00 + 1
+message InvokeEntryMessage {
+  string service_name = 1;
+  string method_name = 2;
+
+  bytes parameter = 3;
+
+  oneof result {
+    bytes value = 14;
+    Failure failure = 15;
+  };
+}
+
+// Kind: Ack-able JournalEntry
+// Type: 0x0C00 + 2
+message BackgroundInvokeEntryMessage {
+  string service_name = 1;
+  string method_name = 2;
+
+  bytes parameter = 3;
+}
+
+// Kind: Completable JournalEntry
+// Type: 0x0C00 + 3
+message AwakeableEntryMessage {
+  oneof result {
+    bytes value = 14;
+    Failure failure = 15;
+  };
+}
+
+// Kind: Ack-able JournalEntry
+// Type: 0x0C00 + 4
+message CompleteAwakeableEntryMessage {
+  string service_name = 1;
+  bytes instance_key = 2;
+  bytes invocation_id = 3;
+  uint32 entry_index = 4;
+
+  bytes payload = 5;
+}
+
+// --- Nested messages
+
+message Failure {
+  int32 code = 1;
+  string message = 2;
+}
