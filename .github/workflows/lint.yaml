@@ -1,0 +1,20 @@
+name: Lint Code Base
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Run protolint
+        uses: plexsystems/protolint-action@v0.7.0
+        with:
+          configDirectory: .
