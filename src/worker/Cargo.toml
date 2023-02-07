@@ -16,6 +16,8 @@ consensus = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 invoker = { workspace = true }
+journal = { workspace = true }
+service_protocol = { workspace = true }
 network = { workspace = true }
 pin-project-lite = "0.2.9"
 tokio = { workspace = true }
