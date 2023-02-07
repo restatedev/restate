@@ -15,8 +15,8 @@ description = "Restate makes distributed applications easy!"
 
 [workspace.dependencies]
 anyhow = "1.0.68"
-bytes = "1.3"
-bytestring = "1.2"
+bytes = { version = "1.3", features = ["serde"] }
+bytestring = { version = "1.2", features = ["serde"] }
 clap = { version = "4.0", features = ["derive", "env"] }
 futures = "0.3.25"
 futures-sink = "0.3.25"
@@ -27,13 +27,14 @@ prost = "0.11"
 prost-types = "0.11"
 prost-reflect = "0.9"
 prost-build = "0.11"
-serde = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
 tracing = "0.1"
 tokio = { version = "1.24", features = ["rt-multi-thread", "signal", "macros"] }
 tokio-stream = "0.1.11"
 tokio-util = "0.7.4"
-uuid = { version = "1.3.0", features = ["v7"] }
+opentelemetry = { version = "0.18" }
+uuid = { version = "1.3.0", features = ["v7", "serde"] }
 
 # Own crates
 config = { path = "src/config" }

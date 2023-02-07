@@ -1,97 +1,198 @@
-use common::types::{InvocationId, PartitionLeaderEpoch};
-use std::collections::HashMap;
+use common::types::{PartitionLeaderEpoch, ServiceInvocationId};
+use futures::Stream;
+use journal::raw::RawEntry;
+use journal::{Completion, EntryIndex};
+use opentelemetry::Context;
+use std::future::Future;
 use tokio::sync::mpsc;
-use tokio_util::sync::PollSender;
-use tracing::debug;
+
+mod invoker;
+pub use crate::invoker::*;
+
+// --- Journal
+
+pub type JournalRevision = u32;
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct JournalMetadata {
+    method: String,
+
+    /// Span attached to this invocation.
+    tracing_context: Context,
+
+    journal_size: EntryIndex,
+    journal_revision: JournalRevision,
+}
+
+// --- Input messages
 
 #[derive(Debug)]
-pub enum Input {
-    Invoke(InvocationId),
-    Resume,
-    Completion,
-    Abort(PartitionLeaderEpoch),
-    StorageAck,
+pub struct Input<I> {
+    partition: PartitionLeaderEpoch,
+    inner: I,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct InvokeInputCommand {
+    service_invocation_id: ServiceInvocationId,
+
+    journal: InvokeInputJournal,
+}
+
+#[derive(Debug)]
+pub enum InvokeInputJournal {
+    NoCachedJournal,
+    CachedJournal(JournalMetadata, Vec<RawEntry>),
+}
+
+#[derive(Debug)]
+pub enum OtherInputCommand {
+    Completion {
+        service_invocation_id: ServiceInvocationId,
+        completion: Completion,
+        journal_revision: JournalRevision,
+    },
+    StoredEntryAck {
+        service_invocation_id: ServiceInvocationId,
+        entry_index: EntryIndex,
+        journal_revision: JournalRevision,
+    },
+
+    /// Command used to clean up internal state when a partition leader is going away
+    AbortAllPartition,
+    AbortInvocation {
+        service_invocation_id: ServiceInvocationId,
+    },
 
     // needed for dynamic registration at Invoker
-    Register(PartitionLeaderEpoch, mpsc::Sender<Output>),
+    RegisterPartition(mpsc::Sender<Output>),
 }
+
+impl Input<InvokeInputCommand> {
+    pub fn new_invoke(
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+    ) -> Self {
+        Self {
+            partition,
+            inner: InvokeInputCommand {
+                service_invocation_id,
+                journal: InvokeInputJournal::NoCachedJournal,
+            },
+        }
+    }
+
+    pub fn new_cached_invoke(
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        journal: Vec<RawEntry>,
+    ) -> Self {
+        Self {
+            partition,
+            inner: InvokeInputCommand {
+                service_invocation_id,
+                journal: InvokeInputJournal::CachedJournal(journal_metadata, journal),
+            },
+        }
+    }
+}
+
+impl Input<OtherInputCommand> {
+    pub fn new_completion(
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        completion: Completion,
+        journal_revision: JournalRevision,
+    ) -> Self {
+        Self {
+            partition,
+            inner: OtherInputCommand::Completion {
+                service_invocation_id,
+                completion,
+                journal_revision,
+            },
+        }
+    }
+
+    pub fn new_stored_entry_ack(
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        entry_index: EntryIndex,
+        journal_revision: JournalRevision,
+    ) -> Self {
+        Self {
+            partition,
+            inner: OtherInputCommand::StoredEntryAck {
+                service_invocation_id,
+                entry_index,
+                journal_revision,
+            },
+        }
+    }
+
+    pub fn new_abort_all_partition(partition: PartitionLeaderEpoch) -> Self {
+        Self {
+            partition,
+            inner: OtherInputCommand::AbortAllPartition,
+        }
+    }
+
+    pub fn new_abort_invocation(
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+    ) -> Self {
+        Self {
+            partition,
+            inner: OtherInputCommand::AbortInvocation {
+                service_invocation_id,
+            },
+        }
+    }
+
+    pub fn new_register_partition(
+        partition: PartitionLeaderEpoch,
+        sender: mpsc::Sender<Output>,
+    ) -> Self {
+        Self {
+            partition,
+            inner: OtherInputCommand::RegisterPartition(sender),
+        }
+    }
+}
+
+// --- Output messages
+
+pub type InvokerError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 #[derive(Debug)]
 pub enum Output {
-    JournalEntry,
-    Suspended,
-    End,
-    Failed,
+    JournalEntry {
+        service_invocation_id: ServiceInvocationId,
+        entry_index: EntryIndex,
+        entry: RawEntry,
+    },
+    Suspended {
+        service_invocation_id: ServiceInvocationId,
+    },
+    End {
+        service_invocation_id: ServiceInvocationId,
+    },
+    /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
+    Failed {
+        service_invocation_id: ServiceInvocationId,
+        error: InvokerError,
+    },
 }
 
-pub type InvokerSender = PollSender<Input>;
+// --- Journal Reader
 
-#[derive(Debug)]
-pub struct Invoker {
-    input: mpsc::Receiver<Input>,
-    partition_processors: HashMap<PartitionLeaderEpoch, mpsc::Sender<Output>>,
+pub trait JournalReader {
+    type JournalStream: Stream<Item = RawEntry>;
+    type Error;
+    type Future: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
 
-    // used for constructing the invoker sender
-    input_tx: mpsc::Sender<Input>,
-}
-
-impl Invoker {
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel(32);
-
-        Invoker {
-            input: rx,
-            partition_processors: HashMap::new(),
-            input_tx: tx,
-        }
-    }
-
-    pub fn create_sender(&self) -> InvokerSender {
-        PollSender::new(self.input_tx.clone())
-    }
-
-    pub async fn run(self, drain: drain::Watch) {
-        let Invoker {
-            mut input,
-            mut partition_processors,
-            ..
-        } = self;
-
-        let shutdown = drain.signaled();
-        tokio::pin!(shutdown);
-
-        loop {
-            tokio::select! {
-                input_message = input.recv() => {
-                    let input_message = input_message.expect("Input is never closed");
-
-                    match input_message {
-                        Input::Register(partition_leader_epoch, sender) => {
-                            partition_processors.insert(partition_leader_epoch, sender);
-                        }
-                        Input::Abort(partition_leader_epoch) => {
-                            partition_processors.remove(&partition_leader_epoch);
-                        },
-                        Input::Invoke(..) => {
-                            unimplemented!("Not yet implemented");
-                        },
-                        Input::Resume => {
-                            unimplemented!("Not yet implemented");
-                        },
-                        Input::Completion => {
-                            unimplemented!("Not yet implemented");
-                        },
-                        Input::StorageAck => {
-                            unimplemented!("Not yet implemented");
-                        }
-                    }
-                },
-                _ = &mut shutdown => {
-                    debug!("Shutting down the invoker");
-                    break;
-                }
-            }
-        }
-    }
+    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future;
 }
