@@ -1,7 +1,7 @@
-use crate::partition::state_machine::{Effects, StateMachine};
 use common::types::{LeaderEpoch, PartitionId, PeerId, ServiceInvocationId};
 use futures::{stream, Sink, SinkExt, Stream, StreamExt};
 use invoker::InvokeInputJournal;
+use service_protocol::codec::ProtobufRawEntryCodec;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::DerefMut;
@@ -13,7 +13,10 @@ use tracing::{debug, info};
 mod effects;
 mod state_machine;
 
+use crate::partition::effects::Effects;
 pub(crate) use state_machine::Command;
+
+type StateMachine = state_machine::StateMachine<ProtobufRawEntryCodec>;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<

@@ -5,8 +5,8 @@ use journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
     Entry, EntryType, InvokeEntry, InvokeRequest, SetStateEntry, SleepEntry,
 };
-use service_protocol::codec::ProtobufRawEntryCodec;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use storage_api::StorageReader;
 use tracing::debug;
 
@@ -31,10 +31,12 @@ pub(crate) enum Command {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct StateMachine {
+pub(super) struct StateMachine<Codec> {
     // initialized from persistent storage
     inbox_seq_number: u64,
     outbox_seq_number: u64,
+
+    _codec: PhantomData<Codec>,
 }
 
 /// Unwraps the inner value of a given enum variant.
@@ -82,7 +84,11 @@ macro_rules! enum_inner {
     };
 }
 
-impl StateMachine {
+impl<Codec> StateMachine<Codec>
+where
+    Codec: RawEntryCodec,
+    Codec::Error: Debug,
+{
     /// Applies the given command and returns effects via the provided effects struct
     ///
     /// We pass in the effects message as a mutable borrow to be able to reuse it across
@@ -363,6 +369,6 @@ impl StateMachine {
     }
 
     fn deserialize(raw_entry: &RawEntry) -> Entry {
-        ProtobufRawEntryCodec::deserialize(raw_entry).expect("Failed to deserialize journal entry")
+        Codec::deserialize(raw_entry).expect("Failed to deserialize journal entry")
     }
 }
