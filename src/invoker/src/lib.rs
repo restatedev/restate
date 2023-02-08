@@ -9,6 +9,8 @@ use tokio::sync::mpsc;
 mod invoker;
 pub use crate::invoker::*;
 
+mod message;
+
 // --- Journal Reader
 
 #[allow(dead_code)]

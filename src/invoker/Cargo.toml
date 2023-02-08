@@ -10,9 +10,13 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bytes = { workspace = true }
+bytes-utils = { workspace = true }
 common = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
+paste = { workspace = true }
+prost = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -20,3 +24,7 @@ tracing = { workspace = true }
 opentelemetry = { workspace = true }
 
 journal = { workspace = true }
+service_protocol = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }
