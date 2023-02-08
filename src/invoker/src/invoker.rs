@@ -1,5 +1,7 @@
 use super::*;
 use common::types::PartitionLeaderEpoch;
+use futures::stream;
+use futures::stream::{PollNext, StreamExt};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use tokio::sync::mpsc;
@@ -81,15 +83,18 @@ impl<C: ?Sized, JR: JournalReader> Invoker<C, JR> {
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
 
+        // Merge the two invoke and resume streams into a single stream
+        let invoke_input_stream = stream::poll_fn(move |cx| invoke_input_rx.poll_recv(cx));
+        let resume_input_stream = stream::poll_fn(move |cx| resume_input_rx.poll_recv(cx));
+        let mut invoke_stream =
+            stream::select_with_strategy(invoke_input_stream, resume_input_stream, |_: &mut ()| {
+                PollNext::Right
+            });
+
         loop {
             tokio::select! {
-                // TODO implement input stream to select biased between resume and invoke
-                invoke_input_message = invoke_input_rx.recv() => {
+                invoke_input_message = invoke_stream.next() => {
                     let _invoke_input_message = invoke_input_message.expect("Input is never closed");
-                    unimplemented!("Not yet implemented");
-                },
-                resume_input_message = resume_input_rx.recv() => {
-                    let _resume_input_message = resume_input_message.expect("Input is never closed");
                     unimplemented!("Not yet implemented");
                 },
                 other_input_message = other_input_rx.recv() => {
