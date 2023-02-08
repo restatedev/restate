@@ -192,7 +192,8 @@ mod tests {
         let mut decoder = Decoder::default();
 
         let expected_msg_0 = ProtocolMessage::new_start_message(
-            &ServiceInvocationId::new("service", "key", uuid::Uuid::now_v7()),
+            "key".into(),
+            Bytes::copy_from_slice(uuid::Uuid::now_v7().as_bytes()),
             1,
         );
         let expected_msg_1: ProtocolMessage = RawEntry::new(

@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 use bytes::Bytes;
-use common::types::ServiceInvocationId;
 use journal::raw::{RawEntry, RawEntryHeader};
 use journal::{Completion, CompletionResult};
 use prost::Message;
@@ -25,10 +24,14 @@ pub enum ProtocolMessage {
 }
 
 impl ProtocolMessage {
-    pub fn new_start_message(sid: &ServiceInvocationId, known_entries: u32) -> Self {
+    pub fn new_start_message(
+        invocation_id: Bytes,
+        instance_key: Bytes,
+        known_entries: u32,
+    ) -> Self {
         ProtocolMessage::Start(pb::StartMessage {
-            invocation_id: Bytes::copy_from_slice(sid.invocation_id.as_bytes()),
-            instance_key: sid.service_id.key.clone(),
+            invocation_id,
+            instance_key,
 
             // TODO https://github.com/restatedev/service-protocol/issues/10
             known_service_version: 0,
