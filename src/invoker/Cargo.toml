@@ -15,6 +15,9 @@ bytes-utils = { workspace = true }
 common = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
+hyper = { version = "0.14.23", features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
+hyper-tls = "0.5"
+h2 = { version = "0.3.15", features = ["unstable"] }
 paste = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }

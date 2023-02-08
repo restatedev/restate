@@ -1,5 +1,6 @@
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
+use hyper::Uri;
 use journal::raw::RawEntry;
 use journal::Completion;
 use opentelemetry::Context;
@@ -7,10 +8,35 @@ use std::collections::HashSet;
 use std::future::Future;
 use tokio::sync::mpsc;
 
+mod message;
+
 mod invoker;
 pub use crate::invoker::*;
 
-mod message;
+mod invocation_task;
+
+// --- Service registration
+
+#[derive(Debug, Copy, Clone)]
+pub enum ProtocolType {
+    RequestResponse,
+    BidiStream,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceMetadata {
+    address: Uri,
+    protocol_type: ProtocolType,
+}
+
+impl ServiceMetadata {
+    pub fn new(address: Uri, protocol_type: ProtocolType) -> Self {
+        Self {
+            address,
+            protocol_type,
+        }
+    }
+}
 
 // --- Journal Reader
 
