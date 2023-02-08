@@ -20,6 +20,7 @@ invoker = { workspace = true }
 journal = { workspace = true }
 network = { workspace = true }
 pin-project-lite = "0.2.9"
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }

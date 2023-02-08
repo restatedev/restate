@@ -1928,6 +1928,7 @@ dependencies = [
  "service_protocol",
  "storage_api",
  "storage_rocksdb",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "tokio-util",

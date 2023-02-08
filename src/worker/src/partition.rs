@@ -114,7 +114,7 @@ where
                         match command {
                             consensus::Command::Apply(fsm_command) => {
                                 effects.clear();
-                                state_machine.on_apply(fsm_command, &mut effects, &storage);
+                                state_machine.on_apply(fsm_command, &mut effects, &storage).expect("State machine application must not fail");
                                 Self::apply_effects(&effects, &storage);
                             }
                             consensus::Command::BecomeLeader(leader_epoch) => {

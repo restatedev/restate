@@ -17,6 +17,10 @@ use crate::partition::effects::OutboxMessage;
 use crate::partition::state_machine::storage::InvocationStatus;
 use storage::StorageHelper;
 
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct Error<E>(#[from] E);
+
 #[derive(Debug)]
 pub(crate) enum Command {
     Invoker(invoker::OutputEffect),
@@ -98,7 +102,7 @@ where
         command: Command,
         effects: &mut Effects,
         storage: &Storage,
-    ) {
+    ) -> Result<(), Error<Codec::Error>> {
         debug!(?command, "Apply");
 
         let storage = StorageHelper::new(storage);
@@ -154,7 +158,7 @@ where
                         match entry.header.ty {
                             EntryType::Invoke => {
                                 let InvokeEntry { request, .. } =
-                                    enum_inner!(Self::deserialize(&entry), Entry::Invoke);
+                                    enum_inner!(Self::deserialize(&entry)?, Entry::Invoke);
 
                                 let service_invocation = Self::create_service_invocation(
                                     request,
@@ -166,8 +170,10 @@ where
                                 );
                             }
                             EntryType::BackgroundInvoke => {
-                                let BackgroundInvokeEntry(request) =
-                                    enum_inner!(Self::deserialize(&entry), Entry::BackgroundInvoke);
+                                let BackgroundInvokeEntry(request) = enum_inner!(
+                                    Self::deserialize(&entry)?,
+                                    Entry::BackgroundInvoke
+                                );
 
                                 let service_invocation =
                                     Self::create_service_invocation(request, None);
@@ -178,7 +184,7 @@ where
                             }
                             EntryType::CompleteAwakeable => {
                                 let entry = enum_inner!(
-                                    Self::deserialize(&entry),
+                                    Self::deserialize(&entry)?,
                                     Entry::CompleteAwakeable
                                 );
 
@@ -187,7 +193,7 @@ where
                             }
                             EntryType::SetState => {
                                 let SetStateEntry { key, value } =
-                                    enum_inner!(Self::deserialize(&entry), Entry::SetState);
+                                    enum_inner!(Self::deserialize(&entry)?, Entry::SetState);
 
                                 effects.set_state(
                                     service_invocation_id.service_id.clone(),
@@ -197,12 +203,12 @@ where
                             }
                             EntryType::ClearState => {
                                 let ClearStateEntry { key } =
-                                    enum_inner!(Self::deserialize(&entry), Entry::ClearState);
+                                    enum_inner!(Self::deserialize(&entry)?, Entry::ClearState);
                                 effects.clear_state(service_invocation_id.service_id.clone(), key);
                             }
                             EntryType::Sleep => {
                                 let SleepEntry { wake_up_time, .. } =
-                                    enum_inner!(Self::deserialize(&entry), Entry::Sleep);
+                                    enum_inner!(Self::deserialize(&entry)?, Entry::Sleep);
                                 effects.register_timer(
                                     wake_up_time,
                                     service_invocation_id.clone(),
@@ -223,7 +229,7 @@ where
                                     entry_index,
                                     entry,
                                 );
-                                return;
+                                return Ok(());
                             }
                         }
 
@@ -284,6 +290,8 @@ where
                 Self::handle_completion(service_invocation_id, completion, &storage, effects);
             }
         }
+
+        Ok(())
     }
 
     fn handle_completion(
@@ -368,7 +376,7 @@ where
         unimplemented!()
     }
 
-    fn deserialize(raw_entry: &RawEntry) -> Entry {
-        Codec::deserialize(raw_entry).expect("Failed to deserialize journal entry")
+    fn deserialize(raw_entry: &RawEntry) -> Result<Entry, Error<Codec::Error>> {
+        Codec::deserialize(raw_entry).map_err(Into::into)
     }
 }
