@@ -17,6 +17,11 @@ pub type PartitionId = u64;
 /// The leader epoch of a given partition
 pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 
+pub type EntryIndex = u32;
+
+/// Discriminator for invocation instances
+pub type InvocationId = Uuid;
+
 /// Id of a single service invocation.
 ///
 /// A service invocation id is composed of a [`ServiceId`] and an [`InvocationId`]
@@ -76,5 +81,24 @@ impl ServiceId {
     }
 }
 
-/// Discriminator for invocation instances
-pub type InvocationId = Uuid;
+/// Representing a service invocation
+#[derive(Debug)]
+pub struct ServiceInvocation {
+    pub id: ServiceInvocationId,
+    pub method_name: ByteString,
+    pub argument: Bytes,
+}
+
+/// Representing a response for a caller
+#[derive(Debug)]
+pub struct Response {
+    pub id: ServiceInvocationId,
+    pub entry_index: EntryIndex,
+    pub result: ResponseResult,
+}
+
+#[derive(Debug)]
+pub enum ResponseResult {
+    Success(Bytes),
+    Failure(i32, ByteString),
+}

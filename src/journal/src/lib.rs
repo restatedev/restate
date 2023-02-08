@@ -2,6 +2,7 @@
 
 use bytes::Bytes;
 use bytestring::ByteString;
+use common::types::{EntryIndex, ResponseResult};
 
 pub mod raw;
 
@@ -9,8 +10,6 @@ mod entries;
 pub use entries::*;
 
 pub type JournalRevision = u32;
-
-pub type EntryIndex = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryType {
@@ -66,4 +65,15 @@ pub enum CompletionResult {
 pub struct Completion {
     pub entry_index: EntryIndex,
     pub result: CompletionResult,
+}
+
+impl From<ResponseResult> for CompletionResult {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(bytes) => CompletionResult::Success(bytes),
+            ResponseResult::Failure(error_code, error_msg) => {
+                CompletionResult::Failure(error_code, error_msg)
+            }
+        }
+    }
 }

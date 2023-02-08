@@ -10,6 +10,7 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
+mod effects;
 mod state_machine;
 
 pub(crate) use state_machine::Command;
@@ -88,7 +89,7 @@ where
             peer_id,
             partition_id,
             command_stream,
-            state_machine,
+            mut state_machine,
             invoker_tx,
             storage,
             proposal_sink,

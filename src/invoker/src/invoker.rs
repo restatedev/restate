@@ -1,5 +1,5 @@
 use super::*;
-use common::types::PartitionLeaderEpoch;
+use common::types::{EntryIndex, PartitionLeaderEpoch};
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
 use std::collections::HashMap;

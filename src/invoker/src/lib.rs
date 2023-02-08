@@ -1,7 +1,7 @@
-use common::types::{PartitionLeaderEpoch, ServiceInvocationId};
+use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
 use journal::raw::RawEntry;
-use journal::{Completion, EntryIndex, JournalRevision};
+use journal::{Completion, JournalRevision};
 use opentelemetry::Context;
 use std::future::Future;
 use tokio::sync::mpsc;
@@ -86,23 +86,24 @@ pub trait InvokerInputSender {
 pub type InvokerError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 #[derive(Debug)]
-pub enum OutputEffect {
+pub struct OutputEffect {
+    pub service_invocation_id: ServiceInvocationId,
+    pub kind: Kind,
+}
+
+#[derive(Debug)]
+pub enum Kind {
     JournalEntry {
-        service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
         entry: RawEntry,
     },
     Suspended {
-        service_invocation_id: ServiceInvocationId,
         journal_revision: JournalRevision,
     },
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
-    End {
-        service_invocation_id: ServiceInvocationId,
-    },
+    End,
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
     Failed {
-        service_invocation_id: ServiceInvocationId,
         error: InvokerError,
     },
 }
