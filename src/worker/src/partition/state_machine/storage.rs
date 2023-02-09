@@ -1,14 +1,8 @@
-use futures::{Stream, stream};
-use common::types::{InvocationId, ServiceId, ServiceInvocation, ServiceInvocationId};
+use crate::partition::InvocationStatus;
+use common::types::{ServiceId, ServiceInvocation, ServiceInvocationId};
+use futures::{stream, Stream};
 use journal::JournalRevision;
 use storage_api::StorageReader;
-
-#[derive(Debug, PartialEq)]
-pub(super) enum InvocationStatus {
-    Invoked(InvocationId),
-    Suspended(InvocationId),
-    Free,
-}
 
 pub(super) struct StorageReaderHelper {}
 
@@ -21,7 +15,7 @@ impl StorageReaderHelper {
         InvocationStatus::Free
     }
 
-    pub(super) fn peek_inbox(&self, service_id: &ServiceId) -> Option<ServiceInvocation> {
+    pub(super) fn peek_inbox(&self, service_id: &ServiceId) -> Option<(u64, ServiceInvocation)> {
         None
     }
 

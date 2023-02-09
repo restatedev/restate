@@ -12,9 +12,10 @@ use tracing::debug;
 
 mod storage;
 
+pub(super) use crate::partition::effects::Effects;
+use crate::partition::effects::OutboxMessage;
+use crate::partition::InvocationStatus;
 use storage::StorageReaderHelper;
-use crate::partition::effects::{Effects, OutboxMessage};
-use crate::partition::state_machine::storage::InvocationStatus;
 
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
@@ -26,7 +27,7 @@ pub(crate) enum Command {
     Timer {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        timestamp: i64,
+        timestamp: u64,
     },
     OutboxTruncation(u64),
     Invocation(ServiceInvocation),
@@ -209,7 +210,7 @@ where
                                 let SleepEntry { wake_up_time, .. } =
                                     enum_inner!(Self::deserialize(&entry)?, Entry::Sleep);
                                 effects.register_timer(
-                                    wake_up_time,
+                                    wake_up_time as u64,
                                     service_invocation_id.clone(),
                                     entry_index,
                                 );
@@ -224,7 +225,7 @@ where
                             // special handling because we can have a completion present
                             EntryType::Awakeable => {
                                 effects.append_awakeable_entry(
-                                    service_invocation_id.service_id,
+                                    service_invocation_id,
                                     entry_index,
                                     entry,
                                 );
@@ -232,11 +233,7 @@ where
                             }
                         }
 
-                        effects.append_journal_entry(
-                            service_invocation_id.service_id,
-                            entry_index,
-                            entry,
-                        );
+                        effects.append_journal_entry(service_invocation_id, entry_index, entry);
                     }
                     invoker::Kind::Suspended {
                         journal_revision: expected_journal_revision,
@@ -245,9 +242,9 @@ where
                             storage.get_journal_revision(&service_invocation_id.service_id);
 
                         if actual_journal_revision > expected_journal_revision {
-                            effects.resume_service(service_invocation_id.service_id);
+                            effects.resume_service(service_invocation_id);
                         } else {
-                            effects.suspend_service(service_invocation_id.service_id);
+                            effects.suspend_service(service_invocation_id);
                         }
                     }
                     invoker::Kind::End => {
@@ -314,7 +311,7 @@ where
             }
             InvocationStatus::Suspended(invocation_id) => {
                 if invocation_id == service_invocation_id.invocation_id {
-                    effects.resume_service(service_invocation_id.service_id.clone());
+                    effects.resume_service(service_invocation_id.clone());
                     effects.store_completion(service_invocation_id, completion);
                 } else {
                     debug!(
@@ -341,11 +338,13 @@ where
     ) {
         effects.drop_journal(service_invocation_id.service_id.clone());
 
-        if let Some(service_invocation) = storage.peek_inbox(&service_invocation_id.service_id) {
-            effects.pop_inbox(service_invocation_id.service_id);
+        if let Some((inbox_sequence_number, service_invocation)) =
+            storage.peek_inbox(&service_invocation_id.service_id)
+        {
+            effects.pop_inbox(service_invocation_id.service_id, inbox_sequence_number);
             effects.invoke_service(service_invocation);
         } else {
-            effects.mark_service_instance_as_free(service_invocation_id.service_id);
+            effects.free_service(service_invocation_id.service_id);
         }
 
         let response = Self::create_response(completion_result);
