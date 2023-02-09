@@ -7,48 +7,174 @@ use std::marker::PhantomData;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-pub struct InvokerSender {
-    invoke_input: mpsc::Sender<Input<InvokeInputCommand>>,
-    resume_input: mpsc::Sender<Input<InvokeInputCommand>>,
-    other_input: mpsc::Sender<Input<OtherInputCommand>>,
+#[derive(Debug, Clone)]
+pub struct UnboundedInvokerInputSender {
+    invoke_input: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
+    resume_input: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
+    other_input: mpsc::UnboundedSender<Input<OtherInputCommand>>,
 }
 
-impl InvokerSender {
-    pub fn invoke_tx(&self) -> mpsc::Sender<Input<InvokeInputCommand>> {
-        self.invoke_input.clone()
+impl InvokerInputSender for UnboundedInvokerInputSender {
+    type Error = ();
+    type Future = futures::future::Ready<Result<(), ()>>;
+
+    fn invoke(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        journal: InvokeInputJournal,
+    ) -> Self::Future {
+        self.invoke_input
+            .send(Input {
+                partition,
+                inner: InvokeInputCommand {
+                    service_invocation_id,
+                    journal,
+                },
+            })
+            .expect("Invoker should be running");
+        futures::future::ok(())
     }
 
-    pub fn resume_tx(&self) -> mpsc::Sender<Input<InvokeInputCommand>> {
-        self.resume_input.clone()
+    fn resume(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        journal: InvokeInputJournal,
+    ) -> Self::Future {
+        self.resume_input
+            .send(Input {
+                partition,
+                inner: InvokeInputCommand {
+                    service_invocation_id,
+                    journal,
+                },
+            })
+            .expect("Invoker should be running");
+        futures::future::ok(())
     }
 
-    pub fn other_tx(&self) -> mpsc::Sender<Input<OtherInputCommand>> {
-        self.other_input.clone()
+    fn notify_completion(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        journal_revision: JournalRevision,
+        completion: Completion,
+    ) -> Self::Future {
+        self.other_input
+            .send(Input {
+                partition,
+                inner: OtherInputCommand::Completion {
+                    service_invocation_id,
+                    completion,
+                    journal_revision,
+                },
+            })
+            .expect("Invoker should be running");
+        futures::future::ok(())
+    }
+
+    fn notify_stored_entry_ack(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        journal_revision: JournalRevision,
+        entry_index: EntryIndex,
+    ) -> Self::Future {
+        self.other_input
+            .send(Input {
+                partition,
+                inner: OtherInputCommand::StoredEntryAck {
+                    service_invocation_id,
+                    entry_index,
+                    journal_revision,
+                },
+            })
+            .expect("Invoker should be running");
+        futures::future::ok(())
+    }
+
+    fn abort_all_partition(&mut self, partition: PartitionLeaderEpoch) -> Self::Future {
+        self.other_input
+            .send(Input {
+                partition,
+                inner: OtherInputCommand::AbortAllPartition,
+            })
+            .expect("Invoker should be running");
+        futures::future::ok(())
+    }
+
+    fn register_partition(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        sender: mpsc::Sender<OutputEffect>,
+    ) -> Self::Future {
+        self.other_input
+            .send(Input {
+                partition,
+                inner: OtherInputCommand::RegisterPartition(sender),
+            })
+            .expect("Invoker should be running");
+        futures::future::ok(())
     }
 }
 
 #[derive(Debug)]
+struct Input<I> {
+    partition: PartitionLeaderEpoch,
+    inner: I,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct InvokeInputCommand {
+    service_invocation_id: ServiceInvocationId,
+    journal: InvokeInputJournal,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+enum OtherInputCommand {
+    Completion {
+        service_invocation_id: ServiceInvocationId,
+        completion: Completion,
+        journal_revision: JournalRevision,
+    },
+    StoredEntryAck {
+        service_invocation_id: ServiceInvocationId,
+        entry_index: EntryIndex,
+        journal_revision: JournalRevision,
+    },
+
+    /// Command used to clean up internal state when a partition leader is going away
+    AbortAllPartition,
+
+    // needed for dynamic registration at Invoker
+    RegisterPartition(mpsc::Sender<OutputEffect>),
+}
+
+#[derive(Debug)]
 pub struct Invoker<Codec: ?Sized, JournalReader> {
-    invoke_input_rx: mpsc::Receiver<Input<InvokeInputCommand>>,
-    resume_input_rx: mpsc::Receiver<Input<InvokeInputCommand>>,
-    other_input_rx: mpsc::Receiver<Input<OtherInputCommand>>,
-    partition_processors: HashMap<PartitionLeaderEpoch, mpsc::Sender<Output>>,
+    invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
+    resume_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
+    other_input_rx: mpsc::UnboundedReceiver<Input<OtherInputCommand>>,
+    partition_processors: HashMap<PartitionLeaderEpoch, mpsc::Sender<OutputEffect>>,
 
     _journal_reader: JournalReader,
 
     // used for constructing the invoker sender
-    invoke_input_tx: mpsc::Sender<Input<InvokeInputCommand>>,
-    resume_input_tx: mpsc::Sender<Input<InvokeInputCommand>>,
-    other_input_tx: mpsc::Sender<Input<OtherInputCommand>>,
+    invoke_input_tx: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
+    resume_input_tx: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
+    other_input_tx: mpsc::UnboundedSender<Input<OtherInputCommand>>,
 
     _codec: PhantomData<Codec>,
 }
 
 impl<C: ?Sized, JR: JournalReader> Invoker<C, JR> {
     pub fn new(journal_reader: JR) -> Self {
-        let (invoke_input_tx, invoke_input_rx) = mpsc::channel(32);
-        let (resume_input_tx, resume_input_rx) = mpsc::channel(32);
-        let (other_input_tx, other_input_rx) = mpsc::channel(32);
+        let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
+        let (resume_input_tx, resume_input_rx) = mpsc::unbounded_channel();
+        let (other_input_tx, other_input_rx) = mpsc::unbounded_channel();
 
         Invoker {
             invoke_input_rx,
@@ -63,8 +189,8 @@ impl<C: ?Sized, JR: JournalReader> Invoker<C, JR> {
         }
     }
 
-    pub fn create_sender(&self) -> InvokerSender {
-        InvokerSender {
+    pub fn create_sender(&self) -> UnboundedInvokerInputSender {
+        UnboundedInvokerInputSender {
             invoke_input: self.invoke_input_tx.clone(),
             resume_input: self.resume_input_tx.clone(),
             other_input: self.other_input_tx.clone(),
@@ -108,10 +234,6 @@ impl<C: ?Sized, JR: JournalReader> Invoker<C, JR> {
                         OtherInputCommand::AbortAllPartition => {
                             partition_processors.remove(&partition);
                             // TODO teardown of streams
-                        },
-                        OtherInputCommand::AbortInvocation { .. } => {
-                            unimplemented!("Not yet implemented");
-                           // TODO teardown of streams
                         },
                         OtherInputCommand::Completion { .. } => {
                             unimplemented!("Not yet implemented");

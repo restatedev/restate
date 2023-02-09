@@ -58,8 +58,7 @@ impl ServiceInvocationId {
 /// Id of a keyed service instance.
 ///
 /// Services are isolated by key. This means that there cannot be two concurrent
-/// invocations for the same service instance (service name, key). The system will make sure
-/// that a service instance is locked until the current invocation has completed.
+/// invocations for the same service instance (service name, key).
 #[derive(Eq, Hash, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub struct ServiceId {
     /// Identifies the grpc service

@@ -1,7 +1,7 @@
 use common::types::{PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
 use journal::raw::RawEntry;
-use journal::{Completion, EntryIndex};
+use journal::{Completion, EntryIndex, JournalRevision};
 use opentelemetry::Context;
 use std::future::Future;
 use tokio::sync::mpsc;
@@ -9,9 +9,7 @@ use tokio::sync::mpsc;
 mod invoker;
 pub use crate::invoker::*;
 
-// --- Journal
-
-pub type JournalRevision = u32;
+// --- Journal Reader
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -25,21 +23,15 @@ pub struct JournalMetadata {
     journal_revision: JournalRevision,
 }
 
-// --- Input messages
+pub trait JournalReader {
+    type JournalStream: Stream<Item = RawEntry>;
+    type Error;
+    type Future: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
 
-#[derive(Debug)]
-pub struct Input<I> {
-    partition: PartitionLeaderEpoch,
-    inner: I,
+    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future;
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct InvokeInputCommand {
-    service_invocation_id: ServiceInvocationId,
-
-    journal: InvokeInputJournal,
-}
+// --- Invoker input sender
 
 #[derive(Debug)]
 pub enum InvokeInputJournal {
@@ -47,120 +39,44 @@ pub enum InvokeInputJournal {
     CachedJournal(JournalMetadata, Vec<RawEntry>),
 }
 
-#[derive(Debug)]
-pub enum OtherInputCommand {
-    Completion {
+pub trait InvokerInputSender {
+    type Error;
+    type Future: Future<Output = Result<(), Self::Error>>;
+
+    fn invoke(
+        &mut self,
+        partition: PartitionLeaderEpoch,
         service_invocation_id: ServiceInvocationId,
+        journal: InvokeInputJournal,
+    ) -> Self::Future;
+    fn resume(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        journal: InvokeInputJournal,
+    ) -> Self::Future;
+
+    fn notify_completion(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        journal_revision: JournalRevision,
         completion: Completion,
-        journal_revision: JournalRevision,
-    },
-    StoredEntryAck {
+    ) -> Self::Future;
+    fn notify_stored_entry_ack(
+        &mut self,
+        partition: PartitionLeaderEpoch,
         service_invocation_id: ServiceInvocationId,
+        journal_revision: JournalRevision,
         entry_index: EntryIndex,
-        journal_revision: JournalRevision,
-    },
+    ) -> Self::Future;
 
-    /// Command used to clean up internal state when a partition leader is going away
-    AbortAllPartition,
-    AbortInvocation {
-        service_invocation_id: ServiceInvocationId,
-    },
-
-    // needed for dynamic registration at Invoker
-    RegisterPartition(mpsc::Sender<Output>),
-}
-
-impl Input<InvokeInputCommand> {
-    pub fn new_invoke(
+    fn abort_all_partition(&mut self, partition: PartitionLeaderEpoch) -> Self::Future;
+    fn register_partition(
+        &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-    ) -> Self {
-        Self {
-            partition,
-            inner: InvokeInputCommand {
-                service_invocation_id,
-                journal: InvokeInputJournal::NoCachedJournal,
-            },
-        }
-    }
-
-    pub fn new_cached_invoke(
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        journal_metadata: JournalMetadata,
-        journal: Vec<RawEntry>,
-    ) -> Self {
-        Self {
-            partition,
-            inner: InvokeInputCommand {
-                service_invocation_id,
-                journal: InvokeInputJournal::CachedJournal(journal_metadata, journal),
-            },
-        }
-    }
-}
-
-impl Input<OtherInputCommand> {
-    pub fn new_completion(
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        completion: Completion,
-        journal_revision: JournalRevision,
-    ) -> Self {
-        Self {
-            partition,
-            inner: OtherInputCommand::Completion {
-                service_invocation_id,
-                completion,
-                journal_revision,
-            },
-        }
-    }
-
-    pub fn new_stored_entry_ack(
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        entry_index: EntryIndex,
-        journal_revision: JournalRevision,
-    ) -> Self {
-        Self {
-            partition,
-            inner: OtherInputCommand::StoredEntryAck {
-                service_invocation_id,
-                entry_index,
-                journal_revision,
-            },
-        }
-    }
-
-    pub fn new_abort_all_partition(partition: PartitionLeaderEpoch) -> Self {
-        Self {
-            partition,
-            inner: OtherInputCommand::AbortAllPartition,
-        }
-    }
-
-    pub fn new_abort_invocation(
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-    ) -> Self {
-        Self {
-            partition,
-            inner: OtherInputCommand::AbortInvocation {
-                service_invocation_id,
-            },
-        }
-    }
-
-    pub fn new_register_partition(
-        partition: PartitionLeaderEpoch,
-        sender: mpsc::Sender<Output>,
-    ) -> Self {
-        Self {
-            partition,
-            inner: OtherInputCommand::RegisterPartition(sender),
-        }
-    }
+        sender: mpsc::Sender<OutputEffect>,
+    ) -> Self::Future;
 }
 
 // --- Output messages
@@ -168,7 +84,7 @@ impl Input<OtherInputCommand> {
 pub type InvokerError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 #[derive(Debug)]
-pub enum Output {
+pub enum OutputEffect {
     JournalEntry {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
@@ -176,7 +92,9 @@ pub enum Output {
     },
     Suspended {
         service_invocation_id: ServiceInvocationId,
+        journal_revision: JournalRevision,
     },
+    /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End {
         service_invocation_id: ServiceInvocationId,
     },
@@ -185,14 +103,4 @@ pub enum Output {
         service_invocation_id: ServiceInvocationId,
         error: InvokerError,
     },
-}
-
-// --- Journal Reader
-
-pub trait JournalReader {
-    type JournalStream: Stream<Item = RawEntry>;
-    type Error;
-    type Future: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
-
-    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future;
 }

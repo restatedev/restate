@@ -2,8 +2,7 @@ use common::types::PeerId;
 use consensus::{Consensus, ProposalSender, Targeted};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use invoker::InvokerSender;
-use invoker::{InvokeInputCommand, Invoker, OtherInputCommand};
+use invoker::{Invoker, UnboundedInvokerInputSender};
 use network::Network;
 use partition::RocksDBJournalReader;
 use service_protocol::codec::ProtobufRawEntryCodec;
@@ -23,8 +22,7 @@ type PartitionProcessor = partition::PartitionProcessor<
     ReceiverStream<ConsensusCommand>,
     IdentitySender<partition::Command>,
     ProtobufRawEntryCodec,
-    PollSender<invoker::Input<InvokeInputCommand>>,
-    PollSender<invoker::Input<OtherInputCommand>>,
+    UnboundedInvokerInputSender,
     RocksDBStorage,
 >;
 type TargetedFsmCommand = Targeted<partition::Command>;
@@ -112,7 +110,7 @@ impl Worker {
     fn create_partition_processor(
         peer_id: PeerId,
         proposal_sender: ProposalSender<TargetedFsmCommand>,
-        invoker_sender: InvokerSender,
+        invoker_sender: UnboundedInvokerInputSender,
         storage: RocksDBStorage,
     ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
@@ -121,9 +119,7 @@ impl Worker {
             peer_id,
             ReceiverStream::new(command_rx),
             IdentitySender::new(peer_id, proposal_sender),
-            PollSender::new(invoker_sender.invoke_tx()),
-            PollSender::new(invoker_sender.resume_tx()),
-            PollSender::new(invoker_sender.other_tx()),
+            invoker_sender,
             storage,
         );
 
