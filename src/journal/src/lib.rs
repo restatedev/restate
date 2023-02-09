@@ -31,7 +31,7 @@ pub enum EntryType {
     CompleteAwakeable,
 
     // Unknown
-    Unknown(u16),
+    Custom(u16),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub enum Entry {
     BackgroundInvoke(BackgroundInvokeEntry),
     Awakeable(AwakeableEntry),
     CompleteAwakeable(CompleteAwakeableEntry),
-    Unknown(Bytes),
+    Custom(Bytes),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

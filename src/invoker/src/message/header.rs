@@ -1,6 +1,6 @@
 use journal::EntryType;
 
-const UNKNOWN_MESSAGE_MASK: u16 = 0xFC00;
+const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
 const COMPLETED_MASK: u64 = 0x0001_0000_0000;
 const VERSION_MASK: u64 = 0x03FF_0000_0000;
 
@@ -12,7 +12,7 @@ pub enum MessageKind {
     IO,
     State,
     Syscall,
-    Unknown,
+    Custom,
 }
 
 // This macro generates:
@@ -27,7 +27,7 @@ macro_rules! gen_message_type_enum {
         #[derive(Debug, Copy, Clone, PartialEq, Eq)]
         pub enum MessageType {
             $($body)*
-            Unknown(u16)
+            Custom(u16)
         }
     };
     (@gen_enum [$variant:ident Entry $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
@@ -42,7 +42,7 @@ macro_rules! gen_message_type_enum {
             pub fn kind(&self) -> MessageKind {
                 match self {
                     $(MessageType::$variant => MessageKind::$kind,)*
-                    MessageType::Unknown(_) => MessageKind::Unknown
+                    MessageType::Custom(_) => MessageKind::Custom
                 }
             }
         }
@@ -59,7 +59,7 @@ macro_rules! gen_message_type_enum {
             fn from(mt: MessageType) -> Self {
                 match mt {
                     $(MessageType::$variant => $id,)*
-                    MessageType::Unknown(id) => id
+                    MessageType::Custom(id) => id
                 }
             }
         }
@@ -78,7 +78,7 @@ macro_rules! gen_message_type_enum {
             fn try_from(value: MessageTypeId) -> Result<Self, Self::Error> {
                 match value {
                     $($id => Ok(MessageType::$variant),)*
-                    v if ((v & UNKNOWN_MESSAGE_MASK) != 0) => Ok(MessageType::Unknown(v)),
+                    v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::Custom(v)),
                     v => Err(UnknownMessageType(v))
                 }
             }
@@ -98,7 +98,7 @@ macro_rules! gen_message_type_enum {
              fn try_from(mt: MessageType) -> Result<Self, Self::Error> {
                 match mt {
                     $(MessageType::$variant => $res,)*
-                    MessageType::Unknown(_) => Err("Unknown is not an entry message")
+                    MessageType::Custom(id) => Ok(EntryType::Custom(id))
                 }
              }
         }
@@ -115,7 +115,7 @@ macro_rules! gen_message_type_enum {
              fn from(et: EntryType) -> Self {
                 match et {
                     $(EntryType::$variant => paste::paste! { MessageType::[<$variant Entry >] },)*
-                    EntryType::Unknown(id) => MessageType::Unknown(id)
+                    EntryType::Custom(id) => MessageType::Custom(id)
                 }
              }
         }
@@ -350,6 +350,16 @@ mod tests {
         GetStateEntry,
         State,
         Some(true),
+        None,
+        10341
+    );
+
+    roundtrip_test!(
+        custom_entry,
+        MessageHeader::new(MessageType::Custom(0xFC00), 10341),
+        MessageType::Custom(0xFC00),
+        MessageKind::Custom,
+        None,
         None,
         10341
     );
