@@ -154,7 +154,7 @@ enum OtherInputCommand {
 }
 
 #[derive(Debug)]
-pub struct Invoker<Codec: ?Sized, JournalReader> {
+pub struct Invoker<Codec, JournalReader> {
     invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     resume_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     other_input_rx: mpsc::UnboundedReceiver<Input<OtherInputCommand>>,
@@ -170,7 +170,7 @@ pub struct Invoker<Codec: ?Sized, JournalReader> {
     _codec: PhantomData<Codec>,
 }
 
-impl<C: ?Sized, JR: JournalReader> Invoker<C, JR> {
+impl<C, JR: JournalReader> Invoker<C, JR> {
     pub fn new(journal_reader: JR) -> Self {
         let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
         let (resume_input_tx, resume_input_rx) = mpsc::unbounded_channel();

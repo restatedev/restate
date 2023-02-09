@@ -18,7 +18,7 @@ pub(crate) use state_machine::Command;
 pub(super) struct PartitionProcessor<
     CmdStream,
     ProposalSink,
-    RawEntryCodec: ?Sized,
+    RawEntryCodec,
     InvokerInputSender,
     Storage,
 > {
@@ -58,7 +58,7 @@ impl<CmdStream, ProposalSink, RawEntryCodec, InvokerInputSender, Storage>
 where
     CmdStream: Stream<Item = consensus::Command<Command>>,
     ProposalSink: Sink<Command>,
-    RawEntryCodec: ?Sized + Debug,
+    RawEntryCodec: Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     InvokerInputSender::Error: Debug,
     Storage: storage_api::Storage,
