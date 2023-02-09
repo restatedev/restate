@@ -175,6 +175,7 @@ fn decode_protocol_message(
                     Please contact the developers.",
                 ),
                 completed_flag: header.completed(),
+                requires_ack_flag: header.requires_ack(),
             },
             // NOTE: This is a no-op copy if the Buf is instance of Bytes.
             // In case of SegmentedBuf, this doesn't copy if the whole message is contained
@@ -206,6 +207,7 @@ mod tests {
             RawEntryHeader {
                 ty: EntryType::PollInputStream,
                 completed_flag: Some(true),
+                requires_ack_flag: None,
             },
             pb::PollInputStreamEntryMessage {
                 value: Bytes::from_static("input".as_bytes()),
@@ -265,6 +267,7 @@ mod tests {
             RawEntryHeader {
                 ty: EntryType::PollInputStream,
                 completed_flag: Some(true),
+                requires_ack_flag: None,
             },
             pb::PollInputStreamEntryMessage {
                 value: Bytes::from_static("input".as_bytes()),

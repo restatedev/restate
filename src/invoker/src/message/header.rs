@@ -3,6 +3,7 @@ use journal::EntryType;
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
 const COMPLETED_MASK: u64 = 0x0001_0000_0000;
 const VERSION_MASK: u64 = 0x03FF_0000_0000;
+const REQUIRES_ACK_MASK: u64 = 0x0001_0000_0000;
 
 type MessageTypeId = u16;
 
@@ -168,6 +169,10 @@ impl MessageType {
     fn allows_protocol_version(&self) -> bool {
         *self == MessageType::Start
     }
+
+    fn allows_requires_ack_flag(&self) -> bool {
+        matches!(self, MessageType::Custom(_))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,38 +185,48 @@ pub struct MessageHeader {
     completed_flag: Option<bool>,
     /// Only `StartMessage` allows protocol_version.
     protocol_version: Option<u16>,
+    /// Only `Custom` entries allow requires ack flag.
+    requires_ack_flag: Option<bool>,
 }
 
 impl MessageHeader {
     #[inline]
     pub fn new(ty: MessageType, length: u32) -> Self {
-        Self::_new(ty, None, None, length)
+        Self::_new(ty, None, None, None, length)
     }
 
     #[inline]
     pub fn new_start(protocol_version: u16, length: u32) -> Self {
-        Self::_new(MessageType::Start, None, Some(protocol_version), length)
+        Self::_new(
+            MessageType::Start,
+            None,
+            Some(protocol_version),
+            None,
+            length,
+        )
     }
 
     #[inline]
     pub fn new_completable_entry(ty: MessageType, completed: bool, length: u32) -> Self {
         debug_assert!(ty.allows_completed_flag());
 
-        Self::_new(ty, Some(completed), None, length)
+        Self::_new(ty, Some(completed), None, None, length)
     }
 
     #[inline]
     fn _new(
         ty: MessageType,
-        completed: Option<bool>,
+        completed_flag: Option<bool>,
         protocol_version: Option<u16>,
+        requires_ack_flag: Option<bool>,
         length: u32,
     ) -> Self {
         MessageHeader {
             ty,
             length,
-            completed_flag: completed,
+            completed_flag,
             protocol_version,
+            requires_ack_flag,
         }
     }
 
@@ -236,6 +251,11 @@ impl MessageHeader {
     }
 
     #[inline]
+    pub fn requires_ack(&self) -> Option<bool> {
+        self.requires_ack_flag
+    }
+
+    #[inline]
     pub fn frame_length(&self) -> u32 {
         self.length
     }
@@ -251,7 +271,7 @@ impl TryFrom<u64> for MessageHeader {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let ty_code = (value >> 48) as u16;
         let ty: MessageType = ty_code.try_into()?;
-        let completed = if ty.allows_completed_flag() {
+        let completed_flag = if ty.allows_completed_flag() {
             Some((value & COMPLETED_MASK) != 0)
         } else {
             None
@@ -261,9 +281,20 @@ impl TryFrom<u64> for MessageHeader {
         } else {
             None
         };
+        let requires_ack_flag = if ty.allows_requires_ack_flag() {
+            Some((value & REQUIRES_ACK_MASK) != 0)
+        } else {
+            None
+        };
         let length = value as u32;
 
-        Ok(MessageHeader::_new(ty, completed, protocol_version, length))
+        Ok(MessageHeader::_new(
+            ty,
+            completed_flag,
+            protocol_version,
+            requires_ack_flag,
+            length,
+        ))
     }
 }
 
@@ -278,6 +309,9 @@ impl From<MessageHeader> for u64 {
         if let Some(protocol_version) = message_header.protocol_version {
             res |= (protocol_version as u64) << 32;
         }
+        if let Some(true) = message_header.requires_ack_flag {
+            res |= REQUIRES_ACK_MASK;
+        }
 
         res
     }
@@ -289,7 +323,46 @@ mod tests {
     use super::{MessageKind::*, MessageType::*, *};
 
     macro_rules! roundtrip_test {
-        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $done:expr, $protocol_version:expr, $len:expr) => {
+        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr) => {
+            roundtrip_test!($test_name, $header, $ty, $kind, $len, None, None, None);
+        };
+        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, version: $protocol_version:expr) => {
+            roundtrip_test!(
+                $test_name,
+                $header,
+                $ty,
+                $kind,
+                $len,
+                None,
+                Some($protocol_version),
+                None
+            );
+        };
+        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, completed: $completed:expr) => {
+            roundtrip_test!(
+                $test_name,
+                $header,
+                $ty,
+                $kind,
+                $len,
+                Some($completed),
+                None,
+                None
+            );
+        };
+        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, requires_ack: $requires_ack:expr) => {
+            roundtrip_test!(
+                $test_name,
+                $header,
+                $ty,
+                $kind,
+                $len,
+                None,
+                None,
+                Some($requires_ack)
+            );
+        };
+        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, $completed:expr, $protocol_version:expr, $requires_ack:expr) => {
             #[test]
             fn $test_name() {
                 let serialized: u64 = $header.into();
@@ -297,8 +370,9 @@ mod tests {
 
                 assert_eq!(header.message_type(), $ty);
                 assert_eq!(header.message_kind(), $kind);
-                assert_eq!(header.completed(), $done);
+                assert_eq!(header.completed(), $completed);
                 assert_eq!(header.protocol_version(), $protocol_version);
+                assert_eq!(header.requires_ack(), $requires_ack);
                 assert_eq!(header.frame_length(), $len);
             }
         };
@@ -309,9 +383,8 @@ mod tests {
         MessageHeader::new_start(1, 25),
         Start,
         Core,
-        None,
-        Some(1),
-        25
+        25,
+        version: 1
     );
 
     roundtrip_test!(
@@ -319,8 +392,6 @@ mod tests {
         MessageHeader::new(Completion, 22),
         Completion,
         Core,
-        None,
-        None,
         22
     );
 
@@ -329,9 +400,8 @@ mod tests {
         MessageHeader::new_completable_entry(GetStateEntry, true, 0),
         GetStateEntry,
         State,
-        Some(true),
-        None,
-        0
+        0,
+        completed: true
     );
 
     roundtrip_test!(
@@ -339,9 +409,8 @@ mod tests {
         MessageHeader::new_completable_entry(GetStateEntry, false, 0),
         GetStateEntry,
         State,
-        Some(false),
-        None,
-        0
+        0,
+        completed: false
     );
 
     roundtrip_test!(
@@ -349,9 +418,8 @@ mod tests {
         MessageHeader::new_completable_entry(GetStateEntry, true, 10341),
         GetStateEntry,
         State,
-        Some(true),
-        None,
-        10341
+        10341,
+        completed: true
     );
 
     roundtrip_test!(
@@ -359,8 +427,16 @@ mod tests {
         MessageHeader::new(MessageType::Custom(0xFC00), 10341),
         MessageType::Custom(0xFC00),
         MessageKind::Custom,
-        None,
-        None,
-        10341
+        10341,
+        requires_ack: false
+    );
+
+    roundtrip_test!(
+        custom_entry_with_requires_ack,
+        MessageHeader::_new(MessageType::Custom(0xFC00), None, None, Some(true), 10341),
+        MessageType::Custom(0xFC00),
+        MessageKind::Custom,
+        10341,
+        requires_ack: true
     );
 }

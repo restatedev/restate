@@ -120,6 +120,7 @@ mod tests {
             RawEntryHeader {
                 ty: EntryType::Invoke,
                 completed_flag: Some(false),
+                requires_ack_flag: None,
             },
             pb::InvokeEntryMessage {
                 service_name: "MySvc".to_string(),
