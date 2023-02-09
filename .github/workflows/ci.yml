@@ -33,6 +33,8 @@ jobs:
 
       - name: Setup just
         uses: extractions/setup-just@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
