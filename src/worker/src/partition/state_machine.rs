@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use storage_api::StorageReader;
 use tracing::debug;
 
@@ -6,7 +7,7 @@ pub(super) struct StateMachine;
 
 #[derive(Debug)]
 pub(crate) enum Command {
-    Invoker(invoker::Output),
+    Invoker(invoker::OutputEffect),
 }
 
 #[derive(Debug, Default)]

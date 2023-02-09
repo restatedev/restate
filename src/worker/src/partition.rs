@@ -1,7 +1,9 @@
 use crate::partition::state_machine::{Effects, StateMachine};
-use common::types::{InvocationId, LeaderEpoch, PartitionId, PeerId};
+use common::types::{LeaderEpoch, PartitionId, PeerId, ServiceInvocationId};
 use futures::{stream, Sink, SinkExt, Stream, StreamExt};
+use invoker::InvokeInputJournal;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -13,7 +15,13 @@ mod state_machine;
 pub(crate) use state_machine::Command;
 
 #[derive(Debug)]
-pub(super) struct PartitionProcessor<CmdStream, ProposalSink, InvokerSink, Storage> {
+pub(super) struct PartitionProcessor<
+    CmdStream,
+    ProposalSink,
+    RawEntryCodec,
+    InvokerInputSender,
+    Storage,
+> {
     peer_id: PeerId,
     partition_id: PartitionId,
 
@@ -21,18 +29,38 @@ pub(super) struct PartitionProcessor<CmdStream, ProposalSink, InvokerSink, Stora
 
     command_stream: CmdStream,
     proposal_sink: ProposalSink,
-    invoker_sink: InvokerSink,
+
+    invoker_tx: InvokerInputSender,
 
     state_machine: StateMachine,
+
+    _entry_codec: PhantomData<RawEntryCodec>,
 }
 
-impl<CmdStream, ProposalSink, InvokerSink, Storage>
-    PartitionProcessor<CmdStream, ProposalSink, InvokerSink, Storage>
+#[derive(Debug)]
+pub(super) struct RocksDBJournalReader;
+
+impl invoker::JournalReader for RocksDBJournalReader {
+    type JournalStream = stream::Empty<journal::raw::RawEntry>;
+    type Error = ();
+    type Future = futures::future::Pending<
+        Result<(invoker::JournalMetadata, Self::JournalStream), Self::Error>,
+    >;
+
+    fn read_journal(&self, _sid: &ServiceInvocationId) -> Self::Future {
+        // TODO implement this
+        unimplemented!("Implement JournalReader")
+    }
+}
+
+impl<CmdStream, ProposalSink, RawEntryCodec, InvokerInputSender, Storage>
+    PartitionProcessor<CmdStream, ProposalSink, RawEntryCodec, InvokerInputSender, Storage>
 where
     CmdStream: Stream<Item = consensus::Command<Command>>,
     ProposalSink: Sink<Command>,
-    InvokerSink: Sink<invoker::Input>,
-    InvokerSink::Error: Debug,
+    RawEntryCodec: Debug,
+    InvokerInputSender: invoker::InvokerInputSender + Clone,
+    InvokerInputSender::Error: Debug,
     Storage: storage_api::Storage,
 {
     pub(super) fn new(
@@ -40,7 +68,7 @@ where
         partition_id: PartitionId,
         command_stream: CmdStream,
         proposal_sink: ProposalSink,
-        invoker_sink: InvokerSink,
+        invoker_tx: InvokerInputSender,
         storage: Storage,
     ) -> Self {
         Self {
@@ -48,9 +76,10 @@ where
             partition_id,
             command_stream,
             proposal_sink,
-            invoker_sink,
+            invoker_tx,
             state_machine: StateMachine::default(),
             storage,
+            _entry_codec: Default::default(),
         }
     }
 
@@ -60,17 +89,17 @@ where
             partition_id,
             command_stream,
             state_machine,
-            invoker_sink,
+            invoker_tx,
             storage,
             proposal_sink,
+            ..
         } = self;
         tokio::pin!(command_stream);
-        tokio::pin!(invoker_sink);
         tokio::pin!(proposal_sink);
 
         let mut effects = Effects::default();
 
-        let mut leadership_state = LeadershipState::follower(partition_id, invoker_sink);
+        let mut leadership_state = LeadershipState::follower(partition_id, invoker_tx);
 
         loop {
             let mut actuator_stream = leadership_state.actuator_stream();
@@ -115,7 +144,7 @@ where
     }
 
     async fn propose_actuator_message(
-        actuator_message: invoker::Output,
+        actuator_message: invoker::OutputEffect,
         proposal_sink: &mut Pin<&mut ProposalSink>,
     ) {
         // Err only if the consensus module is shutting down
@@ -131,29 +160,29 @@ where
     }
 }
 
-enum LeadershipState<InvokerSink> {
+enum LeadershipState<InvokerInputSender> {
     Follower {
         partition_id: PartitionId,
-        invoker_sink: InvokerSink,
+        invoker_tx: InvokerInputSender,
     },
 
     Leader {
         partition_id: PartitionId,
         leader_epoch: LeaderEpoch,
-        invoker_rx: mpsc::Receiver<invoker::Output>,
-        invoker_sink: InvokerSink,
+        invoker_rx: mpsc::Receiver<invoker::OutputEffect>,
+        invoker_tx: InvokerInputSender,
     },
 }
 
-impl<InvokerSink> LeadershipState<InvokerSink>
+impl<InvokerInputSender> LeadershipState<InvokerInputSender>
 where
-    InvokerSink: Sink<invoker::Input> + Unpin,
-    InvokerSink::Error: Debug,
+    InvokerInputSender: invoker::InvokerInputSender,
+    InvokerInputSender::Error: Debug,
 {
-    fn follower(partition_id: PartitionId, invoker_sink: InvokerSink) -> Self {
+    fn follower(partition_id: PartitionId, invoker_tx: InvokerInputSender) -> Self {
         Self::Follower {
             partition_id,
-            invoker_sink,
+            invoker_tx,
         }
     }
 
@@ -179,21 +208,25 @@ where
     ) -> Self {
         if let LeadershipState::Follower {
             partition_id,
-            mut invoker_sink,
+            mut invoker_tx,
         } = self
         {
             let (tx, rx) = mpsc::channel(1);
 
-            invoker_sink
-                .send(invoker::Input::Register((partition_id, leader_epoch), tx))
+            invoker_tx
+                .register_partition((partition_id, leader_epoch), tx)
                 .await
                 .expect("Invoker should be running");
 
             let mut invoked_invocations = Self::invoked_invocations(storage);
 
-            while let Some(invocation_id) = invoked_invocations.next().await {
-                invoker_sink
-                    .send(invoker::Input::Invoke(invocation_id))
+            while let Some(service_invocation_id) = invoked_invocations.next().await {
+                invoker_tx
+                    .invoke(
+                        (partition_id, leader_epoch),
+                        service_invocation_id,
+                        InvokeInputJournal::NoCachedJournal,
+                    )
                     .await
                     .expect("Invoker should be running");
             }
@@ -202,7 +235,7 @@ where
                 partition_id,
                 leader_epoch,
                 invoker_rx: rx,
-                invoker_sink,
+                invoker_tx,
             }
         } else {
             unreachable!("This method should only be called if I am a follower!");
@@ -213,35 +246,35 @@ where
         if let LeadershipState::Leader {
             partition_id,
             leader_epoch,
-            mut invoker_sink,
+            mut invoker_tx,
             ..
         } = self
         {
-            invoker_sink
-                .send(invoker::Input::Abort((partition_id, leader_epoch)))
+            invoker_tx
+                .abort_all_partition((partition_id, leader_epoch))
                 .await
                 .expect("Invoker should be running");
-            Self::follower(partition_id, invoker_sink)
+            Self::follower(partition_id, invoker_tx)
         } else {
             self
         }
     }
 
-    fn actuator_stream(&mut self) -> ActuatorStream<'_, InvokerSink> {
+    fn actuator_stream(&mut self) -> ActuatorStream<'_, InvokerInputSender> {
         ActuatorStream { inner: self }
     }
 
-    fn invoked_invocations<S>(_storage: &S) -> impl Stream<Item = InvocationId> {
+    fn invoked_invocations<S>(_storage: &S) -> impl Stream<Item = ServiceInvocationId> {
         stream::empty()
     }
 }
 
-struct ActuatorStream<'a, I> {
-    inner: &'a mut LeadershipState<I>,
+struct ActuatorStream<'a, InvokerInputSender> {
+    inner: &'a mut LeadershipState<InvokerInputSender>,
 }
 
-impl<'a, I> Stream for ActuatorStream<'a, I> {
-    type Item = invoker::Output;
+impl<'a, InvokerInputSender> Stream for ActuatorStream<'a, InvokerInputSender> {
+    type Item = invoker::OutputEffect;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.deref_mut().inner {

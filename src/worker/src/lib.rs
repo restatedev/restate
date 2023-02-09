@@ -2,9 +2,10 @@ use common::types::PeerId;
 use consensus::{Consensus, ProposalSender, Targeted};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use invoker::Invoker;
-use invoker::InvokerSender;
+use invoker::{Invoker, UnboundedInvokerInputSender};
 use network::Network;
+use partition::RocksDBJournalReader;
+use service_protocol::codec::ProtobufRawEntryCodec;
 use storage_rocksdb::RocksDBStorage;
 use tokio::join;
 use tokio::sync::mpsc;
@@ -20,7 +21,8 @@ type ConsensusCommand = consensus::Command<partition::Command>;
 type PartitionProcessor = partition::PartitionProcessor<
     ReceiverStream<ConsensusCommand>,
     IdentitySender<partition::Command>,
-    PollSender<invoker::Input>,
+    ProtobufRawEntryCodec,
+    UnboundedInvokerInputSender,
     RocksDBStorage,
 >;
 type TargetedFsmCommand = Targeted<partition::Command>;
@@ -50,7 +52,7 @@ pub struct Worker {
     >,
     processors: Vec<PartitionProcessor>,
     network: Network<TargetedFsmCommand, PollSender<TargetedFsmCommand>>,
-    invoker: Invoker,
+    invoker: Invoker<ProtobufRawEntryCodec, RocksDBJournalReader>,
     _storage: RocksDBStorage,
 }
 
@@ -61,7 +63,6 @@ impl Options {
 }
 
 impl Worker {
-    #[allow(clippy::new_without_default)]
     pub fn new(opts: Options) -> Self {
         let Options {
             channel_size,
@@ -80,7 +81,7 @@ impl Worker {
             network.create_consensus_sender(),
         );
 
-        let invoker = Invoker::new();
+        let invoker = Invoker::new(RocksDBJournalReader);
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {
@@ -109,7 +110,7 @@ impl Worker {
     fn create_partition_processor(
         peer_id: PeerId,
         proposal_sender: ProposalSender<TargetedFsmCommand>,
-        invoker_sender: InvokerSender,
+        invoker_sender: UnboundedInvokerInputSender,
         storage: RocksDBStorage,
     ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);

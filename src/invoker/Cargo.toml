@@ -12,6 +12,11 @@ publish = false
 [dependencies]
 common = { workspace = true }
 drain = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+opentelemetry = { workspace = true }
+
+journal = { workspace = true }
