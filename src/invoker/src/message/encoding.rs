@@ -49,12 +49,18 @@ impl Encoder {
 
 fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeader {
     match msg {
-        ProtocolMessage::Start(m) => {
-            MessageHeader::new_start(protocol_version, m.encoded_len().try_into().unwrap())
-        }
-        ProtocolMessage::Completion(m) => {
-            MessageHeader::new(MessageType::Completion, m.encoded_len().try_into().unwrap())
-        }
+        ProtocolMessage::Start(m) => MessageHeader::new_start(
+            protocol_version,
+            m.encoded_len()
+                .try_into()
+                .expect("Protocol messages can't be larger than u32"),
+        ),
+        ProtocolMessage::Completion(m) => MessageHeader::new(
+            MessageType::Completion,
+            m.encoded_len()
+                .try_into()
+                .expect("Protocol messages can't be larger than u32"),
+        ),
         ProtocolMessage::UnparsedEntry(entry) => match entry.header.completed_flag {
             Some(completed_flag) => MessageHeader::new_completable_entry(
                 entry.entry_type().into(),
@@ -170,9 +176,9 @@ fn decode_protocol_message(
                 ),
                 completed_flag: header.completed(),
             },
-            // NOTE: This is a no-op copy if the Buf is instance of Bytes
-            //  In case of SegmentedBuf, this doesn't copy if the whole message fits in a
-            //  single contained Bytes
+            // NOTE: This is a no-op copy if the Buf is instance of Bytes.
+            // In case of SegmentedBuf, this doesn't copy if the whole message is contained
+            // in a single Bytes instance.
             buf.copy_to_bytes(buf.remaining()),
         )),
     })

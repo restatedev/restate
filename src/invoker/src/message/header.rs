@@ -176,7 +176,9 @@ pub struct MessageHeader {
     length: u32,
 
     // Flags
+    /// Only `CompletableEntries` allow completed flag. See [`MessageType#allows_completed_flag`].
     completed_flag: Option<bool>,
+    /// Only `StartMessage` allows protocol_version.
     protocol_version: Option<u16>,
 }
 
@@ -266,13 +268,14 @@ impl TryFrom<u64> for MessageHeader {
 }
 
 impl From<MessageHeader> for u64 {
-    fn from(fh: MessageHeader) -> Self {
-        let mut res = ((u16::from(fh.ty) as u64) << 48) | (fh.length as u64);
+    fn from(message_header: MessageHeader) -> Self {
+        let mut res =
+            ((u16::from(message_header.ty) as u64) << 48) | (message_header.length as u64);
 
-        if let Some(true) = fh.completed_flag {
+        if let Some(true) = message_header.completed_flag {
             res |= COMPLETED_MASK;
         }
-        if let Some(protocol_version) = fh.protocol_version {
+        if let Some(protocol_version) = message_header.protocol_version {
             res |= (protocol_version as u64) << 32;
         }
 

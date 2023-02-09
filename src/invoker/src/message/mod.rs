@@ -41,10 +41,10 @@ impl ProtocolMessage {
 }
 
 impl From<Completion> for ProtocolMessage {
-    fn from(jc: Completion) -> Self {
+    fn from(completion: Completion) -> Self {
         ProtocolMessage::Completion(pb::CompletionMessage {
-            entry_index: jc.entry_index,
-            result: match jc.result {
+            entry_index: completion.entry_index,
+            result: match completion.result {
                 CompletionResult::Ack => None,
                 CompletionResult::Empty => Some(pb::completion_message::Result::Empty(())),
                 CompletionResult::Success(b) => Some(pb::completion_message::Result::Value(b)),
