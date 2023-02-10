@@ -296,6 +296,8 @@ impl<C, JR: JournalReader> Invoker<C, JR> {
                             if err.is_panic() {
                                 panic::resume_unwind(err.into_panic());
                             }
+                            // Other errors are cancellations caused by us (e.g. after AbortAllPartition),
+                            // hence we can ignore them.
                         }
                     }
                 }
@@ -360,7 +362,9 @@ mod state_machine_coordinator {
         }
 
         pub(super) fn handle_abort_all_partition(&mut self) {
-            unimplemented!()
+            for (_, sm) in self.invocation_state_machines.iter_mut() {
+                sm.abort()
+            }
         }
 
         pub(super) fn handle_completion(
@@ -424,5 +428,13 @@ mod invocation_state_machine {
 
         // We remain in this state until the JoinHandle of the tokio's task is completed.
         WaitingClose,
+    }
+
+    impl InvocationStateMachine {
+        pub(super) fn abort(&self) {
+            if let InnerState::InFlight { task_handle, .. } = &self.state {
+                task_handle.abort()
+            }
+        }
     }
 }
