@@ -16,145 +16,42 @@ pub enum MessageKind {
     Custom,
 }
 
-// This macro generates:
-// * MessageType enum
-// * MessageType#kind(&self) -> MessageKind
-// * From<MessageType> for MessageTypeId (used for serializing message header)
-// * TryFrom<MessageTypeId> for MessageType (used for deserializing message header)
-// * From<EntryType> for MessageType (used to convert from journal entry to message header)
-// * TryFrom<MessageType> for EntryType (used to convert from message header to journal entry)
-macro_rules! gen_message_type_enum {
-    (@gen_enum [] -> [$($body:tt)*]) => {
-        #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-        pub enum MessageType {
-            $($body)*
-            Custom(u16)
-        }
-    };
-    (@gen_enum [$variant:ident Entry $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message_type_enum!(@gen_enum [$($tail)*] -> [[<$variant Entry>], $($body)*]); }
-    };
-    (@gen_enum [$variant:ident $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message_type_enum!(@gen_enum [$($tail)*] -> [$variant, $($body)*]);
-    };
-
-    (@gen_kind_impl [] -> [$($variant:ident, $kind:ident,)*]) => {
-        impl MessageType {
-            pub fn kind(&self) -> MessageKind {
-                match self {
-                    $(MessageType::$variant => MessageKind::$kind,)*
-                    MessageType::Custom(_) => MessageKind::Custom
-                }
-            }
-        }
-    };
-    (@gen_kind_impl [$variant:ident Entry $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message_type_enum!(@gen_kind_impl [$($tail)*] -> [[<$variant Entry>], $kind, $($body)*]); }
-    };
-    (@gen_kind_impl [$variant:ident $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message_type_enum!(@gen_kind_impl [$($tail)*] -> [$variant, $kind, $($body)*]);
-    };
-
-    (@gen_to_id [] -> [$($variant:ident, $id:literal,)*]) => {
-        impl From<MessageType> for MessageTypeId {
-            fn from(mt: MessageType) -> Self {
-                match mt {
-                    $(MessageType::$variant => $id,)*
-                    MessageType::Custom(id) => id
-                }
-            }
-        }
-    };
-    (@gen_to_id [$variant:ident Entry $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message_type_enum!(@gen_to_id [$($tail)*] -> [[<$variant Entry>], $id, $($body)*]); }
-    };
-    (@gen_to_id [$variant:ident $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message_type_enum!(@gen_to_id [$($tail)*] -> [$variant, $id, $($body)*]);
-    };
-
-    (@gen_from_id [] -> [$($variant:ident, $id:literal,)*]) => {
-        impl TryFrom<MessageTypeId> for MessageType {
-            type Error = UnknownMessageType;
-
-            fn try_from(value: MessageTypeId) -> Result<Self, Self::Error> {
-                match value {
-                    $($id => Ok(MessageType::$variant),)*
-                    v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::Custom(v)),
-                    v => Err(UnknownMessageType(v))
-                }
-            }
-        }
-    };
-    (@gen_from_id [$variant:ident Entry $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message_type_enum!(@gen_from_id [$($tail)*] -> [[<$variant Entry>], $id, $($body)*]); }
-    };
-    (@gen_from_id [$variant:ident $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message_type_enum!(@gen_from_id [$($tail)*] -> [$variant, $id, $($body)*]);
-    };
-
-    (@gen_to_entry_type [] -> [$($variant:ident, $res:expr,)*]) => {
-        impl TryFrom<MessageType> for EntryType {
-            type Error = &'static str;
-
-             fn try_from(mt: MessageType) -> Result<Self, Self::Error> {
-                match mt {
-                    $(MessageType::$variant => $res,)*
-                    MessageType::Custom(id) => Ok(EntryType::Custom(id))
-                }
-             }
-        }
-    };
-    (@gen_to_entry_type [$variant:ident Entry $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message_type_enum!(@gen_to_entry_type [$($tail)*] -> [[<$variant Entry>], Ok(EntryType::$variant), $($body)*]); }
-    };
-    (@gen_to_entry_type [$variant:ident $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message_type_enum!(@gen_to_entry_type [$($tail)*] -> [$variant, Err(concat!(stringify!($variant), " is not an entry message")), $($body)*]);
-    };
-
-    (@gen_from_entry_type [] -> [$($variant:ident,)*]) => {
-        impl From<EntryType> for MessageType {
-             fn from(et: EntryType) -> Self {
-                match et {
-                    $(EntryType::$variant => paste::paste! { MessageType::[<$variant Entry >] },)*
-                    EntryType::Custom(id) => MessageType::Custom(id)
-                }
-             }
-        }
-    };
-    (@gen_from_entry_type [$variant:ident Entry $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message_type_enum!(@gen_from_entry_type [$($tail)*] -> [$variant, $($body)*]);
-    };
-    (@gen_from_entry_type [$variant:ident $kind:ident = $id:literal; $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message_type_enum!(@gen_from_entry_type [$($tail)*] -> [$($body)*]);
-    };
-
-    // Entrypoint of the macro
-    ($($tokens:tt)*) => {
-        gen_message_type_enum!(@gen_enum [$($tokens)*] -> []);
-        gen_message_type_enum!(@gen_kind_impl [$($tokens)*] -> []);
-        gen_message_type_enum!(@gen_to_id [$($tokens)*] -> []);
-        gen_message_type_enum!(@gen_from_id [$($tokens)*] -> []);
-        gen_message_type_enum!(@gen_to_entry_type [$($tokens)*] -> []);
-        gen_message_type_enum!(@gen_from_entry_type [$($tokens)*] -> []);
-    };
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MessageType {
+    Start,
+    Completion,
+    PollInputStreamEntry,
+    OutputStreamEntry,
+    GetStateEntry,
+    SetStateEntry,
+    ClearStateEntry,
+    SleepEntry,
+    InvokeEntry,
+    BackgroundInvokeEntry,
+    AwakeableEntry,
+    CompleteAwakeableEntry,
+    Custom(u16),
 }
 
-gen_message_type_enum!(
-    Start Core = 0x0000;
-    Completion Core = 0x0001;
-    PollInputStream Entry IO = 0x0400;
-    OutputStream Entry IO = 0x0401;
-    GetState Entry State = 0x0800;
-    SetState Entry State = 0x0801;
-    ClearState Entry State = 0x0802;
-    Sleep Entry Syscall = 0x0C00;
-    Invoke Entry Syscall = 0x0C01;
-    BackgroundInvoke Entry Syscall = 0x0C02;
-    Awakeable Entry Syscall = 0x0C03;
-    CompleteAwakeable Entry Syscall = 0x0C04;
-);
-
 impl MessageType {
+    fn kind(&self) -> MessageKind {
+        match self {
+            MessageType::Start => MessageKind::Core,
+            MessageType::Completion => MessageKind::Core,
+            MessageType::PollInputStreamEntry => MessageKind::IO,
+            MessageType::OutputStreamEntry => MessageKind::IO,
+            MessageType::GetStateEntry => MessageKind::State,
+            MessageType::SetStateEntry => MessageKind::State,
+            MessageType::ClearStateEntry => MessageKind::State,
+            MessageType::SleepEntry => MessageKind::Syscall,
+            MessageType::InvokeEntry => MessageKind::Syscall,
+            MessageType::BackgroundInvokeEntry => MessageKind::Syscall,
+            MessageType::AwakeableEntry => MessageKind::Syscall,
+            MessageType::CompleteAwakeableEntry => MessageKind::Syscall,
+            MessageType::Custom(_) => MessageKind::Custom,
+        }
+    }
+
     fn allows_completed_flag(&self) -> bool {
         matches!(
             self,
@@ -172,6 +69,93 @@ impl MessageType {
 
     fn allows_requires_ack_flag(&self) -> bool {
         matches!(self, MessageType::Custom(_))
+    }
+}
+
+impl From<MessageType> for MessageTypeId {
+    fn from(mt: MessageType) -> Self {
+        match mt {
+            MessageType::Start => 0x0000,
+            MessageType::Completion => 0x0001,
+            MessageType::PollInputStreamEntry => 0x0400,
+            MessageType::OutputStreamEntry => 0x0401,
+            MessageType::GetStateEntry => 0x0800,
+            MessageType::SetStateEntry => 0x0801,
+            MessageType::ClearStateEntry => 0x0802,
+            MessageType::SleepEntry => 0x0C00,
+            MessageType::InvokeEntry => 0x0C01,
+            MessageType::BackgroundInvokeEntry => 0x0C02,
+            MessageType::AwakeableEntry => 0x0C03,
+            MessageType::CompleteAwakeableEntry => 0x0C04,
+            MessageType::Custom(id) => id,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown message code {0:#x}")]
+pub struct UnknownMessageType(u16);
+
+impl TryFrom<MessageTypeId> for MessageType {
+    type Error = UnknownMessageType;
+
+    fn try_from(value: MessageTypeId) -> Result<Self, Self::Error> {
+        match value {
+            0x0000 => Ok(MessageType::Start),
+            0x0001 => Ok(MessageType::Completion),
+            0x0400 => Ok(MessageType::PollInputStreamEntry),
+            0x0401 => Ok(MessageType::OutputStreamEntry),
+            0x0800 => Ok(MessageType::GetStateEntry),
+            0x0801 => Ok(MessageType::SetStateEntry),
+            0x0802 => Ok(MessageType::ClearStateEntry),
+            0x0C00 => Ok(MessageType::SleepEntry),
+            0x0C01 => Ok(MessageType::InvokeEntry),
+            0x0C02 => Ok(MessageType::BackgroundInvokeEntry),
+            0x0C03 => Ok(MessageType::AwakeableEntry),
+            0x0C04 => Ok(MessageType::CompleteAwakeableEntry),
+            v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::Custom(v)),
+            v => Err(UnknownMessageType(v)),
+        }
+    }
+}
+
+impl TryFrom<MessageType> for EntryType {
+    type Error = &'static str;
+
+    fn try_from(mt: MessageType) -> Result<Self, Self::Error> {
+        match mt {
+            MessageType::Start => Err("Start is not an entry message"),
+            MessageType::Completion => Err("Completion is not an entry message"),
+            MessageType::PollInputStreamEntry => Ok(EntryType::PollInputStream),
+            MessageType::OutputStreamEntry => Ok(EntryType::OutputStream),
+            MessageType::GetStateEntry => Ok(EntryType::GetState),
+            MessageType::SetStateEntry => Ok(EntryType::SetState),
+            MessageType::ClearStateEntry => Ok(EntryType::ClearState),
+            MessageType::SleepEntry => Ok(EntryType::Sleep),
+            MessageType::InvokeEntry => Ok(EntryType::Invoke),
+            MessageType::BackgroundInvokeEntry => Ok(EntryType::BackgroundInvoke),
+            MessageType::AwakeableEntry => Ok(EntryType::Awakeable),
+            MessageType::CompleteAwakeableEntry => Ok(EntryType::CompleteAwakeable),
+            MessageType::Custom(id) => Ok(EntryType::Custom(id)),
+        }
+    }
+}
+
+impl From<EntryType> for MessageType {
+    fn from(et: EntryType) -> Self {
+        match et {
+            EntryType::PollInputStream => MessageType::PollInputStreamEntry,
+            EntryType::OutputStream => MessageType::OutputStreamEntry,
+            EntryType::GetState => MessageType::GetStateEntry,
+            EntryType::SetState => MessageType::SetStateEntry,
+            EntryType::ClearState => MessageType::ClearStateEntry,
+            EntryType::Sleep => MessageType::SleepEntry,
+            EntryType::Invoke => MessageType::InvokeEntry,
+            EntryType::BackgroundInvoke => MessageType::BackgroundInvokeEntry,
+            EntryType::Awakeable => MessageType::AwakeableEntry,
+            EntryType::CompleteAwakeable => MessageType::CompleteAwakeableEntry,
+            EntryType::Custom(id) => MessageType::Custom(id),
+        }
     }
 }
 
@@ -260,10 +244,6 @@ impl MessageHeader {
         self.length
     }
 }
-
-#[derive(Debug, thiserror::Error)]
-#[error("unknown message code {0:#x}")]
-pub struct UnknownMessageType(u16);
 
 impl TryFrom<u64> for MessageHeader {
     type Error = UnknownMessageType;
