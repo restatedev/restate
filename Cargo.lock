@@ -664,6 +664,7 @@ dependencies = [
  "hyper-tls",
  "journal",
  "opentelemetry",
+ "opentelemetry-http",
  "paste",
  "prost",
  "service_protocol",
@@ -1008,6 +1009,18 @@ checksum = "69d6c3d7288a106c0a363e4b0e8d308058d56902adefb16f4936f417ffef086e"
 dependencies = [
  "opentelemetry_api",
  "opentelemetry_sdk",
+]
+
+[[package]]
+name = "opentelemetry-http"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1edc79add46364183ece1a4542592ca593e6421c60807232f5b8f7a31703825d"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http",
+ "opentelemetry_api",
 ]
 
 [[package]]

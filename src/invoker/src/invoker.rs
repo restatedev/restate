@@ -7,9 +7,16 @@ use futures::stream::{PollNext, StreamExt};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::panic;
+
+use common::types::PartitionLeaderEpoch;
+use futures::stream;
+use futures::stream::{PollNext, StreamExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
+
+use super::*;
+use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 
 #[derive(Debug, Clone)]
 pub struct UnboundedInvokerInputSender {
@@ -125,14 +132,12 @@ struct Input<I> {
     inner: I,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 struct InvokeInputCommand {
     service_invocation_id: ServiceInvocationId,
     journal: InvokeInputJournal,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 enum OtherInputCommand {
     Completion {
@@ -151,7 +156,6 @@ enum OtherInputCommand {
     RegisterPartition(mpsc::Sender<OutputEffect>),
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
@@ -182,7 +186,7 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
 
 impl<C, JR, JS, SER> Invoker<C, JR, SER>
 where
-    JR: JournalReader<JournalStream = JS> + Clone + Send + 'static,
+    JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
     JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
     SER: ServiceEndpointRegistry,
 {
@@ -254,7 +258,7 @@ where
                             &service_endpoint_registry,
                             &mut invocation_tasks,
                             &invocation_tasks_tx
-                        );
+                        ).await;
                 },
                 Some(other_input_message) = other_input_rx.recv() => {
                     match other_input_message {
@@ -262,7 +266,7 @@ where
                             state_machine_coordinator.register_partition(partition, sender);
                         },
                         Input { partition, inner: OtherInputCommand::AbortAllPartition } => {
-                            if let Some(partition_state_machine) = state_machine_coordinator.remove_partition(partition) {
+                            if let Some(mut partition_state_machine) = state_machine_coordinator.remove_partition(partition) {
                                 partition_state_machine.handle_abort_all_partition();
                             } else {
                                 // This is safe to ignore
@@ -295,7 +299,7 @@ where
                                 invocation_task_msg.service_invocation_id,
                                 entry_index,
                                 raw_entry
-                            )
+                            ).await
                         },
                         InvocationTaskOutputInner::Result {last_journal_revision, last_journal_index, kind} => {
                             partition_state_machine.handle_invocation_task_result(
@@ -303,22 +307,19 @@ where
                                 last_journal_index,
                                 last_journal_revision,
                                 kind
-                            )
+                            ).await
                         }
                     };
                 },
                 Some(invocation_task_result) = invocation_tasks.join_next() => {
-                    match invocation_task_result {
-                        Err(err) => {
-                            // Propagate panics coming from invocation tasks.
-                            if err.is_panic() {
-                                panic::resume_unwind(err.into_panic());
-                            }
-                            // Other errors are cancellations caused by us (e.g. after AbortAllPartition),
-                            // hence we can ignore them.
-                        },
-                        _ => {}
+                    if let Err(err) = invocation_task_result {
+                        // Propagate panics coming from invocation tasks.
+                        if err.is_panic() {
+                         panic::resume_unwind(err.into_panic());
+                        }
                     }
+                    // Other errors are cancellations caused by us (e.g. after AbortAllPartition),
+                    // hence we can ignore them.
                 }
                 _ = &mut shutdown => {
                     debug!("Shutting down the invoker");
@@ -401,7 +402,7 @@ mod state_machine_coordinator {
             }
         }
 
-        pub(super) fn handle_invoke<JR, JS, SER>(
+        pub(super) async fn handle_invoke<JR, JS, SER>(
             &mut self,
             invoke_input_cmd: InvokeInputCommand,
             journal_reader: &JR,
@@ -409,7 +410,7 @@ mod state_machine_coordinator {
             invocation_tasks: &mut JoinSet<()>,
             invocation_tasks_tx: &mpsc::UnboundedSender<InvocationTaskOutput>,
         ) where
-            JR: JournalReader<JournalStream = JS> + Clone + Send + 'static,
+            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
             JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
             SER: ServiceEndpointRegistry,
         {
@@ -426,10 +427,13 @@ mod state_machine_coordinator {
                     service_invocation_id.service_id.service_name.to_string(),
                 ));
                 // No endpoint metadata can be resolved, we just fail it.
-                let _ = self.output_tx.send(OutputEffect::Failed {
-                    service_invocation_id,
-                    error,
-                });
+                let _ = self
+                    .output_tx
+                    .send(OutputEffect::Failed {
+                        service_invocation_id,
+                        error,
+                    })
+                    .await;
                 return;
             }
 
@@ -445,7 +449,7 @@ mod state_machine_coordinator {
                     invocation_tasks_tx.clone(),
                     Some(completions_rx),
                 )
-                .run(),
+                .run(invoke_input_cmd.journal),
             );
 
             // Register the state machine
@@ -455,8 +459,8 @@ mod state_machine_coordinator {
             );
         }
 
-        pub(super) fn handle_abort_all_partition(&self) {
-            for sm in self.invocation_state_machines.values() {
+        pub(super) fn handle_abort_all_partition(&mut self) {
+            for sm in self.invocation_state_machines.values_mut() {
                 sm.abort()
             }
         }
@@ -490,7 +494,7 @@ mod state_machine_coordinator {
             // If no state machine is registered, the PP will send a new invoke
         }
 
-        pub(super) fn handle_new_entry(
+        pub(super) async fn handle_new_entry(
             &mut self,
             service_invocation_id: ServiceInvocationId,
             entry_index: EntryIndex,
@@ -501,16 +505,19 @@ mod state_machine_coordinator {
                 .get_mut(&service_invocation_id)
             {
                 sm.notify_new_entry(&entry);
-                let _ = self.output_tx.send(OutputEffect::JournalEntry {
-                    service_invocation_id,
-                    entry_index,
-                    entry,
-                });
+                let _ = self
+                    .output_tx
+                    .send(OutputEffect::JournalEntry {
+                        service_invocation_id,
+                        entry_index,
+                        entry,
+                    })
+                    .await;
             }
             // If no state machine, this might be an entry for an aborted invocation.
         }
 
-        pub(super) fn handle_invocation_task_result(
+        pub(super) async fn handle_invocation_task_result(
             &mut self,
             service_invocation_id: ServiceInvocationId,
             last_journal_index: EntryIndex,
@@ -534,7 +541,7 @@ mod state_machine_coordinator {
                             }
                         };
 
-                        let _ = self.output_tx.send(output_effect);
+                        let _ = self.output_tx.send(output_effect).await;
                     }
                     error_kind => {
                         warn!(
@@ -550,10 +557,13 @@ mod state_machine_coordinator {
                                 .insert(service_invocation_id, sm);
                             unimplemented!("Implement timer")
                         } else {
-                            let _ = self.output_tx.send(OutputEffect::Failed {
-                                service_invocation_id,
-                                error: Box::new(error_kind),
-                            });
+                            let _ = self
+                                .output_tx
+                                .send(OutputEffect::Failed {
+                                    service_invocation_id,
+                                    error: Box::new(error_kind),
+                                })
+                                .await;
                         }
                     }
                 }
@@ -565,6 +575,7 @@ mod state_machine_coordinator {
 
 mod invocation_state_machine {
     use super::*;
+    use std::mem;
     use std::time::Duration;
 
     use journal::{Completion, EntryType};
@@ -595,6 +606,7 @@ mod invocation_state_machine {
 
         WaitingRetry {
             // TODO implement timer
+            //  https://github.com/restatedev/restate/issues/84
             index_waiting_on_ack: EntryIndex,
         },
     }
@@ -610,10 +622,11 @@ mod invocation_state_machine {
             )
         }
 
-        pub(super) fn abort(&self) {
-            match &self.0 {
-                TaskState::Running(task_handle) => task_handle.abort(),
-                _ => {}
+        pub(super) fn abort(&mut self) {
+            if let TaskState::Running(task_handle) =
+                mem::replace(&mut self.0, TaskState::NotRunning)
+            {
+                task_handle.abort();
             }
         }
 
@@ -656,7 +669,9 @@ mod invocation_state_machine {
                 index_waiting_on_ack: entry_index,
             };
             // TODO implement retry policy
-            return None;
+            //  https://github.com/restatedev/restate/issues/84
+            // TODO define criteria for recoverable and unrecoverable errors
+            None
         }
 
         pub(super) fn ending(&self) -> bool {

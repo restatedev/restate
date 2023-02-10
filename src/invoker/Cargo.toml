@@ -25,6 +25,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 opentelemetry = { workspace = true }
+opentelemetry-http = "0.7"
 
 journal = { workspace = true }
 service_protocol = { workspace = true }

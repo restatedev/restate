@@ -6,6 +6,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use tracing::{debug, info};
+use std::convert::Infallible;
 
 mod effects;
 mod leadership;
@@ -42,12 +43,12 @@ pub(super) struct PartitionProcessor<
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct RocksDBJournalReader;
 
 impl invoker::JournalReader for RocksDBJournalReader {
     type JournalStream = stream::Empty<journal::raw::RawEntry>;
-    type Error = ();
+    type Error = Infallible;
     type Future = futures::future::Pending<
         Result<(invoker::JournalMetadata, Self::JournalStream), Self::Error>,
     >;

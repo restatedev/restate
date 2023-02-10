@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::future::Future;
+
+use common::types::{PartitionLeaderEpoch, ServiceInvocationId};
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
 use hyper::Uri;
@@ -17,7 +21,7 @@ mod invocation_task;
 
 // --- Service Endpoint Registry
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ProtocolType {
     RequestResponse,
     BidiStream,
@@ -42,6 +46,12 @@ pub trait ServiceEndpointRegistry {
     fn resolve_endpoint(&self, service_name: &str) -> Option<EndpointMetadata>;
 }
 
+impl ServiceEndpointRegistry for HashMap<String, EndpointMetadata> {
+    fn resolve_endpoint(&self, service_name: &str) -> Option<EndpointMetadata> {
+        self.get(service_name).cloned()
+    }
+}
+
 // --- Journal Reader
 
 #[allow(dead_code)]
@@ -57,8 +67,8 @@ pub struct JournalMetadata {
 
 pub trait JournalReader {
     type JournalStream: Stream<Item = RawEntry>;
-    type Error;
-    type Future: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
+    type Error: std::error::Error + Send + Sync + 'static;
+    type Future: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>> + Send;
 
     fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future;
 }

@@ -2,10 +2,11 @@ use common::types::PeerId;
 use consensus::{Consensus, ProposalSender, Targeted};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use invoker::{Invoker, UnboundedInvokerInputSender};
+use invoker::{EndpointMetadata, Invoker, UnboundedInvokerInputSender};
 use network::Network;
 use partition::RocksDBJournalReader;
 use service_protocol::codec::ProtobufRawEntryCodec;
+use std::collections::HashMap;
 use storage_rocksdb::RocksDBStorage;
 use tokio::join;
 use tokio::sync::mpsc;
@@ -52,7 +53,8 @@ pub struct Worker {
     >,
     processors: Vec<PartitionProcessor>,
     network: Network<TargetedFsmCommand, PollSender<TargetedFsmCommand>>,
-    invoker: Invoker<ProtobufRawEntryCodec, RocksDBJournalReader>,
+    invoker:
+        Invoker<ProtobufRawEntryCodec, RocksDBJournalReader, HashMap<String, EndpointMetadata>>,
     _storage: RocksDBStorage,
 }
 
@@ -81,7 +83,7 @@ impl Worker {
             network.create_consensus_sender(),
         );
 
-        let invoker = Invoker::new(RocksDBJournalReader);
+        let invoker = Invoker::new(RocksDBJournalReader, Default::default());
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {
