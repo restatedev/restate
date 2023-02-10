@@ -12,10 +12,9 @@ use tracing::debug;
 
 mod storage;
 
-pub(super) use crate::partition::effects::Effects;
-use crate::partition::effects::OutboxMessage;
+use storage::StorageReaderHelper;
+use crate::partition::effects::{Effects, OutboxMessage};
 use crate::partition::state_machine::storage::InvocationStatus;
-use storage::StorageHelper;
 
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
@@ -105,11 +104,11 @@ where
     ) -> Result<(), Error<Codec::Error>> {
         debug!(?command, "Apply");
 
-        let storage = StorageHelper::new(storage);
+        let storage = StorageReaderHelper::new(storage);
 
         match command {
             Command::Invocation(service_invocation) => {
-                let status = storage.invocation_status(&service_invocation.id.service_id);
+                let status = storage.get_invocation_status(&service_invocation.id.service_id);
 
                 if status == InvocationStatus::Free {
                     effects.invoke_service(service_invocation);
@@ -134,7 +133,7 @@ where
                 service_invocation_id,
                 kind,
             }) => {
-                let status = storage.invocation_status(&service_invocation_id.service_id);
+                let status = storage.get_invocation_status(&service_invocation_id.service_id);
 
                 debug_assert!(
                     matches!(
@@ -147,7 +146,7 @@ where
                 match kind {
                     invoker::Kind::JournalEntry { entry_index, entry } => {
                         let journal_length =
-                            storage.journal_length(&service_invocation_id.service_id);
+                            storage.get_journal_length(&service_invocation_id.service_id);
 
                         debug_assert_eq!(
                             entry_index,
@@ -243,7 +242,7 @@ where
                         journal_revision: expected_journal_revision,
                     } => {
                         let actual_journal_revision =
-                            storage.journal_revision(&service_invocation_id.service_id);
+                            storage.get_journal_revision(&service_invocation_id.service_id);
 
                         if actual_journal_revision > expected_journal_revision {
                             effects.resume_service(service_invocation_id.service_id);
@@ -297,10 +296,10 @@ where
     fn handle_completion(
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
-        storage: &StorageHelper,
+        storage: &StorageReaderHelper,
         effects: &mut Effects,
     ) {
-        let status = storage.invocation_status(&service_invocation_id.service_id);
+        let status = storage.get_invocation_status(&service_invocation_id.service_id);
 
         match status {
             InvocationStatus::Invoked(invocation_id) => {
@@ -337,7 +336,7 @@ where
         &mut self,
         service_invocation_id: ServiceInvocationId,
         completion_result: CompletionResult,
-        storage: &StorageHelper,
+        storage: &StorageReaderHelper,
         effects: &mut Effects,
     ) {
         effects.drop_journal(service_invocation_id.service_id.clone());

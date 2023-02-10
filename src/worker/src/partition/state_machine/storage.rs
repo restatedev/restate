@@ -1,4 +1,5 @@
-use common::types::{InvocationId, ServiceId, ServiceInvocation};
+use futures::{Stream, stream};
+use common::types::{InvocationId, ServiceId, ServiceInvocation, ServiceInvocationId};
 use journal::JournalRevision;
 use storage_api::StorageReader;
 
@@ -9,14 +10,14 @@ pub(super) enum InvocationStatus {
     Free,
 }
 
-pub(super) struct StorageHelper {}
+pub(super) struct StorageReaderHelper {}
 
-impl StorageHelper {
+impl StorageReaderHelper {
     pub(super) fn new<S: StorageReader>(_storage: &S) -> Self {
-        StorageHelper {}
+        StorageReaderHelper {}
     }
 
-    pub(super) fn invocation_status(&self, service_id: &ServiceId) -> InvocationStatus {
+    pub(super) fn get_invocation_status(&self, service_id: &ServiceId) -> InvocationStatus {
         InvocationStatus::Free
     }
 
@@ -24,11 +25,15 @@ impl StorageHelper {
         None
     }
 
-    pub(super) fn journal_revision(&self, service_id: &ServiceId) -> JournalRevision {
+    pub(super) fn get_journal_revision(&self, service_id: &ServiceId) -> JournalRevision {
         0
     }
 
-    pub(super) fn journal_length(&self, service_id: &ServiceId) -> u32 {
+    pub(super) fn get_journal_length(&self, service_id: &ServiceId) -> u32 {
         0
+    }
+
+    pub fn scan_invoked_invocations(&self) -> impl Stream<Item = ServiceInvocationId> {
+        stream::empty()
     }
 }

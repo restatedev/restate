@@ -13,8 +13,8 @@ use tracing::{debug, info};
 mod effects;
 mod state_machine;
 
-use crate::partition::effects::Effects;
 pub(crate) use state_machine::Command;
+use crate::partition::effects::Effects;
 
 type StateMachine = state_machine::StateMachine<ProtobufRawEntryCodec>;
 
