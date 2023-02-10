@@ -15,7 +15,7 @@ pub use crate::invoker::*;
 
 mod invocation_task;
 
-// --- Service registration
+// --- Service Endpoint Registry
 
 #[derive(Debug, Copy, Clone)]
 pub enum ProtocolType {
@@ -24,18 +24,22 @@ pub enum ProtocolType {
 }
 
 #[derive(Debug, Clone)]
-pub struct ServiceMetadata {
+pub struct EndpointMetadata {
     address: Uri,
     protocol_type: ProtocolType,
 }
 
-impl ServiceMetadata {
+impl EndpointMetadata {
     pub fn new(address: Uri, protocol_type: ProtocolType) -> Self {
         Self {
             address,
             protocol_type,
         }
     }
+}
+
+pub trait ServiceEndpointRegistry {
+    fn resolve_endpoint(&self, service_name: &str) -> Option<EndpointMetadata>;
 }
 
 // --- Journal Reader

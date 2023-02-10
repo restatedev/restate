@@ -1,5 +1,5 @@
 use super::*;
-use crate::invocation_task::{InvocationEntry, InvocationTaskResult};
+use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use common::types::PartitionLeaderEpoch;
 use common::types::{EntryIndex, PartitionLeaderEpoch};
 use futures::stream;
@@ -153,55 +153,60 @@ enum OtherInputCommand {
 
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct Invoker<Codec, JournalReader> {
+pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     resume_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     other_input_rx: mpsc::UnboundedReceiver<Input<OtherInputCommand>>,
 
     state_machine_coordinator: state_machine_coordinator::InvocationStateMachineCoordinator,
 
-    // used for constructing the invoker sender
+    // Used for constructing the invoker sender
     invoke_input_tx: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
     resume_input_tx: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
     other_input_tx: mpsc::UnboundedSender<Input<OtherInputCommand>>,
 
     // Service endpoints registry
-    endpoints: HashMap<String, (ProtocolType, Uri)>,
+    service_endpoint_registry: ServiceEndpointRegistry,
 
-    // Channels to communicate between internal channels
-    streams_entry_tx: mpsc::UnboundedSender<InvocationEntry>,
-    streams_entry_rx: mpsc::UnboundedReceiver<InvocationEntry>,
+    // Channel to communicate with invocation tasks
+    invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+    invocation_tasks_rx: mpsc::UnboundedReceiver<InvocationTaskOutput>,
 
     // Set of stream coroutines
-    invocation_tasks: JoinSet<InvocationTaskResult>,
+    invocation_tasks: JoinSet<()>,
 
     journal_reader: JournalReader,
 
     _codec: PhantomData<Codec>,
 }
 
-impl<C, JR: JournalReader> Invoker<C, JR> {
-    pub fn new(journal_reader: JR) -> Self {
+impl<C, JR, JS, SER> Invoker<C, JR, SER>
+where
+    JR: JournalReader<JournalStream = JS> + Clone + Send + 'static,
+    JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+    SER: ServiceEndpointRegistry,
+{
+    pub fn new(journal_reader: JR, service_endpoint_registry: SER) -> Self {
         let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
         let (resume_input_tx, resume_input_rx) = mpsc::unbounded_channel();
         let (other_input_tx, other_input_rx) = mpsc::unbounded_channel();
 
-        let (streams_entry_tx, streams_entry_rx) = mpsc::unbounded_channel();
+        let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
         Invoker {
             invoke_input_rx,
             resume_input_rx,
             other_input_rx,
             state_machine_coordinator: Default::default(),
-            journal_reader,
             invoke_input_tx,
             resume_input_tx,
             other_input_tx,
-            _codec: Default::default(),
-            endpoints: Default::default(),
-            streams_entry_tx,
-            streams_entry_rx,
+            service_endpoint_registry,
+            invocation_tasks_tx,
+            invocation_tasks_rx,
             invocation_tasks: Default::default(),
+            journal_reader,
+            _codec: Default::default(),
         }
     }
 
@@ -219,9 +224,9 @@ impl<C, JR: JournalReader> Invoker<C, JR> {
             mut resume_input_rx,
             mut other_input_rx,
             mut state_machine_coordinator,
-            endpoints,
-            streams_entry_tx,
-            mut streams_entry_rx,
+            service_endpoint_registry,
+            invocation_tasks_tx,
+            mut invocation_tasks_rx,
             mut invocation_tasks,
             journal_reader,
             ..
@@ -242,10 +247,14 @@ impl<C, JR: JournalReader> Invoker<C, JR> {
             tokio::select! {
                 Some(invoke_input_message) = invoke_stream.next() => {
                     state_machine_coordinator
-                        .resolve_partition(invoke_input_message.partition)
-                        .expect("An Invoke was sent with an unregistered partition. \
-                                This is not supposed to happen, and it's probably a bug.")
-                        .handle_invoke(invoke_input_message.inner);
+                        .must_resolve_partition(invoke_input_message.partition)
+                        .handle_invoke(
+                            invoke_input_message.inner,
+                            &journal_reader,
+                            &service_endpoint_registry,
+                            &mut invocation_tasks,
+                            &invocation_tasks_tx
+                        );
                 },
                 Some(other_input_message) = other_input_rx.recv() => {
                     match other_input_message {
@@ -253,7 +262,7 @@ impl<C, JR: JournalReader> Invoker<C, JR> {
                             state_machine_coordinator.register_partition(partition, sender);
                         },
                         Input { partition, inner: OtherInputCommand::AbortAllPartition } => {
-                            if let Some(partition_state_machine) = state_machine_coordinator.resolve_partition(partition) {
+                            if let Some(partition_state_machine) = state_machine_coordinator.remove_partition(partition) {
                                 partition_state_machine.handle_abort_all_partition();
                             } else {
                                 // This is safe to ignore
@@ -261,36 +270,45 @@ impl<C, JR: JournalReader> Invoker<C, JR> {
                         }
                         Input { partition, inner: OtherInputCommand::Completion { service_invocation_id, journal_revision, completion } } => {
                             state_machine_coordinator
-                                .resolve_partition(partition)
-                                .expect("A Completion was sent with an unregistered partition. \
-                                        This is not supposed to happen, and it's probably a bug.")
+                                .must_resolve_partition(partition)
                                 .handle_completion(service_invocation_id, journal_revision, completion);
                         },
-                        Input { partition, inner: OtherInputCommand::StoredEntryAck { service_invocation_id, journal_revision, entry_index } } => {
+                        Input { partition, inner: OtherInputCommand::StoredEntryAck { service_invocation_id, entry_index, .. } } => {
                             state_machine_coordinator
-                                .resolve_partition(partition)
-                                .expect("A StoredEntryAck was sent with an unregistered partition. \
-                                        This is not supposed to happen, and it's probably a bug.")
-                                .handle_stored_entry_ack(service_invocation_id, journal_revision, entry_index);
+                                .must_resolve_partition(partition)
+                                .handle_stored_entry_ack(service_invocation_id, entry_index);
                         }
                     }
                 },
-                Some(new_entry) = streams_entry_rx.recv() => {
-                    state_machine_coordinator
-                        .resolve_partition(new_entry.partition)
-                        .expect("A new entry was sent with an unregistered partition. \
-                                This is not supposed to happen, and it's probably a bug.")
-                        .handle_new_entry(new_entry);
+                Some(invocation_task_msg) = invocation_tasks_rx.recv() => {
+                    let partition_state_machine =
+                        if let Some(psm) = state_machine_coordinator.resolve_partition(invocation_task_msg.partition) {
+                            psm
+                        } else {
+                            // We can skip it as it means the invocation was aborted
+                            continue
+                        };
+
+                    match invocation_task_msg.inner {
+                        InvocationTaskOutputInner::NewEntry {entry_index, raw_entry} => {
+                            partition_state_machine.handle_new_entry(
+                                invocation_task_msg.service_invocation_id,
+                                entry_index,
+                                raw_entry
+                            )
+                        },
+                        InvocationTaskOutputInner::Result {last_journal_revision, last_journal_index, kind} => {
+                            partition_state_machine.handle_invocation_task_result(
+                                invocation_task_msg.service_invocation_id,
+                                last_journal_index,
+                                last_journal_revision,
+                                kind
+                            )
+                        }
+                    };
                 },
                 Some(invocation_task_result) = invocation_tasks.join_next() => {
                     match invocation_task_result {
-                        Ok(result) => {
-                            state_machine_coordinator
-                                .resolve_partition(result.partition)
-                                .expect("An invocation task result was sent with an unregistered partition. \
-                                        This is not supposed to happen, and it's probably a bug.")
-                                .handle_invocation_task_result(result);
-                        }
                         Err(err) => {
                             // Propagate panics coming from invocation tasks.
                             if err.is_panic() {
@@ -298,7 +316,8 @@ impl<C, JR: JournalReader> Invoker<C, JR> {
                             }
                             // Other errors are cancellations caused by us (e.g. after AbortAllPartition),
                             // hence we can ignore them.
-                        }
+                        },
+                        _ => {}
                     }
                 }
                 _ = &mut shutdown => {
@@ -312,6 +331,13 @@ impl<C, JR: JournalReader> Invoker<C, JR> {
 
 mod state_machine_coordinator {
     use super::*;
+    use crate::invocation_task::{InvocationTask, InvocationTaskResultKind};
+    use crate::invoker::invocation_state_machine::InvocationStateMachine;
+    use tracing::warn;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("Cannot find service {0} in the service endpoint registry")]
+    pub struct CannotResolveEndpoint(String);
 
     #[derive(Debug, Default)]
     pub(super) struct InvocationStateMachineCoordinator {
@@ -325,6 +351,25 @@ mod state_machine_coordinator {
             partition: PartitionLeaderEpoch,
         ) -> Option<&mut PartitionInvocationStateMachineCoordinator> {
             self.partitions.get_mut(&partition)
+        }
+
+        #[inline]
+        pub(super) fn must_resolve_partition(
+            &mut self,
+            partition: PartitionLeaderEpoch,
+        ) -> &mut PartitionInvocationStateMachineCoordinator {
+            self.partitions.get_mut(&partition).expect(
+                "An event has been triggered for an unknown partition. \
+                This is not supposed to happen, and it's probably a bug.",
+            )
+        }
+
+        #[inline]
+        pub(super) fn remove_partition(
+            &mut self,
+            partition: PartitionLeaderEpoch,
+        ) -> Option<PartitionInvocationStateMachineCoordinator> {
+            self.partitions.remove(&partition)
         }
 
         #[inline]
@@ -343,26 +388,75 @@ mod state_machine_coordinator {
     #[derive(Debug)]
     pub(super) struct PartitionInvocationStateMachineCoordinator {
         partition: PartitionLeaderEpoch,
-        sender: mpsc::Sender<OutputEffect>,
-        invocation_state_machines:
-            HashMap<ServiceInvocationId, invocation_state_machine::InvocationStateMachine>,
+        output_tx: mpsc::Sender<OutputEffect>,
+        invocation_state_machines: HashMap<ServiceInvocationId, InvocationStateMachine>,
     }
 
     impl PartitionInvocationStateMachineCoordinator {
         fn new(partition: PartitionLeaderEpoch, sender: mpsc::Sender<OutputEffect>) -> Self {
             Self {
                 partition,
-                sender,
+                output_tx: sender,
                 invocation_state_machines: Default::default(),
             }
         }
 
-        pub(super) fn handle_invoke(&mut self, invoke_input_cmd: InvokeInputCommand) {
-            unimplemented!()
+        pub(super) fn handle_invoke<JR, JS, SER>(
+            &mut self,
+            invoke_input_cmd: InvokeInputCommand,
+            journal_reader: &JR,
+            service_endpoint_registry: &SER,
+            invocation_tasks: &mut JoinSet<()>,
+            invocation_tasks_tx: &mpsc::UnboundedSender<InvocationTaskOutput>,
+        ) where
+            JR: JournalReader<JournalStream = JS> + Clone + Send + 'static,
+            JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+            SER: ServiceEndpointRegistry,
+        {
+            let service_invocation_id = invoke_input_cmd.service_invocation_id;
+            debug_assert!(!self
+                .invocation_state_machines
+                .contains_key(&service_invocation_id));
+
+            // Resolve metadata
+            let metadata = service_endpoint_registry
+                .resolve_endpoint(&service_invocation_id.service_id.service_name);
+            if metadata.is_none() {
+                let error = Box::new(CannotResolveEndpoint(
+                    service_invocation_id.service_id.service_name.to_string(),
+                ));
+                // No endpoint metadata can be resolved, we just fail it.
+                let _ = self.output_tx.send(OutputEffect::Failed {
+                    service_invocation_id,
+                    error,
+                });
+                return;
+            }
+
+            // Start the InvocationTask
+            let (completions_tx, completions_rx) = mpsc::unbounded_channel();
+            let abort_handle = invocation_tasks.spawn(
+                InvocationTask::new(
+                    self.partition,
+                    service_invocation_id.clone(),
+                    0,
+                    metadata.unwrap(),
+                    journal_reader.clone(),
+                    invocation_tasks_tx.clone(),
+                    Some(completions_rx),
+                )
+                .run(),
+            );
+
+            // Register the state machine
+            self.invocation_state_machines.insert(
+                service_invocation_id,
+                InvocationStateMachine::start(abort_handle, Some(completions_tx)),
+            );
         }
 
-        pub(super) fn handle_abort_all_partition(&mut self) {
-            for (_, sm) in self.invocation_state_machines.iter_mut() {
+        pub(super) fn handle_abort_all_partition(&self) {
+            for sm in self.invocation_state_machines.values() {
                 sm.abort()
             }
         }
@@ -373,68 +467,200 @@ mod state_machine_coordinator {
             journal_revision: JournalRevision,
             completion: Completion,
         ) {
-            unimplemented!()
+            if let Some(sm) = self
+                .invocation_state_machines
+                .get_mut(&service_invocation_id)
+            {
+                sm.notify_completion(journal_revision, completion);
+            }
+            // If no state machine is registered, the PP will send a new invoke
         }
 
         pub(super) fn handle_stored_entry_ack(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            journal_revision: JournalRevision,
             entry_index: EntryIndex,
         ) {
-            unimplemented!()
+            if let Some(sm) = self
+                .invocation_state_machines
+                .get_mut(&service_invocation_id)
+            {
+                sm.notify_stored_ack(entry_index);
+            }
+            // If no state machine is registered, the PP will send a new invoke
         }
 
-        pub(super) fn handle_new_entry(&mut self, new_entry: InvocationEntry) {
-            unimplemented!()
+        pub(super) fn handle_new_entry(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            entry_index: EntryIndex,
+            entry: RawEntry,
+        ) {
+            if let Some(sm) = self
+                .invocation_state_machines
+                .get_mut(&service_invocation_id)
+            {
+                sm.notify_new_entry(&entry);
+                let _ = self.output_tx.send(OutputEffect::JournalEntry {
+                    service_invocation_id,
+                    entry_index,
+                    entry,
+                });
+            }
+            // If no state machine, this might be an entry for an aborted invocation.
         }
 
         pub(super) fn handle_invocation_task_result(
             &mut self,
-            invocation_task_result: InvocationTaskResult,
+            service_invocation_id: ServiceInvocationId,
+            last_journal_index: EntryIndex,
+            last_journal_revision: JournalRevision,
+            kind: InvocationTaskResultKind,
         ) {
-            unimplemented!()
+            if let Some(mut sm) = self
+                .invocation_state_machines
+                .remove(&service_invocation_id)
+            {
+                match kind {
+                    InvocationTaskResultKind::Ok => {
+                        let output_effect = if sm.ending() {
+                            OutputEffect::End {
+                                service_invocation_id,
+                            }
+                        } else {
+                            OutputEffect::Suspended {
+                                service_invocation_id,
+                                journal_revision: last_journal_revision,
+                            }
+                        };
+
+                        let _ = self.output_tx.send(output_effect);
+                    }
+                    error_kind => {
+                        warn!(
+                            restate.sid = %service_invocation_id,
+                            "Error when executing the invocation: {}",
+                            error_kind
+                        );
+
+                        if let Some(_next_retry_timer_duration) =
+                            sm.handle_task_error(last_journal_index)
+                        {
+                            self.invocation_state_machines
+                                .insert(service_invocation_id, sm);
+                            unimplemented!("Implement timer")
+                        } else {
+                            let _ = self.output_tx.send(OutputEffect::Failed {
+                                service_invocation_id,
+                                error: Box::new(error_kind),
+                            });
+                        }
+                    }
+                }
+            }
+            // If no state machine, this might be a result for an aborted invocation.
         }
     }
 }
 
 mod invocation_state_machine {
     use super::*;
+    use std::time::Duration;
 
-    use hyper::Uri;
-
-    use journal::Completion;
+    use journal::{Completion, EntryType};
     use tokio::sync::mpsc;
     use tokio::task::AbortHandle;
 
     /// Component encapsulating the business logic of the invocation state machine
     #[derive(Debug)]
-    pub(super) struct InvocationStateMachine {
-        // Last index seen from the Service Endpoint
-        last_seen_index: EntryIndex,
-        // Last revision received from the PP
-        last_journal_revision: JournalRevision,
+    pub(super) struct InvocationStateMachine(TaskState, InvocationState);
 
-        state: InnerState,
+    #[derive(Debug)]
+    enum TaskState {
+        Running(AbortHandle),
+        NotRunning,
     }
 
     #[derive(Debug)]
-    enum InnerState {
+    enum InvocationState {
         // If there is no completion channel, then the stream is open in request/response mode
         InFlight {
-            completions_tx: Option<mpsc::UnboundedSender<Completion>>,
-            task_handle: AbortHandle,
+            // This can be none if the invocation task is request/response
+            completions_tx: Option<mpsc::UnboundedSender<(JournalRevision, Completion)>>,
         },
 
-        // We remain in this state until the JoinHandle of the tokio's task is completed.
+        // We remain in this state until we get the task result.
+        // We enter this state as soon as we see an OutpuStreamEntry.
         WaitingClose,
+
+        WaitingRetry {
+            // TODO implement timer
+            index_waiting_on_ack: EntryIndex,
+        },
     }
 
     impl InvocationStateMachine {
+        pub(super) fn start(
+            abort_handle: AbortHandle,
+            completions_tx: Option<mpsc::UnboundedSender<(JournalRevision, Completion)>>,
+        ) -> Self {
+            Self(
+                TaskState::Running(abort_handle),
+                InvocationState::InFlight { completions_tx },
+            )
+        }
+
         pub(super) fn abort(&self) {
-            if let InnerState::InFlight { task_handle, .. } = &self.state {
-                task_handle.abort()
+            match &self.0 {
+                TaskState::Running(task_handle) => task_handle.abort(),
+                _ => {}
             }
+        }
+
+        pub(super) fn notify_new_entry(&mut self, raw_entry: &RawEntry) {
+            if raw_entry.entry_type() == EntryType::OutputStream {
+                debug_assert!(matches!(&self.0, TaskState::Running(_)));
+
+                self.1 = InvocationState::WaitingClose
+            }
+        }
+
+        pub(super) fn notify_stored_ack(&mut self, entry_index: EntryIndex) {
+            if let InvocationState::WaitingRetry {
+                index_waiting_on_ack,
+            } = &mut self.1
+            {
+                *index_waiting_on_ack = entry_index
+            }
+        }
+
+        pub(super) fn notify_completion(
+            &mut self,
+            journal_revision: JournalRevision,
+            completion: Completion,
+        ) {
+            if let InvocationState::InFlight {
+                completions_tx: Some(sender),
+            } = &mut self.1
+            {
+                let _ = sender.send((journal_revision, completion));
+            }
+        }
+
+        /// Returns Some() with the timer for the next retry, otherwise None if retry limit exhausted
+        pub(super) fn handle_task_error(&mut self, entry_index: EntryIndex) -> Option<Duration> {
+            debug_assert!(matches!(&self.0, TaskState::Running(_)));
+
+            self.0 = TaskState::NotRunning;
+            self.1 = InvocationState::WaitingRetry {
+                index_waiting_on_ack: entry_index,
+            };
+            // TODO implement retry policy
+            return None;
+        }
+
+        pub(super) fn ending(&self) -> bool {
+            matches!(self.1, InvocationState::WaitingClose)
         }
     }
 }

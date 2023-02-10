@@ -1,26 +1,18 @@
 use std::error::Error;
 
-use crate::JournalReader;
+use crate::{EndpointMetadata, JournalReader};
 use common::types::{PartitionLeaderEpoch, ServiceInvocationId};
 use futures::stream::Stream;
 use hyper::http;
 use journal::raw::RawEntry;
-use journal::{Completion, EntryIndex};
+use journal::{Completion, EntryIndex, JournalRevision};
 use tokio::sync::mpsc;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum InvocationTaskResultKind {
-    #[error("request channel was closed")]
-    RequestTxClosed,
-    #[error("response channel was closed")]
-    ResponseRxClosed,
-    #[error("Output tx was closed")]
-    OutputTxClosed,
-    #[error("input rx was closed")]
-    InputRxClosed,
+    #[error("no error")]
+    Ok,
 
-    #[error("suspended: {0:?}")]
-    Suspended(Vec<u32>),
     #[error("unexpected http status code: {0}")]
     UnexpectedResponse(http::StatusCode),
     #[error("other hyper error: {0}")]
@@ -56,45 +48,49 @@ fn h2_reason(err: &hyper::Error) -> h2::Reason {
 impl From<hyper::Error> for InvocationTaskResultKind {
     fn from(err: hyper::Error) -> Self {
         if h2_reason(&err) == h2::Reason::NO_ERROR {
-            InvocationTaskResultKind::ResponseRxClosed
+            InvocationTaskResultKind::Ok
         } else {
             InvocationTaskResultKind::Network(err)
         }
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct InvocationTaskResult {
-    // Info to propagate to upper layer
+pub(crate) struct InvocationTaskOutput {
     pub(crate) partition: PartitionLeaderEpoch,
     pub(crate) service_invocation_id: ServiceInvocationId,
-    #[allow(unused)]
-    pub(crate) used_protocol_version: u16,
-
-    pub(crate) kind: InvocationTaskResultKind,
+    pub(crate) inner: InvocationTaskOutputInner,
 }
 
-#[derive(Debug)]
-pub(crate) struct InvocationEntry {
-    // Info to propagate to upper layer
-    pub(crate) partition: PartitionLeaderEpoch,
-    pub(crate) service_invocation_id: ServiceInvocationId,
+pub(crate) enum InvocationTaskOutputInner {
+    Result {
+        last_journal_index: EntryIndex,
+        last_journal_revision: JournalRevision,
 
-    pub(crate) entry_index: EntryIndex,
-    pub(crate) raw_entry: RawEntry,
+        kind: InvocationTaskResultKind,
+    },
+    NewEntry {
+        entry_index: EntryIndex,
+        raw_entry: RawEntry,
+    },
 }
 
 /// Represents an open invocation stream
 pub(crate) struct InvocationTask<JR> {
     // Connection params
     partition: PartitionLeaderEpoch,
-    sid: ServiceInvocationId,
+    service_invocation_id: ServiceInvocationId,
     protocol_version: u16,
+    service_metadata: EndpointMetadata,
+
+    journal_index: EntryIndex,
+    // Last revision received from the partition processor.
+    // It is updated every time a completion is sent on the wire
+    last_journal_revision: JournalRevision,
 
     // Invoker tx/rx
     journal_reader: JR,
-    invoker_tx: mpsc::UnboundedSender<InvocationEntry>,
-    invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
+    invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+    invoker_rx: Option<mpsc::UnboundedReceiver<(JournalRevision, Completion)>>,
 }
 
 impl<JR, JS> InvocationTask<JR>
@@ -106,14 +102,18 @@ where
         partition: PartitionLeaderEpoch,
         sid: ServiceInvocationId,
         protocol_version: u16,
+        service_metadata: EndpointMetadata,
         journal_reader: JR,
-        invoker_tx: mpsc::UnboundedSender<InvocationEntry>,
-        invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
+        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_rx: Option<mpsc::UnboundedReceiver<(JournalRevision, Completion)>>,
     ) -> Self {
         Self {
             partition,
-            sid,
+            service_invocation_id: sid,
             protocol_version,
+            service_metadata,
+            journal_index: 0,
+            last_journal_revision: 0,
             journal_reader,
             invoker_tx,
             invoker_rx,
@@ -121,8 +121,8 @@ where
     }
 
     /// Loop opening the request to service endpoint and consuming the stream
-    #[tracing::instrument(name = "run", level = "trace", skip_all, fields(restate.sid = % self.sid))]
-    pub async fn run(self) -> InvocationTaskResult {
+    #[tracing::instrument(name = "run", level = "trace", skip_all, fields(restate.sid = %self.service_invocation_id))]
+    pub async fn run(self) {
         unimplemented!("Implement this")
     }
 }
