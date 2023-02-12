@@ -49,6 +49,7 @@ common = { path = "src/common" }
 consensus = { path = "src/consensus" }
 ingress_common = { path = "src/ingress_common" }
 ingress_grpc = { path = "src/ingress_grpc" }
+queue = { path = "src/queue"}
 invoker = { path = "src/invoker" }
 journal = { path = "src/journal" }
 meta = { path = "src/meta" }
