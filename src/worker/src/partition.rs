@@ -17,8 +17,10 @@ use tracing::{debug, info};
 
 mod effects;
 mod state_machine;
+mod storage;
 
 use crate::partition::effects::{ActuatorMessage, Collector, Effect, Effects, OutboxMessage};
+use crate::partition::storage::PartitionStorage;
 pub(crate) use state_machine::Command;
 use storage_api::WriteTransaction;
 use storage_rocksdb::RocksDBWriteTransaction;
@@ -113,6 +115,8 @@ where
 
         let mut leadership_state = LeadershipState::follower(partition_id, invoker_tx);
 
+        let partition_storage = PartitionStorage::new(partition_id, &storage);
+
         loop {
             let mut actuator_stream = leadership_state.actuator_stream();
 
@@ -122,7 +126,7 @@ where
                         match command {
                             consensus::Command::Apply(fsm_command) => {
                                 effects.clear();
-                                state_machine.on_apply(fsm_command, &mut effects, &storage).expect("State machine application must not fail");
+                                state_machine.on_apply(fsm_command, &mut effects, &partition_storage).expect("State machine application must not fail");
 
                                 let mut message_collector = leadership_state.message_collector();
 
