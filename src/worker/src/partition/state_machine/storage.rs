@@ -6,6 +6,11 @@ use storage_api::StorageReader;
 
 pub(super) struct StorageReaderHelper {}
 
+pub(super) struct JournalStatus {
+    pub(super) revision: JournalRevision,
+    pub(super) length: u32,
+}
+
 impl StorageReaderHelper {
     pub(super) fn new<S: StorageReader>(_storage: &S) -> Self {
         StorageReaderHelper {}
@@ -19,12 +24,11 @@ impl StorageReaderHelper {
         None
     }
 
-    pub(super) fn get_journal_revision(&self, service_id: &ServiceId) -> JournalRevision {
-        0
-    }
-
-    pub(super) fn get_journal_length(&self, service_id: &ServiceId) -> u32 {
-        0
+    pub(super) fn get_journal_status(&self, service_id: &ServiceId) -> JournalStatus {
+        JournalStatus {
+            revision: 0,
+            length: 0,
+        }
     }
 
     pub fn scan_invoked_invocations(&self) -> impl Stream<Item = ServiceInvocationId> {

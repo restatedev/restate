@@ -146,8 +146,9 @@ where
 
                 match kind {
                     invoker::Kind::JournalEntry { entry_index, entry } => {
-                        let journal_length =
-                            storage.get_journal_length(&service_invocation_id.service_id);
+                        let journal_length = storage
+                            .get_journal_status(&service_invocation_id.service_id)
+                            .length;
 
                         debug_assert_eq!(
                             entry_index,
@@ -238,8 +239,9 @@ where
                     invoker::Kind::Suspended {
                         journal_revision: expected_journal_revision,
                     } => {
-                        let actual_journal_revision =
-                            storage.get_journal_revision(&service_invocation_id.service_id);
+                        let actual_journal_revision = storage
+                            .get_journal_status(&service_invocation_id.service_id)
+                            .revision;
 
                         if actual_journal_revision > expected_journal_revision {
                             effects.resume_service(service_invocation_id);
