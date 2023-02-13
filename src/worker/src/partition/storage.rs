@@ -1,3 +1,4 @@
+use futures::future::BoxFuture;
 use crate::partition::effects::{Committable, OutboxMessage, StateStorage};
 use crate::partition::state_machine::{JournalStatus, StateReader};
 use crate::partition::InvocationStatus;
@@ -35,18 +36,21 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
     fn get_invocation_status(
         &self,
         _service_id: &ServiceId,
-    ) -> Result<InvocationStatus, Self::Error> {
+    ) -> BoxFuture<Result<InvocationStatus, Self::Error>> {
         todo!()
     }
 
     fn peek_inbox(
         &self,
         _service_id: &ServiceId,
-    ) -> Result<Option<(u64, ServiceInvocation)>, Self::Error> {
+    ) -> BoxFuture<Result<Option<(u64, ServiceInvocation)>, Self::Error>> {
         todo!()
     }
 
-    fn get_journal_status(&self, _service_id: &ServiceId) -> Result<JournalStatus, Self::Error> {
+    fn get_journal_status(
+        &self,
+        _service_id: &ServiceId,
+    ) -> BoxFuture<Result<JournalStatus, Self::Error>> {
         todo!()
     }
 }

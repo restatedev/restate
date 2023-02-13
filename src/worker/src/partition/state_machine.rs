@@ -8,6 +8,7 @@ use journal::{
 };
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use futures::future::BoxFuture;
 use tracing::debug;
 
 use crate::partition::effects::{Effects, OutboxMessage};
@@ -43,20 +44,28 @@ pub(super) struct JournalStatus {
     pub(super) length: u32,
 }
 
+pub type InboxEntry = (u64, ServiceInvocation);
+
 pub(super) trait StateReader {
     type Error;
 
+    // TODO: Replace with async trait or proper future
     fn get_invocation_status(
         &self,
         service_id: &ServiceId,
-    ) -> Result<InvocationStatus, Self::Error>;
+    ) -> BoxFuture<Result<InvocationStatus, Self::Error>>;
 
+    // TODO: Replace with async trait or proper future
     fn peek_inbox(
         &self,
         service_id: &ServiceId,
-    ) -> Result<Option<(u64, ServiceInvocation)>, Self::Error>;
+    ) -> BoxFuture<Result<Option<InboxEntry>, Self::Error>>;
 
-    fn get_journal_status(&self, service_id: &ServiceId) -> Result<JournalStatus, Self::Error>;
+    // TODO: Replace with async trait or proper future
+    fn get_journal_status(
+        &self,
+        service_id: &ServiceId,
+    ) -> BoxFuture<Result<JournalStatus, Self::Error>>;
 }
 
 #[derive(Debug, Default)]
@@ -122,7 +131,7 @@ where
     ///
     /// We pass in the effects message as a mutable borrow to be able to reuse it across
     /// invocations of this methods which lies on the hot path.
-    pub(super) fn on_apply<State: StateReader>(
+    pub(super) async fn on_apply<State: StateReader>(
         &mut self,
         command: Command,
         effects: &mut Effects,
@@ -134,6 +143,7 @@ where
             Command::Invocation(service_invocation) => {
                 let status = state
                     .get_invocation_status(&service_invocation.id.service_id)
+                    .await
                     .map_err(Error::State)?;
 
                 if status == InvocationStatus::Free {
@@ -153,10 +163,10 @@ where
                     result: result.into(),
                 };
 
-                Self::handle_completion(id, completion, state, effects)?;
+                Self::handle_completion(id, completion, state, effects).await?;
             }
             Command::Invoker(effect) => {
-                self.on_invoker_effect(effects, state, effect)?;
+                self.on_invoker_effect(effects, state, effect).await?;
             }
             Command::OutboxTruncation(index) => {
                 effects.truncate_outbox(index);
@@ -176,14 +186,14 @@ where
                     entry_index,
                     result: CompletionResult::Success(Bytes::new()),
                 };
-                Self::handle_completion(service_invocation_id, completion, state, effects)?;
+                Self::handle_completion(service_invocation_id, completion, state, effects).await?;
             }
         }
 
         Ok(())
     }
 
-    fn on_invoker_effect<State: StateReader>(
+    async fn on_invoker_effect<State: StateReader>(
         &mut self,
         effects: &mut Effects,
         state: &State,
@@ -194,6 +204,7 @@ where
     ) -> Result<(), Error<State::Error, Codec::Error>> {
         let status = state
             .get_invocation_status(&service_invocation_id.service_id)
+            .await
             .map_err(Error::State)?;
 
         debug_assert!(
@@ -212,13 +223,14 @@ where
                     service_invocation_id,
                     entry_index,
                     entry,
-                )?;
+                ).await?;
             }
             Kind::Suspended {
                 journal_revision: expected_journal_revision,
             } => {
                 let actual_journal_revision = state
                     .get_journal_status(&service_invocation_id.service_id)
+                    .await
                     .map_err(Error::State)?
                     .revision;
 
@@ -234,7 +246,7 @@ where
                     CompletionResult::Success(Bytes::new()),
                     state,
                     effects,
-                )?;
+                ).await?;
             }
             Kind::Failed { error } => {
                 self.complete_invocation(
@@ -242,14 +254,14 @@ where
                     CompletionResult::Failure(502, error.to_string().into()),
                     state,
                     effects,
-                )?;
+                ).await?;
             }
         }
 
         Ok(())
     }
 
-    fn handle_journal_entry<State: StateReader>(
+    async fn handle_journal_entry<State: StateReader>(
         &mut self,
         effects: &mut Effects,
         state: &State,
@@ -259,6 +271,7 @@ where
     ) -> Result<(), Error<State::Error, Codec::Error>> {
         let journal_length = state
             .get_journal_status(&service_invocation_id.service_id)
+            .await
             .map_err(Error::State)?
             .length;
 
@@ -344,7 +357,7 @@ where
         Ok(())
     }
 
-    fn handle_completion<State: StateReader>(
+    async fn handle_completion<State: StateReader>(
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
         state: &State,
@@ -352,6 +365,7 @@ where
     ) -> Result<(), Error<State::Error, Codec::Error>> {
         let status = state
             .get_invocation_status(&service_invocation_id.service_id)
+            .await
             .map_err(Error::State)?;
 
         match status {
@@ -387,7 +401,7 @@ where
         Ok(())
     }
 
-    fn complete_invocation<State: StateReader>(
+    async fn complete_invocation<State: StateReader>(
         &mut self,
         service_invocation_id: ServiceInvocationId,
         completion_result: CompletionResult,
@@ -398,6 +412,7 @@ where
 
         if let Some((inbox_sequence_number, service_invocation)) = state
             .peek_inbox(&service_invocation_id.service_id)
+            .await
             .map_err(Error::State)?
         {
             effects.pop_inbox(service_invocation_id.service_id, inbox_sequence_number);

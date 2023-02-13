@@ -119,7 +119,7 @@ where
                         match command {
                             consensus::Command::Apply(fsm_command) => {
                                 effects.clear();
-                                state_machine.on_apply(fsm_command, &mut effects, &partition_storage).expect("State machine application must not fail");
+                                state_machine.on_apply(fsm_command, &mut effects, &partition_storage).await.expect("State machine application must not fail");
 
                                 let message_collector = leadership_state.message_collector();
 
