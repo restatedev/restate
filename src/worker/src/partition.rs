@@ -19,7 +19,9 @@ mod effects;
 mod state_machine;
 mod storage;
 
-use crate::partition::effects::{ActuatorMessage, Collector, Effect, Effects, OutboxMessage};
+use crate::partition::effects::{
+    ActuatorMessage, Effect, Effects, Interpreter, MessageCollector, OutboxMessage,
+};
 use crate::partition::storage::PartitionStorage;
 pub(crate) use state_machine::Command;
 use storage_api::WriteTransaction;
@@ -115,7 +117,7 @@ where
 
         let mut leadership_state = LeadershipState::follower(partition_id, invoker_tx);
 
-        let partition_storage = PartitionStorage::new(partition_id, &storage);
+        let mut partition_storage = PartitionStorage::new(partition_id, storage);
 
         loop {
             let mut actuator_stream = leadership_state.actuator_stream();
@@ -130,15 +132,15 @@ where
 
                                 let mut message_collector = leadership_state.message_collector();
 
-                                let storage_helper = StorageWriterHelper::new(storage.transaction());
-                                effects::interpret_effects::<<Storage as storage_api::Storage>::WriteTransactionType<'_>, MessageCollector<'_, InvokerInputSender>, RawEntryCodec>(&mut effects, &storage_helper, &mut message_collector).expect("Effect interpreter must not fail");
-                                storage_helper.into_transaction().commit();
+                                let transaction = partition_storage.create_transaction();
+                                let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).expect("Effect interpreter must not fail");
 
+                                let mut message_collector = result.commit();
                                 message_collector.send().await.expect("Actuator message sending must not fail");
                             }
                             consensus::Command::BecomeLeader(leader_epoch) => {
                                 info!(%peer_id, %partition_id, %leader_epoch, "Become leader.");
-                                leadership_state = leadership_state.become_leader(leader_epoch, &storage).await;
+                                leadership_state = leadership_state.become_leader(leader_epoch, &partition_storage).await;
                             }
                             consensus::Command::BecomeFollower => {
                                 info!(%peer_id, %partition_id, "Become follower.");
@@ -182,112 +184,7 @@ pub(crate) enum InvocationStatus {
     Free,
 }
 
-struct StorageWriterHelper<Txn> {
-    transaction: Txn,
-}
-
-impl<Txn> StorageWriterHelper<Txn> {
-    fn new(transaction: Txn) -> Self {
-        Self { transaction }
-    }
-
-    fn into_transaction(self) -> Txn {
-        self.transaction
-    }
-
-    fn write_invocation_status(&self, service_id: &ServiceId, status: &InvocationStatus) {
-        unimplemented!()
-    }
-
-    fn create_journal(&self, service_id: &ServiceId, method_name: impl AsRef<str>) {
-        unimplemented!()
-    }
-
-    fn store_journal_entry(
-        &self,
-        service_id: &ServiceId,
-        entry_index: EntryIndex,
-        raw_entry: RawEntry,
-    ) -> JournalRevision {
-        unimplemented!()
-    }
-
-    fn store_completion_result(
-        &self,
-        service_id: &ServiceId,
-        entry_index: EntryIndex,
-        completion_result: CompletionResult,
-    ) {
-        unimplemented!()
-    }
-
-    fn enqueue_into_inbox(&self, seq_number: u64, service_invocation: ServiceInvocation) {
-        unimplemented!()
-    }
-
-    fn enqueue_into_outbox(&self, seq_number: u64, message: OutboxMessage) {
-        unimplemented!()
-    }
-
-    fn store_inbox_seq_number(&self, seq_number: u64) {
-        unimplemented!()
-    }
-
-    fn store_outbox_seq_number(&self, seq_number: u64) {
-        unimplemented!()
-    }
-
-    fn write_state(&self, service_id: &ServiceId, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
-        unimplemented!()
-    }
-
-    fn clear_state(&self, service_id: &ServiceId, key: impl AsRef<[u8]>) {
-        unimplemented!()
-    }
-
-    fn store_timer(
-        &self,
-        service_invocation_id: &ServiceInvocationId,
-        wake_up_time: u64,
-        entry_index: EntryIndex,
-    ) {
-        unimplemented!()
-    }
-
-    fn delete_timer(&self, service_id: &ServiceId, wake_up_time: u64, entry_index: EntryIndex) {
-        unimplemented!()
-    }
-
-    fn read_completion_result(
-        &self,
-        service_id: &ServiceId,
-        entry_index: EntryIndex,
-    ) -> Option<CompletionResult> {
-        unimplemented!()
-    }
-
-    fn read_journal_entry(
-        &self,
-        service_id: &ServiceId,
-        entry_index: EntryIndex,
-    ) -> Option<RawEntry> {
-        unimplemented!()
-    }
-
-    fn truncate_outbox(&self, outbox_sequence_number: u64) {
-        unimplemented!()
-    }
-
-    fn truncate_inbox(&self, service_id: &ServiceId, inbox_sequence_number: u64) {
-        unimplemented!()
-    }
-
-    fn drop_journal(&self, service_id: &ServiceId) {
-        unimplemented!()
-    }
-}
-
-enum MessageCollector<'a, I> {
+enum ActuatorMessageCollector<'a, I> {
     Active {
         leadership_state: &'a mut LeadershipState<I>,
         messages: Vec<ActuatorMessage>,
@@ -295,29 +192,29 @@ enum MessageCollector<'a, I> {
     Inactive,
 }
 
-impl<'a, I> MessageCollector<'a, I>
+impl<'a, I> ActuatorMessageCollector<'a, I>
 where
     I: InvokerInputSender,
     I::Error: Debug,
 {
     async fn send(self) -> Result<(), I::Error> {
         match self {
-            MessageCollector::Active {
+            ActuatorMessageCollector::Active {
                 leadership_state,
                 messages,
             } => leadership_state.send_actuator_messages(messages).await,
-            MessageCollector::Inactive => Ok(()),
+            ActuatorMessageCollector::Inactive => Ok(()),
         }
     }
 }
 
-impl<'a, I> Collector for MessageCollector<'a, I> {
+impl<'a, I> MessageCollector for ActuatorMessageCollector<'a, I> {
     fn collect(&mut self, message: ActuatorMessage) {
         match self {
-            MessageCollector::Active { messages, .. } => {
+            ActuatorMessageCollector::Active { messages, .. } => {
                 messages.push(message);
             }
-            MessageCollector::Inactive => {}
+            ActuatorMessageCollector::Inactive => {}
         }
     }
 }
@@ -351,14 +248,15 @@ where
     async fn become_leader<S: storage_api::Storage>(
         self,
         leader_epoch: LeaderEpoch,
-        storage: &S,
+        partition_storage: &PartitionStorage<S>,
     ) -> Self {
         if let LeadershipState::Follower { .. } = self {
-            self.unchecked_become_leader(leader_epoch, storage).await
+            self.unchecked_become_leader(leader_epoch, partition_storage)
+                .await
         } else {
             self.become_follower()
                 .await
-                .unchecked_become_leader(leader_epoch, storage)
+                .unchecked_become_leader(leader_epoch, partition_storage)
                 .await
         }
     }
@@ -366,7 +264,7 @@ where
     async fn unchecked_become_leader<S: storage_api::Storage>(
         self,
         leader_epoch: LeaderEpoch,
-        storage: &S,
+        partition_storage: &PartitionStorage<S>,
     ) -> Self {
         if let LeadershipState::Follower {
             partition_id,
@@ -381,7 +279,7 @@ where
                 .await
                 .expect("Invoker should be running");
 
-            let mut invoked_invocations = Self::invoked_invocations(storage);
+            let mut invoked_invocations = partition_storage.scan_invoked_invocations();
 
             while let Some(service_invocation_id) = invoked_invocations.next().await {
                 invoker_tx
@@ -423,10 +321,10 @@ where
         }
     }
 
-    fn message_collector(&mut self) -> MessageCollector<'_, InvokerInputSender> {
+    fn message_collector(&mut self) -> ActuatorMessageCollector<'_, InvokerInputSender> {
         match self {
-            LeadershipState::Follower { .. } => MessageCollector::Inactive,
-            LeadershipState::Leader { .. } => MessageCollector::Active {
+            LeadershipState::Follower { .. } => ActuatorMessageCollector::Inactive,
+            LeadershipState::Leader { .. } => ActuatorMessageCollector::Active {
                 leadership_state: self,
                 messages: Vec::new(),
             },
@@ -502,10 +400,6 @@ where
         }
 
         Ok(())
-    }
-
-    fn invoked_invocations<S>(_storage: &S) -> impl Stream<Item = ServiceInvocationId> {
-        stream::empty()
     }
 }
 

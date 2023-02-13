@@ -10,8 +10,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use tracing::debug;
 
-pub(super) use crate::partition::effects::Effects;
-use crate::partition::effects::OutboxMessage;
+use crate::partition::effects::{Effects, OutboxMessage};
 use crate::partition::InvocationStatus;
 
 #[derive(Debug, thiserror::Error)]
