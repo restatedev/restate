@@ -13,6 +13,7 @@ unlicensed = "deny"
 allow = [
     "MIT",
     "Apache-2.0",
+    "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC"
 ]
@@ -50,6 +51,13 @@ multiple-versions = "deny"
 wildcards = "allow"
 highlight = "all"
 allow = []
+skip = [
+    # It's ok to ignore these dependencies, as they're resolved but we never use them,
+    # since we don't target Windows, nor HermitCore
+    # Also see https://github.com/rust-lang/cargo/issues/1197
+    { name = "windows-sys" },
+    { name = "hermit-abi" },
+]
 deny = [
     # Each entry the name of a crate and a version range. If version is
     # not specified, all versions will be matched.
