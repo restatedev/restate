@@ -32,3 +32,5 @@ service_protocol = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }
+test_utils = { workspace = true }
+tracing-subscriber = { workspace = true }

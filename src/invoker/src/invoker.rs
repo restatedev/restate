@@ -5,12 +5,14 @@ use common::types::{EntryIndex, PartitionLeaderEpoch};
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::panic;
 
 use common::types::PartitionLeaderEpoch;
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
+use journal::raw::RawEntryCodec;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
@@ -26,8 +28,8 @@ pub struct UnboundedInvokerInputSender {
 }
 
 impl InvokerInputSender for UnboundedInvokerInputSender {
-    type Error = ();
-    type Future = futures::future::Ready<Result<(), ()>>;
+    type Error = Infallible;
+    type Future = futures::future::Ready<Result<(), Self::Error>>;
 
     fn invoke(
         &mut self,
@@ -133,6 +135,12 @@ struct Input<I> {
 }
 
 #[derive(Debug)]
+enum InputCommand {
+    Invoke(InvokeInputCommand),
+    Other(OtherInputCommand),
+}
+
+#[derive(Debug)]
 struct InvokeInputCommand {
     service_invocation_id: ServiceInvocationId,
     journal: InvokeInputJournal,
@@ -186,6 +194,7 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
 
 impl<C, JR, JS, SER> Invoker<C, JR, SER>
 where
+    C: RawEntryCodec,
     JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
     JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
     SER: ServiceEndpointRegistry,
@@ -210,10 +219,17 @@ where
             invocation_tasks_rx,
             invocation_tasks: Default::default(),
             journal_reader,
-            _codec: Default::default(),
+            _codec: PhantomData::<C>::default(),
         }
     }
+}
 
+impl<C, JR, JS, SER> Invoker<C, JR, SER>
+where
+    JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+    JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+    SER: ServiceEndpointRegistry,
+{
     pub fn create_sender(&self) -> UnboundedInvokerInputSender {
         UnboundedInvokerInputSender {
             invoke_input: self.invoke_input_tx.clone(),
@@ -242,42 +258,57 @@ where
         // Merge the two invoke and resume streams into a single stream
         let invoke_input_stream = stream::poll_fn(move |cx| invoke_input_rx.poll_recv(cx));
         let resume_input_stream = stream::poll_fn(move |cx| resume_input_rx.poll_recv(cx));
-        let mut invoke_stream =
+        let invoke_stream =
             stream::select_with_strategy(invoke_input_stream, resume_input_stream, |_: &mut ()| {
+                PollNext::Right
+            })
+            .map(|i| Input {
+                partition: i.partition,
+                inner: InputCommand::Invoke(i.inner),
+            });
+
+        // Merge the invoker and other streams
+        let other_input_stream =
+            stream::poll_fn(move |cx| other_input_rx.poll_recv(cx)).map(|i| Input {
+                partition: i.partition,
+                inner: InputCommand::Other(i.inner),
+            });
+        let mut input_stream =
+            stream::select_with_strategy(invoke_stream, other_input_stream, |_: &mut ()| {
                 PollNext::Right
             });
 
         loop {
             tokio::select! {
-                Some(invoke_input_message) = invoke_stream.next() => {
-                    state_machine_coordinator
-                        .must_resolve_partition(invoke_input_message.partition)
-                        .handle_invoke(
-                            invoke_input_message.inner,
-                            &journal_reader,
-                            &service_endpoint_registry,
-                            &mut invocation_tasks,
-                            &invocation_tasks_tx
-                        ).await;
-                },
-                Some(other_input_message) = other_input_rx.recv() => {
-                    match other_input_message {
-                        Input { partition, inner: OtherInputCommand::RegisterPartition(sender) } => {
+                Some(input_message) = input_stream.next() => {
+                    match input_message {
+                        Input { partition, inner: InputCommand::Invoke(invoke_input_command) } => {
+                            state_machine_coordinator
+                                .must_resolve_partition(partition)
+                                .handle_invoke(
+                                    invoke_input_command,
+                                    &journal_reader,
+                                    &service_endpoint_registry,
+                                    &mut invocation_tasks,
+                                    &invocation_tasks_tx
+                                ).await;
+                        },
+                        Input { partition, inner: InputCommand::Other(OtherInputCommand::RegisterPartition(sender)) } => {
                             state_machine_coordinator.register_partition(partition, sender);
                         },
-                        Input { partition, inner: OtherInputCommand::AbortAllPartition } => {
+                        Input { partition, inner: InputCommand::Other(OtherInputCommand::AbortAllPartition) } => {
                             if let Some(mut partition_state_machine) = state_machine_coordinator.remove_partition(partition) {
                                 partition_state_machine.handle_abort_all_partition();
                             } else {
                                 // This is safe to ignore
                             }
                         }
-                        Input { partition, inner: OtherInputCommand::Completion { service_invocation_id, journal_revision, completion } } => {
+                        Input { partition, inner: InputCommand::Other(OtherInputCommand::Completion { service_invocation_id, journal_revision, completion }) } => {
                             state_machine_coordinator
                                 .must_resolve_partition(partition)
                                 .handle_completion(service_invocation_id, journal_revision, completion);
                         },
-                        Input { partition, inner: OtherInputCommand::StoredEntryAck { service_invocation_id, entry_index, .. } } => {
+                        Input { partition, inner: InputCommand::Other(OtherInputCommand::StoredEntryAck { service_invocation_id, entry_index, .. }) } => {
                             state_machine_coordinator
                                 .must_resolve_partition(partition)
                                 .handle_stored_entry_ack(service_invocation_id, entry_index);
@@ -315,7 +346,7 @@ where
                     if let Err(err) = invocation_task_result {
                         // Propagate panics coming from invocation tasks.
                         if err.is_panic() {
-                         panic::resume_unwind(err.into_panic());
+                            panic::resume_unwind(err.into_panic());
                         }
                     }
                     // Other errors are cancellations caused by us (e.g. after AbortAllPartition),
@@ -323,7 +354,8 @@ where
                 }
                 _ = &mut shutdown => {
                     debug!("Shutting down the invoker");
-                    break;
+                    state_machine_coordinator.abort_all();
+                    return;
                 }
             }
         }
@@ -383,6 +415,12 @@ mod state_machine_coordinator {
                 partition,
                 PartitionInvocationStateMachineCoordinator::new(partition, sender),
             );
+        }
+
+        pub(super) fn abort_all(&mut self) {
+            for partition in self.partitions.values_mut() {
+                partition.handle_abort_all_partition();
+            }
         }
     }
 

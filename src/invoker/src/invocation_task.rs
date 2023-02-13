@@ -3,7 +3,7 @@ use std::error::Error;
 
 use bytes::Bytes;
 use common::types::{PartitionLeaderEpoch, ServiceInvocationId};
-use futures::{future, select_biased, stream, FutureExt, Stream, StreamExt};
+use futures::{future, stream, Stream, StreamExt};
 use hyper::body::Sender;
 use hyper::client::HttpConnector;
 use hyper::http::response::Parts;
@@ -15,7 +15,6 @@ use journal::{Completion, EntryIndex, JournalRevision};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
-use tokio::select;
 use tokio::sync::mpsc;
 use tracing::trace;
 
@@ -54,6 +53,16 @@ impl From<hyper::Error> for InvocationTaskResultKind {
             InvocationTaskResultKind::Ok
         } else {
             InvocationTaskResultKind::Network(err)
+        }
+    }
+}
+
+impl From<tokio::task::JoinError> for InvocationTaskResultKind {
+    fn from(err: tokio::task::JoinError) -> Self {
+        if err.is_cancelled() {
+            InvocationTaskResultKind::Ok
+        } else {
+            InvocationTaskResultKind::Other(Box::new(err))
         }
     }
 }
@@ -187,11 +196,11 @@ where
                     .read_journal(&self.service_invocation_id)
                     .await
                     .map_err(|e| InvocationTaskResultKind::JournalReader(Box::new(e)))?;
-                (journal_meta, future::Either::Left(journal_stream.fuse()))
+                (journal_meta, future::Either::Left(journal_stream))
             }
             InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
                 journal_meta,
-                future::Either::Right(stream::iter(journal_items).fuse()),
+                future::Either::Right(stream::iter(journal_items)),
             ),
         };
 
@@ -223,7 +232,8 @@ where
         let (http_response_header, mut http_stream_rx) = http_response.into_parts();
         Self::validate_response(http_response_header)?;
 
-        // If we have the invoker_rx, we can use the bidi stream loop, which both reads the invoker_rx and the http_stream_rx
+        // If we have the invoker_rx, we can use the bidi stream loop,
+        // which both reads the invoker_rx and the http_stream_rx
         if let Some(invoker_rx) = self.invoker_rx.take() {
             self.bidi_stream_loop(&mut http_stream_tx, invoker_rx, &mut http_stream_rx)
                 .await?;
@@ -232,6 +242,8 @@ where
         // We don't have the invoker_rx, so we simply consume the response
         Err(self.response_stream_loop(&mut http_stream_rx).await)
     }
+
+    // --- Loops
 
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
     async fn wait_response_and_replay_end_loop<JournalStream>(
@@ -242,37 +254,31 @@ where
         journal_stream: JournalStream,
     ) -> Result<Response<Body>, InvocationTaskResultKind>
     where
-        JournalStream: Stream<Item = RawEntry> + stream::FusedStream,
+        JournalStream: Stream<Item = RawEntry>,
     {
-        tokio::pin! {
-            let req_fut = client.request(req).fuse();
-            let js = journal_stream;
-        }
+        // This future drives the request initiation,
+        // so we need to spawn it separately to avoid a deadlock when trying to write to the request body.
+        let mut req_fut = tokio::spawn(client.request(req));
+        tokio::pin!(journal_stream);
 
         let mut response = None;
 
         loop {
-            select_biased! {
-                response_res = &mut req_fut => {
+            tokio::select! {
+                response_res = &mut req_fut, if response.is_none() => {
                     response = Some(
-                        response_res?
+                        response_res??
                     );
                 },
-                opt_je = js.next() => {
-                    match opt_je {
-                        Some(je) => {
-                            self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await?;
-                            self.next_journal_index += 1;
-                        },
-                        None => {
-                            trace!("Finished to replay the journal");
-                        }
-                    }
+                Some(je) = journal_stream.next() => {
+                    self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await?;
+                    self.next_journal_index += 1;
                 },
-                complete => break,
+                else => break,
             }
         }
 
+        trace!("Finished to replay the journal");
         Ok(response.unwrap())
     }
 
@@ -284,7 +290,7 @@ where
         http_stream_rx: &mut Body,
     ) -> Result<(), InvocationTaskResultKind> {
         loop {
-            select! {
+            tokio::select! {
                 opt_completion = invoker_rx.recv() => {
                     match opt_completion {
                         Some((journal_revision, completion)) => {

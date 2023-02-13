@@ -55,14 +55,14 @@ impl ServiceEndpointRegistry for HashMap<String, EndpointMetadata> {
 // --- Journal Reader
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JournalMetadata {
-    method: String,
+    pub method: String,
 
     /// Span attached to this invocation.
-    tracing_context: Context,
+    pub tracing_context: Context,
 
-    journal_size: EntryIndex,
+    pub journal_size: EntryIndex,
 }
 
 pub trait JournalReader {
