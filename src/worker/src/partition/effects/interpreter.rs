@@ -12,6 +12,7 @@ pub(crate) struct Error<T>(#[from] T);
 pub(crate) enum ActuatorMessage {
     Invoke(ServiceInvocationId),
     NewOutboxMessage(u64),
+    #[allow(dead_code)]
     RegisterTimer {
         service_invocation_id: ServiceInvocationId,
         wake_up_time: u64,
@@ -123,12 +124,6 @@ pub(crate) struct Interpreter<Codec> {
 }
 
 impl<Codec: RawEntryCodec> Interpreter<Codec> {
-    pub(crate) fn new() -> Self {
-        Self {
-            _codec: Default::default(),
-        }
-    }
-
     pub(crate) fn interpret_effects<S: StateStorage + Committable, C: MessageCollector>(
         effects: &mut Effects,
         state_storage: S,
@@ -362,7 +357,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         collector: &mut C,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        mut raw_entry: RawEntry,
+        raw_entry: RawEntry,
     ) {
         let journal_revision = state_storage.store_journal_entry(
             &service_invocation_id.service_id,
@@ -377,7 +372,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         });
     }
 
-    fn into_raw_entry(input_stream_entry: &PollInputStreamEntry) -> RawEntry {
+    fn into_raw_entry(_input_stream_entry: &PollInputStreamEntry) -> RawEntry {
         todo!()
     }
 }

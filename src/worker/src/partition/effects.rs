@@ -1,15 +1,13 @@
-use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{EntryIndex, Response, ServiceId, ServiceInvocation, ServiceInvocationId};
-use journal::raw::{RawEntry, RawEntryCodec};
-use journal::{Completion, CompletionResult, JournalRevision, PollInputStreamEntry};
+use journal::raw::RawEntry;
+use journal::Completion;
 use std::vec::Drain;
-use storage_api::WriteTransaction;
 
 mod interpreter;
 
 pub(crate) use interpreter::{
-    ActuatorMessage, Committable, InterpretationResult, Interpreter, MessageCollector, StateStorage,
+    ActuatorMessage, Committable, Interpreter, MessageCollector, StateStorage,
 };
 
 #[derive(Debug)]

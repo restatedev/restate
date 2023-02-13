@@ -1,11 +1,6 @@
-use common::types::{
-    EntryIndex, InvocationId, LeaderEpoch, PartitionId, PeerId, ServiceId, ServiceInvocation,
-    ServiceInvocationId,
-};
+use common::types::{InvocationId, LeaderEpoch, PartitionId, PeerId, ServiceInvocationId};
 use futures::{stream, Sink, SinkExt, Stream, StreamExt};
 use invoker::{InvokeInputJournal, InvokerInputSender};
-use journal::raw::{RawEntry, RawEntryCodec};
-use journal::{CompletionResult, Entry, JournalRevision};
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -19,13 +14,9 @@ mod effects;
 mod state_machine;
 mod storage;
 
-use crate::partition::effects::{
-    ActuatorMessage, Effect, Effects, Interpreter, MessageCollector, OutboxMessage,
-};
+use crate::partition::effects::{ActuatorMessage, Effects, Interpreter, MessageCollector};
 use crate::partition::storage::PartitionStorage;
 pub(crate) use state_machine::Command;
-use storage_api::WriteTransaction;
-use storage_rocksdb::RocksDBWriteTransaction;
 
 type StateMachine = state_machine::StateMachine<ProtobufRawEntryCodec>;
 
@@ -106,7 +97,7 @@ where
             command_stream,
             mut state_machine,
             invoker_tx,
-            mut storage,
+            storage,
             proposal_sink,
             ..
         } = self;
@@ -130,12 +121,12 @@ where
                                 effects.clear();
                                 state_machine.on_apply(fsm_command, &mut effects, &partition_storage).expect("State machine application must not fail");
 
-                                let mut message_collector = leadership_state.message_collector();
+                                let message_collector = leadership_state.message_collector();
 
                                 let transaction = partition_storage.create_transaction();
                                 let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).expect("Effect interpreter must not fail");
 
-                                let mut message_collector = result.commit();
+                                let message_collector = result.commit();
                                 message_collector.send().await.expect("Actuator message sending must not fail");
                             }
                             consensus::Command::BecomeLeader(leader_epoch) => {
@@ -351,13 +342,13 @@ where
                         ActuatorMessage::Invoke(service_invocation_id) => {
                             invoker_tx
                                 .invoke(
-                                    (partition_id.clone(), leader_epoch.clone()),
+                                    (*partition_id, *leader_epoch),
                                     service_invocation_id,
                                     InvokeInputJournal::NoCachedJournal,
                                 )
                                 .await?
                         }
-                        ActuatorMessage::NewOutboxMessage(seq_number) => {
+                        ActuatorMessage::NewOutboxMessage(..) => {
                             // ignore for the time being
                         }
                         ActuatorMessage::RegisterTimer { .. } => {
@@ -370,7 +361,7 @@ where
                         } => {
                             invoker_tx
                                 .notify_stored_entry_ack(
-                                    (partition_id.clone(), leader_epoch.clone()),
+                                    (*partition_id, *leader_epoch),
                                     service_invocation_id,
                                     journal_revision,
                                     entry_index,
@@ -384,7 +375,7 @@ where
                         } => {
                             invoker_tx
                                 .notify_completion(
-                                    (partition_id.clone(), leader_epoch.clone()),
+                                    (*partition_id, *leader_epoch),
                                     service_invocation_id,
                                     journal_revision,
                                     completion,

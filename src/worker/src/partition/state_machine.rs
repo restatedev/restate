@@ -24,13 +24,17 @@ pub enum Error<S, C> {
 #[derive(Debug)]
 pub(crate) enum Command {
     Invoker(invoker::OutputEffect),
+    #[allow(dead_code)]
     Timer {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
         timestamp: u64,
     },
+    #[allow(dead_code)]
     OutboxTruncation(u64),
+    #[allow(dead_code)]
     Invocation(ServiceInvocation),
+    #[allow(dead_code)]
     Response(Response),
 }
 
@@ -415,20 +419,20 @@ where
     }
 
     fn create_service_invocation(
-        invoke_request: InvokeRequest,
-        response_target: Option<(ServiceInvocationId, EntryIndex)>,
+        _invoke_request: InvokeRequest,
+        _response_target: Option<(ServiceInvocationId, EntryIndex)>,
     ) -> ServiceInvocation {
         // We might want to create the service invocation when receiving the journal entry from
         // service endpoint. That way we can fail it fast if the service cannot be resolved.
-        unimplemented!()
+        todo!()
     }
 
-    fn create_response_for_awakeable_entry(entry: CompleteAwakeableEntry) -> Response {
-        unimplemented!()
+    fn create_response_for_awakeable_entry(_entry: CompleteAwakeableEntry) -> Response {
+        todo!()
     }
 
-    fn create_response(result: CompletionResult) -> Response {
-        unimplemented!()
+    fn create_response(_result: CompletionResult) -> Response {
+        todo!()
     }
 
     fn deserialize(raw_entry: &RawEntry) -> Result<Entry, Codec::Error> {

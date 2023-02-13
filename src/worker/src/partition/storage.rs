@@ -8,15 +8,15 @@ use journal::{CompletionResult, JournalRevision};
 use tokio_stream::Stream;
 
 pub(super) struct PartitionStorage<Storage> {
-    partition_id: PartitionId,
-    storage: Storage,
+    _partition_id: PartitionId,
+    _storage: Storage,
 }
 
 impl<Storage> PartitionStorage<Storage> {
     pub(super) fn new(partition_id: PartitionId, storage: Storage) -> Self {
         Self {
-            partition_id,
-            storage,
+            _partition_id: partition_id,
+            _storage: storage,
         }
     }
 
@@ -34,130 +34,130 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
 
     fn get_invocation_status(
         &self,
-        service_id: &ServiceId,
+        _service_id: &ServiceId,
     ) -> Result<InvocationStatus, Self::Error> {
         todo!()
     }
 
     fn peek_inbox(
         &self,
-        service_id: &ServiceId,
+        _service_id: &ServiceId,
     ) -> Result<Option<(u64, ServiceInvocation)>, Self::Error> {
         todo!()
     }
 
-    fn get_journal_status(&self, service_id: &ServiceId) -> Result<JournalStatus, Self::Error> {
+    fn get_journal_status(&self, _service_id: &ServiceId) -> Result<JournalStatus, Self::Error> {
         todo!()
     }
 }
 
 pub(super) struct Transaction<'a, Storage> {
-    inner: &'a mut PartitionStorage<Storage>,
+    _inner: &'a mut PartitionStorage<Storage>,
 }
 
 impl<'a, Storage> Transaction<'a, Storage> {
     pub(super) fn new(inner: &'a mut PartitionStorage<Storage>) -> Self {
-        Self { inner }
+        Self { _inner: inner }
     }
 
     pub(super) fn commit(self) {}
 }
 
 impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
-    fn write_invocation_status(&self, service_id: &ServiceId, status: &InvocationStatus) {
+    fn write_invocation_status(&self, _service_id: &ServiceId, _status: &InvocationStatus) {
         todo!()
     }
 
-    fn create_journal(&self, service_id: &ServiceId, method_name: impl AsRef<str>) {
+    fn create_journal(&self, _service_id: &ServiceId, _method_name: impl AsRef<str>) {
         todo!()
     }
 
     fn store_journal_entry(
         &self,
-        service_id: &ServiceId,
-        entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        _service_id: &ServiceId,
+        _entry_index: EntryIndex,
+        _raw_entry: RawEntry,
     ) -> JournalRevision {
         todo!()
     }
 
     fn store_completion_result(
         &self,
-        service_id: &ServiceId,
-        entry_index: EntryIndex,
-        completion_result: CompletionResult,
+        _service_id: &ServiceId,
+        _entry_index: EntryIndex,
+        _completion_result: CompletionResult,
     ) {
         todo!()
     }
 
-    fn enqueue_into_inbox(&self, seq_number: u64, service_invocation: ServiceInvocation) {
+    fn enqueue_into_inbox(&self, _seq_number: u64, _service_invocation: ServiceInvocation) {
         todo!()
     }
 
-    fn enqueue_into_outbox(&self, seq_number: u64, message: OutboxMessage) {
+    fn enqueue_into_outbox(&self, _seq_number: u64, _message: OutboxMessage) {
         todo!()
     }
 
-    fn store_inbox_seq_number(&self, seq_number: u64) {
+    fn store_inbox_seq_number(&self, _seq_number: u64) {
         todo!()
     }
 
-    fn store_outbox_seq_number(&self, seq_number: u64) {
+    fn store_outbox_seq_number(&self, _seq_number: u64) {
         todo!()
     }
 
-    fn write_state(&self, service_id: &ServiceId, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+    fn write_state(&self, _service_id: &ServiceId, _key: impl AsRef<[u8]>, _value: impl AsRef<[u8]>) {
         todo!()
     }
 
-    fn clear_state(&self, service_id: &ServiceId, key: impl AsRef<[u8]>) {
+    fn clear_state(&self, _service_id: &ServiceId, _key: impl AsRef<[u8]>) {
         todo!()
     }
 
     fn store_timer(
         &self,
-        service_invocation_id: &ServiceInvocationId,
-        wake_up_time: u64,
-        entry_index: EntryIndex,
+        _service_invocation_id: &ServiceInvocationId,
+        _wake_up_time: u64,
+        _entry_index: EntryIndex,
     ) {
         todo!()
     }
 
-    fn delete_timer(&self, service_id: &ServiceId, wake_up_time: u64, entry_index: EntryIndex) {
+    fn delete_timer(&self, _service_id: &ServiceId, _wake_up_time: u64, _entry_index: EntryIndex) {
         todo!()
     }
 
     fn read_completion_result(
         &self,
-        service_id: &ServiceId,
-        entry_index: EntryIndex,
+        _service_id: &ServiceId,
+        _entry_index: EntryIndex,
     ) -> Option<CompletionResult> {
         todo!()
     }
 
     fn read_journal_entry(
         &self,
-        service_id: &ServiceId,
-        entry_index: EntryIndex,
+        _service_id: &ServiceId,
+        _entry_index: EntryIndex,
     ) -> Option<RawEntry> {
         todo!()
     }
 
-    fn truncate_outbox(&self, outbox_sequence_number: u64) {
+    fn truncate_outbox(&self, _outbox_sequence_number: u64) {
         todo!()
     }
 
-    fn truncate_inbox(&self, service_id: &ServiceId, inbox_sequence_number: u64) {
+    fn truncate_inbox(&self, _service_id: &ServiceId, _inbox_sequence_number: u64) {
         todo!()
     }
 
-    fn drop_journal(&self, service_id: &ServiceId) {
+    fn drop_journal(&self, _service_id: &ServiceId) {
         todo!()
     }
 }
 
 impl<'a, Storage> Committable for Transaction<'a, Storage> {
     fn commit(self) {
-        todo!()
+        self.commit();
     }
 }
