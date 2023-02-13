@@ -64,11 +64,25 @@ impl<'a, Storage> Transaction<'a, Storage> {
 }
 
 impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
-    fn write_invocation_status(&self, _service_id: &ServiceId, _status: &InvocationStatus) {
+    type Error = ();
+
+    fn store_invocation_status(
+        &self,
+        _service_id: &ServiceId,
+        _status: &InvocationStatus,
+    ) -> Result<(), Self::Error> {
         todo!()
     }
 
-    fn create_journal(&self, _service_id: &ServiceId, _method_name: impl AsRef<str>) {
+    fn create_journal(
+        &self,
+        _service_id: &ServiceId,
+        _method_name: impl AsRef<str>,
+    ) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn drop_journal(&self, _service_id: &ServiceId) -> Result<(), Self::Error> {
         todo!()
     }
 
@@ -76,8 +90,8 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
-        _raw_entry: RawEntry,
-    ) -> JournalRevision {
+        _raw_entry: &RawEntry,
+    ) -> Result<JournalRevision, Self::Error> {
         todo!()
     }
 
@@ -85,32 +99,77 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
-        _completion_result: CompletionResult,
-    ) {
+        _completion_result: &CompletionResult,
+    ) -> Result<(), Self::Error> {
         todo!()
     }
 
-    fn enqueue_into_inbox(&self, _seq_number: u64, _service_invocation: ServiceInvocation) {
+    fn load_completion_result(
+        &self,
+        _service_id: &ServiceId,
+        _entry_index: EntryIndex,
+    ) -> Result<Option<CompletionResult>, Self::Error> {
         todo!()
     }
 
-    fn enqueue_into_outbox(&self, _seq_number: u64, _message: OutboxMessage) {
+    fn load_journal_entry(
+        &self,
+        _service_id: &ServiceId,
+        _entry_index: EntryIndex,
+    ) -> Result<Option<RawEntry>, Self::Error> {
         todo!()
     }
 
-    fn store_inbox_seq_number(&self, _seq_number: u64) {
+    fn enqueue_into_inbox(
+        &self,
+        _seq_number: u64,
+        _service_invocation: &ServiceInvocation,
+    ) -> Result<(), Self::Error> {
         todo!()
     }
 
-    fn store_outbox_seq_number(&self, _seq_number: u64) {
+    fn enqueue_into_outbox(
+        &self,
+        _seq_number: u64,
+        _message: &OutboxMessage,
+    ) -> Result<(), Self::Error> {
         todo!()
     }
 
-    fn write_state(&self, _service_id: &ServiceId, _key: impl AsRef<[u8]>, _value: impl AsRef<[u8]>) {
+    fn store_inbox_seq_number(&self, _seq_number: u64) -> Result<(), Self::Error> {
         todo!()
     }
 
-    fn clear_state(&self, _service_id: &ServiceId, _key: impl AsRef<[u8]>) {
+    fn store_outbox_seq_number(&self, _seq_number: u64) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn truncate_outbox(&self, _outbox_sequence_number: u64) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn truncate_inbox(
+        &self,
+        _service_id: &ServiceId,
+        _inbox_sequence_number: u64,
+    ) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn store_state(
+        &self,
+        _service_id: &ServiceId,
+        _key: impl AsRef<[u8]>,
+        _value: impl AsRef<[u8]>,
+    ) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn clear_state(
+        &self,
+        _service_id: &ServiceId,
+        _key: impl AsRef<[u8]>,
+    ) -> Result<(), Self::Error> {
         todo!()
     }
 
@@ -119,39 +178,16 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         _service_invocation_id: &ServiceInvocationId,
         _wake_up_time: u64,
         _entry_index: EntryIndex,
-    ) {
+    ) -> Result<(), Self::Error> {
         todo!()
     }
 
-    fn delete_timer(&self, _service_id: &ServiceId, _wake_up_time: u64, _entry_index: EntryIndex) {
-        todo!()
-    }
-
-    fn read_completion_result(
+    fn delete_timer(
         &self,
         _service_id: &ServiceId,
+        _wake_up_time: u64,
         _entry_index: EntryIndex,
-    ) -> Option<CompletionResult> {
-        todo!()
-    }
-
-    fn read_journal_entry(
-        &self,
-        _service_id: &ServiceId,
-        _entry_index: EntryIndex,
-    ) -> Option<RawEntry> {
-        todo!()
-    }
-
-    fn truncate_outbox(&self, _outbox_sequence_number: u64) {
-        todo!()
-    }
-
-    fn truncate_inbox(&self, _service_id: &ServiceId, _inbox_sequence_number: u64) {
-        todo!()
-    }
-
-    fn drop_journal(&self, _service_id: &ServiceId) {
+    ) -> Result<(), Self::Error> {
         todo!()
     }
 }
