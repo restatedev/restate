@@ -22,7 +22,7 @@ pub(crate) enum Effect {
     InvokeService(ServiceInvocation),
     ResumeService(ServiceInvocationId),
     SuspendService(ServiceInvocationId),
-    FreeService(ServiceId),
+    DropJournalAndFreeService(ServiceId),
 
     // In-/outbox
     EnqueueIntoInbox {
@@ -34,20 +34,24 @@ pub(crate) enum Effect {
         message: OutboxMessage,
     },
     TruncateOutbox(u64),
-    PopInbox {
+    DropJournalAndPopInbox {
         service_id: ServiceId,
         inbox_sequence_number: u64,
     },
 
     // State
     SetState {
-        service_id: ServiceId,
+        service_invocation_id: ServiceInvocationId,
         key: Bytes,
         value: Bytes,
+        raw_entry: RawEntry,
+        entry_index: EntryIndex,
     },
     ClearState {
-        service_id: ServiceId,
+        service_invocation_id: ServiceInvocationId,
         key: Bytes,
+        raw_entry: RawEntry,
+        entry_index: EntryIndex,
     },
 
     // Timers
@@ -73,15 +77,14 @@ pub(crate) enum Effect {
         entry_index: EntryIndex,
         raw_entry: RawEntry,
     },
-    StoreCompletion {
-        service_invocation_id: ServiceInvocationId,
-        completion: Completion,
-    },
     StoreCompletionAndForward {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
     },
-    DropJournal(ServiceId),
+    StoreCompletionAndResume {
+        service_invocation_id: ServiceInvocationId,
+        completion: Completion,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -112,8 +115,9 @@ impl Effects {
             .push(Effect::SuspendService(service_invocation_id))
     }
 
-    pub(crate) fn free_service(&mut self, service_id: ServiceId) {
-        self.effects.push(Effect::FreeService(service_id));
+    pub(crate) fn drop_journal_and_free_service(&mut self, service_id: ServiceId) {
+        self.effects
+            .push(Effect::DropJournalAndFreeService(service_id));
     }
 
     pub(crate) fn enqueue_into_inbox(
@@ -134,16 +138,36 @@ impl Effects {
         })
     }
 
-    pub(crate) fn set_state(&mut self, service_id: ServiceId, key: Bytes, value: Bytes) {
+    pub(crate) fn set_state(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        key: Bytes,
+        value: Bytes,
+        raw_entry: RawEntry,
+        entry_index: EntryIndex,
+    ) {
         self.effects.push(Effect::SetState {
-            service_id,
+            service_invocation_id,
             key,
             value,
+            raw_entry,
+            entry_index,
         })
     }
 
-    pub(crate) fn clear_state(&mut self, service_id: ServiceId, key: Bytes) {
-        self.effects.push(Effect::ClearState { service_id, key })
+    pub(crate) fn clear_state(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        key: Bytes,
+        raw_entry: RawEntry,
+        entry_index: EntryIndex,
+    ) {
+        self.effects.push(Effect::ClearState {
+            service_invocation_id,
+            key,
+            raw_entry,
+            entry_index,
+        })
     }
 
     pub(crate) fn register_timer(
@@ -203,17 +227,6 @@ impl Effects {
             .push(Effect::TruncateOutbox(outbox_sequence_number));
     }
 
-    pub(crate) fn store_completion(
-        &mut self,
-        service_invocation_id: ServiceInvocationId,
-        completion: Completion,
-    ) {
-        self.effects.push(Effect::StoreCompletion {
-            service_invocation_id,
-            completion,
-        })
-    }
-
     pub(crate) fn store_and_forward_completion(
         &mut self,
         service_invocation_id: ServiceInvocationId,
@@ -225,12 +238,23 @@ impl Effects {
         })
     }
 
-    pub(crate) fn drop_journal(&mut self, service_id: ServiceId) {
-        self.effects.push(Effect::DropJournal(service_id));
+    pub(crate) fn store_completion_and_resume(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        completion: Completion,
+    ) {
+        self.effects.push(Effect::StoreCompletionAndResume {
+            service_invocation_id,
+            completion,
+        })
     }
 
-    pub(crate) fn pop_inbox(&mut self, service_id: ServiceId, inbox_sequence_number: u64) {
-        self.effects.push(Effect::PopInbox {
+    pub(crate) fn drop_journal_and_pop_inbox(
+        &mut self,
+        service_id: ServiceId,
+        inbox_sequence_number: u64,
+    ) {
+        self.effects.push(Effect::DropJournalAndPopInbox {
             service_id,
             inbox_sequence_number,
         });

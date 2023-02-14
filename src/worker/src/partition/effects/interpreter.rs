@@ -247,7 +247,10 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     )
                     .map_err(Error::State)?;
             }
-            Effect::FreeService(service_id) => {
+            Effect::DropJournalAndFreeService(service_id) => {
+                state_storage
+                    .drop_journal(&service_id)
+                    .map_err(Error::State)?;
                 state_storage
                     .store_invocation_status(&service_id, &InvocationStatus::Free)
                     .map_err(Error::State)?;
@@ -277,16 +280,41 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 collector.collect(ActuatorMessage::NewOutboxMessage(seq_number));
             }
             Effect::SetState {
-                service_id,
+                service_invocation_id,
                 key,
                 value,
-            } => state_storage
-                .store_state(&service_id, key, value)
-                .map_err(Error::State)?,
-            Effect::ClearState { service_id, key } => {
+                raw_entry,
+                entry_index,
+            } => {
                 state_storage
-                    .clear_state(&service_id, key)
+                    .store_state(&service_invocation_id.service_id, key, value)
                     .map_err(Error::State)?;
+                Self::append_journal_entry(
+                    state_storage,
+                    collector,
+                    service_invocation_id,
+                    entry_index,
+                    raw_entry,
+                )
+                .await?;
+            }
+            Effect::ClearState {
+                service_invocation_id,
+                key,
+                raw_entry,
+                entry_index,
+            } => {
+                state_storage
+                    .clear_state(&service_invocation_id.service_id, key)
+                    .map_err(Error::State)?;
+                Self::append_journal_entry(
+                    state_storage,
+                    collector,
+                    service_invocation_id,
+                    entry_index,
+                    raw_entry,
+                )
+                .await?;
             }
             Effect::RegisterTimer {
                 service_invocation_id,
@@ -317,21 +345,14 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 entry_index,
                 raw_entry,
             } => {
-                debug_assert!(
-                    state_storage
-                        .load_completion_result(&service_invocation_id.service_id, entry_index)
-                        .await
-                        .map_err(Error::State)?
-                        .is_none(),
-                    "Only awakeable journal entries can have a completion result already stored"
-                );
                 Self::append_journal_entry(
                     state_storage,
                     collector,
                     service_invocation_id,
                     entry_index,
                     raw_entry,
-                )?;
+                )
+                .await?;
             }
             Effect::AppendAwakeableEntry {
                 service_invocation_id,
@@ -348,7 +369,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                         .map_err(Error::Codec)?;
                 }
 
-                Self::append_journal_entry(
+                Self::unchecked_append_journal_entry(
                     state_storage,
                     collector,
                     service_invocation_id,
@@ -360,17 +381,6 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 state_storage
                     .truncate_outbox(outbox_sequence_number)
                     .map_err(Error::State)?;
-            }
-            Effect::StoreCompletion {
-                service_invocation_id,
-                completion:
-                    Completion {
-                        entry_index,
-                        result,
-                    },
-            } => {
-                Self::store_completion(state_storage, &service_invocation_id, entry_index, result)
-                    .await?;
             }
             Effect::StoreCompletionAndForward {
                 service_invocation_id,
@@ -401,15 +411,36 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     });
                 }
             }
-            Effect::DropJournal(service_id) => {
-                state_storage
-                    .drop_journal(&service_id)
-                    .map_err(Error::State)?;
+            Effect::StoreCompletionAndResume {
+                service_invocation_id,
+                completion:
+                    Completion {
+                        entry_index,
+                        result,
+                    },
+            } => {
+                if Self::store_completion(
+                    state_storage,
+                    &service_invocation_id,
+                    entry_index,
+                    // We need to give ownership because storing the completion requires creating
+                    // a protobuf message. However, cloning should be "cheap" because
+                    // CompletionResult uses Bytes.
+                    result.clone(),
+                )
+                .await?
+                .is_some()
+                {
+                    collector.collect(ActuatorMessage::Invoke(service_invocation_id));
+                }
             }
-            Effect::PopInbox {
+            Effect::DropJournalAndPopInbox {
                 service_id,
                 inbox_sequence_number,
             } => {
+                state_storage
+                    .drop_journal(&service_id)
+                    .map_err(Error::State)?;
                 state_storage
                     .truncate_inbox(&service_id, inbox_sequence_number)
                     .map_err(Error::State)?;
@@ -450,7 +481,32 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         Ok(result)
     }
 
-    fn append_journal_entry<S: StateStorage, C: MessageCollector>(
+    async fn append_journal_entry<S: StateStorage, C: MessageCollector>(
+        state_storage: &S,
+        collector: &mut C,
+        service_invocation_id: ServiceInvocationId,
+        entry_index: EntryIndex,
+        raw_entry: RawEntry,
+    ) -> Result<(), Error<S::Error, Codec::Error>> {
+        debug_assert!(
+            state_storage
+                .load_completion_result(&service_invocation_id.service_id, entry_index)
+                .await
+                .map_err(Error::State)?
+                .is_none(),
+            "Only awakeable journal entries can have a completion result already stored"
+        );
+
+        Self::unchecked_append_journal_entry(
+            state_storage,
+            collector,
+            service_invocation_id,
+            entry_index,
+            raw_entry,
+        )
+    }
+
+    fn unchecked_append_journal_entry<S: StateStorage, C: MessageCollector>(
         state_storage: &S,
         collector: &mut C,
         service_invocation_id: ServiceInvocationId,

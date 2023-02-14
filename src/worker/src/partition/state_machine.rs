@@ -321,14 +321,20 @@ where
                     Entry::SetState
                 );
 
-                effects.set_state(service_invocation_id.service_id.clone(), key, value);
+                effects.set_state(service_invocation_id, key, value, entry, entry_index);
+                // set_state includes append journal entry in order to avoid unnecessary clones.
+                // That's why we must return here.
+                return Ok(());
             }
             EntryType::ClearState => {
                 let ClearStateEntry { key } = enum_inner!(
                     Self::deserialize(&entry).map_err(Error::Codec)?,
                     Entry::ClearState
                 );
-                effects.clear_state(service_invocation_id.service_id.clone(), key);
+                effects.clear_state(service_invocation_id, key, entry, entry_index);
+                // clear_state includes append journal entry in order to avoid unnecessary clones.
+                // That's why we must return here.
+                return Ok(());
             }
             EntryType::Sleep => {
                 let SleepEntry { wake_up_time, .. } = enum_inner!(
@@ -337,6 +343,9 @@ where
                 );
                 effects.register_timer(
                     wake_up_time as u64,
+                    // Registering a timer generates multiple effects: timer registration and
+                    // journal append which each generate actuator messages for the timer service
+                    // and the invoker --> Cloning required
                     service_invocation_id.clone(),
                     entry_index,
                 );
@@ -384,8 +393,7 @@ where
             }
             InvocationStatus::Suspended(invocation_id) => {
                 if invocation_id == service_invocation_id.invocation_id {
-                    effects.resume_service(service_invocation_id.clone());
-                    effects.store_completion(service_invocation_id, completion);
+                    effects.store_completion_and_resume(service_invocation_id, completion);
                 } else {
                     debug!(
                         ?completion,
@@ -411,17 +419,18 @@ where
         state: &State,
         effects: &mut Effects,
     ) -> Result<(), Error<State::Error, Codec::Error>> {
-        effects.drop_journal(service_invocation_id.service_id.clone());
-
         if let Some((inbox_sequence_number, service_invocation)) = state
             .peek_inbox(&service_invocation_id.service_id)
             .await
             .map_err(Error::State)?
         {
-            effects.pop_inbox(service_invocation_id.service_id, inbox_sequence_number);
+            effects.drop_journal_and_pop_inbox(
+                service_invocation_id.service_id,
+                inbox_sequence_number,
+            );
             effects.invoke_service(service_invocation);
         } else {
-            effects.free_service(service_invocation_id.service_id);
+            effects.drop_journal_and_free_service(service_invocation_id.service_id);
         }
 
         let response = Self::create_response(completion_result);
