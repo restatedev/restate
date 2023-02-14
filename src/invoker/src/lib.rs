@@ -54,7 +54,6 @@ impl ServiceEndpointRegistry for HashMap<String, EndpointMetadata> {
 
 // --- Journal Reader
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct JournalMetadata {
     pub method: String,

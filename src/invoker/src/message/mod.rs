@@ -1,6 +1,3 @@
-// TODO remove this as soon as we start using this module in the invoker.
-#![allow(dead_code)]
-
 use bytes::Bytes;
 use journal::raw::RawEntry;
 use journal::{Completion, CompletionResult};
