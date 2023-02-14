@@ -124,9 +124,9 @@ where
                                 let message_collector = leadership_state.message_collector();
 
                                 let transaction = partition_storage.create_transaction();
-                                let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).expect("Effect interpreter must not fail");
+                                let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).await.expect("Effect interpreter must not fail");
 
-                                let message_collector = result.commit();
+                                let message_collector = result.commit().await.expect("Persisting state machine changes must not fail");
                                 message_collector.send().await.expect("Actuator message sending must not fail");
                             }
                             consensus::Command::BecomeLeader(leader_epoch) => {

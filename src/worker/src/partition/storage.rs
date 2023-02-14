@@ -1,9 +1,9 @@
-use futures::future::BoxFuture;
 use crate::partition::effects::{Committable, OutboxMessage, StateStorage};
 use crate::partition::state_machine::{JournalStatus, StateReader};
 use crate::partition::InvocationStatus;
 use common::types::{EntryIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId};
-use futures::stream;
+use futures::future::BoxFuture;
+use futures::{future, stream, FutureExt};
 use journal::raw::RawEntry;
 use journal::{CompletionResult, JournalRevision};
 use tokio_stream::Stream;
@@ -112,7 +112,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
-    ) -> Result<Option<CompletionResult>, Self::Error> {
+    ) -> BoxFuture<Result<Option<CompletionResult>, Self::Error>> {
         todo!()
     }
 
@@ -120,7 +120,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
-    ) -> Result<Option<RawEntry>, Self::Error> {
+    ) -> BoxFuture<Result<Option<RawEntry>, Self::Error>> {
         todo!()
     }
 
@@ -197,7 +197,10 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
 }
 
 impl<'a, Storage> Committable for Transaction<'a, Storage> {
-    fn commit(self) {
+    type Error = ();
+
+    fn commit(self) -> BoxFuture<'static, Result<(), Self::Error>> {
         self.commit();
+        future::ready(Ok(())).boxed()
     }
 }

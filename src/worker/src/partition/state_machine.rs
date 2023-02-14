@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use common::types::{EntryIndex, Response, ServiceId, ServiceInvocation, ServiceInvocationId};
+use futures::future::BoxFuture;
 use invoker::Kind;
 use journal::raw::{RawEntry, RawEntryCodec};
 use journal::{
@@ -8,7 +9,6 @@ use journal::{
 };
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use futures::future::BoxFuture;
 use tracing::debug;
 
 use crate::partition::effects::{Effects, OutboxMessage};
@@ -223,7 +223,8 @@ where
                     service_invocation_id,
                     entry_index,
                     entry,
-                ).await?;
+                )
+                .await?;
             }
             Kind::Suspended {
                 journal_revision: expected_journal_revision,
@@ -246,7 +247,8 @@ where
                     CompletionResult::Success(Bytes::new()),
                     state,
                     effects,
-                ).await?;
+                )
+                .await?;
             }
             Kind::Failed { error } => {
                 self.complete_invocation(
@@ -254,7 +256,8 @@ where
                     CompletionResult::Failure(502, error.to_string().into()),
                     state,
                     effects,
-                ).await?;
+                )
+                .await?;
             }
         }
 

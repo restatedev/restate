@@ -1,6 +1,7 @@
 use crate::partition::effects::{Effect, Effects, OutboxMessage};
 use crate::partition::InvocationStatus;
 use common::types::{EntryIndex, ServiceId, ServiceInvocation, ServiceInvocationId};
+use futures::future::BoxFuture;
 use journal::raw::{RawEntry, RawEntryCodec};
 use journal::{Completion, CompletionResult, JournalRevision, PollInputStreamEntry};
 use std::marker::PhantomData;
@@ -73,17 +74,19 @@ pub(crate) trait StateStorage {
         completion_result: &CompletionResult,
     ) -> Result<(), Self::Error>;
 
+    // TODO: Replace with async trait or proper future
     fn load_completion_result(
         &self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> Result<Option<CompletionResult>, Self::Error>;
+    ) -> BoxFuture<Result<Option<CompletionResult>, Self::Error>>;
 
+    // TODO: Replace with async trait or proper future
     fn load_journal_entry(
         &self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> Result<Option<RawEntry>, Self::Error>;
+    ) -> BoxFuture<Result<Option<RawEntry>, Self::Error>>;
 
     // In-/outbox
     fn enqueue_into_inbox(
@@ -138,7 +141,10 @@ pub(crate) trait StateStorage {
 }
 
 pub(crate) trait Committable {
-    fn commit(self);
+    type Error;
+
+    // TODO: Replace with async trait or proper future
+    fn commit(self) -> BoxFuture<'static, Result<(), Self::Error>>;
 }
 
 #[must_use = "Don't forget to commit the interpretation result"]
@@ -155,11 +161,11 @@ where
         Self { txn, collector }
     }
 
-    pub(crate) fn commit(self) -> Collector {
+    pub(crate) async fn commit(self) -> Result<Collector, Txn::Error> {
         let Self { txn, collector } = self;
 
-        txn.commit();
-        collector
+        txn.commit().await?;
+        Ok(collector)
     }
 }
 
@@ -168,19 +174,19 @@ pub(crate) struct Interpreter<Codec> {
 }
 
 impl<Codec: RawEntryCodec> Interpreter<Codec> {
-    pub(crate) fn interpret_effects<S: StateStorage + Committable, C: MessageCollector>(
+    pub(crate) async fn interpret_effects<S: StateStorage + Committable, C: MessageCollector>(
         effects: &mut Effects,
         state_storage: S,
         mut message_collector: C,
-    ) -> Result<InterpretationResult<S, C>, Error<S::Error, Codec::Error>> {
+    ) -> Result<InterpretationResult<S, C>, Error<<S as StateStorage>::Error, Codec::Error>> {
         for effect in effects.drain() {
-            Self::interpret_effect(effect, &state_storage, &mut message_collector)?;
+            Self::interpret_effect(effect, &state_storage, &mut message_collector).await?;
         }
 
         Ok(InterpretationResult::new(state_storage, message_collector))
     }
 
-    fn interpret_effect<S: StateStorage, C: MessageCollector>(
+    async fn interpret_effect<S: StateStorage, C: MessageCollector>(
         effect: Effect,
         state_storage: &S,
         collector: &mut C,
@@ -314,6 +320,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 debug_assert!(
                     state_storage
                         .load_completion_result(&service_invocation_id.service_id, entry_index)
+                        .await
                         .map_err(Error::State)?
                         .is_none(),
                     "Only awakeable journal entries can have a completion result already stored"
@@ -334,6 +341,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 // check whether the completion has arrived first
                 if let Some(completion_result) = state_storage
                     .load_completion_result(&service_invocation_id.service_id, entry_index)
+                    .await
                     .map_err(Error::State)?
                 {
                     Codec::write_completion(&mut raw_entry, completion_result)
@@ -361,7 +369,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                         result,
                     },
             } => {
-                Self::store_completion(state_storage, &service_invocation_id, entry_index, result)?;
+                Self::store_completion(state_storage, &service_invocation_id, entry_index, result)
+                    .await?;
             }
             Effect::StoreCompletionAndForward {
                 service_invocation_id,
@@ -376,7 +385,9 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     &service_invocation_id,
                     entry_index,
                     result.clone(),
-                )? {
+                )
+                .await?
+                {
                     collector.collect(ActuatorMessage::ForwardCompletion {
                         service_invocation_id,
                         journal_revision,
@@ -405,7 +416,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         Ok(())
     }
 
-    fn store_completion<S: StateStorage>(
+    async fn store_completion<S: StateStorage>(
         state_storage: &S,
         service_invocation_id: &ServiceInvocationId,
         entry_index: EntryIndex,
@@ -413,6 +424,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
     ) -> Result<Option<JournalRevision>, Error<S::Error, Codec::Error>> {
         let result = if let Some(mut raw_entry) = state_storage
             .load_journal_entry(&service_invocation_id.service_id, entry_index)
+            .await
             .map_err(Error::State)?
         {
             Codec::write_completion(&mut raw_entry, completion_result).map_err(Error::Codec)?;
