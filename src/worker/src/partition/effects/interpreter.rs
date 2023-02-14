@@ -220,7 +220,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     )
                     .map_err(Error::State)?;
 
-                // TODO: Send PollInputStreamEntry together with Invoke message
+                // TODO: Send raw PollInputStreamEntry together with Invoke message
                 collector.collect(ActuatorMessage::Invoke(service_invocation.id));
             }
             Effect::ResumeService(ServiceInvocationId {
@@ -384,6 +384,9 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     state_storage,
                     &service_invocation_id,
                     entry_index,
+                    // We need to give ownership because storing the completion requires creating
+                    // a protobuf message. However, cloning should be "cheap" because
+                    // CompletionResult uses Bytes.
                     result.clone(),
                 )
                 .await?
