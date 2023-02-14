@@ -1,4 +1,5 @@
 use crate::partition::effects::{Committable, OutboxMessage, StateStorage};
+use crate::partition::leadership::InvocationReader;
 use crate::partition::state_machine::{JournalStatus, StateReader};
 use crate::partition::InvocationStatus;
 use common::types::{EntryIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId};
@@ -6,7 +7,6 @@ use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
 use journal::raw::RawEntry;
 use journal::{CompletionResult, JournalRevision};
-use tokio_stream::Stream;
 
 pub(super) struct PartitionStorage<Storage> {
     _partition_id: PartitionId,
@@ -23,10 +23,6 @@ impl<Storage> PartitionStorage<Storage> {
 
     pub(super) fn create_transaction(&mut self) -> Transaction<'_, Storage> {
         Transaction::new(self)
-    }
-
-    pub(super) fn scan_invoked_invocations(&self) -> impl Stream<Item = ServiceInvocationId> {
-        stream::empty()
     }
 }
 
@@ -52,6 +48,14 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
         _service_id: &ServiceId,
     ) -> BoxFuture<Result<JournalStatus, Self::Error>> {
         todo!()
+    }
+}
+
+impl<Storage> InvocationReader for PartitionStorage<Storage> {
+    type InvokedInvocationStream = stream::Empty<ServiceInvocationId>;
+
+    fn scan_invoked_invocations(&self) -> Self::InvokedInvocationStream {
+        stream::empty()
     }
 }
 

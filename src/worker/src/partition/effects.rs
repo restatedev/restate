@@ -93,6 +93,12 @@ pub(crate) struct Effects {
 }
 
 impl Effects {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            effects: Vec::with_capacity(capacity),
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.effects.clear()
     }
