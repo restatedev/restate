@@ -1,4 +1,6 @@
-use common::types::{InvocationId, LeaderEpoch, PartitionId, PeerId, ServiceInvocationId};
+use common::types::{
+    InvocationId, LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId,
+};
 use futures::{stream, Sink, SinkExt, Stream, StreamExt};
 use invoker::{InvokeInputJournal, InvokerInputSender};
 use service_protocol::codec::ProtobufRawEntryCodec;
@@ -121,13 +123,13 @@ where
                                 effects.clear();
                                 state_machine.on_apply(fsm_command, &mut effects, &partition_storage).await.expect("State machine application must not fail");
 
-                                let message_collector = leadership_state.message_collector();
+                                let message_collector = leadership_state.into_message_collector();
 
                                 let transaction = partition_storage.create_transaction();
                                 let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).await.expect("Effect interpreter must not fail");
 
                                 let message_collector = result.commit().await.expect("Persisting state machine changes must not fail");
-                                message_collector.send().await.expect("Actuator message sending must not fail");
+                                leadership_state = message_collector.send().await.expect("Actuator message sending must not fail");
                             }
                             consensus::Command::BecomeLeader(leader_epoch) => {
                                 info!(%peer_id, %partition_id, %leader_epoch, "Become leader.");
@@ -175,37 +177,114 @@ pub(crate) enum InvocationStatus {
     Free,
 }
 
-enum ActuatorMessageCollector<'a, I> {
-    Active {
-        leadership_state: &'a mut LeadershipState<I>,
-        messages: Vec<ActuatorMessage>,
+enum ActuatorMessageCollector<I> {
+    Leader {
+        partition_id: PartitionId,
+        leader_epoch: LeaderEpoch,
+        invoker_tx: I,
+        invoker_rx: mpsc::Receiver<invoker::OutputEffect>,
+        message_buffer: Vec<ActuatorMessage>,
     },
-    Inactive,
+    Follower(LeadershipState<I>),
 }
 
-impl<'a, I> ActuatorMessageCollector<'a, I>
+impl<I> ActuatorMessageCollector<I>
 where
     I: InvokerInputSender,
     I::Error: Debug,
 {
-    async fn send(self) -> Result<(), I::Error> {
+    async fn send(self) -> Result<LeadershipState<I>, I::Error> {
         match self {
-            ActuatorMessageCollector::Active {
-                leadership_state,
-                messages,
-            } => leadership_state.send_actuator_messages(messages).await,
-            ActuatorMessageCollector::Inactive => Ok(()),
+            ActuatorMessageCollector::Leader {
+                partition_id,
+                leader_epoch,
+                mut invoker_tx,
+                invoker_rx,
+                mut message_buffer,
+            } => {
+                Self::send_actuator_messages(
+                    (partition_id, leader_epoch),
+                    &mut invoker_tx,
+                    message_buffer.drain(..),
+                )
+                .await?;
+
+                Ok(LeadershipState::Leader {
+                    partition_id,
+                    leader_epoch,
+                    invoker_tx,
+                    invoker_rx,
+                    message_buffer,
+                })
+            }
+            ActuatorMessageCollector::Follower(leadership_state) => Ok(leadership_state),
         }
+    }
+
+    async fn send_actuator_messages(
+        partition_leader_epoch: PartitionLeaderEpoch,
+        invoker_tx: &mut I,
+        messages: impl IntoIterator<Item = ActuatorMessage>,
+    ) -> Result<(), I::Error> {
+        for message in messages.into_iter() {
+            match message {
+                ActuatorMessage::Invoke(service_invocation_id) => {
+                    invoker_tx
+                        .invoke(
+                            partition_leader_epoch,
+                            service_invocation_id,
+                            InvokeInputJournal::NoCachedJournal,
+                        )
+                        .await?
+                }
+                ActuatorMessage::NewOutboxMessage(..) => {
+                    // ignore for the time being
+                }
+                ActuatorMessage::RegisterTimer { .. } => {
+                    // we don't have a timer service yet :-(
+                }
+                ActuatorMessage::AckStoredEntry {
+                    service_invocation_id,
+                    journal_revision,
+                    entry_index,
+                } => {
+                    invoker_tx
+                        .notify_stored_entry_ack(
+                            partition_leader_epoch,
+                            service_invocation_id,
+                            journal_revision,
+                            entry_index,
+                        )
+                        .await?;
+                }
+                ActuatorMessage::ForwardCompletion {
+                    service_invocation_id,
+                    journal_revision,
+                    completion,
+                } => {
+                    invoker_tx
+                        .notify_completion(
+                            partition_leader_epoch,
+                            service_invocation_id,
+                            journal_revision,
+                            completion,
+                        )
+                        .await?
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
-impl<'a, I> MessageCollector for ActuatorMessageCollector<'a, I> {
+impl<I> MessageCollector for ActuatorMessageCollector<I> {
     fn collect(&mut self, message: ActuatorMessage) {
         match self {
-            ActuatorMessageCollector::Active { messages, .. } => {
-                messages.push(message);
+            ActuatorMessageCollector::Leader { message_buffer, .. } => {
+                message_buffer.push(message);
             }
-            ActuatorMessageCollector::Inactive => {}
+            ActuatorMessageCollector::Follower(..) => {}
         }
     }
 }
@@ -221,6 +300,7 @@ enum LeadershipState<InvokerInputSender> {
         leader_epoch: LeaderEpoch,
         invoker_rx: mpsc::Receiver<invoker::OutputEffect>,
         invoker_tx: InvokerInputSender,
+        message_buffer: Vec<ActuatorMessage>,
     },
 }
 
@@ -288,6 +368,7 @@ where
                 leader_epoch,
                 invoker_rx: rx,
                 invoker_tx,
+                message_buffer: Vec::with_capacity(2),
             }
         } else {
             unreachable!("This method should only be called if I am a follower!");
@@ -312,85 +393,32 @@ where
         }
     }
 
-    fn message_collector(&mut self) -> ActuatorMessageCollector<'_, InvokerInputSender> {
+    fn into_message_collector(self) -> ActuatorMessageCollector<InvokerInputSender> {
         match self {
-            LeadershipState::Follower { .. } => ActuatorMessageCollector::Inactive,
-            LeadershipState::Leader { .. } => ActuatorMessageCollector::Active {
-                leadership_state: self,
-                messages: Vec::new(),
-            },
+            leadership_state @ LeadershipState::Follower { .. } => {
+                ActuatorMessageCollector::Follower(leadership_state)
+            }
+            LeadershipState::Leader {
+                partition_id,
+                leader_epoch,
+                invoker_tx,
+                invoker_rx,
+                mut message_buffer,
+            } => {
+                message_buffer.clear();
+                ActuatorMessageCollector::Leader {
+                    partition_id,
+                    leader_epoch,
+                    invoker_rx,
+                    invoker_tx,
+                    message_buffer,
+                }
+            }
         }
     }
 
     fn actuator_stream(&mut self) -> ActuatorStream<'_, InvokerInputSender> {
         ActuatorStream { inner: self }
-    }
-
-    async fn send_actuator_messages(
-        &mut self,
-        messages: Vec<ActuatorMessage>,
-    ) -> Result<(), InvokerInputSender::Error> {
-        match self {
-            LeadershipState::Leader {
-                partition_id,
-                leader_epoch,
-                invoker_tx,
-                ..
-            } => {
-                for message in messages.into_iter() {
-                    match message {
-                        ActuatorMessage::Invoke(service_invocation_id) => {
-                            invoker_tx
-                                .invoke(
-                                    (*partition_id, *leader_epoch),
-                                    service_invocation_id,
-                                    InvokeInputJournal::NoCachedJournal,
-                                )
-                                .await?
-                        }
-                        ActuatorMessage::NewOutboxMessage(..) => {
-                            // ignore for the time being
-                        }
-                        ActuatorMessage::RegisterTimer { .. } => {
-                            // we don't have a timer service yet :-(
-                        }
-                        ActuatorMessage::AckStoredEntry {
-                            service_invocation_id,
-                            journal_revision,
-                            entry_index,
-                        } => {
-                            invoker_tx
-                                .notify_stored_entry_ack(
-                                    (*partition_id, *leader_epoch),
-                                    service_invocation_id,
-                                    journal_revision,
-                                    entry_index,
-                                )
-                                .await?;
-                        }
-                        ActuatorMessage::ForwardCompletion {
-                            service_invocation_id,
-                            journal_revision,
-                            completion,
-                        } => {
-                            invoker_tx
-                                .notify_completion(
-                                    (*partition_id, *leader_epoch),
-                                    service_invocation_id,
-                                    journal_revision,
-                                    completion,
-                                )
-                                .await?
-                        }
-                    }
-                }
-            }
-            LeadershipState::Follower { .. } => {
-                debug!("Ignore sending actuator messages because I am a follower.");
-            }
-        }
-
-        Ok(())
     }
 }
 
