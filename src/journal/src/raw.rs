@@ -9,6 +9,10 @@ pub struct RawEntryHeader {
     /// This is always [`Some`] if the entry type is a [`CompletableEntry`],
     /// and always [`None`] if the entry type is not a [`CompletableEntry`].
     pub completed_flag: Option<bool>,
+
+    /// This flag represents whether a [`EntryType::Custom`] requires an ack or not.
+    /// This returns [`Some`] only if [`Self#entry_type`] is [`EntryType::Custom`].
+    pub requires_ack_flag: Option<bool>,
 }
 
 /// This struct represents a serialized journal entry.

@@ -32,7 +32,7 @@ macro_rules! match_decode {
                     .map_err(|e| Error { ty: $ty, kind: ErrorKind::Decode(e) })
                     .and_then(|msg| msg.try_into().map_err(|f| Error { ty: $ty, kind: ErrorKind::MissingField(f) }))
               },)*
-             EntryType::Unknown(_) => Ok(Entry::Unknown($buf.copy_to_bytes($buf.remaining()))),
+             EntryType::Custom(_) => Ok(Entry::Custom($buf.copy_to_bytes($buf.remaining()))),
         }
     };
 }
@@ -120,6 +120,7 @@ mod tests {
             RawEntryHeader {
                 ty: EntryType::Invoke,
                 completed_flag: Some(false),
+                requires_ack_flag: None,
             },
             pb::InvokeEntryMessage {
                 service_name: "MySvc".to_string(),
