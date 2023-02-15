@@ -81,10 +81,10 @@ where
                         .await?
                 }
                 ActuatorMessage::NewOutboxMessage(..) => {
-                    // ignore for the time being
+                    todo!("Make use of this signal once the shuffle is there.")
                 }
                 ActuatorMessage::RegisterTimer { .. } => {
-                    // we don't have a timer service yet :-(
+                    unimplemented!("we don't have a timer service yet :-(")
                 }
                 ActuatorMessage::AckStoredEntry {
                     service_invocation_id,
