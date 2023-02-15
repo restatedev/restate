@@ -45,6 +45,7 @@ invoker = { path = "src/invoker" }
 journal = { path = "src/journal" }
 meta = { path = "src/meta" }
 network = { path = "src/network" }
+service_key_extractor = { path = "src/service_key_extractor" }
 service_protocol = { path = "src/service_protocol" }
 storage_api = {path = "src/storage_api"}
 storage_rocksdb = { path = "src/storage_rocksdb" }
