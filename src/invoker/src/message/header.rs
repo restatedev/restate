@@ -52,7 +52,7 @@ impl MessageType {
         }
     }
 
-    fn have_completed_flag(&self) -> bool {
+    fn has_completed_flag(&self) -> bool {
         matches!(
             self,
             MessageType::PollInputStreamEntry
@@ -63,11 +63,11 @@ impl MessageType {
         )
     }
 
-    fn have_protocol_version(&self) -> bool {
+    fn has_protocol_version(&self) -> bool {
         *self == MessageType::Start
     }
 
-    fn have_requires_ack_flag(&self) -> bool {
+    fn has_requires_ack_flag(&self) -> bool {
         matches!(self, MessageType::Custom(_))
     }
 }
@@ -205,7 +205,7 @@ impl MessageHeader {
 
     #[inline]
     pub fn new_completable_entry(ty: MessageType, completed: bool, length: u32) -> Self {
-        debug_assert!(ty.have_completed_flag());
+        debug_assert!(ty.has_completed_flag());
 
         Self::_new(ty, Some(completed), None, None, length)
     }
@@ -266,17 +266,17 @@ impl TryFrom<u64> for MessageHeader {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let ty_code = (value >> 48) as u16;
         let ty: MessageType = ty_code.try_into()?;
-        let completed_flag = if ty.have_completed_flag() {
+        let completed_flag = if ty.has_completed_flag() {
             Some((value & COMPLETED_MASK) != 0)
         } else {
             None
         };
-        let protocol_version = if ty.have_protocol_version() {
+        let protocol_version = if ty.has_protocol_version() {
             Some(((value & VERSION_MASK) >> 32) as u16)
         } else {
             None
         };
-        let requires_ack_flag = if ty.have_requires_ack_flag() {
+        let requires_ack_flag = if ty.has_requires_ack_flag() {
             Some((value & REQUIRES_ACK_MASK) != 0)
         } else {
             None
