@@ -2,6 +2,7 @@ use super::header::UnknownMessageType;
 use super::*;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
+use journal::raw::RawEntryHeader;
 use std::mem;
 use tracing::trace;
 
@@ -61,7 +62,7 @@ fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeade
                 .try_into()
                 .expect("Protocol messages can't be larger than u32"),
         ),
-        ProtocolMessage::UnparsedEntry(entry) => match entry.header.completed_flag {
+        ProtocolMessage::UnparsedEntry(entry) => match entry.header.is_completed() {
             Some(completed_flag) => MessageHeader::new_completable_entry(
                 entry.entry_type().into(),
                 completed_flag,
@@ -167,16 +168,7 @@ fn decode_protocol_message(
         MessageType::Start => ProtocolMessage::Start(pb::StartMessage::decode(buf)?),
         MessageType::Completion => ProtocolMessage::Completion(pb::CompletionMessage::decode(buf)?),
         _ => ProtocolMessage::UnparsedEntry(RawEntry::new(
-            RawEntryHeader {
-                ty: header.message_type().try_into().expect(
-                    "This failure is not supposed to happen, \
-                    as all the non-entry message types should have been processed. \
-                    This is a serious Restate bug. \
-                    Please contact the developers.",
-                ),
-                completed_flag: header.completed(),
-                requires_ack_flag: header.requires_ack(),
-            },
+            entry_to_raw_header(header),
             // NOTE: This is a no-op copy if the Buf is instance of Bytes.
             // In case of SegmentedBuf, this doesn't copy if the whole message is contained
             // in a single Bytes instance.
@@ -185,11 +177,61 @@ fn decode_protocol_message(
     })
 }
 
+fn entry_to_raw_header(message_header: &MessageHeader) -> RawEntryHeader {
+    debug_assert!(
+        !matches!(
+            message_header.message_type(),
+            MessageType::Start | MessageType::Completion
+        ),
+        "Message is not an entry type. This is a Restate bug. Please contact the developers."
+    );
+    match message_header.message_type() {
+        MessageType::Start => unreachable!(),
+        MessageType::Completion => unreachable!(),
+        MessageType::PollInputStreamEntry => RawEntryHeader::PollInputStream {
+            is_completed: message_header
+                .completed()
+                .expect("completed flag being present"),
+        },
+        MessageType::OutputStreamEntry => RawEntryHeader::OutputStream,
+        MessageType::GetStateEntry => RawEntryHeader::GetState {
+            is_completed: message_header
+                .completed()
+                .expect("completed flag being present"),
+        },
+        MessageType::SetStateEntry => RawEntryHeader::SetState,
+        MessageType::ClearStateEntry => RawEntryHeader::ClearState,
+        MessageType::SleepEntry => RawEntryHeader::Sleep {
+            is_completed: message_header
+                .completed()
+                .expect("completed flag being present"),
+        },
+        MessageType::InvokeEntry => RawEntryHeader::Invoke {
+            is_completed: message_header
+                .completed()
+                .expect("completed flag being present"),
+        },
+        MessageType::BackgroundInvokeEntry => RawEntryHeader::BackgroundInvoke,
+        MessageType::AwakeableEntry => RawEntryHeader::Awakeable {
+            is_completed: message_header
+                .completed()
+                .expect("completed flag being present"),
+        },
+        MessageType::CompleteAwakeableEntry => RawEntryHeader::CompleteAwakeable,
+        MessageType::Custom(code) => RawEntryHeader::Custom {
+            code,
+            requires_ack: message_header
+                .requires_ack()
+                .expect("requires ack flag begin present"),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::*;
-    use journal::EntryType;
+    use journal::raw::RawEntryHeader;
     use service_protocol::pb;
 
     #[test]
@@ -204,11 +246,7 @@ mod tests {
             1,
         );
         let expected_msg_1: ProtocolMessage = RawEntry::new(
-            RawEntryHeader {
-                ty: EntryType::PollInputStream,
-                completed_flag: Some(true),
-                requires_ack_flag: None,
-            },
+            RawEntryHeader::PollInputStream { is_completed: true },
             pb::PollInputStreamEntryMessage {
                 value: Bytes::from_static("input".as_bytes()),
             }
@@ -264,11 +302,7 @@ mod tests {
         let mut decoder = Decoder::default();
 
         let expected_msg: ProtocolMessage = RawEntry::new(
-            RawEntryHeader {
-                ty: EntryType::PollInputStream,
-                completed_flag: Some(true),
-                requires_ack_flag: None,
-            },
+            RawEntryHeader::PollInputStream { is_completed: true },
             pb::PollInputStreamEntryMessage {
                 value: Bytes::from_static("input".as_bytes()),
             }

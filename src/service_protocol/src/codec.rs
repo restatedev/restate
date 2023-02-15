@@ -64,13 +64,13 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
         entry: &mut RawEntry,
         completion_result: CompletionResult,
     ) -> Result<(), Self::Error> {
-        debug_assert_eq!(entry.header.completed_flag, Some(false));
+        debug_assert_eq!(entry.header.is_completed(), Some(false));
 
         // Prepare the result to serialize in protobuf
         let completion_result_message = match completion_result {
             CompletionResult::Ack => {
                 // For acks we simply flag the entry as completed and return
-                entry.header.completed_flag = Some(true);
+                entry.header.mark_completed();
                 return Ok(());
             }
             CompletionResult::Empty => pb::completion_message::Result::Empty(()),
@@ -98,7 +98,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
 
         // Write back to the entry the new buffer and the completed flag
         entry.entry = result_buf.freeze();
-        entry.header.completed_flag = Some(true);
+        entry.header.mark_completed();
 
         Ok(())
     }
@@ -117,10 +117,8 @@ mod tests {
 
         // Create an invoke entry
         let raw_entry: RawEntry = RawEntry::new(
-            RawEntryHeader {
-                ty: EntryType::Invoke,
-                completed_flag: Some(false),
-                requires_ack_flag: None,
+            RawEntryHeader::Invoke {
+                is_completed: false,
             },
             pb::InvokeEntryMessage {
                 service_name: "MySvc".to_string(),
@@ -151,7 +149,7 @@ mod tests {
         .unwrap();
         let actual_entry = ProtobufRawEntryCodec::deserialize(&actual_raw_entry).unwrap();
 
-        assert_eq!(actual_raw_entry.header.completed_flag, Some(true));
+        assert_eq!(actual_raw_entry.header.is_completed(), Some(true));
         assert_eq!(actual_entry, expected_entry);
     }
 }

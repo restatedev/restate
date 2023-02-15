@@ -55,6 +55,12 @@ pub(crate) enum Effect {
         raw_entry: RawEntry,
         entry_index: EntryIndex,
     },
+    GetStateAndAppendCompletedEntry {
+        key: Bytes,
+        service_invocation_id: ServiceInvocationId,
+        raw_entry: RawEntry,
+        entry_index: EntryIndex,
+    },
 
     // Timers
     RegisterTimer {
@@ -75,6 +81,11 @@ pub(crate) enum Effect {
         raw_entry: RawEntry,
     },
     AppendAwakeableEntry {
+        service_invocation_id: ServiceInvocationId,
+        entry_index: EntryIndex,
+        raw_entry: RawEntry,
+    },
+    AppendJournalEntryAndAck {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
         raw_entry: RawEntry,
@@ -178,6 +189,21 @@ impl Effects {
         })
     }
 
+    pub(crate) fn get_state_and_append_completed_entry(
+        &mut self,
+        key: Bytes,
+        service_invocation_id: ServiceInvocationId,
+        entry_index: EntryIndex,
+        raw_entry: RawEntry,
+    ) {
+        self.effects.push(Effect::GetStateAndAppendCompletedEntry {
+            key,
+            service_invocation_id,
+            entry_index,
+            raw_entry,
+        })
+    }
+
     pub(crate) fn register_timer(
         &mut self,
         wake_up_time: u64,
@@ -224,6 +250,19 @@ impl Effects {
         raw_entry: RawEntry,
     ) {
         self.effects.push(Effect::AppendAwakeableEntry {
+            service_invocation_id,
+            entry_index,
+            raw_entry,
+        })
+    }
+
+    pub(crate) fn append_journal_entry_and_ack_storage(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        entry_index: EntryIndex,
+        raw_entry: RawEntry,
+    ) {
+        self.effects.push(Effect::AppendJournalEntryAndAck {
             service_invocation_id,
             entry_index,
             raw_entry,

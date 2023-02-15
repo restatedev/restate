@@ -2,6 +2,7 @@ use crate::partition::effects::{Committable, OutboxMessage, StateStorage};
 use crate::partition::leadership::InvocationReader;
 use crate::partition::state_machine::{JournalStatus, StateReader};
 use crate::partition::InvocationStatus;
+use bytes::Bytes;
 use common::types::{EntryIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId};
 use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
@@ -170,6 +171,14 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         _key: impl AsRef<[u8]>,
         _value: impl AsRef<[u8]>,
     ) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn load_state(
+        &self,
+        _service_id: &ServiceId,
+        _key: impl AsRef<[u8]>,
+    ) -> BoxFuture<Result<Bytes, Self::Error>> {
         todo!()
     }
 

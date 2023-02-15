@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use bytes::Bytes;
-use journal::raw::{RawEntry, RawEntryHeader};
+use journal::raw::RawEntry;
 use journal::{Completion, CompletionResult};
 use prost::Message;
 use service_protocol::pb;

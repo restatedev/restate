@@ -4,10 +4,11 @@ use common::types::{
 };
 use futures::future::BoxFuture;
 use invoker::Kind;
-use journal::raw::{RawEntry, RawEntryCodec};
+use journal::raw::{RawEntry, RawEntryCodec, RawEntryHeader};
 use journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
-    Entry, EntryType, InvokeEntry, InvokeRequest, JournalRevision, SetStateEntry, SleepEntry,
+    Entry, EntryResult, GetStateEntry, InvokeEntry, InvokeRequest, JournalRevision,
+    OutputStreamEntry, SetStateEntry, SleepEntry,
 };
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -248,25 +249,20 @@ where
                 }
             }
             Kind::End => {
-                self.complete_invocation(
-                    service_invocation_id,
-                    CompletionResult::Success(Bytes::new()),
-                    state,
-                    effects,
-                )
-                .await?;
+                self.complete_invocation(service_invocation_id, state, effects)
+                    .await?;
             }
             Kind::Failed { error, error_code } => {
-                self.complete_invocation(
-                    service_invocation_id,
-                    CompletionResult::Failure(
-                        error_code,
-                        error.to_string().into(),
-                    ),
-                    state,
-                    effects,
-                )
-                .await?;
+                let response = Self::create_response(EntryResult::Failure(
+                    error_code,
+                    error.to_string().into(),
+                ));
+
+                // TODO: We probably only need to send the response if we haven't send a response before
+                self.send_message(OutboxMessage::Response(response), effects);
+
+                self.complete_invocation(service_invocation_id, state, effects)
+                    .await?;
             }
         }
 
@@ -293,38 +289,41 @@ where
             "Expect to receive next journal entry"
         );
 
-        match entry.header.ty {
-            EntryType::Invoke => {
-                let InvokeEntry { request, .. } = enum_inner!(
-                    Self::deserialize(&entry).map_err(Error::Codec)?,
-                    Entry::Invoke
+        match entry.header {
+            // nothing to do
+            RawEntryHeader::PollInputStream { is_completed } => {
+                debug_assert!(
+                    !is_completed,
+                    "Poll input stream entry must not be completed."
                 );
-
-                let service_invocation = Self::create_service_invocation(
-                    request,
-                    Some((service_invocation_id.clone(), entry_index)),
-                );
-                self.send_message(OutboxMessage::Invocation(service_invocation), effects);
             }
-            EntryType::BackgroundInvoke => {
-                let BackgroundInvokeEntry(request) = enum_inner!(
+            RawEntryHeader::OutputStream => {
+                let OutputStreamEntry { result } = enum_inner!(
                     Self::deserialize(&entry).map_err(Error::Codec)?,
-                    Entry::BackgroundInvoke
+                    Entry::OutputStream
                 );
 
-                let service_invocation = Self::create_service_invocation(request, None);
-                self.send_message(OutboxMessage::Invocation(service_invocation), effects);
-            }
-            EntryType::CompleteAwakeable => {
-                let entry = enum_inner!(
-                    Self::deserialize(&entry).map_err(Error::Codec)?,
-                    Entry::CompleteAwakeable
-                );
+                let response = Self::create_response(result);
 
-                let response = Self::create_response_for_awakeable_entry(entry);
                 self.send_message(OutboxMessage::Response(response), effects);
             }
-            EntryType::SetState => {
+            RawEntryHeader::GetState { is_completed } => {
+                if !is_completed {
+                    let GetStateEntry { key, .. } = enum_inner!(
+                        Self::deserialize(&entry).map_err(Error::Codec)?,
+                        Entry::GetState
+                    );
+
+                    effects.get_state_and_append_completed_entry(
+                        key,
+                        service_invocation_id,
+                        entry_index,
+                        entry,
+                    );
+                    return Ok(());
+                }
+            }
+            RawEntryHeader::SetState => {
                 let SetStateEntry { key, value } = enum_inner!(
                     Self::deserialize(&entry).map_err(Error::Codec)?,
                     Entry::SetState
@@ -335,7 +334,7 @@ where
                 // That's why we must return here.
                 return Ok(());
             }
-            EntryType::ClearState => {
+            RawEntryHeader::ClearState => {
                 let ClearStateEntry { key } = enum_inner!(
                     Self::deserialize(&entry).map_err(Error::Codec)?,
                     Entry::ClearState
@@ -345,7 +344,8 @@ where
                 // That's why we must return here.
                 return Ok(());
             }
-            EntryType::Sleep => {
+            RawEntryHeader::Sleep { is_completed } => {
+                debug_assert!(!is_completed, "Sleep entry must not be completed.");
                 let SleepEntry { wake_up_time, .. } = enum_inner!(
                     Self::deserialize(&entry).map_err(Error::Codec)?,
                     Entry::Sleep
@@ -359,17 +359,58 @@ where
                     entry_index,
                 );
             }
+            RawEntryHeader::Invoke { is_completed } => {
+                if !is_completed {
+                    let InvokeEntry { request, .. } = enum_inner!(
+                        Self::deserialize(&entry).map_err(Error::Codec)?,
+                        Entry::Invoke
+                    );
 
-            // nothing to do
-            EntryType::GetState => {}
-            EntryType::Custom(_) => {}
-            EntryType::PollInputStream => {}
-            EntryType::OutputStream => {}
+                    let service_invocation = Self::create_service_invocation(
+                        request,
+                        Some((service_invocation_id.clone(), entry_index)),
+                    );
+                    self.send_message(OutboxMessage::Invocation(service_invocation), effects);
+                } else {
+                    // no action needed for a completed invoke entry
+                }
+            }
+            RawEntryHeader::BackgroundInvoke => {
+                let BackgroundInvokeEntry(request) = enum_inner!(
+                    Self::deserialize(&entry).map_err(Error::Codec)?,
+                    Entry::BackgroundInvoke
+                );
 
+                let service_invocation = Self::create_service_invocation(request, None);
+                self.send_message(OutboxMessage::Invocation(service_invocation), effects);
+            }
             // special handling because we can have a completion present
-            EntryType::Awakeable => {
+            RawEntryHeader::Awakeable { is_completed } => {
+                debug_assert!(!is_completed, "Awakeable entry must not be completed.");
                 effects.append_awakeable_entry(service_invocation_id, entry_index, entry);
                 return Ok(());
+            }
+            RawEntryHeader::CompleteAwakeable => {
+                let entry = enum_inner!(
+                    Self::deserialize(&entry).map_err(Error::Codec)?,
+                    Entry::CompleteAwakeable
+                );
+
+                let response = Self::create_response_for_awakeable_entry(entry);
+                self.send_message(OutboxMessage::Response(response), effects);
+            }
+            RawEntryHeader::Custom {
+                requires_ack,
+                code: _,
+            } => {
+                if requires_ack {
+                    effects.append_journal_entry_and_ack_storage(
+                        service_invocation_id,
+                        entry_index,
+                        entry,
+                    );
+                    return Ok(());
+                }
             }
         }
 
@@ -424,7 +465,6 @@ where
     async fn complete_invocation<State: StateReader>(
         &mut self,
         service_invocation_id: ServiceInvocationId,
-        completion_result: CompletionResult,
         state: &State,
         effects: &mut Effects,
     ) -> Result<(), Error<State::Error, Codec::Error>> {
@@ -441,10 +481,6 @@ where
         } else {
             effects.drop_journal_and_free_service(service_invocation_id.service_id);
         }
-
-        let response = Self::create_response(completion_result);
-
-        self.send_message(OutboxMessage::Response(response), effects);
 
         Ok(())
     }
@@ -467,7 +503,7 @@ where
         todo!()
     }
 
-    fn create_response(_result: CompletionResult) -> InvocationResponse {
+    fn create_response(_result: EntryResult) -> InvocationResponse {
         todo!()
     }
 

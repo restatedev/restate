@@ -1,5 +1,6 @@
 use crate::partition::effects::{Effect, Effects, OutboxMessage};
 use crate::partition::InvocationStatus;
+use bytes::Bytes;
 use common::types::{EntryIndex, ServiceId, ServiceInvocation, ServiceInvocationId};
 use futures::future::BoxFuture;
 use invoker::InvokeInputJournal;
@@ -124,6 +125,13 @@ pub(crate) trait StateStorage {
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> Result<(), Self::Error>;
+
+    // TODO: Replace with async trait or proper future
+    fn load_state(
+        &self,
+        service_id: &ServiceId,
+        key: impl AsRef<[u8]>,
+    ) -> BoxFuture<Result<Bytes, Self::Error>>;
 
     fn clear_state(&self, service_id: &ServiceId, key: impl AsRef<[u8]>)
         -> Result<(), Self::Error>;
@@ -326,6 +334,37 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 )
                 .await?;
             }
+            Effect::GetStateAndAppendCompletedEntry {
+                key,
+                service_invocation_id,
+                mut raw_entry,
+                entry_index,
+            } => {
+                let value = state_storage
+                    .load_state(&service_invocation_id.service_id, &key)
+                    .await
+                    .map_err(Error::State)?;
+
+                Codec::write_completion(&mut raw_entry, CompletionResult::Success(value.clone()))
+                    .map_err(Error::Codec)?;
+
+                let journal_revision = Self::unchecked_append_journal_entry(
+                    state_storage,
+                    collector,
+                    service_invocation_id.clone(),
+                    entry_index,
+                    raw_entry,
+                )?;
+
+                collector.collect(ActuatorMessage::ForwardCompletion {
+                    service_invocation_id,
+                    journal_revision,
+                    completion: Completion {
+                        entry_index,
+                        result: CompletionResult::Success(value),
+                    },
+                })
+            }
             Effect::RegisterTimer {
                 service_invocation_id,
                 wake_up_time,
@@ -386,6 +425,30 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     entry_index,
                     raw_entry,
                 )?;
+            }
+            Effect::AppendJournalEntryAndAck {
+                service_invocation_id,
+                raw_entry,
+                entry_index,
+            } => {
+                let journal_revision = Self::append_journal_entry(
+                    state_storage,
+                    collector,
+                    service_invocation_id.clone(),
+                    entry_index,
+                    raw_entry,
+                )
+                .await?;
+
+                // storage is acked by sending an empty completion
+                collector.collect(ActuatorMessage::ForwardCompletion {
+                    journal_revision,
+                    service_invocation_id,
+                    completion: Completion {
+                        entry_index,
+                        result: CompletionResult::Ack,
+                    },
+                })
             }
             Effect::TruncateOutbox(outbox_sequence_number) => {
                 state_storage
@@ -500,7 +563,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
         raw_entry: RawEntry,
-    ) -> Result<(), Error<S::Error, Codec::Error>> {
+    ) -> Result<JournalRevision, Error<S::Error, Codec::Error>> {
         debug_assert!(
             state_storage
                 .load_completion_result(&service_invocation_id.service_id, entry_index)
@@ -525,7 +588,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
         raw_entry: RawEntry,
-    ) -> Result<(), Error<S::Error, Codec::Error>> {
+    ) -> Result<JournalRevision, Error<S::Error, Codec::Error>> {
         let journal_revision = state_storage
             .store_journal_entry(&service_invocation_id.service_id, entry_index, &raw_entry)
             .map_err(Error::State)?;
@@ -536,7 +599,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             journal_revision,
         });
 
-        Ok(())
+        Ok(journal_revision)
     }
 
     fn into_raw_entry(_input_stream_entry: &PollInputStreamEntry) -> RawEntry {
