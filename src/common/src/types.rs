@@ -91,7 +91,7 @@ pub struct ServiceInvocation {
 
 /// Representing a response for a caller
 #[derive(Debug)]
-pub struct Response {
+pub struct InvocationResponse {
     pub id: ServiceInvocationId,
     pub entry_index: EntryIndex,
     pub result: ResponseResult,

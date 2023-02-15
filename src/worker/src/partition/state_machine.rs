@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use common::types::{EntryIndex, Response, ServiceId, ServiceInvocation, ServiceInvocationId};
+use common::types::{EntryIndex, InvocationResponse, ServiceId, ServiceInvocation, ServiceInvocationId};
 use futures::future::BoxFuture;
 use invoker::Kind;
 use journal::raw::{RawEntry, RawEntryCodec};
@@ -36,7 +36,7 @@ pub(crate) enum Command {
     #[allow(dead_code)]
     Invocation(ServiceInvocation),
     #[allow(dead_code)]
-    Response(Response),
+    Response(InvocationResponse),
 }
 
 pub(super) struct JournalStatus {
@@ -153,7 +153,7 @@ where
                     self.inbox_seq_number += 1;
                 }
             }
-            Command::Response(Response {
+            Command::Response(InvocationResponse {
                 id,
                 entry_index,
                 result,
@@ -454,11 +454,11 @@ where
         todo!()
     }
 
-    fn create_response_for_awakeable_entry(_entry: CompleteAwakeableEntry) -> Response {
+    fn create_response_for_awakeable_entry(_entry: CompleteAwakeableEntry) -> InvocationResponse {
         todo!()
     }
 
-    fn create_response(_result: CompletionResult) -> Response {
+    fn create_response(_result: CompletionResult) -> InvocationResponse {
         todo!()
     }
 
