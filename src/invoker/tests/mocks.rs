@@ -126,7 +126,7 @@ where
             )
             .await;
 
-        debug!("Sending invoke to invoker: {:?}", &sid);
+        debug!("Sending invoke to invoker: {:?}", sid);
         self.in_tx
             .invoke((0, 0), sid, InvokeInputJournal::NoCachedJournal)
             .await
@@ -136,7 +136,7 @@ where
     pub async fn run(mut self) {
         while let Some(handler) = self.steps.pop_front() {
             let handler_res = match handler {
-                SimulatorStep::Handle(h) => {
+                SimulatorStep::Handle(handler_fn) => {
                     let out = self.out_rx.recv().await.unwrap();
                     debug!("Got from invoker: {:?}", out);
 
@@ -162,11 +162,11 @@ where
                             .unwrap();
                     };
 
-                    h(out)
+                    handler_fn(out)
                 }
-                SimulatorStep::Do(timeout, h) => {
+                SimulatorStep::Do(timeout, handler_fn) => {
                     tokio::time::sleep(timeout).await;
-                    h()
+                    handler_fn()
                 }
             };
 

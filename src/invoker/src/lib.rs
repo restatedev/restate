@@ -43,12 +43,12 @@ impl EndpointMetadata {
 }
 
 pub trait ServiceEndpointRegistry {
-    fn resolve_endpoint(&self, service_name: &str) -> Option<EndpointMetadata>;
+    fn resolve_endpoint(&self, service_name: impl AsRef<str>) -> Option<EndpointMetadata>;
 }
 
 impl ServiceEndpointRegistry for HashMap<String, EndpointMetadata> {
-    fn resolve_endpoint(&self, service_name: &str) -> Option<EndpointMetadata> {
-        self.get(service_name).cloned()
+    fn resolve_endpoint(&self, service_name: impl AsRef<str>) -> Option<EndpointMetadata> {
+        self.get(service_name.as_ref()).cloned()
     }
 }
 

@@ -1,4 +1,5 @@
-//! This module has a test to run manually that can be tested against the Counter example in sdk-java.
+//! This module has a test to run manually that can be tested against the
+//! [Counter example](https://github.com/restatedev/sdk-java/blob/main/examples/src/main/java/dev/restate/sdk/examples/BlockingCounter.java) in sdk-java.
 
 mod mocks;
 

@@ -53,7 +53,8 @@ highlight = "all"
 allow = []
 skip = [
     # It's ok to ignore these dependencies, as they're resolved but we never use them,
-    # since we don't target Windows, nor HermitCore
+    # since we don't target Windows, nor HermitCore. We have a couple of transitive dependencies
+    # requiring windows and hermit syscalls with conflicting version.
     # Also see https://github.com/rust-lang/cargo/issues/1197
     { name = "windows-sys" },
     { name = "hermit-abi" },

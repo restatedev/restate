@@ -16,13 +16,15 @@ use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
 use tokio::sync::mpsc;
-use tracing::trace;
+use tracing::{debug, trace};
 
 use super::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
 use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader, ProtocolType};
 
+// Clippy false positive
+// https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
 #[allow(clippy::declare_interior_mutable_const)]
 const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/restate");
 
@@ -68,6 +70,7 @@ impl From<tokio::task::JoinError> for InvocationTaskResultKind {
 }
 
 // Copy pasted from hyper::Error
+// https://github.com/hyperium/hyper/blob/40c01dfb4f87342a6f86f07564ddc482194c6240/src/error.rs#L229
 // TODO hopefully this code is not needed anymore with hyper 1.0,
 //  as we'll have more control on the h2 frames themselves.
 //  Revisit when upgrading to hyper 1.0.
@@ -83,6 +86,7 @@ fn find_source<E: Error + 'static>(err: &hyper::Error) -> Option<&E> {
     // else
     None
 }
+
 fn h2_reason(err: &hyper::Error) -> h2::Reason {
     // Find an h2::Reason somewhere in the cause stack, if it exists,
     // otherwise assume an INTERNAL_ERROR.
@@ -256,9 +260,10 @@ where
     where
         JournalStream: Stream<Item = RawEntry>,
     {
-        // This future drives the request initiation,
-        // so we need to spawn it separately to avoid a deadlock when trying to write to the request body.
-        let mut req_fut = tokio::spawn(client.request(req));
+        // Because the body sender blocks on waiting for the request body buffer to be available,
+        // we need to spawn the request initiation separately, otherwise the loop below
+        // will deadlock on the journal entry write.
+        let mut req_fut = tokio::task::spawn(client.request(req));
         tokio::pin!(journal_stream);
 
         let mut response = None;
@@ -295,8 +300,17 @@ where
                     match opt_completion {
                         Some((journal_revision, completion)) => {
                             trace!("Sending the completion to the wire");
-                            self.write(http_stream_tx, completion.into()).await?;
-                            self.last_journal_revision = cmp::max(self.last_journal_revision, journal_revision);
+                            if journal_revision > self.last_journal_revision {
+                                self.write(http_stream_tx, completion.into()).await?;
+                                self.last_journal_revision = cmp::max(self.last_journal_revision, journal_revision);
+                            } else {
+                                debug!(
+                                    "Ignoring completion {} as the journal revision is smaller than the last seen journal revision: {} <= {}",
+                                    completion.entry_index,
+                                    journal_revision,
+                                    self.last_journal_revision
+                                );
+                            }
                         },
                         None => {
                             // Completion channel is closed,

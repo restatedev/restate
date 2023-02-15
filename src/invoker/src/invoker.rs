@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::panic;
+use std::time::Duration;
 
 use common::types::PartitionLeaderEpoch;
 use futures::stream;
@@ -15,7 +16,7 @@ use futures::stream::{PollNext, StreamExt};
 use journal::raw::RawEntryCodec;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::*;
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
@@ -163,6 +164,8 @@ enum OtherInputCommand {
     // needed for dynamic registration at Invoker
     RegisterPartition(mpsc::Sender<OutputEffect>),
 }
+
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
@@ -355,9 +358,17 @@ where
                 _ = &mut shutdown => {
                     debug!("Shutting down the invoker");
                     state_machine_coordinator.abort_all();
-                    return;
+                    break;
                 }
             }
+        }
+
+        // Wait for all the tasks to shutdown
+        if tokio::time::timeout(SHUTDOWN_TIMEOUT, invocation_tasks.shutdown())
+            .await
+            .is_err()
+        {
+            warn!("I'm going to forcefully shutdown the invoker without waiting for all the tasks to be joined");
         }
     }
 }
@@ -393,7 +404,7 @@ mod state_machine_coordinator {
         ) -> &mut PartitionInvocationStateMachineCoordinator {
             self.partitions.get_mut(&partition).expect(
                 "An event has been triggered for an unknown partition. \
-                This is not supposed to happen, and it's probably a bug.",
+                This is not supposed to happen, and is probably a bug.",
             )
         }
 
@@ -681,7 +692,9 @@ mod invocation_state_machine {
                 index_waiting_on_ack,
             } = &mut self.1
             {
-                *index_waiting_on_ack = entry_index
+                if entry_index >= *index_waiting_on_ack {
+                    // TODO retry if retry timer passed
+                }
             }
         }
 
@@ -699,12 +712,15 @@ mod invocation_state_machine {
         }
 
         /// Returns Some() with the timer for the next retry, otherwise None if retry limit exhausted
-        pub(super) fn handle_task_error(&mut self, entry_index: EntryIndex) -> Option<Duration> {
+        pub(super) fn handle_task_error(
+            &mut self,
+            last_entry_index: EntryIndex,
+        ) -> Option<Duration> {
             debug_assert!(matches!(&self.0, TaskState::Running(_)));
 
             self.0 = TaskState::NotRunning;
             self.1 = InvocationState::WaitingRetry {
-                index_waiting_on_ack: entry_index,
+                index_waiting_on_ack: last_entry_index,
             };
             // TODO implement retry policy
             //  https://github.com/restatedev/restate/issues/84
