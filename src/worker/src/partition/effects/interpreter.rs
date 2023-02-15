@@ -2,6 +2,7 @@ use crate::partition::effects::{Effect, Effects, OutboxMessage};
 use crate::partition::InvocationStatus;
 use common::types::{EntryIndex, ServiceId, ServiceInvocation, ServiceInvocationId};
 use futures::future::BoxFuture;
+use invoker::InvokeInputJournal;
 use journal::raw::{RawEntry, RawEntryCodec};
 use journal::{Completion, CompletionResult, JournalRevision, PollInputStreamEntry};
 use std::marker::PhantomData;
@@ -17,7 +18,10 @@ pub(crate) enum Error<S, C> {
 
 #[derive(Debug)]
 pub(crate) enum ActuatorMessage {
-    Invoke(ServiceInvocationId),
+    Invoke {
+        service_invocation_id: ServiceInvocationId,
+        invoke_input_journal: InvokeInputJournal,
+    },
     NewOutboxMessage(u64),
     #[allow(dead_code)]
     RegisterTimer {
@@ -221,7 +225,10 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .map_err(Error::State)?;
 
                 // TODO: Send raw PollInputStreamEntry together with Invoke message
-                collector.collect(ActuatorMessage::Invoke(service_invocation.id));
+                collector.collect(ActuatorMessage::Invoke {
+                    service_invocation_id: service_invocation.id,
+                    invoke_input_journal: InvokeInputJournal::NoCachedJournal,
+                });
             }
             Effect::ResumeService(ServiceInvocationId {
                 service_id,
@@ -231,10 +238,13 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .store_invocation_status(&service_id, &InvocationStatus::Invoked(invocation_id))
                     .map_err(Error::State)?;
 
-                collector.collect(ActuatorMessage::Invoke(ServiceInvocationId {
-                    service_id,
-                    invocation_id,
-                }));
+                collector.collect(ActuatorMessage::Invoke {
+                    service_invocation_id: ServiceInvocationId {
+                        service_id,
+                        invocation_id,
+                    },
+                    invoke_input_journal: InvokeInputJournal::NoCachedJournal,
+                });
             }
             Effect::SuspendService(ServiceInvocationId {
                 service_id,
@@ -431,7 +441,10 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 .await?
                 .is_some()
                 {
-                    collector.collect(ActuatorMessage::Invoke(service_invocation_id));
+                    collector.collect(ActuatorMessage::Invoke {
+                        service_invocation_id,
+                        invoke_input_journal: InvokeInputJournal::NoCachedJournal,
+                    });
                 }
             }
             Effect::DropJournalAndPopInbox {

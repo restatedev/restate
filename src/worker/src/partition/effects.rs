@@ -1,5 +1,7 @@
 use bytes::Bytes;
-use common::types::{EntryIndex, InvocationResponse, ServiceId, ServiceInvocation, ServiceInvocationId};
+use common::types::{
+    EntryIndex, InvocationResponse, ServiceId, ServiceInvocation, ServiceInvocationId,
+};
 use journal::raw::RawEntry;
 use journal::Completion;
 use std::vec::Drain;

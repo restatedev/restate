@@ -1,5 +1,7 @@
 use bytes::Bytes;
-use common::types::{EntryIndex, InvocationResponse, ServiceId, ServiceInvocation, ServiceInvocationId};
+use common::types::{
+    EntryIndex, InvocationResponse, ServiceId, ServiceInvocation, ServiceInvocationId,
+};
 use futures::future::BoxFuture;
 use invoker::Kind;
 use journal::raw::{RawEntry, RawEntryCodec};

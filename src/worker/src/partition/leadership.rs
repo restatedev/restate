@@ -68,12 +68,15 @@ where
             trace!(?message, "Send actuator message");
 
             match message {
-                ActuatorMessage::Invoke(service_invocation_id) => {
+                ActuatorMessage::Invoke {
+                    service_invocation_id,
+                    invoke_input_journal,
+                } => {
                     invoker_tx
                         .invoke(
                             partition_leader_epoch,
                             service_invocation_id,
-                            InvokeInputJournal::NoCachedJournal,
+                            invoke_input_journal,
                         )
                         .await?
                 }
