@@ -256,10 +256,13 @@ where
                 )
                 .await?;
             }
-            Kind::Failed { error } => {
+            Kind::Failed { error, error_code } => {
                 self.complete_invocation(
                     service_invocation_id,
-                    CompletionResult::Failure(502, error.to_string().into()),
+                    CompletionResult::Failure(
+                        error_code,
+                        error.to_string().into(),
+                    ),
                     state,
                     effects,
                 )
