@@ -78,7 +78,6 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
         &mut self,
         partition: PartitionLeaderEpoch,
         service_invocation_id: ServiceInvocationId,
-        journal_revision: JournalRevision,
         entry_index: EntryIndex,
     ) -> Self::Future {
         self.other_input
@@ -87,7 +86,6 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
                 inner: OtherInputCommand::StoredEntryAck {
                     service_invocation_id,
                     entry_index,
-                    journal_revision,
                 },
             })
             .expect("Invoker should be running");
@@ -143,7 +141,6 @@ enum OtherInputCommand {
     StoredEntryAck {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        journal_revision: JournalRevision,
     },
 
     /// Command used to clean up internal state when a partition leader is going away

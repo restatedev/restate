@@ -88,14 +88,12 @@ where
                 }
                 ActuatorMessage::AckStoredEntry {
                     service_invocation_id,
-                    journal_revision,
                     entry_index,
                 } => {
                     invoker_tx
                         .notify_stored_entry_ack(
                             partition_leader_epoch,
                             service_invocation_id,
-                            journal_revision,
                             entry_index,
                         )
                         .await?;

@@ -33,7 +33,6 @@ pub(crate) enum ActuatorMessage {
     AckStoredEntry {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        journal_revision: JournalRevision,
     },
     ForwardCompletion {
         service_invocation_id: ServiceInvocationId,
@@ -596,7 +595,6 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         collector.collect(ActuatorMessage::AckStoredEntry {
             service_invocation_id,
             entry_index,
-            journal_revision,
         });
 
         Ok(journal_revision)

@@ -69,7 +69,6 @@ pub trait InvokerInputSender {
         &mut self,
         partition: PartitionLeaderEpoch,
         service_invocation_id: ServiceInvocationId,
-        journal_revision: JournalRevision,
         entry_index: EntryIndex,
     ) -> Self::Future;
 
