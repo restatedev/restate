@@ -11,7 +11,7 @@ use journal::{
 };
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::partition::effects::{Effects, OutboxMessage};
 use crate::partition::InvocationStatus;
@@ -238,6 +238,10 @@ where
                     .revision;
 
                 if actual_journal_revision > expected_journal_revision {
+                    trace!(
+                        ?service_invocation_id,
+                        "Resuming instead of suspending service because there is a newer journal."
+                    );
                     effects.resume_service(service_invocation_id);
                 } else {
                     effects.suspend_service(service_invocation_id);
