@@ -43,7 +43,7 @@ pub(crate) enum Command {
 
 pub(super) struct JournalStatus {
     pub(super) revision: JournalRevision,
-    pub(super) length: u32,
+    pub(super) length: EntryIndex,
 }
 
 pub type InboxEntry = (u64, ServiceInvocation);
