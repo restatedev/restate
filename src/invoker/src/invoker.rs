@@ -335,12 +335,12 @@ where
                                 raw_entry
                             ).await
                         },
-                        InvocationTaskOutputInner::Result {last_journal_revision, last_journal_index, kind} => {
+                        InvocationTaskOutputInner::Result {last_journal_revision, last_journal_index, result} => {
                             partition_state_machine.handle_invocation_task_result(
                                 invocation_task_msg.service_invocation_id,
                                 last_journal_index,
                                 last_journal_revision,
-                                kind
+                                result
                             ).await
                         }
                     };
@@ -375,7 +375,7 @@ where
 
 mod state_machine_coordinator {
     use super::*;
-    use crate::invocation_task::{InvocationTask, InvocationTaskResultKind};
+    use crate::invocation_task::{InvocationTask, InvocationTaskError};
     use crate::invoker::invocation_state_machine::InvocationStateMachine;
     use tracing::warn;
 
@@ -571,14 +571,14 @@ mod state_machine_coordinator {
             service_invocation_id: ServiceInvocationId,
             last_journal_index: EntryIndex,
             last_journal_revision: JournalRevision,
-            kind: InvocationTaskResultKind,
+            result: Result<(), InvocationTaskError>,
         ) {
             if let Some(mut sm) = self
                 .invocation_state_machines
                 .remove(&service_invocation_id)
             {
-                match kind {
-                    InvocationTaskResultKind::Ok => {
+                match result {
+                    Ok(_) => {
                         let output_effect = if sm.ending() {
                             OutputEffect::End {
                                 service_invocation_id,
@@ -592,11 +592,11 @@ mod state_machine_coordinator {
 
                         let _ = self.output_tx.send(output_effect).await;
                     }
-                    error_kind => {
+                    Err(error) => {
                         warn!(
                             restate.sid = %service_invocation_id,
                             "Error when executing the invocation: {}",
-                            error_kind
+                            error
                         );
 
                         if let Some(_next_retry_timer_duration) =
@@ -610,7 +610,7 @@ mod state_machine_coordinator {
                                 .output_tx
                                 .send(OutputEffect::Failed {
                                     service_invocation_id,
-                                    error: Box::new(error_kind),
+                                    error: Box::new(error),
                                 })
                                 .await;
                         }

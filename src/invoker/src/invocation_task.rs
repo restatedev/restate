@@ -8,7 +8,7 @@ use hyper::body::Sender;
 use hyper::client::HttpConnector;
 use hyper::http::response::Parts;
 use hyper::http::HeaderValue;
-use hyper::{http, Body, Request, Response, Uri};
+use hyper::{http, Body, Request, Uri};
 use hyper_tls::HttpsConnector;
 use journal::raw::RawEntry;
 use journal::{Completion, EntryIndex, JournalRevision};
@@ -16,6 +16,7 @@ use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
 use tokio::sync::mpsc;
+use tokio::task::JoinError;
 use tracing::{debug, trace};
 
 use super::message::{
@@ -29,10 +30,7 @@ use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader
 const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/restate");
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum InvocationTaskResultKind {
-    #[error("no error")]
-    Ok,
-
+pub(crate) enum InvocationTaskError {
     #[error("unexpected http status code: {0}")]
     UnexpectedResponse(http::StatusCode),
     #[error("unexpected http status code: {0:?}")]
@@ -45,28 +43,10 @@ pub(crate) enum InvocationTaskResultKind {
     JournalReader(Box<dyn Error + Send + Sync + 'static>),
     #[error("other hyper error: {0}")]
     Network(hyper::Error),
+    #[error("unexpected join error, looks like hyper panicked: {0}")]
+    UnexpectedJoinError(#[from] JoinError),
     #[error(transparent)]
     Other(#[from] Box<dyn Error + Send + Sync + 'static>),
-}
-
-impl From<hyper::Error> for InvocationTaskResultKind {
-    fn from(err: hyper::Error) -> Self {
-        if h2_reason(&err) == h2::Reason::NO_ERROR {
-            InvocationTaskResultKind::Ok
-        } else {
-            InvocationTaskResultKind::Network(err)
-        }
-    }
-}
-
-impl From<tokio::task::JoinError> for InvocationTaskResultKind {
-    fn from(err: tokio::task::JoinError) -> Self {
-        if err.is_cancelled() {
-            InvocationTaskResultKind::Ok
-        } else {
-            InvocationTaskResultKind::Other(Box::new(err))
-        }
-    }
 }
 
 // Copy pasted from hyper::Error
@@ -106,7 +86,7 @@ pub(crate) enum InvocationTaskOutputInner {
         last_journal_index: EntryIndex,
         last_journal_revision: JournalRevision,
 
-        kind: InvocationTaskResultKind,
+        result: Result<(), InvocationTaskError>,
     },
     NewEntry {
         entry_index: EntryIndex,
@@ -134,6 +114,25 @@ pub(crate) struct InvocationTask<JR> {
     // Encoder/Decoder
     encoder: Encoder,
     decoder: Decoder,
+}
+
+/// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
+/// Not needed if we had Try stable. See [`InvocationTask::run_internal`]
+enum TerminalLoopState<T> {
+    Continue(T),
+    End,
+}
+
+impl<T> TryFrom<hyper::Error> for TerminalLoopState<T> {
+    type Error = InvocationTaskError;
+
+    fn try_from(err: hyper::Error) -> Result<Self, Self::Error> {
+        if h2_reason(&err) == h2::Reason::NO_ERROR {
+            Ok(TerminalLoopState::End)
+        } else {
+            Err(InvocationTaskError::Network(err))
+        }
+    }
 }
 
 impl<JR, JS> InvocationTask<JR>
@@ -171,27 +170,22 @@ where
     /// Loop opening the request to service endpoint and consuming the stream
     #[tracing::instrument(name = "run", level = "trace", skip_all, fields(restate.sid = %self.service_invocation_id))]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
-        let kind = self
-            .run_internal(input_journal)
-            .await
-            .expect_err("run_internal never returns Ok");
+        let result = self.run_internal(input_journal).await;
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             service_invocation_id: self.service_invocation_id,
             inner: InvocationTaskOutputInner::Result {
                 last_journal_index: self.next_journal_index - 1,
                 last_journal_revision: self.last_journal_revision,
-                kind,
+                result,
             },
         });
     }
 
-    // This method never returns Ok(()). The Result type is used only for shortcircuiting.
-    // Unfortunately we cannot implement the try operator on InvocationTaskResultKind yet https://github.com/rust-lang/rust/issues/84277.
     async fn run_internal(
         &mut self,
         input_journal: InvokeInputJournal,
-    ) -> Result<(), InvocationTaskResultKind> {
+    ) -> Result<(), InvocationTaskError> {
         // Resolve journal and its metadata
         let (journal_metadata, journal_stream) = match input_journal {
             InvokeInputJournal::NoCachedJournal => {
@@ -199,7 +193,7 @@ where
                     .journal_reader
                     .read_journal(&self.service_invocation_id)
                     .await
-                    .map_err(|e| InvocationTaskResultKind::JournalReader(Box::new(e)))?;
+                    .map_err(|e| InvocationTaskError::JournalReader(Box::new(e)))?;
                 (journal_meta, future::Either::Left(journal_stream))
             }
             InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
@@ -220,31 +214,40 @@ where
             .await?;
 
         // Start the request
-        let http_response = self
+        // TODO this could be much nicer to implement if we had the try operator
+        //  https://github.com/rust-lang/rust/issues/84277.
+        let mut http_stream_rx = match self
             .wait_response_and_replay_end_loop(
                 &mut http_stream_tx,
                 client,
                 http_request,
                 journal_stream,
             )
-            .await?;
+            .await?
+        {
+            TerminalLoopState::Continue(b) => b,
+            TerminalLoopState::End => return Ok(()),
+        };
 
         // Check all the entries have been replayed
         debug_assert_eq!(self.next_journal_index, journal_metadata.journal_size);
 
-        // Check the response is valid
-        let (http_response_header, mut http_stream_rx) = http_response.into_parts();
-        Self::validate_response(http_response_header)?;
-
         // If we have the invoker_rx, we can use the bidi stream loop,
         // which both reads the invoker_rx and the http_stream_rx
         if let Some(invoker_rx) = self.invoker_rx.take() {
-            self.bidi_stream_loop(&mut http_stream_tx, invoker_rx, &mut http_stream_rx)
-                .await?;
+            // TODO this could be much nicer to implement if we had the try operator
+            //  https://github.com/rust-lang/rust/issues/84277.
+            match self
+                .bidi_stream_loop(&mut http_stream_tx, invoker_rx, &mut http_stream_rx)
+                .await?
+            {
+                TerminalLoopState::Continue(_) => {}
+                TerminalLoopState::End => return Ok(()),
+            }
         }
 
         // We don't have the invoker_rx, so we simply consume the response
-        Err(self.response_stream_loop(&mut http_stream_rx).await)
+        self.response_stream_loop(&mut http_stream_rx).await
     }
 
     // --- Loops
@@ -256,7 +259,7 @@ where
         client: hyper::Client<HttpsConnector<HttpConnector>>,
         req: Request<Body>,
         journal_stream: JournalStream,
-    ) -> Result<Response<Body>, InvocationTaskResultKind>
+    ) -> Result<TerminalLoopState<Body>, InvocationTaskError>
     where
         JournalStream: Stream<Item = RawEntry>,
     {
@@ -266,14 +269,21 @@ where
         let mut req_fut = tokio::task::spawn(client.request(req));
         tokio::pin!(journal_stream);
 
-        let mut response = None;
+        let mut http_stream_rx_res = None;
 
         loop {
             tokio::select! {
-                response_res = &mut req_fut, if response.is_none() => {
-                    response = Some(
-                        response_res??
-                    );
+                response_res = &mut req_fut, if http_stream_rx_res.is_none() => {
+                    let http_response = match response_res? {
+                        Ok(res) => res,
+                        Err(hyper_err) => return hyper_err.try_into(),
+                    };
+
+                    // Check the response is valid
+                    let (http_response_header, http_stream_rx) = http_response.into_parts();
+                    Self::validate_response(http_response_header)?;
+
+                    http_stream_rx_res = Some(http_stream_rx);
                 },
                 Some(je) = journal_stream.next() => {
                     self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await?;
@@ -284,7 +294,7 @@ where
         }
 
         trace!("Finished to replay the journal");
-        Ok(response.unwrap())
+        Ok(TerminalLoopState::Continue(http_stream_rx_res.unwrap()))
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
@@ -293,7 +303,7 @@ where
         http_stream_tx: &mut Sender,
         mut invoker_rx: mpsc::UnboundedReceiver<(JournalRevision, Completion)>,
         http_stream_rx: &mut Body,
-    ) -> Result<(), InvocationTaskResultKind> {
+    ) -> Result<TerminalLoopState<()>, InvocationTaskError> {
         loop {
             tokio::select! {
                 opt_completion = invoker_rx.recv() => {
@@ -316,7 +326,7 @@ where
                             // Completion channel is closed,
                             // the invoker main loop won't send completions anymore.
                             // Response stream might still be open though.
-                            return Ok(())
+                            return Ok(TerminalLoopState::Continue(()))
                         },
                     }
                 },
@@ -324,11 +334,11 @@ where
                     match opt_buf {
                         Some(Ok(buf)) => self.handle_read(buf)?,
                         Some(Err(hyper_err)) => {
-                            return Err(hyper_err.into())
+                            return hyper_err.try_into();
                         },
                         None => {
                             // Response stream is closed. No further processing is needed.
-                            return Err(InvocationTaskResultKind::Ok)
+                            return Ok(TerminalLoopState::End)
                         }
                     }
                 },
@@ -339,19 +349,18 @@ where
     async fn response_stream_loop(
         &mut self,
         http_stream_rx: &mut Body,
-    ) -> InvocationTaskResultKind {
+    ) -> Result<(), InvocationTaskError> {
         while let Some(buf_res) = http_stream_rx.next().await {
             match buf_res {
-                Ok(buf) => {
-                    if let Err(e) = self.handle_read(buf) {
-                        return e;
-                    }
+                Ok(buf) => self.handle_read(buf)?,
+                Err(hyper_err) => {
+                    let _: TerminalLoopState<()> = hyper_err.try_into()?;
+                    return Ok(());
                 }
-                Err(hyper_err) => return hyper_err.into(),
             }
         }
 
-        InvocationTaskResultKind::Ok
+        Ok(())
     }
 
     // --- Read and write methods
@@ -360,7 +369,7 @@ where
         &mut self,
         http_stream_tx: &mut Sender,
         journal_metadata: &JournalMetadata,
-    ) -> Result<(), InvocationTaskResultKind> {
+    ) -> Result<(), InvocationTaskError> {
         // Send the invoke frame
         self.write(
             http_stream_tx,
@@ -381,19 +390,19 @@ where
         &mut self,
         http_stream_tx: &mut Sender,
         msg: ProtocolMessage,
-    ) -> Result<(), InvocationTaskResultKind> {
+    ) -> Result<(), InvocationTaskError> {
         let buf = self.encoder.encode(msg);
 
         if let Err(hyper_err) = http_stream_tx.send_data(buf).await {
             // is_closed() can happen only with sender's channel
             if !hyper_err.is_closed() {
-                return Err(InvocationTaskResultKind::Network(hyper_err));
+                return Err(InvocationTaskError::Network(hyper_err));
             }
         };
         Ok(())
     }
 
-    fn handle_read(&mut self, buf: Bytes) -> Result<(), InvocationTaskResultKind> {
+    fn handle_read(&mut self, buf: Bytes) -> Result<(), InvocationTaskError> {
         self.decoder.push(buf);
 
         while let Some((frame_header, frame)) = self.decoder.consume_next()? {
@@ -407,13 +416,13 @@ where
         &mut self,
         mh: MessageHeader,
         message: ProtocolMessage,
-    ) -> Result<(), InvocationTaskResultKind> {
+    ) -> Result<(), InvocationTaskError> {
         trace!(restate.protocol.message_header = ?mh, restate.protocol.message = ?message, "Received message");
         match message {
-            ProtocolMessage::Start(_) => Err(InvocationTaskResultKind::UnexpectedMessage(
-                MessageType::Start,
-            )),
-            ProtocolMessage::Completion(_) => Err(InvocationTaskResultKind::UnexpectedMessage(
+            ProtocolMessage::Start(_) => {
+                Err(InvocationTaskError::UnexpectedMessage(MessageType::Start))
+            }
+            ProtocolMessage::Completion(_) => Err(InvocationTaskError::UnexpectedMessage(
                 MessageType::Completion,
             )),
             ProtocolMessage::UnparsedEntry(raw_entry) => {
@@ -502,9 +511,9 @@ where
             .build::<_, Body>(HttpsConnector::new())
     }
 
-    fn validate_response(mut parts: Parts) -> Result<(), InvocationTaskResultKind> {
+    fn validate_response(mut parts: Parts) -> Result<(), InvocationTaskError> {
         if !parts.status.is_success() {
-            return Err(InvocationTaskResultKind::UnexpectedResponse(parts.status));
+            return Err(InvocationTaskError::UnexpectedResponse(parts.status));
         }
 
         let content_type = parts.headers.remove(http::header::CONTENT_TYPE);
@@ -514,10 +523,10 @@ where
             {
                 #[allow(clippy::borrow_interior_mutable_const)]
                 if ct != APPLICATION_RESTATE {
-                    return Err(InvocationTaskResultKind::UnexpectedContentType(Some(ct)));
+                    return Err(InvocationTaskError::UnexpectedContentType(Some(ct)));
                 }
             }
-            None => return Err(InvocationTaskResultKind::UnexpectedContentType(None)),
+            None => return Err(InvocationTaskError::UnexpectedContentType(None)),
         }
 
         Ok(())
