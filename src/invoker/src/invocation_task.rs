@@ -258,16 +258,15 @@ where
         http_stream_tx: &mut Sender,
         client: hyper::Client<HttpsConnector<HttpConnector>>,
         req: Request<Body>,
-        journal_stream: JournalStream,
+        mut journal_stream: JournalStream,
     ) -> Result<TerminalLoopState<Body>, InvocationTaskError>
     where
-        JournalStream: Stream<Item = RawEntry>,
+        JournalStream: Stream<Item = RawEntry> + Unpin,
     {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.
         let mut req_fut = tokio::task::spawn(client.request(req));
-        tokio::pin!(journal_stream);
 
         let mut http_stream_rx_res = None;
 
