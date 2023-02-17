@@ -7,8 +7,8 @@ use invoker::Kind;
 use journal::raw::{RawEntry, RawEntryCodec, RawEntryHeader};
 use journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
-    Entry, EntryResult, GetStateEntry, InvokeEntry, InvokeRequest, JournalRevision,
-    OutputStreamEntry, SetStateEntry, SleepEntry,
+    Entry, EntryResult, GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry,
+    SetStateEntry, SleepEntry,
 };
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -43,7 +43,6 @@ pub(crate) enum Command {
 }
 
 pub(super) struct JournalStatus {
-    pub(super) revision: JournalRevision,
     pub(super) length: EntryIndex,
 }
 
@@ -69,6 +68,13 @@ pub(super) trait StateReader {
         &self,
         service_id: &ServiceId,
     ) -> BoxFuture<Result<JournalStatus, Self::Error>>;
+
+    // TODO: Replace with async trait or proper future
+    fn is_entry_completed(
+        &self,
+        service_id: &ServiceId,
+        entry_index: EntryIndex,
+    ) -> BoxFuture<Result<bool, Self::Error>>;
 }
 
 #[derive(Debug, Default)]
@@ -230,23 +236,27 @@ where
                 .await?;
             }
             Kind::Suspended {
-                journal_revision: expected_journal_revision,
+                waiting_for_completed_entries,
             } => {
-                let actual_journal_revision = state
-                    .get_journal_status(&service_invocation_id.service_id)
-                    .await
-                    .map_err(Error::State)?
-                    .revision;
-
-                if actual_journal_revision > expected_journal_revision {
-                    trace!(
+                debug_assert!(
+                    !waiting_for_completed_entries.is_empty(),
+                    "Expecting at least one entry on which the invocation {service_invocation_id:?} is waiting."
+                );
+                for entry_index in &waiting_for_completed_entries {
+                    if state
+                        .is_entry_completed(&service_invocation_id.service_id, *entry_index)
+                        .await
+                        .map_err(Error::State)?
+                    {
+                        trace!(
                         ?service_invocation_id,
-                        "Resuming instead of suspending service because there is a newer journal."
-                    );
-                    effects.resume_service(service_invocation_id);
-                } else {
-                    effects.suspend_service(service_invocation_id);
+                        "Resuming instead of suspending service because an awaited entry is completed.");
+                        effects.resume_service(service_invocation_id);
+                        return Ok(());
+                    }
                 }
+
+                effects.suspend_service(service_invocation_id, waiting_for_completed_entries);
             }
             Kind::End => {
                 self.complete_invocation(service_invocation_id, state, effects)
@@ -441,9 +451,23 @@ where
                     );
                 }
             }
-            InvocationStatus::Suspended(invocation_id) => {
+            InvocationStatus::Suspended {
+                invocation_id,
+                waiting_for_completed_entries,
+            } => {
                 if invocation_id == service_invocation_id.invocation_id {
-                    effects.store_completion_and_resume(service_invocation_id, completion);
+                    for entry_index in &waiting_for_completed_entries {
+                        if state
+                            .is_entry_completed(&service_invocation_id.service_id, *entry_index)
+                            .await
+                            .map_err(Error::State)?
+                        {
+                            effects.store_completion_and_resume(service_invocation_id, completion);
+                            return Ok(());
+                        }
+                    }
+
+                    effects.store_completion(service_invocation_id, completion);
                 } else {
                     debug!(
                         ?completion,

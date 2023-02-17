@@ -1,8 +1,9 @@
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
 use journal::raw::RawEntry;
-use journal::{Completion, JournalRevision};
+use journal::Completion;
 use opentelemetry::Context;
+use std::collections::HashSet;
 use std::future::Future;
 use tokio::sync::mpsc;
 
@@ -22,7 +23,6 @@ pub struct JournalMetadata {
     tracing_context: Context,
 
     journal_size: EntryIndex,
-    journal_revision: JournalRevision,
 }
 
 pub trait JournalReader {
@@ -62,7 +62,6 @@ pub trait InvokerInputSender {
         &mut self,
         partition: PartitionLeaderEpoch,
         service_invocation_id: ServiceInvocationId,
-        journal_revision: JournalRevision,
         completion: Completion,
     ) -> Self::Future;
     fn notify_stored_entry_ack(
@@ -97,7 +96,7 @@ pub enum Kind {
         entry: RawEntry,
     },
     Suspended {
-        journal_revision: JournalRevision,
+        waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,

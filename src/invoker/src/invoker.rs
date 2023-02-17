@@ -58,7 +58,6 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
         &mut self,
         partition: PartitionLeaderEpoch,
         service_invocation_id: ServiceInvocationId,
-        journal_revision: JournalRevision,
         completion: Completion,
     ) -> Self::Future {
         self.other_input
@@ -67,7 +66,6 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
                 inner: OtherInputCommand::Completion {
                     service_invocation_id,
                     completion,
-                    journal_revision,
                 },
             })
             .expect("Invoker should be running");
@@ -136,7 +134,6 @@ enum OtherInputCommand {
     Completion {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
-        journal_revision: JournalRevision,
     },
     StoredEntryAck {
         service_invocation_id: ServiceInvocationId,

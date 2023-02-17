@@ -7,7 +7,7 @@ use common::types::{EntryIndex, PartitionId, ServiceId, ServiceInvocation, Servi
 use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
 use journal::raw::RawEntry;
-use journal::{CompletionResult, JournalRevision};
+use journal::CompletionResult;
 
 pub(super) struct PartitionStorage<Storage> {
     _partition_id: PartitionId,
@@ -48,6 +48,14 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
         &self,
         _service_id: &ServiceId,
     ) -> BoxFuture<Result<JournalStatus, Self::Error>> {
+        todo!()
+    }
+
+    fn is_entry_completed(
+        &self,
+        _service_id: &ServiceId,
+        _entry_index: EntryIndex,
+    ) -> BoxFuture<Result<bool, Self::Error>> {
         todo!()
     }
 }
@@ -100,7 +108,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
         _raw_entry: &RawEntry,
-    ) -> Result<JournalRevision, Self::Error> {
+    ) -> Result<(), Self::Error> {
         todo!()
     }
 

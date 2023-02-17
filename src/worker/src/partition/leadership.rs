@@ -100,14 +100,12 @@ where
                 }
                 ActuatorMessage::ForwardCompletion {
                     service_invocation_id,
-                    journal_revision,
                     completion,
                 } => {
                     invoker_tx
                         .notify_completion(
                             partition_leader_epoch,
                             service_invocation_id,
-                            journal_revision,
                             completion,
                         )
                         .await?

@@ -5,7 +5,7 @@ use common::types::{EntryIndex, ServiceId, ServiceInvocation, ServiceInvocationI
 use futures::future::BoxFuture;
 use invoker::InvokeInputJournal;
 use journal::raw::{RawEntry, RawEntryCodec};
-use journal::{Completion, CompletionResult, JournalRevision, PollInputStreamEntry};
+use journal::{Completion, CompletionResult, PollInputStreamEntry};
 use std::marker::PhantomData;
 use tracing::trace;
 
@@ -36,7 +36,6 @@ pub(crate) enum ActuatorMessage {
     },
     ForwardCompletion {
         service_invocation_id: ServiceInvocationId,
-        journal_revision: JournalRevision,
         completion: Completion,
     },
 }
@@ -69,7 +68,7 @@ pub(crate) trait StateStorage {
         service_id: &ServiceId,
         entry_index: EntryIndex,
         raw_entry: &RawEntry,
-    ) -> Result<JournalRevision, Self::Error>;
+    ) -> Result<(), Self::Error>;
 
     fn store_completion_result(
         &self,
@@ -253,14 +252,21 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     invoke_input_journal: InvokeInputJournal::NoCachedJournal,
                 });
             }
-            Effect::SuspendService(ServiceInvocationId {
-                service_id,
-                invocation_id,
-            }) => {
+            Effect::SuspendService {
+                service_invocation_id:
+                    ServiceInvocationId {
+                        service_id,
+                        invocation_id,
+                    },
+                waiting_for_completed_entries,
+            } => {
                 state_storage
                     .store_invocation_status(
                         &service_id,
-                        &InvocationStatus::Suspended(invocation_id),
+                        &InvocationStatus::Suspended {
+                            invocation_id,
+                            waiting_for_completed_entries,
+                        },
                     )
                     .map_err(Error::State)?;
             }
@@ -347,7 +353,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 Codec::write_completion(&mut raw_entry, CompletionResult::Success(value.clone()))
                     .map_err(Error::Codec)?;
 
-                let journal_revision = Self::unchecked_append_journal_entry(
+                Self::unchecked_append_journal_entry(
                     state_storage,
                     collector,
                     service_invocation_id.clone(),
@@ -357,7 +363,6 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
                 collector.collect(ActuatorMessage::ForwardCompletion {
                     service_invocation_id,
-                    journal_revision,
                     completion: Completion {
                         entry_index,
                         result: CompletionResult::Success(value),
@@ -430,7 +435,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 raw_entry,
                 entry_index,
             } => {
-                let journal_revision = Self::append_journal_entry(
+                Self::append_journal_entry(
                     state_storage,
                     collector,
                     service_invocation_id.clone(),
@@ -441,7 +446,6 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
                 // storage is acked by sending an empty completion
                 collector.collect(ActuatorMessage::ForwardCompletion {
-                    journal_revision,
                     service_invocation_id,
                     completion: Completion {
                         entry_index,
@@ -454,6 +458,17 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .truncate_outbox(outbox_sequence_number)
                     .map_err(Error::State)?;
             }
+            Effect::StoreCompletion {
+                service_invocation_id,
+                completion:
+                    Completion {
+                        entry_index,
+                        result,
+                    },
+            } => {
+                Self::store_completion(state_storage, &service_invocation_id, entry_index, result)
+                    .await?;
+            }
             Effect::StoreCompletionAndForward {
                 service_invocation_id,
                 completion:
@@ -462,7 +477,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                         result,
                     },
             } => {
-                if let Some(journal_revision) = Self::store_completion(
+                if Self::store_completion(
                     state_storage,
                     &service_invocation_id,
                     entry_index,
@@ -475,7 +490,6 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 {
                     collector.collect(ActuatorMessage::ForwardCompletion {
                         service_invocation_id,
-                        journal_revision,
                         completion: Completion {
                             entry_index,
                             result,
@@ -501,7 +515,6 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     result.clone(),
                 )
                 .await?
-                .is_some()
                 {
                     collector.collect(ActuatorMessage::Invoke {
                         service_invocation_id,
@@ -525,23 +538,23 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         Ok(())
     }
 
+    /// Stores the given completion. Returns `true` if an [`RawEntry`] was completed.
     async fn store_completion<S: StateStorage>(
         state_storage: &S,
         service_invocation_id: &ServiceInvocationId,
         entry_index: EntryIndex,
         completion_result: CompletionResult,
-    ) -> Result<Option<JournalRevision>, Error<S::Error, Codec::Error>> {
-        let result = if let Some(mut raw_entry) = state_storage
+    ) -> Result<bool, Error<S::Error, Codec::Error>> {
+        if let Some(mut raw_entry) = state_storage
             .load_journal_entry(&service_invocation_id.service_id, entry_index)
             .await
             .map_err(Error::State)?
         {
             Codec::write_completion(&mut raw_entry, completion_result).map_err(Error::Codec)?;
-            Some(
-                state_storage
-                    .store_journal_entry(&service_invocation_id.service_id, entry_index, &raw_entry)
-                    .map_err(Error::State)?,
-            )
+            state_storage
+                .store_journal_entry(&service_invocation_id.service_id, entry_index, &raw_entry)
+                .map_err(Error::State)?;
+            Ok(true)
         } else {
             state_storage
                 .store_completion_result(
@@ -550,10 +563,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     &completion_result,
                 )
                 .map_err(Error::State)?;
-            None
-        };
-
-        Ok(result)
+            Ok(false)
+        }
     }
 
     async fn append_journal_entry<S: StateStorage, C: MessageCollector>(
@@ -562,7 +573,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
         raw_entry: RawEntry,
-    ) -> Result<JournalRevision, Error<S::Error, Codec::Error>> {
+    ) -> Result<(), Error<S::Error, Codec::Error>> {
         debug_assert!(
             state_storage
                 .load_completion_result(&service_invocation_id.service_id, entry_index)
@@ -587,8 +598,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
         raw_entry: RawEntry,
-    ) -> Result<JournalRevision, Error<S::Error, Codec::Error>> {
-        let journal_revision = state_storage
+    ) -> Result<(), Error<S::Error, Codec::Error>> {
+        state_storage
             .store_journal_entry(&service_invocation_id.service_id, entry_index, &raw_entry)
             .map_err(Error::State)?;
 
@@ -597,7 +608,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             entry_index,
         });
 
-        Ok(journal_revision)
+        Ok(())
     }
 
     fn into_raw_entry(_input_stream_entry: &PollInputStreamEntry) -> RawEntry {

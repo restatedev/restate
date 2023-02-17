@@ -4,6 +4,7 @@ use common::types::{
 };
 use journal::raw::RawEntry;
 use journal::Completion;
+use std::collections::HashSet;
 use std::vec::Drain;
 
 mod interpreter;
@@ -23,7 +24,10 @@ pub(crate) enum Effect {
     // service status changes
     InvokeService(ServiceInvocation),
     ResumeService(ServiceInvocationId),
-    SuspendService(ServiceInvocationId),
+    SuspendService {
+        service_invocation_id: ServiceInvocationId,
+        waiting_for_completed_entries: HashSet<EntryIndex>,
+    },
     DropJournalAndFreeService(ServiceId),
 
     // In-/outbox
@@ -90,6 +94,10 @@ pub(crate) enum Effect {
         entry_index: EntryIndex,
         raw_entry: RawEntry,
     },
+    StoreCompletion {
+        service_invocation_id: ServiceInvocationId,
+        completion: Completion,
+    },
     StoreCompletionAndForward {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
@@ -129,9 +137,15 @@ impl Effects {
             .push(Effect::ResumeService(service_invocation_id));
     }
 
-    pub(crate) fn suspend_service(&mut self, service_invocation_id: ServiceInvocationId) {
-        self.effects
-            .push(Effect::SuspendService(service_invocation_id))
+    pub(crate) fn suspend_service(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        waiting_for_completed_entries: HashSet<EntryIndex>,
+    ) {
+        self.effects.push(Effect::SuspendService {
+            service_invocation_id,
+            waiting_for_completed_entries,
+        })
     }
 
     pub(crate) fn drop_journal_and_free_service(&mut self, service_id: ServiceId) {
@@ -274,6 +288,17 @@ impl Effects {
             .push(Effect::TruncateOutbox(outbox_sequence_number));
     }
 
+    pub(crate) fn store_completion(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        completion: Completion,
+    ) {
+        self.effects.push(Effect::StoreCompletion {
+            service_invocation_id,
+            completion,
+        });
+    }
+
     pub(crate) fn store_and_forward_completion(
         &mut self,
         service_invocation_id: ServiceInvocationId,
@@ -282,7 +307,7 @@ impl Effects {
         self.effects.push(Effect::StoreCompletionAndForward {
             service_invocation_id,
             completion,
-        })
+        });
     }
 
     pub(crate) fn store_completion_and_resume(
@@ -293,7 +318,7 @@ impl Effects {
         self.effects.push(Effect::StoreCompletionAndResume {
             service_invocation_id,
             completion,
-        })
+        });
     }
 
     pub(crate) fn drop_journal_and_pop_inbox(

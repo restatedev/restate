@@ -9,8 +9,6 @@ pub mod raw;
 mod entries;
 pub use entries::*;
 
-pub type JournalRevision = u32;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryType {
     // IO
