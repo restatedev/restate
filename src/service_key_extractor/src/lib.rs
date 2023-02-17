@@ -197,7 +197,7 @@ mod impls {
 
             // Composite cases
             (StartGroup, KeyStructure::Nested(expected_message_fields)) => {
-                let mut message_fields = HashMap::new();
+                let mut message_fields = HashMap::with_capacity(expected_message_fields.len());
                 loop {
                     let (next_field_number, next_wire_type) = decode_key(buf)?;
                     if next_wire_type == EndGroup {
@@ -234,7 +234,7 @@ mod impls {
             }
 
             (LengthDelimited, KeyStructure::Nested(expected_message_fields)) => {
-                let mut message_fields = HashMap::new();
+                let mut message_fields = HashMap::with_capacity(expected_message_fields.len());
                 let inner_message_len = decode_varint(buf)? as usize;
                 let mut current_buf = buf.split_to(inner_message_len);
                 while current_buf.has_remaining() {
@@ -581,7 +581,8 @@ mod impls {
             };
         }
 
-        // Note: The encoding from rust types to protobuf has been taken directly from prost/encoding.rs
+        // Note: The encoding from rust types to protobuf has been taken directly from
+        // https://github.com/tokio-rs/prost/blob/master/src/encoding.rs
 
         // Test single varint size type
         extract_tests!(
