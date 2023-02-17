@@ -7,7 +7,6 @@ use network::Network;
 use partition::RocksDBJournalReader;
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashMap;
-use std::time::Duration;
 use storage_rocksdb::RocksDBStorage;
 use tokio::join;
 use tokio::sync::mpsc;
