@@ -94,6 +94,7 @@ pub(super) struct StateMachine<Codec> {
 /// # Example
 ///
 /// ```
+/// use worker::enum_inner;
 /// enum Enum {
 ///     A(u64),
 ///     B(String),
@@ -109,7 +110,7 @@ pub(super) struct StateMachine<Codec> {
 ///
 /// The given example will expand to:
 ///
-/// ```
+/// ```no_run
 /// enum Enum {
 ///     A(u64),
 ///     B(String),
@@ -122,6 +123,7 @@ pub(super) struct StateMachine<Codec> {
 ///     _ => panic!()
 /// };
 /// ```
+#[macro_export]
 macro_rules! enum_inner {
     ($ty:expr, $variant:path) => {
         match $ty {
