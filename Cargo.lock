@@ -1696,6 +1696,7 @@ dependencies = [
  "opentelemetry-jaeger",
  "opentelemetry-semantic-conventions",
  "thiserror",
+ "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

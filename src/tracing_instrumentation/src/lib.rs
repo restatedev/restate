@@ -40,6 +40,7 @@ impl Options {
     /// use clap::Parser;
     ///
     /// #[derive(Debug, clap::Parser)]
+    /// #[group(skip)]
     /// struct Options {
     ///     #[clap(flatten)]
     ///     tracing: tracing_instrumentation::Options,
@@ -47,7 +48,6 @@ impl Options {
     ///
     /// #[tokio::main]
     /// async fn main() {
-    /// use tracing_instrumentation::TokioRuntime;
     /// let options = Options::parse();
     ///     options
     ///         .tracing
