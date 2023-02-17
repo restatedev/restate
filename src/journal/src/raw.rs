@@ -16,22 +16,6 @@ pub enum RawEntryHeader {
 }
 
 impl RawEntryHeader {
-    fn as_entry_type(&self) -> EntryType {
-        match self {
-            RawEntryHeader::PollInputStream { .. } => EntryType::PollInputStream,
-            RawEntryHeader::OutputStream => EntryType::OutputStream,
-            RawEntryHeader::GetState { .. } => EntryType::GetState,
-            RawEntryHeader::SetState => EntryType::SetState,
-            RawEntryHeader::ClearState => EntryType::ClearState,
-            RawEntryHeader::Sleep { .. } => EntryType::Sleep,
-            RawEntryHeader::Invoke { .. } => EntryType::Invoke,
-            RawEntryHeader::BackgroundInvoke => EntryType::BackgroundInvoke,
-            RawEntryHeader::Awakeable { .. } => EntryType::Awakeable,
-            RawEntryHeader::CompleteAwakeable => EntryType::CompleteAwakeable,
-            RawEntryHeader::Custom { code, .. } => EntryType::Custom(*code),
-        }
-    }
-
     pub fn is_completed(&self) -> Option<bool> {
         match self {
             RawEntryHeader::PollInputStream { is_completed } => Some(*is_completed),
@@ -75,10 +59,6 @@ pub struct RawEntry {
 impl RawEntry {
     pub fn new(header: RawEntryHeader, entry: Bytes) -> Self {
         Self { header, entry }
-    }
-
-    pub fn entry_type(&self) -> EntryType {
-        self.header.as_entry_type()
     }
 
     pub fn into_inner(self) -> (RawEntryHeader, Bytes) {

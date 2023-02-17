@@ -1,5 +1,3 @@
-use journal::EntryType;
-
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
 const COMPLETED_MASK: u64 = 0x0001_0000_0000;
 const VERSION_MASK: u64 = 0x03FF_0000_0000;
@@ -128,46 +126,6 @@ impl TryFrom<MessageTypeId> for MessageType {
             COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CompleteAwakeableEntry),
             v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::Custom(v)),
             v => Err(UnknownMessageType(v)),
-        }
-    }
-}
-
-impl TryFrom<MessageType> for EntryType {
-    type Error = &'static str;
-
-    fn try_from(mt: MessageType) -> Result<Self, Self::Error> {
-        match mt {
-            MessageType::Start => Err("Start is not an entry message"),
-            MessageType::Completion => Err("Completion is not an entry message"),
-            MessageType::PollInputStreamEntry => Ok(EntryType::PollInputStream),
-            MessageType::OutputStreamEntry => Ok(EntryType::OutputStream),
-            MessageType::GetStateEntry => Ok(EntryType::GetState),
-            MessageType::SetStateEntry => Ok(EntryType::SetState),
-            MessageType::ClearStateEntry => Ok(EntryType::ClearState),
-            MessageType::SleepEntry => Ok(EntryType::Sleep),
-            MessageType::InvokeEntry => Ok(EntryType::Invoke),
-            MessageType::BackgroundInvokeEntry => Ok(EntryType::BackgroundInvoke),
-            MessageType::AwakeableEntry => Ok(EntryType::Awakeable),
-            MessageType::CompleteAwakeableEntry => Ok(EntryType::CompleteAwakeable),
-            MessageType::Custom(id) => Ok(EntryType::Custom(id)),
-        }
-    }
-}
-
-impl From<EntryType> for MessageType {
-    fn from(et: EntryType) -> Self {
-        match et {
-            EntryType::PollInputStream => MessageType::PollInputStreamEntry,
-            EntryType::OutputStream => MessageType::OutputStreamEntry,
-            EntryType::GetState => MessageType::GetStateEntry,
-            EntryType::SetState => MessageType::SetStateEntry,
-            EntryType::ClearState => MessageType::ClearStateEntry,
-            EntryType::Sleep => MessageType::SleepEntry,
-            EntryType::Invoke => MessageType::InvokeEntry,
-            EntryType::BackgroundInvoke => MessageType::BackgroundInvokeEntry,
-            EntryType::Awakeable => MessageType::AwakeableEntry,
-            EntryType::CompleteAwakeable => MessageType::CompleteAwakeableEntry,
-            EntryType::Custom(id) => MessageType::Custom(id),
         }
     }
 }

@@ -64,11 +64,14 @@ fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeade
         ),
         ProtocolMessage::UnparsedEntry(entry) => match entry.header.is_completed() {
             Some(completed_flag) => MessageHeader::new_completable_entry(
-                entry.entry_type().into(),
+                raw_header_to_message_type(&entry.header),
                 completed_flag,
                 entry.entry.len() as u32,
             ),
-            None => MessageHeader::new(entry.entry_type().into(), entry.entry.len() as u32),
+            None => MessageHeader::new(
+                raw_header_to_message_type(&entry.header),
+                entry.entry.len() as u32,
+            ),
         },
     }
 }
@@ -224,6 +227,22 @@ fn entry_to_raw_header(message_header: &MessageHeader) -> RawEntryHeader {
                 .requires_ack()
                 .expect("requires ack flag begin present"),
         },
+    }
+}
+
+fn raw_header_to_message_type(entry_header: &RawEntryHeader) -> MessageType {
+    match entry_header {
+        RawEntryHeader::PollInputStream { .. } => MessageType::PollInputStreamEntry,
+        RawEntryHeader::OutputStream => MessageType::OutputStreamEntry,
+        RawEntryHeader::GetState { .. } => MessageType::GetStateEntry,
+        RawEntryHeader::SetState => MessageType::SetStateEntry,
+        RawEntryHeader::ClearState => MessageType::ClearStateEntry,
+        RawEntryHeader::Sleep { .. } => MessageType::SleepEntry,
+        RawEntryHeader::Invoke { .. } => MessageType::InvokeEntry,
+        RawEntryHeader::BackgroundInvoke => MessageType::BackgroundInvokeEntry,
+        RawEntryHeader::Awakeable { .. } => MessageType::AwakeableEntry,
+        RawEntryHeader::CompleteAwakeable => MessageType::CompleteAwakeableEntry,
+        RawEntryHeader::Custom { code, .. } => MessageType::Custom(*code),
     }
 }
 

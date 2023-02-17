@@ -15,8 +15,8 @@ opentelemetry = { workspace = true, features = ["rt-tokio-current-thread", "rt-t
 opentelemetry-jaeger = { version = "0.17", features = ["rt-tokio-current-thread", "rt-tokio"] }
 opentelemetry-semantic-conventions = "0.10"
 thiserror = { workspace = true }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 tracing-opentelemetry = "0.18"
 
 [dev-dependencies]

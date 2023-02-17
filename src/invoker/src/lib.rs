@@ -1,34 +1,71 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::future::Future;
+
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
+use hyper::Uri;
 use journal::raw::RawEntry;
 use journal::Completion;
 use opentelemetry::Context;
-use std::collections::HashSet;
-use std::future::Future;
 use tokio::sync::mpsc;
+
+mod message;
 
 mod invoker;
 pub use crate::invoker::*;
 
-mod message;
+mod invocation_task;
+
+// --- Service Endpoint Registry
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ProtocolType {
+    RequestResponse,
+    BidiStream,
+}
+
+#[derive(Debug, Clone)]
+pub struct EndpointMetadata {
+    address: Uri,
+    protocol_type: ProtocolType,
+}
+
+impl EndpointMetadata {
+    pub fn new(address: Uri, protocol_type: ProtocolType) -> Self {
+        Self {
+            address,
+            protocol_type,
+        }
+    }
+}
+
+pub trait ServiceEndpointRegistry {
+    fn resolve_endpoint(&self, service_name: impl AsRef<str>) -> Option<EndpointMetadata>;
+}
+
+impl ServiceEndpointRegistry for HashMap<String, EndpointMetadata> {
+    fn resolve_endpoint(&self, service_name: impl AsRef<str>) -> Option<EndpointMetadata> {
+        self.get(service_name.as_ref()).cloned()
+    }
+}
 
 // --- Journal Reader
 
-#[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JournalMetadata {
-    method: String,
+    pub method: String,
 
     /// Span attached to this invocation.
-    tracing_context: Context,
+    pub tracing_context: Context,
 
-    journal_size: EntryIndex,
+    pub journal_size: EntryIndex,
 }
 
 pub trait JournalReader {
     type JournalStream: Stream<Item = RawEntry>;
-    type Error;
-    type Future: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
+    type Error: std::error::Error + Send + Sync + 'static;
+    type Future: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>> + Send;
 
     fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future;
 }

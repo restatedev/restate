@@ -2,6 +2,7 @@ use common::types::{EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvoca
 use futures::{stream, Sink, SinkExt, Stream, StreamExt};
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -42,12 +43,12 @@ pub(super) struct PartitionProcessor<
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct RocksDBJournalReader;
 
 impl invoker::JournalReader for RocksDBJournalReader {
     type JournalStream = stream::Empty<journal::raw::RawEntry>;
-    type Error = ();
+    type Error = Infallible;
     type Future = futures::future::Pending<
         Result<(invoker::JournalMetadata, Self::JournalStream), Self::Error>,
     >;
