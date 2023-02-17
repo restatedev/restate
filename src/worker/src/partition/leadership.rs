@@ -1,5 +1,5 @@
 use crate::partition::effects::{ActuatorMessage, MessageCollector};
-use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, ServiceInvocationId};
+use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId};
 use futures::{Stream, StreamExt};
 use invoker::{InvokeInputJournal, InvokerInputSender};
 use std::fmt::Debug;
@@ -15,15 +15,24 @@ pub(super) trait InvocationReader {
     fn scan_invoked_invocations(&self) -> Self::InvokedInvocationStream;
 }
 
+pub(super) struct LeaderState {
+    leader_epoch: LeaderEpoch,
+    invoker_rx: mpsc::Receiver<invoker::OutputEffect>,
+    message_buffer: Vec<ActuatorMessage>,
+}
+
+pub(super) struct FollowerState<I> {
+    peer_id: PeerId,
+    partition_id: PartitionId,
+    invoker_tx: I,
+}
+
 pub(super) enum ActuatorMessageCollector<I> {
     Leader {
-        partition_id: PartitionId,
-        leader_epoch: LeaderEpoch,
-        invoker_tx: I,
-        invoker_rx: mpsc::Receiver<invoker::OutputEffect>,
-        message_buffer: Vec<ActuatorMessage>,
+        follower_state: FollowerState<I>,
+        leader_state: LeaderState,
     },
-    Follower(LeadershipState<I>),
+    Follower(FollowerState<I>),
 }
 
 impl<I> ActuatorMessageCollector<I>
@@ -34,28 +43,24 @@ where
     pub(super) async fn send(self) -> Result<LeadershipState<I>, I::Error> {
         match self {
             ActuatorMessageCollector::Leader {
-                partition_id,
-                leader_epoch,
-                mut invoker_tx,
-                invoker_rx,
-                mut message_buffer,
+                mut follower_state,
+                mut leader_state,
             } => {
                 Self::send_actuator_messages(
-                    (partition_id, leader_epoch),
-                    &mut invoker_tx,
-                    message_buffer.drain(..),
+                    (follower_state.partition_id, leader_state.leader_epoch),
+                    &mut follower_state.invoker_tx,
+                    leader_state.message_buffer.drain(..),
                 )
                 .await?;
 
                 Ok(LeadershipState::Leader {
-                    partition_id,
-                    leader_epoch,
-                    invoker_tx,
-                    invoker_rx,
-                    message_buffer,
+                    follower_state,
+                    leader_state,
                 })
             }
-            ActuatorMessageCollector::Follower(leadership_state) => Ok(leadership_state),
+            ActuatorMessageCollector::Follower(follower_state) => {
+                Ok(LeadershipState::Follower(follower_state))
+            }
         }
     }
 
@@ -120,7 +125,10 @@ where
 impl<I> MessageCollector for ActuatorMessageCollector<I> {
     fn collect(&mut self, message: ActuatorMessage) {
         match self {
-            ActuatorMessageCollector::Leader { message_buffer, .. } => {
+            ActuatorMessageCollector::Leader {
+                leader_state: LeaderState { message_buffer, .. },
+                ..
+            } => {
                 message_buffer.push(message);
             }
             ActuatorMessageCollector::Follower(..) => {}
@@ -129,17 +137,11 @@ impl<I> MessageCollector for ActuatorMessageCollector<I> {
 }
 
 pub(super) enum LeadershipState<InvokerInputSender> {
-    Follower {
-        partition_id: PartitionId,
-        invoker_tx: InvokerInputSender,
-    },
+    Follower(FollowerState<InvokerInputSender>),
 
     Leader {
-        partition_id: PartitionId,
-        leader_epoch: LeaderEpoch,
-        invoker_rx: mpsc::Receiver<invoker::OutputEffect>,
-        invoker_tx: InvokerInputSender,
-        message_buffer: Vec<ActuatorMessage>,
+        follower_state: FollowerState<InvokerInputSender>,
+        leader_state: LeaderState,
     },
 }
 
@@ -148,11 +150,16 @@ where
     InvokerInputSender: invoker::InvokerInputSender,
     InvokerInputSender::Error: Debug,
 {
-    pub(super) fn follower(partition_id: PartitionId, invoker_tx: InvokerInputSender) -> Self {
-        Self::Follower {
+    pub(super) fn follower(
+        peer_id: PeerId,
+        partition_id: PartitionId,
+        invoker_tx: InvokerInputSender,
+    ) -> Self {
+        Self::Follower(FollowerState {
+            peer_id,
             partition_id,
             invoker_tx,
-        }
+        })
     }
 
     pub(super) async fn become_leader<I: InvocationReader>(
@@ -176,25 +183,22 @@ where
         leader_epoch: LeaderEpoch,
         invocation_reader: &I,
     ) -> Self {
-        if let LeadershipState::Follower {
-            partition_id,
-            mut invoker_tx,
-            ..
-        } = self
-        {
+        if let LeadershipState::Follower(mut follower_state) = self {
             let (tx, rx) = mpsc::channel(1);
 
-            invoker_tx
-                .register_partition((partition_id, leader_epoch), tx)
+            follower_state
+                .invoker_tx
+                .register_partition((follower_state.partition_id, leader_epoch), tx)
                 .await
                 .expect("Invoker should be running");
 
             let mut invoked_invocations = invocation_reader.scan_invoked_invocations();
 
             while let Some(service_invocation_id) = invoked_invocations.next().await {
-                invoker_tx
+                follower_state
+                    .invoker_tx
                     .invoke(
-                        (partition_id, leader_epoch),
+                        (follower_state.partition_id, leader_epoch),
                         service_invocation_id,
                         InvokeInputJournal::NoCachedJournal,
                     )
@@ -203,13 +207,14 @@ where
             }
 
             LeadershipState::Leader {
-                partition_id,
-                leader_epoch,
-                invoker_rx: rx,
-                invoker_tx,
-                // The max number of actuator messages should be 2 atm (e.g. RegisterTimer and
-                // AckStoredEntry)
-                message_buffer: Vec::with_capacity(2),
+                follower_state,
+                leader_state: LeaderState {
+                    leader_epoch,
+                    invoker_rx: rx,
+                    // The max number of actuator messages should be 2 atm (e.g. RegisterTimer and
+                    // AckStoredEntry)
+                    message_buffer: Vec::with_capacity(2),
+                },
             }
         } else {
             unreachable!("This method should only be called if I am a follower!");
@@ -218,17 +223,20 @@ where
 
     pub(super) async fn become_follower(self) -> Self {
         if let LeadershipState::Leader {
-            partition_id,
-            leader_epoch,
-            mut invoker_tx,
-            ..
+            follower_state:
+                FollowerState {
+                    peer_id,
+                    partition_id,
+                    mut invoker_tx,
+                },
+            leader_state: LeaderState { leader_epoch, .. },
         } = self
         {
             invoker_tx
                 .abort_all_partition((partition_id, leader_epoch))
                 .await
                 .expect("Invoker should be running");
-            Self::follower(partition_id, invoker_tx)
+            Self::follower(peer_id, partition_id, invoker_tx)
         } else {
             self
         }
@@ -236,23 +244,17 @@ where
 
     pub(super) fn into_message_collector(self) -> ActuatorMessageCollector<InvokerInputSender> {
         match self {
-            leadership_state @ LeadershipState::Follower { .. } => {
-                ActuatorMessageCollector::Follower(leadership_state)
+            LeadershipState::Follower(follower_state) => {
+                ActuatorMessageCollector::Follower(follower_state)
             }
             LeadershipState::Leader {
-                partition_id,
-                leader_epoch,
-                invoker_tx,
-                invoker_rx,
-                mut message_buffer,
+                follower_state,
+                mut leader_state,
             } => {
-                message_buffer.clear();
+                leader_state.message_buffer.clear();
                 ActuatorMessageCollector::Leader {
-                    partition_id,
-                    leader_epoch,
-                    invoker_rx,
-                    invoker_tx,
-                    message_buffer,
+                    follower_state,
+                    leader_state,
                 }
             }
         }
@@ -272,7 +274,10 @@ impl<'a, InvokerInputSender> Stream for ActuatorStream<'a, InvokerInputSender> {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.deref_mut().inner {
-            LeadershipState::Leader { invoker_rx, .. } => invoker_rx.poll_recv(cx),
+            LeadershipState::Leader {
+                leader_state: LeaderState { invoker_rx, .. },
+                ..
+            } => invoker_rx.poll_recv(cx),
             LeadershipState::Follower { .. } => Poll::Pending,
         }
     }

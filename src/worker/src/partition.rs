@@ -107,7 +107,7 @@ where
         // The max number of effects should be 2 atm (e.g. RegisterTimer and AppendJournalEntry)
         let mut effects = Effects::with_capacity(2);
 
-        let mut leadership_state = LeadershipState::follower(partition_id, invoker_tx);
+        let mut leadership_state = LeadershipState::follower(peer_id, partition_id, invoker_tx);
 
         let mut partition_storage = PartitionStorage::new(partition_id, storage);
 
