@@ -87,7 +87,6 @@ pub(crate) struct InvocationTaskOutput {
 
 pub(crate) enum InvocationTaskOutputInner {
     Result {
-        last_journal_index: EntryIndex,
         last_journal_revision: JournalRevision,
 
         result: Result<(), InvocationTaskError>,
@@ -179,7 +178,6 @@ where
             partition: self.partition,
             service_invocation_id: self.service_invocation_id,
             inner: InvocationTaskOutputInner::Result {
-                last_journal_index: self.next_journal_index - 1,
                 last_journal_revision: self.last_journal_revision,
                 result,
             },

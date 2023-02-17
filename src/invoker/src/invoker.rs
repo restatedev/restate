@@ -7,8 +7,8 @@ use futures::stream::{PollNext, StreamExt};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::marker::PhantomData;
-use std::panic;
 use std::time::Duration;
+use std::{cmp, panic};
 
 use common::types::PartitionLeaderEpoch;
 use futures::stream;
@@ -299,7 +299,7 @@ where
                         },
                         Input { partition, inner: InputCommand::Other(OtherInputCommand::AbortAllPartition) } => {
                             if let Some(mut partition_state_machine) = state_machine_coordinator.remove_partition(partition) {
-                                partition_state_machine.handle_abort_all_partition();
+                                partition_state_machine.abort();
                             } else {
                                 // This is safe to ignore
                             }
@@ -333,10 +333,9 @@ where
                                 raw_entry
                             ).await
                         },
-                        InvocationTaskOutputInner::Result {last_journal_revision, last_journal_index, result} => {
+                        InvocationTaskOutputInner::Result {last_journal_revision, result} => {
                             partition_state_machine.handle_invocation_task_result(
                                 invocation_task_msg.service_invocation_id,
-                                last_journal_index,
                                 last_journal_revision,
                                 result
                             ).await
@@ -428,7 +427,7 @@ mod state_machine_coordinator {
 
         pub(super) fn abort_all(&mut self) {
             for partition in self.partitions.values_mut() {
-                partition.handle_abort_all_partition();
+                partition.abort();
             }
         }
     }
@@ -506,7 +505,7 @@ mod state_machine_coordinator {
             );
         }
 
-        pub(super) fn handle_abort_all_partition(&mut self) {
+        pub(super) fn abort(&mut self) {
             for sm in self.invocation_state_machines.values_mut() {
                 sm.abort()
             }
@@ -551,7 +550,7 @@ mod state_machine_coordinator {
                 .invocation_state_machines
                 .get_mut(&service_invocation_id)
             {
-                sm.notify_new_entry(&entry);
+                sm.notify_new_entry(entry_index, &entry);
                 let _ = self
                     .output_tx
                     .send(OutputEffect::JournalEntry {
@@ -567,7 +566,6 @@ mod state_machine_coordinator {
         pub(super) async fn handle_invocation_task_result(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            last_journal_index: EntryIndex,
             last_journal_revision: JournalRevision,
             result: Result<(), InvocationTaskError>,
         ) {
@@ -577,7 +575,7 @@ mod state_machine_coordinator {
             {
                 match result {
                     Ok(_) => {
-                        let output_effect = if sm.ending() {
+                        let output_effect = if sm.is_ending() {
                             OutputEffect::End {
                                 service_invocation_id,
                             }
@@ -597,9 +595,7 @@ mod state_machine_coordinator {
                             error
                         );
 
-                        if let Some(_next_retry_timer_duration) =
-                            sm.handle_task_error(last_journal_index)
-                        {
+                        if let Some(_next_retry_timer_duration) = sm.handle_task_error() {
                             self.invocation_state_machines
                                 .insert(service_invocation_id, sm);
                             unimplemented!("Implement timer")
@@ -639,12 +635,61 @@ mod invocation_state_machine {
         NotRunning,
     }
 
+    /// This struct tracks which entries the invocation task generates,
+    /// and which ones have been already stored and acked by the partition processor.
+    /// This information is used to decide when it's safe to retry.
+    ///
+    /// Every time the invocation task generates a new entry, the index is notified to this struct with
+    /// [`JournalTracker::notify_entry_sent_to_partition_processor`], and every time the invoker receives
+    /// [`OtherInputCommand::StoredEntryAck`], the index is notified to this struct with [`JournalTracker::notify_acked_entry_from_partition_processor`].
+    ///
+    /// After the retry timer is fired, we can check whether we can retry immediately or not with [`JournalTracker::can_retry`].
+    #[derive(Default, Debug, Copy, Clone)]
+    struct JournalTracker {
+        last_acked_entry_from_partition_processor: Option<EntryIndex>,
+        last_entry_sent_to_partition_processor: Option<EntryIndex>,
+    }
+
+    impl JournalTracker {
+        fn notify_acked_entry_from_partition_processor(&mut self, idx: EntryIndex) {
+            self.last_entry_sent_to_partition_processor =
+                cmp::max(Some(idx), self.last_acked_entry_from_partition_processor)
+        }
+
+        fn notify_entry_sent_to_partition_processor(&mut self, idx: EntryIndex) {
+            self.last_entry_sent_to_partition_processor =
+                cmp::max(Some(idx), self.last_entry_sent_to_partition_processor)
+        }
+
+        // TODO remove once we implement retries. https://github.com/restatedev/restate/issues/84
+        #[allow(dead_code)]
+        fn can_retry(&self) -> bool {
+            match (
+                self.last_acked_entry_from_partition_processor,
+                self.last_entry_sent_to_partition_processor,
+            ) {
+                (_, None) => {
+                    // The invocation task didn't generated new entries.
+                    // We're always good to retry in this case.
+                    true
+                }
+                (Some(last_acked), Some(last_sent)) => {
+                    // Last acked must be higher than last sent,
+                    // otherwise we'll end up retrying when not all the entries have been stored.
+                    last_acked >= last_sent
+                }
+                _ => false,
+            }
+        }
+    }
+
     #[derive(Debug)]
     enum InvocationState {
         // If there is no completion channel, then the stream is open in request/response mode
         InFlight {
             // This can be none if the invocation task is request/response
             completions_tx: Option<mpsc::UnboundedSender<(JournalRevision, Completion)>>,
+            journal_tracker: JournalTracker,
         },
 
         // We remain in this state until we get the task result.
@@ -654,7 +699,7 @@ mod invocation_state_machine {
         WaitingRetry {
             // TODO implement timer
             //  https://github.com/restatedev/restate/issues/84
-            index_waiting_on_ack: EntryIndex,
+            journal_tracker: JournalTracker,
         },
     }
 
@@ -665,7 +710,10 @@ mod invocation_state_machine {
         ) -> Self {
             Self(
                 TaskState::Running(abort_handle),
-                InvocationState::InFlight { completions_tx },
+                InvocationState::InFlight {
+                    completions_tx,
+                    journal_tracker: Default::default(),
+                },
             )
         }
 
@@ -677,22 +725,35 @@ mod invocation_state_machine {
             }
         }
 
-        pub(super) fn notify_new_entry(&mut self, raw_entry: &RawEntry) {
-            if raw_entry.entry_type() == EntryType::OutputStream {
-                debug_assert!(matches!(&self.0, TaskState::Running(_)));
+        pub(super) fn notify_new_entry(&mut self, entry_index: EntryIndex, raw_entry: &RawEntry) {
+            debug_assert!(matches!(&self.0, TaskState::Running(_)));
+            debug_assert!(matches!(&self.1, InvocationState::InFlight { .. }));
 
-                self.1 = InvocationState::WaitingClose
+            if raw_entry.entry_type() == EntryType::OutputStream {
+                self.1 = InvocationState::WaitingClose;
+                return;
+            }
+
+            if let InvocationState::InFlight {
+                journal_tracker, ..
+            } = &mut self.1
+            {
+                journal_tracker.notify_entry_sent_to_partition_processor(entry_index);
             }
         }
 
         pub(super) fn notify_stored_ack(&mut self, entry_index: EntryIndex) {
-            if let InvocationState::WaitingRetry {
-                index_waiting_on_ack,
-            } = &mut self.1
-            {
-                if entry_index >= *index_waiting_on_ack {
-                    // TODO retry if retry timer passed
+            match &mut self.1 {
+                InvocationState::InFlight {
+                    journal_tracker, ..
+                } => {
+                    journal_tracker.notify_acked_entry_from_partition_processor(entry_index);
                 }
+                InvocationState::WaitingRetry { journal_tracker } => {
+                    journal_tracker.notify_acked_entry_from_partition_processor(entry_index);
+                    // TODO retry if retry timer fired already and journal_stored_guard.can_retry()
+                }
+                _ => {}
             }
         }
 
@@ -703,6 +764,7 @@ mod invocation_state_machine {
         ) {
             if let InvocationState::InFlight {
                 completions_tx: Some(sender),
+                ..
             } = &mut self.1
             {
                 let _ = sender.send((journal_revision, completion));
@@ -710,15 +772,18 @@ mod invocation_state_machine {
         }
 
         /// Returns Some() with the timer for the next retry, otherwise None if retry limit exhausted
-        pub(super) fn handle_task_error(
-            &mut self,
-            last_entry_index: EntryIndex,
-        ) -> Option<Duration> {
+        pub(super) fn handle_task_error(&mut self) -> Option<Duration> {
             debug_assert!(matches!(&self.0, TaskState::Running(_)));
+            debug_assert!(matches!(&self.1, InvocationState::InFlight { .. }));
 
             self.0 = TaskState::NotRunning;
-            self.1 = InvocationState::WaitingRetry {
-                index_waiting_on_ack: last_entry_index,
+            self.1 = match &self.1 {
+                InvocationState::InFlight {
+                    journal_tracker, ..
+                } => InvocationState::WaitingRetry {
+                    journal_tracker: *journal_tracker,
+                },
+                _ => unreachable!(),
             };
             // TODO implement retry policy
             //  https://github.com/restatedev/restate/issues/84
@@ -726,7 +791,7 @@ mod invocation_state_machine {
             None
         }
 
-        pub(super) fn ending(&self) -> bool {
+        pub(super) fn is_ending(&self) -> bool {
             matches!(self.1, InvocationState::WaitingClose)
         }
     }
