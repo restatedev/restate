@@ -1,9 +1,5 @@
 use super::*;
-use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
-use common::types::PartitionLeaderEpoch;
-use common::types::{EntryIndex, PartitionLeaderEpoch};
-use futures::stream;
-use futures::stream::{PollNext, StreamExt};
+
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::marker::PhantomData;
@@ -18,7 +14,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
-use super::*;
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 
 #[derive(Debug, Clone)]
@@ -304,10 +299,10 @@ where
                                 // This is safe to ignore
                             }
                         }
-                        Input { partition, inner: InputCommand::Other(OtherInputCommand::Completion { service_invocation_id, journal_revision, completion }) } => {
+                        Input { partition, inner: InputCommand::Other(OtherInputCommand::Completion { service_invocation_id, completion }) } => {
                             state_machine_coordinator
                                 .must_resolve_partition(partition)
-                                .handle_completion(service_invocation_id, journal_revision, completion);
+                                .handle_completion(service_invocation_id, completion);
                         },
                         Input { partition, inner: InputCommand::Other(OtherInputCommand::StoredEntryAck { service_invocation_id, entry_index, .. }) } => {
                             state_machine_coordinator
@@ -333,10 +328,9 @@ where
                                 raw_entry
                             ).await
                         },
-                        InvocationTaskOutputInner::Result {last_journal_revision, result} => {
+                        InvocationTaskOutputInner::Result {result} => {
                             partition_state_machine.handle_invocation_task_result(
                                 invocation_task_msg.service_invocation_id,
-                                last_journal_revision,
                                 result
                             ).await
                         }
@@ -475,9 +469,12 @@ mod state_machine_coordinator {
                 // No endpoint metadata can be resolved, we just fail it.
                 let _ = self
                     .output_tx
-                    .send(OutputEffect::Failed {
+                    .send(OutputEffect {
                         service_invocation_id,
-                        error,
+                        kind: Kind::Failed {
+                            error_code: tonic::Code::Internal.into(),
+                            error,
+                        },
                     })
                     .await;
                 return;
@@ -514,14 +511,13 @@ mod state_machine_coordinator {
         pub(super) fn handle_completion(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            journal_revision: JournalRevision,
             completion: Completion,
         ) {
             if let Some(sm) = self
                 .invocation_state_machines
                 .get_mut(&service_invocation_id)
             {
-                sm.notify_completion(journal_revision, completion);
+                sm.notify_completion(completion);
             }
             // If no state machine is registered, the PP will send a new invoke
         }
@@ -553,10 +549,9 @@ mod state_machine_coordinator {
                 sm.notify_new_entry(entry_index, &entry);
                 let _ = self
                     .output_tx
-                    .send(OutputEffect::JournalEntry {
+                    .send(OutputEffect {
                         service_invocation_id,
-                        entry_index,
-                        entry,
+                        kind: Kind::JournalEntry { entry_index, entry },
                     })
                     .await;
             }
@@ -566,7 +561,6 @@ mod state_machine_coordinator {
         pub(super) async fn handle_invocation_task_result(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            last_journal_revision: JournalRevision,
             result: Result<(), InvocationTaskError>,
         ) {
             if let Some(mut sm) = self
@@ -576,13 +570,17 @@ mod state_machine_coordinator {
                 match result {
                     Ok(_) => {
                         let output_effect = if sm.is_ending() {
-                            OutputEffect::End {
+                            OutputEffect {
                                 service_invocation_id,
+                                kind: Kind::End,
                             }
                         } else {
-                            OutputEffect::Suspended {
+                            OutputEffect {
                                 service_invocation_id,
-                                journal_revision: last_journal_revision,
+                                kind: Kind::Suspended {
+                                    // TODO https://github.com/restatedev/restate/issues/97
+                                    waiting_for_completed_entries: Default::default(),
+                                },
                             }
                         };
 
@@ -602,9 +600,12 @@ mod state_machine_coordinator {
                         } else {
                             let _ = self
                                 .output_tx
-                                .send(OutputEffect::Failed {
+                                .send(OutputEffect {
                                     service_invocation_id,
-                                    error: Box::new(error),
+                                    kind: Kind::Failed {
+                                        error_code: tonic::Code::Internal.into(),
+                                        error: Box::new(error),
+                                    },
                                 })
                                 .await;
                         }
@@ -688,7 +689,7 @@ mod invocation_state_machine {
         // If there is no completion channel, then the stream is open in request/response mode
         InFlight {
             // This can be none if the invocation task is request/response
-            completions_tx: Option<mpsc::UnboundedSender<(JournalRevision, Completion)>>,
+            completions_tx: Option<mpsc::UnboundedSender<Completion>>,
             journal_tracker: JournalTracker,
         },
 
@@ -706,7 +707,7 @@ mod invocation_state_machine {
     impl InvocationStateMachine {
         pub(super) fn start(
             abort_handle: AbortHandle,
-            completions_tx: Option<mpsc::UnboundedSender<(JournalRevision, Completion)>>,
+            completions_tx: Option<mpsc::UnboundedSender<Completion>>,
         ) -> Self {
             Self(
                 TaskState::Running(abort_handle),
@@ -757,17 +758,13 @@ mod invocation_state_machine {
             }
         }
 
-        pub(super) fn notify_completion(
-            &mut self,
-            journal_revision: JournalRevision,
-            completion: Completion,
-        ) {
+        pub(super) fn notify_completion(&mut self, completion: Completion) {
             if let InvocationState::InFlight {
                 completions_tx: Some(sender),
                 ..
             } = &mut self.1
             {
-                let _ = sender.send((journal_revision, completion));
+                let _ = sender.send(completion);
             }
         }
 

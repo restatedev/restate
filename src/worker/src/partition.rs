@@ -2,11 +2,11 @@ use common::types::{EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvoca
 use futures::{stream, Sink, SinkExt, Stream, StreamExt};
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use tracing::{debug, info};
-use std::convert::Infallible;
 
 mod effects;
 mod leadership;

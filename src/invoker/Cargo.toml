@@ -23,6 +23,7 @@ prost = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+tonic = { workspace = true }
 tracing = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry-http = "0.7"

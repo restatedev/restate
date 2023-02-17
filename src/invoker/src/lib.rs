@@ -1,15 +1,13 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::future::Future;
 
-use common::types::{PartitionLeaderEpoch, ServiceInvocationId};
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
 use hyper::Uri;
 use journal::raw::RawEntry;
 use journal::Completion;
 use opentelemetry::Context;
-use std::collections::HashSet;
-use std::future::Future;
 use tokio::sync::mpsc;
 
 mod message;

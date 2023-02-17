@@ -1,11 +1,10 @@
-use std::cmp;
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use common::types::{PartitionLeaderEpoch, ServiceInvocationId};
+use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::{future, stream, Stream, StreamExt};
 use hyper::body::Sender;
 use hyper::client::HttpConnector;
@@ -14,14 +13,14 @@ use hyper::http::HeaderValue;
 use hyper::{http, Body, Request, Uri};
 use hyper_tls::HttpsConnector;
 use journal::raw::RawEntry;
-use journal::{Completion, EntryIndex, JournalRevision};
+use journal::Completion;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
-use tracing::{debug, trace};
+use tracing::trace;
 
 use super::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
@@ -87,8 +86,6 @@ pub(crate) struct InvocationTaskOutput {
 
 pub(crate) enum InvocationTaskOutputInner {
     Result {
-        last_journal_revision: JournalRevision,
-
         result: Result<(), InvocationTaskError>,
     },
     NewEntry {
@@ -105,14 +102,11 @@ pub(crate) struct InvocationTask<JR> {
     endpoint_metadata: EndpointMetadata,
 
     next_journal_index: EntryIndex,
-    // Last revision received from the partition processor.
-    // It is updated every time a completion is sent on the wire
-    last_journal_revision: JournalRevision,
 
     // Invoker tx/rx
     journal_reader: JR,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-    invoker_rx: Option<mpsc::UnboundedReceiver<(JournalRevision, Completion)>>,
+    invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
 
     // Encoder/Decoder
     encoder: Encoder,
@@ -150,7 +144,7 @@ where
         endpoint_metadata: EndpointMetadata,
         journal_reader: JR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-        invoker_rx: Option<mpsc::UnboundedReceiver<(JournalRevision, Completion)>>,
+        invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
     ) -> Self {
         if endpoint_metadata.protocol_type == ProtocolType::RequestResponse {
             // TODO https://github.com/restatedev/restate/issues/83
@@ -161,7 +155,6 @@ where
             service_invocation_id: sid,
             endpoint_metadata,
             next_journal_index: 0,
-            last_journal_revision: 0,
             journal_reader,
             invoker_tx,
             invoker_rx,
@@ -177,10 +170,7 @@ where
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             service_invocation_id: self.service_invocation_id,
-            inner: InvocationTaskOutputInner::Result {
-                last_journal_revision: self.last_journal_revision,
-                result,
-            },
+            inner: InvocationTaskOutputInner::Result { result },
         });
     }
 
@@ -203,9 +193,6 @@ where
                 future::Either::Right(stream::iter(journal_items)),
             ),
         };
-
-        // Update internal state with journal metadata
-        self.last_journal_revision = journal_metadata.journal_revision;
 
         // Acquire an HTTP client
         let client = Self::get_client();
@@ -305,26 +292,16 @@ where
     async fn bidi_stream_loop(
         &mut self,
         http_stream_tx: &mut Sender,
-        mut invoker_rx: mpsc::UnboundedReceiver<(JournalRevision, Completion)>,
+        mut invoker_rx: mpsc::UnboundedReceiver<Completion>,
         http_stream_rx: &mut Body,
     ) -> Result<TerminalLoopState<()>, InvocationTaskError> {
         loop {
             tokio::select! {
                 opt_completion = invoker_rx.recv() => {
                     match opt_completion {
-                        Some((journal_revision, completion)) => {
+                        Some(completion) => {
                             trace!("Sending the completion to the wire");
-                            if journal_revision > self.last_journal_revision {
-                                self.write(http_stream_tx, completion.into()).await?;
-                                self.last_journal_revision = cmp::max(self.last_journal_revision, journal_revision);
-                            } else {
-                                debug!(
-                                    "Ignoring completion {} as the journal revision is smaller than the last seen journal revision: {} <= {}",
-                                    completion.entry_index,
-                                    journal_revision,
-                                    self.last_journal_revision
-                                );
-                            }
+                            self.write(http_stream_tx, completion.into()).await?;
                         },
                         None => {
                             // Completion channel is closed,

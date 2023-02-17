@@ -6,10 +6,12 @@ mod mocks;
 use bytes::Bytes;
 use common::types::ServiceInvocationId;
 use hyper::Uri;
-use invoker::{EndpointMetadata, Invoker, OutputEffect, ProtocolType, UnboundedInvokerInputSender};
-use journal::raw::RawEntryCodec;
+use invoker::{
+    EndpointMetadata, Invoker, Kind, OutputEffect, ProtocolType, UnboundedInvokerInputSender,
+};
+use journal::raw::{RawEntryCodec, RawEntryHeader};
 use journal::{
-    Completion, CompletionResult, Entry, EntryResult, EntryType, GetStateEntry, GetStateValue,
+    Completion, CompletionResult, Entry, EntryResult, GetStateEntry, GetStateValue,
     OutputStreamEntry,
 };
 use mocks::{InMemoryJournalStorage, SimulatorAction};
@@ -17,7 +19,7 @@ use prost::Message;
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashMap;
 use std::time::Duration;
-use test_utils::{assert_eq, let_assert, test};
+use test_utils::{assert, assert_eq, let_assert, test};
 use uuid::Uuid;
 
 type PartitionProcessorSimulator =
@@ -41,14 +43,15 @@ pub struct CounterUpdateResult {
 fn register_counter_test_steps(partition_processor_simulator: &mut PartitionProcessorSimulator) {
     partition_processor_simulator.append_handler_step(|out| {
         let_assert!(
-            OutputEffect::JournalEntry {
+            OutputEffect {
                 service_invocation_id,
-                entry_index: 1,
-                entry
+                kind: Kind::JournalEntry {
+                    entry_index: 1,
+                    entry
+                }
             } = out
         );
-        assert_eq!(entry.entry_type(), EntryType::GetState);
-        assert_eq!(entry.header.completed_flag, Some(false));
+        assert!(let RawEntryHeader::GetState { is_completed: false } = entry.header);
 
         let_assert!(
             Ok(Entry::GetState(GetStateEntry {
@@ -74,27 +77,29 @@ fn register_set_state_and_output_steps(
 ) {
     partition_processor_simulator.append_handler_step(|out| {
         let_assert!(
-            OutputEffect::JournalEntry {
-                entry_index: 2,
-                entry,
+            OutputEffect {
+                kind: Kind::JournalEntry {
+                    entry_index: 2,
+                    entry
+                },
                 ..
             } = out
         );
-        assert_eq!(entry.entry_type(), EntryType::SetState);
-        assert_eq!(entry.header.completed_flag, None);
+        assert!(let RawEntryHeader::SetState = entry.header);
 
         SimulatorAction::Noop
     });
     partition_processor_simulator.append_handler_step(|out| {
         let_assert!(
-            OutputEffect::JournalEntry {
-                entry_index: 3,
-                entry,
+            OutputEffect {
+                kind: Kind::JournalEntry {
+                    entry_index: 3,
+                    entry
+                },
                 ..
             } = out
         );
-        assert_eq!(entry.entry_type(), EntryType::OutputStream);
-        assert_eq!(entry.header.completed_flag, None);
+        assert!(let RawEntryHeader::OutputStream = entry.header);
 
         let_assert!(Ok(Entry::OutputStream(OutputStreamEntry {
             result: EntryResult::Success(mut result)

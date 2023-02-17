@@ -8,14 +8,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec::IntoIter;
 
-use common::types::ServiceInvocationId;
+use common::types::{EntryIndex, ServiceInvocationId};
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use invoker::{
-    InvokeInputJournal, InvokerInputSender, JournalMetadata, JournalReader, OutputEffect,
+    InvokeInputJournal, InvokerInputSender, JournalMetadata, JournalReader, Kind, OutputEffect,
 };
 use journal::raw::{RawEntry, RawEntryCodec, RawEntryHeader};
-use journal::{Completion, CompletionResult, EntryIndex, EntryType, JournalRevision};
+use journal::{Completion, CompletionResult};
 use prost::Message;
 use service_protocol::pb::PollInputStreamEntryMessage;
 use tokio::sync::{mpsc, Mutex};
@@ -112,11 +112,7 @@ where
             .append_entry(
                 &sid,
                 RawEntry::new(
-                    RawEntryHeader {
-                        ty: EntryType::PollInputStream,
-                        completed_flag: Some(true),
-                        requires_ack_flag: None,
-                    },
+                    RawEntryHeader::PollInputStream { is_completed: true },
                     PollInputStreamEntryMessage {
                         value: request_payload.encode_to_vec().into(),
                     }
@@ -140,14 +136,12 @@ where
                     let out = self.out_rx.recv().await.unwrap();
                     debug!("Got from invoker: {:?}", out);
 
-                    if let OutputEffect::JournalEntry {
+                    if let OutputEffect {
                         service_invocation_id,
-                        entry_index,
-                        entry,
+                        kind: Kind::JournalEntry { entry_index, entry },
                     } = &out
                     {
-                        let new_revision = self
-                            .journals
+                        self.journals
                             .append_entry(service_invocation_id, entry.clone())
                             .await;
                         debug!("Notifying stored ack to invoker: {:?}", entry_index);
@@ -155,7 +149,6 @@ where
                             .notify_stored_entry_ack(
                                 (0, 0),
                                 service_invocation_id.clone(),
-                                new_revision,
                                 *entry_index,
                             )
                             .await
@@ -172,8 +165,7 @@ where
 
             match handler_res {
                 SimulatorAction::SendCompletion(sid, completion) => {
-                    let new_revision = self
-                        .journals
+                    self.journals
                         .complete_entry::<Codec>(
                             &sid,
                             completion.entry_index,
@@ -183,7 +175,7 @@ where
 
                     debug!("Sending completion to invoker: {:?}", &completion);
                     self.in_tx
-                        .notify_completion((0, 0), sid, new_revision, completion)
+                        .notify_completion((0, 0), sid, completion)
                         .await
                         .unwrap();
                 }
@@ -214,29 +206,21 @@ impl InMemoryJournalStorage {
                     method: method.into(),
                     tracing_context: Default::default(),
                     journal_size: 0,
-                    journal_revision: 0,
                 },
                 vec![],
             ),
         );
     }
 
-    pub async fn append_entry(
-        &mut self,
-        sid: &ServiceInvocationId,
-        entry: impl Into<RawEntry>,
-    ) -> JournalRevision {
+    pub async fn append_entry(&mut self, sid: &ServiceInvocationId, entry: impl Into<RawEntry>) {
         let mut journals = self.journals.lock().await;
         let (meta, journal) = journals
             .get_mut(sid)
             .expect("append_entry can be invoked only when the journal is already available");
 
         meta.journal_size += 1;
-        meta.journal_revision += 1;
 
         journal.push(entry.into());
-
-        meta.journal_revision
     }
 
     pub async fn complete_entry<Codec>(
@@ -244,24 +228,19 @@ impl InMemoryJournalStorage {
         sid: &ServiceInvocationId,
         index: EntryIndex,
         result: CompletionResult,
-    ) -> JournalRevision
-    where
+    ) where
         Codec: RawEntryCodec,
         Codec::Error: Debug,
     {
         let mut journals = self.journals.lock().await;
-        let (meta, journal) = journals
+        let (_, journal) = journals
             .get_mut(sid)
             .expect("append_entry can be invoked only when the journal is already available");
-
-        meta.journal_revision += 1;
 
         let raw_entry = journal
             .get_mut(index as usize)
             .expect("There should be an entry");
         Codec::write_completion(raw_entry, result).unwrap();
-
-        meta.journal_revision
     }
 }
 
