@@ -622,7 +622,8 @@ mod invocation_state_machine {
     use std::mem;
     use std::time::Duration;
 
-    use journal::{Completion, EntryType};
+    use journal::raw::RawEntryHeader;
+    use journal::Completion;
     use tokio::sync::mpsc;
     use tokio::task::AbortHandle;
 
@@ -730,7 +731,7 @@ mod invocation_state_machine {
             debug_assert!(matches!(&self.0, TaskState::Running(_)));
             debug_assert!(matches!(&self.1, InvocationState::InFlight { .. }));
 
-            if raw_entry.entry_type() == EntryType::OutputStream {
+            if raw_entry.header == RawEntryHeader::OutputStream {
                 self.1 = InvocationState::WaitingClose;
                 return;
             }

@@ -1,14 +1,14 @@
 use super::pb;
 use bytes::{Buf, BufMut, BytesMut};
 use journal::raw::*;
-use journal::{CompletionResult, Entry, EntryType};
+use journal::{CompletionResult, Entry};
 use prost::Message;
 use std::mem;
 
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot decode {ty:?}. {kind:?}")]
 pub struct Error {
-    ty: EntryType,
+    ty: RawEntryHeader,
     kind: ErrorKind,
 }
 
@@ -27,12 +27,12 @@ pub enum ErrorKind {
 macro_rules! match_decode {
     ($ty:expr, $buf:expr, { $($variant:ident),* }) => {
         match $ty {
-              $(EntryType::$variant => paste::paste! {
+              $(RawEntryHeader::$variant { .. } => paste::paste! {
                   pb::[<$variant EntryMessage>]::decode($buf)
-                    .map_err(|e| Error { ty: $ty, kind: ErrorKind::Decode(e) })
-                    .and_then(|msg| msg.try_into().map_err(|f| Error { ty: $ty, kind: ErrorKind::MissingField(f) }))
+                    .map_err(|e| Error { ty: $ty.clone(), kind: ErrorKind::Decode(e) })
+                    .and_then(|msg| msg.try_into().map_err(|f| Error { ty: $ty.clone(), kind: ErrorKind::MissingField(f) }))
               },)*
-             EntryType::Custom(_) => Ok(Entry::Custom($buf.copy_to_bytes($buf.remaining()))),
+             RawEntryHeader::Custom { .. } => Ok(Entry::Custom($buf.copy_to_bytes($buf.remaining()))),
         }
     };
 }
@@ -46,7 +46,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
     fn deserialize(entry: &RawEntry) -> Result<Entry, Self::Error> {
         // We clone the entry Bytes here to ensure that the generated Message::decode
         // invocation reuses the same underlying byte array.
-        match_decode!(entry.entry_type(), entry.entry.clone(), {
+        match_decode!(&entry.header, entry.entry.clone(), {
             PollInputStream,
             OutputStream,
             GetState,

@@ -9,28 +9,6 @@ pub mod raw;
 mod entries;
 pub use entries::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryType {
-    // IO
-    PollInputStream,
-    OutputStream,
-
-    // State access
-    GetState,
-    SetState,
-    ClearState,
-
-    // Syscalls
-    Sleep,
-    Invoke,
-    BackgroundInvoke,
-    Awakeable,
-    CompleteAwakeable,
-
-    // Unknown
-    Custom(u16),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
     // IO
