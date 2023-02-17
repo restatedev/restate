@@ -64,7 +64,7 @@ run *flags: (_target-installed _target)
     cargo run {{ _target-option }} {{ flags }}
 
 test: (_target-installed _target)
-    cargo test {{ _target-option }} --all --all-features --all-targets
+    cargo test {{ _target-option }} --workspace --all-features
 
 # Runs lints and tests
 verify: lint test
