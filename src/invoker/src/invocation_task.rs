@@ -27,7 +27,7 @@ use super::message::{
 };
 use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader, ProtocolType};
 
-// Clippy false positive
+// Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
 #[allow(clippy::declare_interior_mutable_const)]
 const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/restate");
@@ -375,7 +375,8 @@ where
         let buf = self.encoder.encode(msg);
 
         if let Err(hyper_err) = http_stream_tx.send_data(buf).await {
-            // is_closed() can happen only with sender's channel
+            // is_closed() is try only if the request channel (Sender) has been closed.
+            // This can happen if the service endpoint is suspending.
             if !hyper_err.is_closed() {
                 return Err(InvocationTaskError::Network(hyper_err));
             }

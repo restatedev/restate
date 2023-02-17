@@ -18,7 +18,6 @@ use mocks::{InMemoryJournalStorage, SimulatorAction};
 use prost::Message;
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashMap;
-use std::time::Duration;
 use test_utils::{assert, assert_eq, let_assert, test};
 use uuid::Uuid;
 
@@ -156,7 +155,7 @@ async fn bidi_stream() {
     let (drain_signal, watch) = drain::channel();
 
     // Run and await for partition processor to complete, then send the shutdown signal
-    let invoker_res = tokio::spawn(remote_invoker.run(Duration::from_secs(30), watch));
+    let invoker_res = tokio::spawn(remote_invoker.run(watch));
     partition_processor_simulator.run().await;
 
     // Send the drain signal

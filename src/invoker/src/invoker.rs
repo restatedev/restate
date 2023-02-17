@@ -3,7 +3,6 @@ use super::*;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::marker::PhantomData;
-use std::time::Duration;
 use std::{cmp, panic};
 
 use common::types::PartitionLeaderEpoch;
@@ -12,7 +11,7 @@ use futures::stream::{PollNext, StreamExt};
 use journal::raw::RawEntryCodec;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 
@@ -234,7 +233,7 @@ where
         }
     }
 
-    pub async fn run(self, shutdown_timeout: Duration, drain: drain::Watch) {
+    pub async fn run(self, drain: drain::Watch) {
         let Invoker {
             mut invoke_input_rx,
             mut resume_input_rx,
@@ -355,12 +354,7 @@ where
         }
 
         // Wait for all the tasks to shutdown
-        if tokio::time::timeout(shutdown_timeout, invocation_tasks.shutdown())
-            .await
-            .is_err()
-        {
-            warn!("I'm going to forcefully shutdown the invoker without waiting for all the tasks to be joined");
-        }
+        invocation_tasks.shutdown().await;
     }
 }
 

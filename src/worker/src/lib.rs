@@ -29,8 +29,6 @@ type PartitionProcessor = partition::PartitionProcessor<
 >;
 type TargetedFsmCommand = Targeted<partition::Command>;
 
-const INVOKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
 pub struct Options {
@@ -135,8 +133,7 @@ impl Worker {
         let (invoker_shutdown, invoker_drain) = drain::channel();
         let (network_shutdown, network_drain) = drain::channel();
 
-        let mut invoker_handle =
-            tokio::spawn(self.invoker.run(INVOKER_SHUTDOWN_TIMEOUT, invoker_drain));
+        let mut invoker_handle = tokio::spawn(self.invoker.run(invoker_drain));
         let mut network_handle = tokio::spawn(self.network.run(network_drain));
         let mut consensus_handle = tokio::spawn(self.consensus.run());
         let mut processors_handles: FuturesUnordered<_> = self
