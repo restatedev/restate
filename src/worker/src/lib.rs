@@ -7,6 +7,7 @@ use network::Network;
 use partition::RocksDBJournalReader;
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashMap;
+use std::time::Duration;
 use storage_rocksdb::RocksDBStorage;
 use tokio::join;
 use tokio::sync::mpsc;
@@ -27,6 +28,8 @@ type PartitionProcessor = partition::PartitionProcessor<
     RocksDBStorage,
 >;
 type TargetedFsmCommand = Targeted<partition::Command>;
+
+const INVOKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
@@ -132,7 +135,8 @@ impl Worker {
         let (invoker_shutdown, invoker_drain) = drain::channel();
         let (network_shutdown, network_drain) = drain::channel();
 
-        let mut invoker_handle = tokio::spawn(self.invoker.run(invoker_drain));
+        let mut invoker_handle =
+            tokio::spawn(self.invoker.run(INVOKER_SHUTDOWN_TIMEOUT, invoker_drain));
         let mut network_handle = tokio::spawn(self.network.run(network_drain));
         let mut consensus_handle = tokio::spawn(self.consensus.run());
         let mut processors_handles: FuturesUnordered<_> = self

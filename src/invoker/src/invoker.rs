@@ -165,8 +165,6 @@ enum OtherInputCommand {
     RegisterPartition(mpsc::Sender<OutputEffect>),
 }
 
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-
 #[derive(Debug)]
 pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
@@ -241,7 +239,7 @@ where
         }
     }
 
-    pub async fn run(self, drain: drain::Watch) {
+    pub async fn run(self, shutdown_timeout: Duration, drain: drain::Watch) {
         let Invoker {
             mut invoke_input_rx,
             mut resume_input_rx,
@@ -364,7 +362,7 @@ where
         }
 
         // Wait for all the tasks to shutdown
-        if tokio::time::timeout(SHUTDOWN_TIMEOUT, invocation_tasks.shutdown())
+        if tokio::time::timeout(shutdown_timeout, invocation_tasks.shutdown())
             .await
             .is_err()
         {
