@@ -23,7 +23,7 @@ impl<ConMsg, ConOut> Network<ConMsg, ConOut>
 where
     ConMsg: Send + 'static,
     ConOut: Sink<ConMsg>,
-    <ConOut as Sink<ConMsg>>::Error: Debug,
+    ConOut::Error: std::error::Error + Send + Sync + Debug + 'static,
 {
     pub fn new(consensus_out: ConOut) -> Self {
         let (consensus_in_tx, consensus_in_rx) = mpsc::channel(64);
@@ -39,7 +39,7 @@ where
         PollSender::new(self.consensus_in_tx.clone())
     }
 
-    pub async fn run(self, drain: drain::Watch) {
+    pub async fn run(self, drain: drain::Watch) -> anyhow::Result<()> {
         let Network {
             mut consensus_in_rx,
             consensus_out,
@@ -54,7 +54,7 @@ where
             tokio::select! {
                 message = consensus_in_rx.recv() => {
                     let message = message.expect("Network owns the consensus sender, that's why the receiver will never be closed.");
-                    consensus_out.send(message).await.expect("Consensus component must be running.");
+                    consensus_out.send(message).await?;
                 },
                 _ = &mut shutdown => {
                     debug!("Shutting network down.");
@@ -62,5 +62,7 @@ where
                 }
             }
         }
+
+        Ok(())
     }
 }
