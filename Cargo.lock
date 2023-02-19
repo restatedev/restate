@@ -317,6 +317,7 @@ version = "0.1.0"
 name = "consensus"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "common",
  "drain",
  "futures",

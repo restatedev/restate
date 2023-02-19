@@ -47,7 +47,7 @@ impl<Cmd, SmSink, RaftIn, RaftOut> Consensus<Cmd, SmSink, RaftIn, RaftOut>
 where
     Cmd: Send + Debug + 'static,
     SmSink: Sink<Command<Cmd>> + Unpin,
-    SmSink::Error: Debug,
+    SmSink::Error: std::error::Error + Send + Sync + 'static,
     RaftIn: Stream<Item = Targeted<Cmd>>,
     RaftOut: Sink<Targeted<Cmd>>,
 {
@@ -74,7 +74,7 @@ where
         self.state_machines.extend(state_machines);
     }
 
-    pub async fn run(self) {
+    pub async fn run(self) -> anyhow::Result<()> {
         let Consensus {
             mut proposal_rx,
             mut state_machines,
@@ -84,7 +84,7 @@ where
 
         info!("Running the consensus driver.");
 
-        Self::announce_leadership(&mut state_machines).await;
+        Self::announce_leadership(&mut state_machines).await?;
 
         tokio::pin!(raft_in);
 
@@ -96,14 +96,14 @@ where
                     let (target, proposal) = proposal.expect("Consensus owns the proposal sender, that's why the receiver should never be closed");
 
                     if let Some(state_machine) = state_machines.get_mut(&target) {
-                        state_machine.send(Command::Apply(proposal)).await.expect("The state machine should exist as long as Consensus exists");
+                        state_machine.send(Command::Apply(proposal)).await?;
                     }
                 },
                 raft_msg = raft_in.next() => {
                     if let Some((target, raft_msg)) = raft_msg {
 
                         if let Some(state_machine) = state_machines.get_mut(&target) {
-                            state_machine.send(Command::Apply(raft_msg)).await.expect("The state machine should exist as long as Consensus exists");
+                            state_machine.send(Command::Apply(raft_msg)).await?;
                         }
                     } else {
                         debug!("Shutting consensus down.");
@@ -112,14 +112,16 @@ where
                 }
             }
         }
+
+        Ok(())
     }
 
-    async fn announce_leadership(state_machines: &mut HashMap<PeerId, SmSink>) {
+    async fn announce_leadership(state_machines: &mut HashMap<PeerId, SmSink>) -> anyhow::Result<()> {
         debug!("Announcing leadership.");
         for sink in state_machines.values_mut() {
-            sink.send(Command::BecomeLeader(1))
-                .await
-                .expect("The state machine should exist as long as Consensus exists");
+            sink.send(Command::BecomeLeader(1)).await?
         }
+
+        Ok(())
     }
 }
