@@ -1,6 +1,5 @@
 use common::types::{EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
 use futures::{stream, Sink, SinkExt, Stream, StreamExt};
-use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fmt::Debug;
@@ -17,8 +16,6 @@ use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::LeadershipState;
 use crate::partition::storage::PartitionStorage;
 pub(crate) use state_machine::Command;
-
-type StateMachine = state_machine::StateMachine<ProtobufRawEntryCodec>;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<
@@ -38,7 +35,7 @@ pub(super) struct PartitionProcessor<
 
     invoker_tx: InvokerInputSender,
 
-    state_machine: StateMachine,
+    state_machine: state_machine::StateMachine<RawEntryCodec>,
 
     _entry_codec: PhantomData<RawEntryCodec>,
 }
@@ -64,7 +61,7 @@ impl<CmdStream, ProposalSink, RawEntryCodec, InvokerInputSender, Storage>
 where
     CmdStream: Stream<Item = consensus::Command<Command>>,
     ProposalSink: Sink<Command>,
-    RawEntryCodec: journal::raw::RawEntryCodec + Debug,
+    RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
     RawEntryCodec::Error: Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     InvokerInputSender::Error: Debug,
@@ -84,13 +81,13 @@ where
             command_stream,
             proposal_sink,
             invoker_tx,
-            state_machine: StateMachine::default(),
+            state_machine: Default::default(),
             storage,
             _entry_codec: Default::default(),
         }
     }
 
-    pub(super) async fn run(self) {
+    pub(super) async fn run(self) -> anyhow::Result<()> {
         let PartitionProcessor {
             peer_id,
             partition_id,
@@ -120,23 +117,23 @@ where
                         match command {
                             consensus::Command::Apply(fsm_command) => {
                                 effects.clear();
-                                state_machine.on_apply(fsm_command, &mut effects, &partition_storage).await.expect("State machine application must not fail");
+                                state_machine.on_apply(fsm_command, &mut effects, &partition_storage).await?;
 
                                 let message_collector = leadership_state.into_message_collector();
 
                                 let transaction = partition_storage.create_transaction();
-                                let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).await.expect("Effect interpreter must not fail");
+                                let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).await?;
 
-                                let message_collector = result.commit().await.expect("Persisting state machine changes must not fail");
-                                leadership_state = message_collector.send().await.expect("Actuator message sending must not fail");
+                                let message_collector = result.commit().await?;
+                                leadership_state = message_collector.send().await?;
                             }
                             consensus::Command::BecomeLeader(leader_epoch) => {
                                 info!(%peer_id, %partition_id, %leader_epoch, "Become leader.");
-                                leadership_state = leadership_state.become_leader(leader_epoch, &partition_storage).await;
+                                leadership_state = leadership_state.become_leader(leader_epoch, &partition_storage).await?;
                             }
                             consensus::Command::BecomeFollower => {
                                 info!(%peer_id, %partition_id, "Become follower.");
-                                leadership_state = leadership_state.become_follower().await;
+                                leadership_state = leadership_state.become_follower().await?;
                             },
                             consensus::Command::ApplySnapshot => {
                                 unimplemented!("Not supported yet.");
@@ -150,14 +147,16 @@ where
                     }
                 },
                 actuator_message = actuator_stream.next() => {
-                    let actuator_message = actuator_message.expect("Actuator stream must be open");
+                    let actuator_message = actuator_message.ok_or(anyhow::anyhow!("actuator stream is closed"))?;
                     Self::propose_actuator_message(actuator_message, &mut proposal_sink).await;
                 }
             }
         }
 
         debug!(%peer_id, %partition_id, "Shutting partition processor down.");
-        leadership_state.become_follower().await;
+        let _ = leadership_state.become_follower().await;
+
+        Ok(())
     }
 
     async fn propose_actuator_message(

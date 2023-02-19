@@ -1,7 +1,6 @@
 use super::*;
 
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::{cmp, panic};
 
@@ -22,8 +21,12 @@ pub struct UnboundedInvokerInputSender {
     other_input: mpsc::UnboundedSender<Input<OtherInputCommand>>,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("invoker is not running")]
+pub struct InvokerNotRunning;
+
 impl InvokerInputSender for UnboundedInvokerInputSender {
-    type Error = Infallible;
+    type Error = InvokerNotRunning;
     type Future = futures::future::Ready<Result<(), Self::Error>>;
 
     fn invoke(
@@ -32,16 +35,17 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
         service_invocation_id: ServiceInvocationId,
         journal: InvokeInputJournal,
     ) -> Self::Future {
-        self.invoke_input
-            .send(Input {
-                partition,
-                inner: InvokeInputCommand {
-                    service_invocation_id,
-                    journal,
-                },
-            })
-            .expect("Invoker should be running");
-        futures::future::ok(())
+        futures::future::ready(
+            self.invoke_input
+                .send(Input {
+                    partition,
+                    inner: InvokeInputCommand {
+                        service_invocation_id,
+                        journal,
+                    },
+                })
+                .map_err(|_| InvokerNotRunning),
+        )
     }
 
     fn resume(
@@ -50,16 +54,17 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
         service_invocation_id: ServiceInvocationId,
         journal: InvokeInputJournal,
     ) -> Self::Future {
-        self.resume_input
-            .send(Input {
-                partition,
-                inner: InvokeInputCommand {
-                    service_invocation_id,
-                    journal,
-                },
-            })
-            .expect("Invoker should be running");
-        futures::future::ok(())
+        futures::future::ready(
+            self.resume_input
+                .send(Input {
+                    partition,
+                    inner: InvokeInputCommand {
+                        service_invocation_id,
+                        journal,
+                    },
+                })
+                .map_err(|_| InvokerNotRunning),
+        )
     }
 
     fn notify_completion(
@@ -68,16 +73,17 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
     ) -> Self::Future {
-        self.other_input
-            .send(Input {
-                partition,
-                inner: OtherInputCommand::Completion {
-                    service_invocation_id,
-                    completion,
-                },
-            })
-            .expect("Invoker should be running");
-        futures::future::ok(())
+        futures::future::ready(
+            self.other_input
+                .send(Input {
+                    partition,
+                    inner: OtherInputCommand::Completion {
+                        service_invocation_id,
+                        completion,
+                    },
+                })
+                .map_err(|_| InvokerNotRunning),
+        )
     }
 
     fn notify_stored_entry_ack(
@@ -86,26 +92,28 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
     ) -> Self::Future {
-        self.other_input
-            .send(Input {
-                partition,
-                inner: OtherInputCommand::StoredEntryAck {
-                    service_invocation_id,
-                    entry_index,
-                },
-            })
-            .expect("Invoker should be running");
-        futures::future::ok(())
+        futures::future::ready(
+            self.other_input
+                .send(Input {
+                    partition,
+                    inner: OtherInputCommand::StoredEntryAck {
+                        service_invocation_id,
+                        entry_index,
+                    },
+                })
+                .map_err(|_| InvokerNotRunning),
+        )
     }
 
     fn abort_all_partition(&mut self, partition: PartitionLeaderEpoch) -> Self::Future {
-        self.other_input
-            .send(Input {
-                partition,
-                inner: OtherInputCommand::AbortAllPartition,
-            })
-            .expect("Invoker should be running");
-        futures::future::ok(())
+        futures::future::ready(
+            self.other_input
+                .send(Input {
+                    partition,
+                    inner: OtherInputCommand::AbortAllPartition,
+                })
+                .map_err(|_| InvokerNotRunning),
+        )
     }
 
     fn register_partition(
@@ -113,13 +121,14 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
         partition: PartitionLeaderEpoch,
         sender: mpsc::Sender<OutputEffect>,
     ) -> Self::Future {
-        self.other_input
-            .send(Input {
-                partition,
-                inner: OtherInputCommand::RegisterPartition(sender),
-            })
-            .expect("Invoker should be running");
-        futures::future::ok(())
+        futures::future::ready(
+            self.other_input
+                .send(Input {
+                    partition,
+                    inner: OtherInputCommand::RegisterPartition(sender),
+                })
+                .map_err(|_| InvokerNotRunning),
+        )
     }
 }
 

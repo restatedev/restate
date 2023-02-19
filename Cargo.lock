@@ -2532,6 +2532,7 @@ checksum = "447660ad36a13288b1db4d4248e857b510e8c3a225c822ba4fb748c0aafecffd"
 name = "worker"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytes",
  "clap",
  "common",

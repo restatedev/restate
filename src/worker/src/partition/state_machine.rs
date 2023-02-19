@@ -2,6 +2,7 @@ use bytes::Bytes;
 use common::types::{
     EntryIndex, InvocationResponse, ServiceId, ServiceInvocation, ServiceInvocationId,
 };
+use common::utils::GenericError;
 use futures::future::BoxFuture;
 use invoker::Kind;
 use journal::raw::{RawEntry, RawEntryCodec, RawEntryHeader};
@@ -18,11 +19,11 @@ use crate::partition::effects::{Effects, OutboxMessage};
 use crate::partition::InvocationStatus;
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error<S, C> {
-    #[error("failed to read from state reader")]
-    State(S),
-    #[error("failed to deserialize state")]
-    Codec(C),
+pub enum Error {
+    #[error("failed to read from state reader: {0}")]
+    State(GenericError),
+    #[error("failed to deserialize entry: {0}")]
+    Codec(GenericError),
 }
 
 #[derive(Debug)]
@@ -49,7 +50,7 @@ pub(super) struct JournalStatus {
 pub type InboxEntry = (u64, ServiceInvocation);
 
 pub(super) trait StateReader {
-    type Error;
+    type Error: std::error::Error + Send + Sync + 'static;
 
     // TODO: Replace with async trait or proper future
     fn get_invocation_status(
@@ -147,7 +148,7 @@ where
         command: Command,
         effects: &mut Effects,
         state: &State,
-    ) -> Result<(), Error<State::Error, Codec::Error>> {
+    ) -> Result<(), Error> {
         debug!(?command, "Apply");
 
         match command {
@@ -155,7 +156,7 @@ where
                 let status = state
                     .get_invocation_status(&service_invocation.id.service_id)
                     .await
-                    .map_err(Error::State)?;
+                    .map_err(|err| Error::State(err.into()))?;
 
                 if status == InvocationStatus::Free {
                     effects.invoke_service(service_invocation);
@@ -212,11 +213,11 @@ where
             service_invocation_id,
             kind,
         }: invoker::OutputEffect,
-    ) -> Result<(), Error<State::Error, Codec::Error>> {
+    ) -> Result<(), Error> {
         let status = state
             .get_invocation_status(&service_invocation_id.service_id)
             .await
-            .map_err(Error::State)?;
+            .map_err(|err| Error::State(err.into()))?;
 
         debug_assert!(
             matches!(
@@ -248,7 +249,7 @@ where
                     if state
                         .is_entry_completed(&service_invocation_id.service_id, *entry_index)
                         .await
-                        .map_err(Error::State)?
+                        .map_err(|err| Error::State(err.into()))?
                     {
                         trace!(
                         ?service_invocation_id,
@@ -288,11 +289,11 @@ where
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
         entry: RawEntry,
-    ) -> Result<(), Error<State::Error, Codec::Error>> {
+    ) -> Result<(), Error> {
         let journal_length = state
             .get_journal_status(&service_invocation_id.service_id)
             .await
-            .map_err(Error::State)?
+            .map_err(|err| Error::State(err.into()))?
             .length;
 
         debug_assert_eq!(
@@ -311,7 +312,7 @@ where
             }
             RawEntryHeader::OutputStream => {
                 let OutputStreamEntry { result } = enum_inner!(
-                    Self::deserialize(&entry).map_err(Error::Codec)?,
+                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
                     Entry::OutputStream
                 );
 
@@ -322,7 +323,7 @@ where
             RawEntryHeader::GetState { is_completed } => {
                 if !is_completed {
                     let GetStateEntry { key, .. } = enum_inner!(
-                        Self::deserialize(&entry).map_err(Error::Codec)?,
+                        Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
                         Entry::GetState
                     );
 
@@ -337,7 +338,7 @@ where
             }
             RawEntryHeader::SetState => {
                 let SetStateEntry { key, value } = enum_inner!(
-                    Self::deserialize(&entry).map_err(Error::Codec)?,
+                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
                     Entry::SetState
                 );
 
@@ -348,7 +349,7 @@ where
             }
             RawEntryHeader::ClearState => {
                 let ClearStateEntry { key } = enum_inner!(
-                    Self::deserialize(&entry).map_err(Error::Codec)?,
+                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
                     Entry::ClearState
                 );
                 effects.clear_state(service_invocation_id, key, entry, entry_index);
@@ -359,7 +360,7 @@ where
             RawEntryHeader::Sleep { is_completed } => {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
                 let SleepEntry { wake_up_time, .. } = enum_inner!(
-                    Self::deserialize(&entry).map_err(Error::Codec)?,
+                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
                     Entry::Sleep
                 );
                 effects.register_timer(
@@ -374,7 +375,7 @@ where
             RawEntryHeader::Invoke { is_completed } => {
                 if !is_completed {
                     let InvokeEntry { request, .. } = enum_inner!(
-                        Self::deserialize(&entry).map_err(Error::Codec)?,
+                        Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
                         Entry::Invoke
                     );
 
@@ -389,7 +390,7 @@ where
             }
             RawEntryHeader::BackgroundInvoke => {
                 let BackgroundInvokeEntry(request) = enum_inner!(
-                    Self::deserialize(&entry).map_err(Error::Codec)?,
+                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
                     Entry::BackgroundInvoke
                 );
 
@@ -404,7 +405,7 @@ where
             }
             RawEntryHeader::CompleteAwakeable => {
                 let entry = enum_inner!(
-                    Self::deserialize(&entry).map_err(Error::Codec)?,
+                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
                     Entry::CompleteAwakeable
                 );
 
@@ -436,11 +437,11 @@ where
         completion: Completion,
         state: &State,
         effects: &mut Effects,
-    ) -> Result<(), Error<State::Error, Codec::Error>> {
+    ) -> Result<(), Error> {
         let status = state
             .get_invocation_status(&service_invocation_id.service_id)
             .await
-            .map_err(Error::State)?;
+            .map_err(|err| Error::State(err.into()))?;
 
         match status {
             InvocationStatus::Invoked(invocation_id) => {
@@ -462,7 +463,7 @@ where
                         if state
                             .is_entry_completed(&service_invocation_id.service_id, *entry_index)
                             .await
-                            .map_err(Error::State)?
+                            .map_err(|err| Error::State(err.into()))?
                         {
                             effects.store_completion_and_resume(service_invocation_id, completion);
                             return Ok(());
@@ -493,11 +494,11 @@ where
         service_invocation_id: ServiceInvocationId,
         state: &State,
         effects: &mut Effects,
-    ) -> Result<(), Error<State::Error, Codec::Error>> {
+    ) -> Result<(), Error> {
         if let Some((inbox_sequence_number, service_invocation)) = state
             .peek_inbox(&service_invocation_id.service_id)
             .await
-            .map_err(Error::State)?
+            .map_err(|err| Error::State(err.into()))?
         {
             effects.drop_journal_and_pop_inbox(
                 service_invocation_id.service_id,

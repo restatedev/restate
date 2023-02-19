@@ -79,7 +79,7 @@ pub enum InvokeInputJournal {
 }
 
 pub trait InvokerInputSender {
-    type Error;
+    type Error: std::error::Error + Send + Sync + 'static;
     type Future: Future<Output = Result<(), Self::Error>>;
 
     fn invoke(

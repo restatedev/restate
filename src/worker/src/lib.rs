@@ -129,11 +129,10 @@ impl Worker {
     }
 
     pub async fn run(self, drain: drain::Watch) {
-        let (invoker_shutdown, invoker_drain) = drain::channel();
-        let (network_shutdown, network_drain) = drain::channel();
+        let (shutdown_signal, shutdown_watch) = drain::channel();
 
-        let mut invoker_handle = tokio::spawn(self.invoker.run(invoker_drain));
-        let mut network_handle = tokio::spawn(self.network.run(network_drain));
+        let mut invoker_handle = tokio::spawn(self.invoker.run(shutdown_watch.clone()));
+        let mut network_handle = tokio::spawn(self.network.run(shutdown_watch));
         let mut consensus_handle = tokio::spawn(self.consensus.run());
         let mut processors_handles: FuturesUnordered<_> = self
             .processors
@@ -149,17 +148,10 @@ impl Worker {
 
                 // first we shut down the network which shuts down the consensus which shuts
                 // down the partition processors transitively
-                network_shutdown.drain().await;
+                shutdown_signal.drain().await;
 
                 // ignored because we are shutting down
-                let _ = join!(network_handle, consensus_handle, processors_handles.collect::<Vec<_>>());
-
-                // at last we shut down the invoker which is safe to shut down once all partition
-                // processors have shut down
-                invoker_shutdown.drain().await;
-
-                // ignored because we are shutting down
-                let _ = invoker_handle.await;
+                let _ = join!(network_handle, consensus_handle, processors_handles.collect::<Vec<_>>(), invoker_handle);
 
                 debug!("Completed shutdown of worker");
             },

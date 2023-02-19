@@ -1,5 +1,6 @@
 use crate::partition::effects::{ActuatorMessage, MessageCollector};
 use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId};
+use common::utils::GenericError;
 use futures::{Stream, StreamExt};
 use invoker::{InvokeInputJournal, InvokerInputSender};
 use std::fmt::Debug;
@@ -35,12 +36,15 @@ pub(super) enum ActuatorMessageCollector<I> {
     Follower(FollowerState<I>),
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("failed sending actuator messages: {0}")]
+pub(crate) struct SendError(#[from] GenericError);
+
 impl<I> ActuatorMessageCollector<I>
 where
     I: InvokerInputSender,
-    I::Error: Debug,
 {
-    pub(super) async fn send(self) -> Result<LeadershipState<I>, I::Error> {
+    pub(super) async fn send(self) -> Result<LeadershipState<I>, SendError> {
         match self {
             ActuatorMessageCollector::Leader {
                 mut follower_state,
@@ -51,7 +55,8 @@ where
                     &mut follower_state.invoker_tx,
                     leader_state.message_buffer.drain(..),
                 )
-                .await?;
+                .await
+                .map_err(|err| SendError(err.into()))?;
 
                 Ok(LeadershipState::Leader {
                     follower_state,
@@ -136,6 +141,12 @@ impl<I> MessageCollector for ActuatorMessageCollector<I> {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum Error {
+    #[error(transparent)]
+    Invoker(GenericError),
+}
+
 pub(super) enum LeadershipState<InvokerInputSender> {
     Follower(FollowerState<InvokerInputSender>),
 
@@ -166,13 +177,13 @@ where
         self,
         leader_epoch: LeaderEpoch,
         invocation_reader: &I,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         if let LeadershipState::Follower { .. } = self {
             self.unchecked_become_leader(leader_epoch, invocation_reader)
                 .await
         } else {
             self.become_follower()
-                .await
+                .await?
                 .unchecked_become_leader(leader_epoch, invocation_reader)
                 .await
         }
@@ -182,7 +193,7 @@ where
         self,
         leader_epoch: LeaderEpoch,
         invocation_reader: &I,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         if let LeadershipState::Follower(mut follower_state) = self {
             let (tx, rx) = mpsc::channel(1);
 
@@ -190,7 +201,7 @@ where
                 .invoker_tx
                 .register_partition((follower_state.partition_id, leader_epoch), tx)
                 .await
-                .expect("Invoker should be running");
+                .map_err(|err| Error::Invoker(err.into()))?;
 
             let mut invoked_invocations = invocation_reader.scan_invoked_invocations();
 
@@ -203,10 +214,10 @@ where
                         InvokeInputJournal::NoCachedJournal,
                     )
                     .await
-                    .expect("Invoker should be running");
+                    .map_err(|err| Error::Invoker(err.into()))?;
             }
 
-            LeadershipState::Leader {
+            Ok(LeadershipState::Leader {
                 follower_state,
                 leader_state: LeaderState {
                     leader_epoch,
@@ -215,13 +226,13 @@ where
                     // AckStoredEntry)
                     message_buffer: Vec::with_capacity(2),
                 },
-            }
+            })
         } else {
             unreachable!("This method should only be called if I am a follower!");
         }
     }
 
-    pub(super) async fn become_follower(self) -> Self {
+    pub(super) async fn become_follower(self) -> Result<Self, Error> {
         if let LeadershipState::Leader {
             follower_state:
                 FollowerState {
@@ -235,10 +246,10 @@ where
             invoker_tx
                 .abort_all_partition((partition_id, leader_epoch))
                 .await
-                .expect("Invoker should be running");
-            Self::follower(peer_id, partition_id, invoker_tx)
+                .map_err(|err| Error::Invoker(err.into()))?;
+            Ok(Self::follower(peer_id, partition_id, invoker_tx))
         } else {
-            self
+            Ok(self)
         }
     }
 

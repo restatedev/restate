@@ -8,6 +8,7 @@ use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
 use journal::raw::RawEntry;
 use journal::CompletionResult;
+use std::convert::Infallible;
 
 pub(super) struct PartitionStorage<Storage> {
     _partition_id: PartitionId,
@@ -28,7 +29,7 @@ impl<Storage> PartitionStorage<Storage> {
 }
 
 impl<Storage> StateReader for PartitionStorage<Storage> {
-    type Error = ();
+    type Error = Infallible;
 
     fn get_invocation_status(
         &self,
@@ -81,7 +82,7 @@ impl<'a, Storage> Transaction<'a, Storage> {
 }
 
 impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
-    type Error = ();
+    type Error = Infallible;
 
     fn store_invocation_status(
         &self,
@@ -218,7 +219,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
 }
 
 impl<'a, Storage> Committable for Transaction<'a, Storage> {
-    type Error = ();
+    type Error = Infallible;
 
     fn commit(self) -> BoxFuture<'static, Result<(), Self::Error>> {
         self.commit();

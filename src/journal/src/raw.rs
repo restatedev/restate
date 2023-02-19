@@ -67,7 +67,7 @@ impl RawEntry {
 }
 
 pub trait RawEntryCodec {
-    type Error;
+    type Error: std::error::Error + Send + Sync + 'static;
 
     fn deserialize(entry: &RawEntry) -> Result<Entry, Self::Error>;
 
