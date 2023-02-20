@@ -18,6 +18,17 @@ pub struct IngressRequestHeaders {
     method_name: String,
     tracing_context: Context,
 }
+
+impl IngressRequestHeaders {
+    pub fn new(service_name: String, method_name: String, tracing_context: Context) -> Self {
+        Self {
+            service_name,
+            method_name,
+            tracing_context,
+        }
+    }
+}
+
 pub type IngressRequest = (IngressRequestHeaders, Bytes);
 pub type IngressResponse = Bytes;
 pub type IngressError = Status;
