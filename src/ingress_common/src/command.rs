@@ -181,23 +181,6 @@ mod tests {
         }
     }
 
-    impl<T: Send, R: Send + Debug> Command<T, R> {
-        pub(crate) async fn get_request_and_inject_response<F>(
-            mut rx: UnboundedCommandReceiver<T, R>,
-            result_factory: F,
-        ) -> T
-        where
-            F: FnOnce(&T) -> R,
-        {
-            let command = rx.recv().await.unwrap();
-            let (payload, response_tx) = command.into_inner();
-
-            response_tx.send(result_factory(&payload)).unwrap();
-
-            payload
-        }
-    }
-
     #[test(tokio::test)]
     async fn test_back_and_forth() {
         let (tx, mut rx) = mpsc::unbounded_channel();

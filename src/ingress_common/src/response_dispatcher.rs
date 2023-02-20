@@ -125,17 +125,6 @@ mod tests {
     use super::*;
 
     use test_utils::test;
-    use tokio::sync::mpsc;
-
-    impl IngressResponseSender {
-        pub(crate) fn mock() -> (
-            IngressResponseSender,
-            mpsc::UnboundedReceiver<IngressResponseMessage>,
-        ) {
-            let (response_tx, response_rx) = mpsc::unbounded_channel();
-            (IngressResponseSender { response_tx }, response_rx)
-        }
-    }
 
     #[test(tokio::test)]
     async fn test_closed_handler() {

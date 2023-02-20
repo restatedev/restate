@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod command;
 mod request_response_handler;
 mod response_dispatcher;
@@ -11,14 +9,12 @@ pub use response_dispatcher::*;
 use bytes::Bytes;
 use common::types::ServiceInvocationId;
 use opentelemetry::Context;
-use tonic::metadata::MetadataMap;
 use tonic::Status;
 
 #[derive(Debug)]
 pub struct IngressRequestHeaders {
     service_name: String,
     method_name: String,
-    metadata: MetadataMap,
     tracing_context: Context,
 }
 pub type IngressRequest = (IngressRequestHeaders, Bytes);

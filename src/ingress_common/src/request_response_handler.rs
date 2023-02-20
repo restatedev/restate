@@ -36,7 +36,7 @@ where
     ServiceInvocationSender: Sink<ServiceInvocation> + Clone,
     ServiceInvocationSender::Error: Debug,
 {
-    pub(crate) fn new(
+    pub fn new(
         ingress_id: IngressId,
         service_invocation_factory: InvocationFactory,
         service_invocation_sender: ServiceInvocationSender,
@@ -218,7 +218,6 @@ mod tests {
             IngressRequestHeaders {
                 service_name: "Unknown".to_string(),
                 method_name: "Unknown".to_string(),
-                metadata: Default::default(),
                 tracing_context: Default::default(),
             },
             Bytes::from_static(&[0, 0, 0, 0, 0]),
@@ -247,7 +246,6 @@ mod tests {
             IngressRequestHeaders {
                 service_name: "MySvc".to_string(),
                 method_name: "MyMethod".to_string(),
-                metadata: Default::default(),
                 tracing_context: Default::default(),
             },
             req_payload.clone(),
