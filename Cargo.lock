@@ -294,7 +294,9 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "bytestring",
+ "opentelemetry_api",
  "serde",
+ "tonic",
  "uuid",
 ]
 
