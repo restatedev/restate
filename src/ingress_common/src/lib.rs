@@ -8,7 +8,7 @@ pub use response_dispatcher::*;
 
 use bytes::Bytes;
 use common::types::ServiceInvocationId;
-use opentelemetry::Context;
+use opentelemetry_api::Context;
 use tonic::Status;
 
 #[derive(Debug)]

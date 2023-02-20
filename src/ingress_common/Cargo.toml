@@ -10,31 +10,22 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# Restate
 common = { workspace = true }
 
-# Encoding/Decoding
 bytes = { workspace = true }
-prost-reflect = { workspace = true, features = ["serde", "reflect-well-known-types"] }
-
-# Futures
-pin-project = { workspace = true }
-futures = { workspace = true }
-tokio-util = { workspace = true }
 drain = { workspace = true }
-
-# Tower + Tonic + Tokio
+futures = { workspace = true }
+pin-project = { workspace = true }
+opentelemetry_api = { workspace = true }
 tower = { version = "0.4", features = ["util"] }
 tonic = { workspace = true }
 tokio = { workspace = true }
-
-# Tracing
-opentelemetry = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
 mockall = "0.11"
 test_utils = { workspace = true }
+tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

@@ -11,7 +11,7 @@ use common::types::{
 };
 use futures::future::BoxFuture;
 use futures::{ready, FutureExt, Sink, SinkExt};
-use opentelemetry::trace::{SpanContext, TraceContextExt};
+use opentelemetry_api::trace::{SpanContext, TraceContextExt};
 use pin_project::pin_project;
 use tonic::Status;
 use tower::Service;
