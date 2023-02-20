@@ -16,7 +16,7 @@ drain = { workspace = true }
 futures-util = { workspace = true }
 humantime = "2.1.0"
 meta = { workspace = true }
-pin-project-lite = "0.2.9"
+pin-project = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing_instrumentation = { workspace = true }
