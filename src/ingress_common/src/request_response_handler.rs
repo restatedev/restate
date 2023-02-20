@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(status.code(), Code::NotFound);
     }
 
-    #[tokio::test]
+    #[test(tokio::test)]
     async fn successful_invocation() {
         let req_payload = Bytes::from_static(&[1, 2, 3, 4]);
         let res_payload = Bytes::from_static(&[5, 6, 7, 8]);

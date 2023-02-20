@@ -21,6 +21,7 @@ prost-reflect = { workspace = true, features = ["serde", "reflect-well-known-typ
 pin-project = { workspace = true }
 futures = { workspace = true }
 tokio-util = { workspace = true }
+drain = { workspace = true }
 
 # Tower + Tonic + Tokio
 tower = { version = "0.4", features = ["util"] }

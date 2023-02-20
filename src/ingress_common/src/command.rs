@@ -24,14 +24,6 @@ impl<T> CommandResponseSender<T> {
         }
     }
 
-    pub fn send_or_return(self, t: T) -> Result<(), T> {
-        if let Some(tx) = self.tx {
-            tx.send(t)
-        } else {
-            Ok(())
-        }
-    }
-
     pub fn is_closed(&self) -> bool {
         match &self.tx {
             Some(tx) => tx.is_closed(),
