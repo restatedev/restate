@@ -9,8 +9,7 @@ use common::types::{
     IngressId, ServiceInvocation, ServiceInvocationFactory, ServiceInvocationResponseSink,
     SpanRelation,
 };
-use futures::future::BoxFuture;
-use futures::{ready, FutureExt, Sink, SinkExt};
+use futures::{ready, Sink, SinkExt};
 use opentelemetry_api::trace::{SpanContext, TraceContextExt};
 use pin_project::pin_project;
 use tonic::Status;
@@ -20,54 +19,64 @@ use tracing::{info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// Handler for a single request/response.
-pub struct RequestResponseHandler<InvocationFactory, ServiceInvocationSender> {
-    ingress_id: IngressId,
+pub struct RequestResponseHandler<InvocationFactory, InvocationSink> {
+    ingress_id: Option<IngressId>,
 
-    service_invocation_factory: InvocationFactory,
-    service_invocation_sender: ServiceInvocationSender,
+    invocation_factory: InvocationFactory,
+    invocation_sink: Option<InvocationSink>,
 
     response_requester: IngressResponseRequester,
 }
 
-impl<InvocationFactory, ServiceInvocationSender>
-    RequestResponseHandler<InvocationFactory, ServiceInvocationSender>
+impl<InvocationFactory, InvocationSink> RequestResponseHandler<InvocationFactory, InvocationSink>
 where
     InvocationFactory: ServiceInvocationFactory,
-    ServiceInvocationSender: Sink<ServiceInvocation> + Clone,
-    ServiceInvocationSender::Error: Debug,
+    InvocationSink: Sink<ServiceInvocation>,
+    InvocationSink::Error: Debug,
 {
     pub fn new(
         ingress_id: IngressId,
-        service_invocation_factory: InvocationFactory,
-        service_invocation_sender: ServiceInvocationSender,
+        invocation_factory: InvocationFactory,
+        invocation_sink: InvocationSink,
         response_requester: IngressResponseRequester,
     ) -> Self {
         Self {
-            ingress_id,
-            service_invocation_factory,
-            service_invocation_sender,
+            ingress_id: Some(ingress_id),
+            invocation_factory,
+            invocation_sink: Some(invocation_sink),
             response_requester,
         }
     }
 }
 
-impl<InvocationFactory, ServiceInvocationSender> Service<IngressRequest>
-    for RequestResponseHandler<InvocationFactory, ServiceInvocationSender>
+impl<InvocationFactory, InvocationSink> Service<IngressRequest>
+    for RequestResponseHandler<InvocationFactory, InvocationSink>
 where
     InvocationFactory: ServiceInvocationFactory,
-    ServiceInvocationSender: Sink<ServiceInvocation> + Send + Unpin + Clone + 'static,
-    ServiceInvocationSender::Error: Debug,
+    InvocationSink: Sink<ServiceInvocation> + Unpin + 'static,
+    InvocationSink::Error: Debug,
 {
     type Response = IngressResponse;
     type Error = IngressError;
-    type Future =
-        Instrumented<HandlerFuture<BoxFuture<'static, Result<(), ServiceInvocationSender::Error>>>>;
+    type Future = Instrumented<HandlerFuture<InvocationSink>>;
 
-    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.invocation_sink
+            .as_mut()
+            .unwrap()
+            .poll_ready_unpin(cx)
+            .map_err(|e| {
+                warn!("Error when polling the invocation sink: {:?}", e);
+                Status::unavailable("Unavailable")
+            })
     }
 
     fn call(&mut self, req: IngressRequest) -> Self::Future {
+        let mut sink = self
+            .invocation_sink
+            .take()
+            .expect("RequestResponseHandler should be invoked once per request");
+
         let (req_headers, req_payload) = req;
 
         let span = info_span!(
@@ -79,11 +88,11 @@ where
 
         trace!(parent: &span, rpc.request = ?req_payload);
 
-        let service_invocation = match self.service_invocation_factory.create(
+        let service_invocation = match self.invocation_factory.create(
             &req_headers.service_name,
             &req_headers.method_name,
             req_payload,
-            ServiceInvocationResponseSink::Ingress(self.ingress_id.clone()),
+            ServiceInvocationResponseSink::Ingress(self.ingress_id.take().unwrap()),
             SpanRelation::from_parent(create_parent_span_context(
                 req_headers.tracing_context.span().span_context(),
             )),
@@ -91,7 +100,7 @@ where
             Ok(i) => i,
             Err(e) => {
                 warn!(parent: &span, "Cannot create service invocation: {:?}", e);
-                return HandlerFuture::Error(Some(e)).instrument(span);
+                return HandlerFuture::Error { sink, err: Some(e) }.instrument(span);
             }
         };
 
@@ -109,14 +118,24 @@ where
                 parent: &span,
                 "Cannot register invocation to response dispatcher loop"
             );
-            return HandlerFuture::Error(Some(Status::unavailable("Unavailable"))).instrument(span);
+            return HandlerFuture::Error {
+                sink,
+                err: Some(Status::unavailable("Unavailable")),
+            }
+            .instrument(span);
         }
 
-        let mut sender = self.service_invocation_sender.clone();
-        let send_invocation_fut = async move { sender.send(service_invocation).await }.boxed();
+        if let Err(e) = sink.start_send_unpin(service_invocation) {
+            warn!("Cannot forward the invocation to the worker: {:?}", e);
+            return HandlerFuture::Error {
+                sink,
+                err: Some(Status::unavailable("Unavailable")),
+            }
+            .instrument(span);
+        }
 
         HandlerFuture::SendingInvocation {
-            send_invocation_fut,
+            sink,
             response_rx: Some(response_rx),
         }
         .instrument(span)
@@ -124,32 +143,33 @@ where
 }
 
 #[pin_project(project = HandlerFutureProj)]
-pub enum HandlerFuture<SendInvocationFut> {
+pub enum HandlerFuture<InvocationSink> {
     SendingInvocation {
         #[pin]
-        send_invocation_fut: SendInvocationFut,
+        sink: InvocationSink,
         response_rx: Option<CommandResponseReceiver<IngressResult>>,
     },
     WaitingResponse(#[pin] CommandResponseReceiver<IngressResult>),
-    Error(Option<Status>),
+    Error {
+        #[pin]
+        sink: InvocationSink,
+        err: Option<Status>,
+    },
 }
 
-impl<SendInvocationFut, SendInvocationErr> Future for HandlerFuture<SendInvocationFut>
+impl<InvocationSink> Future for HandlerFuture<InvocationSink>
 where
-    SendInvocationFut: Future<Output = Result<(), SendInvocationErr>>,
+    InvocationSink: Sink<ServiceInvocation> + 'static,
+    InvocationSink::Error: Debug,
 {
     type Output = IngressResult;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             match self.as_mut().project() {
-                HandlerFutureProj::SendingInvocation {
-                    send_invocation_fut,
-                    response_rx,
-                    ..
-                } => {
-                    if ready!(send_invocation_fut.poll(cx)).is_err() {
-                        warn!("Cannot forward the invocation to the worker");
+                HandlerFutureProj::SendingInvocation { sink, response_rx } => {
+                    if let Err(e) = ready!(sink.poll_close(cx)) {
+                        warn!("Cannot forward the invocation to the worker: {:?}", e);
                         return Poll::Ready(Err(Status::unavailable("Unavailable")));
                     } else {
                         // TODO should we also respect the timeout coming from grpc timeout header?
@@ -178,10 +198,16 @@ where
                         }
                     })
                 }
-                HandlerFutureProj::Error(opt_err) => {
-                    return Poll::Ready(Err(opt_err
+                HandlerFutureProj::Error { sink, err } => {
+                    // We still need to try closing the sink in order to release the quota
+                    if let Err(e) = ready!(sink.poll_close(cx)) {
+                        // This should never fail I guess?
+                        warn!("Cannot forward the invocation to the worker: {:?}", e);
+                    }
+
+                    return Poll::Ready(Err(err
                         .take()
-                        .expect("Future should not be polled twice")))
+                        .expect("Future should not be polled twice")));
                 }
             }
         }
