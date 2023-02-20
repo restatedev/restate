@@ -1,5 +1,6 @@
 use crate::partition::effects::{Committable, OutboxMessage, StateStorage};
 use crate::partition::leadership::InvocationReader;
+use crate::partition::shuffle::{OutboxReader, ShuffleMessage};
 use crate::partition::state_machine::{JournalStatus, StateReader};
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
@@ -10,6 +11,7 @@ use journal::raw::RawEntry;
 use journal::CompletionResult;
 use std::convert::Infallible;
 
+#[derive(Debug, Clone)]
 pub(super) struct PartitionStorage<Storage> {
     _partition_id: PartitionId,
     _storage: Storage,
@@ -214,6 +216,17 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         _wake_up_time: u64,
         _entry_index: EntryIndex,
     ) -> Result<(), Self::Error> {
+        todo!()
+    }
+}
+
+impl<Storage> OutboxReader for PartitionStorage<Storage> {
+    type Error = ();
+
+    fn get_next_message(
+        &self,
+        _next_sequence_number: u64,
+    ) -> BoxFuture<Result<Option<ShuffleMessage>, Self::Error>> {
         todo!()
     }
 }

@@ -1,9 +1,10 @@
+use crate::partition::shuffle;
 use common::types::PeerId;
 use consensus::{Consensus, ProposalSender, Targeted};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use invoker::{EndpointMetadata, Invoker, UnboundedInvokerInputSender};
-use network::Network;
+use network::UnboundedNetworkHandle;
 use partition::RocksDBJournalReader;
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashMap;
@@ -24,9 +25,17 @@ type PartitionProcessor = partition::PartitionProcessor<
     IdentitySender<partition::Command>,
     ProtobufRawEntryCodec,
     UnboundedInvokerInputSender,
+    UnboundedNetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
     RocksDBStorage,
 >;
 type TargetedFsmCommand = Targeted<partition::Command>;
+
+type Network = network::Network<
+    TargetedFsmCommand,
+    PollSender<TargetedFsmCommand>,
+    shuffle::NetworkInput,
+    shuffle::NetworkOutput,
+>;
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
@@ -52,7 +61,7 @@ pub struct Worker {
         PollSender<TargetedFsmCommand>,
     >,
     processors: Vec<PartitionProcessor>,
-    network: Network<TargetedFsmCommand, PollSender<TargetedFsmCommand>>,
+    network: Network,
     invoker:
         Invoker<ProtobufRawEntryCodec, RocksDBJournalReader, HashMap<String, EndpointMetadata>>,
     _storage: RocksDBStorage,
@@ -83,6 +92,8 @@ impl Worker {
             network.create_consensus_sender(),
         );
 
+        let network_handle = network.create_network_handle();
+
         let invoker = Invoker::new(RocksDBJournalReader, Default::default());
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
@@ -94,6 +105,7 @@ impl Worker {
                     proposal_sender,
                     invoker_sender,
                     storage.clone(),
+                    network_handle.clone(),
                 )
             })
             .unzip();
@@ -114,6 +126,7 @@ impl Worker {
         proposal_sender: ProposalSender<TargetedFsmCommand>,
         invoker_sender: UnboundedInvokerInputSender,
         storage: RocksDBStorage,
+        network_handle: UnboundedNetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
     ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(
@@ -123,6 +136,7 @@ impl Worker {
             IdentitySender::new(peer_id, proposal_sender),
             invoker_sender,
             storage,
+            network_handle,
         );
 
         ((peer_id, PollSender::new(command_tx)), processor)

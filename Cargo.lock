@@ -1100,8 +1100,10 @@ name = "network"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "common",
  "drain",
  "futures",
+ "thiserror",
  "tokio",
  "tokio-util",
  "tracing",

@@ -1,13 +1,19 @@
 use crate::partition::effects::{ActuatorMessage, MessageCollector};
+use crate::partition::shuffle;
+use crate::partition::shuffle::{OutboxReader, Shuffle};
 use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId};
 use common::utils::GenericError;
 use futures::{Stream, StreamExt};
 use invoker::{InvokeInputJournal, InvokerInputSender};
+use std::convert::Infallible;
 use std::fmt::Debug;
 use std::ops::DerefMut;
+use std::panic;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
+use tokio::task;
+use tokio_util::sync::PollSender;
 use tracing::trace;
 
 pub(super) trait InvocationReader {
@@ -18,33 +24,39 @@ pub(super) trait InvocationReader {
 
 pub(super) struct LeaderState {
     leader_epoch: LeaderEpoch,
+    shutdown_signal: drain::Signal,
     invoker_rx: mpsc::Receiver<invoker::OutputEffect>,
+    shuffle_rx: mpsc::Receiver<shuffle::OutboxTruncation>,
+    shuffle_hint_tx: mpsc::Sender<shuffle::NewOutboxMessage>,
+    shuffle_handle: task::JoinHandle<Result<(), Infallible>>,
     message_buffer: Vec<ActuatorMessage>,
 }
 
-pub(super) struct FollowerState<I> {
+pub(super) struct FollowerState<I, N> {
     peer_id: PeerId,
     partition_id: PartitionId,
     invoker_tx: I,
+    network_handle: N,
 }
 
-pub(super) enum ActuatorMessageCollector<I> {
+pub(super) enum ActuatorMessageCollector<I, N> {
     Leader {
-        follower_state: FollowerState<I>,
+        follower_state: FollowerState<I, N>,
         leader_state: LeaderState,
     },
-    Follower(FollowerState<I>),
+    Follower(FollowerState<I, N>),
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed sending actuator messages: {0}")]
 pub(crate) struct SendError(#[from] GenericError);
 
-impl<I> ActuatorMessageCollector<I>
+impl<I, N> ActuatorMessageCollector<I, N>
 where
     I: InvokerInputSender,
+    N: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
 {
-    pub(super) async fn send(self) -> Result<LeadershipState<I>, SendError> {
+    pub(super) async fn send(self) -> Result<LeadershipState<I, N>, SendError> {
         match self {
             ActuatorMessageCollector::Leader {
                 mut follower_state,
@@ -53,6 +65,7 @@ where
                 Self::send_actuator_messages(
                     (follower_state.partition_id, leader_state.leader_epoch),
                     &mut follower_state.invoker_tx,
+                    &mut leader_state.shuffle_hint_tx,
                     leader_state.message_buffer.drain(..),
                 )
                 .await
@@ -72,6 +85,7 @@ where
     async fn send_actuator_messages(
         partition_leader_epoch: PartitionLeaderEpoch,
         invoker_tx: &mut I,
+        shuffle_hint_tx: &mut mpsc::Sender<shuffle::NewOutboxMessage>,
         messages: impl IntoIterator<Item = ActuatorMessage>,
     ) -> Result<(), I::Error> {
         for message in messages.into_iter() {
@@ -90,8 +104,9 @@ where
                         )
                         .await?
                 }
-                ActuatorMessage::NewOutboxMessage(..) => {
-                    todo!("Make use of this signal once the shuffle is there.")
+                ActuatorMessage::NewOutboxMessage(index) => {
+                    // it is ok if this message is not sent since it is only a hint
+                    let _ = shuffle_hint_tx.try_send(shuffle::NewOutboxMessage::new(index));
                 }
                 ActuatorMessage::RegisterTimer { .. } => {
                     unimplemented!("we don't have a timer service yet :-(")
@@ -127,7 +142,7 @@ where
     }
 }
 
-impl<I> MessageCollector for ActuatorMessageCollector<I> {
+impl<I, N> MessageCollector for ActuatorMessageCollector<I, N> {
     fn collect(&mut self, message: ActuatorMessage) {
         match self {
             ActuatorMessageCollector::Leader {
@@ -143,67 +158,81 @@ impl<I> MessageCollector for ActuatorMessageCollector<I> {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    #[error(transparent)]
+    #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Invoker(GenericError),
+    #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
+    Network(GenericError),
+    #[error("shuffle is unreachable. This indicates a bug or the system is shutting down: {0}")]
+    Shuffle(GenericError),
 }
 
-pub(super) enum LeadershipState<InvokerInputSender> {
-    Follower(FollowerState<InvokerInputSender>),
+pub(super) enum LeadershipState<InvokerInputSender, NetworkHandle> {
+    Follower(FollowerState<InvokerInputSender, NetworkHandle>),
 
     Leader {
-        follower_state: FollowerState<InvokerInputSender>,
+        follower_state: FollowerState<InvokerInputSender, NetworkHandle>,
         leader_state: LeaderState,
     },
 }
 
-impl<InvokerInputSender> LeadershipState<InvokerInputSender>
+impl<InvokerInputSender, NetworkHandle> LeadershipState<InvokerInputSender, NetworkHandle>
 where
     InvokerInputSender: invoker::InvokerInputSender,
     InvokerInputSender::Error: Debug,
+    NetworkHandle: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
+    NetworkHandle::Error: Debug,
 {
     pub(super) fn follower(
         peer_id: PeerId,
         partition_id: PartitionId,
         invoker_tx: InvokerInputSender,
+        network_handle: NetworkHandle,
     ) -> Self {
         Self::Follower(FollowerState {
             peer_id,
             partition_id,
             invoker_tx,
+            network_handle,
         })
     }
 
-    pub(super) async fn become_leader<I: InvocationReader>(
+    pub(super) async fn become_leader<SR>(
         self,
         leader_epoch: LeaderEpoch,
-        invocation_reader: &I,
-    ) -> Result<Self, Error> {
+        state_reader: SR,
+    ) -> Result<Self, Error>
+    where
+        SR: InvocationReader + OutboxReader + Send + 'static,
+    {
         if let LeadershipState::Follower { .. } = self {
-            self.unchecked_become_leader(leader_epoch, invocation_reader)
+            self.unchecked_become_leader(leader_epoch, state_reader)
                 .await
         } else {
             self.become_follower()
                 .await?
-                .unchecked_become_leader(leader_epoch, invocation_reader)
+                .unchecked_become_leader(leader_epoch, state_reader)
                 .await
         }
     }
 
-    async fn unchecked_become_leader<I: InvocationReader>(
+    async fn unchecked_become_leader<SR>(
         self,
         leader_epoch: LeaderEpoch,
-        invocation_reader: &I,
-    ) -> Result<Self, Error> {
+        state_reader: SR,
+    ) -> Result<Self, Error>
+    where
+        SR: OutboxReader + InvocationReader + Send + 'static,
+    {
         if let LeadershipState::Follower(mut follower_state) = self {
-            let (tx, rx) = mpsc::channel(1);
+            let (invoker_tx, invoker_rx) = mpsc::channel(1);
 
             follower_state
                 .invoker_tx
-                .register_partition((follower_state.partition_id, leader_epoch), tx)
+                .register_partition((follower_state.partition_id, leader_epoch), invoker_tx)
                 .await
                 .map_err(|err| Error::Invoker(err.into()))?;
 
-            let mut invoked_invocations = invocation_reader.scan_invoked_invocations();
+            let mut invoked_invocations = state_reader.scan_invoked_invocations();
 
             while let Some(service_invocation_id) = invoked_invocations.next().await {
                 follower_state
@@ -217,11 +246,35 @@ where
                     .map_err(|err| Error::Invoker(err.into()))?;
             }
 
+            let (shuffle_tx, shuffle_rx) = mpsc::channel(1);
+
+            let shuffle = Shuffle::new(
+                follower_state.peer_id,
+                state_reader,
+                follower_state.network_handle.create_shuffle_sender(),
+                PollSender::new(shuffle_tx),
+            );
+
+            follower_state
+                .network_handle
+                .register_shuffle(shuffle.peer_id(), shuffle.create_network_sender())
+                .await
+                .map_err(|err| Error::Network(err.into()))?;
+
+            let shuffle_hint_tx = shuffle.create_hint_sender();
+
+            let (shutdown_signal, shutdown_watch) = drain::channel();
+            let shuffle_handle = tokio::spawn(shuffle.run(shutdown_watch));
+
             Ok(LeadershipState::Leader {
                 follower_state,
                 leader_state: LeaderState {
                     leader_epoch,
-                    invoker_rx: rx,
+                    shutdown_signal,
+                    invoker_rx,
+                    shuffle_rx,
+                    shuffle_hint_tx,
+                    shuffle_handle,
                     // The max number of actuator messages should be 2 atm (e.g. RegisterTimer and
                     // AckStoredEntry)
                     message_buffer: Vec::with_capacity(2),
@@ -239,21 +292,53 @@ where
                     peer_id,
                     partition_id,
                     mut invoker_tx,
+                    network_handle,
                 },
-            leader_state: LeaderState { leader_epoch, .. },
+            leader_state:
+                LeaderState {
+                    leader_epoch,
+                    shutdown_signal,
+                    shuffle_handle,
+                    ..
+                },
         } = self
         {
-            invoker_tx
-                .abort_all_partition((partition_id, leader_epoch))
-                .await
-                .map_err(|err| Error::Invoker(err.into()))?;
-            Ok(Self::follower(peer_id, partition_id, invoker_tx))
+            // trigger shut down of all leadership tasks
+            shutdown_signal.drain().await;
+
+            let (shuffle_result, abort_result, unregister_result) = tokio::join!(
+                shuffle_handle,
+                invoker_tx.abort_all_partition((partition_id, leader_epoch)),
+                network_handle.unregister_shuffle(peer_id),
+            );
+
+            abort_result.map_err(|err| Error::Invoker(err.into()))?;
+            unregister_result.map_err(|err| Error::Network(err.into()))?;
+
+            if let Err(err) = shuffle_result {
+                if err.is_panic() {
+                    panic::resume_unwind(err.into_panic());
+                }
+            } else {
+                shuffle_result
+                    .unwrap()
+                    .map_err(|err| Error::Shuffle(err.into()))?;
+            }
+
+            Ok(Self::follower(
+                peer_id,
+                partition_id,
+                invoker_tx,
+                network_handle,
+            ))
         } else {
             Ok(self)
         }
     }
 
-    pub(super) fn into_message_collector(self) -> ActuatorMessageCollector<InvokerInputSender> {
+    pub(super) fn into_message_collector(
+        self,
+    ) -> ActuatorMessageCollector<InvokerInputSender, NetworkHandle> {
         match self {
             LeadershipState::Follower(follower_state) => {
                 ActuatorMessageCollector::Follower(follower_state)
@@ -271,24 +356,67 @@ where
         }
     }
 
-    pub(super) fn actuator_stream(&mut self) -> ActuatorStream<'_, InvokerInputSender> {
+    pub(super) fn actuator_stream(
+        &mut self,
+    ) -> ActuatorStream<'_, InvokerInputSender, NetworkHandle> {
         ActuatorStream { inner: self }
     }
 }
 
-pub(super) struct ActuatorStream<'a, InvokerInputSender> {
-    inner: &'a mut LeadershipState<InvokerInputSender>,
+pub(super) struct ActuatorStream<'a, InvokerInputSender, NetworkHandle> {
+    inner: &'a mut LeadershipState<InvokerInputSender, NetworkHandle>,
 }
 
-impl<'a, InvokerInputSender> Stream for ActuatorStream<'a, InvokerInputSender> {
-    type Item = invoker::OutputEffect;
+#[derive(Debug)]
+pub(super) enum ActuatorOutput {
+    Invoker(invoker::OutputEffect),
+    Shuffle(shuffle::OutboxTruncation),
+    ShuffleTaskTermination { error: Option<anyhow::Error> },
+}
+
+impl<'a, InvokerInputSender, NetworkHandle> Stream
+    for ActuatorStream<'a, InvokerInputSender, NetworkHandle>
+{
+    type Item = ActuatorOutput;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.deref_mut().inner {
             LeadershipState::Leader {
-                leader_state: LeaderState { invoker_rx, .. },
+                leader_state:
+                    LeaderState {
+                        invoker_rx,
+                        shuffle_rx,
+                        shuffle_handle,
+                        ..
+                    },
                 ..
-            } => invoker_rx.poll_recv(cx),
+            } => {
+                let invoker_stream = futures::stream::poll_fn(|cx| invoker_rx.poll_recv(cx))
+                    .map(ActuatorOutput::Invoker);
+                let shuffle_stream = futures::stream::poll_fn(|cx| shuffle_rx.poll_recv(cx))
+                    .map(ActuatorOutput::Shuffle);
+                let shuffle_handle = futures::stream::once(shuffle_handle).map(|result| {
+                    if let Err(err) = result {
+                        if err.is_panic() {
+                            panic::resume_unwind(err.into_panic());
+                        }
+                        ActuatorOutput::ShuffleTaskTermination {
+                            error: Some(err.into()),
+                        }
+                    } else {
+                        let result = result.unwrap();
+
+                        ActuatorOutput::ShuffleTaskTermination {
+                            error: result.err().map(Into::into),
+                        }
+                    }
+                });
+
+                let mut all_streams =
+                    futures::stream_select!(invoker_stream, shuffle_stream, shuffle_handle);
+
+                Pin::new(&mut all_streams).poll_next(cx)
+            }
             LeadershipState::Follower { .. } => Poll::Pending,
         }
     }

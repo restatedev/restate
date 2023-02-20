@@ -116,7 +116,9 @@ where
         Ok(())
     }
 
-    async fn announce_leadership(state_machines: &mut HashMap<PeerId, SmSink>) -> anyhow::Result<()> {
+    async fn announce_leadership(
+        state_machines: &mut HashMap<PeerId, SmSink>,
+    ) -> anyhow::Result<()> {
         debug!("Announcing leadership.");
         for sink in state_machines.values_mut() {
             sink.send(Command::BecomeLeader(1)).await?

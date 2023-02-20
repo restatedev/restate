@@ -9,11 +9,12 @@ use tracing::{debug, info};
 
 mod effects;
 mod leadership;
+pub mod shuffle;
 mod state_machine;
 mod storage;
 
 use crate::partition::effects::{Effects, Interpreter};
-use crate::partition::leadership::LeadershipState;
+use crate::partition::leadership::{ActuatorOutput, LeadershipState};
 use crate::partition::storage::PartitionStorage;
 pub(crate) use state_machine::Command;
 
@@ -23,6 +24,7 @@ pub(super) struct PartitionProcessor<
     ProposalSink,
     RawEntryCodec,
     InvokerInputSender,
+    NetworkHandle,
     Storage,
 > {
     peer_id: PeerId,
@@ -36,6 +38,8 @@ pub(super) struct PartitionProcessor<
     invoker_tx: InvokerInputSender,
 
     state_machine: state_machine::StateMachine<RawEntryCodec>,
+
+    network_handle: NetworkHandle,
 
     _entry_codec: PhantomData<RawEntryCodec>,
 }
@@ -56,8 +60,15 @@ impl invoker::JournalReader for RocksDBJournalReader {
     }
 }
 
-impl<CmdStream, ProposalSink, RawEntryCodec, InvokerInputSender, Storage>
-    PartitionProcessor<CmdStream, ProposalSink, RawEntryCodec, InvokerInputSender, Storage>
+impl<CmdStream, ProposalSink, RawEntryCodec, InvokerInputSender, NetworkHandle, Storage>
+    PartitionProcessor<
+        CmdStream,
+        ProposalSink,
+        RawEntryCodec,
+        InvokerInputSender,
+        NetworkHandle,
+        Storage,
+    >
 where
     CmdStream: Stream<Item = consensus::Command<Command>>,
     ProposalSink: Sink<Command>,
@@ -65,7 +76,9 @@ where
     RawEntryCodec::Error: Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     InvokerInputSender::Error: Debug,
-    Storage: storage_api::Storage,
+    NetworkHandle: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
+    NetworkHandle::Error: Debug,
+    Storage: storage_api::Storage + Clone + Send + 'static,
 {
     pub(super) fn new(
         peer_id: PeerId,
@@ -74,6 +87,7 @@ where
         proposal_sink: ProposalSink,
         invoker_tx: InvokerInputSender,
         storage: Storage,
+        network_handle: NetworkHandle,
     ) -> Self {
         Self {
             peer_id,
@@ -83,6 +97,7 @@ where
             invoker_tx,
             state_machine: Default::default(),
             storage,
+            network_handle,
             _entry_codec: Default::default(),
         }
     }
@@ -94,6 +109,7 @@ where
             command_stream,
             mut state_machine,
             invoker_tx,
+            network_handle,
             storage,
             proposal_sink,
             ..
@@ -104,7 +120,8 @@ where
         // The max number of effects should be 2 atm (e.g. RegisterTimer and AppendJournalEntry)
         let mut effects = Effects::with_capacity(2);
 
-        let mut leadership_state = LeadershipState::follower(peer_id, partition_id, invoker_tx);
+        let mut leadership_state =
+            LeadershipState::follower(peer_id, partition_id, invoker_tx, network_handle);
 
         let mut partition_storage = PartitionStorage::new(partition_id, storage);
 
@@ -129,7 +146,7 @@ where
                             }
                             consensus::Command::BecomeLeader(leader_epoch) => {
                                 info!(%peer_id, %partition_id, %leader_epoch, "Become leader.");
-                                leadership_state = leadership_state.become_leader(leader_epoch, &partition_storage).await?;
+                                leadership_state = leadership_state.become_leader(leader_epoch, partition_storage.clone()).await?;
                             }
                             consensus::Command::BecomeFollower => {
                                 info!(%peer_id, %partition_id, "Become follower.");
@@ -148,7 +165,7 @@ where
                 },
                 actuator_message = actuator_stream.next() => {
                     let actuator_message = actuator_message.ok_or(anyhow::anyhow!("actuator stream is closed"))?;
-                    Self::propose_actuator_message(actuator_message, &mut proposal_sink).await;
+                    Self::handle_actuator_message(actuator_message, &mut proposal_sink).await?;
                 }
             }
         }
@@ -159,12 +176,30 @@ where
         Ok(())
     }
 
-    async fn propose_actuator_message(
-        actuator_message: invoker::OutputEffect,
+    async fn handle_actuator_message(
+        actuator_message: ActuatorOutput,
         proposal_sink: &mut Pin<&mut ProposalSink>,
-    ) {
-        // Err only if the consensus module is shutting down
-        let _ = proposal_sink.send(Command::Invoker(actuator_message)).await;
+    ) -> anyhow::Result<()> {
+        match actuator_message {
+            ActuatorOutput::Invoker(invoker_output) => {
+                // Err only if the consensus module is shutting down
+                let _ = proposal_sink.send(Command::Invoker(invoker_output)).await;
+            }
+            ActuatorOutput::Shuffle(outbox_truncation) => {
+                // Err only if the consensus module is shutting down
+                let _ = proposal_sink
+                    .send(Command::OutboxTruncation(outbox_truncation.index()))
+                    .await;
+            }
+            ActuatorOutput::ShuffleTaskTermination { error } => {
+                let error =
+                    error.unwrap_or(anyhow::anyhow!("shuffle task terminated unexpectedly"));
+
+                return Err(error);
+            }
+        };
+
+        Ok(())
     }
 }
 
