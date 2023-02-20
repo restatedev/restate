@@ -1,5 +1,5 @@
 use futures_util::TryFuture;
-use pin_project_lite::pin_project;
+use pin_project::pin_project;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
@@ -21,14 +21,13 @@ pub(crate) trait TryProcessAbortFuture: TryFuture {
     }
 }
 
-pin_project! {
-    #[derive(Debug)]
-    #[must_use = "futures do nothing unless you `.await` or poll them"]
-    pub(crate) struct AbortOnErr<Fut, T> {
-        #[pin]
-        inner: Fut,
-        component: Option<T>,
-    }
+#[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+#[pin_project]
+pub(crate) struct AbortOnErr<Fut, T> {
+    #[pin]
+    inner: Fut,
+    component: Option<T>,
 }
 
 impl<Fut, T> Future for AbortOnErr<Fut, T>

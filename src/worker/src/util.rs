@@ -1,18 +1,17 @@
 use common::types::PeerId;
 use consensus::{ProposalSender, Targeted};
 use futures::Sink;
-use pin_project_lite::pin_project;
+use pin_project::pin_project;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-pin_project! {
-    /// Sender which attaches the identity id to a sent message.
-    #[derive(Debug)]
-    pub(super) struct IdentitySender<T> {
-        id: PeerId,
-        #[pin]
-        sender: ProposalSender<Targeted<T>>
-    }
+/// Sender which attaches the identity id to a sent message.
+#[derive(Debug)]
+#[pin_project]
+pub(super) struct IdentitySender<T> {
+    id: PeerId,
+    #[pin]
+    sender: ProposalSender<Targeted<T>>,
 }
 
 impl<T> IdentitySender<T> {

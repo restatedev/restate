@@ -19,7 +19,7 @@ futures = { workspace = true }
 invoker = { workspace = true }
 journal = { workspace = true }
 network = { workspace = true }
-pin-project-lite = "0.2.9"
+pin-project = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
