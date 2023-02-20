@@ -58,6 +58,8 @@ skip = [
     # Also see https://github.com/rust-lang/cargo/issues/1197
     { name = "windows-sys" },
     { name = "hermit-abi" },
+    # Clash between prost-reflect and tracing_instrumentation
+    { name = "ordered-float" }
 ]
 deny = [
     # Each entry the name of a crate and a version range. If version is
