@@ -1,7 +1,7 @@
 use crate::partition::effects::{Committable, OutboxMessage, StateStorage};
 use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError, ShuffleMessage};
-use crate::partition::state_machine::{JournalStatus, StateReader};
+use crate::partition::state_machine::{JournalStatus, StateReader, StateReaderError};
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{EntryIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId};
@@ -31,26 +31,24 @@ impl<Storage> PartitionStorage<Storage> {
 }
 
 impl<Storage> StateReader for PartitionStorage<Storage> {
-    type Error = Infallible;
-
     fn get_invocation_status(
         &self,
         _service_id: &ServiceId,
-    ) -> BoxFuture<Result<InvocationStatus, Self::Error>> {
+    ) -> BoxFuture<Result<InvocationStatus, StateReaderError>> {
         todo!()
     }
 
     fn peek_inbox(
         &self,
         _service_id: &ServiceId,
-    ) -> BoxFuture<Result<Option<(u64, ServiceInvocation)>, Self::Error>> {
+    ) -> BoxFuture<Result<Option<(u64, ServiceInvocation)>, StateReaderError>> {
         todo!()
     }
 
     fn get_journal_status(
         &self,
         _service_id: &ServiceId,
-    ) -> BoxFuture<Result<JournalStatus, Self::Error>> {
+    ) -> BoxFuture<Result<JournalStatus, StateReaderError>> {
         todo!()
     }
 
@@ -58,7 +56,7 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
         &self,
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
-    ) -> BoxFuture<Result<bool, Self::Error>> {
+    ) -> BoxFuture<Result<bool, StateReaderError>> {
         todo!()
     }
 }

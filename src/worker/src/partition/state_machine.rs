@@ -19,9 +19,9 @@ use crate::partition::effects::{Effects, OutboxMessage};
 use crate::partition::InvocationStatus;
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub(super) enum Error {
     #[error("failed to read from state reader: {0}")]
-    State(GenericError),
+    State(#[from] StateReaderError),
     #[error("failed to deserialize entry: {0}")]
     Codec(GenericError),
 }
@@ -49,33 +49,37 @@ pub(super) struct JournalStatus {
 
 pub type InboxEntry = (u64, ServiceInvocation);
 
-pub(super) trait StateReader {
-    type Error: std::error::Error + Send + Sync + 'static;
+#[derive(Debug, thiserror::Error)]
+#[error("failed reading state: {source:?}")]
+pub(super) struct StateReaderError {
+    source: Option<GenericError>,
+}
 
+pub(super) trait StateReader {
     // TODO: Replace with async trait or proper future
     fn get_invocation_status(
         &self,
         service_id: &ServiceId,
-    ) -> BoxFuture<Result<InvocationStatus, Self::Error>>;
+    ) -> BoxFuture<Result<InvocationStatus, StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
     fn peek_inbox(
         &self,
         service_id: &ServiceId,
-    ) -> BoxFuture<Result<Option<InboxEntry>, Self::Error>>;
+    ) -> BoxFuture<Result<Option<InboxEntry>, StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
     fn get_journal_status(
         &self,
         service_id: &ServiceId,
-    ) -> BoxFuture<Result<JournalStatus, Self::Error>>;
+    ) -> BoxFuture<Result<JournalStatus, StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
     fn is_entry_completed(
         &self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<bool, Self::Error>>;
+    ) -> BoxFuture<Result<bool, StateReaderError>>;
 }
 
 #[derive(Debug, Default)]
@@ -155,8 +159,7 @@ where
             Command::Invocation(service_invocation) => {
                 let status = state
                     .get_invocation_status(&service_invocation.id.service_id)
-                    .await
-                    .map_err(|err| Error::State(err.into()))?;
+                    .await?;
 
                 if status == InvocationStatus::Free {
                     effects.invoke_service(service_invocation);
@@ -216,8 +219,7 @@ where
     ) -> Result<(), Error> {
         let status = state
             .get_invocation_status(&service_invocation_id.service_id)
-            .await
-            .map_err(|err| Error::State(err.into()))?;
+            .await?;
 
         debug_assert!(
             matches!(
@@ -248,8 +250,7 @@ where
                 for entry_index in &waiting_for_completed_entries {
                     if state
                         .is_entry_completed(&service_invocation_id.service_id, *entry_index)
-                        .await
-                        .map_err(|err| Error::State(err.into()))?
+                        .await?
                     {
                         trace!(
                         ?service_invocation_id,
@@ -292,8 +293,7 @@ where
     ) -> Result<(), Error> {
         let journal_length = state
             .get_journal_status(&service_invocation_id.service_id)
-            .await
-            .map_err(|err| Error::State(err.into()))?
+            .await?
             .length;
 
         debug_assert_eq!(
@@ -440,8 +440,7 @@ where
     ) -> Result<(), Error> {
         let status = state
             .get_invocation_status(&service_invocation_id.service_id)
-            .await
-            .map_err(|err| Error::State(err.into()))?;
+            .await?;
 
         match status {
             InvocationStatus::Invoked(invocation_id) => {
@@ -462,8 +461,7 @@ where
                     for entry_index in &waiting_for_completed_entries {
                         if state
                             .is_entry_completed(&service_invocation_id.service_id, *entry_index)
-                            .await
-                            .map_err(|err| Error::State(err.into()))?
+                            .await?
                         {
                             effects.store_completion_and_resume(service_invocation_id, completion);
                             return Ok(());
@@ -497,8 +495,7 @@ where
     ) -> Result<(), Error> {
         if let Some((inbox_sequence_number, service_invocation)) = state
             .peek_inbox(&service_invocation_id.service_id)
-            .await
-            .map_err(|err| Error::State(err.into()))?
+            .await?
         {
             effects.drop_journal_and_pop_inbox(
                 service_invocation_id.service_id,
