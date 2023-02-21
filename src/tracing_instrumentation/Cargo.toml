@@ -17,7 +17,7 @@ opentelemetry-semantic-conventions = "0.10"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-opentelemetry = "0.18"
+tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
