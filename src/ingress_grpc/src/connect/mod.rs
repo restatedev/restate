@@ -1,5 +1,6 @@
 mod descriptors_registry;
 mod content_type;
+mod utils;
 
 pub use descriptors_registry::InMemoryMethodDescriptorRegistry;
 
