@@ -4,7 +4,6 @@ use super::utils::*;
 use super::*;
 
 use std::future::Future;
-use std::mem;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -50,40 +49,29 @@ impl ConnectRequest {
 
     /// Returns the full name of the method
     #[inline]
-    pub(crate) fn method_name(&self) -> &str {
+    pub(super) fn method_name(&self) -> &str {
         self.method_descriptor.full_name()
     }
 
     #[inline]
-    fn headers(&self) -> &HeaderMap {
-        &self.headers
-    }
-
-    #[inline]
-    fn headers_mut(&mut self) -> &mut HeaderMap {
+    pub(super) fn headers_mut(&mut self) -> &mut HeaderMap {
         &mut self.headers
     }
 
     #[inline]
-    fn method_descriptor(&self) -> MethodDescriptor {
-        self.method_descriptor.clone()
+    pub(super) fn method_descriptor(&self) -> &MethodDescriptor {
+        &self.method_descriptor
     }
 
-    #[inline]
-    fn payload(&self) -> &DynamicMessage {
-        &self.payload
-    }
-
-    #[inline]
-    fn take_headers(&mut self) -> HeaderMap {
-        mem::take(&mut self.headers)
-    }
-
-    #[inline]
-    fn take_payload(&mut self) -> DynamicMessage {
-        mem::replace(
-            &mut self.payload,
-            DynamicMessage::new(self.method_descriptor.input()),
+    pub fn into_inner(self) -> (HeaderMap, DynamicMessage, ConnectResponseBuilder) {
+        (
+            self.headers,
+            self.payload,
+            ConnectResponseBuilder {
+                method_descriptor: self.method_descriptor,
+                headers: Default::default(),
+                content_type: self.content_type,
+            }
         )
     }
 
@@ -352,7 +340,7 @@ mod tests {
                 );
                 assert_eq!(
                     connect_req
-                        .take_payload()
+                        .payload
                         .transcode_to::<pb::GreetingRequest>()
                         .unwrap(),
                     pb::GreetingRequest {
@@ -393,7 +381,7 @@ mod tests {
                     HeaderValue::from_static("my-value")
                 );
                 connect_req
-                    .take_payload()
+                    .payload
                     .transcode_to::<()>() // google.protobuf.Empty
                     .unwrap();
 
@@ -420,11 +408,11 @@ mod tests {
     async fn invoke_greeter_protobuf() {
         let svc = ServiceBuilder::new()
             .layer(ConnectRequestLayer::new(test_descriptor_registry()))
-            .service_fn(|mut connect_req: ConnectRequest| async move {
+            .service_fn(|connect_req: ConnectRequest| async move {
                 assert_eq!(connect_req.method_name(), "greeter.Greeter.Greet");
                 assert_eq!(
                     connect_req
-                        .take_payload()
+                        .payload
                         .transcode_to::<pb::GreetingRequest>()
                         .unwrap(),
                     pb::GreetingRequest {

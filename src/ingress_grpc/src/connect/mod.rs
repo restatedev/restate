@@ -3,6 +3,7 @@ mod descriptors_registry;
 mod req;
 mod res;
 mod utils;
+mod layer;
 
 use descriptors_registry::InMemoryMethodDescriptorRegistry;
 

@@ -58,10 +58,6 @@ pub struct ConnectResponseBuilder {
 }
 
 impl ConnectResponseBuilder {
-    pub fn content_type(mut self, content_type: ConnectContentType) -> ConnectResponseBuilder {
-        self.content_type = content_type;
-        self
-    }
 
     pub fn header<K: Into<HeaderName>, V: Into<HeaderValue>>(
         mut self,
@@ -76,31 +72,13 @@ impl ConnectResponseBuilder {
         }
     }
 
-    pub fn headers_mut(&mut self) -> &mut HeaderMap {
-        &mut self.headers
-    }
-
-    pub fn dynamic_message(self, payload: DynamicMessage) -> ConnectResponse {
+    fn dynamic_message(self, payload: DynamicMessage) -> ConnectResponse {
         ConnectResponse::new(
             self.method_descriptor,
             self.headers,
             self.content_type,
             payload,
         )
-    }
-
-    pub fn reflect_message<T: prost_reflect::ReflectMessage>(self, payload: &T) -> ConnectResponse {
-        self.dynamic_message(payload.transcode_to_dynamic())
-    }
-
-    pub fn message<T: prost::Message>(
-        self,
-        payload: &T,
-    ) -> Result<ConnectResponse, prost::DecodeError> {
-        let mut dynamic_msg = DynamicMessage::new(self.method_descriptor.output());
-        dynamic_msg.transcode_from(payload)?;
-
-        Ok(self.dynamic_message(dynamic_msg))
     }
 
     pub fn encoded_message<B: Buf>(
@@ -233,16 +211,18 @@ mod tests {
         let svc = ServiceBuilder::new()
             .layer(ConnectResponseLayer::default())
             .service_fn(|grpc_req: ConnectRequest| async move {
+                let mut dynamic_msg = DynamicMessage::new(greeter_greet_method_descriptor().output());
+                dynamic_msg.transcode_from(&pb::GreetingResponse {
+                    greeting: "Hello Francesco".to_string(),
+                }).unwrap();
+
                 Ok(grpc_req
                     .response()
                     .header(
                         HeaderName::from_static("x-my-header"),
                         HeaderValue::from_static("my-value"),
                     )
-                    .message(&pb::GreetingResponse {
-                        greeting: "Hello Francesco".to_string(),
-                    })
-                    .unwrap())
+                    .dynamic_message(dynamic_msg))
             });
 
         let mut res = svc
