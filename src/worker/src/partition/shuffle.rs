@@ -1,4 +1,5 @@
 use common::types::PeerId;
+use common::utils::GenericError;
 use futures::future::BoxFuture;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
@@ -39,13 +40,17 @@ pub(crate) enum NetworkOutput {
     Response,
 }
 
-pub(super) trait OutboxReader {
-    type Error;
+#[derive(Debug, thiserror::Error)]
+#[error("failed to read outbox: {source:?}")]
+pub(super) struct OutboxReaderError {
+    source: Option<GenericError>,
+}
 
+pub(super) trait OutboxReader {
     fn get_next_message(
         &self,
         next_sequence_number: u64,
-    ) -> BoxFuture<Result<Option<ShuffleMessage>, Self::Error>>;
+    ) -> BoxFuture<Result<Option<ShuffleMessage>, OutboxReaderError>>;
 }
 
 pub(super) type NetworkSender<T> = mpsc::Sender<T>;
