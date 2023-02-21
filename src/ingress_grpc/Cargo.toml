@@ -34,3 +34,6 @@ tonic-web = "0.5"
 opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
 tracing = { workspace = true }
+
+# Other
+arc-swap = { workspace = true }

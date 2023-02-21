@@ -1,1 +1,2 @@
+mod connect;
 mod grpc;
