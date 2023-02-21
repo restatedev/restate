@@ -1,8 +1,8 @@
 use common::types::PeerId;
-use futures::future::BoxFuture;
-use futures::{FutureExt, Sink, SinkExt};
+use futures::{Sink, SinkExt};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::future;
 use tokio::sync::mpsc;
 use tokio_util::sync::PollSender;
 use tracing::debug;
@@ -13,16 +13,17 @@ pub type ShuffleSender<T> = PollSender<T>;
 
 pub trait NetworkHandle<ShuffleIn, ShuffleOut> {
     type Error: std::error::Error + Send + Sync + 'static;
+    type Future: future::Future<Output = Result<(), Self::Error>>;
 
     fn register_shuffle(
         &self,
         peer_id: PeerId,
         shuffle_sender: mpsc::Sender<ShuffleIn>,
-    ) -> BoxFuture<'static, Result<(), Self::Error>>;
+    ) -> Self::Future;
 
     fn create_shuffle_sender(&self) -> ShuffleSender<ShuffleOut>;
 
-    fn unregister_shuffle(&self, peer_id: PeerId) -> BoxFuture<'static, Result<(), Self::Error>>;
+    fn unregister_shuffle(&self, peer_id: PeerId) -> Self::Future;
 }
 
 enum NetworkCommand<ShuffleIn> {
@@ -154,12 +155,13 @@ where
     ShuffleOut: Send + 'static,
 {
     type Error = NetworkNotRunning;
+    type Future = futures::future::Ready<Result<(), Self::Error>>;
 
     fn register_shuffle(
         &self,
         peer_id: PeerId,
         shuffle_tx: mpsc::Sender<ShuffleIn>,
-    ) -> BoxFuture<'static, Result<(), Self::Error>> {
+    ) -> Self::Future {
         futures::future::ready(
             self.network_command_tx
                 .send(NetworkCommand::RegisterShuffle {
@@ -168,19 +170,17 @@ where
                 })
                 .map_err(|_| NetworkNotRunning),
         )
-        .boxed()
     }
 
     fn create_shuffle_sender(&self) -> ShuffleSender<ShuffleOut> {
         PollSender::new(self.shuffle_tx.clone())
     }
 
-    fn unregister_shuffle(&self, peer_id: PeerId) -> BoxFuture<'static, Result<(), Self::Error>> {
+    fn unregister_shuffle(&self, peer_id: PeerId) -> Self::Future {
         futures::future::ready(
             self.network_command_tx
                 .send(NetworkCommand::UnregisterShuffle { peer_id })
                 .map_err(|_| NetworkNotRunning),
         )
-        .boxed()
     }
 }
