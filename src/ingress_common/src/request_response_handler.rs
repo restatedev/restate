@@ -109,7 +109,7 @@ where
         // Send the ServiceInvocation
         permit.send(service_invocation);
 
-        // We need to wait for response
+        // We need to wait for the response
         HandlerResponseFut::WaitingResponse(response_rx).instrument(span)
     }
 }
@@ -123,9 +123,9 @@ impl Future for HandlerResponseFut {
     type Output = IngressResult;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        return match self.get_mut() {
+        return Poll::Ready(match self.get_mut() {
             HandlerResponseFut::WaitingResponse(response_rx) => {
-                Poll::Ready(match ready!(response_rx.poll_unpin(cx)) {
+                match ready!(response_rx.poll_unpin(cx)) {
                     Ok(Ok(response_payload)) => {
                         trace!(rpc.response = ?response_payload, "Complete external gRPC request successfully");
 
@@ -141,14 +141,14 @@ impl Future for HandlerResponseFut {
                     }
                     Err(_) => {
                         warn!("Response channel was closed");
-                        return Poll::Ready(Err(Status::unavailable("Unavailable")));
+                        Err(Status::unavailable("Unavailable"))
                     }
-                })
+                }
             }
             HandlerResponseFut::Error(err) => {
-                Poll::Ready(Err(err.take().expect("Future should not be polled twice")))
+                Err(err.take().expect("Future should not be polled twice"))
             }
-        };
+        });
     }
 }
 
