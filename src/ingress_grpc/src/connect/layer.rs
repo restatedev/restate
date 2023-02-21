@@ -1,26 +1,30 @@
-use std::future::Future;
-use std::pin::Pin;
-use super::*;
 use super::req::*;
 use super::res::*;
+use super::*;
+use std::future::Future;
+use std::pin::Pin;
 
-use std::task::{Context, Poll, ready};
 use bytes::Bytes;
+use std::task::{ready, Context, Poll};
 
+use ingress_common::{
+    IngressError, IngressRequest, IngressRequestHeaders, IngressResponse, IngressResult,
+};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
+use pin_project::pin_project;
 use prost::Message;
 use tonic::Status;
 use tower::{Layer, Service, ServiceBuilder};
-use pin_project::pin_project;
-use ingress_common::{IngressError, IngressRequest, IngressRequestHeaders, IngressResponse, IngressResult};
 
 /// This layer decodes a connect protocol request to Ingress types.
 pub(super) struct ConnectLayer<Registry> {
-    descriptor_registry: Registry
+    descriptor_registry: Registry,
 }
 
 impl<Registry> ConnectLayer<Registry> {
+    // TODO remove once we wire up everything
+    #[allow(dead_code)]
     pub(crate) fn new(descriptor_registry: Registry) -> Self {
         Self {
             descriptor_registry,
@@ -29,12 +33,13 @@ impl<Registry> ConnectLayer<Registry> {
 }
 
 impl<S, Registry> Layer<S> for ConnectLayer<Registry>
-    where
-        S: Service<IngressRequest, Response = IngressResponse, Error = IngressError> + Send + 'static,
-        S::Future: Send,
-        Registry: MethodDescriptorRegistry + Clone
+where
+    S: Service<IngressRequest, Response = IngressResponse, Error = IngressError> + Send + 'static,
+    S::Future: Send,
+    Registry: MethodDescriptorRegistry + Clone,
 {
-    type Service = ConnectRequestService<Registry, ConnectResponseService<ConnectAdapterService<S>>>;
+    type Service =
+        ConnectRequestService<Registry, ConnectResponseService<ConnectAdapterService<S>>>;
 
     fn layer(&self, inner: S) -> Self::Service {
         ServiceBuilder::new()
@@ -51,10 +56,8 @@ pub(crate) struct ConnectAdapterService<S> {
 }
 
 impl<S> Service<ConnectRequest> for ConnectAdapterService<S>
-    where
-        S: Service<IngressRequest, Response = IngressResponse, Error = IngressError>
-        + Send
-        + 'static,
+where
+    S: Service<IngressRequest, Response = IngressResponse, Error = IngressError> + Send + 'static,
 {
     type Response = ConnectResponse;
     type Error = Status;
@@ -72,19 +75,20 @@ impl<S> Service<ConnectRequest> for ConnectAdapterService<S>
 
         let (headers, payload, response_builder) = request.into_inner();
 
-        let tracing_context = TraceContextPropagator::new()
-            .extract(&opentelemetry_http::HeaderExtractor(&headers));
+        let tracing_context =
+            TraceContextPropagator::new().extract(&opentelemetry_http::HeaderExtractor(&headers));
 
-        let ingress_request_headers = IngressRequestHeaders::new(
-            service_name,
-            method_name,
-            tracing_context
-        );
+        let ingress_request_headers =
+            IngressRequestHeaders::new(service_name, method_name, tracing_context);
         let payload = Bytes::from(payload.encode_to_vec());
 
         ResponseFuture {
             response_builder: Some(response_builder),
-            fut: self.inner.take().unwrap().call((ingress_request_headers, payload)),
+            fut: self
+                .inner
+                .take()
+                .unwrap()
+                .call((ingress_request_headers, payload)),
         }
     }
 }
@@ -92,7 +96,8 @@ impl<S> Service<ConnectRequest> for ConnectAdapterService<S>
 #[pin_project]
 pub(crate) struct ResponseFuture<F> {
     response_builder: Option<ConnectResponseBuilder>,
-    #[pin] fut: F
+    #[pin]
+    fut: F,
 }
 
 const _: () = {
@@ -104,8 +109,8 @@ const _: () = {
 };
 
 impl<F> Future for ResponseFuture<F>
-    where
-        F: Future<Output = IngressResult>,
+where
+    F: Future<Output = IngressResult>,
 {
     type Output = Result<ConnectResponse, Status>;
 
@@ -125,8 +130,7 @@ impl<F> Future for ResponseFuture<F>
             Ok(grpc_res) => grpc_res,
             Err(err) => {
                 return Poll::Ready(Err(Status::internal(format!(
-                    "The response payload cannot be decoded: {}",
-                    err
+                    "The response payload cannot be decoded: {err}",
                 ))))
             }
         };
@@ -137,8 +141,8 @@ impl<F> Future for ResponseFuture<F>
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::mocks::*;
+    use super::*;
 
     use futures::future::{ok, Ready};
 
@@ -146,28 +150,24 @@ mod tests {
     use http::{Method, Request, StatusCode};
     use hyper::body::HttpBody;
     use serde_json::json;
+    use test_utils::{assert_eq, test};
     use tower::ServiceExt;
-    use test_utils::{test, assert_eq};
 
     // Mock protobufs
 
-    fn greeter_service_fn(
-        ingress_req: IngressRequest,
-    ) -> Ready<IngressResult> {
-        let person = pb::GreetingRequest::decode(ingress_req.1)
-            .unwrap()
-            .person;
+    fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<IngressResult> {
+        let person = pb::GreetingRequest::decode(ingress_req.1).unwrap().person;
         ok(pb::GreetingResponse {
-            greeting: format!("Hello {}", person),
-        }.encode_to_vec().into())
+            greeting: format!("Hello {person}"),
+        }
+        .encode_to_vec()
+        .into())
     }
 
     #[test(tokio::test)]
     async fn layers_works() {
         let svc = ServiceBuilder::new()
-            .layer(ConnectLayer::new(
-                test_descriptor_registry()
-            ))
+            .layer(ConnectLayer::new(test_descriptor_registry()))
             .service_fn(greeter_service_fn);
 
         let mut res = svc
@@ -180,8 +180,8 @@ mod tests {
                         json!({
                             "person": "Francesco"
                         })
-                            .to_string()
-                            .into(),
+                        .to_string()
+                        .into(),
                     )
                     .unwrap(),
             )

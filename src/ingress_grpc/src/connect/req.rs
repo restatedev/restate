@@ -54,11 +54,6 @@ impl ConnectRequest {
     }
 
     #[inline]
-    pub(super) fn headers_mut(&mut self) -> &mut HeaderMap {
-        &mut self.headers
-    }
-
-    #[inline]
     pub(super) fn method_descriptor(&self) -> &MethodDescriptor {
         &self.method_descriptor
     }
@@ -71,16 +66,8 @@ impl ConnectRequest {
                 method_descriptor: self.method_descriptor,
                 headers: Default::default(),
                 content_type: self.content_type,
-            }
+            },
         )
-    }
-
-    pub fn response(self) -> ConnectResponseBuilder {
-        ConnectResponseBuilder {
-            method_descriptor: self.method_descriptor,
-            headers: Default::default(),
-            content_type: self.content_type,
-        }
     }
 }
 
@@ -231,7 +218,10 @@ where
 }
 
 #[pin_project(project = ResponseFutureProj)]
-pub enum ResponseFuture<B, S> where S: Service<ConnectRequest> {
+pub enum ResponseFuture<B, S>
+where
+    S: Service<ConnectRequest>,
+{
     BodyFut {
         method_descriptor: Option<MethodDescriptor>,
         parts: Option<Parts>,
@@ -270,7 +260,13 @@ where
         loop {
             match self.as_mut().project() {
                 ResponseFutureProj::NextFut { future } => return future.poll(cx),
-                ResponseFutureProj::BodyFut { method_descriptor, parts, content_type, future, svc } => {
+                ResponseFutureProj::BodyFut {
+                    method_descriptor,
+                    parts,
+                    content_type,
+                    future,
+                    svc,
+                } => {
                     let body = match ready!(future.poll(cx)) {
                         Ok(b) => b,
                         Err(e) => return Poll::Ready(Err(BoxError::from(e))),
@@ -332,17 +328,16 @@ mod tests {
     async fn invoke_greeter_json_and_header_propagation() {
         let svc = ServiceBuilder::new()
             .layer(ConnectRequestLayer::new(test_descriptor_registry()))
-            .service_fn(|mut connect_req: ConnectRequest| async move {
+            .service_fn(|connect_req: ConnectRequest| async move {
                 assert_eq!(connect_req.method_name(), "greeter.Greeter.Greet");
+
+                let (mut headers, payload, _) = connect_req.into_inner();
                 assert_eq!(
-                    connect_req.headers_mut().remove("x-my-header").unwrap(),
+                    headers.remove("x-my-header").unwrap(),
                     HeaderValue::from_static("my-value")
                 );
                 assert_eq!(
-                    connect_req
-                        .payload
-                        .transcode_to::<pb::GreetingRequest>()
-                        .unwrap(),
+                    payload.transcode_to::<pb::GreetingRequest>().unwrap(),
                     pb::GreetingRequest {
                         person: "Francesco".to_string()
                     }
@@ -374,14 +369,15 @@ mod tests {
     async fn invoke_greeter_get_count() {
         let svc = ServiceBuilder::new()
             .layer(ConnectRequestLayer::new(test_descriptor_registry()))
-            .service_fn(|mut connect_req: ConnectRequest| async move {
+            .service_fn(|connect_req: ConnectRequest| async move {
                 assert_eq!(connect_req.method_name(), "greeter.Greeter.GetCount");
+
+                let (mut headers, payload, _) = connect_req.into_inner();
                 assert_eq!(
-                    connect_req.headers_mut().remove("x-my-header").unwrap(),
+                    headers.remove("x-my-header").unwrap(),
                     HeaderValue::from_static("my-value")
                 );
-                connect_req
-                    .payload
+                payload
                     .transcode_to::<()>() // google.protobuf.Empty
                     .unwrap();
 
@@ -450,9 +446,7 @@ mod tests {
     #[test(tokio::test)]
     async fn invoke_wrong_http_method() {
         let svc = ServiceBuilder::new()
-            .layer(ConnectRequestLayer::new(
-                test_descriptor_registry(),
-            ))
+            .layer(ConnectRequestLayer::new(test_descriptor_registry()))
             .service_fn(|_: ConnectRequest| async move { unreachable!() });
 
         let res = svc

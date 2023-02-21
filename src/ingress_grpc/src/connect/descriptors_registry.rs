@@ -1,3 +1,6 @@
+// TODO remove once we wire up everything
+#![allow(dead_code)]
+
 use super::*;
 
 use std::collections::HashMap;
@@ -9,7 +12,7 @@ use prost_reflect::{MethodDescriptor, ServiceDescriptor};
 type ServiceMethods = HashMap<String, MethodDescriptor>;
 
 #[derive(Clone, Default)]
-pub(super) struct InMemoryMethodDescriptorRegistry {
+pub struct InMemoryMethodDescriptorRegistry {
     services: Arc<ArcSwap<HashMap<String, ServiceMethods>>>,
 }
 

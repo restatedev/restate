@@ -9,9 +9,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Buf;
-use http::header::{HeaderName, CONTENT_TYPE};
-use http::Response as HttpResponse;
-use http::{HeaderMap, HeaderValue, StatusCode};
+use http::header::HeaderName;
+use http::{header::CONTENT_TYPE, HeaderMap, StatusCode};
+use http::{HeaderValue, Response as HttpResponse};
 use hyper::Body;
 use pin_project::pin_project;
 use prost_reflect::DynamicMessage;
@@ -41,7 +41,14 @@ impl ConnectResponse {
         }
     }
 
-    pub fn into_inner(self) -> (MethodDescriptor, ConnectContentType, HeaderMap, DynamicMessage) {
+    pub fn into_inner(
+        self,
+    ) -> (
+        MethodDescriptor,
+        ConnectContentType,
+        HeaderMap,
+        DynamicMessage,
+    ) {
         (
             self.method_descriptor,
             self.content_type,
@@ -58,7 +65,7 @@ pub struct ConnectResponseBuilder {
 }
 
 impl ConnectResponseBuilder {
-
+    #[allow(dead_code)]
     pub fn header<K: Into<HeaderName>, V: Into<HeaderValue>>(
         mut self,
         key: K,
@@ -115,7 +122,11 @@ where
     type Future = ResponseFuture<S::Future>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.as_mut().unwrap().poll_ready(cx).map_err(|e| e.into())
+        self.inner
+            .as_mut()
+            .unwrap()
+            .poll_ready(cx)
+            .map_err(|e| e.into())
     }
 
     fn call(&mut self, request: ConnectRequest) -> Self::Future {
@@ -199,8 +210,7 @@ mod tests {
     use super::super::mocks::{greeter_greet_method_descriptor, pb};
     use super::*;
 
-    use http::header::HeaderName;
-    use http::{HeaderValue, StatusCode};
+    use http::StatusCode;
     use hyper::body::HttpBody;
     use test_utils::{assert_eq, test};
     use tonic::Code;
@@ -211,13 +221,17 @@ mod tests {
         let svc = ServiceBuilder::new()
             .layer(ConnectResponseLayer::default())
             .service_fn(|grpc_req: ConnectRequest| async move {
-                let mut dynamic_msg = DynamicMessage::new(greeter_greet_method_descriptor().output());
-                dynamic_msg.transcode_from(&pb::GreetingResponse {
-                    greeting: "Hello Francesco".to_string(),
-                }).unwrap();
+                let mut dynamic_msg =
+                    DynamicMessage::new(greeter_greet_method_descriptor().output());
+                dynamic_msg
+                    .transcode_from(&pb::GreetingResponse {
+                        greeting: "Hello Francesco".to_string(),
+                    })
+                    .unwrap();
 
                 Ok(grpc_req
-                    .response()
+                    .into_inner()
+                    .2
                     .header(
                         HeaderName::from_static("x-my-header"),
                         HeaderValue::from_static("my-value"),

@@ -1,11 +1,13 @@
 mod content_type;
 mod descriptors_registry;
+mod layer;
 mod req;
 mod res;
 mod utils;
-mod layer;
 
-use descriptors_registry::InMemoryMethodDescriptorRegistry;
+// TODO remove once we wire up everything
+#[allow(unused_imports)]
+pub(super) use descriptors_registry::InMemoryMethodDescriptorRegistry;
 
 use prost_reflect::MethodDescriptor;
 
