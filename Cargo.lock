@@ -757,7 +757,6 @@ dependencies = [
  "pin-project",
  "test_utils",
  "tokio",
- "tokio-util",
  "tonic",
  "tower",
  "tracing",

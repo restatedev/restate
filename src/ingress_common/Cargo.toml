@@ -26,6 +26,5 @@ tracing-opentelemetry = { workspace = true }
 [dev-dependencies]
 mockall = "0.11"
 test_utils = { workspace = true }
-tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

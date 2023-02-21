@@ -1,17 +1,16 @@
 use super::*;
 
-use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 
 use common::types::{
     IngressId, ServiceInvocation, ServiceInvocationFactory, ServiceInvocationResponseSink,
     SpanRelation,
 };
-use futures::{ready, Sink, SinkExt};
 use opentelemetry_api::trace::{SpanContext, TraceContextExt};
 use pin_project::pin_project;
+use tokio::sync::mpsc;
 use tonic::Status;
 use tower::Service;
 use tracing::instrument::Instrumented;
@@ -19,65 +18,50 @@ use tracing::{info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// Handler for a single request/response.
-pub struct RequestResponseHandler<InvocationFactory, InvocationSink> {
+pub struct RequestResponseHandler<InvocationFactory> {
     ingress_id: Option<IngressId>,
 
     invocation_factory: InvocationFactory,
-    invocation_sink: Option<InvocationSink>,
 
     response_requester: IngressResponseRequester,
 }
 
-impl<InvocationFactory, InvocationSink> RequestResponseHandler<InvocationFactory, InvocationSink>
+impl<InvocationFactory> RequestResponseHandler<InvocationFactory>
 where
     InvocationFactory: ServiceInvocationFactory,
-    InvocationSink: Sink<ServiceInvocation>,
-    InvocationSink::Error: Debug,
 {
     pub fn new(
         ingress_id: IngressId,
         invocation_factory: InvocationFactory,
-        invocation_sink: InvocationSink,
         response_requester: IngressResponseRequester,
     ) -> Self {
         Self {
             ingress_id: Some(ingress_id),
             invocation_factory,
-            invocation_sink: Some(invocation_sink),
             response_requester,
         }
     }
 }
 
-impl<InvocationFactory, InvocationSink> Service<IngressRequest>
-    for RequestResponseHandler<InvocationFactory, InvocationSink>
+impl<InvocationFactory> Service<(IngressRequest, mpsc::OwnedPermit<ServiceInvocation>)>
+    for RequestResponseHandler<InvocationFactory>
 where
     InvocationFactory: ServiceInvocationFactory,
-    InvocationSink: Sink<ServiceInvocation> + Unpin + 'static,
-    InvocationSink::Error: Debug,
 {
     type Response = IngressResponse;
     type Error = IngressError;
-    type Future = Instrumented<HandlerFuture<InvocationSink>>;
+    type Future = Instrumented<HandlerResponseFut>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.invocation_sink
-            .as_mut()
-            .unwrap()
-            .poll_ready_unpin(cx)
-            .map_err(|e| {
-                warn!("Error when polling the invocation sink: {:?}", e);
-                Status::unavailable("Unavailable")
-            })
+    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, req: IngressRequest) -> Self::Future {
-        let mut sink = self
-            .invocation_sink
-            .take()
-            .expect("RequestResponseHandler should be invoked once per request");
-
-        let (req_headers, req_payload) = req;
+    fn call(
+        &mut self,
+        req: (IngressRequest, mpsc::OwnedPermit<ServiceInvocation>),
+    ) -> Self::Future {
+        let (req_headers, req_payload) = req.0;
+        let permit = req.1;
 
         let span = info_span!(
             "Ingress invocation",
@@ -100,7 +84,7 @@ where
             Ok(i) => i,
             Err(e) => {
                 warn!(parent: &span, "Cannot create service invocation: {:?}", e);
-                return HandlerFuture::Error { sink, err: Some(e) }.instrument(span);
+                return HandlerResponseFut::Error(Some(e)).instrument(span);
             }
         };
 
@@ -118,99 +102,54 @@ where
                 parent: &span,
                 "Cannot register invocation to response dispatcher loop"
             );
-            return HandlerFuture::Error {
-                sink,
-                err: Some(Status::unavailable("Unavailable")),
-            }
-            .instrument(span);
+            return HandlerResponseFut::Error(Some(Status::unavailable("Unavailable")))
+                .instrument(span);
         }
 
-        if let Err(e) = sink.start_send_unpin(service_invocation) {
-            warn!("Cannot forward the invocation to the worker: {:?}", e);
-            return HandlerFuture::Error {
-                sink,
-                err: Some(Status::unavailable("Unavailable")),
-            }
-            .instrument(span);
-        }
+        // Send the ServiceInvocation
+        permit.send(service_invocation);
 
-        HandlerFuture::SendingInvocation {
-            sink,
-            response_rx: Some(response_rx),
-        }
-        .instrument(span)
+        // We need to wait for response
+        HandlerResponseFut::WaitingResponse(response_rx).instrument(span)
     }
 }
 
-#[pin_project(project = HandlerFutureProj)]
-pub enum HandlerFuture<InvocationSink> {
-    SendingInvocation {
-        #[pin]
-        sink: InvocationSink,
-        response_rx: Option<CommandResponseReceiver<IngressResult>>,
-    },
+#[pin_project(project = HandlerResponseFutProj)]
+pub enum HandlerResponseFut {
     WaitingResponse(#[pin] CommandResponseReceiver<IngressResult>),
-    Error {
-        #[pin]
-        sink: InvocationSink,
-        err: Option<Status>,
-    },
+    Error(Option<Status>),
 }
 
-impl<InvocationSink> Future for HandlerFuture<InvocationSink>
-where
-    InvocationSink: Sink<ServiceInvocation> + 'static,
-    InvocationSink::Error: Debug,
-{
+impl Future for HandlerResponseFut {
     type Output = IngressResult;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        loop {
-            match self.as_mut().project() {
-                HandlerFutureProj::SendingInvocation { sink, response_rx } => {
-                    if let Err(e) = ready!(sink.poll_close(cx)) {
-                        warn!("Cannot forward the invocation to the worker: {:?}", e);
-                        return Poll::Ready(Err(Status::unavailable("Unavailable")));
-                    } else {
-                        // TODO should we also respect the timeout coming from grpc timeout header?
-                        let new_state = HandlerFuture::WaitingResponse(response_rx.take().unwrap());
-                        self.set(new_state)
-                    }
-                }
-                HandlerFutureProj::WaitingResponse(response_rx) => {
-                    return Poll::Ready(match ready!(response_rx.poll(cx)) {
-                        Ok(Ok(response_payload)) => {
-                            trace!(rpc.response = ?response_payload, "Complete external gRPC request successfully");
+        return match self.as_mut().project() {
+            HandlerResponseFutProj::WaitingResponse(response_rx) => {
+                Poll::Ready(match ready!(response_rx.poll(cx)) {
+                    Ok(Ok(response_payload)) => {
+                        trace!(rpc.response = ?response_payload, "Complete external gRPC request successfully");
 
-                            Ok(response_payload)
-                        }
-                        Ok(Err(status)) => {
-                            info!(
+                        Ok(response_payload)
+                    }
+                    Ok(Err(status)) => {
+                        info!(
                                 rpc.grpc.status_code = ?status.code(),
                                 rpc.grpc.status_message = ?status.message(),
                                 "Complete external gRPC request with a failure");
 
-                            Err(status)
-                        }
-                        Err(_) => {
-                            warn!("Response channel was closed");
-                            return Poll::Ready(Err(Status::unavailable("Unavailable")));
-                        }
-                    })
-                }
-                HandlerFutureProj::Error { sink, err } => {
-                    // We still need to try closing the sink in order to release the quota
-                    if let Err(e) = ready!(sink.poll_close(cx)) {
-                        // This should never fail I guess?
-                        warn!("Cannot forward the invocation to the worker: {:?}", e);
+                        Err(status)
                     }
-
-                    return Poll::Ready(Err(err
-                        .take()
-                        .expect("Future should not be polled twice")));
-                }
+                    Err(_) => {
+                        warn!("Response channel was closed");
+                        return Poll::Ready(Err(Status::unavailable("Unavailable")));
+                    }
+                })
             }
-        }
+            HandlerResponseFutProj::Error(err) => {
+                Poll::Ready(Err(err.take().expect("Future should not be polled twice")))
+            }
+        };
     }
 }
 
@@ -230,11 +169,11 @@ fn create_parent_span_context(request_span: &SpanContext) -> SpanContext {
 mod tests {
     use super::*;
 
+    use crate::wait_sender_quota_svc::WaitSenderPermitService;
     use bytes::Bytes;
     use mockall::mock;
     use test_utils::{assert_eq, let_assert, test};
     use tokio::sync::mpsc;
-    use tokio_util::sync::PollSender;
     use tonic::Code;
     use tower::ServiceExt;
 
@@ -329,11 +268,14 @@ mod tests {
         let (service_invocation_tx, mut service_invocation_rx) = mpsc::channel(1);
         let (registration_command_tx, registration_command_rx) = mpsc::unbounded_channel();
 
-        let handler = RequestResponseHandler::new(
-            IngressId("127.0.0.1:8080".parse().unwrap()),
-            service_invocation_factory,
-            PollSender::new(service_invocation_tx),
-            registration_command_tx,
+        let handler = WaitSenderPermitService::new(
+            service_invocation_tx,
+            || Status::unavailable("Unavailable"),
+            RequestResponseHandler::new(
+                IngressId("127.0.0.1:8080".parse().unwrap()),
+                service_invocation_factory,
+                registration_command_tx,
+            ),
         );
         let handler_handle = tokio::spawn(async move { handler.oneshot(req).await });
 
