@@ -780,6 +780,7 @@ dependencies = [
 name = "ingress_grpc"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "common",
  "futures",
@@ -790,8 +791,11 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-http",
  "pin-project",
+ "prost",
+ "prost-build",
  "prost-reflect",
  "serde_json",
+ "test_utils",
  "tokio",
  "tonic",
  "tonic-web",
