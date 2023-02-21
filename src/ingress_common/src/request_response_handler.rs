@@ -8,8 +8,8 @@ use common::types::{
     IngressId, ServiceInvocation, ServiceInvocationFactory, ServiceInvocationResponseSink,
     SpanRelation,
 };
+use futures::FutureExt;
 use opentelemetry_api::trace::{SpanContext, TraceContextExt};
-use pin_project::pin_project;
 use tokio::sync::mpsc;
 use tonic::Status;
 use tower::Service;
@@ -114,19 +114,18 @@ where
     }
 }
 
-#[pin_project(project = HandlerResponseFutProj)]
 pub enum HandlerResponseFut {
-    WaitingResponse(#[pin] CommandResponseReceiver<IngressResult>),
+    WaitingResponse(CommandResponseReceiver<IngressResult>),
     Error(Option<Status>),
 }
 
 impl Future for HandlerResponseFut {
     type Output = IngressResult;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        return match self.as_mut().project() {
-            HandlerResponseFutProj::WaitingResponse(response_rx) => {
-                Poll::Ready(match ready!(response_rx.poll(cx)) {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        return match self.get_mut() {
+            HandlerResponseFut::WaitingResponse(response_rx) => {
+                Poll::Ready(match ready!(response_rx.poll_unpin(cx)) {
                     Ok(Ok(response_payload)) => {
                         trace!(rpc.response = ?response_payload, "Complete external gRPC request successfully");
 
@@ -146,7 +145,7 @@ impl Future for HandlerResponseFut {
                     }
                 })
             }
-            HandlerResponseFutProj::Error(err) => {
+            HandlerResponseFut::Error(err) => {
                 Poll::Ready(Err(err.take().expect("Future should not be polled twice")))
             }
         };

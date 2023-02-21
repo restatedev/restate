@@ -18,6 +18,8 @@ pub struct ResponseDispatcherLoop {
     local_waiting_responses: HashMap<ServiceInvocationId, CommandResponseSender<IngressResult>>,
 
     // Channels
+    // These channels and the above map can be unbounded,
+    // because we enforce concurrency limits in the ingress services
     response_rx: mpsc::UnboundedReceiver<IngressResponseMessage>,
     waiting_response_registration_rx: UnboundedCommandReceiver<ServiceInvocationId, IngressResult>,
 

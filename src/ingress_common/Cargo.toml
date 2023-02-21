@@ -15,7 +15,6 @@ common = { workspace = true }
 bytes = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
-pin-project = { workspace = true }
 opentelemetry_api = { workspace = true }
 tower = { version = "0.4", features = ["util"] }
 tonic = { workspace = true }
