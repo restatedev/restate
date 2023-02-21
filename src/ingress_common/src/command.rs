@@ -1,5 +1,3 @@
-// TODO should we move this to common/utils?
-
 use std::fmt;
 use std::fmt::Debug;
 
@@ -130,14 +128,6 @@ impl<T: Send, R: Send> Command<T, R> {
     pub fn map_payload<U: Send>(self, map_fn: impl FnOnce(T) -> U) -> Command<U, R> {
         Command {
             payload: map_fn(self.payload),
-            response_tx: self.response_tx,
-        }
-    }
-
-    /// Map the payload using the Into trait.
-    pub fn into_payload<U: Send + From<T>>(self) -> Command<U, R> {
-        Command {
-            payload: self.payload.into(),
             response_tx: self.response_tx,
         }
     }
