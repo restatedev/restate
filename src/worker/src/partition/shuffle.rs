@@ -1,12 +1,19 @@
+use crate::partition::shuffle::state_machine::StateMachine;
 use common::types::PeerId;
 use common::utils::GenericError;
 use futures::future::BoxFuture;
-use std::convert::Infallible;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-#[derive(Debug)]
-pub(super) struct ShuffleMessage {}
+#[derive(Debug, Clone)]
+pub(crate) struct ShuffleMessage {}
+
+impl ShuffleMessage {
+    fn seq_number(&self) -> u64 {
+        0
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct NewOutboxMessage(u64);
@@ -21,6 +28,10 @@ impl NewOutboxMessage {
 pub(crate) struct OutboxTruncation(u64);
 
 impl OutboxTruncation {
+    fn new(truncation_index: u64) -> Self {
+        Self(truncation_index)
+    }
+
     pub(crate) fn index(&self) -> u64 {
         self.0
     }
@@ -36,8 +47,7 @@ pub(crate) enum NetworkInput {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) enum NetworkOutput {
-    Invocation,
-    Response,
+    Message(ShuffleMessage),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -57,17 +67,18 @@ pub(super) type NetworkSender<T> = mpsc::Sender<T>;
 
 pub(super) type HintSender = mpsc::Sender<NewOutboxMessage>;
 
-pub(super) struct Shuffle<OR, NetSink, CmdSink> {
+pub(super) struct Shuffle<OR> {
     peer_id: PeerId,
-    _outbox_reader: OR,
+
+    outbox_reader: OR,
 
     // used to send messages to different partitions
-    _network_sink: NetSink,
+    network_tx: mpsc::Sender<NetworkOutput>,
 
     network_in_rx: mpsc::Receiver<NetworkInput>,
 
     // used to tell partition processor about outbox truncations
-    _cmd_sink: CmdSink,
+    truncation_tx: mpsc::Sender<OutboxTruncation>,
 
     hint_rx: mpsc::Receiver<NewOutboxMessage>,
 
@@ -76,26 +87,26 @@ pub(super) struct Shuffle<OR, NetSink, CmdSink> {
     hint_tx: mpsc::Sender<NewOutboxMessage>,
 }
 
-impl<OR, NetSink, CmdSink> Shuffle<OR, NetSink, CmdSink>
+impl<OR> Shuffle<OR>
 where
     OR: OutboxReader,
 {
     pub(super) fn new(
         peer_id: PeerId,
         outbox_reader: OR,
-        network_sink: NetSink,
-        cmd_sink: CmdSink,
+        network_tx: mpsc::Sender<NetworkOutput>,
+        truncation_tx: mpsc::Sender<OutboxTruncation>,
     ) -> Self {
         let (network_in_tx, network_in_rx) = mpsc::channel(32);
         let (hint_tx, hint_rx) = mpsc::channel(1);
 
         Self {
             peer_id,
-            _outbox_reader: outbox_reader,
-            _network_sink: network_sink,
+            outbox_reader,
+            network_tx,
             network_in_rx,
             network_in_tx,
-            _cmd_sink: cmd_sink,
+            truncation_tx,
             hint_rx,
             hint_tx,
         }
@@ -113,11 +124,14 @@ where
         self.hint_tx.clone()
     }
 
-    pub(super) async fn run(self, shutdown_watch: drain::Watch) -> Result<(), Infallible> {
+    pub(super) async fn run(self, shutdown_watch: drain::Watch) -> anyhow::Result<()> {
         let Self {
             peer_id,
             mut hint_rx,
             mut network_in_rx,
+            outbox_reader,
+            network_tx,
+            truncation_tx,
             ..
         } = self;
 
@@ -126,15 +140,26 @@ where
         let shutdown = shutdown_watch.signaled();
         tokio::pin!(shutdown);
 
+        let state_machine = StateMachine::new(
+            |next_seq_number| outbox_reader.get_next_message(next_seq_number),
+            |msg| network_tx.send(msg),
+            &mut hint_rx,
+            Duration::from_secs(60),
+        );
+
+        tokio::pin!(state_machine);
+
         loop {
             tokio::select! {
-                hint = hint_rx.recv() => {
-                    let _hint = hint.expect("Shuffle owns the cmd sender. That's why the channel should never be closed.");
-                    todo!("Implement command logic");
+                result = state_machine.as_mut().run() => {
+                    result?;
                 },
-                network_msg = network_in_rx.recv() => {
-                  let _network_msg = network_msg.expect("Shuffle owns the network in sender. That's why the channel should never be closed.");
-                    todo!("Implement network msg logic");
+                network_input = network_in_rx.recv() => {
+                    let network_input = network_input.expect("Shuffle owns the network in sender. That's why the channel should never be closed.");
+                    if let Some(truncation_index) = state_machine.as_mut().on_network_input(network_input) {
+                        // this is just a hint which we can drop
+                        let _ = truncation_tx.try_send(OutboxTruncation::new(truncation_index));
+                    }
                 },
                 _ = &mut shutdown => {
                     break;
@@ -145,5 +170,155 @@ where
         debug!(%peer_id, "Stopping shuffle");
 
         Ok(())
+    }
+}
+
+mod state_machine {
+    use crate::partition::shuffle::{
+        NetworkInput, NetworkOutput, NewOutboxMessage, ShuffleMessage,
+    };
+    use pin_project::pin_project;
+    use std::cmp;
+    use std::future::Future;
+    use std::marker::PhantomData;
+    use std::pin::Pin;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tokio::time::Sleep;
+    use tracing::trace;
+
+    #[pin_project(project = StateProj)]
+    enum State<ReadFuture, SendFuture> {
+        Idle,
+        ReadingOutbox(#[pin] ReadFuture),
+        Sending(#[pin] SendFuture),
+        WaitingForAck(#[pin] Sleep),
+    }
+
+    #[pin_project]
+    pub(super) struct StateMachine<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError> {
+        current_sequence_number: u64,
+        read_operation: ReadOp,
+        send_operation: SendOp,
+        hint_rx: &'a mut mpsc::Receiver<NewOutboxMessage>,
+        retry_timeout: Duration,
+        #[pin]
+        state: State<ReadFuture, SendFuture>,
+
+        _read_error: PhantomData<ReadError>,
+    }
+
+    impl<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError>
+        StateMachine<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError>
+    where
+        SendFuture: Future<Output = Result<(), mpsc::error::SendError<NetworkOutput>>>,
+        SendOp: Fn(NetworkOutput) -> SendFuture,
+        ReadError: std::error::Error + Send + Sync + 'static,
+        ReadFuture: Future<Output = Result<Option<ShuffleMessage>, ReadError>>,
+        ReadOp: Fn(u64) -> ReadFuture,
+    {
+        pub(super) fn new(
+            read_operation: ReadOp,
+            send_operation: SendOp,
+            hint_rx: &'a mut mpsc::Receiver<NewOutboxMessage>,
+            retry_timeout: Duration,
+        ) -> Self {
+            let current_sequence_number = 0;
+            let reading_future = read_operation(current_sequence_number);
+
+            Self {
+                current_sequence_number,
+                read_operation,
+                send_operation,
+                hint_rx,
+                retry_timeout,
+                state: State::ReadingOutbox(reading_future),
+                _read_error: Default::default(),
+            }
+        }
+
+        pub(super) async fn run(self: Pin<&mut Self>) -> Result<(), anyhow::Error> {
+            let mut this = self.project();
+            match this.state.as_mut().project() {
+                StateProj::Idle => {
+                    let NewOutboxMessage(seq_number) = this
+                        .hint_rx
+                        .recv()
+                        .await
+                        .expect("shuffle is owning the hint sender");
+                    *this.current_sequence_number =
+                        cmp::max(seq_number, *this.current_sequence_number);
+
+                    let reading_future = (this.read_operation)(*this.current_sequence_number);
+
+                    this.state.set(State::ReadingOutbox(reading_future));
+                }
+                StateProj::ReadingOutbox(reading_future) => {
+                    let reading_result = reading_future.await?;
+
+                    if let Some(shuffle_message) = reading_result {
+                        *this.current_sequence_number = shuffle_message.seq_number();
+
+                        let send_future =
+                            (this.send_operation)(NetworkOutput::Message(shuffle_message));
+
+                        this.state.set(State::Sending(send_future));
+                    } else {
+                        this.state.set(State::Idle);
+                    }
+                }
+                StateProj::Sending(send_future) => {
+                    send_future.await?;
+
+                    this.state.set(State::WaitingForAck(tokio::time::sleep(
+                        *this.retry_timeout,
+                    )));
+                }
+                StateProj::WaitingForAck(sleep) => {
+                    sleep.await;
+
+                    // try to send the message again
+                    let read_future = (this.read_operation)(*this.current_sequence_number);
+
+                    this.state.set(State::ReadingOutbox(read_future));
+                }
+            }
+
+            Ok(())
+        }
+
+        pub(super) fn on_network_input(
+            self: Pin<&mut Self>,
+            network_input: NetworkInput,
+        ) -> Option<u64> {
+            match network_input {
+                NetworkInput::Acknowledge(seq_number) => {
+                    if seq_number >= self.current_sequence_number {
+                        trace!("Received acknowledgement for sequence number {seq_number}.");
+                        self.read_next_message(seq_number + 1);
+                        Some(seq_number)
+                    } else {
+                        None
+                    }
+                }
+                NetworkInput::Duplicate(seq_number) => {
+                    if seq_number >= self.current_sequence_number {
+                        trace!("Message with sequence number {seq_number} is a duplicate.");
+                        self.read_next_message(seq_number + 1);
+                        Some(seq_number)
+                    } else {
+                        None
+                    }
+                }
+            }
+        }
+
+        fn read_next_message(self: Pin<&mut Self>, next_sequence_number: u64) {
+            let mut this = self.project();
+            let read_future = (this.read_operation)(next_sequence_number);
+
+            *this.current_sequence_number = next_sequence_number;
+            this.state.set(State::ReadingOutbox(read_future));
+        }
     }
 }

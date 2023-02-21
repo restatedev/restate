@@ -6,7 +6,6 @@ use common::utils::GenericError;
 use futures::{Stream, StreamExt};
 use invoker::{InvokeInputJournal, InvokerInputSender, InvokerNotRunning};
 use network::NetworkNotRunning;
-use std::convert::Infallible;
 use std::fmt::Debug;
 use std::ops::DerefMut;
 use std::panic;
@@ -14,7 +13,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tokio::task;
-use tokio_util::sync::PollSender;
 use tracing::trace;
 
 pub(super) trait InvocationReader {
@@ -29,7 +27,7 @@ pub(super) struct LeaderState {
     invoker_rx: mpsc::Receiver<invoker::OutputEffect>,
     shuffle_rx: mpsc::Receiver<shuffle::OutboxTruncation>,
     shuffle_hint_tx: mpsc::Sender<shuffle::NewOutboxMessage>,
-    shuffle_handle: task::JoinHandle<Result<(), Infallible>>,
+    shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
     message_buffer: Vec<ActuatorMessage>,
 }
 
@@ -163,8 +161,8 @@ pub(crate) enum Error {
     Invoker(#[from] InvokerNotRunning),
     #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Network(#[from] NetworkNotRunning),
-    #[error("shuffle is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Shuffle(GenericError),
+    #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
+    FailedShuffleTask(#[from] anyhow::Error),
 }
 
 pub(super) enum LeadershipState<InvokerInputSender, NetworkHandle> {
@@ -201,7 +199,7 @@ where
         state_reader: SR,
     ) -> Result<Self, Error>
     where
-        SR: InvocationReader + OutboxReader + Send + 'static,
+        SR: InvocationReader + OutboxReader + Send + Sync + 'static,
     {
         if let LeadershipState::Follower { .. } = self {
             self.unchecked_become_leader(leader_epoch, state_reader)
@@ -220,7 +218,7 @@ where
         state_reader: SR,
     ) -> Result<Self, Error>
     where
-        SR: OutboxReader + InvocationReader + Send + 'static,
+        SR: OutboxReader + InvocationReader + Send + Sync + 'static,
     {
         if let LeadershipState::Follower(mut follower_state) = self {
             let (invoker_tx, invoker_rx) = mpsc::channel(1);
@@ -249,7 +247,7 @@ where
                 follower_state.peer_id,
                 state_reader,
                 follower_state.network_handle.create_shuffle_sender(),
-                PollSender::new(shuffle_tx),
+                shuffle_tx,
             );
 
             follower_state
@@ -316,9 +314,7 @@ where
                     panic::resume_unwind(err.into_panic());
                 }
             } else {
-                shuffle_result
-                    .unwrap()
-                    .map_err(|err| Error::Shuffle(err.into()))?;
+                shuffle_result.unwrap()?;
             }
 
             Ok(Self::follower(

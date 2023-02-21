@@ -83,7 +83,7 @@ where
     RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     NetworkHandle: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
-    Storage: storage_api::Storage + Clone + Send + 'static,
+    Storage: storage_api::Storage + Clone + Send + Sync + 'static,
 {
     pub(super) fn new(
         peer_id: PeerId,

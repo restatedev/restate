@@ -9,7 +9,7 @@ use tracing::debug;
 
 pub type ConsensusSender<T> = PollSender<T>;
 
-pub type ShuffleSender<T> = PollSender<T>;
+pub type ShuffleSender<T> = mpsc::Sender<T>;
 
 #[derive(Debug, thiserror::Error)]
 #[error("network is not running")]
@@ -171,7 +171,7 @@ where
     }
 
     fn create_shuffle_sender(&self) -> ShuffleSender<ShuffleOut> {
-        PollSender::new(self.shuffle_tx.clone())
+        self.shuffle_tx.clone()
     }
 
     fn unregister_shuffle(&self, peer_id: PeerId) -> Self::Future {
