@@ -14,6 +14,7 @@ ingress_common = { workspace = true }
 
 # Encoding/Decoding
 bytes = { workspace = true }
+serde = { workspace = true }
 serde_json = "1.0"
 prost = { workspace = true }
 prost-reflect = { workspace = true, features = ["serde", "reflect-well-known-types"] }
@@ -41,6 +42,7 @@ arc-swap = { workspace = true }
 
 [dev-dependencies]
 test_utils = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }

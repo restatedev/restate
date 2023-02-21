@@ -8,9 +8,9 @@ use prost_reflect::{MethodDescriptor, ServiceDescriptor};
 
 type ServiceMethods = HashMap<String, MethodDescriptor>;
 
-#[derive(Default)]
-pub struct InMemoryMethodDescriptorRegistry {
-    services: ArcSwap<HashMap<String, ServiceMethods>>,
+#[derive(Clone, Default)]
+pub(super) struct InMemoryMethodDescriptorRegistry {
+    services: Arc<ArcSwap<HashMap<String, ServiceMethods>>>,
 }
 
 impl InMemoryMethodDescriptorRegistry {
@@ -38,7 +38,7 @@ impl InMemoryMethodDescriptorRegistry {
     }
 }
 
-impl MethodDescriptorRegistry for Arc<InMemoryMethodDescriptorRegistry> {
+impl MethodDescriptorRegistry for InMemoryMethodDescriptorRegistry {
     fn resolve_method_descriptor(
         &self,
         svc_name: &str,

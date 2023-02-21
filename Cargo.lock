@@ -794,6 +794,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-reflect",
+ "serde",
  "serde_json",
  "test_utils",
  "tokio",
@@ -801,6 +802,7 @@ dependencies = [
  "tonic-web",
  "tower",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
