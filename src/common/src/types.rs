@@ -83,7 +83,7 @@ impl ServiceId {
 }
 
 /// Representing a service invocation
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ServiceInvocation {
     pub id: ServiceInvocationId,
     pub method_name: ByteString,
@@ -109,14 +109,14 @@ pub trait ServiceInvocationFactory {
 }
 
 /// Representing a response for a caller
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InvocationResponse {
     pub id: ServiceInvocationId,
     pub entry_index: EntryIndex,
     pub result: ResponseResult,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ResponseResult {
     Success(Bytes),
     Failure(i32, ByteString),

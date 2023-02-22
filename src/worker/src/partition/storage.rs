@@ -2,7 +2,7 @@ use crate::partition::effects::{
     CommitError, Committable, OutboxMessage, StateStorage, StateStorageError,
 };
 use crate::partition::leadership::InvocationReader;
-use crate::partition::shuffle::{OutboxReader, OutboxReaderError, ShuffleMessage};
+use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{JournalStatus, StateReader, StateReaderError};
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
@@ -221,7 +221,7 @@ impl<Storage> OutboxReader for PartitionStorage<Storage> {
     fn get_next_message(
         &self,
         _next_sequence_number: u64,
-    ) -> BoxFuture<Result<Option<ShuffleMessage>, OutboxReaderError>> {
+    ) -> BoxFuture<Result<Option<(u64, OutboxMessage)>, OutboxReaderError>> {
         todo!()
     }
 }

@@ -1,3 +1,4 @@
+use crate::partition::effects::OutboxMessage;
 use crate::partition::shuffle::state_machine::StateMachine;
 use common::types::PeerId;
 use common::utils::GenericError;
@@ -6,21 +7,18 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-#[derive(Debug, Clone)]
-pub(crate) struct ShuffleMessage {}
-
-impl ShuffleMessage {
-    fn seq_number(&self) -> u64 {
-        0
-    }
+#[derive(Debug)]
+pub(crate) struct NewOutboxMessage {
+    seq_number: u64,
+    message: OutboxMessage,
 }
 
-#[derive(Debug)]
-pub(crate) struct NewOutboxMessage(u64);
-
 impl NewOutboxMessage {
-    pub(crate) fn new(index: u64) -> Self {
-        Self(index)
+    pub(crate) fn new(seq_number: u64, message: OutboxMessage) -> Self {
+        Self {
+            seq_number,
+            message,
+        }
     }
 }
 
@@ -47,7 +45,7 @@ pub(crate) enum NetworkInput {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) enum NetworkOutput {
-    Message(ShuffleMessage),
+    Message(OutboxMessage),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -60,7 +58,7 @@ pub(super) trait OutboxReader {
     fn get_next_message(
         &self,
         next_sequence_number: u64,
-    ) -> BoxFuture<Result<Option<ShuffleMessage>, OutboxReaderError>>;
+    ) -> BoxFuture<Result<Option<(u64, OutboxMessage)>, OutboxReaderError>>;
 }
 
 pub(super) type NetworkSender<T> = mpsc::Sender<T>;
@@ -174,18 +172,16 @@ where
 }
 
 mod state_machine {
-    use crate::partition::shuffle::{
-        NetworkInput, NetworkOutput, NewOutboxMessage, ShuffleMessage,
-    };
+    use crate::partition::effects::OutboxMessage;
+    use crate::partition::shuffle::{NetworkInput, NetworkOutput, NewOutboxMessage};
     use pin_project::pin_project;
-    use std::cmp;
     use std::future::Future;
     use std::marker::PhantomData;
     use std::pin::Pin;
     use std::time::Duration;
     use tokio::sync::mpsc;
     use tokio::time::Sleep;
-    use tracing::trace;
+    use tracing::{debug, trace};
 
     #[pin_project(project = StateProj)]
     enum State<ReadFuture, SendFuture> {
@@ -214,7 +210,7 @@ mod state_machine {
         SendFuture: Future<Output = Result<(), mpsc::error::SendError<NetworkOutput>>>,
         SendOp: Fn(NetworkOutput) -> SendFuture,
         ReadError: std::error::Error + Send + Sync + 'static,
-        ReadFuture: Future<Output = Result<Option<ShuffleMessage>, ReadError>>,
+        ReadFuture: Future<Output = Result<Option<(u64, OutboxMessage)>, ReadError>>,
         ReadOp: Fn(u64) -> ReadFuture,
     {
         pub(super) fn new(
@@ -239,52 +235,65 @@ mod state_machine {
 
         pub(super) async fn run(self: Pin<&mut Self>) -> Result<(), anyhow::Error> {
             let mut this = self.project();
-            match this.state.as_mut().project() {
-                StateProj::Idle => {
-                    let NewOutboxMessage(seq_number) = this
-                        .hint_rx
-                        .recv()
-                        .await
-                        .expect("shuffle is owning the hint sender");
-                    *this.current_sequence_number =
-                        cmp::max(seq_number, *this.current_sequence_number);
+            loop {
+                match this.state.as_mut().project() {
+                    StateProj::Idle => {
+                        let NewOutboxMessage {
+                            seq_number,
+                            message,
+                        } = this
+                            .hint_rx
+                            .recv()
+                            .await
+                            .expect("shuffle is owning the hint sender");
 
-                    let reading_future = (this.read_operation)(*this.current_sequence_number);
+                        if seq_number >= *this.current_sequence_number {
+                            *this.current_sequence_number = seq_number;
 
-                    this.state.set(State::ReadingOutbox(reading_future));
-                }
-                StateProj::ReadingOutbox(reading_future) => {
-                    let reading_result = reading_future.await?;
+                            let send_future =
+                                (this.send_operation)(NetworkOutput::Message(message));
+                            this.state.set(State::Sending(send_future));
+                        } else {
+                            let reading_future =
+                                (this.read_operation)(*this.current_sequence_number);
+                            this.state.set(State::ReadingOutbox(reading_future));
+                        }
+                    }
+                    StateProj::ReadingOutbox(reading_future) => {
+                        let reading_result = reading_future.await?;
 
-                    if let Some(shuffle_message) = reading_result {
-                        *this.current_sequence_number = shuffle_message.seq_number();
+                        if let Some((seq_number, message)) = reading_result {
+                            *this.current_sequence_number = seq_number;
 
-                        let send_future =
-                            (this.send_operation)(NetworkOutput::Message(shuffle_message));
+                            let send_future =
+                                (this.send_operation)(NetworkOutput::Message(message));
 
-                        this.state.set(State::Sending(send_future));
-                    } else {
-                        this.state.set(State::Idle);
+                            this.state.set(State::Sending(send_future));
+                        } else {
+                            this.state.set(State::Idle);
+                        }
+                    }
+                    StateProj::Sending(send_future) => {
+                        send_future.await?;
+
+                        this.state.set(State::WaitingForAck(tokio::time::sleep(
+                            *this.retry_timeout,
+                        )));
+                    }
+                    StateProj::WaitingForAck(sleep) => {
+                        sleep.await;
+
+                        debug!(
+                            "Did not receive ack for message {} in time. Retry sending it again.",
+                            *this.current_sequence_number
+                        );
+                        // try to send the message again
+                        let read_future = (this.read_operation)(*this.current_sequence_number);
+
+                        this.state.set(State::ReadingOutbox(read_future));
                     }
                 }
-                StateProj::Sending(send_future) => {
-                    send_future.await?;
-
-                    this.state.set(State::WaitingForAck(tokio::time::sleep(
-                        *this.retry_timeout,
-                    )));
-                }
-                StateProj::WaitingForAck(sleep) => {
-                    sleep.await;
-
-                    // try to send the message again
-                    let read_future = (this.read_operation)(*this.current_sequence_number);
-
-                    this.state.set(State::ReadingOutbox(read_future));
-                }
             }
-
-            Ok(())
         }
 
         pub(super) fn on_network_input(

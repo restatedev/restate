@@ -103,9 +103,13 @@ where
                         )
                         .await?
                 }
-                ActuatorMessage::NewOutboxMessage(index) => {
+                ActuatorMessage::NewOutboxMessage {
+                    seq_number,
+                    message,
+                } => {
                     // it is ok if this message is not sent since it is only a hint
-                    let _ = shuffle_hint_tx.try_send(shuffle::NewOutboxMessage::new(index));
+                    let _ = shuffle_hint_tx
+                        .try_send(shuffle::NewOutboxMessage::new(seq_number, message));
                 }
                 ActuatorMessage::RegisterTimer { .. } => {
                     unimplemented!("we don't have a timer service yet :-(")

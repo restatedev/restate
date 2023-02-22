@@ -24,7 +24,10 @@ pub(crate) enum ActuatorMessage {
         service_invocation_id: ServiceInvocationId,
         invoke_input_journal: InvokeInputJournal,
     },
-    NewOutboxMessage(u64),
+    NewOutboxMessage {
+        seq_number: u64,
+        message: OutboxMessage,
+    },
     #[allow(dead_code)]
     RegisterTimer {
         service_invocation_id: ServiceInvocationId,
@@ -297,7 +300,10 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 state_storage.enqueue_into_outbox(seq_number, &message)?;
                 state_storage.store_outbox_seq_number(seq_number)?;
 
-                collector.collect(ActuatorMessage::NewOutboxMessage(seq_number));
+                collector.collect(ActuatorMessage::NewOutboxMessage {
+                    seq_number,
+                    message,
+                });
             }
             Effect::SetState {
                 service_invocation_id,

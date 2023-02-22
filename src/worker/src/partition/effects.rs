@@ -14,7 +14,7 @@ pub(crate) use interpreter::{
     StateStorageError,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum OutboxMessage {
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
