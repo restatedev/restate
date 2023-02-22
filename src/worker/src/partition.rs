@@ -75,7 +75,6 @@ where
     RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     NetworkHandle: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
-    NetworkHandle::Error: Debug,
     Storage: storage_api::Storage + Clone + Send + 'static,
 {
     pub(super) fn new(

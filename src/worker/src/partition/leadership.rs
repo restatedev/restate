@@ -179,7 +179,6 @@ impl<InvokerInputSender, NetworkHandle> LeadershipState<InvokerInputSender, Netw
 where
     InvokerInputSender: invoker::InvokerInputSender,
     NetworkHandle: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
-    NetworkHandle::Error: Debug,
 {
     pub(super) fn follower(
         peer_id: PeerId,

@@ -11,9 +11,12 @@ pub type ConsensusSender<T> = PollSender<T>;
 
 pub type ShuffleSender<T> = PollSender<T>;
 
+#[derive(Debug, thiserror::Error)]
+#[error("network is not running")]
+pub struct NetworkNotRunning;
+
 pub trait NetworkHandle<ShuffleIn, ShuffleOut> {
-    type Error: std::error::Error + Send + Sync + 'static;
-    type Future: future::Future<Output = Result<(), Self::Error>>;
+    type Future: future::Future<Output = Result<(), NetworkNotRunning>>;
 
     fn register_shuffle(
         &self,
@@ -144,18 +147,13 @@ pub struct UnboundedNetworkHandle<ShuffleIn, ShuffleOut> {
     shuffle_tx: mpsc::Sender<ShuffleOut>,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("network is not running")]
-pub struct NetworkNotRunning;
-
 impl<ShuffleIn, ShuffleOut> NetworkHandle<ShuffleIn, ShuffleOut>
     for UnboundedNetworkHandle<ShuffleIn, ShuffleOut>
 where
     ShuffleIn: Send + 'static,
     ShuffleOut: Send + 'static,
 {
-    type Error = NetworkNotRunning;
-    type Future = futures::future::Ready<Result<(), Self::Error>>;
+    type Future = futures::future::Ready<Result<(), NetworkNotRunning>>;
 
     fn register_shuffle(
         &self,
