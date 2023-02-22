@@ -363,11 +363,19 @@ pub(super) struct ActuatorStream<'a, InvokerInputSender, NetworkHandle> {
     inner: &'a mut LeadershipState<InvokerInputSender, NetworkHandle>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(super) enum TaskError {
+    #[error("task was cancelled")]
+    Cancelled,
+    #[error(transparent)]
+    Error(#[from] GenericError),
+}
+
 #[derive(Debug)]
 pub(super) enum ActuatorOutput {
     Invoker(invoker::OutputEffect),
     Shuffle(shuffle::OutboxTruncation),
-    ShuffleTaskTermination { error: Option<anyhow::Error> },
+    ShuffleTaskTermination { error: Option<TaskError> },
 }
 
 impl<'a, InvokerInputSender, NetworkHandle> Stream
@@ -397,13 +405,13 @@ impl<'a, InvokerInputSender, NetworkHandle> Stream
                             panic::resume_unwind(err.into_panic());
                         }
                         ActuatorOutput::ShuffleTaskTermination {
-                            error: Some(err.into()),
+                            error: Some(TaskError::Cancelled),
                         }
                     } else {
                         let result = result.unwrap();
 
                         ActuatorOutput::ShuffleTaskTermination {
-                            error: result.err().map(Into::into),
+                            error: result.err().map(|err| TaskError::Error(err.into())),
                         }
                     }
                 });

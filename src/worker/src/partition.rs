@@ -14,9 +14,17 @@ mod state_machine;
 mod storage;
 
 use crate::partition::effects::{Effects, Interpreter};
-use crate::partition::leadership::{ActuatorOutput, LeadershipState};
+use crate::partition::leadership::{ActuatorOutput, LeadershipState, TaskError};
 use crate::partition::storage::PartitionStorage;
 pub(crate) use state_machine::Command;
+
+#[derive(Debug, thiserror::Error)]
+enum ActuatorError {
+    #[error("task terminated unexpectedly")]
+    TerminatedTask,
+    #[error(transparent)]
+    FailedTask(#[from] TaskError),
+}
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<
@@ -176,7 +184,7 @@ where
     async fn handle_actuator_message(
         actuator_message: ActuatorOutput,
         proposal_sink: &mut Pin<&mut ProposalSink>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), ActuatorError> {
         match actuator_message {
             ActuatorOutput::Invoker(invoker_output) => {
                 // Err only if the consensus module is shutting down
@@ -189,10 +197,9 @@ where
                     .await;
             }
             ActuatorOutput::ShuffleTaskTermination { error } => {
-                let error =
-                    error.unwrap_or(anyhow::anyhow!("shuffle task terminated unexpectedly"));
-
-                return Err(error);
+                return Err(error
+                    .map(Into::into)
+                    .unwrap_or(ActuatorError::TerminatedTask))
             }
         };
 
