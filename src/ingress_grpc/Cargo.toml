@@ -1,0 +1,36 @@
+[package]
+name = "ingress_grpc"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Restate
+common = { workspace = true }
+ingress_common = { workspace = true }
+
+# Encoding/Decoding
+bytes = { workspace = true }
+serde_json = "1.0"
+prost-reflect = { workspace = true, features = ["serde", "reflect-well-known-types"] }
+
+# Futures
+pin-project = { workspace = true }
+futures = { workspace = true }
+
+# Tower + Hyper + Tonic + Tokio
+tower = { version = "0.4", features = ["util"] }
+http = "0.2"
+http-body = "0.4"
+hyper = { workspace = true, features = ["http1", "http2", "server", "tcp", "stream", "runtime"] }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tonic-web = "0.5"
+
+# Tracing
+opentelemetry = { workspace = true }
+opentelemetry-http = { workspace = true }
+tracing = { workspace = true }
