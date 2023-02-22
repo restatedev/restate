@@ -1,4 +1,5 @@
 use super::*;
+use common::utils::GenericError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawEntryHeader {
@@ -66,13 +67,32 @@ impl RawEntry {
     }
 }
 
-pub trait RawEntryCodec {
-    type Error: std::error::Error + Send + Sync + 'static;
+#[derive(Debug, thiserror::Error)]
+#[error("Cannot decode {ty:?}. {kind:?}")]
+pub struct RawEntryCodecError {
+    ty: RawEntryHeader,
+    kind: ErrorKind,
+}
 
-    fn deserialize(entry: &RawEntry) -> Result<Entry, Self::Error>;
+impl RawEntryCodecError {
+    pub fn new(ty: RawEntryHeader, kind: ErrorKind) -> Self {
+        Self { ty, kind }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ErrorKind {
+    #[error("failed to decode: {source:?}")]
+    Decode { source: Option<GenericError> },
+    #[error("Field '{0}' is missing")]
+    MissingField(&'static str),
+}
+
+pub trait RawEntryCodec {
+    fn deserialize(entry: &RawEntry) -> Result<Entry, RawEntryCodecError>;
 
     fn write_completion(
         entry: &mut RawEntry,
         completion_result: CompletionResult,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<(), RawEntryCodecError>;
 }

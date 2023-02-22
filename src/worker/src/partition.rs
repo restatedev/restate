@@ -73,7 +73,6 @@ where
     CmdStream: Stream<Item = consensus::Command<Command>>,
     ProposalSink: Sink<Command>,
     RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
-    RawEntryCodec::Error: Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     InvokerInputSender::Error: Debug,
     NetworkHandle: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,

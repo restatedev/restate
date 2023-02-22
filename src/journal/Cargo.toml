@@ -13,3 +13,4 @@ publish = false
 bytes = { workspace = true }
 bytestring = { workspace = true }
 common = { workspace = true }
+thiserror = { workspace = true }

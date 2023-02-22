@@ -98,7 +98,6 @@ where
     InvokerInput: InvokerInputSender + Debug,
     InvokerInput::Error: Debug,
     Codec: RawEntryCodec,
-    Codec::Error: Debug,
 {
     pub async fn invoke(
         &mut self,
@@ -230,7 +229,6 @@ impl InMemoryJournalStorage {
         result: CompletionResult,
     ) where
         Codec: RawEntryCodec,
-        Codec::Error: Debug,
     {
         let mut journals = self.journals.lock().await;
         let (_, journal) = journals

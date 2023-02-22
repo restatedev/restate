@@ -5,21 +5,6 @@ use journal::{CompletionResult, Entry};
 use prost::Message;
 use std::mem;
 
-#[derive(Debug, thiserror::Error)]
-#[error("Cannot decode {ty:?}. {kind:?}")]
-pub struct Error {
-    ty: RawEntryHeader,
-    kind: ErrorKind,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ErrorKind {
-    #[error(transparent)]
-    Decode(#[from] prost::DecodeError),
-    #[error("Field '{0}' is missing")]
-    MissingField(&'static str),
-}
-
 /// This macro generates the pattern matching with arms per entry.
 /// For each entry it first executes `Message#decode` and then `try_into()`.
 /// It expects that for each `{...}Entry` there is a valid `TryFrom<{...}Message>` implementation with `Error = &'static str`.
@@ -29,8 +14,8 @@ macro_rules! match_decode {
         match $ty {
               $(RawEntryHeader::$variant { .. } => paste::paste! {
                   pb::[<$variant EntryMessage>]::decode($buf)
-                    .map_err(|e| Error { ty: $ty.clone(), kind: ErrorKind::Decode(e) })
-                    .and_then(|msg| msg.try_into().map_err(|f| Error { ty: $ty.clone(), kind: ErrorKind::MissingField(f) }))
+                    .map_err(|e| RawEntryCodecError::new($ty.clone(), ErrorKind::Decode { source: Some(e.into()) }))
+                    .and_then(|msg| msg.try_into().map_err(|f| RawEntryCodecError::new($ty.clone(), ErrorKind::MissingField(f))))
               },)*
              RawEntryHeader::Custom { .. } => Ok(Entry::Custom($buf.copy_to_bytes($buf.remaining()))),
         }
@@ -41,9 +26,7 @@ macro_rules! match_decode {
 pub struct ProtobufRawEntryCodec;
 
 impl RawEntryCodec for ProtobufRawEntryCodec {
-    type Error = Error;
-
-    fn deserialize(entry: &RawEntry) -> Result<Entry, Self::Error> {
+    fn deserialize(entry: &RawEntry) -> Result<Entry, RawEntryCodecError> {
         // We clone the entry Bytes here to ensure that the generated Message::decode
         // invocation reuses the same underlying byte array.
         match_decode!(&entry.header, entry.entry.clone(), {
@@ -63,7 +46,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
     fn write_completion(
         entry: &mut RawEntry,
         completion_result: CompletionResult,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), RawEntryCodecError> {
         debug_assert_eq!(entry.header.is_completed(), Some(false));
 
         // Prepare the result to serialize in protobuf

@@ -5,7 +5,7 @@ use common::types::{
 use common::utils::GenericError;
 use futures::future::BoxFuture;
 use invoker::Kind;
-use journal::raw::{RawEntry, RawEntryCodec, RawEntryHeader};
+use journal::raw::{RawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
 use journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
     Entry, EntryResult, GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry,
@@ -23,7 +23,7 @@ pub(super) enum Error {
     #[error("failed to read from state reader: {0}")]
     State(#[from] StateReaderError),
     #[error("failed to deserialize entry: {0}")]
-    Codec(GenericError),
+    Codec(#[from] RawEntryCodecError),
 }
 
 #[derive(Debug)]
@@ -141,7 +141,6 @@ macro_rules! enum_inner {
 impl<Codec> StateMachine<Codec>
 where
     Codec: RawEntryCodec,
-    Codec::Error: Debug,
 {
     /// Applies the given command and returns effects via the provided effects struct
     ///
@@ -312,7 +311,7 @@ where
             }
             RawEntryHeader::OutputStream => {
                 let OutputStreamEntry { result } = enum_inner!(
-                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
+                    Self::deserialize(&entry)?,
                     Entry::OutputStream
                 );
 
@@ -323,7 +322,7 @@ where
             RawEntryHeader::GetState { is_completed } => {
                 if !is_completed {
                     let GetStateEntry { key, .. } = enum_inner!(
-                        Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
+                        Self::deserialize(&entry)?,
                         Entry::GetState
                     );
 
@@ -338,7 +337,7 @@ where
             }
             RawEntryHeader::SetState => {
                 let SetStateEntry { key, value } = enum_inner!(
-                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
+                    Self::deserialize(&entry)?,
                     Entry::SetState
                 );
 
@@ -349,7 +348,7 @@ where
             }
             RawEntryHeader::ClearState => {
                 let ClearStateEntry { key } = enum_inner!(
-                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
+                    Self::deserialize(&entry)?,
                     Entry::ClearState
                 );
                 effects.clear_state(service_invocation_id, key, entry, entry_index);
@@ -360,7 +359,7 @@ where
             RawEntryHeader::Sleep { is_completed } => {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
                 let SleepEntry { wake_up_time, .. } = enum_inner!(
-                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
+                    Self::deserialize(&entry)?,
                     Entry::Sleep
                 );
                 effects.register_timer(
@@ -375,7 +374,7 @@ where
             RawEntryHeader::Invoke { is_completed } => {
                 if !is_completed {
                     let InvokeEntry { request, .. } = enum_inner!(
-                        Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
+                        Self::deserialize(&entry)?,
                         Entry::Invoke
                     );
 
@@ -390,7 +389,7 @@ where
             }
             RawEntryHeader::BackgroundInvoke => {
                 let BackgroundInvokeEntry(request) = enum_inner!(
-                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
+                    Self::deserialize(&entry)?,
                     Entry::BackgroundInvoke
                 );
 
@@ -405,7 +404,7 @@ where
             }
             RawEntryHeader::CompleteAwakeable => {
                 let entry = enum_inner!(
-                    Self::deserialize(&entry).map_err(|err| Error::Codec(err.into()))?,
+                    Self::deserialize(&entry)?,
                     Entry::CompleteAwakeable
                 );
 
@@ -493,9 +492,8 @@ where
         state: &State,
         effects: &mut Effects,
     ) -> Result<(), Error> {
-        if let Some((inbox_sequence_number, service_invocation)) = state
-            .peek_inbox(&service_invocation_id.service_id)
-            .await?
+        if let Some((inbox_sequence_number, service_invocation)) =
+            state.peek_inbox(&service_invocation_id.service_id).await?
         {
             effects.drop_journal_and_pop_inbox(
                 service_invocation_id.service_id,
@@ -531,7 +529,7 @@ where
         todo!()
     }
 
-    fn deserialize(raw_entry: &RawEntry) -> Result<Entry, Codec::Error> {
+    fn deserialize(raw_entry: &RawEntry) -> Result<Entry, RawEntryCodecError> {
         Codec::deserialize(raw_entry)
     }
 }
