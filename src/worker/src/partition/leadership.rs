@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tokio::task;
 use tokio_util::sync::PollSender;
 use tracing::trace;
+use network::NetworkNotRunning;
 
 pub(super) trait InvocationReader {
     type InvokedInvocationStream: Stream<Item = ServiceInvocationId> + Unpin;
@@ -159,9 +160,9 @@ impl<I, N> MessageCollector for ActuatorMessageCollector<I, N> {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Invoker(GenericError),
+    Invoker(#[from] InvokerNotRunning),
     #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Network(GenericError),
+    Network(#[from] NetworkNotRunning),
     #[error("shuffle is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Shuffle(GenericError),
 }
@@ -227,8 +228,7 @@ where
             follower_state
                 .invoker_tx
                 .register_partition((follower_state.partition_id, leader_epoch), invoker_tx)
-                .await
-                .map_err(|err| Error::Invoker(err.into()))?;
+                .await?;
 
             let mut invoked_invocations = state_reader.scan_invoked_invocations();
 
@@ -240,8 +240,7 @@ where
                         service_invocation_id,
                         InvokeInputJournal::NoCachedJournal,
                     )
-                    .await
-                    .map_err(|err| Error::Invoker(err.into()))?;
+                    .await?;
             }
 
             let (shuffle_tx, shuffle_rx) = mpsc::channel(1);
@@ -256,8 +255,7 @@ where
             follower_state
                 .network_handle
                 .register_shuffle(shuffle.peer_id(), shuffle.create_network_sender())
-                .await
-                .map_err(|err| Error::Network(err.into()))?;
+                .await?;
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
 
@@ -310,8 +308,8 @@ where
                 network_handle.unregister_shuffle(peer_id),
             );
 
-            abort_result.map_err(|err| Error::Invoker(err.into()))?;
-            unregister_result.map_err(|err| Error::Network(err.into()))?;
+            abort_result?;
+            unregister_result?;
 
             if let Err(err) = shuffle_result {
                 if err.is_panic() {
