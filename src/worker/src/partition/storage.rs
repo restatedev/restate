@@ -222,7 +222,7 @@ impl<Storage> OutboxReader for PartitionStorage<Storage> {
         &self,
         _next_sequence_number: u64,
     ) -> BoxFuture<Result<Option<(u64, OutboxMessage)>, OutboxReaderError>> {
-        todo!()
+        future::ok(None).boxed()
     }
 }
 
