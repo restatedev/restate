@@ -5,7 +5,7 @@ use common::types::{EntryIndex, ServiceId, ServiceInvocation, ServiceInvocationI
 use common::utils::GenericError;
 use futures::future::BoxFuture;
 use invoker::InvokeInputJournal;
-use journal::raw::{RawEntry, RawEntryCodec};
+use journal::raw::{RawEntry, RawEntryCodec, RawEntryCodecError};
 use journal::{Completion, CompletionResult, PollInputStreamEntry};
 use std::marker::PhantomData;
 use tracing::trace;
@@ -15,7 +15,7 @@ pub(crate) enum Error {
     #[error("failed to read state while interpreting effects: {0}")]
     State(#[from] StateStorageError),
     #[error("failed to decode entry while interpreting effects: {0}")]
-    Codec(GenericError),
+    Codec(#[from] RawEntryCodecError),
 }
 
 #[derive(Debug)]
@@ -342,8 +342,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .load_state(&service_invocation_id.service_id, &key)
                     .await?;
 
-                Codec::write_completion(&mut raw_entry, CompletionResult::Success(value.clone()))
-                    .map_err(|err| Error::Codec(err.into()))?;
+                Codec::write_completion(&mut raw_entry, CompletionResult::Success(value.clone()))?;
 
                 Self::unchecked_append_journal_entry(
                     state_storage,
@@ -405,8 +404,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .load_completion_result(&service_invocation_id.service_id, entry_index)
                     .await?
                 {
-                    Codec::write_completion(&mut raw_entry, completion_result)
-                        .map_err(|err| Error::Codec(err.into()))?;
+                    Codec::write_completion(&mut raw_entry, completion_result)?;
                 }
 
                 Self::unchecked_append_journal_entry(
@@ -530,8 +528,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             .load_journal_entry(&service_invocation_id.service_id, entry_index)
             .await?
         {
-            Codec::write_completion(&mut raw_entry, completion_result)
-                .map_err(|err| Error::Codec(err.into()))?;
+            Codec::write_completion(&mut raw_entry, completion_result)?;
             state_storage.store_journal_entry(
                 &service_invocation_id.service_id,
                 entry_index,
