@@ -5,6 +5,7 @@ use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, Serv
 use common::utils::GenericError;
 use futures::{Stream, StreamExt};
 use invoker::{InvokeInputJournal, InvokerInputSender, InvokerNotRunning};
+use network::NetworkNotRunning;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::ops::DerefMut;
@@ -15,7 +16,6 @@ use tokio::sync::mpsc;
 use tokio::task;
 use tokio_util::sync::PollSender;
 use tracing::trace;
-use network::NetworkNotRunning;
 
 pub(super) trait InvocationReader {
     type InvokedInvocationStream: Stream<Item = ServiceInvocationId> + Unpin;

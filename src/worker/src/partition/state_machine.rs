@@ -310,10 +310,8 @@ where
                 );
             }
             RawEntryHeader::OutputStream => {
-                let OutputStreamEntry { result } = enum_inner!(
-                    Self::deserialize(&entry)?,
-                    Entry::OutputStream
-                );
+                let OutputStreamEntry { result } =
+                    enum_inner!(Self::deserialize(&entry)?, Entry::OutputStream);
 
                 let response = Self::create_response(result);
 
@@ -321,10 +319,8 @@ where
             }
             RawEntryHeader::GetState { is_completed } => {
                 if !is_completed {
-                    let GetStateEntry { key, .. } = enum_inner!(
-                        Self::deserialize(&entry)?,
-                        Entry::GetState
-                    );
+                    let GetStateEntry { key, .. } =
+                        enum_inner!(Self::deserialize(&entry)?, Entry::GetState);
 
                     effects.get_state_and_append_completed_entry(
                         key,
@@ -336,10 +332,8 @@ where
                 }
             }
             RawEntryHeader::SetState => {
-                let SetStateEntry { key, value } = enum_inner!(
-                    Self::deserialize(&entry)?,
-                    Entry::SetState
-                );
+                let SetStateEntry { key, value } =
+                    enum_inner!(Self::deserialize(&entry)?, Entry::SetState);
 
                 effects.set_state(service_invocation_id, key, value, entry, entry_index);
                 // set_state includes append journal entry in order to avoid unnecessary clones.
@@ -347,10 +341,8 @@ where
                 return Ok(());
             }
             RawEntryHeader::ClearState => {
-                let ClearStateEntry { key } = enum_inner!(
-                    Self::deserialize(&entry)?,
-                    Entry::ClearState
-                );
+                let ClearStateEntry { key } =
+                    enum_inner!(Self::deserialize(&entry)?, Entry::ClearState);
                 effects.clear_state(service_invocation_id, key, entry, entry_index);
                 // clear_state includes append journal entry in order to avoid unnecessary clones.
                 // That's why we must return here.
@@ -358,10 +350,8 @@ where
             }
             RawEntryHeader::Sleep { is_completed } => {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
-                let SleepEntry { wake_up_time, .. } = enum_inner!(
-                    Self::deserialize(&entry)?,
-                    Entry::Sleep
-                );
+                let SleepEntry { wake_up_time, .. } =
+                    enum_inner!(Self::deserialize(&entry)?, Entry::Sleep);
                 effects.register_timer(
                     wake_up_time as u64,
                     // Registering a timer generates multiple effects: timer registration and
@@ -373,10 +363,8 @@ where
             }
             RawEntryHeader::Invoke { is_completed } => {
                 if !is_completed {
-                    let InvokeEntry { request, .. } = enum_inner!(
-                        Self::deserialize(&entry)?,
-                        Entry::Invoke
-                    );
+                    let InvokeEntry { request, .. } =
+                        enum_inner!(Self::deserialize(&entry)?, Entry::Invoke);
 
                     let service_invocation = Self::create_service_invocation(
                         request,
@@ -388,10 +376,8 @@ where
                 }
             }
             RawEntryHeader::BackgroundInvoke => {
-                let BackgroundInvokeEntry(request) = enum_inner!(
-                    Self::deserialize(&entry)?,
-                    Entry::BackgroundInvoke
-                );
+                let BackgroundInvokeEntry(request) =
+                    enum_inner!(Self::deserialize(&entry)?, Entry::BackgroundInvoke);
 
                 let service_invocation = Self::create_service_invocation(request, None);
                 self.send_message(OutboxMessage::Invocation(service_invocation), effects);
@@ -403,10 +389,7 @@ where
                 return Ok(());
             }
             RawEntryHeader::CompleteAwakeable => {
-                let entry = enum_inner!(
-                    Self::deserialize(&entry)?,
-                    Entry::CompleteAwakeable
-                );
+                let entry = enum_inner!(Self::deserialize(&entry)?, Entry::CompleteAwakeable);
 
                 let response = Self::create_response_for_awakeable_entry(entry);
                 self.send_message(OutboxMessage::Response(response), effects);

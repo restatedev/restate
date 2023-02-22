@@ -1,4 +1,4 @@
-use crate::partition::effects::{Committable, OutboxMessage, StateStorage};
+use crate::partition::effects::{Committable, OutboxMessage, StateStorage, StateStorageError};
 use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError, ShuffleMessage};
 use crate::partition::state_machine::{JournalStatus, StateReader, StateReaderError};
@@ -82,13 +82,11 @@ impl<'a, Storage> Transaction<'a, Storage> {
 }
 
 impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
-    type Error = Infallible;
-
     fn store_invocation_status(
         &self,
         _service_id: &ServiceId,
         _status: &InvocationStatus,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
@@ -96,11 +94,11 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _method_name: impl AsRef<str>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
-    fn drop_journal(&self, _service_id: &ServiceId) -> Result<(), Self::Error> {
+    fn drop_journal(&self, _service_id: &ServiceId) -> Result<(), StateStorageError> {
         todo!()
     }
 
@@ -109,7 +107,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
         _raw_entry: &RawEntry,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
@@ -118,7 +116,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
         _completion_result: &CompletionResult,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
@@ -126,7 +124,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<CompletionResult>, Self::Error>> {
+    ) -> BoxFuture<Result<Option<CompletionResult>, StateStorageError>> {
         todo!()
     }
 
@@ -134,7 +132,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<RawEntry>, Self::Error>> {
+    ) -> BoxFuture<Result<Option<RawEntry>, StateStorageError>> {
         todo!()
     }
 
@@ -142,7 +140,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _seq_number: u64,
         _service_invocation: &ServiceInvocation,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
@@ -150,19 +148,19 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _seq_number: u64,
         _message: &OutboxMessage,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
-    fn store_inbox_seq_number(&self, _seq_number: u64) -> Result<(), Self::Error> {
+    fn store_inbox_seq_number(&self, _seq_number: u64) -> Result<(), StateStorageError> {
         todo!()
     }
 
-    fn store_outbox_seq_number(&self, _seq_number: u64) -> Result<(), Self::Error> {
+    fn store_outbox_seq_number(&self, _seq_number: u64) -> Result<(), StateStorageError> {
         todo!()
     }
 
-    fn truncate_outbox(&self, _outbox_sequence_number: u64) -> Result<(), Self::Error> {
+    fn truncate_outbox(&self, _outbox_sequence_number: u64) -> Result<(), StateStorageError> {
         todo!()
     }
 
@@ -170,7 +168,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _inbox_sequence_number: u64,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
@@ -179,7 +177,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         _service_id: &ServiceId,
         _key: impl AsRef<[u8]>,
         _value: impl AsRef<[u8]>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
@@ -187,7 +185,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _key: impl AsRef<[u8]>,
-    ) -> BoxFuture<Result<Bytes, Self::Error>> {
+    ) -> BoxFuture<Result<Bytes, StateStorageError>> {
         todo!()
     }
 
@@ -195,7 +193,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _key: impl AsRef<[u8]>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
@@ -204,7 +202,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         _service_invocation_id: &ServiceInvocationId,
         _wake_up_time: u64,
         _entry_index: EntryIndex,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
@@ -213,7 +211,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         _service_id: &ServiceId,
         _wake_up_time: u64,
         _entry_index: EntryIndex,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 }
