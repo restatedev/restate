@@ -78,9 +78,12 @@ pub enum InvokeInputJournal {
     CachedJournal(JournalMetadata, Vec<RawEntry>),
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("invoker is not running")]
+pub struct InvokerNotRunning;
+
 pub trait InvokerInputSender {
-    type Error: std::error::Error + Send + Sync + 'static;
-    type Future: Future<Output = Result<(), Self::Error>>;
+    type Future: Future<Output = Result<(), InvokerNotRunning>>;
 
     fn invoke(
         &mut self,

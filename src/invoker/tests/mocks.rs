@@ -54,7 +54,6 @@ impl Debug for SimulatorStep {
 impl<InvokerInput, Codec> PartitionProcessorSimulator<InvokerInput, Codec>
 where
     InvokerInput: InvokerInputSender,
-    InvokerInput::Error: Debug,
 {
     pub async fn new(journals: InMemoryJournalStorage, mut in_tx: InvokerInput) -> Self {
         let (out_tx, out_rx) = mpsc::channel(100);
@@ -96,7 +95,6 @@ where
 impl<InvokerInput, Codec> PartitionProcessorSimulator<InvokerInput, Codec>
 where
     InvokerInput: InvokerInputSender + Debug,
-    InvokerInput::Error: Debug,
     Codec: RawEntryCodec,
 {
     pub async fn invoke(

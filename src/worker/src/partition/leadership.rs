@@ -4,7 +4,7 @@ use crate::partition::shuffle::{OutboxReader, Shuffle};
 use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId};
 use common::utils::GenericError;
 use futures::{Stream, StreamExt};
-use invoker::{InvokeInputJournal, InvokerInputSender};
+use invoker::{InvokeInputJournal, InvokerInputSender, InvokerNotRunning};
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::ops::DerefMut;
@@ -87,7 +87,7 @@ where
         invoker_tx: &mut I,
         shuffle_hint_tx: &mut mpsc::Sender<shuffle::NewOutboxMessage>,
         messages: impl IntoIterator<Item = ActuatorMessage>,
-    ) -> Result<(), I::Error> {
+    ) -> Result<(), InvokerNotRunning> {
         for message in messages.into_iter() {
             trace!(?message, "Send actuator message");
 
@@ -178,7 +178,6 @@ pub(super) enum LeadershipState<InvokerInputSender, NetworkHandle> {
 impl<InvokerInputSender, NetworkHandle> LeadershipState<InvokerInputSender, NetworkHandle>
 where
     InvokerInputSender: invoker::InvokerInputSender,
-    InvokerInputSender::Error: Debug,
     NetworkHandle: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
     NetworkHandle::Error: Debug,
 {

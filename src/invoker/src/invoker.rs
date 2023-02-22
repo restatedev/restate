@@ -21,13 +21,8 @@ pub struct UnboundedInvokerInputSender {
     other_input: mpsc::UnboundedSender<Input<OtherInputCommand>>,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("invoker is not running")]
-pub struct InvokerNotRunning;
-
 impl InvokerInputSender for UnboundedInvokerInputSender {
-    type Error = InvokerNotRunning;
-    type Future = futures::future::Ready<Result<(), Self::Error>>;
+    type Future = futures::future::Ready<Result<(), InvokerNotRunning>>;
 
     fn invoke(
         &mut self,
