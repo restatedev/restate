@@ -10,7 +10,8 @@ use std::vec::Drain;
 mod interpreter;
 
 pub(crate) use interpreter::{
-    ActuatorMessage, Committable, Interpreter, MessageCollector, StateStorage, StateStorageError,
+    ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
+    StateStorageError,
 };
 
 #[derive(Debug)]

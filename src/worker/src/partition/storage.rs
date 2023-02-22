@@ -1,4 +1,6 @@
-use crate::partition::effects::{Committable, OutboxMessage, StateStorage, StateStorageError};
+use crate::partition::effects::{
+    CommitError, Committable, OutboxMessage, StateStorage, StateStorageError,
+};
 use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError, ShuffleMessage};
 use crate::partition::state_machine::{JournalStatus, StateReader, StateReaderError};
@@ -9,7 +11,6 @@ use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
 use journal::raw::RawEntry;
 use journal::CompletionResult;
-use std::convert::Infallible;
 
 #[derive(Debug, Clone)]
 pub(super) struct PartitionStorage<Storage> {
@@ -226,9 +227,7 @@ impl<Storage> OutboxReader for PartitionStorage<Storage> {
 }
 
 impl<'a, Storage> Committable for Transaction<'a, Storage> {
-    type Error = Infallible;
-
-    fn commit(self) -> BoxFuture<'static, Result<(), Self::Error>> {
+    fn commit(self) -> BoxFuture<'static, Result<(), CommitError>> {
         self.commit();
         future::ready(Ok(())).boxed()
     }

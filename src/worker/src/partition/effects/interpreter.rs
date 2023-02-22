@@ -162,11 +162,15 @@ pub(crate) trait StateStorage {
     ) -> Result<(), StateStorageError>;
 }
 
-pub(crate) trait Committable {
-    type Error: std::error::Error + Send + Sync + 'static;
+#[derive(Debug, thiserror::Error)]
+#[error("failed committing results: {source:?}")]
+pub(crate) struct CommitError {
+    source: Option<GenericError>,
+}
 
+pub(crate) trait Committable {
     // TODO: Replace with async trait or proper future
-    fn commit(self) -> BoxFuture<'static, Result<(), Self::Error>>;
+    fn commit(self) -> BoxFuture<'static, Result<(), CommitError>>;
 }
 
 #[must_use = "Don't forget to commit the interpretation result"]
@@ -174,10 +178,6 @@ pub(crate) struct InterpretationResult<Txn, Collector> {
     txn: Txn,
     collector: Collector,
 }
-
-#[derive(Debug, thiserror::Error)]
-#[error("failed committing results: {0}")]
-pub(crate) struct CommitError(#[from] GenericError);
 
 impl<Txn, Collector> InterpretationResult<Txn, Collector>
 where
@@ -190,7 +190,7 @@ where
     pub(crate) async fn commit(self) -> Result<Collector, CommitError> {
         let Self { txn, collector } = self;
 
-        txn.commit().await.map_err(|err| CommitError(err.into()))?;
+        txn.commit().await?;
         Ok(collector)
     }
 }
