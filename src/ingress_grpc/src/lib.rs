@@ -3,12 +3,16 @@ mod descriptors_registry;
 mod handler;
 mod protocol;
 mod response_dispatcher;
+mod server;
 
 pub(crate) use command::*;
 
 pub use descriptors_registry::InMemoryMethodDescriptorRegistry;
 pub use descriptors_registry::MethodDescriptorRegistry;
-pub use response_dispatcher::*;
+pub use response_dispatcher::IngressResponseSender;
+pub use response_dispatcher::ResponseDispatcherLoop;
+pub use server::HyperServerIngress;
+pub use server::StartSignal;
 
 use bytes::Bytes;
 use common::types::ServiceInvocationId;

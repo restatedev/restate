@@ -1,4 +1,5 @@
 use super::protocol::{BoxBody, Protocol};
+use super::response_dispatcher::IngressResponseRequester;
 use super::*;
 
 use std::sync::Arc;
@@ -26,6 +27,26 @@ pub struct Handler<InvocationFactory, MethodRegistry> {
     response_requester: IngressResponseRequester,
     invocation_sender: mpsc::Sender<ServiceInvocation>,
     global_concurrency_semaphore: Arc<Semaphore>,
+}
+
+impl<InvocationFactory, MethodRegistry> Handler<InvocationFactory, MethodRegistry> {
+    pub fn new(
+        ingress_id: IngressId,
+        invocation_factory: InvocationFactory,
+        method_registry: MethodRegistry,
+        response_requester: IngressResponseRequester,
+        invocation_sender: mpsc::Sender<ServiceInvocation>,
+        global_concurrency_semaphore: Arc<Semaphore>,
+    ) -> Self {
+        Self {
+            ingress_id,
+            invocation_factory,
+            method_registry,
+            response_requester,
+            invocation_sender,
+            global_concurrency_semaphore,
+        }
+    }
 }
 
 // TODO When porting to hyper 1.0 https://github.com/restatedev/restate/issues/96
@@ -169,6 +190,7 @@ where
             }.instrument(span)
         };
 
+        // Let the protocol handle the request
         let result_fut = protocol.handle_request(
             service_name,
             method_name,
