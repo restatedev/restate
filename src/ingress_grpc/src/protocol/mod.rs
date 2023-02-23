@@ -70,9 +70,13 @@ impl Protocol {
             Protocol::Tonic => {
                 Self::handle_tonic_request(ingress_request_headers, req, handler_fn).await
             }
-            Protocol::Connect => {
-                Ok(Self::handle_connect_request(ingress_request_headers, descriptor, req, handler_fn).await)
-            }
+            Protocol::Connect => Ok(Self::handle_connect_request(
+                ingress_request_headers,
+                descriptor,
+                req,
+                handler_fn,
+            )
+            .await),
         }
     }
 
@@ -129,12 +133,11 @@ impl Protocol {
         H: FnOnce(IngressRequest) -> F + Send + 'static,
         F: Future<Output = IngressResult> + Send,
     {
-        let (content_type, request_message) = match connect_adapter::decode_request(req, &descriptor).await {
-            Ok(req) => req,
-            Err(error_res) => {
-                return error_res.map(to_box_body)
-            }
-        };
+        let (content_type, request_message) =
+            match connect_adapter::decode_request(req, &descriptor).await {
+                Ok(req) => req,
+                Err(error_res) => return error_res.map(to_box_body),
+            };
 
         let ingress_request_body = Bytes::from(request_message.encode_to_vec());
         let response = match handler_fn((ingress_request_headers, ingress_request_body)).await {
@@ -163,35 +166,35 @@ where
 mod tests {
     use super::*;
 
+    use crate::mocks::*;
     use futures::future::{ok, Ready};
     use http::header::CONTENT_TYPE;
     use http::{Method, Request, StatusCode};
     use hyper::body::HttpBody;
     use serde_json::json;
     use test_utils::{assert_eq, test};
-    use crate::mocks::*;
 
     fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<IngressResult> {
         let person = pb::GreetingRequest::decode(ingress_req.1).unwrap().person;
         ok(pb::GreetingResponse {
             greeting: format!("Hello {person}"),
         }
-            .encode_to_vec()
-            .into())
+        .encode_to_vec()
+        .into())
     }
 
     #[test(tokio::test)]
     async fn handle_connect_request_works() {
-        let request =       Request::builder()
+        let request = Request::builder()
             .uri("http://localhost/greeter.Greeter/Greet")
             .method(Method::POST)
             .header(CONTENT_TYPE, "application/json")
             .body(
                 json!({
-                            "person": "Francesco"
-                        })
-                    .to_string()
-                    .into(),
+                    "person": "Francesco"
+                })
+                .to_string()
+                .into(),
             )
             .unwrap();
 
@@ -199,12 +202,13 @@ mod tests {
             IngressRequestHeaders::new(
                 "greeter.Greeter".to_string(),
                 "Greet".to_string(),
-                Context::default()
+                Context::default(),
             ),
             greeter_greet_method_descriptor(),
             request,
-            greeter_service_fn
-        ).await;
+            greeter_service_fn,
+        )
+        .await;
 
         let body = res.data().await.unwrap().unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();

@@ -112,8 +112,7 @@ where
         } else {
             debug!("{}/{} not found", service_name, method_name);
             return ok(protocol.encode_status(Status::not_found(format!(
-                "{}/{} not found",
-                service_name, method_name
+                "{service_name}/{method_name} not found"
             ))))
             .boxed();
         };

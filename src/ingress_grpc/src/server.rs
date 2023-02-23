@@ -161,7 +161,7 @@ mod tests {
         let json_payload = json!({"person": "Francesco"});
         let http_response = hyper::Client::new()
             .request(
-                hyper::Request::post(format!("http://{}/greeter.Greeter/Greet", address))
+                hyper::Request::post(format!("http://{address}/greeter.Greeter/Greet"))
                     .header(CONTENT_TYPE, "application/json")
                     .body(Body::from(serde_json::to_vec(&json_payload).unwrap()))
                     .unwrap(),
@@ -207,7 +207,7 @@ mod tests {
         let (drain, address, service_invocation_future, ingress_handle) =
             bootstrap_test(expected_greeting_response.clone()).await;
 
-        let mut client = pb::greeter_client::GreeterClient::connect(format!("http://{}", address))
+        let mut client = pb::greeter_client::GreeterClient::connect(format!("http://{address}"))
             .await
             .unwrap();
 

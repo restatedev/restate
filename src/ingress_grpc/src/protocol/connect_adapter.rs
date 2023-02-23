@@ -1,7 +1,7 @@
 use bytes::Buf;
 use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
-use http::{Method, Request, Response, StatusCode};
 use http::request::Parts;
+use http::{Method, Request, Response, StatusCode};
 use hyper::Body;
 use prost_reflect::{DynamicMessage, MethodDescriptor};
 use serde::Serialize;
@@ -10,7 +10,10 @@ use tracing::warn;
 
 use content_type::ConnectContentType;
 
-pub(super) async fn decode_request(request: Request<Body>, method_descriptor: &MethodDescriptor) -> Result<(ConnectContentType, DynamicMessage), Response<Body>> {
+pub(super) async fn decode_request(
+    request: Request<Body>,
+    method_descriptor: &MethodDescriptor,
+) -> Result<(ConnectContentType, DynamicMessage), Response<Body>> {
     let (mut parts, body) = request.into_parts();
 
     // Check content encoding
@@ -18,8 +21,11 @@ pub(super) async fn decode_request(request: Request<Body>, method_descriptor: &M
         return Err(status::not_implemented());
     }
 
-    if parts.method == Method::GET && is_get_allowed(&method_descriptor) {
-        return Ok((ConnectContentType::Json, DynamicMessage::new(method_descriptor.input())))
+    return if parts.method == Method::GET && is_get_allowed(method_descriptor) {
+        Ok((
+            ConnectContentType::Json,
+            DynamicMessage::new(method_descriptor.input()),
+        ))
     } else if parts.method == Method::POST {
         // Read content type
         let content_type = match parts
@@ -35,11 +41,8 @@ pub(super) async fn decode_request(request: Request<Body>, method_descriptor: &M
         let body = match hyper::body::to_bytes(body).await {
             Ok(b) => b,
             Err(e) => {
-                warn!(
-                    "Error when reading the body: {}",
-                    e
-                );
-                return Err(status::internal_server_error())
+                warn!("Error when reading the body: {}", e);
+                return Err(status::internal_server_error());
             }
         };
 
@@ -60,32 +63,37 @@ pub(super) async fn decode_request(request: Request<Body>, method_descriptor: &M
             }
         };
 
-        return Ok((content_type, msg))
+        Ok((content_type, msg))
     } else {
-        return Err(status::method_not_allowed())
-    }
+        Err(status::method_not_allowed())
+    };
 }
 
-pub(super) fn encode_response<B: Buf>(response_body: B, method_descriptor: &MethodDescriptor, request_content_type: ConnectContentType) -> Response<Body> {
+pub(super) fn encode_response<B: Buf>(
+    response_body: B,
+    method_descriptor: &MethodDescriptor,
+    request_content_type: ConnectContentType,
+) -> Response<Body> {
     let dynamic_message = match DynamicMessage::decode(method_descriptor.output(), response_body) {
         Ok(msg) => msg,
         Err(err) => {
             warn!("The response payload cannot be decoded: {}", err);
             return status::status_response(Status::internal(format!(
                 "The response payload cannot be decoded: {err}",
-            )))
+            )));
         }
     };
 
-    let (content_type_header, body) = match content_type::write_message(request_content_type, dynamic_message) {
-        Ok(r) => r,
-        Err(err) => {
-            warn!("The response payload cannot be serialized: {}", err);
-            return status::status_response(Status::internal(format!(
-                "The response payload cannot be serialized: {err}",
-            )))
-        }
-    };
+    let (content_type_header, body) =
+        match content_type::write_message(request_content_type, dynamic_message) {
+            Ok(r) => r,
+            Err(err) => {
+                warn!("The response payload cannot be serialized: {}", err);
+                return status::status_response(Status::internal(format!(
+                    "The response payload cannot be serialized: {err}",
+                )));
+            }
+        };
 
     Response::builder()
         .status(StatusCode::OK)
@@ -127,7 +135,8 @@ pub(super) mod content_type {
         if let Ok(ct) = content_type.to_str() {
             return if ct.starts_with("application/json") {
                 Some(ConnectContentType::Json)
-            } else if ct.starts_with("application/proto") || ct.starts_with("application/protobuf") {
+            } else if ct.starts_with("application/proto") || ct.starts_with("application/protobuf")
+            {
                 Some(ConnectContentType::Protobuf)
             } else {
                 None
@@ -176,8 +185,8 @@ pub(super) mod content_type {
 
     #[cfg(test)]
     mod tests {
-        use crate::mocks::greeter_get_count_method_descriptor;
         use super::*;
+        use crate::mocks::greeter_get_count_method_descriptor;
 
         use bytes::Bytes;
         use http::HeaderValue;
@@ -203,9 +212,9 @@ pub(super) mod content_type {
                 greeter_get_count_method_descriptor().input(),
                 Bytes::from("{}"),
             )
-                .unwrap()
-                .transcode_to::<()>()
-                .unwrap();
+            .unwrap()
+            .transcode_to::<()>()
+            .unwrap();
         }
 
         #[tokio::test]
@@ -214,7 +223,7 @@ pub(super) mod content_type {
                 ConnectContentType::Json,
                 DynamicMessage::new(greeter_get_count_method_descriptor().input()),
             )
-                .unwrap();
+            .unwrap();
 
             assert_eq!(
                 hyper::body::to_bytes(b).await.unwrap(),
@@ -344,13 +353,13 @@ pub(super) mod status {
 mod tests {
     use super::*;
 
+    use crate::mocks::{greeter_greet_method_descriptor, pb};
     use bytes::Bytes;
     use http::StatusCode;
     use http_body::Body;
     use prost::Message;
     use serde_json::json;
     use test_utils::{assert_eq, test};
-    use crate::mocks::{greeter_greet_method_descriptor, pb};
 
     #[test(tokio::test)]
     async fn decode_greet_json() {
@@ -361,11 +370,15 @@ mod tests {
                 .header(CONTENT_TYPE, "application/json")
                 .body(json!({"person": "Francesco"}).to_string().into())
                 .unwrap(),
-            &greeter_greet_method_descriptor()
-        ).await.unwrap();
+            &greeter_greet_method_descriptor(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
-            request_payload.transcode_to::<pb::GreetingRequest>().unwrap(),
+            request_payload
+                .transcode_to::<pb::GreetingRequest>()
+                .unwrap(),
             pb::GreetingRequest {
                 person: "Francesco".to_string()
             }
@@ -384,15 +397,19 @@ mod tests {
                     pb::GreetingRequest {
                         person: "Francesco".to_string(),
                     }
-                        .encode_to_vec()
-                        .into(),
+                    .encode_to_vec()
+                    .into(),
                 )
                 .unwrap(),
-            &greeter_greet_method_descriptor()
-        ).await.unwrap();
+            &greeter_greet_method_descriptor(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
-            request_payload.transcode_to::<pb::GreetingRequest>().unwrap(),
+            request_payload
+                .transcode_to::<pb::GreetingRequest>()
+                .unwrap(),
             pb::GreetingRequest {
                 person: "Francesco".to_string()
             }
@@ -409,8 +426,10 @@ mod tests {
                 .header(CONTENT_TYPE, "application/json")
                 .body(json!({"person": "Francesco"}).to_string().into())
                 .unwrap(),
-            &greeter_greet_method_descriptor()
-        ).await.unwrap_err();
+            &greeter_greet_method_descriptor(),
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(err_response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
@@ -424,19 +443,28 @@ mod tests {
                 .header(CONTENT_TYPE, "application/yaml")
                 .body("person: Francesco".to_string().into())
                 .unwrap(),
-            &greeter_greet_method_descriptor()
-        ).await.unwrap_err();
+            &greeter_greet_method_descriptor(),
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(err_response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
     #[test(tokio::test)]
     async fn encode_greet_json() {
-        let pb_response = Bytes::from(pb::GreetingResponse {
-            greeting: "Hello Francesco".to_string(),
-        }.encode_to_vec());
+        let pb_response = Bytes::from(
+            pb::GreetingResponse {
+                greeting: "Hello Francesco".to_string(),
+            }
+            .encode_to_vec(),
+        );
 
-        let mut res = encode_response(pb_response, &greeter_greet_method_descriptor(), ConnectContentType::Json);
+        let mut res = encode_response(
+            pb_response,
+            &greeter_greet_method_descriptor(),
+            ConnectContentType::Json,
+        );
 
         let body = res.data().await.unwrap().unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
