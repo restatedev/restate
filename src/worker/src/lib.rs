@@ -31,7 +31,7 @@ type PartitionProcessor = partition::PartitionProcessor<
 type TargetedFsmCommand = Targeted<partition::Command>;
 
 type Network =
-    network::Network<TargetedFsmCommand, shuffle::NetworkInput, shuffle::NetworkOutput, (), ()>;
+    network::Network<TargetedFsmCommand, shuffle::NetworkInput, shuffle::NetworkOutput, (), (), ()>;
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
@@ -80,8 +80,9 @@ impl Worker {
         let storage = storage_rocksdb.build();
         let num_partition_processors = 10;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
+        let (ingress_tx, _ingress_rx) = mpsc::channel(channel_size);
 
-        let network = Network::new(raft_in_tx);
+        let network = Network::new(raft_in_tx, ingress_tx);
 
         let mut consensus = Consensus::new(
             ReceiverStream::new(raft_in_rx),

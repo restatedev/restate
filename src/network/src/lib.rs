@@ -44,7 +44,7 @@ enum NetworkCommand<ShuffleIn> {
 
 /// Component which is responsible for routing messages from different components.
 #[derive(Debug)]
-pub struct Network<ConMsg, ShuffleIn, ShuffleOut, IngressOut, PPOut> {
+pub struct Network<ConMsg, ShuffleIn, ShuffleOut, IngressOut, IngressIn, PPOut> {
     /// Receiver for messages from the consensus module
     consensus_in_rx: mpsc::Receiver<ConMsg>,
 
@@ -55,7 +55,9 @@ pub struct Network<ConMsg, ShuffleIn, ShuffleOut, IngressOut, PPOut> {
 
     shuffle_rx: mpsc::Receiver<ShuffleOut>,
 
-    ingress_rx: mpsc::Receiver<IngressOut>,
+    ingress_in_rx: mpsc::Receiver<IngressOut>,
+
+    _ingress_tx: mpsc::Sender<IngressIn>,
 
     partition_processor_rx: mpsc::Receiver<PPOut>,
 
@@ -65,19 +67,19 @@ pub struct Network<ConMsg, ShuffleIn, ShuffleOut, IngressOut, PPOut> {
     // used for creating the network handle
     network_command_tx: mpsc::UnboundedSender<NetworkCommand<ShuffleIn>>,
     shuffle_tx: mpsc::Sender<ShuffleOut>,
-    ingress_tx: mpsc::Sender<IngressOut>,
+    ingress_in_tx: mpsc::Sender<IngressOut>,
     partition_processor_tx: mpsc::Sender<PPOut>,
 }
 
-impl<ConMsg, ShuffleIn, ShuffleOut, IngressOut, PPOut>
-    Network<ConMsg, ShuffleIn, ShuffleOut, IngressOut, PPOut>
+impl<ConMsg, ShuffleIn, ShuffleOut, IngressOut, IngressIn, PPOut>
+    Network<ConMsg, ShuffleIn, ShuffleOut, IngressOut, IngressIn, PPOut>
 where
     ConMsg: Debug + Send + Sync + 'static,
 {
-    pub fn new(consensus_tx: mpsc::Sender<ConMsg>) -> Self {
+    pub fn new(consensus_tx: mpsc::Sender<ConMsg>, ingress_tx: mpsc::Sender<IngressIn>) -> Self {
         let (consensus_in_tx, consensus_in_rx) = mpsc::channel(64);
         let (shuffle_tx, shuffle_rx) = mpsc::channel(64);
-        let (ingress_tx, ingress_rx) = mpsc::channel(64);
+        let (ingress_in_tx, ingress_in_rx) = mpsc::channel(64);
         let (partition_processor_tx, partition_processor_rx) = mpsc::channel(64);
         let (network_command_tx, network_command_rx) = mpsc::unbounded_channel();
 
@@ -89,8 +91,9 @@ where
             network_command_tx,
             shuffle_rx,
             shuffle_tx,
-            ingress_rx,
-            ingress_tx,
+            ingress_in_rx,
+            _ingress_tx: ingress_tx,
+            ingress_in_tx,
             partition_processor_rx,
             partition_processor_tx,
         }
@@ -108,7 +111,7 @@ where
     }
 
     pub fn create_ingress_sender(&self) -> IngressSender<IngressOut> {
-        self.ingress_tx.clone()
+        self.ingress_in_tx.clone()
     }
 
     pub fn create_partition_processor_sender(&self) -> PartitionProcessorSender<PPOut> {
@@ -118,17 +121,17 @@ where
     pub async fn run(self, drain: drain::Watch) -> anyhow::Result<()> {
         let Network {
             mut consensus_in_rx,
-            consensus_tx: consensus_out,
+            consensus_tx,
             mut network_command_rx,
             mut shuffle_rx,
-            mut ingress_rx,
+            mut ingress_in_rx,
             mut partition_processor_rx,
             ..
         } = self;
 
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
-        tokio::pin!(consensus_out);
+        tokio::pin!(consensus_tx);
 
         let mut shuffles = HashMap::new();
 
@@ -136,7 +139,7 @@ where
             tokio::select! {
                 message = consensus_in_rx.recv() => {
                     let message = message.expect("Network owns the consensus sender, that's why the receiver will never be closed.");
-                    consensus_out.send(message).await?;
+                    consensus_tx.send(message).await?;
                 },
                 command = network_command_rx.recv() => {
                     let command = command.expect("Network owns the command sender, that's why the receiver will never be closed.");
@@ -154,7 +157,7 @@ where
 
                     todo!("Need to implement the shuffle logic.");
                 },
-                ingress_msg = ingress_rx.recv() => {
+                ingress_msg = ingress_in_rx.recv() => {
                     let _ingress_msg = ingress_msg.expect("Network owns the ingress sneder, that's why the receiver will never be closed.");
 
                     todo!("Need to implement the ingress logic.");
