@@ -114,7 +114,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     /// preload if the current segment has less than a half of the in memory threshold.
     #[inline]
     fn should_preload(&self, len: usize) -> bool {
-        len < self.in_memory_element_threshold.div_floor(2)
+        2 * len < self.in_memory_element_threshold
     }
 
     fn try_preload_next_segment(&mut self) {

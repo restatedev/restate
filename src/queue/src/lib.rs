@@ -1,5 +1,3 @@
-#![feature(int_roundings)]
-
 mod io;
 mod segmented_queue;
 
