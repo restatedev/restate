@@ -1,18 +1,21 @@
 mod connect_utils;
+mod tonic_adapter;
+mod tower_utils;
 
 use super::*;
 
 use std::future::Future;
 
-use bytes::{Buf, Bytes};
-use http::request::Parts;
+use bytes::Bytes;
 use http::{HeaderMap, HeaderValue, Request, Response};
 use http_body::combinators::UnsyncBoxBody;
 use http_body::Body;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
+use tonic::server::Grpc;
 use tonic::Status;
-use tower::BoxError;
+use tower::{BoxError, Layer, Service};
+use tower_utils::service_fn_once;
 use tracing::debug;
 
 pub(crate) enum Protocol {
@@ -48,8 +51,8 @@ impl Protocol {
         handler_fn: H,
     ) -> Result<Response<BoxBody>, BoxError>
     where
-        H: FnOnce(IngressRequest) -> F,
-        F: Future<Output = IngressResult>,
+        H: FnOnce(IngressRequest) -> F + Clone + Send + 'static,
+        F: Future<Output = IngressResult> + Send,
     {
         // Parse service_name and method_name
         let mut path_parts: Vec<&str> = req.uri().path().split('/').collect();
@@ -72,7 +75,61 @@ impl Protocol {
         let tracing_context = TraceContextPropagator::new()
             .extract(&opentelemetry_http::HeaderExtractor(req.headers()));
 
-        unimplemented!()
+        // Create Ingress request headers
+        let ingress_request_headers =
+            IngressRequestHeaders::new(service_name, method_name, tracing_context);
+
+        match self {
+            Protocol::Tonic => {
+                Self::handle_tonic_request(ingress_request_headers, req, handler_fn).await
+            }
+            Protocol::Connect => {
+                unimplemented!()
+            }
+        }
+    }
+
+    async fn handle_tonic_request<H, F>(
+        ingress_request_headers: IngressRequestHeaders,
+        req: Request<hyper::Body>,
+        handler_fn: H,
+    ) -> Result<Response<BoxBody>, BoxError>
+    where
+        // TODO Clone bound is not needed,
+        //  remove it once https://github.com/hyperium/tonic/issues/1290 is released
+        H: FnOnce(IngressRequest) -> F + Clone + Send + 'static,
+        F: Future<Output = IngressResult> + Send,
+    {
+        // Why FnOnce and service_fn_once are safe here?
+        //
+        // The reason is that the interface of Grpc::unary() is probably incorrect,
+        // because it gets the ownership of the service, rather than a &self mut borrow.
+        //
+        // There is no reason to get the ownership, as the service could be reused.
+        // There is also no reason for which Grpc::unary() should invoke twice Service::call() within
+        // its code (you can verify this point by looking inside the Grpc::unary() implementation).
+        //
+        // Hence we can safely provide a service which after the first Service::call()
+        // is consumed and it cannot be reused anymore.
+
+        let mut s = tonic_web::GrpcWebLayer::new().layer(service_fn_once(move |hyper_req| async {
+            Ok::<_, Status>(
+                Grpc::new(tonic_adapter::NoopCodec)
+                    .unary(
+                        tonic_adapter::TonicUnaryServiceAdapter::new(
+                            ingress_request_headers,
+                            handler_fn,
+                        ),
+                        hyper_req,
+                    )
+                    .await,
+            )
+        }));
+
+        s.call(req)
+            .await
+            .map_err(BoxError::from)
+            .map(|res| res.map(to_box_body))
     }
 }
 

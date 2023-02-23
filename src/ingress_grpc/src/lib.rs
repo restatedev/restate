@@ -12,13 +12,10 @@ pub use response_dispatcher::*;
 
 use bytes::Bytes;
 use common::types::ServiceInvocationId;
-use http_body::combinators::UnsyncBoxBody;
 use opentelemetry::Context;
-use prost_reflect::MethodDescriptor;
 use tonic::Status;
-use tower::BoxError;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IngressRequestHeaders {
     service_name: String,
     method_name: String,
