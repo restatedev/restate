@@ -1,12 +1,17 @@
 mod command;
+mod descriptors_registry;
 mod response_dispatcher;
 
 pub(crate) use command::*;
+
+pub use descriptors_registry::InMemoryMethodDescriptorRegistry;
+pub use descriptors_registry::MethodDescriptorRegistry;
 pub use response_dispatcher::*;
 
 use bytes::Bytes;
 use common::types::ServiceInvocationId;
 use opentelemetry::Context;
+use prost_reflect::MethodDescriptor;
 use tonic::Status;
 
 #[derive(Debug)]

@@ -39,6 +39,7 @@ tracing = { workspace = true }
 
 # Other
 drain = { workspace = true }
+arc-swap = { workspace = true }
 
 [dev-dependencies]
 hyper = { workspace = true, features = ["client"] }

@@ -736,6 +736,7 @@ dependencies = [
 name = "ingress_grpc"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "common",
  "drain",
