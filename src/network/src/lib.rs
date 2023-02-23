@@ -11,6 +11,8 @@ pub type ConsensusSender<T> = PollSender<T>;
 
 pub type ShuffleSender<T> = mpsc::Sender<T>;
 
+pub type IngressSender<T> = mpsc::Sender<T>;
+
 #[derive(Debug, thiserror::Error)]
 #[error("network is not running")]
 pub struct NetworkNotRunning;
@@ -41,7 +43,7 @@ enum NetworkCommand<ShuffleIn> {
 
 /// Component which is responsible for routing messages from different components.
 #[derive(Debug)]
-pub struct Network<ConMsg, ConOut, ShuffleIn, ShuffleOut> {
+pub struct Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut> {
     /// Receiver for messages from the consensus module
     consensus_in_rx: mpsc::Receiver<ConMsg>,
 
@@ -52,15 +54,19 @@ pub struct Network<ConMsg, ConOut, ShuffleIn, ShuffleOut> {
 
     shuffle_rx: mpsc::Receiver<ShuffleOut>,
 
+    ingress_rx: mpsc::Receiver<IngressOut>,
+
     // used for creating the ConsensusSender
     consensus_in_tx: mpsc::Sender<ConMsg>,
 
     // used for creating the network handle
     network_command_tx: mpsc::UnboundedSender<NetworkCommand<ShuffleIn>>,
     shuffle_tx: mpsc::Sender<ShuffleOut>,
+    ingress_tx: mpsc::Sender<IngressOut>,
 }
 
-impl<ConMsg, ConOut, ShuffleIn, ShuffleOut> Network<ConMsg, ConOut, ShuffleIn, ShuffleOut>
+impl<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut>
+    Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut>
 where
     ConMsg: Send + 'static,
     ConOut: Sink<ConMsg>,
@@ -69,6 +75,7 @@ where
     pub fn new(consensus_out: ConOut) -> Self {
         let (consensus_in_tx, consensus_in_rx) = mpsc::channel(64);
         let (shuffle_tx, shuffle_rx) = mpsc::channel(64);
+        let (ingress_tx, ingress_rx) = mpsc::channel(64);
         let (network_command_tx, network_command_rx) = mpsc::unbounded_channel();
 
         Self {
@@ -79,6 +86,8 @@ where
             network_command_tx,
             shuffle_rx,
             shuffle_tx,
+            ingress_rx,
+            ingress_tx,
         }
     }
 
@@ -93,12 +102,17 @@ where
         }
     }
 
+    pub fn create_ingress_sender(&self) -> IngressSender<IngressOut> {
+        self.ingress_tx.clone()
+    }
+
     pub async fn run(self, drain: drain::Watch) -> anyhow::Result<()> {
         let Network {
             mut consensus_in_rx,
             consensus_out,
             mut network_command_rx,
             mut shuffle_rx,
+            mut ingress_rx,
             ..
         } = self;
 
@@ -130,6 +144,11 @@ where
 
                     todo!("Need to implement the shuffle logic.");
                 },
+                ingress_msg = ingress_rx.recv() => {
+                    let _ingress_msg = ingress_msg.expect("Network owns the ingress sneder, that's why the receiver will never be closed.");
+
+                    todo!("Need to implement the ingress logic.");
+                }
                 _ = &mut shutdown => {
                     debug!("Shutting network down.");
                     break;

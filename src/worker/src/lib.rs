@@ -35,6 +35,7 @@ type Network = network::Network<
     PollSender<TargetedFsmCommand>,
     shuffle::NetworkInput,
     shuffle::NetworkOutput,
+    (),
 >;
 
 #[derive(Debug, clap::Parser)]
