@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use common::types::{IngressId, ServiceInvocation, ServiceInvocationFactory};
-use futures::future::{ok, BoxFuture};
+use futures::future::{BoxFuture, ok};
 use futures::FutureExt;
 use http::{HeaderMap, HeaderValue, Request, Response};
 use http_body::combinators::UnsyncBoxBody;
@@ -12,6 +12,7 @@ use hyper::Body as HyperBody;
 use tokio::sync::{mpsc, Semaphore};
 use tower::{BoxError, Service};
 use tracing::{debug, warn};
+use crate::protocol::Protocol;
 
 #[derive(Clone)]
 pub struct Handler<InvocationFactory, MethodRegistry> {
@@ -22,8 +23,6 @@ pub struct Handler<InvocationFactory, MethodRegistry> {
     invocation_sender: mpsc::Sender<ServiceInvocation>,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
-
-type BoxBody = UnsyncBoxBody<Bytes, BoxError>;
 
 // TODO When porting to hyper 1.0 https://github.com/restatedev/restate/issues/96
 //  replace this impl with hyper::Service impl
@@ -82,38 +81,6 @@ where
         // We hold the semaphore permit up to the end of the request processing
         drop(permit);
 
-        unimplemented!()
-    }
-}
-
-fn is_connect(headers: &HeaderMap<HeaderValue>) -> bool {
-    let content_type = headers.get(http::header::CONTENT_TYPE);
-    matches!(
-        content_type,
-        Some(ct) if ct.as_bytes().starts_with(b"application/json") || ct.as_bytes().starts_with(b"application/proto") || ct.as_bytes().starts_with(b"application/protobuf")
-    )
-}
-
-enum Protocol {
-    // Use tonic (gRPC or gRPC-Web)
-    Tonic,
-    Connect,
-}
-
-impl Protocol {
-    fn pick_protocol(headers: &HeaderMap<HeaderValue>) -> Self {
-        let content_type = headers.get(http::header::CONTENT_TYPE);
-        if matches!(
-            content_type,
-            Some(ct) if ct.as_bytes().starts_with(b"application/json") || ct.as_bytes().starts_with(b"application/proto") || ct.as_bytes().starts_with(b"application/protobuf")
-        ) {
-            Protocol::Connect
-        } else {
-            Protocol::Tonic
-        }
-    }
-
-    fn encode_status(&self, status: Status) -> Response<BoxBody> {
         unimplemented!()
     }
 }
