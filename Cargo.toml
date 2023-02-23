@@ -37,6 +37,7 @@ tokio = { version = "1.24", features = ["rt-multi-thread", "signal", "macros"] }
 tokio-stream = "0.1.11"
 tokio-util = "0.7.4"
 tonic = { version = "0.8.3", default-features = false }
+tonic-build = "0.8.4"
 opentelemetry_api = { version = "0.18" }
 opentelemetry = { version = "0.18" }
 opentelemetry-http = { version = "0.7" }
@@ -47,7 +48,6 @@ uuid = { version = "1.3.0", features = ["v7", "serde"] }
 config = { path = "src/config" }
 common = { path = "src/common" }
 consensus = { path = "src/consensus" }
-ingress_common = { path = "src/ingress_common" }
 ingress_grpc = { path = "src/ingress_grpc" }
 queue = { path = "src/queue"}
 invoker = { path = "src/invoker" }
