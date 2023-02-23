@@ -30,14 +30,8 @@ type PartitionProcessor = partition::PartitionProcessor<
 >;
 type TargetedFsmCommand = Targeted<partition::Command>;
 
-type Network = network::Network<
-    TargetedFsmCommand,
-    PollSender<TargetedFsmCommand>,
-    shuffle::NetworkInput,
-    shuffle::NetworkOutput,
-    (),
-    (),
->;
+type Network =
+    network::Network<TargetedFsmCommand, shuffle::NetworkInput, shuffle::NetworkOutput, (), ()>;
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
@@ -87,7 +81,7 @@ impl Worker {
         let num_partition_processors = 10;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
-        let network = Network::new(PollSender::new(raft_in_tx));
+        let network = Network::new(raft_in_tx);
 
         let mut consensus = Consensus::new(
             ReceiverStream::new(raft_in_rx),

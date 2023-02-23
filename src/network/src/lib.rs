@@ -1,5 +1,4 @@
 use common::types::PeerId;
-use futures::{Sink, SinkExt};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future;
@@ -45,12 +44,12 @@ enum NetworkCommand<ShuffleIn> {
 
 /// Component which is responsible for routing messages from different components.
 #[derive(Debug)]
-pub struct Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut, PPOut> {
+pub struct Network<ConMsg, ShuffleIn, ShuffleOut, IngressOut, PPOut> {
     /// Receiver for messages from the consensus module
     consensus_in_rx: mpsc::Receiver<ConMsg>,
 
     /// Sender for messages to the consensus module
-    consensus_out: ConOut,
+    consensus_tx: mpsc::Sender<ConMsg>,
 
     network_command_rx: mpsc::UnboundedReceiver<NetworkCommand<ShuffleIn>>,
 
@@ -70,14 +69,12 @@ pub struct Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut, PPOut> {
     partition_processor_tx: mpsc::Sender<PPOut>,
 }
 
-impl<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut, PPOut>
-    Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut, PPOut>
+impl<ConMsg, ShuffleIn, ShuffleOut, IngressOut, PPOut>
+    Network<ConMsg, ShuffleIn, ShuffleOut, IngressOut, PPOut>
 where
-    ConMsg: Send + 'static,
-    ConOut: Sink<ConMsg>,
-    ConOut::Error: std::error::Error + Send + Sync + Debug + 'static,
+    ConMsg: Debug + Send + Sync + 'static,
 {
-    pub fn new(consensus_out: ConOut) -> Self {
+    pub fn new(consensus_tx: mpsc::Sender<ConMsg>) -> Self {
         let (consensus_in_tx, consensus_in_rx) = mpsc::channel(64);
         let (shuffle_tx, shuffle_rx) = mpsc::channel(64);
         let (ingress_tx, ingress_rx) = mpsc::channel(64);
@@ -85,7 +82,7 @@ where
         let (network_command_tx, network_command_rx) = mpsc::unbounded_channel();
 
         Self {
-            consensus_out,
+            consensus_tx,
             consensus_in_rx,
             consensus_in_tx,
             network_command_rx,
@@ -121,7 +118,7 @@ where
     pub async fn run(self, drain: drain::Watch) -> anyhow::Result<()> {
         let Network {
             mut consensus_in_rx,
-            consensus_out,
+            consensus_tx: consensus_out,
             mut network_command_rx,
             mut shuffle_rx,
             mut ingress_rx,
