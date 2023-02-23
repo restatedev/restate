@@ -1,4 +1,4 @@
-mod connect_utils;
+mod connect_adapter;
 mod tonic_adapter;
 mod tower_utils;
 
@@ -12,12 +12,14 @@ use http_body::combinators::UnsyncBoxBody;
 use http_body::Body;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
-use prost_reflect::MethodDescriptor;
+use prost::Message;
+use prost_reflect::{DynamicMessage, MethodDescriptor};
 use tonic::server::Grpc;
 use tonic::Status;
 use tower::{BoxError, Layer, Service};
 use tower_utils::service_fn_once;
 use tracing::debug;
+use crate::protocol::connect_adapter::content_type::ConnectContentType;
 
 pub(crate) enum Protocol {
     // Use tonic (gRPC or gRPC-Web)
@@ -42,7 +44,7 @@ impl Protocol {
     pub(crate) fn encode_status(&self, status: Status) -> Response<BoxBody> {
         match self {
             Protocol::Tonic => status.to_http().map(to_box_body),
-            Protocol::Connect => connect_utils::status_response(status).map(to_box_body),
+            Protocol::Connect => connect_adapter::status::status_response(status).map(to_box_body),
         }
     }
 
@@ -71,7 +73,7 @@ impl Protocol {
                 Self::handle_tonic_request(ingress_request_headers, req, handler_fn).await
             }
             Protocol::Connect => {
-                unimplemented!()
+                Ok(Self::handle_connect_request(ingress_request_headers, descriptor, req, handler_fn).await)
             }
         }
     }
@@ -121,17 +123,34 @@ impl Protocol {
 
     async fn handle_connect_request<H, F>(
         ingress_request_headers: IngressRequestHeaders,
+        descriptor: MethodDescriptor,
         req: Request<hyper::Body>,
         handler_fn: H,
-    ) -> Result<Response<BoxBody>, BoxError>
+    ) -> Response<BoxBody>
     where
         H: FnOnce(IngressRequest) -> F + Send + 'static,
         F: Future<Output = IngressResult> + Send,
     {
-        unimplemented!()
+        let (content_type, request_message) = match connect_adapter::decode_request(req, &descriptor).await {
+            Ok(req) => req,
+            Err(error_res) => {
+                return error_res.map(to_box_body)
+            }
+        };
+
+        let ingress_request_body = Bytes::from(request_message.encode_to_vec());
+        let response = match handler_fn((ingress_request_headers, ingress_request_body)).await {
+            Ok(ingress_response_body) => ingress_response_body,
+            Err(status) => {
+                return connect_adapter::status::status_response(status).map(to_box_body)
+            }
+        };
+
+        connect_adapter::encode_response(response, &descriptor, content_type).map(to_box_body)
     }
 }
 
+// TODO use https://docs.rs/http-body-util/0.1.0-rc.2/http_body_util/enum.Either.html when released
 pub type BoxBody = UnsyncBoxBody<Bytes, BoxError>;
 
 fn to_box_body<B, BE>(body: B) -> UnsyncBoxBody<Bytes, BoxError>

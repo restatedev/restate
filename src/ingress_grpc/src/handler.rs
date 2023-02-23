@@ -34,7 +34,7 @@ impl<InvocationFactory, MethodRegistry> Service<Request<HyperBody>>
     for Handler<InvocationFactory, MethodRegistry>
 where
     InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
-    MethodRegistry: MethodDescriptorRegistry + Clone,
+    MethodRegistry: MethodDescriptorRegistry,
 {
     type Response = Response<BoxBody>;
     type Error = BoxError;
