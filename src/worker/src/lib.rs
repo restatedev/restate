@@ -36,6 +36,7 @@ type Network = network::Network<
     shuffle::NetworkInput,
     shuffle::NetworkOutput,
     (),
+    (),
 >;
 
 #[derive(Debug, clap::Parser)]

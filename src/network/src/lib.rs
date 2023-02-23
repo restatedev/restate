@@ -13,6 +13,8 @@ pub type ShuffleSender<T> = mpsc::Sender<T>;
 
 pub type IngressSender<T> = mpsc::Sender<T>;
 
+pub type PartitionProcessorSender<T> = mpsc::Sender<T>;
+
 #[derive(Debug, thiserror::Error)]
 #[error("network is not running")]
 pub struct NetworkNotRunning;
@@ -43,7 +45,7 @@ enum NetworkCommand<ShuffleIn> {
 
 /// Component which is responsible for routing messages from different components.
 #[derive(Debug)]
-pub struct Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut> {
+pub struct Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut, PPOut> {
     /// Receiver for messages from the consensus module
     consensus_in_rx: mpsc::Receiver<ConMsg>,
 
@@ -56,6 +58,8 @@ pub struct Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut> {
 
     ingress_rx: mpsc::Receiver<IngressOut>,
 
+    partition_processor_rx: mpsc::Receiver<PPOut>,
+
     // used for creating the ConsensusSender
     consensus_in_tx: mpsc::Sender<ConMsg>,
 
@@ -63,10 +67,11 @@ pub struct Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut> {
     network_command_tx: mpsc::UnboundedSender<NetworkCommand<ShuffleIn>>,
     shuffle_tx: mpsc::Sender<ShuffleOut>,
     ingress_tx: mpsc::Sender<IngressOut>,
+    partition_processor_tx: mpsc::Sender<PPOut>,
 }
 
-impl<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut>
-    Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut>
+impl<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut, PPOut>
+    Network<ConMsg, ConOut, ShuffleIn, ShuffleOut, IngressOut, PPOut>
 where
     ConMsg: Send + 'static,
     ConOut: Sink<ConMsg>,
@@ -76,6 +81,7 @@ where
         let (consensus_in_tx, consensus_in_rx) = mpsc::channel(64);
         let (shuffle_tx, shuffle_rx) = mpsc::channel(64);
         let (ingress_tx, ingress_rx) = mpsc::channel(64);
+        let (partition_processor_tx, partition_processor_rx) = mpsc::channel(64);
         let (network_command_tx, network_command_rx) = mpsc::unbounded_channel();
 
         Self {
@@ -88,6 +94,8 @@ where
             shuffle_tx,
             ingress_rx,
             ingress_tx,
+            partition_processor_rx,
+            partition_processor_tx,
         }
     }
 
@@ -106,6 +114,10 @@ where
         self.ingress_tx.clone()
     }
 
+    pub fn create_partition_processor_sender(&self) -> PartitionProcessorSender<PPOut> {
+        self.partition_processor_tx.clone()
+    }
+
     pub async fn run(self, drain: drain::Watch) -> anyhow::Result<()> {
         let Network {
             mut consensus_in_rx,
@@ -113,6 +125,7 @@ where
             mut network_command_rx,
             mut shuffle_rx,
             mut ingress_rx,
+            mut partition_processor_rx,
             ..
         } = self;
 
@@ -148,6 +161,11 @@ where
                     let _ingress_msg = ingress_msg.expect("Network owns the ingress sneder, that's why the receiver will never be closed.");
 
                     todo!("Need to implement the ingress logic.");
+                }
+                partition_processor_msg = partition_processor_rx.recv() => {
+                    let _partition_processor_msg = partition_processor_msg.expect("Network owns the partition processor sender, that's why the receiver will never be closed.");
+
+                    todo!("Need to implement the partition processor logic.");
                 }
                 _ = &mut shutdown => {
                     debug!("Shutting network down.");
