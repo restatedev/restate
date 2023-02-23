@@ -1,8 +1,8 @@
 mod command;
 mod descriptors_registry;
 mod handler;
-mod response_dispatcher;
 mod protocol;
+mod response_dispatcher;
 
 pub(crate) use command::*;
 
@@ -11,8 +11,8 @@ pub use descriptors_registry::MethodDescriptorRegistry;
 pub use response_dispatcher::*;
 
 use bytes::Bytes;
-use http_body::combinators::UnsyncBoxBody;
 use common::types::ServiceInvocationId;
+use http_body::combinators::UnsyncBoxBody;
 use opentelemetry::Context;
 use prost_reflect::MethodDescriptor;
 use tonic::Status;
@@ -39,8 +39,6 @@ pub type IngressRequest = (IngressRequestHeaders, Bytes);
 pub type IngressResponse = Bytes;
 pub type IngressError = Status;
 pub type IngressResult = Result<IngressResponse, IngressError>;
-
-type BoxBody = UnsyncBoxBody<Bytes, BoxError>;
 
 #[derive(Debug, Clone)]
 pub struct IngressResponseMessage {

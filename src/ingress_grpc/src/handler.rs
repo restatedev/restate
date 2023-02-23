@@ -1,10 +1,11 @@
+use super::protocol::{BoxBody, Protocol};
 use super::*;
 
 use std::sync::Arc;
 use std::task::Poll;
 
 use common::types::{IngressId, ServiceInvocation, ServiceInvocationFactory};
-use futures::future::{BoxFuture, ok};
+use futures::future::{ok, BoxFuture};
 use futures::FutureExt;
 use http::{HeaderMap, HeaderValue, Request, Response};
 use http_body::combinators::UnsyncBoxBody;
@@ -12,7 +13,6 @@ use hyper::Body as HyperBody;
 use tokio::sync::{mpsc, Semaphore};
 use tower::{BoxError, Service};
 use tracing::{debug, warn};
-use crate::protocol::Protocol;
 
 #[derive(Clone)]
 pub struct Handler<InvocationFactory, MethodRegistry> {

@@ -1,7 +1,11 @@
-use super::BoxBody;
+mod connect_utils;
 
+use bytes::{Buf, Bytes};
 use http::{HeaderMap, HeaderValue, Response};
+use http_body::combinators::UnsyncBoxBody;
+use http_body::Body;
 use tonic::Status;
+use tower::BoxError;
 
 pub(crate) enum Protocol {
     // Use tonic (gRPC or gRPC-Web)
@@ -24,6 +28,19 @@ impl Protocol {
     }
 
     pub(crate) fn encode_status(&self, status: Status) -> Response<BoxBody> {
-        unimplemented!()
+        match self {
+            Protocol::Tonic => status.to_http().map(to_box_body),
+            Protocol::Connect => connect_utils::status_response(status).map(to_box_body),
+        }
     }
+}
+
+pub type BoxBody = UnsyncBoxBody<Bytes, BoxError>;
+
+fn to_box_body<B, BE>(body: B) -> UnsyncBoxBody<Bytes, BoxError>
+where
+    BE: Into<BoxError> + 'static,
+    B: Body<Data = Bytes, Error = BE> + Sized + Send + 'static,
+{
+    body.map_err(Into::into).boxed_unsync()
 }
