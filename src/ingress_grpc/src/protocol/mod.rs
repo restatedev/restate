@@ -12,6 +12,7 @@ use http_body::combinators::UnsyncBoxBody;
 use http_body::Body;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
+use prost_reflect::MethodDescriptor;
 use tonic::server::Grpc;
 use tonic::Status;
 use tower::{BoxError, Layer, Service};
@@ -47,6 +48,9 @@ impl Protocol {
 
     pub(crate) async fn handle_request<H, F>(
         self,
+        service_name: String,
+        method_name: String,
+        descriptor: MethodDescriptor,
         req: Request<hyper::Body>,
         handler_fn: H,
     ) -> Result<Response<BoxBody>, BoxError>
@@ -54,23 +58,6 @@ impl Protocol {
         H: FnOnce(IngressRequest) -> F + Clone + Send + 'static,
         F: Future<Output = IngressResult> + Send,
     {
-        // Parse service_name and method_name
-        let mut path_parts: Vec<&str> = req.uri().path().split('/').collect();
-        if path_parts.len() != 3 {
-            // Let's immediately reply with a status code not found
-            debug!(
-                "Cannot parse the request path '{}' into a valid GRPC/Connect request path. \
-                Allowed format is '/Service-Name/Method-Name'",
-                req.uri().path()
-            );
-            return Ok(self.encode_status(Status::not_found(format!(
-                "Request path {} invalid",
-                req.uri().path()
-            ))));
-        }
-        let method_name = path_parts.remove(2).to_string();
-        let service_name = path_parts.remove(1).to_string();
-
         // Extract tracing context if any
         let tracing_context = TraceContextPropagator::new()
             .extract(&opentelemetry_http::HeaderExtractor(req.headers()));
@@ -130,6 +117,18 @@ impl Protocol {
             .await
             .map_err(BoxError::from)
             .map(|res| res.map(to_box_body))
+    }
+
+    async fn handle_connect_request<H, F>(
+        ingress_request_headers: IngressRequestHeaders,
+        req: Request<hyper::Body>,
+        handler_fn: H,
+    ) -> Result<Response<BoxBody>, BoxError>
+    where
+        H: FnOnce(IngressRequest) -> F + Send + 'static,
+        F: Future<Output = IngressResult> + Send,
+    {
+        unimplemented!()
     }
 }
 

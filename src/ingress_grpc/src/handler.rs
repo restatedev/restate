@@ -15,7 +15,7 @@ use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use tokio::sync::{mpsc, Semaphore};
 use tower::{BoxError, Service};
-use tracing::{info, info_span, trace, warn, Instrument};
+use tracing::{debug, info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[derive(Clone)]
@@ -62,6 +62,39 @@ where
             warn!("No available quota to process the request");
             return ok(protocol.encode_status(Status::resource_exhausted("Resource exhausted")))
                 .boxed();
+        };
+
+        // Parse service_name and method_name
+        let mut path_parts: Vec<&str> = req.uri().path().split('/').collect();
+        if path_parts.len() != 3 {
+            // Let's immediately reply with a status code not found
+            debug!(
+                "Cannot parse the request path '{}' into a valid GRPC/Connect request path. \
+                Allowed format is '/Service-Name/Method-Name'",
+                req.uri().path()
+            );
+            return ok(protocol.encode_status(Status::not_found(format!(
+                "Request path {} invalid",
+                req.uri().path()
+            ))))
+            .boxed();
+        }
+        let method_name = path_parts.remove(2).to_string();
+        let service_name = path_parts.remove(1).to_string();
+
+        // Find the service method descriptor
+        let descriptor = if let Some(desc) = self
+            .method_registry
+            .resolve_method_descriptor(&service_name, &method_name)
+        {
+            desc
+        } else {
+            debug!("{}/{} not found", service_name, method_name);
+            return ok(protocol.encode_status(Status::not_found(format!(
+                "{}/{} not found",
+                service_name, method_name
+            ))))
+            .boxed();
         };
 
         // Encapsulate in this closure the remaining part of the processing
@@ -136,7 +169,13 @@ where
             }.instrument(span)
         };
 
-        let result_fut = protocol.handle_request(req, ingress_request_handler);
+        let result_fut = protocol.handle_request(
+            service_name,
+            method_name,
+            descriptor,
+            req,
+            ingress_request_handler,
+        );
         async {
             let result = result_fut.await;
 
