@@ -1,7 +1,7 @@
 mod command;
 mod descriptors_registry;
-mod response_dispatcher;
 mod handler;
+mod response_dispatcher;
 
 pub(crate) use command::*;
 

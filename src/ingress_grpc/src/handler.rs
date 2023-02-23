@@ -1,15 +1,17 @@
-use std::sync::Arc;
 use super::*;
 
+use std::sync::Arc;
 use std::task::Poll;
 
-use futures::future::BoxFuture;
-use http::{Request, Response};
+use common::types::{IngressId, ServiceInvocation, ServiceInvocationFactory};
+use futures::future::{ok, BoxFuture};
+use futures::FutureExt;
+use http::{HeaderMap, HeaderValue, Request, Response};
 use http_body::combinators::UnsyncBoxBody;
+use hyper::Body as HyperBody;
 use tokio::sync::{mpsc, Semaphore};
 use tower::{BoxError, Service};
-use hyper::Body as HyperBody;
-use common::types::{IngressId, ServiceInvocation, ServiceInvocationFactory};
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct Handler<InvocationFactory, MethodRegistry> {
@@ -18,16 +20,18 @@ pub struct Handler<InvocationFactory, MethodRegistry> {
     method_registry: MethodRegistry,
     response_requester: IngressResponseRequester,
     invocation_sender: mpsc::Sender<ServiceInvocation>,
-    global_concurrency_semaphore: Arc<Semaphore>
+    global_concurrency_semaphore: Arc<Semaphore>,
 }
 
 type BoxBody = UnsyncBoxBody<Bytes, BoxError>;
 
 // TODO When porting to hyper 1.0 https://github.com/restatedev/restate/issues/96
 //  replace this impl with hyper::Service impl
-impl<InvocationFactory, MethodRegistry> Service<Request<HyperBody>> for Handler<InvocationFactory, MethodRegistry> where
+impl<InvocationFactory, MethodRegistry> Service<Request<HyperBody>>
+    for Handler<InvocationFactory, MethodRegistry>
+where
     InvocationFactory: ServiceInvocationFactory + Clone,
-    MethodRegistry: MethodDescriptorRegistry + Clone
+    MethodRegistry: MethodDescriptorRegistry + Clone,
 {
     type Response = Response<BoxBody>;
     type Error = BoxError;
@@ -40,6 +44,60 @@ impl<InvocationFactory, MethodRegistry> Service<Request<HyperBody>> for Handler<
 
     fn call(&mut self, req: Request<HyperBody>) -> Self::Future {
         // Don't depend on &mut self, as hyper::Service will replace this with an immutable borrow!
+
+        // Discover the protocol
+        let protocol = Protocol::pick_protocol(req.headers());
+
+        // Acquire the semaphore permit to check if we have available quota
+        let permit = if let Ok(p) = self
+            .global_concurrency_semaphore
+            .clone()
+            .try_acquire_owned()
+        {
+            p
+        } else {
+            warn!("No available quota to process the request");
+            return ok(protocol.encode_status(Status::resource_exhausted("Resource exhausted")))
+                .boxed();
+        };
+
+
+
+        // We hold the semaphore permit up to the end of the request processing
+        drop(permit);
+
+        unimplemented!()
+    }
+}
+
+fn is_connect(headers: &HeaderMap<HeaderValue>) -> bool {
+    let content_type = headers.get(http::header::CONTENT_TYPE);
+    matches!(
+        content_type,
+        Some(ct) if ct.as_bytes().starts_with(b"application/json") || ct.as_bytes().starts_with(b"application/proto") || ct.as_bytes().starts_with(b"application/protobuf")
+    )
+}
+
+enum Protocol {
+    // Use tonic (gRPC or gRPC-Web)
+    Tonic,
+    Connect,
+}
+
+impl Protocol {
+    fn pick_protocol(headers: &HeaderMap<HeaderValue>) -> Self {
+        let content_type = headers.get(http::header::CONTENT_TYPE);
+        if matches!(
+            content_type,
+            Some(ct) if ct.as_bytes().starts_with(b"application/json") || ct.as_bytes().starts_with(b"application/proto") || ct.as_bytes().starts_with(b"application/protobuf")
+        ) {
+            Protocol::Connect
+        } else {
+            Protocol::Tonic
+        }
+    }
+
+    fn encode_status(&self, status: Status) -> Response<BoxBody> {
         unimplemented!()
     }
 }
