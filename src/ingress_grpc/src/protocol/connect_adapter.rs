@@ -1,15 +1,13 @@
-use bytes::{Buf, Bytes};
+use bytes::Buf;
 use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use http::{Method, Request, Response, StatusCode};
 use http::request::Parts;
 use hyper::Body;
-use prost::DecodeError;
 use prost_reflect::{DynamicMessage, MethodDescriptor};
 use serde::Serialize;
 use tonic::{Code, Status};
 use tracing::warn;
 
-use crate::IngressRequest;
 use content_type::ConnectContentType;
 
 pub(super) async fn decode_request(request: Request<Body>, method_descriptor: &MethodDescriptor) -> Result<(ConnectContentType, DynamicMessage), Response<Body>> {
@@ -229,10 +227,6 @@ pub(super) mod content_type {
 pub(super) mod status {
     use super::*;
 
-    pub(super) fn not_found() -> Response<Body> {
-        code_response(Code::NotFound)
-    }
-
     pub(super) fn method_not_allowed() -> Response<Body> {
         http_code_response(StatusCode::METHOD_NOT_ALLOWED)
     }
@@ -343,5 +337,114 @@ pub(super) mod status {
             Code::Unavailable => "unavailable",
             Code::DataLoss => "data_loss",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use bytes::Bytes;
+    use http::StatusCode;
+    use http_body::Body;
+    use prost::Message;
+    use serde_json::json;
+    use test_utils::{assert_eq, test};
+    use crate::mocks::{greeter_greet_method_descriptor, pb};
+
+    #[test(tokio::test)]
+    async fn decode_greet_json() {
+        let (ct, request_payload) = decode_request(
+            Request::builder()
+                .uri("http://localhost/greeter.Greeter/Greet")
+                .method(Method::POST)
+                .header(CONTENT_TYPE, "application/json")
+                .body(json!({"person": "Francesco"}).to_string().into())
+                .unwrap(),
+            &greeter_greet_method_descriptor()
+        ).await.unwrap();
+
+        assert_eq!(
+            request_payload.transcode_to::<pb::GreetingRequest>().unwrap(),
+            pb::GreetingRequest {
+                person: "Francesco".to_string()
+            }
+        );
+        assert_eq!(ct, ConnectContentType::Json);
+    }
+
+    #[test(tokio::test)]
+    async fn decode_greet_protobuf() {
+        let (ct, request_payload) = decode_request(
+            Request::builder()
+                .uri("http://localhost/greeter.Greeter/Greet")
+                .method(Method::POST)
+                .header(CONTENT_TYPE, "application/protobuf")
+                .body(
+                    pb::GreetingRequest {
+                        person: "Francesco".to_string(),
+                    }
+                        .encode_to_vec()
+                        .into(),
+                )
+                .unwrap(),
+            &greeter_greet_method_descriptor()
+        ).await.unwrap();
+
+        assert_eq!(
+            request_payload.transcode_to::<pb::GreetingRequest>().unwrap(),
+            pb::GreetingRequest {
+                person: "Francesco".to_string()
+            }
+        );
+        assert_eq!(ct, ConnectContentType::Protobuf);
+    }
+
+    #[test(tokio::test)]
+    async fn decode_wrong_http_method() {
+        let err_response = decode_request(
+            Request::builder()
+                .uri("http://localhost/greeter.Greeter/Greet")
+                .method(Method::PUT)
+                .header(CONTENT_TYPE, "application/json")
+                .body(json!({"person": "Francesco"}).to_string().into())
+                .unwrap(),
+            &greeter_greet_method_descriptor()
+        ).await.unwrap_err();
+
+        assert_eq!(err_response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[test(tokio::test)]
+    async fn decode_unknown_content_type() {
+        let err_response = decode_request(
+            Request::builder()
+                .uri("http://localhost/greeter.Greeter/Greet")
+                .method(Method::POST)
+                .header(CONTENT_TYPE, "application/yaml")
+                .body("person: Francesco".to_string().into())
+                .unwrap(),
+            &greeter_greet_method_descriptor()
+        ).await.unwrap_err();
+
+        assert_eq!(err_response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[test(tokio::test)]
+    async fn encode_greet_json() {
+        let pb_response = Bytes::from(pb::GreetingResponse {
+            greeting: "Hello Francesco".to_string(),
+        }.encode_to_vec());
+
+        let mut res = encode_response(pb_response, &greeter_greet_method_descriptor(), ConnectContentType::Json);
+
+        let body = res.data().await.unwrap().unwrap();
+        let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            json_body.get("greeting").unwrap().as_str().unwrap(),
+            "Hello Francesco"
+        );
     }
 }

@@ -13,13 +13,11 @@ use http_body::Body;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use prost::Message;
-use prost_reflect::{DynamicMessage, MethodDescriptor};
+use prost_reflect::MethodDescriptor;
 use tonic::server::Grpc;
 use tonic::Status;
 use tower::{BoxError, Layer, Service};
 use tower_utils::service_fn_once;
-use tracing::debug;
-use crate::protocol::connect_adapter::content_type::ConnectContentType;
 
 pub(crate) enum Protocol {
     // Use tonic (gRPC or gRPC-Web)
@@ -159,4 +157,62 @@ where
     B: Body<Data = Bytes, Error = BE> + Sized + Send + 'static,
 {
     body.map_err(Into::into).boxed_unsync()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use futures::future::{ok, Ready};
+    use http::header::CONTENT_TYPE;
+    use http::{Method, Request, StatusCode};
+    use hyper::body::HttpBody;
+    use serde_json::json;
+    use test_utils::{assert_eq, test};
+    use crate::mocks::*;
+
+    fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<IngressResult> {
+        let person = pb::GreetingRequest::decode(ingress_req.1).unwrap().person;
+        ok(pb::GreetingResponse {
+            greeting: format!("Hello {person}"),
+        }
+            .encode_to_vec()
+            .into())
+    }
+
+    #[test(tokio::test)]
+    async fn handle_connect_request_works() {
+        let request =       Request::builder()
+            .uri("http://localhost/greeter.Greeter/Greet")
+            .method(Method::POST)
+            .header(CONTENT_TYPE, "application/json")
+            .body(
+                json!({
+                            "person": "Francesco"
+                        })
+                    .to_string()
+                    .into(),
+            )
+            .unwrap();
+
+        let mut res = Protocol::handle_connect_request(
+            IngressRequestHeaders::new(
+                "greeter.Greeter".to_string(),
+                "Greet".to_string(),
+                Context::default()
+            ),
+            greeter_greet_method_descriptor(),
+            request,
+            greeter_service_fn
+        ).await;
+
+        let body = res.data().await.unwrap().unwrap();
+        let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            json_body.get("greeting").unwrap().as_str().unwrap(),
+            "Hello Francesco"
+        );
+    }
 }
