@@ -125,6 +125,16 @@ pub(super) mod content_type {
     use prost_reflect::MessageDescriptor;
     use tower::BoxError;
 
+    const APPLICATION_JSON: &str = "application/json";
+    const APPLICATION_PROTO: &str = "application/proto";
+
+    // Clippy false positive, might be caused by Bytes contained within HeaderValue.
+    // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
+    #[allow(clippy::declare_interior_mutable_const)]
+    const APPLICATION_JSON_HEADER: HeaderValue = HeaderValue::from_static(APPLICATION_JSON);
+    #[allow(clippy::declare_interior_mutable_const)]
+    const APPLICATION_PROTO_HEADER: HeaderValue = HeaderValue::from_static(APPLICATION_PROTO);
+
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
     pub enum ConnectContentType {
         Protobuf,
@@ -133,10 +143,9 @@ pub(super) mod content_type {
 
     pub(super) fn resolve_content_type(content_type: &HeaderValue) -> Option<ConnectContentType> {
         if let Ok(ct) = content_type.to_str() {
-            return if ct.starts_with("application/json") {
+            return if ct.starts_with(APPLICATION_JSON) {
                 Some(ConnectContentType::Json)
-            } else if ct.starts_with("application/proto") || ct.starts_with("application/protobuf")
-            {
+            } else if ct.starts_with(APPLICATION_PROTO) {
                 Some(ConnectContentType::Protobuf)
             } else {
                 None
@@ -172,14 +181,13 @@ pub(super) mod content_type {
                 msg.serialize(&mut ser)?;
 
                 Ok((
-                    HeaderValue::from_static("application/json"),
+                    APPLICATION_JSON_HEADER,
                     ser.into_inner().into_inner().freeze().into(),
                 ))
             }
-            ConnectContentType::Protobuf => Ok((
-                HeaderValue::from_static("application/proto"),
-                msg.encode_to_vec().into(),
-            )),
+            ConnectContentType::Protobuf => {
+                Ok((APPLICATION_PROTO_HEADER, msg.encode_to_vec().into()))
+            }
         }
     }
 
