@@ -211,13 +211,12 @@ mod tests {
             .await
             .unwrap();
 
-        let res_future = tokio::spawn(async move {
-            client
-                .greet(pb::GreetingRequest {
-                    person: "Francesco".to_string(),
-                })
-                .await
-        });
+        let response = client
+            .greet(pb::GreetingRequest {
+                person: "Francesco".to_string(),
+            })
+            .await
+            .unwrap();
 
         let mut service_invocation = service_invocation_future.await.unwrap().unwrap();
         assert_eq!(
@@ -229,7 +228,7 @@ mod tests {
         assert_eq!(&greeting_req.person, "Francesco");
 
         // Read the http_response_future
-        let greeting_res = res_future.await.unwrap().unwrap().into_inner();
+        let greeting_res = response.into_inner();
         assert_eq!(greeting_res, expected_greeting_response);
 
         drain.drain().await;
