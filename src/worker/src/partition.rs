@@ -14,17 +14,9 @@ mod state_machine;
 mod storage;
 
 use crate::partition::effects::{Effects, Interpreter};
-use crate::partition::leadership::{ActuatorOutput, LeadershipState, TaskError};
+use crate::partition::leadership::{ActuatorOutput, LeadershipState};
 use crate::partition::storage::PartitionStorage;
 pub(crate) use state_machine::Command;
-
-#[derive(Debug, thiserror::Error)]
-enum ActuatorError {
-    #[error("task terminated unexpectedly")]
-    TerminatedTask,
-    #[error(transparent)]
-    FailedTask(#[from] TaskError),
-}
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<
@@ -125,14 +117,12 @@ where
         // The max number of effects should be 2 atm (e.g. RegisterTimer and AppendJournalEntry)
         let mut effects = Effects::with_capacity(2);
 
-        let mut leadership_state =
+        let (mut actuator_stream, mut leadership_state) =
             LeadershipState::follower(peer_id, partition_id, invoker_tx, network_handle);
 
         let mut partition_storage = PartitionStorage::new(partition_id, storage);
 
         loop {
-            let mut actuator_stream = leadership_state.actuator_stream();
-
             tokio::select! {
                 command = command_stream.next() => {
                     if let Some(command) = command {
@@ -151,11 +141,11 @@ where
                             }
                             consensus::Command::BecomeLeader(leader_epoch) => {
                                 info!(%peer_id, %partition_id, %leader_epoch, "Become leader.");
-                                leadership_state = leadership_state.become_leader(leader_epoch, partition_storage.clone()).await?;
+                                (actuator_stream, leadership_state) = leadership_state.become_leader(leader_epoch, partition_storage.clone()).await?;
                             }
                             consensus::Command::BecomeFollower => {
                                 info!(%peer_id, %partition_id, "Become follower.");
-                                leadership_state = leadership_state.become_follower().await?;
+                                (actuator_stream, leadership_state) = leadership_state.become_follower().await?;
                             },
                             consensus::Command::ApplySnapshot => {
                                 unimplemented!("Not supported yet.");
@@ -170,7 +160,10 @@ where
                 },
                 actuator_message = actuator_stream.next() => {
                     let actuator_message = actuator_message.ok_or(anyhow::anyhow!("actuator stream is closed"))?;
-                    Self::handle_actuator_message(actuator_message, &mut proposal_sink).await?;
+                    Self::propose_actuator_message(actuator_message, &mut proposal_sink).await;
+                },
+                task_result = leadership_state.run_tasks() => {
+                    Err(task_result)?
                 }
             }
         }
@@ -181,10 +174,10 @@ where
         Ok(())
     }
 
-    async fn handle_actuator_message(
+    async fn propose_actuator_message(
         actuator_message: ActuatorOutput,
         proposal_sink: &mut Pin<&mut ProposalSink>,
-    ) -> Result<(), ActuatorError> {
+    ) {
         match actuator_message {
             ActuatorOutput::Invoker(invoker_output) => {
                 // Err only if the consensus module is shutting down
@@ -196,14 +189,7 @@ where
                     .send(Command::OutboxTruncation(outbox_truncation.index()))
                     .await;
             }
-            ActuatorOutput::ShuffleTaskTermination { error } => {
-                return Err(error
-                    .map(Into::into)
-                    .unwrap_or(ActuatorError::TerminatedTask))
-            }
         };
-
-        Ok(())
     }
 }
 
