@@ -5,7 +5,10 @@ vulnerability = "deny"
 unmaintained = "warn"
 yanked = "deny"
 notice = "warn"
-ignore = []
+ignore = [
+    # Caused by atty which is pulled in by criterion
+    "RUSTSEC-2021-0145",
+]
 
 
 [licenses]
@@ -59,7 +62,11 @@ skip = [
     { name = "windows-sys" },
     { name = "hermit-abi" },
     # Clash between prost-reflect and tracing_instrumentation
-    { name = "ordered-float" }
+    { name = "ordered-float" },
+
+    # Clash between criterion clap dependency and our own
+    { name = "clap" },
+    { name = "clap_lex" },
 ]
 deny = [
     # Each entry the name of a crate and a version range. If version is

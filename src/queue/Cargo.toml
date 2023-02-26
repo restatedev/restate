@@ -16,3 +16,8 @@ bincode = "1.3"
 
 [dev-dependencies]
 tempfile = "*"
+criterion = { version = "0.4.0", features = ["async_tokio"] }
+
+[[bench]]
+name = "queue_benchmark"
+harness = false

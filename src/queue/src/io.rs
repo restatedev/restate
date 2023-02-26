@@ -55,8 +55,14 @@ pub(crate) async fn consume_segment_infallible<T: DeserializeOwned + Send + 'sta
         } else {
             // slow path: copy frame_len worth of bytes from the internal BufReader, and thus
             // force it to fill its internal buffer.
-            frame.clear();
-            frame.resize(frame_len, 0u8);
+
+            // make sure that our frame buffer is large enough to hold frame_len bytes
+            if frame.len() < frame_len {
+                // This will set the len of `frame` to `frame_len` by extending the existing
+                // vec with 0u8
+                frame.resize(frame_len, 0u8);
+            }
+
             reader
                 .read_exact(&mut frame[0..frame_len])
                 .await
@@ -64,7 +70,7 @@ pub(crate) async fn consume_segment_infallible<T: DeserializeOwned + Send + 'sta
 
             let value = DefaultOptions::new()
                 .with_varint_encoding()
-                .deserialize_from(Cursor::new(&frame))
+                .deserialize_from(Cursor::new(&frame[0..frame_len]))
                 .expect(READ_ERR_MSG);
             values.push_back(value);
         };
