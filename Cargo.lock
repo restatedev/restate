@@ -1195,9 +1195,11 @@ name = "network"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "common",
  "drain",
  "futures",
+ "pin-project",
  "thiserror",
  "tokio",
  "tokio-util",

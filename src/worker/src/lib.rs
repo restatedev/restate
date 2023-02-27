@@ -1,10 +1,10 @@
-use crate::partition::shuffle;
-use common::types::PeerId;
-use consensus::{Consensus, ProposalSender, Targeted};
+use common::types::{PeerId, PeerTarget};
+use consensus::{Consensus, ProposalSender};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use invoker::{EndpointMetadata, Invoker, UnboundedInvokerInputSender};
 use network::UnboundedNetworkHandle;
+use partition::shuffle;
 use partition::RocksDBJournalReader;
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashMap;
@@ -16,22 +16,21 @@ use tokio_util::sync::PollSender;
 use tracing::debug;
 use util::IdentitySender;
 
+mod ingress_integration;
+mod network_integration;
 mod partition;
 mod util;
 
 type ConsensusCommand = consensus::Command<partition::Command>;
+type ConsensusMsg = PeerTarget<partition::Command>;
 type PartitionProcessor = partition::PartitionProcessor<
     ReceiverStream<ConsensusCommand>,
     IdentitySender<partition::Command>,
     ProtobufRawEntryCodec,
     UnboundedInvokerInputSender,
-    UnboundedNetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
+    UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     RocksDBStorage,
 >;
-type TargetedFsmCommand = Targeted<partition::Command>;
-
-type Network =
-    network::Network<TargetedFsmCommand, shuffle::NetworkInput, shuffle::NetworkOutput, (), (), ()>;
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
@@ -53,11 +52,11 @@ pub struct Worker {
     consensus: Consensus<
         partition::Command,
         PollSender<ConsensusCommand>,
-        ReceiverStream<TargetedFsmCommand>,
-        PollSender<TargetedFsmCommand>,
+        ReceiverStream<ConsensusMsg>,
+        PollSender<ConsensusMsg>,
     >,
     processors: Vec<PartitionProcessor>,
-    network: Network,
+    network: network_integration::Network,
     invoker:
         Invoker<ProtobufRawEntryCodec, RocksDBJournalReader, HashMap<String, EndpointMetadata>>,
     _storage: RocksDBStorage,
@@ -82,7 +81,7 @@ impl Worker {
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
         let (ingress_tx, _ingress_rx) = mpsc::channel(channel_size);
 
-        let network = Network::new(raft_in_tx, ingress_tx);
+        let network = network_integration::Network::new(raft_in_tx, ingress_tx);
 
         let mut consensus = Consensus::new(
             ReceiverStream::new(raft_in_rx),
@@ -120,10 +119,10 @@ impl Worker {
 
     fn create_partition_processor(
         peer_id: PeerId,
-        proposal_sender: ProposalSender<TargetedFsmCommand>,
+        proposal_sender: ProposalSender<ConsensusMsg>,
         invoker_sender: UnboundedInvokerInputSender,
         storage: RocksDBStorage,
-        network_handle: UnboundedNetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
+        network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(

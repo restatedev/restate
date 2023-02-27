@@ -52,7 +52,7 @@ pub(crate) struct SendError(#[from] GenericError);
 impl<I, N> ActuatorMessageCollector<I, N>
 where
     I: InvokerInputSender,
-    N: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
+    N: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
     pub(super) async fn send(self) -> Result<LeadershipState<I, N>, SendError> {
         match self {
@@ -180,7 +180,7 @@ pub(super) enum LeadershipState<InvokerInputSender, NetworkHandle> {
 impl<InvokerInputSender, NetworkHandle> LeadershipState<InvokerInputSender, NetworkHandle>
 where
     InvokerInputSender: invoker::InvokerInputSender,
-    NetworkHandle: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
+    NetworkHandle: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
     pub(super) fn follower(
         peer_id: PeerId,

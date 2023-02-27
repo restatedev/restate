@@ -11,9 +11,11 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+bytes = { workspace = true }
 common = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
+pin-project = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

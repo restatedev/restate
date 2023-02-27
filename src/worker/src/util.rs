@@ -1,5 +1,5 @@
-use common::types::PeerId;
-use consensus::{ProposalSender, Targeted};
+use common::types::{PeerId, PeerTarget};
+use consensus::ProposalSender;
 use futures::Sink;
 use pin_project::pin_project;
 use std::pin::Pin;
@@ -11,17 +11,17 @@ use std::task::{Context, Poll};
 pub(super) struct IdentitySender<T> {
     id: PeerId,
     #[pin]
-    sender: ProposalSender<Targeted<T>>,
+    sender: ProposalSender<PeerTarget<T>>,
 }
 
 impl<T> IdentitySender<T> {
-    pub(super) fn new(id: PeerId, sender: ProposalSender<Targeted<T>>) -> Self {
+    pub(super) fn new(id: PeerId, sender: ProposalSender<PeerTarget<T>>) -> Self {
         Self { id, sender }
     }
 }
 
 impl<T: Send + 'static> Sink<T> for IdentitySender<T> {
-    type Error = <ProposalSender<Targeted<T>> as Sink<Targeted<T>>>::Error;
+    type Error = <ProposalSender<PeerTarget<T>> as Sink<PeerTarget<T>>>::Error;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.project().sender.poll_ready(cx)

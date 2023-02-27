@@ -37,7 +37,6 @@ pub(crate) enum Command {
     },
     #[allow(dead_code)]
     OutboxTruncation(u64),
-    #[allow(dead_code)]
     Invocation(ServiceInvocation),
     #[allow(dead_code)]
     Response(InvocationResponse),

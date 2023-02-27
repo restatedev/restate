@@ -1,6 +1,6 @@
 use crate::partition::effects::OutboxMessage;
 use crate::partition::shuffle::state_machine::StateMachine;
-use common::types::PeerId;
+use common::types::{AckKind, InvocationResponse, PeerId};
 use common::utils::GenericError;
 use futures::future::BoxFuture;
 use std::time::Duration;
@@ -37,15 +37,13 @@ impl OutboxTruncation {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub(crate) enum NetworkInput {
-    Acknowledge(u64),
-    Duplicate(u64),
-}
+pub(crate) struct ShuffleInput(pub(crate) AckKind);
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub(crate) enum NetworkOutput {
-    Message(OutboxMessage),
+pub(crate) enum ShuffleOutput {
+    PartitionProcessor(OutboxMessage),
+    Ingress(InvocationResponse),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,9 +69,9 @@ pub(super) struct Shuffle<OR> {
     outbox_reader: OR,
 
     // used to send messages to different partitions
-    network_tx: mpsc::Sender<NetworkOutput>,
+    network_tx: mpsc::Sender<ShuffleOutput>,
 
-    network_in_rx: mpsc::Receiver<NetworkInput>,
+    network_in_rx: mpsc::Receiver<ShuffleInput>,
 
     // used to tell partition processor about outbox truncations
     truncation_tx: mpsc::Sender<OutboxTruncation>,
@@ -81,7 +79,7 @@ pub(super) struct Shuffle<OR> {
     hint_rx: mpsc::Receiver<NewOutboxMessage>,
 
     // used to create the senders into the shuffle
-    network_in_tx: mpsc::Sender<NetworkInput>,
+    network_in_tx: mpsc::Sender<ShuffleInput>,
     hint_tx: mpsc::Sender<NewOutboxMessage>,
 }
 
@@ -92,7 +90,7 @@ where
     pub(super) fn new(
         peer_id: PeerId,
         outbox_reader: OR,
-        network_tx: mpsc::Sender<NetworkOutput>,
+        network_tx: mpsc::Sender<ShuffleOutput>,
         truncation_tx: mpsc::Sender<OutboxTruncation>,
     ) -> Self {
         let (network_in_tx, network_in_rx) = mpsc::channel(32);
@@ -114,7 +112,7 @@ where
         self.peer_id
     }
 
-    pub(super) fn create_network_sender(&self) -> NetworkSender<NetworkInput> {
+    pub(super) fn create_network_sender(&self) -> NetworkSender<ShuffleInput> {
         self.network_in_tx.clone()
     }
 
@@ -173,7 +171,8 @@ where
 
 mod state_machine {
     use crate::partition::effects::OutboxMessage;
-    use crate::partition::shuffle::{NetworkInput, NetworkOutput, NewOutboxMessage};
+    use crate::partition::shuffle::{NewOutboxMessage, ShuffleInput, ShuffleOutput};
+    use common::types::AckKind;
     use pin_project::pin_project;
     use std::future::Future;
     use std::marker::PhantomData;
@@ -207,8 +206,8 @@ mod state_machine {
     impl<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError>
         StateMachine<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError>
     where
-        SendFuture: Future<Output = Result<(), mpsc::error::SendError<NetworkOutput>>>,
-        SendOp: Fn(NetworkOutput) -> SendFuture,
+        SendFuture: Future<Output = Result<(), mpsc::error::SendError<ShuffleOutput>>>,
+        SendOp: Fn(ShuffleOutput) -> SendFuture,
         ReadError: std::error::Error + Send + Sync + 'static,
         ReadFuture: Future<Output = Result<Option<(u64, OutboxMessage)>, ReadError>>,
         ReadOp: Fn(u64) -> ReadFuture,
@@ -251,7 +250,7 @@ mod state_machine {
                             *this.current_sequence_number = seq_number;
 
                             let send_future =
-                                (this.send_operation)(NetworkOutput::Message(message));
+                                (this.send_operation)(ShuffleOutput::PartitionProcessor(message));
                             this.state.set(State::Sending(send_future));
                         } else {
                             let reading_future =
@@ -266,7 +265,7 @@ mod state_machine {
                             *this.current_sequence_number = seq_number;
 
                             let send_future =
-                                (this.send_operation)(NetworkOutput::Message(message));
+                                (this.send_operation)(ShuffleOutput::PartitionProcessor(message));
 
                             this.state.set(State::Sending(send_future));
                         } else {
@@ -298,10 +297,10 @@ mod state_machine {
 
         pub(super) fn on_network_input(
             self: Pin<&mut Self>,
-            network_input: NetworkInput,
+            network_input: ShuffleInput,
         ) -> Option<u64> {
-            match network_input {
-                NetworkInput::Acknowledge(seq_number) => {
+            match network_input.0 {
+                AckKind::Acknowledge(seq_number) => {
                     if seq_number >= self.current_sequence_number {
                         trace!("Received acknowledgement for sequence number {seq_number}.");
                         self.read_next_message(seq_number + 1);
@@ -310,7 +309,7 @@ mod state_machine {
                         None
                     }
                 }
-                NetworkInput::Duplicate(seq_number) => {
+                AckKind::Duplicate(seq_number) => {
                     if seq_number >= self.current_sequence_number {
                         trace!("Message with sequence number {seq_number} is a duplicate.");
                         self.read_next_message(seq_number + 1);

@@ -165,3 +165,12 @@ impl SpanRelation {
         }
     }
 }
+
+/// Wrapper that extends a message with its target peer to which the message should be sent.
+pub type PeerTarget<Msg> = (PeerId, Msg);
+
+#[derive(Debug, Clone, Copy)]
+pub enum AckKind {
+    Acknowledge(u64),
+    Duplicate(u64),
+}

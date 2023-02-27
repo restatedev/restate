@@ -1,4 +1,4 @@
-use common::types::{LeaderEpoch, PeerId};
+use common::types::{LeaderEpoch, PeerId, PeerTarget};
 use futures::{SinkExt, Stream, StreamExt};
 use futures_sink::Sink;
 use std::collections::HashMap;
@@ -20,9 +20,6 @@ pub enum Command<T> {
 
 pub type ProposalSender<T> = PollSender<T>;
 
-/// Wrapper that extends a message with its target peer to which the message should be sent.
-pub type Targeted<Msg> = (PeerId, Msg);
-
 /// Component which is responsible for running the consensus algorithm for multiple replicated
 /// state machines. Consensus replicates messages of type `Cmd`.
 #[derive(Debug)]
@@ -31,7 +28,7 @@ pub struct Consensus<Cmd, SmSink, RaftIn, RaftOut> {
     state_machines: HashMap<PeerId, SmSink>,
 
     /// Receiver of proposals from all associated state machines
-    proposal_rx: mpsc::Receiver<Targeted<Cmd>>,
+    proposal_rx: mpsc::Receiver<PeerTarget<Cmd>>,
 
     /// Receiver of incoming raft messages
     raft_in: RaftIn,
@@ -40,7 +37,7 @@ pub struct Consensus<Cmd, SmSink, RaftIn, RaftOut> {
     _raft_out: RaftOut,
 
     // used to create the ProposalSenders
-    proposal_tx: mpsc::Sender<Targeted<Cmd>>,
+    proposal_tx: mpsc::Sender<PeerTarget<Cmd>>,
 }
 
 impl<Cmd, SmSink, RaftIn, RaftOut> Consensus<Cmd, SmSink, RaftIn, RaftOut>
@@ -48,8 +45,8 @@ where
     Cmd: Send + Debug + 'static,
     SmSink: Sink<Command<Cmd>> + Unpin,
     SmSink::Error: std::error::Error + Send + Sync + 'static,
-    RaftIn: Stream<Item = Targeted<Cmd>>,
-    RaftOut: Sink<Targeted<Cmd>>,
+    RaftIn: Stream<Item = PeerTarget<Cmd>>,
+    RaftOut: Sink<PeerTarget<Cmd>>,
 {
     pub fn new(raft_in: RaftIn, raft_out: RaftOut) -> Self {
         let (proposal_tx, proposal_rx) = mpsc::channel(64);
@@ -63,7 +60,7 @@ where
         }
     }
 
-    pub fn create_proposal_sender(&self) -> ProposalSender<Targeted<Cmd>> {
+    pub fn create_proposal_sender(&self) -> ProposalSender<PeerTarget<Cmd>> {
         PollSender::new(self.proposal_tx.clone())
     }
 

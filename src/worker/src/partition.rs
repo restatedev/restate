@@ -1,4 +1,4 @@
-use common::types::{EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
+use common::types::{AckKind, EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
 use futures::{stream, Sink, SinkExt, Stream, StreamExt};
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -16,6 +16,7 @@ mod storage;
 use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::{ActuatorOutput, LeadershipState};
 use crate::partition::storage::PartitionStorage;
+pub(crate) use effects::OutboxMessage;
 pub(crate) use state_machine::Command;
 
 #[derive(Debug)]
@@ -47,6 +48,22 @@ pub(super) struct PartitionProcessor<
 #[derive(Debug, Clone)]
 pub(super) struct RocksDBJournalReader;
 
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(super) enum MessageAck {
+    Shuffle(ShuffleMessageAck),
+    Ingress(IngressMessageAck),
+}
+
+#[derive(Debug)]
+pub(super) struct ShuffleMessageAck {
+    pub(crate) shuffle_target: PeerId,
+    pub(crate) kind: AckKind,
+}
+
+#[derive(Debug)]
+pub(super) struct IngressMessageAck(pub(crate) AckKind);
+
 impl invoker::JournalReader for RocksDBJournalReader {
     type JournalStream = stream::Empty<journal::raw::RawEntry>;
     type Error = Infallible;
@@ -74,7 +91,7 @@ where
     ProposalSink: Sink<Command>,
     RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
-    NetworkHandle: network::NetworkHandle<shuffle::NetworkInput, shuffle::NetworkOutput>,
+    NetworkHandle: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     Storage: storage_api::Storage + Clone + Send + Sync + 'static,
 {
     pub(super) fn new(
