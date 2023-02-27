@@ -62,6 +62,12 @@ fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeade
                 .try_into()
                 .expect("Protocol messages can't be larger than u32"),
         ),
+        ProtocolMessage::Suspension(m) => MessageHeader::new(
+            MessageType::Suspension,
+            m.encoded_len()
+                .try_into()
+                .expect("Protocol messages can't be larger than u32"),
+        ),
         ProtocolMessage::UnparsedEntry(entry) => match entry.header.is_completed() {
             Some(completed_flag) => MessageHeader::new_completable_entry(
                 raw_header_to_message_type(&entry.header),
@@ -80,6 +86,7 @@ fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost:
     match msg {
         ProtocolMessage::Start(m) => m.encode(buf),
         ProtocolMessage::Completion(m) => m.encode(buf),
+        ProtocolMessage::Suspension(m) => m.encode(buf),
         ProtocolMessage::UnparsedEntry(entry) => {
             buf.put(entry.entry.clone());
             Ok(())
@@ -170,6 +177,7 @@ fn decode_protocol_message(
     Ok(match header.message_type() {
         MessageType::Start => ProtocolMessage::Start(pb::StartMessage::decode(buf)?),
         MessageType::Completion => ProtocolMessage::Completion(pb::CompletionMessage::decode(buf)?),
+        MessageType::Suspension => ProtocolMessage::Suspension(pb::SuspensionMessage::decode(buf)?),
         _ => ProtocolMessage::UnparsedEntry(RawEntry::new(
             entry_to_raw_header(header),
             // NOTE: This is a no-op copy if the Buf is instance of Bytes.
@@ -184,13 +192,14 @@ fn entry_to_raw_header(message_header: &MessageHeader) -> RawEntryHeader {
     debug_assert!(
         !matches!(
             message_header.message_type(),
-            MessageType::Start | MessageType::Completion
+            MessageType::Start | MessageType::Completion | MessageType::Suspension
         ),
         "Message is not an entry type. This is a Restate bug. Please contact the developers."
     );
     match message_header.message_type() {
         MessageType::Start => unreachable!(),
         MessageType::Completion => unreachable!(),
+        MessageType::Suspension => unreachable!(),
         MessageType::PollInputStreamEntry => RawEntryHeader::PollInputStream {
             is_completed: message_header
                 .completed()

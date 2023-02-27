@@ -124,8 +124,6 @@ pub(crate) struct InvocationTask<JR> {
 enum TerminalLoopState<T> {
     Continue(T),
     Closed,
-    // TODO https://github.com/restatedev/restate/issues/97
-    #[allow(dead_code)]
     Suspended(HashSet<EntryIndex>),
     Failed(InvocationTaskError),
 }
@@ -398,29 +396,32 @@ where
         Ok(())
     }
 
-    fn handle_read(&mut self, buf: Bytes) -> Result<(), InvocationTaskError> {
+    fn handle_read(&mut self, buf: Bytes) -> TerminalLoopState<()> {
         self.decoder.push(buf);
 
-        while let Some((frame_header, frame)) = self.decoder.consume_next()? {
-            self.handle_message(frame_header, frame)?;
+        while let Some((frame_header, frame)) = shortcircuit!(self.decoder.consume_next()) {
+            shortcircuit!(self.handle_message(frame_header, frame));
         }
 
-        Ok(())
+        TerminalLoopState::Continue(())
     }
 
     fn handle_message(
         &mut self,
         mh: MessageHeader,
         message: ProtocolMessage,
-    ) -> Result<(), InvocationTaskError> {
+    ) -> TerminalLoopState<()> {
         trace!(restate.protocol.message_header = ?mh, restate.protocol.message = ?message, "Received message");
         match message {
-            ProtocolMessage::Start(_) => {
-                Err(InvocationTaskError::UnexpectedMessage(MessageType::Start))
-            }
-            ProtocolMessage::Completion(_) => Err(InvocationTaskError::UnexpectedMessage(
-                MessageType::Completion,
-            )),
+            ProtocolMessage::Start(_) => TerminalLoopState::Failed(
+                InvocationTaskError::UnexpectedMessage(MessageType::Start),
+            ),
+            ProtocolMessage::Completion(_) => TerminalLoopState::Failed(
+                InvocationTaskError::UnexpectedMessage(MessageType::Completion),
+            ),
+            ProtocolMessage::Suspension(suspension) => TerminalLoopState::Suspended(
+                HashSet::from_iter(suspension.entry_indexes.into_iter()),
+            ),
             ProtocolMessage::UnparsedEntry(raw_entry) => {
                 let _ = self.invoker_tx.send(InvocationTaskOutput {
                     partition: self.partition,
@@ -431,7 +432,7 @@ where
                     },
                 });
                 self.next_journal_index += 1;
-                Ok(())
+                TerminalLoopState::Continue(())
             }
         }
     }

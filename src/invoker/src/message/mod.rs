@@ -15,6 +15,7 @@ pub enum ProtocolMessage {
     // Core
     Start(pb::StartMessage),
     Completion(pb::CompletionMessage),
+    Suspension(pb::SuspensionMessage),
 
     // Entries are not parsed at this point
     UnparsedEntry(RawEntry),
@@ -29,9 +30,6 @@ impl ProtocolMessage {
         ProtocolMessage::Start(pb::StartMessage {
             invocation_id,
             instance_key,
-
-            // TODO https://github.com/restatedev/service-protocol/issues/10
-            known_service_version: 0,
             known_entries,
         })
     }

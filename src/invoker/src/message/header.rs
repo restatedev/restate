@@ -18,6 +18,7 @@ pub enum MessageKind {
 pub enum MessageType {
     Start,
     Completion,
+    Suspension,
     PollInputStreamEntry,
     OutputStreamEntry,
     GetStateEntry,
@@ -36,6 +37,7 @@ impl MessageType {
         match self {
             MessageType::Start => MessageKind::Core,
             MessageType::Completion => MessageKind::Core,
+            MessageType::Suspension => MessageKind::Core,
             MessageType::PollInputStreamEntry => MessageKind::IO,
             MessageType::OutputStreamEntry => MessageKind::IO,
             MessageType::GetStateEntry => MessageKind::State,
@@ -72,6 +74,7 @@ impl MessageType {
 
 const START_MESSAGE_TYPE: u16 = 0x0000;
 const COMPLETION_MESSAGE_TYPE: u16 = 0x0001;
+const SUSPENSION_MESSAGE_TYPE: u16 = 0x0002;
 const POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE: u16 = 0x0400;
 const OUTPUT_STREAM_ENTRY_MESSAGE_TYPE: u16 = 0x0401;
 const GET_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0800;
@@ -88,6 +91,7 @@ impl From<MessageType> for MessageTypeId {
         match mt {
             MessageType::Start => START_MESSAGE_TYPE,
             MessageType::Completion => COMPLETION_MESSAGE_TYPE,
+            MessageType::Suspension => SUSPENSION_MESSAGE_TYPE,
             MessageType::PollInputStreamEntry => POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE,
             MessageType::OutputStreamEntry => OUTPUT_STREAM_ENTRY_MESSAGE_TYPE,
             MessageType::GetStateEntry => GET_STATE_ENTRY_MESSAGE_TYPE,
@@ -114,6 +118,7 @@ impl TryFrom<MessageTypeId> for MessageType {
         match value {
             START_MESSAGE_TYPE => Ok(MessageType::Start),
             COMPLETION_MESSAGE_TYPE => Ok(MessageType::Completion),
+            SUSPENSION_MESSAGE_TYPE => Ok(MessageType::Suspension),
             POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE => Ok(MessageType::PollInputStreamEntry),
             OUTPUT_STREAM_ENTRY_MESSAGE_TYPE => Ok(MessageType::OutputStreamEntry),
             GET_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetStateEntry),
