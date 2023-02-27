@@ -454,8 +454,12 @@ where
                         .as_str(),
                     &journal_metadata.method,
                 ],
-            ))
-            .version(http::Version::HTTP_2);
+            ));
+
+        // In case it's bidi stream, force HTTP/2
+        if self.endpoint_metadata.protocol_type == ProtocolType::BidiStream {
+            http_request_builder = http_request_builder.version(http::Version::HTTP_2);
+        }
 
         // Inject OpenTelemetry context
         TraceContextPropagator::new().inject_context(
