@@ -1,5 +1,5 @@
 use super::pb;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use journal::raw::*;
 use journal::{CompletionResult, Entry};
 use prost::Message;
@@ -26,6 +26,15 @@ macro_rules! match_decode {
 pub struct ProtobufRawEntryCodec;
 
 impl RawEntryCodec for ProtobufRawEntryCodec {
+    fn serialize_as_unary_input_entry(value: Bytes) -> RawEntry {
+        RawEntry::new(
+            RawEntryHeader::PollInputStream { is_completed: true },
+            pb::PollInputStreamEntryMessage { value }
+                .encode_to_vec()
+                .into(),
+        )
+    }
+
     fn deserialize(entry: &RawEntry) -> Result<Entry, RawEntryCodecError> {
         // We clone the entry Bytes here to ensure that the generated Message::decode
         // invocation reuses the same underlying byte array.
