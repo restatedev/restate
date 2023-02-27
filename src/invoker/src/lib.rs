@@ -4,6 +4,8 @@ use std::future::Future;
 
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
+use hyper::header::HeaderName;
+use hyper::http::HeaderValue;
 use hyper::Uri;
 use journal::raw::RawEntry;
 use journal::Completion;
@@ -25,17 +27,28 @@ pub enum ProtocolType {
     BidiStream,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DeliveryOptions {
+    additional_headers: HashMap<HeaderName, HeaderValue>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EndpointMetadata {
     address: Uri,
     protocol_type: ProtocolType,
+    delivery_options: DeliveryOptions,
 }
 
 impl EndpointMetadata {
-    pub fn new(address: Uri, protocol_type: ProtocolType) -> Self {
+    pub fn new(
+        address: Uri,
+        protocol_type: ProtocolType,
+        delivery_options: DeliveryOptions,
+    ) -> Self {
         Self {
             address,
             protocol_type,
+            delivery_options,
         }
     }
 }

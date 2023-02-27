@@ -7,7 +7,8 @@ use bytes::Bytes;
 use common::types::ServiceInvocationId;
 use hyper::Uri;
 use invoker::{
-    EndpointMetadata, Invoker, Kind, OutputEffect, ProtocolType, UnboundedInvokerInputSender,
+    DeliveryOptions, EndpointMetadata, Invoker, Kind, OutputEffect, ProtocolType,
+    UnboundedInvokerInputSender,
 };
 use journal::raw::{RawEntryCodec, RawEntryHeader};
 use journal::{
@@ -132,6 +133,7 @@ async fn bidi_stream() {
                 EndpointMetadata::new(
                     Uri::from_static("http://localhost:8080"),
                     ProtocolType::BidiStream,
+                    DeliveryOptions::default(),
                 ),
             )]
             .into(),
