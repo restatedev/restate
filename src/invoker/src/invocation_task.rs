@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
@@ -25,7 +26,7 @@ use tracing::trace;
 use super::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
-use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader, ProtocolType};
+use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -85,13 +86,19 @@ pub(crate) struct InvocationTaskOutput {
 }
 
 pub(crate) enum InvocationTaskOutputInner {
-    Result {
-        result: Result<(), InvocationTaskError>,
-    },
     NewEntry {
         entry_index: EntryIndex,
         raw_entry: RawEntry,
     },
+    Closed,
+    Suspended(HashSet<EntryIndex>),
+    Failed(InvocationTaskError),
+}
+
+impl From<InvocationTaskError> for InvocationTaskOutputInner {
+    fn from(value: InvocationTaskError) -> Self {
+        InvocationTaskOutputInner::Failed(value)
+    }
 }
 
 /// Represents an open invocation stream
@@ -114,22 +121,44 @@ pub(crate) struct InvocationTask<JR> {
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
-/// Not needed if we had Try stable. See [`InvocationTask::run_internal`]
 enum TerminalLoopState<T> {
     Continue(T),
-    End,
+    Closed,
+    // TODO https://github.com/restatedev/restate/issues/97
+    #[allow(dead_code)]
+    Suspended(HashSet<EntryIndex>),
+    Failed(InvocationTaskError),
 }
 
-impl<T> TryFrom<hyper::Error> for TerminalLoopState<T> {
-    type Error = InvocationTaskError;
-
-    fn try_from(err: hyper::Error) -> Result<Self, Self::Error> {
-        if h2_reason(&err) == h2::Reason::NO_ERROR {
-            Ok(TerminalLoopState::End)
-        } else {
-            Err(InvocationTaskError::Network(err))
+impl<T, E: Into<InvocationTaskError>> From<Result<T, E>> for TerminalLoopState<T> {
+    fn from(value: Result<T, E>) -> Self {
+        match value {
+            Ok(v) => TerminalLoopState::Continue(v),
+            Err(e) => TerminalLoopState::Failed(e.into()),
         }
     }
+}
+
+impl<T> From<hyper::Error> for TerminalLoopState<T> {
+    fn from(err: hyper::Error) -> Self {
+        if h2_reason(&err) == h2::Reason::NO_ERROR {
+            TerminalLoopState::Closed
+        } else {
+            TerminalLoopState::Failed(InvocationTaskError::Network(err))
+        }
+    }
+}
+
+/// Could be replaced by ? operator if we had Try stable. See [`InvocationTask::run_internal`]
+macro_rules! shortcircuit {
+    ($value:expr) => {
+        match TerminalLoopState::from($value) {
+            TerminalLoopState::Continue(v) => v,
+            TerminalLoopState::Closed => return TerminalLoopState::Closed,
+            TerminalLoopState::Suspended(v) => return TerminalLoopState::Suspended(v),
+            TerminalLoopState::Failed(e) => return TerminalLoopState::Failed(e),
+        }
+    };
 }
 
 impl<JR, JS> InvocationTask<JR>
@@ -146,10 +175,6 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
     ) -> Self {
-        if endpoint_metadata.protocol_type == ProtocolType::RequestResponse {
-            // TODO https://github.com/restatedev/restate/issues/83
-            unimplemented!("Request response is not implemented yet");
-        }
         Self {
             partition,
             service_invocation_id: sid,
@@ -167,25 +192,30 @@ where
     #[tracing::instrument(name = "run", level = "trace", skip_all, fields(restate.sid = %self.service_invocation_id))]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
         let result = self.run_internal(input_journal).await;
+        let inner = match result {
+            TerminalLoopState::Continue(_) => {
+                unreachable!("This is not supposed to happen")
+            }
+            TerminalLoopState::Closed => InvocationTaskOutputInner::Closed,
+            TerminalLoopState::Suspended(v) => InvocationTaskOutputInner::Suspended(v),
+            TerminalLoopState::Failed(e) => InvocationTaskOutputInner::Failed(e),
+        };
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             service_invocation_id: self.service_invocation_id,
-            inner: InvocationTaskOutputInner::Result { result },
+            inner,
         });
     }
 
-    async fn run_internal(
-        &mut self,
-        input_journal: InvokeInputJournal,
-    ) -> Result<(), InvocationTaskError> {
+    async fn run_internal(&mut self, input_journal: InvokeInputJournal) -> TerminalLoopState<()> {
         // Resolve journal and its metadata
         let (journal_metadata, journal_stream) = match input_journal {
             InvokeInputJournal::NoCachedJournal => {
-                let (journal_meta, journal_stream) = self
+                let (journal_meta, journal_stream) = shortcircuit!(self
                     .journal_reader
                     .read_journal(&self.service_invocation_id)
                     .await
-                    .map_err(|e| InvocationTaskError::JournalReader(Box::new(e)))?;
+                    .map_err(|e| InvocationTaskError::JournalReader(Box::new(e))));
                 (journal_meta, future::Either::Left(journal_stream))
             }
             InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
@@ -199,24 +229,21 @@ where
 
         // Prepare the request and send start message
         let (mut http_stream_tx, http_request) = self.prepare_request(&journal_metadata);
-        self.write_start(&mut http_stream_tx, &journal_metadata)
-            .await?;
+        shortcircuit!(
+            self.write_start(&mut http_stream_tx, &journal_metadata)
+                .await
+        );
 
         // Start the request
-        // TODO this could be much nicer to implement if we had the try operator
-        //  https://github.com/rust-lang/rust/issues/84277.
-        let mut http_stream_rx = match self
-            .wait_response_and_replay_end_loop(
+        let mut http_stream_rx = shortcircuit!(
+            self.wait_response_and_replay_end_loop(
                 &mut http_stream_tx,
                 client,
                 http_request,
                 journal_stream,
             )
-            .await?
-        {
-            TerminalLoopState::Continue(b) => b,
-            TerminalLoopState::End => return Ok(()),
-        };
+            .await
+        );
 
         // Check all the entries have been replayed
         debug_assert_eq!(self.next_journal_index, journal_metadata.journal_size);
@@ -224,15 +251,10 @@ where
         // If we have the invoker_rx, we can use the bidi stream loop,
         // which both reads the invoker_rx and the http_stream_rx
         if let Some(invoker_rx) = self.invoker_rx.take() {
-            // TODO this could be much nicer to implement if we had the try operator
-            //  https://github.com/rust-lang/rust/issues/84277.
-            match self
-                .bidi_stream_loop(&mut http_stream_tx, invoker_rx, &mut http_stream_rx)
-                .await?
-            {
-                TerminalLoopState::Continue(_) => {}
-                TerminalLoopState::End => return Ok(()),
-            }
+            shortcircuit!(
+                self.bidi_stream_loop(&mut http_stream_tx, invoker_rx, &mut http_stream_rx)
+                    .await
+            );
         }
 
         // We don't have the invoker_rx, so we simply consume the response
@@ -248,7 +270,7 @@ where
         client: hyper::Client<HttpsConnector<HttpConnector>>,
         req: Request<Body>,
         mut journal_stream: JournalStream,
-    ) -> Result<TerminalLoopState<Body>, InvocationTaskError>
+    ) -> TerminalLoopState<Body>
     where
         JournalStream: Stream<Item = RawEntry> + Unpin,
     {
@@ -265,19 +287,19 @@ where
         loop {
             tokio::select! {
                 response_res = &mut req_fut, if http_stream_rx_res.is_none() => {
-                    let http_response = match response_res? {
+                    let http_response = match shortcircuit!(response_res) {
                         Ok(res) => res,
-                        Err(hyper_err) => return hyper_err.try_into(),
+                        Err(hyper_err) => shortcircuit!(hyper_err),
                     };
 
                     // Check the response is valid
                     let (http_response_header, http_stream_rx) = http_response.into_parts();
-                    Self::validate_response(http_response_header)?;
+                    shortcircuit!(Self::validate_response(http_response_header));
 
                     http_stream_rx_res = Some(http_stream_rx);
                 },
                 Some(je) = journal_stream.next() => {
-                    self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await?;
+                    shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
                     self.next_journal_index += 1;
                 },
                 else => break,
@@ -285,7 +307,7 @@ where
         }
 
         trace!("Finished to replay the journal");
-        Ok(TerminalLoopState::Continue(http_stream_rx_res.unwrap()))
+        TerminalLoopState::Continue(http_stream_rx_res.unwrap())
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
@@ -294,32 +316,30 @@ where
         http_stream_tx: &mut Sender,
         mut invoker_rx: mpsc::UnboundedReceiver<Completion>,
         http_stream_rx: &mut Body,
-    ) -> Result<TerminalLoopState<()>, InvocationTaskError> {
+    ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
                 opt_completion = invoker_rx.recv() => {
                     match opt_completion {
                         Some(completion) => {
                             trace!("Sending the completion to the wire");
-                            self.write(http_stream_tx, completion.into()).await?;
+                            shortcircuit!(self.write(http_stream_tx, completion.into()).await);
                         },
                         None => {
                             // Completion channel is closed,
                             // the invoker main loop won't send completions anymore.
                             // Response stream might still be open though.
-                            return Ok(TerminalLoopState::Continue(()))
+                            return TerminalLoopState::Continue(())
                         },
                     }
                 },
                 opt_buf = http_stream_rx.next() => {
                     match opt_buf {
-                        Some(Ok(buf)) => self.handle_read(buf)?,
-                        Some(Err(hyper_err)) => {
-                            return hyper_err.try_into();
-                        },
+                        Some(Ok(buf)) => shortcircuit!(self.handle_read(buf)),
+                        Some(Err(hyper_err)) => shortcircuit!(hyper_err),
                         None => {
                             // Response stream is closed. No further processing is needed.
-                            return Ok(TerminalLoopState::End)
+                            return TerminalLoopState::Closed
                         }
                     }
                 },
@@ -327,21 +347,15 @@ where
         }
     }
 
-    async fn response_stream_loop(
-        &mut self,
-        http_stream_rx: &mut Body,
-    ) -> Result<(), InvocationTaskError> {
+    async fn response_stream_loop(&mut self, http_stream_rx: &mut Body) -> TerminalLoopState<()> {
         while let Some(buf_res) = http_stream_rx.next().await {
             match buf_res {
-                Ok(buf) => self.handle_read(buf)?,
-                Err(hyper_err) => {
-                    let _: TerminalLoopState<()> = hyper_err.try_into()?;
-                    return Ok(());
-                }
+                Ok(buf) => shortcircuit!(self.handle_read(buf)),
+                Err(hyper_err) => shortcircuit!(hyper_err),
             }
         }
 
-        Ok(())
+        TerminalLoopState::Closed
     }
 
     // --- Read and write methods
