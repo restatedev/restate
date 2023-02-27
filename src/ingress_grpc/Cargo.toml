@@ -10,11 +10,12 @@ publish = false
 [dependencies]
 # Restate
 common = { workspace = true }
-ingress_common = { workspace = true }
 
 # Encoding/Decoding
 bytes = { workspace = true }
+serde = { workspace = true }
 serde_json = "1.0"
+prost = { workspace = true }
 prost-reflect = { workspace = true, features = ["serde", "reflect-well-known-types"] }
 
 # Futures
@@ -23,14 +24,30 @@ futures = { workspace = true }
 
 # Tower + Hyper + Tonic + Tokio
 tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.3", default-features = false, features = ["cors"] }
 http = "0.2"
 http-body = "0.4"
 hyper = { workspace = true, features = ["http1", "http2", "server", "tcp", "stream", "runtime"] }
 tokio = { workspace = true }
 tonic = { workspace = true }
-tonic-web = "0.5"
+tonic-web = "0.5.0"
 
 # Tracing
 opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+
+# Other
+drain = { workspace = true }
+arc-swap = { workspace = true }
+
+[dev-dependencies]
+hyper = { workspace = true, features = ["client"] }
+test_utils = { workspace = true }
+tonic = { workspace = true, features = ["default"] }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

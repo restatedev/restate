@@ -156,21 +156,6 @@ mod tests {
     use test_utils::{assert_eq, test};
     use tokio::sync::mpsc;
 
-    // Mock
-    impl<T: Send, R: Send + Debug> Command<T, R> {
-        pub(crate) async fn inject_response<F>(
-            mut rx: UnboundedCommandReceiver<T, R>,
-            result_factory: F,
-        ) where
-            F: FnOnce(T) -> R,
-        {
-            let command = rx.recv().await.unwrap();
-            let (payload, response_tx) = command.into_inner();
-
-            response_tx.send(result_factory(payload)).unwrap();
-        }
-    }
-
     #[test(tokio::test)]
     async fn test_back_and_forth() {
         let (tx, mut rx) = mpsc::unbounded_channel();
