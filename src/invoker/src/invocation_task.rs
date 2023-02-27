@@ -26,7 +26,7 @@ use tracing::trace;
 use super::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
-use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader};
+use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader, ProtocolType};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -466,6 +466,13 @@ where
                     .expect("The request builder shouldn't fail"),
             ),
         );
+
+        // Inject additional headers
+        for (header_name, header_value) in
+            &self.endpoint_metadata.delivery_options.additional_headers
+        {
+            http_request_builder = http_request_builder.header(header_name, header_value);
+        }
 
         let http_request = http_request_builder
             .body(req_body)
