@@ -254,6 +254,7 @@ where
             mut invocation_tasks_rx,
             mut invocation_tasks,
             journal_reader,
+            retry_policy,
             ..
         } = self;
 
@@ -294,6 +295,7 @@ where
                                     invoke_input_command,
                                     &journal_reader,
                                     &service_endpoint_registry,
+                                    &retry_policy,
                                     &mut invocation_tasks,
                                     &invocation_tasks_tx
                                 ).await;
@@ -469,6 +471,7 @@ mod state_machine_coordinator {
             invoke_input_cmd: InvokeInputCommand,
             journal_reader: &JR,
             service_endpoint_registry: &SER,
+            default_retry_policy: &RetryPolicy,
             invocation_tasks: &mut JoinSet<()>,
             invocation_tasks_tx: &mpsc::UnboundedSender<InvocationTaskOutput>,
         ) where
@@ -505,6 +508,12 @@ mod state_machine_coordinator {
                 }
             };
 
+            let retry_policy = metadata
+                .delivery_options
+                .retry_policy
+                .as_ref()
+                .unwrap_or(default_retry_policy).clone();
+
             // Start the InvocationTask
             let (completions_tx, completions_rx) = match metadata.protocol_type {
                 ProtocolType::RequestResponse => (None, None),
@@ -529,7 +538,11 @@ mod state_machine_coordinator {
             // Register the state machine
             self.invocation_state_machines.insert(
                 service_invocation_id,
-                InvocationStateMachine::start(abort_handle, completions_tx),
+                InvocationStateMachine::start(
+                    abort_handle,
+                    completions_tx,
+                    retry_policy,
+                ),
             );
         }
 
@@ -639,22 +652,26 @@ mod state_machine_coordinator {
                     error
                 );
 
-                if let Some(_next_retry_timer_duration) = sm.handle_task_error() {
-                    self.invocation_state_machines
-                        .insert(service_invocation_id, sm);
-                    unimplemented!("Implement timer")
-                } else {
-                    let _ = self
-                        .output_tx
-                        .send(OutputEffect {
-                            service_invocation_id,
-                            kind: Kind::Failed {
-                                error_code: Code::Internal.into(),
-                                error: Box::new(error),
-                            },
-                        })
-                        .await;
+                if error.is_transient() {
+                    if let Some(_next_retry_timer_duration) = sm.handle_task_error() {
+                        self.invocation_state_machines
+                            .insert(service_invocation_id, sm);
+                        // TODO https://github.com/restatedev/restate/issues/84
+                        unimplemented!("Implement timer");
+                        return;
+                    }
                 }
+
+                let _ = self
+                    .output_tx
+                    .send(OutputEffect {
+                        service_invocation_id,
+                        kind: Kind::Failed {
+                            error_code: Code::Internal.into(),
+                            error: Box::new(error),
+                        },
+                    })
+                    .await;
             }
             // If no state machine, this might be a result for an aborted invocation.
         }
@@ -704,7 +721,11 @@ mod invocation_state_machine {
 
     /// Component encapsulating the business logic of the invocation state machine
     #[derive(Debug)]
-    pub(super) struct InvocationStateMachine(TaskState, InvocationState);
+    pub(super) struct InvocationStateMachine {
+        task_state: TaskState,
+        invocation_state: InvocationState,
+        current_attempt: usize,
+    }
 
     #[derive(Debug)]
     enum TaskState {
@@ -738,8 +759,6 @@ mod invocation_state_machine {
                 cmp::max(Some(idx), self.last_entry_sent_to_partition_processor)
         }
 
-        // TODO remove once we implement retries. https://github.com/restatedev/restate/issues/84
-        #[allow(dead_code)]
         fn can_retry(&self) -> bool {
             match (
                 self.last_acked_entry_from_partition_processor,
@@ -767,6 +786,7 @@ mod invocation_state_machine {
             // This can be none if the invocation task is request/response
             completions_tx: Option<mpsc::UnboundedSender<Completion>>,
             journal_tracker: JournalTracker,
+            retry_policy: RetryPolicy,
         },
 
         // We remain in this state until we get the task result.
@@ -774,6 +794,7 @@ mod invocation_state_machine {
         WaitingClose,
 
         WaitingRetry {
+            timer_fired: bool,
             // TODO implement timer
             //  https://github.com/restatedev/restate/issues/84
             journal_tracker: JournalTracker,
@@ -784,51 +805,58 @@ mod invocation_state_machine {
         pub(super) fn start(
             abort_handle: AbortHandle,
             completions_tx: Option<mpsc::UnboundedSender<Completion>>,
+            retry_policy: RetryPolicy,
         ) -> Self {
-            Self(
-                TaskState::Running(abort_handle),
-                InvocationState::InFlight {
+            Self {
+                task_state: TaskState::Running(abort_handle),
+                invocation_state: InvocationState::InFlight {
                     completions_tx,
                     journal_tracker: Default::default(),
+                    retry_policy,
                 },
-            )
+                current_attempt: 0,
+            }
         }
 
         pub(super) fn abort(&mut self) {
             if let TaskState::Running(task_handle) =
-                mem::replace(&mut self.0, TaskState::NotRunning)
+                mem::replace(&mut self.task_state, TaskState::NotRunning)
             {
                 task_handle.abort();
             }
         }
 
         pub(super) fn notify_new_entry(&mut self, entry_index: EntryIndex, raw_entry: &RawEntry) {
-            debug_assert!(matches!(&self.0, TaskState::Running(_)));
-            debug_assert!(matches!(&self.1, InvocationState::InFlight { .. }));
+            debug_assert!(matches!(&self.task_state, TaskState::Running(_)));
+            debug_assert!(matches!(
+                &self.invocation_state,
+                InvocationState::InFlight { .. }
+            ));
 
             if raw_entry.header == RawEntryHeader::OutputStream {
-                self.1 = InvocationState::WaitingClose;
+                self.invocation_state = InvocationState::WaitingClose;
                 return;
             }
 
             if let InvocationState::InFlight {
                 journal_tracker, ..
-            } = &mut self.1
+            } = &mut self.invocation_state
             {
                 journal_tracker.notify_entry_sent_to_partition_processor(entry_index);
             }
         }
 
         pub(super) fn notify_stored_ack(&mut self, entry_index: EntryIndex) {
-            match &mut self.1 {
+            match &mut self.invocation_state {
                 InvocationState::InFlight {
                     journal_tracker, ..
                 } => {
                     journal_tracker.notify_acked_entry_from_partition_processor(entry_index);
                 }
-                InvocationState::WaitingRetry { journal_tracker } => {
+                InvocationState::WaitingRetry {
+                    journal_tracker, ..
+                } => {
                     journal_tracker.notify_acked_entry_from_partition_processor(entry_index);
-                    // TODO retry if retry timer fired already and journal_stored_guard.can_retry()
                 }
                 _ => {}
             }
@@ -838,34 +866,73 @@ mod invocation_state_machine {
             if let InvocationState::InFlight {
                 completions_tx: Some(sender),
                 ..
-            } = &mut self.1
+            } = &mut self.invocation_state
             {
                 let _ = sender.send(completion);
             }
         }
 
+        pub(super) fn notify_retry_timer_fired(&mut self) {
+            debug_assert!(matches!(
+                &self.invocation_state,
+                InvocationState::WaitingRetry { .. }
+            ));
+
+            if let InvocationState::WaitingRetry { timer_fired, .. } = &mut self.invocation_state {
+                *timer_fired = true;
+            }
+        }
+
         /// Returns Some() with the timer for the next retry, otherwise None if retry limit exhausted
         pub(super) fn handle_task_error(&mut self) -> Option<Duration> {
-            debug_assert!(matches!(&self.0, TaskState::Running(_)));
-            debug_assert!(matches!(&self.1, InvocationState::InFlight { .. }));
+            debug_assert!(matches!(&self.task_state, TaskState::Running(_)));
+            debug_assert!(matches!(
+                &self.invocation_state,
+                InvocationState::InFlight { .. }
+            ));
 
-            self.0 = TaskState::NotRunning;
-            self.1 = match &self.1 {
+            self.task_state = TaskState::NotRunning;
+            self.current_attempt = self.current_attempt + 1;
+            let (next_timer, journal_tracker) = match &self.invocation_state {
                 InvocationState::InFlight {
-                    journal_tracker, ..
-                } => InvocationState::WaitingRetry {
-                    journal_tracker: *journal_tracker,
-                },
+                    retry_policy,
+                    journal_tracker,
+                    ..
+                } => (
+                    retry_policy.next_timer(self.current_attempt),
+                    *journal_tracker,
+                ),
                 _ => unreachable!(),
             };
-            // TODO implement retry policy
-            //  https://github.com/restatedev/restate/issues/84
-            // TODO define criteria for recoverable and unrecoverable errors
-            None
+
+            if next_timer.is_some() {
+                self.invocation_state = InvocationState::WaitingRetry {
+                    timer_fired: false,
+                    journal_tracker,
+                };
+                next_timer
+            } else {
+                None
+            }
         }
 
         pub(super) fn is_ending(&self) -> bool {
-            matches!(self.1, InvocationState::WaitingClose)
+            matches!(self.invocation_state, InvocationState::WaitingClose)
+        }
+
+        pub(super) fn is_ready_to_retry(&self) -> bool {
+            debug_assert!(matches!(
+                &self.invocation_state,
+                InvocationState::WaitingRetry { .. }
+            ));
+
+            match self.invocation_state {
+                InvocationState::WaitingRetry {
+                    timer_fired,
+                    journal_tracker,
+                } => timer_fired && journal_tracker.can_retry(),
+                _ => unreachable!(),
+            }
         }
     }
 }
