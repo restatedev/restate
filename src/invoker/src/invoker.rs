@@ -331,10 +331,21 @@ where
                                 raw_entry
                             ).await
                         },
-                        InvocationTaskOutputInner::Result {result} => {
-                            partition_state_machine.handle_invocation_task_result(
+                        InvocationTaskOutputInner::Closed => {
+                            partition_state_machine.handle_invocation_task_closed(
+                                invocation_task_msg.service_invocation_id
+                            ).await
+                        },
+                        InvocationTaskOutputInner::Failed(e) => {
+                            partition_state_machine.handle_invocation_task_failed(
                                 invocation_task_msg.service_invocation_id,
-                                result
+                                e
+                            ).await
+                        },
+                        InvocationTaskOutputInner::Suspended(indexes) => {
+                            partition_state_machine.handle_invocation_task_suspended(
+                                invocation_task_msg.service_invocation_id,
+                                indexes
                             ).await
                         }
                     };
@@ -364,13 +375,20 @@ where
 
 mod state_machine_coordinator {
     use super::*;
+
     use crate::invocation_task::{InvocationTask, InvocationTaskError};
     use crate::invoker::invocation_state_machine::InvocationStateMachine;
+
+    use tonic::Code;
     use tracing::warn;
 
     #[derive(Debug, thiserror::Error)]
     #[error("Cannot find service {0} in the service endpoint registry")]
     pub struct CannotResolveEndpoint(String);
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("Unexpected end of invocation stream. This is probably a symptom of an SDK bug, please contact the developers.")]
+    pub struct UnexpectedEndOfInvocationStream;
 
     #[derive(Debug, Default)]
     pub(super) struct InvocationStateMachineCoordinator {
@@ -470,7 +488,7 @@ mod state_machine_coordinator {
                     .send(OutputEffect {
                         service_invocation_id,
                         kind: Kind::Failed {
-                            error_code: tonic::Code::Internal.into(),
+                            error_code: Code::Internal.into(),
                             error,
                         },
                     })
@@ -556,59 +574,103 @@ mod state_machine_coordinator {
             // If no state machine, this might be an entry for an aborted invocation.
         }
 
-        pub(super) async fn handle_invocation_task_result(
+        pub(super) async fn handle_invocation_task_closed(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            result: Result<(), InvocationTaskError>,
+        ) {
+            if let Some(sm) = self
+                .invocation_state_machines
+                .remove(&service_invocation_id)
+            {
+                let output_effect = if sm.is_ending() {
+                    OutputEffect {
+                        service_invocation_id,
+                        kind: Kind::End,
+                    }
+                } else {
+                    // Protocol violation.
+                    // We haven't received any output stream entry, but the invocation task was closed
+                    warn!(
+                        restate.sid = %service_invocation_id,
+                        "Protocol violation when executing the invocation. \
+                        The invocation task was closed without a SuspensionMessage, nor an OutputStreamEntry"
+                    );
+                    OutputEffect {
+                        service_invocation_id,
+                        kind: Kind::Failed {
+                            error_code: Code::Internal.into(),
+                            error: Box::new(UnexpectedEndOfInvocationStream),
+                        },
+                    }
+                };
+
+                let _ = self.output_tx.send(output_effect).await;
+            }
+            // If no state machine, this might be a result for an aborted invocation.
+        }
+
+        pub(super) async fn handle_invocation_task_failed(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            error: InvocationTaskError,
         ) {
             if let Some(mut sm) = self
                 .invocation_state_machines
                 .remove(&service_invocation_id)
             {
-                match result {
-                    Ok(_) => {
-                        let output_effect = if sm.is_ending() {
-                            OutputEffect {
-                                service_invocation_id,
-                                kind: Kind::End,
-                            }
-                        } else {
-                            OutputEffect {
-                                service_invocation_id,
-                                kind: Kind::Suspended {
-                                    // TODO https://github.com/restatedev/restate/issues/97
-                                    waiting_for_completed_entries: Default::default(),
-                                },
-                            }
-                        };
+                warn!(
+                    restate.sid = %service_invocation_id,
+                    "Error when executing the invocation: {}",
+                    error
+                );
 
-                        let _ = self.output_tx.send(output_effect).await;
-                    }
-                    Err(error) => {
-                        warn!(
-                            restate.sid = %service_invocation_id,
-                            "Error when executing the invocation: {}",
-                            error
-                        );
-
-                        if let Some(_next_retry_timer_duration) = sm.handle_task_error() {
-                            self.invocation_state_machines
-                                .insert(service_invocation_id, sm);
-                            unimplemented!("Implement timer")
-                        } else {
-                            let _ = self
-                                .output_tx
-                                .send(OutputEffect {
-                                    service_invocation_id,
-                                    kind: Kind::Failed {
-                                        error_code: tonic::Code::Internal.into(),
-                                        error: Box::new(error),
-                                    },
-                                })
-                                .await;
-                        }
-                    }
+                if let Some(_next_retry_timer_duration) = sm.handle_task_error() {
+                    self.invocation_state_machines
+                        .insert(service_invocation_id, sm);
+                    unimplemented!("Implement timer")
+                } else {
+                    let _ = self
+                        .output_tx
+                        .send(OutputEffect {
+                            service_invocation_id,
+                            kind: Kind::Failed {
+                                error_code: Code::Internal.into(),
+                                error: Box::new(error),
+                            },
+                        })
+                        .await;
                 }
+            }
+            // If no state machine, this might be a result for an aborted invocation.
+        }
+
+        pub(super) async fn handle_invocation_task_suspended(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            entry_indexes: HashSet<EntryIndex>,
+        ) {
+            if let Some(sm) = self
+                .invocation_state_machines
+                .remove(&service_invocation_id)
+            {
+                if sm.is_ending() {
+                    // Soft protocol violation.
+                    // We got both an output stream entry and the suspension message
+                    warn!(
+                        restate.sid = %service_invocation_id,
+                        "Protocol violation when executing the invocation. \
+                        The invocation task sent an OutputStreamEntry and was closed with a SuspensionMessage"
+                    );
+                }
+                let _ = self
+                    .output_tx
+                    .send(OutputEffect {
+                        service_invocation_id,
+                        kind: Kind::Suspended {
+                            waiting_for_completed_entries: entry_indexes,
+                        },
+                    })
+                    .await;
             }
             // If no state machine, this might be a result for an aborted invocation.
         }
