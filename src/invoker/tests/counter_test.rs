@@ -6,10 +6,7 @@ mod mocks;
 use bytes::Bytes;
 use common::types::ServiceInvocationId;
 use hyper::Uri;
-use invoker::{
-    DeliveryOptions, EndpointMetadata, Invoker, Kind, OutputEffect, ProtocolType,
-    UnboundedInvokerInputSender,
-};
+use invoker::{DeliveryOptions, EndpointMetadata, Invoker, Kind, OutputEffect, ProtocolType, RetryPolicy, UnboundedInvokerInputSender};
 use journal::raw::{RawEntryCodec, RawEntryHeader};
 use journal::{
     Completion, CompletionResult, Entry, EntryResult, GetStateEntry, GetStateValue,
@@ -127,6 +124,7 @@ async fn bidi_stream() {
     // Start invoker
     let remote_invoker =
         Invoker::<ProtobufRawEntryCodec, _, HashMap<String, EndpointMetadata>>::new(
+            RetryPolicy::default(),
             journal_reader.clone(),
             [(
                 sid.service_id.service_name.clone().to_string(),

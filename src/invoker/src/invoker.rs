@@ -186,6 +186,7 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     // Set of stream coroutines
     invocation_tasks: JoinSet<()>,
 
+    retry_policy: RetryPolicy,
     journal_reader: JournalReader,
 
     _codec: PhantomData<Codec>,
@@ -198,7 +199,11 @@ where
     JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
     SER: ServiceEndpointRegistry,
 {
-    pub fn new(journal_reader: JR, service_endpoint_registry: SER) -> Self {
+    pub fn new(
+        retry_policy: RetryPolicy,
+        journal_reader: JR,
+        service_endpoint_registry: SER,
+    ) -> Self {
         let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
         let (resume_input_tx, resume_input_rx) = mpsc::unbounded_channel();
         let (other_input_tx, other_input_rx) = mpsc::unbounded_channel();
@@ -217,6 +222,7 @@ where
             invocation_tasks_tx,
             invocation_tasks_rx,
             invocation_tasks: Default::default(),
+            retry_policy,
             journal_reader,
             _codec: PhantomData::<C>::default(),
         }
