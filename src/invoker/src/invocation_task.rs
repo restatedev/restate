@@ -26,7 +26,7 @@ use tracing::trace;
 use super::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
-use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader, ProtocolType};
+use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -175,10 +175,6 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
     ) -> Self {
-        if endpoint_metadata.protocol_type == ProtocolType::RequestResponse {
-            // TODO https://github.com/restatedev/restate/issues/83
-            unimplemented!("Request response is not implemented yet");
-        }
         Self {
             partition,
             service_invocation_id: sid,

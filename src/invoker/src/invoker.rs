@@ -476,37 +476,46 @@ mod state_machine_coordinator {
                 .contains_key(&service_invocation_id));
 
             // Resolve metadata
-            let metadata = service_endpoint_registry
-                .resolve_endpoint(&service_invocation_id.service_id.service_name);
-            if metadata.is_none() {
-                let error = Box::new(CannotResolveEndpoint(
-                    service_invocation_id.service_id.service_name.to_string(),
-                ));
-                // No endpoint metadata can be resolved, we just fail it.
-                let _ = self
-                    .output_tx
-                    .send(OutputEffect {
-                        service_invocation_id,
-                        kind: Kind::Failed {
-                            error_code: Code::Internal.into(),
-                            error,
-                        },
-                    })
-                    .await;
-                return;
-            }
+            let metadata = match service_endpoint_registry
+                .resolve_endpoint(&service_invocation_id.service_id.service_name)
+            {
+                Some(m) => m,
+                None => {
+                    let error = Box::new(CannotResolveEndpoint(
+                        service_invocation_id.service_id.service_name.to_string(),
+                    ));
+                    // No endpoint metadata can be resolved, we just fail it.
+                    let _ = self
+                        .output_tx
+                        .send(OutputEffect {
+                            service_invocation_id,
+                            kind: Kind::Failed {
+                                error_code: Code::Internal.into(),
+                                error,
+                            },
+                        })
+                        .await;
+                    return;
+                }
+            };
 
             // Start the InvocationTask
-            let (completions_tx, completions_rx) = mpsc::unbounded_channel();
+            let (completions_tx, completions_rx) = match metadata.protocol_type {
+                ProtocolType::RequestResponse => (None, None),
+                ProtocolType::BidiStream => {
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    (Some(tx), Some(rx))
+                }
+            };
             let abort_handle = invocation_tasks.spawn(
                 InvocationTask::new(
                     self.partition,
                     service_invocation_id.clone(),
                     0,
-                    metadata.unwrap(),
+                    metadata,
                     journal_reader.clone(),
                     invocation_tasks_tx.clone(),
-                    Some(completions_rx),
+                    completions_rx,
                 )
                 .run(invoke_input_cmd.journal),
             );
@@ -514,7 +523,7 @@ mod state_machine_coordinator {
             // Register the state machine
             self.invocation_state_machines.insert(
                 service_invocation_id,
-                InvocationStateMachine::start(abort_handle, Some(completions_tx)),
+                InvocationStateMachine::start(abort_handle, completions_tx),
             );
         }
 
