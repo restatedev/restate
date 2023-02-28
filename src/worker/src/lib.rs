@@ -1,3 +1,4 @@
+use crate::network_integration::FixedPartitionTable;
 use common::types::{PeerId, PeerTarget};
 use consensus::{Consensus, ProposalSender};
 use futures::stream::FuturesUnordered;
@@ -81,7 +82,11 @@ impl Worker {
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
         let (ingress_tx, _ingress_rx) = mpsc::channel(channel_size);
 
-        let network = network_integration::Network::new(raft_in_tx, ingress_tx);
+        let network = network_integration::Network::new(
+            raft_in_tx,
+            ingress_tx,
+            FixedPartitionTable::new(num_partition_processors),
+        );
 
         let mut consensus = Consensus::new(
             ReceiverStream::new(raft_in_rx),

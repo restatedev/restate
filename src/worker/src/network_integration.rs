@@ -4,10 +4,11 @@
 use crate::partition::shuffle;
 use crate::{ingress_integration, partition};
 use bytes::Bytes;
-use common::types::{InvocationResponse, PeerId};
+use common::types::{InvocationResponse, PartitionKey, PeerId};
+use futures::future::{ok, Ready};
 use network::{
-    ConsensusOrIngressTarget, KeyedMessage, ShuffleOrIngressTarget, TargetConsensusOrIngress,
-    TargetShuffle, TargetShuffleOrIngress,
+    ConsensusOrIngressTarget, KeyedMessage, PartitionTable, PartitionTableError,
+    ShuffleOrIngressTarget, TargetConsensusOrIngress, TargetShuffle, TargetShuffleOrIngress,
 };
 
 pub(super) type Network = network::Network<
@@ -21,6 +22,7 @@ pub(super) type Network = network::Network<
     partition::MessageAck,
     partition::ShuffleMessageAck,
     partition::IngressMessageAck,
+    FixedPartitionTable,
 >;
 
 impl From<ingress_integration::IngressOutput> for partition::Command {
@@ -114,5 +116,25 @@ impl From<partition::ShuffleMessageAck> for shuffle::ShuffleInput {
 impl TargetShuffle for partition::ShuffleMessageAck {
     fn shuffle_target(&self) -> PeerId {
         self.shuffle_target
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct FixedPartitionTable {
+    number_partitions: u64,
+}
+
+impl FixedPartitionTable {
+    pub(super) fn new(number_partitions: u64) -> Self {
+        Self { number_partitions }
+    }
+}
+
+impl PartitionTable for FixedPartitionTable {
+    type Future = Ready<Result<u64, PartitionTableError>>;
+
+    fn partition_key_to_target_peer(&self, partition_key: PartitionKey) -> Self::Future {
+        let target_partition = partition_key % self.number_partitions;
+        ok(target_partition)
     }
 }

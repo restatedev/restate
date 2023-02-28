@@ -20,6 +20,10 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 
 pub type EntryIndex = u32;
 
+/// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
+/// which identifies a consecutive range of partition keys.
+pub type PartitionKey = u64;
+
 /// Discriminator for invocation instances
 pub type InvocationId = Uuid;
 

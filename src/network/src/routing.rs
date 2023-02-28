@@ -1,8 +1,10 @@
 use crate::routing::future_impl::{ConsensusSendOperation, LookupMessage, ShuffleSendOperation};
 use crate::{
-    ConsensusOrIngressTarget, KeyedMessage, NetworkCommand, ShuffleOrIngressTarget,
-    TargetConsensusOrIngress, TargetShuffle, TargetShuffleOrIngress, UnboundedNetworkHandle,
+    ConsensusOrIngressTarget, KeyedMessage, NetworkCommand, PartitionTableError,
+    ShuffleOrIngressTarget, TargetConsensusOrIngress, TargetShuffle, TargetShuffleOrIngress,
+    UnboundedNetworkHandle,
 };
+use common::partitioner::HashPartitioner;
 use common::types::{PeerId, PeerTarget};
 use futures::future::{Fuse, FusedFuture};
 use futures::FutureExt;
@@ -32,6 +34,7 @@ pub struct Network<
     PPOut,
     PPToShuffle,
     PPToIngress,
+    PartitionTable,
 > {
     /// Receiver for messages from the consensus module
     consensus_in_rx: mpsc::Receiver<PeerTarget<ConsensusMsg>>,
@@ -48,6 +51,8 @@ pub struct Network<
     ingress_tx: mpsc::Sender<IngressIn>,
 
     partition_processor_rx: mpsc::Receiver<PPOut>,
+
+    partition_table: PartitionTable,
 
     // used for creating the ConsensusSender
     consensus_in_tx: mpsc::Sender<PeerTarget<ConsensusMsg>>,
@@ -79,6 +84,7 @@ impl<
         PPOut,
         PPToShuffle,
         PPToIngress,
+        PartitionTable,
     >
     Network<
         ConsensusMsg,
@@ -91,6 +97,7 @@ impl<
         PPOut,
         PPToShuffle,
         PPToIngress,
+        PartitionTable,
     >
 where
     ConsensusMsg: Debug + Send + Sync + 'static,
@@ -103,10 +110,12 @@ where
     PPOut: TargetShuffleOrIngress<PPToShuffle, PPToIngress>,
     PPToShuffle: TargetShuffle + Into<ShuffleIn> + Debug,
     PPToIngress: Into<IngressIn> + Debug,
+    PartitionTable: crate::PartitionTable,
 {
     pub fn new(
         consensus_tx: mpsc::Sender<PeerTarget<ConsensusMsg>>,
         ingress_tx: mpsc::Sender<IngressIn>,
+        partition_table: PartitionTable,
     ) -> Self {
         let (consensus_in_tx, consensus_in_rx) = mpsc::channel(64);
         let (shuffle_tx, shuffle_rx) = mpsc::channel(64);
@@ -127,6 +136,7 @@ where
             ingress_in_tx,
             partition_processor_rx,
             partition_processor_tx,
+            partition_table,
             _shuffle_to_con: Default::default(),
             _shuffle_to_ingress: Default::default(),
             _partition_processor_to_ingress: Default::default(),
@@ -159,6 +169,7 @@ where
             mut shuffle_rx,
             mut ingress_in_rx,
             mut partition_processor_rx,
+            partition_table,
             ..
         } = self;
 
@@ -168,7 +179,7 @@ where
         let mut shuffles: HashMap<PeerId, mpsc::Sender<ShuffleIn>> = HashMap::new();
 
         let consensus_send = ConsensusSendOperation::new(
-            |msg| Self::lookup_target_peer(msg),
+            |msg| Self::lookup_target_peer(msg, &partition_table),
             |msg| consensus_tx.send(msg),
         );
         let shuffle_send = ShuffleSendOperation::Idle;
@@ -272,22 +283,33 @@ where
     }
 
     async fn lookup_target_peer(
-        _msg: LookupMessage<ShuffleToCon, IngressOut, ConsensusMsg>,
-    ) -> (
-        PeerId,
-        LookupMessage<ShuffleToCon, IngressOut, ConsensusMsg>,
-    ) {
-        todo!("https://github.com/restatedev/restate/issues/121");
+        msg: LookupMessage<ShuffleToCon, IngressOut, ConsensusMsg>,
+        partition_table: &impl crate::PartitionTable,
+    ) -> Result<
+        (
+            PeerId,
+            LookupMessage<ShuffleToCon, IngressOut, ConsensusMsg>,
+        ),
+        PartitionTableError,
+    > {
+        let partition_key = HashPartitioner::compute_partition_key(&msg);
+        let target_peer = partition_table
+            .partition_key_to_target_peer(partition_key)
+            .await?;
+
+        Ok((target_peer, msg))
     }
 }
 
 mod future_impl {
+    use crate::{KeyedMessage, PartitionTableError};
     use common::types::{PeerId, PeerTarget};
     use futures::future::FusedFuture;
     use futures::ready;
     use pin_project::pin_project;
     use std::fmt::{Debug, Formatter};
     use std::future::Future;
+    use std::hash::{Hash, Hasher};
     use std::marker::PhantomData;
     use std::pin::Pin;
     use std::task::{Context, Poll};
@@ -298,6 +320,19 @@ mod future_impl {
     pub(super) struct LookupMessage<A, B, Target> {
         msg: Message<A, B>,
         _target: PhantomData<Target>,
+    }
+
+    impl<A, B, Target> Hash for LookupMessage<A, B, Target>
+    where
+        A: KeyedMessage,
+        B: KeyedMessage,
+    {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            match &self.msg {
+                Message::A(a) => a.routing_key().hash(state),
+                Message::B(b) => b.routing_key().hash(state),
+            }
+        }
     }
 
     impl<A, B, Target> Debug for LookupMessage<A, B, Target>
@@ -444,8 +479,12 @@ mod future_impl {
     }
 
     #[derive(Debug, thiserror::Error)]
-    #[error("failed sending message because {0}")]
-    pub(super) struct ConsensusSendError<M: Debug>(#[from] SendError<PeerTarget<M>>);
+    pub(super) enum ConsensusSendError<M: Debug> {
+        #[error("failed sending message because {0}")]
+        SendError(#[from] SendError<PeerTarget<M>>),
+        #[error("cannot find target peer: {0}")]
+        UnknownTargetPeer(#[from] PartitionTableError),
+    }
 
     impl<LookupOp, SendOp, ConsensusMsg, LookupFuture, SendingFuture, ShuffleMsg, IngressMsg> Future
         for ConsensusSendOperation<
@@ -459,8 +498,12 @@ mod future_impl {
         >
     where
         SendingFuture: Future<Output = Result<(), SendError<PeerTarget<ConsensusMsg>>>>,
-        LookupFuture:
-            Future<Output = (PeerId, LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>)>,
+        LookupFuture: Future<
+            Output = Result<
+                (PeerId, LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>),
+                PartitionTableError,
+            >,
+        >,
         ConsensusMsg: Debug,
         SendOp: Fn(PeerTarget<ConsensusMsg>) -> SendingFuture,
         ShuffleMsg: Into<ConsensusMsg> + Debug,
@@ -474,13 +517,21 @@ mod future_impl {
                 match this.state.as_mut().project() {
                     StateProj::Idle => return Poll::Pending,
                     StateProj::Lookup { future } => {
-                        let (target_peer, msg) = ready!(future.poll(cx));
+                        let result = ready!(future.poll(cx));
 
-                        trace!(target_peer, message = ?msg, "Routing message to consensus.");
+                        match result {
+                            Ok((target_peer, msg)) => {
+                                trace!(target_peer, message = ?msg, "Routing message to consensus.");
 
-                        let future = (this.send_op)((target_peer, msg.into_target()));
+                                let future = (this.send_op)((target_peer, msg.into_target()));
 
-                        this.state.set(State::Sending { future });
+                                this.state.set(State::Sending { future });
+                            }
+                            Err(err) => {
+                                this.state.set(State::Idle);
+                                return Poll::Ready(Err(err.into()));
+                            }
+                        }
                     }
                     StateProj::Sending { future } => {
                         let result = ready!(future.poll(cx));
@@ -507,8 +558,12 @@ mod future_impl {
         >
     where
         SendingFuture: Future<Output = Result<(), SendError<PeerTarget<ConsensusMsg>>>>,
-        LookupFuture:
-            Future<Output = (PeerId, LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>)>,
+        LookupFuture: Future<
+            Output = Result<
+                (PeerId, LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>),
+                PartitionTableError,
+            >,
+        >,
         ConsensusMsg: Debug,
         SendOp: Fn(PeerTarget<ConsensusMsg>) -> SendingFuture,
         ShuffleMsg: Into<ConsensusMsg> + Debug,

@@ -1,4 +1,4 @@
-use common::types::PeerId;
+use common::types::{PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::future::Future;
 use std::hash;
@@ -77,4 +77,14 @@ pub enum ShuffleOrIngressTarget<S, I> {
 pub trait TargetShuffleOrIngress<S, I> {
     /// Returns the target of a message. It can either be a shuffle or an ingress.
     fn target(self) -> ShuffleOrIngressTarget<S, I>;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Cannot find target peer for partition key {0}")]
+pub struct PartitionTableError(PartitionKey);
+
+pub trait PartitionTable {
+    type Future: Future<Output = Result<PeerId, PartitionTableError>>;
+
+    fn partition_key_to_target_peer(&self, partition_key: PartitionKey) -> Self::Future;
 }
