@@ -13,6 +13,8 @@ use tokio::task::JoinSet;
 use tracing::debug;
 
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
+use crate::invoker::state_machine_coordinator::StartInvocationTaskArguments;
+use crate::timer::TimerQueue;
 
 #[derive(Debug, Clone)]
 pub struct UnboundedInvokerInputSender {
@@ -186,6 +188,9 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     // Set of stream coroutines
     invocation_tasks: JoinSet<()>,
 
+    // Retry timers
+    retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
+
     retry_policy: RetryPolicy,
     journal_reader: JournalReader,
 
@@ -222,6 +227,7 @@ where
             invocation_tasks_tx,
             invocation_tasks_rx,
             invocation_tasks: Default::default(),
+            retry_timers: Default::default(),
             retry_policy,
             journal_reader,
             _codec: PhantomData::<C>::default(),
@@ -253,6 +259,7 @@ where
             invocation_tasks_tx,
             mut invocation_tasks_rx,
             mut invocation_tasks,
+            mut retry_timers,
             journal_reader,
             retry_policy,
             ..
@@ -293,11 +300,13 @@ where
                                 .must_resolve_partition(partition)
                                 .handle_invoke(
                                     invoke_input_command,
-                                    &journal_reader,
-                                    &service_endpoint_registry,
-                                    &retry_policy,
-                                    &mut invocation_tasks,
-                                    &invocation_tasks_tx
+                                    StartInvocationTaskArguments::new(
+                                        &journal_reader,
+                                        &service_endpoint_registry,
+                                        &retry_policy,
+                                        &mut invocation_tasks,
+                                        &invocation_tasks_tx
+                                    )
                                 ).await;
                         },
                         Input { partition, inner: InputCommand::Other(OtherInputCommand::RegisterPartition(sender)) } => {
@@ -318,7 +327,18 @@ where
                         Input { partition, inner: InputCommand::Other(OtherInputCommand::StoredEntryAck { service_invocation_id, entry_index, .. }) } => {
                             state_machine_coordinator
                                 .must_resolve_partition(partition)
-                                .handle_stored_entry_ack(service_invocation_id, entry_index);
+                                .handle_stored_entry_ack(
+                                    service_invocation_id,
+                                    StartInvocationTaskArguments::new(
+                                        &journal_reader,
+                                        &service_endpoint_registry,
+                                        &retry_policy,
+                                        &mut invocation_tasks,
+                                        &invocation_tasks_tx
+                                    ),
+                                    entry_index
+                                )
+                                .await;
                         }
                     }
                 },
@@ -347,7 +367,8 @@ where
                         InvocationTaskOutputInner::Failed(e) => {
                             partition_state_machine.handle_invocation_task_failed(
                                 invocation_task_msg.service_invocation_id,
-                                e
+                                e,
+                                &mut retry_timers
                             ).await
                         },
                         InvocationTaskOutputInner::Suspended(indexes) => {
@@ -357,6 +378,23 @@ where
                             ).await
                         }
                     };
+                },
+                timer = retry_timers.await_timer() => {
+                    let (partition, sid) = timer.into_inner();
+
+                    if let Some(partition_state_machine) = state_machine_coordinator.resolve_partition(partition) {
+                        partition_state_machine.handle_retry_timer_fired(
+                            sid,
+                            StartInvocationTaskArguments::new(
+                                &journal_reader,
+                                &service_endpoint_registry,
+                                &retry_policy,
+                                &mut invocation_tasks,
+                                &invocation_tasks_tx
+                            )
+                        ).await;
+                    }
+                    // We can skip it as it means the invocation was aborted
                 },
                 Some(invocation_task_result) = invocation_tasks.join_next() => {
                     if let Err(err) = invocation_task_result {
@@ -382,10 +420,11 @@ where
 }
 
 mod state_machine_coordinator {
+    use super::invocation_state_machine::InvocationStateMachine;
     use super::*;
+    use std::time::SystemTime;
 
     use crate::invocation_task::{InvocationTask, InvocationTaskError};
-    use crate::invoker::invocation_state_machine::InvocationStateMachine;
 
     use tonic::Code;
     use tracing::warn;
@@ -397,6 +436,32 @@ mod state_machine_coordinator {
     #[derive(Debug, thiserror::Error)]
     #[error("Unexpected end of invocation stream. This is probably a symptom of an SDK bug, please contact the developers.")]
     pub struct UnexpectedEndOfInvocationStream;
+
+    pub(super) struct StartInvocationTaskArguments<'a, JR, SER> {
+        journal_reader: &'a JR,
+        service_endpoint_registry: &'a SER,
+        default_retry_policy: &'a RetryPolicy,
+        invocation_tasks: &'a mut JoinSet<()>,
+        invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
+    }
+
+    impl<'a, JR, SER> StartInvocationTaskArguments<'a, JR, SER> {
+        pub(super) fn new(
+            journal_reader: &'a JR,
+            service_endpoint_registry: &'a SER,
+            default_retry_policy: &'a RetryPolicy,
+            invocation_tasks: &'a mut JoinSet<()>,
+            invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
+        ) -> Self {
+            Self {
+                journal_reader,
+                service_endpoint_registry,
+                default_retry_policy,
+                invocation_tasks,
+                invocation_tasks_tx,
+            }
+        }
+    }
 
     #[derive(Debug, Default)]
     pub(super) struct InvocationStateMachineCoordinator {
@@ -469,11 +534,7 @@ mod state_machine_coordinator {
         pub(super) async fn handle_invoke<JR, JS, SER>(
             &mut self,
             invoke_input_cmd: InvokeInputCommand,
-            journal_reader: &JR,
-            service_endpoint_registry: &SER,
-            default_retry_policy: &RetryPolicy,
-            invocation_tasks: &mut JoinSet<()>,
-            invocation_tasks_tx: &mpsc::UnboundedSender<InvocationTaskOutput>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
         ) where
             JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
             JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
@@ -484,16 +545,38 @@ mod state_machine_coordinator {
                 .invocation_state_machines
                 .contains_key(&service_invocation_id));
 
+            self.start_invocation_task(
+                service_invocation_id.clone(),
+                invoke_input_cmd.journal,
+                start_arguments,
+                InvocationStateMachine::create(),
+            )
+            .await
+        }
+
+        pub(super) async fn start_invocation_task<JR, JS, SER>(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            journal: InvokeInputJournal,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
+            mut invocation_state_machine: InvocationStateMachine,
+        ) where
+            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+            JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+            SER: ServiceEndpointRegistry,
+        {
             // Resolve metadata
-            let metadata = match service_endpoint_registry
+            let metadata = match start_arguments
+                .service_endpoint_registry
                 .resolve_endpoint(&service_invocation_id.service_id.service_name)
             {
                 Some(m) => m,
                 None => {
+                    // No endpoint metadata can be resolved, we just fail it.
                     let error = Box::new(CannotResolveEndpoint(
                         service_invocation_id.service_id.service_name.to_string(),
                     ));
-                    // No endpoint metadata can be resolved, we just fail it.
+
                     let _ = self
                         .output_tx
                         .send(OutputEffect {
@@ -512,7 +595,8 @@ mod state_machine_coordinator {
                 .delivery_options
                 .retry_policy
                 .as_ref()
-                .unwrap_or(default_retry_policy).clone();
+                .unwrap_or(start_arguments.default_retry_policy)
+                .clone();
 
             // Start the InvocationTask
             let (completions_tx, completions_rx) = match metadata.protocol_type {
@@ -522,28 +606,23 @@ mod state_machine_coordinator {
                     (Some(tx), Some(rx))
                 }
             };
-            let abort_handle = invocation_tasks.spawn(
+            let abort_handle = start_arguments.invocation_tasks.spawn(
                 InvocationTask::new(
                     self.partition,
                     service_invocation_id.clone(),
                     0,
                     metadata,
-                    journal_reader.clone(),
-                    invocation_tasks_tx.clone(),
+                    start_arguments.journal_reader.clone(),
+                    start_arguments.invocation_tasks_tx.clone(),
                     completions_rx,
                 )
-                .run(invoke_input_cmd.journal),
+                .run(journal),
             );
 
-            // Register the state machine
-            self.invocation_state_machines.insert(
-                service_invocation_id,
-                InvocationStateMachine::start(
-                    abort_handle,
-                    completions_tx,
-                    retry_policy,
-                ),
-            );
+            // Transition the state machine, and store it
+            invocation_state_machine.start(abort_handle, completions_tx, retry_policy);
+            self.invocation_state_machines
+                .insert(service_invocation_id, invocation_state_machine);
         }
 
         pub(super) fn abort(&mut self) {
@@ -566,16 +645,66 @@ mod state_machine_coordinator {
             // If no state machine is registered, the PP will send a new invoke
         }
 
-        pub(super) fn handle_stored_entry_ack(
+        pub(super) async fn handle_retry_timer_fired<JR, JS, SER>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
+        ) where
+            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+            JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+            SER: ServiceEndpointRegistry,
+        {
+            self.handle_retry_event(service_invocation_id, start_arguments, |sm| {
+                sm.notify_retry_timer_fired()
+            })
+            .await;
+        }
+
+        pub(super) async fn handle_stored_entry_ack<JR, JS, SER>(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
             entry_index: EntryIndex,
-        ) {
-            if let Some(sm) = self
+        ) where
+            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+            JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+            SER: ServiceEndpointRegistry,
+        {
+            self.handle_retry_event(service_invocation_id, start_arguments, |sm| {
+                sm.notify_stored_ack(entry_index)
+            })
+            .await;
+        }
+
+        async fn handle_retry_event<JR, JS, SER, FN>(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
+            f: FN,
+        ) where
+            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+            JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+            SER: ServiceEndpointRegistry,
+            FN: FnOnce(&mut InvocationStateMachine),
+        {
+            if let Some(mut sm) = self
                 .invocation_state_machines
-                .get_mut(&service_invocation_id)
+                .remove(&service_invocation_id)
             {
-                sm.notify_stored_ack(entry_index);
+                f(&mut sm);
+                if sm.is_ready_to_retry() {
+                    self.start_invocation_task(
+                        service_invocation_id,
+                        InvokeInputJournal::NoCachedJournal,
+                        start_arguments,
+                        sm,
+                    )
+                    .await;
+                } else {
+                    // Not ready for retrying yet
+                    self.invocation_state_machines
+                        .insert(service_invocation_id, sm);
+                }
             }
             // If no state machine is registered, the PP will send a new invoke
         }
@@ -641,6 +770,7 @@ mod state_machine_coordinator {
             &mut self,
             service_invocation_id: ServiceInvocationId,
             error: InvocationTaskError,
+            retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
         ) {
             if let Some(mut sm) = self
                 .invocation_state_machines
@@ -653,11 +783,13 @@ mod state_machine_coordinator {
                 );
 
                 if error.is_transient() {
-                    if let Some(_next_retry_timer_duration) = sm.handle_task_error() {
+                    if let Some(next_retry_timer_duration) = sm.handle_task_error() {
                         self.invocation_state_machines
-                            .insert(service_invocation_id, sm);
-                        // TODO https://github.com/restatedev/restate/issues/84
-                        unimplemented!("Implement timer");
+                            .insert(service_invocation_id.clone(), sm);
+                        retry_timers.sleep_until(
+                            SystemTime::now() + next_retry_timer_duration,
+                            (self.partition, service_invocation_id),
+                        );
                         return;
                     }
                 }
@@ -781,6 +913,8 @@ mod invocation_state_machine {
 
     #[derive(Debug)]
     enum InvocationState {
+        New,
+
         // If there is no completion channel, then the stream is open in request/response mode
         InFlight {
             // This can be none if the invocation task is request/response
@@ -795,27 +929,38 @@ mod invocation_state_machine {
 
         WaitingRetry {
             timer_fired: bool,
-            // TODO implement timer
-            //  https://github.com/restatedev/restate/issues/84
             journal_tracker: JournalTracker,
         },
     }
 
     impl InvocationStateMachine {
+        pub(super) fn create() -> InvocationStateMachine {
+            Self {
+                task_state: TaskState::NotRunning,
+                invocation_state: InvocationState::New,
+                current_attempt: 0,
+            }
+        }
+
         pub(super) fn start(
+            &mut self,
             abort_handle: AbortHandle,
             completions_tx: Option<mpsc::UnboundedSender<Completion>>,
             retry_policy: RetryPolicy,
-        ) -> Self {
-            Self {
-                task_state: TaskState::Running(abort_handle),
-                invocation_state: InvocationState::InFlight {
-                    completions_tx,
-                    journal_tracker: Default::default(),
-                    retry_policy,
-                },
-                current_attempt: 0,
-            }
+        ) {
+            debug_assert!(matches!(&self.task_state, TaskState::NotRunning));
+            debug_assert!(matches!(
+                &self.invocation_state,
+                InvocationState::New | InvocationState::WaitingRetry { .. }
+            ));
+
+            self.task_state = TaskState::Running(abort_handle);
+            self.invocation_state = InvocationState::InFlight {
+                completions_tx,
+                journal_tracker: Default::default(),
+                retry_policy,
+            };
+            self.current_attempt += 1;
         }
 
         pub(super) fn abort(&mut self) {
@@ -892,14 +1037,13 @@ mod invocation_state_machine {
             ));
 
             self.task_state = TaskState::NotRunning;
-            self.current_attempt = self.current_attempt + 1;
             let (next_timer, journal_tracker) = match &self.invocation_state {
                 InvocationState::InFlight {
                     retry_policy,
                     journal_tracker,
                     ..
                 } => (
-                    retry_policy.next_timer(self.current_attempt),
+                    retry_policy.next_timer(self.current_attempt + 1),
                     *journal_tracker,
                 ),
                 _ => unreachable!(),

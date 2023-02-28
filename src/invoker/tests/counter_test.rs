@@ -6,7 +6,10 @@ mod mocks;
 use bytes::Bytes;
 use common::types::ServiceInvocationId;
 use hyper::Uri;
-use invoker::{DeliveryOptions, EndpointMetadata, Invoker, Kind, OutputEffect, ProtocolType, RetryPolicy, UnboundedInvokerInputSender};
+use invoker::{
+    DeliveryOptions, EndpointMetadata, Invoker, Kind, OutputEffect, ProtocolType, RetryPolicy,
+    UnboundedInvokerInputSender,
+};
 use journal::raw::{RawEntryCodec, RawEntryHeader};
 use journal::{
     Completion, CompletionResult, Entry, EntryResult, GetStateEntry, GetStateValue,
