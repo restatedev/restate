@@ -1,17 +1,16 @@
-use crate::routing::future_impl::{ConsensusSendOperation, LookupMessage, ShuffleSendOperation};
 use crate::{
-    ConsensusOrIngressTarget, KeyedMessage, NetworkCommand, PartitionTableError,
+    ConsensusOrIngressTarget, KeyedMessage, NetworkCommand, PartitionTable, PartitionTableError,
     ShuffleOrIngressTarget, TargetConsensusOrIngress, TargetShuffle, TargetShuffleOrIngress,
     UnboundedNetworkHandle,
 };
 use common::partitioner::HashPartitioner;
 use common::types::{PeerId, PeerTarget};
-use futures::future::{Fuse, FusedFuture};
-use futures::FutureExt;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
 use tokio_util::sync::PollSender;
 use tracing::{debug, trace};
 
@@ -110,7 +109,7 @@ where
     PPOut: TargetShuffleOrIngress<PPToShuffle, PPToIngress>,
     PPToShuffle: TargetShuffle + Into<ShuffleIn> + Debug,
     PPToIngress: Into<IngressIn> + Debug,
-    PartitionTable: crate::PartitionTable,
+    PartitionTable: crate::PartitionTable + Clone,
 {
     pub fn new(
         consensus_tx: mpsc::Sender<PeerTarget<ConsensusMsg>>,
@@ -162,13 +161,13 @@ where
 
     pub async fn run(self, drain: drain::Watch) -> anyhow::Result<()> {
         let Network {
-            mut consensus_in_rx,
+            consensus_in_rx,
             consensus_tx,
             ingress_tx,
             mut network_command_rx,
-            mut shuffle_rx,
-            mut ingress_in_rx,
-            mut partition_processor_rx,
+            shuffle_rx,
+            ingress_in_rx,
+            partition_processor_rx,
             partition_table,
             ..
         } = self;
@@ -176,99 +175,51 @@ where
         debug!("Run network.");
 
         let shutdown = drain.signaled();
-        let mut shuffles: HashMap<PeerId, mpsc::Sender<ShuffleIn>> = HashMap::new();
+        let shuffles: Arc<Mutex<HashMap<PeerId, mpsc::Sender<ShuffleIn>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
-        let consensus_send = ConsensusSendOperation::new(
-            |msg| Self::lookup_target_peer(msg, &partition_table),
-            |msg| consensus_tx.send(msg),
+        let mut consensus_forwarder =
+            ConsensusForwarder::new(consensus_in_rx, consensus_tx.clone());
+        let mut shuffle_router = ShuffleRouter::new(
+            shuffle_rx,
+            consensus_tx.clone(),
+            ingress_tx.clone(),
+            partition_table.clone(),
         );
-        let shuffle_send = ShuffleSendOperation::Idle;
-        let ingress_send = Fuse::terminated();
+        let mut ingress_forwarder =
+            IngressForwarder::new(ingress_in_rx, consensus_tx.clone(), partition_table.clone());
+        let mut partition_processor_router = PartitionProcessorRouter::new(
+            partition_processor_rx,
+            ingress_tx.clone(),
+            Arc::clone(&shuffles),
+        );
 
-        tokio::pin!(consensus_send, shuffle_send, ingress_send, shutdown);
+        tokio::pin!(shutdown);
 
         loop {
             tokio::select! {
-                consensus_msg = consensus_in_rx.recv(), if consensus_send.is_terminated() => {
-                    let consensus_msg = consensus_msg.expect("Network owns the consensus sender, that's why the receiver will never be closed.");
-
-                    trace!(target_peer = %consensus_msg.0, message = ?consensus_msg.1, "Routing consensus message back to itself.");
-
-                    consensus_send.send(consensus_msg);
+                result = consensus_forwarder.run() => {
+                    result?
                 },
-                shuffle_msg = shuffle_rx.recv(), if consensus_send.is_terminated() && ingress_send.is_terminated() => {
-                    let shuffle_msg = shuffle_msg.expect("Network owns the shuffle sender, that's why the receiver will never be closed.");
-                    match shuffle_msg.target() {
-                        ConsensusOrIngressTarget::Consensus(msg) => {
-                            consensus_send.lookup_target_peer_and_send(LookupMessage::left(msg));
-                        },
-                        ConsensusOrIngressTarget::Ingress(msg) => {
-                            trace!(message = ?msg, "Routing shuffle message to ingress.");
-
-                            ingress_send.set(ingress_tx.send(msg.into()).fuse());
-                        }
-                    }
+                result = shuffle_router.run() => {
+                    result?
                 },
-                ingress_msg = ingress_in_rx.recv(), if consensus_send.is_terminated() => {
-                    let ingress_msg = ingress_msg.expect("Network owns the ingress sender, that's why the receiver will never be closed.");
-
-                    consensus_send.lookup_target_peer_and_send(LookupMessage::right(ingress_msg));
-                }
-                partition_processor_msg = partition_processor_rx.recv(), if shuffle_send.is_terminated() && ingress_send.is_terminated() => {
-                    let partition_processor_msg = partition_processor_msg.expect("Network owns the partition processor sender, that's why the receiver will never be closed.");
-
-                    match partition_processor_msg.target() {
-                        ShuffleOrIngressTarget::Shuffle(msg) => {
-                            let shuffle_target = msg.shuffle_target();
-
-                            if let Some(shuffle_tx) = shuffles.get(&shuffle_target).cloned() {
-                                let owned_permit = shuffle_tx.reserve_owned();
-
-                                trace!(shuffle_target, message = ?msg, "Routing partition processor message to shuffle.");
-
-                                // We need a special send operation future which owns the send future
-                                // because while sending, we might modify the shuffles struct which
-                                // requires mutable access.
-                                shuffle_send.set(ShuffleSendOperation::Sending {
-                                    message: Some(msg.into()),
-                                    shuffle_target,
-                                    owned_permit
-                                });
-                            } else {
-                                debug!("Unknown shuffle target {shuffle_target}. Ignoring message {msg:?}.");
-                            }
-                        },
-                        ShuffleOrIngressTarget::Ingress(msg) => {
-                            trace!(message = ?msg, "Routing partition processor message to ingress.");
-
-                            ingress_send.set(ingress_tx.send(msg.into()).fuse());
-                        }
-                    }
-                }
-                send_result = &mut consensus_send => {
-                    send_result?;
+                result = ingress_forwarder.run() => {
+                    result?
                 },
-                send_result = &mut shuffle_send => {
-                    send_result?;
-                },
-                send_result = &mut ingress_send => {
-                    send_result?;
+                result = partition_processor_router.run() => {
+                    result?
                 },
                 command = network_command_rx.recv() => {
                     let command = command.expect("Network owns the command sender, that's why the receiver will never be closed.");
                     match command {
                         NetworkCommand::RegisterShuffle { peer_id, shuffle_tx } => {
                             trace!(shuffle_id = peer_id, "Register new shuffle.");
-                            shuffles.insert(peer_id, shuffle_tx);
+                            shuffles.lock().unwrap().insert(peer_id, shuffle_tx);
                         },
                         NetworkCommand::UnregisterShuffle { peer_id } => {
                             trace!(shuffle_id = peer_id, "Unregister shuffle.");
-                            shuffles.remove(&peer_id);
-
-                            if shuffle_send.shuffle_target() == Some(peer_id) {
-                                // terminate shuffle send operation if the target has been removed
-                                shuffle_send.set(ShuffleSendOperation::Idle);
-                            }
+                            shuffles.lock().unwrap().remove(&peer_id);
                         }
                     };
                 },
@@ -281,361 +232,227 @@ where
 
         Ok(())
     }
+}
 
-    async fn lookup_target_peer(
-        msg: LookupMessage<ShuffleToCon, IngressOut, ConsensusMsg>,
-        partition_table: &impl crate::PartitionTable,
-    ) -> Result<
-        (
-            PeerId,
-            LookupMessage<ShuffleToCon, IngressOut, ConsensusMsg>,
-        ),
-        PartitionTableError,
-    > {
-        let partition_key = HashPartitioner::compute_partition_key(&msg);
-        let target_peer = partition_table
-            .partition_key_to_target_peer(partition_key)
-            .await?;
+async fn lookup_target_peer(
+    msg: &impl KeyedMessage,
+    partition_table: &impl PartitionTable,
+) -> Result<PeerId, PartitionTableError> {
+    let partition_key = HashPartitioner::compute_partition_key(&msg.routing_key());
+    partition_table
+        .partition_key_to_target_peer(partition_key)
+        .await
+}
 
-        Ok((target_peer, msg))
+struct ConsensusForwarder<T> {
+    receiver: mpsc::Receiver<T>,
+    sender: mpsc::Sender<T>,
+}
+
+impl<T> ConsensusForwarder<T>
+where
+    T: Debug,
+{
+    fn new(receiver: mpsc::Receiver<T>, sender: mpsc::Sender<T>) -> Self {
+        Self { receiver, sender }
+    }
+
+    async fn run(&mut self) -> Result<(), SendError<T>> {
+        while let Some(message) = self.receiver.recv().await {
+            trace!(?message, "Forwarding consensus message to itself.");
+            self.sender.send(message).await?
+        }
+
+        Ok(())
     }
 }
 
-mod future_impl {
-    use crate::{KeyedMessage, PartitionTableError};
-    use common::types::{PeerId, PeerTarget};
-    use futures::future::FusedFuture;
-    use futures::ready;
-    use pin_project::pin_project;
-    use std::fmt::{Debug, Formatter};
-    use std::future::Future;
-    use std::hash::{Hash, Hasher};
-    use std::marker::PhantomData;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
-    use tokio::sync::mpsc::error::SendError;
-    use tokio::sync::mpsc::OwnedPermit;
-    use tracing::trace;
+#[derive(Debug, thiserror::Error)]
+enum ShuffleRouterError<C, I> {
+    #[error("failed resolving target peer: {0}")]
+    TargetPeerResolution(#[from] PartitionTableError),
+    #[error("failed routing message to consensus: {0}")]
+    RoutingToConsensus(SendError<PeerTarget<C>>),
+    #[error("failed routing message to ingress: {0}")]
+    RoutingToIngress(SendError<I>),
+}
 
-    pub(super) struct LookupMessage<A, B, Target> {
-        msg: Message<A, B>,
-        _target: PhantomData<Target>,
-    }
+struct ShuffleRouter<ShuffleMsg, ShuffleToCon, ShuffleToIngress, ConsensusMsg, IngressMsg, P> {
+    receiver: mpsc::Receiver<ShuffleMsg>,
+    consensus_tx: mpsc::Sender<PeerTarget<ConsensusMsg>>,
+    ingress_tx: mpsc::Sender<IngressMsg>,
+    partition_table: P,
 
-    impl<A, B, Target> Hash for LookupMessage<A, B, Target>
-    where
-        A: KeyedMessage,
-        B: KeyedMessage,
-    {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            match &self.msg {
-                Message::A(a) => a.routing_key().hash(state),
-                Message::B(b) => b.routing_key().hash(state),
-            }
+    _shuffle_to_consensus: PhantomData<ShuffleToCon>,
+    _shuffle_to_ingress: PhantomData<ShuffleToIngress>,
+}
+
+impl<ShuffleMsg, ShuffleToCon, ShuffleToIngress, ConsensusMsg, IngressMsg, P>
+    ShuffleRouter<ShuffleMsg, ShuffleToCon, ShuffleToIngress, ConsensusMsg, IngressMsg, P>
+where
+    ShuffleMsg: TargetConsensusOrIngress<ShuffleToCon, ShuffleToIngress>,
+    ShuffleToCon: KeyedMessage + Into<ConsensusMsg> + Debug,
+    ShuffleToIngress: Into<IngressMsg> + Debug,
+    P: PartitionTable,
+{
+    fn new(
+        receiver: mpsc::Receiver<ShuffleMsg>,
+        consensus_tx: mpsc::Sender<PeerTarget<ConsensusMsg>>,
+        ingress_tx: mpsc::Sender<IngressMsg>,
+        partition_table: P,
+    ) -> Self {
+        Self {
+            receiver,
+            consensus_tx,
+            ingress_tx,
+            partition_table,
+            _shuffle_to_ingress: Default::default(),
+            _shuffle_to_consensus: Default::default(),
         }
     }
 
-    impl<A, B, Target> Debug for LookupMessage<A, B, Target>
-    where
-        A: Debug,
-        B: Debug,
-    {
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            self.msg.fmt(f)
-        }
-    }
+    async fn run(&mut self) -> Result<(), ShuffleRouterError<ConsensusMsg, IngressMsg>> {
+        while let Some(message) = self.receiver.recv().await {
+            match message.target() {
+                ConsensusOrIngressTarget::Consensus(msg) => {
+                    let target_peer = lookup_target_peer(&msg, &self.partition_table).await?;
 
-    enum Message<A, B> {
-        A(A),
-        B(B),
-    }
+                    trace!(target_peer, message = ?msg, "Routing shuffle message to consensus.");
 
-    impl<A, B> Debug for Message<A, B>
-    where
-        A: Debug,
-        B: Debug,
-    {
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            match self {
-                Message::A(a) => a.fmt(f),
-                Message::B(b) => b.fmt(f),
-            }
-        }
-    }
-
-    impl<A, B, Target> LookupMessage<A, B, Target>
-    where
-        A: Into<Target>,
-        B: Into<Target>,
-    {
-        pub(super) fn left(msg: A) -> Self {
-            Self {
-                msg: Message::A(msg),
-                _target: Default::default(),
-            }
-        }
-
-        pub(super) fn right(msg: B) -> Self {
-            Self {
-                msg: Message::B(msg),
-                _target: Default::default(),
-            }
-        }
-
-        fn into_target(self) -> Target {
-            match self.msg {
-                Message::A(msg) => msg.into(),
-                Message::B(msg) => msg.into(),
-            }
-        }
-    }
-
-    #[pin_project(project = StateProj)]
-    enum State<LookupFuture, SendingFuture> {
-        Idle,
-        Lookup {
-            #[pin]
-            future: LookupFuture,
-        },
-        Sending {
-            #[pin]
-            future: SendingFuture,
-        },
-    }
-
-    #[pin_project]
-    pub(super) struct ConsensusSendOperation<
-        LookupOp,
-        SendOp,
-        ConsensusMsg,
-        LookupFuture,
-        SendingFuture,
-        ShuffleMsg,
-        IngressMsg,
-    > {
-        send_op: SendOp,
-        lookup_op: LookupOp,
-        #[pin]
-        state: State<LookupFuture, SendingFuture>,
-
-        _consensus_msg: PhantomData<ConsensusMsg>,
-        _shuffle_msg: PhantomData<ShuffleMsg>,
-        _ingress_msg: PhantomData<IngressMsg>,
-    }
-
-    impl<LookupOp, SendOp, ConsensusMsg, LookupFuture, SendingFuture, ShuffleMsg, IngressMsg>
-        ConsensusSendOperation<
-            LookupOp,
-            SendOp,
-            ConsensusMsg,
-            LookupFuture,
-            SendingFuture,
-            ShuffleMsg,
-            IngressMsg,
-        >
-    where
-        SendOp: Fn(PeerTarget<ConsensusMsg>) -> SendingFuture,
-        LookupOp: Fn(LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>) -> LookupFuture,
-    {
-        pub(super) fn new(lookup_op: LookupOp, send_op: SendOp) -> Self {
-            Self {
-                lookup_op,
-                send_op,
-                state: State::Idle,
-                _consensus_msg: Default::default(),
-                _shuffle_msg: Default::default(),
-                _ingress_msg: Default::default(),
-            }
-        }
-
-        pub(super) fn send(self: &mut Pin<&mut Self>, msg: PeerTarget<ConsensusMsg>) {
-            let mut this = self.as_mut().project();
-
-            debug_assert!(
-                matches!(this.state.as_mut().project(), StateProj::Idle),
-                "Previous consensus send operation has not been completed."
-            );
-
-            this.state.set(State::Sending {
-                future: (this.send_op)(msg),
-            });
-        }
-
-        pub(super) fn lookup_target_peer_and_send(
-            self: &mut Pin<&mut Self>,
-            msg: LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>,
-        ) {
-            let mut this = self.as_mut().project();
-
-            debug_assert!(
-                matches!(this.state.as_mut().project(), StateProj::Idle),
-                "Previous consensus send operation has not been completed."
-            );
-
-            let future = (this.lookup_op)(msg);
-
-            this.state.set(State::Lookup { future })
-        }
-    }
-
-    #[derive(Debug, thiserror::Error)]
-    pub(super) enum ConsensusSendError<M: Debug> {
-        #[error("failed sending message because {0}")]
-        SendError(#[from] SendError<PeerTarget<M>>),
-        #[error("cannot find target peer: {0}")]
-        UnknownTargetPeer(#[from] PartitionTableError),
-    }
-
-    impl<LookupOp, SendOp, ConsensusMsg, LookupFuture, SendingFuture, ShuffleMsg, IngressMsg> Future
-        for ConsensusSendOperation<
-            LookupOp,
-            SendOp,
-            ConsensusMsg,
-            LookupFuture,
-            SendingFuture,
-            ShuffleMsg,
-            IngressMsg,
-        >
-    where
-        SendingFuture: Future<Output = Result<(), SendError<PeerTarget<ConsensusMsg>>>>,
-        LookupFuture: Future<
-            Output = Result<
-                (PeerId, LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>),
-                PartitionTableError,
-            >,
-        >,
-        ConsensusMsg: Debug,
-        SendOp: Fn(PeerTarget<ConsensusMsg>) -> SendingFuture,
-        ShuffleMsg: Into<ConsensusMsg> + Debug,
-        IngressMsg: Into<ConsensusMsg> + Debug,
-    {
-        type Output = Result<(), ConsensusSendError<ConsensusMsg>>;
-
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            let mut this = self.project();
-            loop {
-                match this.state.as_mut().project() {
-                    StateProj::Idle => return Poll::Pending,
-                    StateProj::Lookup { future } => {
-                        let result = ready!(future.poll(cx));
-
-                        match result {
-                            Ok((target_peer, msg)) => {
-                                trace!(target_peer, message = ?msg, "Routing message to consensus.");
-
-                                let future = (this.send_op)((target_peer, msg.into_target()));
-
-                                this.state.set(State::Sending { future });
-                            }
-                            Err(err) => {
-                                this.state.set(State::Idle);
-                                return Poll::Ready(Err(err.into()));
-                            }
-                        }
-                    }
-                    StateProj::Sending { future } => {
-                        let result = ready!(future.poll(cx));
-
-                        this.state.set(State::Idle);
-
-                        return Poll::Ready(result.map_err(Into::into));
-                    }
+                    self.consensus_tx
+                        .send((target_peer, msg.into()))
+                        .await
+                        .map_err(ShuffleRouterError::RoutingToConsensus)?
+                }
+                ConsensusOrIngressTarget::Ingress(msg) => {
+                    trace!(message = ?msg, "Routing shuffle message to ingress.");
+                    self.ingress_tx
+                        .send(msg.into())
+                        .await
+                        .map_err(ShuffleRouterError::RoutingToIngress)?
                 }
             }
         }
-    }
 
-    impl<LookupOp, SendOp, ConsensusMsg, LookupFuture, SendingFuture, ShuffleMsg, IngressMsg>
-        FusedFuture
-        for ConsensusSendOperation<
-            LookupOp,
-            SendOp,
-            ConsensusMsg,
-            LookupFuture,
-            SendingFuture,
-            ShuffleMsg,
-            IngressMsg,
-        >
-    where
-        SendingFuture: Future<Output = Result<(), SendError<PeerTarget<ConsensusMsg>>>>,
-        LookupFuture: Future<
-            Output = Result<
-                (PeerId, LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>),
-                PartitionTableError,
-            >,
-        >,
-        ConsensusMsg: Debug,
-        SendOp: Fn(PeerTarget<ConsensusMsg>) -> SendingFuture,
-        ShuffleMsg: Into<ConsensusMsg> + Debug,
-        IngressMsg: Into<ConsensusMsg> + Debug,
-    {
-        fn is_terminated(&self) -> bool {
-            matches! {self.state, State::Idle}
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum IngressForwarderError<C> {
+    #[error("failed resolving target peer: {0}")]
+    TargetPeerResolution(#[from] PartitionTableError),
+    #[error("failed forwarding message: {0}")]
+    ForwardingMessage(#[from] SendError<PeerTarget<C>>),
+}
+
+struct IngressForwarder<I, C, P> {
+    receiver: mpsc::Receiver<I>,
+    consensus_tx: mpsc::Sender<PeerTarget<C>>,
+    partition_table: P,
+}
+
+impl<I, C, P> IngressForwarder<I, C, P>
+where
+    I: KeyedMessage + Into<C> + Debug,
+    P: PartitionTable,
+{
+    fn new(
+        receiver: mpsc::Receiver<I>,
+        consensus_tx: mpsc::Sender<PeerTarget<C>>,
+        partition_table: P,
+    ) -> Self {
+        Self {
+            receiver,
+            consensus_tx,
+            partition_table,
         }
     }
 
-    #[pin_project(project = ShuffleSendOperationProj)]
-    pub(super) enum ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg> {
-        Idle,
-        Sending {
-            shuffle_target: PeerId,
-            message: Option<ShuffleMsg>,
-            #[pin]
-            owned_permit: OwnedPermitFuture,
-        },
-    }
+    async fn run(&mut self) -> Result<(), IngressForwarderError<C>> {
+        while let Some(message) = self.receiver.recv().await {
+            let target_peer = lookup_target_peer(&message, &self.partition_table).await?;
 
-    impl<OwnedPermitFuture, ShuffleMsg> ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg> {
-        pub(super) fn shuffle_target(&self) -> Option<PeerId> {
-            match self {
-                ShuffleSendOperation::Idle => None,
-                ShuffleSendOperation::Sending { shuffle_target, .. } => Some(*shuffle_target),
-            }
+            trace!(?message, "Forwarding ingress message to consensus.");
+
+            self.consensus_tx
+                .send((target_peer, message.into()))
+                .await?
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PartitionProcessorRouterError<I> {
+    #[error("failed routing to ingress: {0}")]
+    RoutingToIngress(#[from] SendError<I>),
+}
+
+struct PartitionProcessorRouter<PPMsg, PPToShuffle, PPToIngress, ShuffleMsg, IngressMsg> {
+    receiver: mpsc::Receiver<PPMsg>,
+    ingress_tx: mpsc::Sender<IngressMsg>,
+    shuffle_txs: Arc<Mutex<HashMap<PeerId, mpsc::Sender<ShuffleMsg>>>>,
+
+    _pp_to_shuffle: PhantomData<PPToShuffle>,
+    _pp_to_ingress: PhantomData<PPToIngress>,
+}
+
+impl<PPMsg, PPToShuffle, PPToIngress, ShuffleMsg, IngressMsg>
+    PartitionProcessorRouter<PPMsg, PPToShuffle, PPToIngress, ShuffleMsg, IngressMsg>
+where
+    PPMsg: TargetShuffleOrIngress<PPToShuffle, PPToIngress>,
+    PPToShuffle: TargetShuffle + Into<ShuffleMsg> + Debug,
+    PPToIngress: Into<IngressMsg> + Debug,
+{
+    fn new(
+        receiver: mpsc::Receiver<PPMsg>,
+        ingress_tx: mpsc::Sender<IngressMsg>,
+        shuffle_txs: Arc<Mutex<HashMap<PeerId, mpsc::Sender<ShuffleMsg>>>>,
+    ) -> Self {
+        Self {
+            receiver,
+            ingress_tx,
+            shuffle_txs,
+            _pp_to_ingress: Default::default(),
+            _pp_to_shuffle: Default::default(),
         }
     }
 
-    impl<OwnedPermitFuture, ShuffleMsg> Future for ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg>
-    where
-        OwnedPermitFuture: Future<Output = Result<OwnedPermit<ShuffleMsg>, SendError<()>>>,
-    {
-        type Output = Result<(), SendError<ShuffleMsg>>;
+    async fn run(&mut self) -> Result<(), PartitionProcessorRouterError<IngressMsg>> {
+        while let Some(message) = self.receiver.recv().await {
+            match message.target() {
+                ShuffleOrIngressTarget::Shuffle(msg) => {
+                    let shuffle_target = msg.shuffle_target();
 
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            match self.as_mut().project() {
-                ShuffleSendOperationProj::Idle => Poll::Pending,
-                ShuffleSendOperationProj::Sending {
-                    message,
-                    owned_permit,
-                    ..
-                } => {
-                    let owned_permit = ready!(owned_permit.poll(cx));
-                    let message = message
-                        .take()
-                        .expect("Shuffle send operation can only be polled once.");
-                    self.set(ShuffleSendOperation::Idle);
+                    let shuffle_tx = self
+                        .shuffle_txs
+                        .lock()
+                        .unwrap()
+                        .get(&shuffle_target)
+                        .cloned();
 
-                    match owned_permit {
-                        Ok(owned_permit) => {
-                            owned_permit.send(message);
-                            Poll::Ready(Ok(()))
-                        }
-                        Err(_) => Poll::Ready(Err(SendError(message))),
+                    if let Some(shuffle_tx) = shuffle_tx {
+                        trace!(message = ?msg, "Routing partition processor message to shuffle.");
+                        // can fail if the shuffle was deregistered in the meantime
+                        let _ = shuffle_tx.send(msg.into()).await;
+                    } else {
+                        debug!(
+                            "Unknown shuffle target {shuffle_target}. Ignoring message {msg:?}."
+                        );
                     }
+                }
+                ShuffleOrIngressTarget::Ingress(msg) => {
+                    trace!(message = ?msg, "Routing partition processor message to ingress.");
+                    self.ingress_tx
+                        .send(msg.into())
+                        .await
+                        .map_err(PartitionProcessorRouterError::RoutingToIngress)?;
                 }
             }
         }
-    }
 
-    impl<OwnedPermitFuture, ShuffleMsg> FusedFuture
-        for ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg>
-    where
-        OwnedPermitFuture: Future<Output = Result<OwnedPermit<ShuffleMsg>, SendError<()>>>,
-    {
-        fn is_terminated(&self) -> bool {
-            match self {
-                ShuffleSendOperation::Idle => true,
-                ShuffleSendOperation::Sending { .. } => false,
-            }
-        }
+        Ok(())
     }
 }

@@ -119,7 +119,7 @@ impl TargetShuffle for partition::ShuffleMessageAck {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct FixedPartitionTable {
     number_partitions: u64,
 }
