@@ -1,21 +1,15 @@
+use crate::routing::future_impl::{ConsensusSendOperation, LookupMessage, ShuffleSendOperation};
 use crate::{
     ConsensusOrIngressTarget, KeyedMessage, NetworkCommand, ShuffleOrIngressTarget,
     TargetConsensusOrIngress, TargetShuffle, TargetShuffleOrIngress, UnboundedNetworkHandle,
 };
 use common::types::{PeerId, PeerTarget};
 use futures::future::{Fuse, FusedFuture};
-use futures::ready;
 use futures::FutureExt;
-use pin_project::pin_project;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::future::Future;
 use std::marker::PhantomData;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::SendError;
-use tokio::sync::mpsc::OwnedPermit;
 use tokio_util::sync::PollSender;
 use tracing::{debug, trace};
 
@@ -173,7 +167,10 @@ where
         let shutdown = drain.signaled();
         let mut shuffles: HashMap<PeerId, mpsc::Sender<ShuffleIn>> = HashMap::new();
 
-        let consensus_send = Fuse::terminated();
+        let consensus_send = ConsensusSendOperation::new(
+            |msg| Self::lookup_target_peer(msg),
+            |msg| consensus_tx.send(msg),
+        );
         let shuffle_send = ShuffleSendOperation::Idle;
         let ingress_send = Fuse::terminated();
 
@@ -186,17 +183,13 @@ where
 
                     trace!(target_peer = %consensus_msg.0, message = ?consensus_msg.1, "Routing consensus message back to itself.");
 
-                    consensus_send.set(consensus_tx.send(consensus_msg).fuse());
+                    consensus_send.send(consensus_msg);
                 },
                 shuffle_msg = shuffle_rx.recv(), if consensus_send.is_terminated() && ingress_send.is_terminated() => {
                     let shuffle_msg = shuffle_msg.expect("Network owns the shuffle sender, that's why the receiver will never be closed.");
                     match shuffle_msg.target() {
                         ConsensusOrIngressTarget::Consensus(msg) => {
-                            let target_peer = Self::select_target_peer(&msg);
-
-                            trace!(target_peer, message = ?msg, "Routing shuffle message to consensus module.");
-
-                            consensus_send.set(consensus_tx.send((target_peer, msg.into())).fuse());
+                            consensus_send.lookup_target_peer_and_send(LookupMessage::left(msg));
                         },
                         ConsensusOrIngressTarget::Ingress(msg) => {
                             trace!(message = ?msg, "Routing shuffle message to ingress.");
@@ -208,11 +201,7 @@ where
                 ingress_msg = ingress_in_rx.recv(), if consensus_send.is_terminated() => {
                     let ingress_msg = ingress_msg.expect("Network owns the ingress sender, that's why the receiver will never be closed.");
 
-                    let target_peer = Self::select_target_peer(&ingress_msg);
-
-                    trace!(target_peer, message = ?ingress_msg, "Routing ingress message to consensus module.");
-
-                    consensus_send.set(consensus_tx.send((target_peer, ingress_msg.into())).fuse());
+                    consensus_send.lookup_target_peer_and_send(LookupMessage::right(ingress_msg));
                 }
                 partition_processor_msg = partition_processor_rx.recv(), if shuffle_send.is_terminated() && ingress_send.is_terminated() => {
                     let partition_processor_msg = partition_processor_msg.expect("Network owns the partition processor sender, that's why the receiver will never be closed.");
@@ -282,72 +271,316 @@ where
         Ok(())
     }
 
-    fn select_target_peer(_msg: &impl KeyedMessage) -> PeerId {
+    async fn lookup_target_peer(
+        _msg: LookupMessage<ShuffleToCon, IngressOut, ConsensusMsg>,
+    ) -> (
+        PeerId,
+        LookupMessage<ShuffleToCon, IngressOut, ConsensusMsg>,
+    ) {
         todo!("https://github.com/restatedev/restate/issues/121");
     }
 }
 
-#[pin_project(project = ShuffleSendOperationProj)]
-enum ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg> {
-    Idle,
-    Sending {
-        shuffle_target: PeerId,
-        message: Option<ShuffleMsg>,
-        #[pin]
-        owned_permit: OwnedPermitFuture,
-    },
-}
+mod future_impl {
+    use common::types::{PeerId, PeerTarget};
+    use futures::future::FusedFuture;
+    use futures::ready;
+    use pin_project::pin_project;
+    use std::fmt::{Debug, Formatter};
+    use std::future::Future;
+    use std::marker::PhantomData;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::sync::mpsc::error::SendError;
+    use tokio::sync::mpsc::OwnedPermit;
+    use tracing::trace;
 
-impl<OwnedPermitFuture, ShuffleMsg> ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg> {
-    fn shuffle_target(&self) -> Option<PeerId> {
-        match self {
-            ShuffleSendOperation::Idle => None,
-            ShuffleSendOperation::Sending { shuffle_target, .. } => Some(*shuffle_target),
+    pub(super) struct LookupMessage<A, B, Target> {
+        msg: Message<A, B>,
+        _target: PhantomData<Target>,
+    }
+
+    impl<A, B, Target> Debug for LookupMessage<A, B, Target>
+    where
+        A: Debug,
+        B: Debug,
+    {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            self.msg.fmt(f)
         }
     }
-}
 
-impl<OwnedPermitFuture, ShuffleMsg> Future for ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg>
-where
-    OwnedPermitFuture: Future<Output = Result<OwnedPermit<ShuffleMsg>, SendError<()>>>,
-{
-    type Output = Result<(), SendError<ShuffleMsg>>;
+    enum Message<A, B> {
+        A(A),
+        B(B),
+    }
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.as_mut().project() {
-            ShuffleSendOperationProj::Idle => Poll::Pending,
-            ShuffleSendOperationProj::Sending {
-                message,
-                owned_permit,
-                ..
-            } => {
-                let owned_permit = ready!(owned_permit.poll(cx));
-                let message = message
-                    .take()
-                    .expect("Shuffle send operation can only be polled once.");
-                self.set(ShuffleSendOperation::Idle);
+    impl<A, B> Debug for Message<A, B>
+    where
+        A: Debug,
+        B: Debug,
+    {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Message::A(a) => a.fmt(f),
+                Message::B(b) => b.fmt(f),
+            }
+        }
+    }
 
-                match owned_permit {
-                    Ok(owned_permit) => {
-                        owned_permit.send(message);
-                        Poll::Ready(Ok(()))
+    impl<A, B, Target> LookupMessage<A, B, Target>
+    where
+        A: Into<Target>,
+        B: Into<Target>,
+    {
+        pub(super) fn left(msg: A) -> Self {
+            Self {
+                msg: Message::A(msg),
+                _target: Default::default(),
+            }
+        }
+
+        pub(super) fn right(msg: B) -> Self {
+            Self {
+                msg: Message::B(msg),
+                _target: Default::default(),
+            }
+        }
+
+        fn into_target(self) -> Target {
+            match self.msg {
+                Message::A(msg) => msg.into(),
+                Message::B(msg) => msg.into(),
+            }
+        }
+    }
+
+    #[pin_project(project = StateProj)]
+    enum State<LookupFuture, SendingFuture> {
+        Idle,
+        Lookup {
+            #[pin]
+            future: LookupFuture,
+        },
+        Sending {
+            #[pin]
+            future: SendingFuture,
+        },
+    }
+
+    #[pin_project]
+    pub(super) struct ConsensusSendOperation<
+        LookupOp,
+        SendOp,
+        ConsensusMsg,
+        LookupFuture,
+        SendingFuture,
+        ShuffleMsg,
+        IngressMsg,
+    > {
+        send_op: SendOp,
+        lookup_op: LookupOp,
+        #[pin]
+        state: State<LookupFuture, SendingFuture>,
+
+        _consensus_msg: PhantomData<ConsensusMsg>,
+        _shuffle_msg: PhantomData<ShuffleMsg>,
+        _ingress_msg: PhantomData<IngressMsg>,
+    }
+
+    impl<LookupOp, SendOp, ConsensusMsg, LookupFuture, SendingFuture, ShuffleMsg, IngressMsg>
+        ConsensusSendOperation<
+            LookupOp,
+            SendOp,
+            ConsensusMsg,
+            LookupFuture,
+            SendingFuture,
+            ShuffleMsg,
+            IngressMsg,
+        >
+    where
+        SendOp: Fn(PeerTarget<ConsensusMsg>) -> SendingFuture,
+        LookupOp: Fn(LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>) -> LookupFuture,
+    {
+        pub(super) fn new(lookup_op: LookupOp, send_op: SendOp) -> Self {
+            Self {
+                lookup_op,
+                send_op,
+                state: State::Idle,
+                _consensus_msg: Default::default(),
+                _shuffle_msg: Default::default(),
+                _ingress_msg: Default::default(),
+            }
+        }
+
+        pub(super) fn send(self: &mut Pin<&mut Self>, msg: PeerTarget<ConsensusMsg>) {
+            let mut this = self.as_mut().project();
+
+            debug_assert!(
+                matches!(this.state.as_mut().project(), StateProj::Idle),
+                "Previous consensus send operation has not been completed."
+            );
+
+            this.state.set(State::Sending {
+                future: (this.send_op)(msg),
+            });
+        }
+
+        pub(super) fn lookup_target_peer_and_send(
+            self: &mut Pin<&mut Self>,
+            msg: LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>,
+        ) {
+            let mut this = self.as_mut().project();
+
+            debug_assert!(
+                matches!(this.state.as_mut().project(), StateProj::Idle),
+                "Previous consensus send operation has not been completed."
+            );
+
+            let future = (this.lookup_op)(msg);
+
+            this.state.set(State::Lookup { future })
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("failed sending message because {0}")]
+    pub(super) struct ConsensusSendError<M: Debug>(#[from] SendError<PeerTarget<M>>);
+
+    impl<LookupOp, SendOp, ConsensusMsg, LookupFuture, SendingFuture, ShuffleMsg, IngressMsg> Future
+        for ConsensusSendOperation<
+            LookupOp,
+            SendOp,
+            ConsensusMsg,
+            LookupFuture,
+            SendingFuture,
+            ShuffleMsg,
+            IngressMsg,
+        >
+    where
+        SendingFuture: Future<Output = Result<(), SendError<PeerTarget<ConsensusMsg>>>>,
+        LookupFuture:
+            Future<Output = (PeerId, LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>)>,
+        ConsensusMsg: Debug,
+        SendOp: Fn(PeerTarget<ConsensusMsg>) -> SendingFuture,
+        ShuffleMsg: Into<ConsensusMsg> + Debug,
+        IngressMsg: Into<ConsensusMsg> + Debug,
+    {
+        type Output = Result<(), ConsensusSendError<ConsensusMsg>>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let mut this = self.project();
+            loop {
+                match this.state.as_mut().project() {
+                    StateProj::Idle => return Poll::Pending,
+                    StateProj::Lookup { future } => {
+                        let (target_peer, msg) = ready!(future.poll(cx));
+
+                        trace!(target_peer, message = ?msg, "Routing message to consensus.");
+
+                        let future = (this.send_op)((target_peer, msg.into_target()));
+
+                        this.state.set(State::Sending { future });
                     }
-                    Err(_) => Poll::Ready(Err(SendError(message))),
+                    StateProj::Sending { future } => {
+                        let result = ready!(future.poll(cx));
+
+                        this.state.set(State::Idle);
+
+                        return Poll::Ready(result.map_err(Into::into));
+                    }
                 }
             }
         }
     }
-}
 
-impl<OwnedPermitFuture, ShuffleMsg> FusedFuture
-    for ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg>
-where
-    OwnedPermitFuture: Future<Output = Result<OwnedPermit<ShuffleMsg>, SendError<()>>>,
-{
-    fn is_terminated(&self) -> bool {
-        match self {
-            ShuffleSendOperation::Idle => true,
-            ShuffleSendOperation::Sending { .. } => false,
+    impl<LookupOp, SendOp, ConsensusMsg, LookupFuture, SendingFuture, ShuffleMsg, IngressMsg>
+        FusedFuture
+        for ConsensusSendOperation<
+            LookupOp,
+            SendOp,
+            ConsensusMsg,
+            LookupFuture,
+            SendingFuture,
+            ShuffleMsg,
+            IngressMsg,
+        >
+    where
+        SendingFuture: Future<Output = Result<(), SendError<PeerTarget<ConsensusMsg>>>>,
+        LookupFuture:
+            Future<Output = (PeerId, LookupMessage<ShuffleMsg, IngressMsg, ConsensusMsg>)>,
+        ConsensusMsg: Debug,
+        SendOp: Fn(PeerTarget<ConsensusMsg>) -> SendingFuture,
+        ShuffleMsg: Into<ConsensusMsg> + Debug,
+        IngressMsg: Into<ConsensusMsg> + Debug,
+    {
+        fn is_terminated(&self) -> bool {
+            matches! {self.state, State::Idle}
+        }
+    }
+
+    #[pin_project(project = ShuffleSendOperationProj)]
+    pub(super) enum ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg> {
+        Idle,
+        Sending {
+            shuffle_target: PeerId,
+            message: Option<ShuffleMsg>,
+            #[pin]
+            owned_permit: OwnedPermitFuture,
+        },
+    }
+
+    impl<OwnedPermitFuture, ShuffleMsg> ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg> {
+        pub(super) fn shuffle_target(&self) -> Option<PeerId> {
+            match self {
+                ShuffleSendOperation::Idle => None,
+                ShuffleSendOperation::Sending { shuffle_target, .. } => Some(*shuffle_target),
+            }
+        }
+    }
+
+    impl<OwnedPermitFuture, ShuffleMsg> Future for ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg>
+    where
+        OwnedPermitFuture: Future<Output = Result<OwnedPermit<ShuffleMsg>, SendError<()>>>,
+    {
+        type Output = Result<(), SendError<ShuffleMsg>>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            match self.as_mut().project() {
+                ShuffleSendOperationProj::Idle => Poll::Pending,
+                ShuffleSendOperationProj::Sending {
+                    message,
+                    owned_permit,
+                    ..
+                } => {
+                    let owned_permit = ready!(owned_permit.poll(cx));
+                    let message = message
+                        .take()
+                        .expect("Shuffle send operation can only be polled once.");
+                    self.set(ShuffleSendOperation::Idle);
+
+                    match owned_permit {
+                        Ok(owned_permit) => {
+                            owned_permit.send(message);
+                            Poll::Ready(Ok(()))
+                        }
+                        Err(_) => Poll::Ready(Err(SendError(message))),
+                    }
+                }
+            }
+        }
+    }
+
+    impl<OwnedPermitFuture, ShuffleMsg> FusedFuture
+        for ShuffleSendOperation<OwnedPermitFuture, ShuffleMsg>
+    where
+        OwnedPermitFuture: Future<Output = Result<OwnedPermit<ShuffleMsg>, SendError<()>>>,
+    {
+        fn is_terminated(&self) -> bool {
+            match self {
+                ShuffleSendOperation::Idle => true,
+                ShuffleSendOperation::Sending { .. } => false,
+            }
         }
     }
 }
