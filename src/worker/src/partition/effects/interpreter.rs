@@ -6,7 +6,7 @@ use common::utils::GenericError;
 use futures::future::BoxFuture;
 use invoker::InvokeInputJournal;
 use journal::raw::{RawEntry, RawEntryCodec, RawEntryCodecError};
-use journal::{Completion, CompletionResult, PollInputStreamEntry};
+use journal::{Completion, CompletionResult};
 use std::marker::PhantomData;
 use tracing::trace;
 
@@ -233,14 +233,13 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     &service_invocation.method_name,
                 )?;
 
-                let input_stream_entry = PollInputStreamEntry {
-                    result: service_invocation.argument,
-                };
+                let input_entry =
+                    Codec::serialize_as_unary_input_entry(service_invocation.argument);
 
                 state_storage.store_journal_entry(
                     &service_invocation.id.service_id,
                     1,
-                    &Self::into_raw_entry(&input_stream_entry),
+                    &input_entry,
                 )?;
 
                 // TODO: Send raw PollInputStreamEntry together with Invoke message
@@ -594,9 +593,5 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         });
 
         Ok(())
-    }
-
-    fn into_raw_entry(_input_stream_entry: &PollInputStreamEntry) -> RawEntry {
-        todo!()
     }
 }

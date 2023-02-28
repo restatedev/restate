@@ -89,6 +89,8 @@ pub enum ErrorKind {
 }
 
 pub trait RawEntryCodec {
+    fn serialize_as_unary_input_entry(input_message: Bytes) -> RawEntry;
+
     fn deserialize(entry: &RawEntry) -> Result<Entry, RawEntryCodecError>;
 
     fn write_completion(
