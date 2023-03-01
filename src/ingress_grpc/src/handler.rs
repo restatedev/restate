@@ -148,7 +148,7 @@ where
                     Ok(i) => i,
                     Err(e) => {
                         warn!("Cannot create service invocation: {:?}", e);
-                        return Err(e);
+                        return Err(Status::internal(e.to_string()));
                     }
                 };
                 info!(restate.invocation.id = %service_invocation.id);

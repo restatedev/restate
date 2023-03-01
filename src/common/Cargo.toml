@@ -15,5 +15,5 @@ bytestring = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 opentelemetry_api = { workspace = true }
-tonic = { workspace = true }
+thiserror = { workspace = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

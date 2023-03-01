@@ -378,7 +378,7 @@ dependencies = [
  "bytestring",
  "opentelemetry_api",
  "serde",
- "tonic",
+ "thiserror",
  "uuid",
  "xxhash-rust",
 ]

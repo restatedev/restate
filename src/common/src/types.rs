@@ -1,3 +1,4 @@
+use crate::utils::GenericError;
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::SpanContext;
@@ -96,6 +97,30 @@ pub struct ServiceInvocation {
     pub span_relation: SpanRelation,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("failed creating the service invocation: {source:?}")]
+pub struct ServiceInvocationFactoryError {
+    source: Option<GenericError>,
+}
+
+impl ServiceInvocationFactoryError {
+    pub fn new() -> Self {
+        Self { source: None }
+    }
+
+    pub fn from(source: impl Into<GenericError>) -> Self {
+        Self {
+            source: Some(source.into()),
+        }
+    }
+}
+
+impl Default for ServiceInvocationFactoryError {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Trait to create a new [`ServiceInvocation`].
 ///
 /// This trait can be used by ingresses and partition processors to
@@ -109,7 +134,7 @@ pub trait ServiceInvocationFactory {
         request_payload: Bytes,
         response_sink: ServiceInvocationResponseSink,
         span_relation: SpanRelation,
-    ) -> Result<ServiceInvocation, tonic::Status>;
+    ) -> Result<ServiceInvocation, ServiceInvocationFactoryError>;
 }
 
 /// Representing a response for a caller

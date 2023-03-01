@@ -112,7 +112,10 @@ mod tests {
     use std::net::SocketAddr;
 
     use bytes::Bytes;
-    use common::types::{ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation};
+    use common::types::{
+        ServiceInvocationFactoryError, ServiceInvocationId, ServiceInvocationResponseSink,
+        SpanRelation,
+    };
     use drain::Signal;
     use http::header::CONTENT_TYPE;
     use http::StatusCode;
@@ -138,7 +141,7 @@ mod tests {
             request_payload: Bytes,
             response_sink: ServiceInvocationResponseSink,
             span_relation: SpanRelation,
-        ) -> Result<ServiceInvocation, Status> {
+        ) -> Result<ServiceInvocation, ServiceInvocationFactoryError> {
             Ok(ServiceInvocation {
                 id: ServiceInvocationId::new(service_name, Bytes::new(), uuid::Uuid::now_v7()),
                 method_name: method_name.to_string().into(),
