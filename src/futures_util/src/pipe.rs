@@ -7,6 +7,7 @@ use futures::future::poll_fn;
 use tokio::sync::mpsc;
 
 pub use input::*;
+pub use multi_target::*;
 pub use target::*;
 
 #[derive(Default, Debug, thiserror::Error)]
@@ -120,8 +121,15 @@ mod target {
 
     use pin_project::pin_project;
 
+    pub fn new_sender_pipe_target<T>(tx: mpsc::Sender<T>) -> impl PipeTarget<T> {
+        SenderPipeTarget {
+            acquire_fn: mpsc::Sender::reserve_owned,
+            state: SenderPipeTargetState::Idle(Some(tx)),
+        }
+    }
+
     #[pin_project(project = SenderPipeTargetStateProj)]
-    pub enum SenderPipeTargetState<T, Fut> {
+    enum SenderPipeTargetState<T, Fut> {
         Idle(Option<mpsc::Sender<T>>),
         Acquiring(#[pin] Fut),
         ReadyToSend(Option<mpsc::OwnedPermit<T>>),
@@ -129,17 +137,10 @@ mod target {
     }
 
     #[pin_project]
-    pub struct SenderPipeTarget<T, AcquireFn, Fut> {
+    struct SenderPipeTarget<T, AcquireFn, Fut> {
         acquire_fn: AcquireFn,
         #[pin]
         state: SenderPipeTargetState<T, Fut>,
-    }
-
-    pub fn new_sender_pipe_target<T>(tx: mpsc::Sender<T>) -> impl PipeTarget<T> {
-        SenderPipeTarget {
-            acquire_fn: mpsc::Sender::reserve_owned,
-            state: SenderPipeTargetState::Idle(Some(tx)),
-        }
     }
 
     impl<T, AcquireFn, Fut> PipeTarget<T> for SenderPipeTarget<T, AcquireFn, Fut>
@@ -191,12 +192,113 @@ mod target {
     }
 }
 
+mod multi_target {
+    use super::*;
+
+    use pin_project::pin_project;
+
+    pub enum EitherTarget<T1, T2> {
+        Left(T1),
+        Right(T2),
+    }
+
+    #[derive(Copy, Clone, PartialEq, Debug)]
+    pub enum PipeTargetState {
+        Idle,
+        Ready,
+        Closed,
+    }
+
+    #[pin_project]
+    pub struct EitherPipeTarget<PT1, PT2> {
+        #[pin]
+        left_target: PT1,
+        #[pin]
+        right_target: PT2,
+
+        left_state: PipeTargetState,
+        right_state: PipeTargetState,
+    }
+
+    impl<PT1, PT2> EitherPipeTarget<PT1, PT2> {
+        pub fn new(left_target: PT1, right_target: PT2) -> Self {
+            EitherPipeTarget {
+                left_target,
+                right_target,
+                left_state: PipeTargetState::Idle,
+                right_state: PipeTargetState::Idle,
+            }
+        }
+    }
+
+    impl<T1, T2, PT1, PT2> PipeTarget<EitherTarget<T1, T2>> for EitherPipeTarget<PT1, PT2>
+    where
+        PT1: PipeTarget<T1>,
+        PT2: PipeTarget<T2>,
+    {
+        fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), ClosedError>> {
+            let this = self.project();
+            let mut left_target = this.left_target;
+            let mut right_target = this.right_target;
+
+            loop {
+                match (*this.left_state, *this.right_state) {
+                    (PipeTargetState::Closed, _) | (_, PipeTargetState::Closed) => {
+                        return Poll::Ready(Err(ClosedError))
+                    }
+                    (PipeTargetState::Idle, _) => {
+                        *this.left_state = match ready!(left_target.as_mut().poll_ready(cx)) {
+                            Ok(()) => PipeTargetState::Ready,
+                            Err(_) => PipeTargetState::Closed,
+                        };
+                    }
+                    (_, PipeTargetState::Idle) => {
+                        *this.right_state = match ready!(right_target.as_mut().poll_ready(cx)) {
+                            Ok(()) => PipeTargetState::Ready,
+                            Err(_) => PipeTargetState::Closed,
+                        };
+                    }
+                    (PipeTargetState::Ready, PipeTargetState::Ready) => return Poll::Ready(Ok(())),
+                }
+            }
+        }
+
+        fn send(self: Pin<&mut Self>, msg: EitherTarget<T1, T2>) -> Result<(), ClosedError> {
+            let this = self.project();
+            let left_target = this.left_target;
+            let right_target = this.right_target;
+
+            return match (*this.left_state, *this.right_state, msg) {
+                (PipeTargetState::Closed, _, EitherTarget::Left(_))
+                | (_, PipeTargetState::Closed, EitherTarget::Right(_)) => Err(ClosedError),
+                (PipeTargetState::Ready, _, EitherTarget::Left(left_msg)) => {
+                    *this.left_state = match left_target.send(left_msg) {
+                        Ok(_) => PipeTargetState::Idle,
+                        Err(_) => PipeTargetState::Closed,
+                    };
+                    Ok(())
+                }
+                (_, PipeTargetState::Ready, EitherTarget::Right(right_msg)) => {
+                    *this.right_state = match right_target.send(right_msg) {
+                        Ok(_) => PipeTargetState::Idle,
+                        Err(_) => PipeTargetState::Closed,
+                    };
+                    Ok(())
+                }
+                _ => {
+                    panic!("Unexpected state")
+                }
+            };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn pipe_bounded_bounded() {
+    async fn pipe_bounded_to_bounded() {
         let (source_tx, source_rx) = mpsc::channel(1);
         let (sink_tx, mut sink_rx) = mpsc::channel(1);
 
@@ -215,6 +317,45 @@ mod tests {
 
         // Close
         drop(sink_rx);
+        drop(source_tx);
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pipe_bounded_to_multi_bounded() {
+        let (source_tx, source_rx) = mpsc::channel(2);
+        let (sink_left_tx, mut sink_left_rx) = mpsc::channel(1);
+        let (sink_right_tx, mut sink_right_rx) = mpsc::channel(1);
+
+        // Create the pipe and spawn it
+        let pipe = Pipe::new(
+            ReceiverPipeInput::new(source_rx),
+            EitherPipeTarget::new(
+                new_sender_pipe_target(sink_left_tx),
+                new_sender_pipe_target(sink_right_tx),
+            ),
+            |mut i| {
+                i += 1;
+                futures::future::ready(if i % 2 == 0 {
+                    EitherTarget::Left(i)
+                } else {
+                    EitherTarget::Right(i)
+                })
+            },
+        );
+        let handle = tokio::spawn(pipe.run());
+
+        // Send and receive
+        source_tx.send(0_u32).await.unwrap();
+        source_tx.send(1_u32).await.unwrap();
+        let res: u32 = sink_right_rx.recv().await.unwrap();
+        assert_eq!(res, 1_u32);
+        let res: u32 = sink_left_rx.recv().await.unwrap();
+        assert_eq!(res, 2_u32);
+
+        // Close
+        drop(sink_left_rx);
+        drop(sink_right_rx);
         drop(source_tx);
         handle.await.unwrap();
     }
