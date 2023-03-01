@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use common::types::ServiceInvocationId;
 use tokio::select;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// This loop is taking care of dispatching responses back to [super::RequestResponseHandler].
 ///
@@ -17,14 +17,14 @@ use tracing::{info, warn};
 pub struct ResponseDispatcherLoop {
     local_waiting_responses: HashMap<ServiceInvocationId, CommandResponseSender<IngressResult>>,
 
-    // Channels
-    // These channels and the above map can be unbounded,
+    // This channel and the above map can be unbounded,
     // because we enforce concurrency limits in the ingress services
-    response_rx: mpsc::UnboundedReceiver<IngressResponseMessage>,
     waiting_response_registration_rx: UnboundedCommandReceiver<ServiceInvocationId, IngressResult>,
 
+    response_rx: IngressResponseReceiver,
+
     // For constructing the sender sides
-    response_tx: mpsc::UnboundedSender<IngressResponseMessage>,
+    response_tx: IngressResponseSender,
     waiting_response_registration_tx: UnboundedCommandSender<ServiceInvocationId, IngressResult>,
 }
 
@@ -36,7 +36,7 @@ impl Default for ResponseDispatcherLoop {
 
 impl ResponseDispatcherLoop {
     pub fn new() -> ResponseDispatcherLoop {
-        let (response_tx, response_rx) = mpsc::unbounded_channel();
+        let (response_tx, response_rx) = mpsc::channel(64);
         let (waiting_response_registration_tx, waiting_response_registration_rx) =
             mpsc::unbounded_channel();
 
@@ -53,6 +53,8 @@ impl ResponseDispatcherLoop {
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
 
+        debug!("Running the ResponseDispatcher.");
+
         loop {
             select! {
                 _ = &mut shutdown => {
@@ -60,7 +62,7 @@ impl ResponseDispatcherLoop {
                     break;
                 },
                 response = self.response_rx.recv() => {
-                    self.handle_response(response.unwrap()).await;
+                    self.handle_input(response.unwrap()).await;
                 },
                 registration = self.waiting_response_registration_rx.recv() => {
                     self.handle_awaiter_registration(registration.unwrap());
@@ -70,9 +72,7 @@ impl ResponseDispatcherLoop {
     }
 
     pub fn create_response_sender(&self) -> IngressResponseSender {
-        IngressResponseSender {
-            response_tx: self.response_tx.clone(),
-        }
+        self.response_tx.clone()
     }
 
     pub fn create_response_requester(&self) -> IngressResponseRequester {
@@ -87,38 +87,33 @@ impl ResponseDispatcherLoop {
         self.local_waiting_responses.insert(fn_key, reply_channel);
     }
 
-    async fn handle_response(&mut self, res: IngressResponseMessage) {
-        if let Some(sender) = self
-            .local_waiting_responses
-            .remove(&res.service_invocation_id)
-        {
-            if let Err(Ok(res)) = sender.send(res.result) {
-                warn!(
-                    "Failed to send response '{:?}' because the handler has been closed, \
+    async fn handle_input(&mut self, input: IngressInput) {
+        match input {
+            IngressInput::Response(response) => {
+                if let Some(sender) = self
+                    .local_waiting_responses
+                    .remove(&response.service_invocation_id)
+                {
+                    if let Err(Ok(response)) = sender.send(response.result) {
+                        warn!(
+                            "Failed to send response '{:?}' because the handler has been closed, \
                     probably caused by the client connection that went away",
-                    res
-                );
+                            response
+                        );
+                    }
+                } else {
+                    warn!("Failed to handle response '{:?}' because no handler was found locally waiting for its invocation key", &response);
+                }
             }
-        } else {
-            warn!("Failed to handle response '{:?}' because no handler was found locally waiting for its invocation key", &res);
+            IngressInput::MessageAck { .. } => {
+                todo!("https://github.com/restatedev/restate/issues/132");
+            }
         }
     }
 }
 
-#[derive(Clone)]
-pub struct IngressResponseSender {
-    response_tx: mpsc::UnboundedSender<IngressResponseMessage>,
-}
-
-impl IngressResponseSender {
-    /// Dispatches the response to the ResponseDispatcherLoop, to route it back to the request handler
-    pub fn dispatch_response(
-        &self,
-        res: IngressResponseMessage,
-    ) -> Result<(), mpsc::error::SendError<IngressResponseMessage>> {
-        self.response_tx.send(res)
-    }
-}
+pub type IngressResponseReceiver = mpsc::Receiver<IngressInput>;
+pub type IngressResponseSender = mpsc::Sender<IngressInput>;
 
 pub type IngressResponseRequester = UnboundedCommandSender<ServiceInvocationId, IngressResult>;
 
@@ -147,10 +142,11 @@ mod tests {
 
         // Now let's send the response
         response_sender
-            .dispatch_response(IngressResponseMessage {
+            .send(IngressInput::Response(IngressResponseMessage {
                 service_invocation_id,
                 result: Ok(Bytes::new()),
-            })
+            }))
+            .await
             .unwrap();
 
         // Close and check it did not panic

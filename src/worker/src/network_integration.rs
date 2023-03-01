@@ -1,12 +1,13 @@
 //! This module contains the glue code for converting the various messages into their
 //! required formats when routing them through the network.
 
+use crate::partition;
 use crate::partition::shuffle;
-use crate::{ingress_integration, partition};
 use bytes::Bytes;
 use common::traits::KeyedMessage;
-use common::types::{InvocationResponse, PartitionKey, PeerId};
+use common::types::{PartitionKey, PeerId};
 use futures::future::{ok, Ready};
+use ingress_grpc::IngressResponseMessage;
 use network::{
     ConsensusOrIngressTarget, PartitionTable, PartitionTableError, ShuffleOrIngressTarget,
     TargetConsensusOrIngress, TargetShuffle, TargetShuffleOrIngress,
@@ -18,33 +19,25 @@ pub(super) type Network = network::Network<
     shuffle::ShuffleOutput,
     ConsensusMessage,
     IngressMessage,
-    ingress_integration::IngressOutput,
-    ingress_integration::IngressInput,
+    ingress_grpc::IngressOutput,
+    ingress_grpc::IngressInput,
     partition::MessageAck,
     partition::ShuffleMessageAck,
     partition::IngressMessageAck,
     FixedPartitionTable,
 >;
 
-impl From<ingress_integration::IngressOutput> for partition::Command {
-    fn from(value: ingress_integration::IngressOutput) -> Self {
-        let ingress_integration::IngressOutput(service_invocation) = value;
+impl From<ingress_grpc::IngressOutput> for partition::Command {
+    fn from(value: ingress_grpc::IngressOutput) -> Self {
+        let service_invocation = value.into_inner();
 
         partition::Command::Invocation(service_invocation)
     }
 }
 
-impl KeyedMessage for ingress_integration::IngressOutput {
-    type RoutingKey<'a> = &'a Bytes;
-
-    fn routing_key(&self) -> &Bytes {
-        &self.0.id.service_id.key
-    }
-}
-
-impl From<partition::IngressMessageAck> for ingress_integration::IngressInput {
+impl From<partition::IngressMessageAck> for ingress_grpc::IngressInput {
     fn from(value: partition::IngressMessageAck) -> Self {
-        ingress_integration::IngressInput::MessageAck(value.0)
+        ingress_grpc::IngressInput::MessageAck(value.0)
     }
 }
 
@@ -74,7 +67,7 @@ impl From<ConsensusMessage> for partition::Command {
 }
 
 #[derive(Debug)]
-pub(crate) struct IngressMessage(pub(crate) InvocationResponse);
+pub(crate) struct IngressMessage(pub(crate) IngressResponseMessage);
 
 impl TargetConsensusOrIngress<ConsensusMessage, IngressMessage> for shuffle::ShuffleOutput {
     fn target(self) -> ConsensusOrIngressTarget<ConsensusMessage, IngressMessage> {
@@ -89,9 +82,9 @@ impl TargetConsensusOrIngress<ConsensusMessage, IngressMessage> for shuffle::Shu
     }
 }
 
-impl From<IngressMessage> for ingress_integration::IngressInput {
+impl From<IngressMessage> for ingress_grpc::IngressInput {
     fn from(value: IngressMessage) -> Self {
-        ingress_integration::IngressInput::InvocationResult(value.0)
+        ingress_grpc::IngressInput::Response(value.0)
     }
 }
 

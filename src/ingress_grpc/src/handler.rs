@@ -6,8 +6,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use common::types::{
-    IngressId, ServiceInvocation, ServiceInvocationFactory, ServiceInvocationResponseSink,
-    SpanRelation,
+    IngressId, ServiceInvocationFactory, ServiceInvocationResponseSink, SpanRelation,
 };
 use futures::future::{ok, BoxFuture};
 use futures::FutureExt;
@@ -25,7 +24,7 @@ pub struct Handler<InvocationFactory, MethodRegistry> {
     invocation_factory: InvocationFactory,
     method_registry: MethodRegistry,
     response_requester: IngressResponseRequester,
-    invocation_sender: mpsc::Sender<ServiceInvocation>,
+    ingress_output_sender: mpsc::Sender<IngressOutput>,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
 
@@ -35,7 +34,7 @@ impl<InvocationFactory, MethodRegistry> Handler<InvocationFactory, MethodRegistr
         invocation_factory: InvocationFactory,
         method_registry: MethodRegistry,
         response_requester: IngressResponseRequester,
-        invocation_sender: mpsc::Sender<ServiceInvocation>,
+        ingress_output_sender: mpsc::Sender<IngressOutput>,
         global_concurrency_semaphore: Arc<Semaphore>,
     ) -> Self {
         Self {
@@ -43,7 +42,7 @@ impl<InvocationFactory, MethodRegistry> Handler<InvocationFactory, MethodRegistr
             invocation_factory,
             method_registry,
             response_requester,
-            invocation_sender,
+            ingress_output_sender,
             global_concurrency_semaphore,
         }
     }
@@ -120,7 +119,7 @@ where
         // Encapsulate in this closure the remaining part of the processing
         let ingress_id = self.ingress_id.clone();
         let invocation_factory = self.invocation_factory.clone();
-        let invocation_sender = self.invocation_sender.clone();
+        let invocation_sender = self.ingress_output_sender.clone();
         let response_requester = self.response_requester.clone();
         let ingress_request_handler = move |ingress_request: IngressRequest| {
             let (req_headers, req_payload) = ingress_request;
@@ -166,7 +165,7 @@ where
                 }
 
                 // Send the service invocation
-                if invocation_sender.send(service_invocation).await.is_err() {
+                if invocation_sender.send(IngressOutput(service_invocation)).await.is_err() {
                     warn!("Cannot send the invocation to the network component");
                     return Err(Status::unavailable("Unavailable"));
                 }

@@ -17,6 +17,7 @@ common = { workspace = true }
 consensus = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
+ingress_grpc = { workspace = true }
 invoker = { workspace = true }
 journal = { workspace = true }
 network = { workspace = true }

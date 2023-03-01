@@ -1,8 +1,10 @@
+use crate::ingress_integration::{DefaultServiceInvocationFactory, ExternalClientIngressRunner};
 use crate::network_integration::FixedPartitionTable;
-use common::types::{PeerId, PeerTarget};
+use common::types::{IngressId, PeerId, PeerTarget};
 use consensus::{Consensus, ProposalSender};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use ingress_grpc::{InMemoryMethodDescriptorRegistry, ResponseDispatcherLoop};
 use invoker::{EndpointMetadata, Invoker, UnboundedInvokerInputSender};
 use network::UnboundedNetworkHandle;
 use partition::shuffle;
@@ -46,9 +48,11 @@ pub struct Options {
 
     #[command(flatten)]
     storage_rocksdb: storage_rocksdb::Options,
+
+    #[command(flatten)]
+    external_client_ingress: ingress_grpc::Options,
 }
 
-#[derive(Debug)]
 pub struct Worker {
     consensus: Consensus<
         partition::Command,
@@ -60,6 +64,7 @@ pub struct Worker {
     network: network_integration::Network,
     invoker:
         Invoker<ProtobufRawEntryCodec, RocksDBJournalReader, HashMap<String, EndpointMetadata>>,
+    external_client_ingress_runner: ExternalClientIngressRunner,
 }
 
 impl Options {
@@ -73,18 +78,36 @@ impl Worker {
         let Options {
             channel_size,
             storage_rocksdb,
+            external_client_ingress,
             ..
         } = opts;
 
         let storage = storage_rocksdb.build();
         let num_partition_processors = 10;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
-        let (ingress_tx, _ingress_rx) = mpsc::channel(channel_size);
+
+        let response_dispatcher_loop = ResponseDispatcherLoop::default();
 
         let network = network_integration::Network::new(
             raft_in_tx,
-            ingress_tx,
+            response_dispatcher_loop.create_response_sender(),
             FixedPartitionTable::new(num_partition_processors),
+        );
+
+        let method_descriptor_registry = InMemoryMethodDescriptorRegistry::default();
+        let invocation_factory = DefaultServiceInvocationFactory::default();
+
+        let external_client_ingress = external_client_ingress.build(
+            // TODO replace with proper network address once we have a distributed runtime
+            IngressId(
+                "127.0.0.1:0"
+                    .parse()
+                    .expect("Loopback address needs to be valid."),
+            ),
+            method_descriptor_registry,
+            invocation_factory,
+            response_dispatcher_loop.create_response_requester(),
+            network.create_ingress_sender(),
         );
 
         let mut consensus = Consensus::new(
@@ -117,6 +140,10 @@ impl Worker {
             processors,
             network,
             invoker,
+            external_client_ingress_runner: ExternalClientIngressRunner::new(
+                external_client_ingress,
+                response_dispatcher_loop,
+            ),
         }
     }
 
@@ -144,6 +171,10 @@ impl Worker {
     pub async fn run(self, drain: drain::Watch) {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
+        let mut external_client_ingress_handle = tokio::spawn(
+            self.external_client_ingress_runner
+                .run(shutdown_watch.clone()),
+        );
         let mut invoker_handle = tokio::spawn(self.invoker.run(shutdown_watch.clone()));
         let mut network_handle = tokio::spawn(self.network.run(shutdown_watch));
         let mut consensus_handle = tokio::spawn(self.consensus.run());
@@ -164,7 +195,7 @@ impl Worker {
                 shutdown_signal.drain().await;
 
                 // ignored because we are shutting down
-                let _ = join!(network_handle, consensus_handle, processors_handles.collect::<Vec<_>>(), invoker_handle);
+                let _ = join!(network_handle, consensus_handle, processors_handles.collect::<Vec<_>>(), invoker_handle, external_client_ingress_handle);
 
                 debug!("Completed shutdown of worker");
             },
@@ -179,6 +210,9 @@ impl Worker {
             },
             processor_result = processors_handles.next() => {
                 panic!("One partition processor stopped running: {processor_result:?}");
+            },
+            external_client_ingress_result = &mut external_client_ingress_handle => {
+                panic!("External client ingress stopped running: {external_client_ingress_result:?}");
             }
         }
     }

@@ -887,6 +887,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "bytes",
+ "clap 4.1.6",
  "common",
  "drain",
  "futures",
@@ -2727,6 +2728,7 @@ dependencies = [
  "consensus",
  "drain",
  "futures",
+ "ingress_grpc",
  "invoker",
  "journal",
  "network",

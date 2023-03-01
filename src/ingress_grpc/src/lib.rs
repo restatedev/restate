@@ -1,6 +1,7 @@
 mod command;
 mod descriptors_registry;
 mod handler;
+mod options;
 mod protocol;
 mod response_dispatcher;
 mod server;
@@ -9,13 +10,15 @@ pub(crate) use command::*;
 
 pub use descriptors_registry::InMemoryMethodDescriptorRegistry;
 pub use descriptors_registry::MethodDescriptorRegistry;
+pub use options::Options;
 pub use response_dispatcher::IngressResponseSender;
 pub use response_dispatcher::ResponseDispatcherLoop;
 pub use server::HyperServerIngress;
 pub use server::StartSignal;
 
 use bytes::Bytes;
-use common::types::ServiceInvocationId;
+use common::traits::KeyedMessage;
+use common::types::{AckKind, ServiceInvocation, ServiceInvocationId};
 use opentelemetry::Context;
 use tonic::Status;
 
@@ -45,6 +48,33 @@ pub type IngressResult = Result<IngressResponse, IngressError>;
 pub struct IngressResponseMessage {
     pub service_invocation_id: ServiceInvocationId,
     pub result: IngressResult,
+}
+
+#[derive(Debug)]
+pub struct IngressOutput(ServiceInvocation);
+
+impl IngressOutput {
+    pub fn new(service_invocation: ServiceInvocation) -> Self {
+        Self(service_invocation)
+    }
+
+    pub fn into_inner(self) -> ServiceInvocation {
+        self.0
+    }
+}
+
+impl KeyedMessage for IngressOutput {
+    type RoutingKey<'a> = &'a Bytes;
+
+    fn routing_key(&self) -> &Bytes {
+        &self.0.id.service_id.key
+    }
+}
+
+#[derive(Debug)]
+pub enum IngressInput {
+    Response(IngressResponseMessage),
+    MessageAck(AckKind),
 }
 
 const _: () = {

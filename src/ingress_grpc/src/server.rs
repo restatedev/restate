@@ -4,7 +4,7 @@ use super::*;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use common::types::{IngressId, ServiceInvocation, ServiceInvocationFactory};
+use common::types::{IngressId, ServiceInvocationFactory};
 use futures::FutureExt;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, Semaphore};
@@ -24,7 +24,7 @@ pub struct HyperServerIngress<DescriptorRegistry, InvocationFactory> {
     method_descriptor_registry: DescriptorRegistry,
     invocation_factory: InvocationFactory,
     response_requester: IngressResponseRequester,
-    service_invocation_sender: mpsc::Sender<ServiceInvocation>,
+    ingress_output_sender: mpsc::Sender<IngressOutput>,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
@@ -43,7 +43,7 @@ where
         method_descriptor_registry: DescriptorRegistry,
         invocation_factory: InvocationFactory,
         response_requester: IngressResponseRequester,
-        service_invocation_sender: mpsc::Sender<ServiceInvocation>,
+        ingress_output_sender: mpsc::Sender<IngressOutput>,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
 
@@ -54,7 +54,7 @@ where
             method_descriptor_registry,
             invocation_factory,
             response_requester,
-            service_invocation_sender,
+            ingress_output_sender,
             start_signal_tx,
         };
 
@@ -69,10 +69,9 @@ where
             method_descriptor_registry,
             invocation_factory,
             response_requester,
-            service_invocation_sender,
+            ingress_output_sender,
             start_signal_tx,
         } = self;
-        info!(address = %listening_addr, "Starting hyper endpoint");
 
         let server_builder = hyper::Server::bind(&listening_addr);
 
@@ -86,12 +85,14 @@ where
                     invocation_factory,
                     method_descriptor_registry,
                     response_requester,
-                    service_invocation_sender,
+                    ingress_output_sender,
                     global_concurrency_limit_semaphore,
                 )),
         );
 
         let server = server_builder.serve(make_svc);
+
+        info!(address = %server.local_addr(), "Starting external client ingress.");
 
         // future completion does not affect endpoint
         let _ = start_signal_tx.send(server.local_addr());
@@ -174,7 +175,11 @@ mod tests {
         assert_eq!(http_response.status(), StatusCode::OK);
 
         // Get the function invocation and assert on it
-        let mut service_invocation = service_invocation_future.await.unwrap().unwrap();
+        let mut service_invocation = service_invocation_future
+            .await
+            .unwrap()
+            .unwrap()
+            .into_inner();
         assert_eq!(
             service_invocation.id.service_id.service_name,
             "greeter.Greeter"
@@ -221,7 +226,11 @@ mod tests {
             .await
             .unwrap();
 
-        let mut service_invocation = service_invocation_future.await.unwrap().unwrap();
+        let mut service_invocation = service_invocation_future
+            .await
+            .unwrap()
+            .unwrap()
+            .into_inner();
         assert_eq!(
             service_invocation.id.service_id.service_name,
             "greeter.Greeter"
@@ -243,7 +252,7 @@ mod tests {
     ) -> (
         Signal,
         SocketAddr,
-        JoinHandle<Option<ServiceInvocation>>,
+        JoinHandle<Option<IngressOutput>>,
         JoinHandle<()>,
     ) {
         let (drain, watch) = drain::channel();

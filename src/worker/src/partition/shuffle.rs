@@ -1,8 +1,9 @@
 use crate::partition::effects::OutboxMessage;
 use crate::partition::shuffle::state_machine::StateMachine;
-use common::types::{AckKind, InvocationResponse, PeerId};
+use common::types::{AckKind, PeerId};
 use common::utils::GenericError;
 use futures::future::BoxFuture;
+use ingress_grpc::IngressResponseMessage;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -43,7 +44,7 @@ pub(crate) struct ShuffleInput(pub(crate) AckKind);
 #[allow(dead_code)]
 pub(crate) enum ShuffleOutput {
     PartitionProcessor(OutboxMessage),
-    Ingress(InvocationResponse),
+    Ingress(IngressResponseMessage),
 }
 
 #[derive(Debug, thiserror::Error)]
