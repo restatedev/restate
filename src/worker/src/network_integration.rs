@@ -4,11 +4,12 @@
 use crate::partition::shuffle;
 use crate::{ingress_integration, partition};
 use bytes::Bytes;
+use common::traits::KeyedMessage;
 use common::types::{InvocationResponse, PartitionKey, PeerId};
 use futures::future::{ok, Ready};
 use network::{
-    ConsensusOrIngressTarget, KeyedMessage, PartitionTable, PartitionTableError,
-    ShuffleOrIngressTarget, TargetConsensusOrIngress, TargetShuffle, TargetShuffleOrIngress,
+    ConsensusOrIngressTarget, PartitionTable, PartitionTableError, ShuffleOrIngressTarget,
+    TargetConsensusOrIngress, TargetShuffle, TargetShuffleOrIngress,
 };
 
 pub(super) type Network = network::Network<

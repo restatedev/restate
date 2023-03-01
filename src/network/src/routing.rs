@@ -1,9 +1,10 @@
 use crate::{
-    ConsensusOrIngressTarget, KeyedMessage, NetworkCommand, PartitionTable, PartitionTableError,
+    ConsensusOrIngressTarget, NetworkCommand, PartitionTable, PartitionTableError,
     ShuffleOrIngressTarget, TargetConsensusOrIngress, TargetShuffle, TargetShuffleOrIngress,
     UnboundedNetworkHandle,
 };
 use common::partitioner::HashPartitioner;
+use common::traits::KeyedMessage;
 use common::types::{PeerId, PeerTarget};
 use std::collections::HashMap;
 use std::fmt::Debug;

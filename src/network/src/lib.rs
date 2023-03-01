@@ -1,7 +1,6 @@
 use common::types::{PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::future::Future;
-use std::hash;
 use tokio::sync::mpsc;
 
 mod routing;
@@ -39,15 +38,6 @@ enum NetworkCommand<ShuffleIn> {
     UnregisterShuffle {
         peer_id: PeerId,
     },
-}
-
-/// Trait for messages that have a routing key
-pub trait KeyedMessage {
-    type RoutingKey<'a>: hash::Hash
-    where
-        Self: 'a;
-    /// Returns a reference to the bytes of a keyed message
-    fn routing_key(&self) -> Self::RoutingKey<'_>;
 }
 
 /// Trait for messages that are sent to the shuffle component
