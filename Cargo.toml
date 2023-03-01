@@ -49,6 +49,7 @@ uuid = { version = "1.3.0", features = ["v7", "serde"] }
 config = { path = "src/config" }
 common = { path = "src/common" }
 consensus = { path = "src/consensus" }
+futures_util = { path = "src/futures_util" }
 ingress_grpc = { path = "src/ingress_grpc" }
 queue = { path = "src/queue"}
 invoker = { path = "src/invoker" }
