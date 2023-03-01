@@ -60,7 +60,6 @@ pub struct Worker {
     network: network_integration::Network,
     invoker:
         Invoker<ProtobufRawEntryCodec, RocksDBJournalReader, HashMap<String, EndpointMetadata>>,
-    _storage: RocksDBStorage,
 }
 
 impl Options {
@@ -118,7 +117,6 @@ impl Worker {
             processors,
             network,
             invoker,
-            _storage: storage,
         }
     }
 
