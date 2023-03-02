@@ -53,6 +53,18 @@ pub(crate) enum InvocationTaskError {
     Other(#[from] Box<dyn Error + Send + Sync + 'static>),
 }
 
+impl InvocationTaskError {
+    /// A transient error is retried when possible.
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            InvocationTaskError::Network(_)
+                | InvocationTaskError::UnexpectedJoinError(_)
+                | InvocationTaskError::Other(_)
+        )
+    }
+}
+
 // Copy pasted from hyper::Error
 // https://github.com/hyperium/hyper/blob/40c01dfb4f87342a6f86f07564ddc482194c6240/src/error.rs#L229
 // TODO hopefully this code is not needed anymore with hyper 1.0,

@@ -5,7 +5,7 @@ use consensus::{Consensus, ProposalSender};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use ingress_grpc::{InMemoryMethodDescriptorRegistry, ResponseDispatcherLoop};
-use invoker::{EndpointMetadata, Invoker, UnboundedInvokerInputSender};
+use invoker::{EndpointMetadata, Invoker, RetryPolicy, UnboundedInvokerInputSender};
 use network::UnboundedNetworkHandle;
 use partition::shuffle;
 use partition::RocksDBJournalReader;
@@ -117,7 +117,7 @@ impl Worker {
 
         let network_handle = network.create_network_handle();
 
-        let invoker = Invoker::new(RocksDBJournalReader, Default::default());
+        let invoker = Invoker::new(RetryPolicy::None, RocksDBJournalReader, Default::default());
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {

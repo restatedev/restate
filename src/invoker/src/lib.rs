@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
+use std::time::Duration;
 
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
@@ -18,6 +19,7 @@ mod invoker;
 pub use crate::invoker::*;
 
 mod invocation_task;
+mod timer;
 
 // --- Service Endpoint Registry
 
@@ -27,9 +29,43 @@ pub enum ProtocolType {
     BidiStream,
 }
 
+#[derive(Debug, Clone)]
+pub enum RetryPolicy {
+    None,
+    FixedDelay {
+        interval: Duration,
+        max_attempts: usize,
+    },
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl RetryPolicy {
+    pub(crate) fn next_timer(&self, attempts_num: usize) -> Option<Duration> {
+        match self {
+            RetryPolicy::None => None,
+            RetryPolicy::FixedDelay {
+                interval,
+                max_attempts,
+            } => {
+                if attempts_num > *max_attempts {
+                    None
+                } else {
+                    Some(*interval)
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DeliveryOptions {
     additional_headers: HashMap<HeaderName, HeaderValue>,
+    retry_policy: Option<RetryPolicy>,
 }
 
 #[derive(Debug, Clone)]
