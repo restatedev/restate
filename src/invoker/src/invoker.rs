@@ -437,6 +437,11 @@ mod state_machine_coordinator {
     #[error("Unexpected end of invocation stream. This is probably a symptom of an SDK bug, please contact the developers.")]
     pub struct UnexpectedEndOfInvocationStream;
 
+    /// This struct groups the arguments to start an InvocationTask.
+    ///
+    /// Because the methods receiving this struct might not start
+    /// the InvocationTask (e.g. if the request cannot be retried now),
+    /// we pass only borrows so we create clones only if we need them.
     pub(super) struct StartInvocationTaskArguments<'a, JR, SER> {
         journal_reader: &'a JR,
         service_endpoint_registry: &'a SER,
