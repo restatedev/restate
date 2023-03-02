@@ -14,12 +14,34 @@ pub use target::*;
 #[error("closed")]
 pub struct ClosedError;
 
+/// This trait represents the input side of the pipe.
 pub trait PipeInput<T> {
+    /// Poll the input to receive a new element.
     fn poll_recv(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<T, ClosedError>>;
 }
 
+/// This trait represents the output side of the pipe.
+///
+/// The [`PipeTarget`] transitions through 3 states:
+///
+/// * _Idle_
+/// * _Ready_
+/// * _Closed_
+///
+/// The state becomes _Ready_ when [`Self::poll_ready`] returns [`Poll::Ready`] with [`Ok`].
+/// After sending a message with [`Self::send`], the state transitions back to _Idle_,
+/// requiring to invoke [`Self::poll_ready`] again before the next [`Self::send`].
+///
+/// Both [`Self::poll_ready`] and [`Self::send`] return [`ClosedError`] if the backing target is closed.
 pub trait PipeTarget<U> {
+    /// Returns [`Poll::Ready`] with [`Ok`] if the [`PipeTarget`] is ready to [`Self::send`] messages.
+    ///
+    /// Might be invoked multiple times after it's _Ready_.
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), ClosedError>>;
+
+    /// Send the message.
+    ///
+    /// Panics if the [`PipeTarget`] is _Idle_, meaning there wasn't a previous successful call to [`Self::poll_ready`].
     fn send(self: Pin<&mut Self>, u: U) -> Result<(), ClosedError>;
 }
 
