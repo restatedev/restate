@@ -854,15 +854,8 @@ mod invocation_state_machine {
     /// Component encapsulating the business logic of the invocation state machine
     #[derive(Debug)]
     pub(super) struct InvocationStateMachine {
-        task_state: TaskState,
         invocation_state: InvocationState,
         current_attempt: usize,
-    }
-
-    #[derive(Debug)]
-    enum TaskState {
-        Running(AbortHandle),
-        NotRunning,
     }
 
     /// This struct tracks which entries the invocation task generates,
@@ -921,6 +914,7 @@ mod invocation_state_machine {
             completions_tx: Option<mpsc::UnboundedSender<Completion>>,
             journal_tracker: JournalTracker,
             retry_policy: RetryPolicy,
+            abort_handle: AbortHandle,
         },
 
         // We remain in this state until we get the task result.
@@ -936,7 +930,6 @@ mod invocation_state_machine {
     impl InvocationStateMachine {
         pub(super) fn create() -> InvocationStateMachine {
             Self {
-                task_state: TaskState::NotRunning,
                 invocation_state: InvocationState::New,
                 current_attempt: 0,
             }
@@ -948,31 +941,29 @@ mod invocation_state_machine {
             completions_tx: Option<mpsc::UnboundedSender<Completion>>,
             retry_policy: RetryPolicy,
         ) {
-            debug_assert!(matches!(&self.task_state, TaskState::NotRunning));
             debug_assert!(matches!(
                 &self.invocation_state,
                 InvocationState::New | InvocationState::WaitingRetry { .. }
             ));
 
-            self.task_state = TaskState::Running(abort_handle);
             self.invocation_state = InvocationState::InFlight {
                 completions_tx,
                 journal_tracker: Default::default(),
                 retry_policy,
+                abort_handle,
             };
             self.current_attempt += 1;
         }
 
         pub(super) fn abort(&mut self) {
-            if let TaskState::Running(task_handle) =
-                mem::replace(&mut self.task_state, TaskState::NotRunning)
+            if let InvocationState::InFlight { abort_handle, .. } =
+                mem::replace(&mut self.invocation_state, InvocationState::WaitingClose)
             {
-                task_handle.abort();
+                abort_handle.abort();
             }
         }
 
         pub(super) fn notify_new_entry(&mut self, entry_index: EntryIndex, raw_entry: &RawEntry) {
-            debug_assert!(matches!(&self.task_state, TaskState::Running(_)));
             debug_assert!(matches!(
                 &self.invocation_state,
                 InvocationState::InFlight { .. }
@@ -1030,13 +1021,11 @@ mod invocation_state_machine {
 
         /// Returns Some() with the timer for the next retry, otherwise None if retry limit exhausted
         pub(super) fn handle_task_error(&mut self) -> Option<Duration> {
-            debug_assert!(matches!(&self.task_state, TaskState::Running(_)));
             debug_assert!(matches!(
                 &self.invocation_state,
                 InvocationState::InFlight { .. }
             ));
 
-            self.task_state = TaskState::NotRunning;
             let (next_timer, journal_tracker) = match &self.invocation_state {
                 InvocationState::InFlight {
                     retry_policy,
@@ -1065,17 +1054,12 @@ mod invocation_state_machine {
         }
 
         pub(super) fn is_ready_to_retry(&self) -> bool {
-            debug_assert!(matches!(
-                &self.invocation_state,
-                InvocationState::WaitingRetry { .. }
-            ));
-
             match self.invocation_state {
                 InvocationState::WaitingRetry {
                     timer_fired,
                     journal_tracker,
                 } => timer_fired && journal_tracker.can_retry(),
-                _ => unreachable!(),
+                _ => false,
             }
         }
     }
