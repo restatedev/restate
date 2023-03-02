@@ -294,18 +294,20 @@ mod multi_target {
                 (PipeTargetState::Closed, _, EitherTarget::Left(_))
                 | (_, PipeTargetState::Closed, EitherTarget::Right(_)) => Err(ClosedError),
                 (PipeTargetState::Ready, _, EitherTarget::Left(left_msg)) => {
-                    *this.left_state = match left_target.send(left_msg) {
+                    let send_res = left_target.send(left_msg);
+                    *this.left_state = match &send_res {
                         Ok(_) => PipeTargetState::Idle,
                         Err(_) => PipeTargetState::Closed,
                     };
-                    Ok(())
+                    send_res
                 }
                 (_, PipeTargetState::Ready, EitherTarget::Right(right_msg)) => {
-                    *this.right_state = match right_target.send(right_msg) {
+                    let send_res = right_target.send(right_msg);
+                    *this.right_state = match &send_res {
                         Ok(_) => PipeTargetState::Idle,
                         Err(_) => PipeTargetState::Closed,
                     };
-                    Ok(())
+                    send_res
                 }
                 _ => {
                     panic!("Unexpected state")
