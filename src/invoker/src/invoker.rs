@@ -782,28 +782,28 @@ mod state_machine_coordinator {
                     error
                 );
 
-                if error.is_transient() {
-                    if let Some(next_retry_timer_duration) = sm.handle_task_error() {
+                match sm.handle_task_error() {
+                    Some(next_retry_timer_duration) if error.is_transient() => {
                         self.invocation_state_machines
                             .insert(service_invocation_id.clone(), sm);
                         retry_timers.sleep_until(
                             SystemTime::now() + next_retry_timer_duration,
                             (self.partition, service_invocation_id),
                         );
-                        return;
+                    }
+                    _ => {
+                        let _ = self
+                            .output_tx
+                            .send(OutputEffect {
+                                service_invocation_id,
+                                kind: Kind::Failed {
+                                    error_code: Code::Internal.into(),
+                                    error: Box::new(error),
+                                },
+                            })
+                            .await;
                     }
                 }
-
-                let _ = self
-                    .output_tx
-                    .send(OutputEffect {
-                        service_invocation_id,
-                        kind: Kind::Failed {
-                            error_code: Code::Internal.into(),
-                            error: Box::new(error),
-                        },
-                    })
-                    .await;
             }
             // If no state machine, this might be a result for an aborted invocation.
         }

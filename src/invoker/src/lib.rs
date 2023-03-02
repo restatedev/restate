@@ -32,7 +32,7 @@ pub enum ProtocolType {
 #[derive(Debug, Clone)]
 pub enum RetryPolicy {
     None,
-    Linear {
+    FixedDelay {
         interval: Duration,
         max_attempts: usize,
     },
@@ -48,7 +48,7 @@ impl RetryPolicy {
     pub(crate) fn next_timer(&self, attempts_num: usize) -> Option<Duration> {
         match self {
             RetryPolicy::None => None,
-            RetryPolicy::Linear {
+            RetryPolicy::FixedDelay {
                 interval,
                 max_attempts,
             } => {
