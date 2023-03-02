@@ -2733,6 +2733,7 @@ dependencies = [
  "journal",
  "network",
  "pin-project",
+ "service_key_extractor",
  "service_protocol",
  "storage_api",
  "storage_rocksdb",

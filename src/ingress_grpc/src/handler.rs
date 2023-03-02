@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use common::types::{
-    IngressId, ServiceInvocationFactory, ServiceInvocationResponseSink, SpanRelation,
+    IngressId, ServiceInvocationFactory, ServiceInvocationFactoryError,
+    ServiceInvocationResponseSink, SpanRelation,
 };
 use futures::future::{ok, BoxFuture};
 use futures::FutureExt;
@@ -147,7 +148,13 @@ where
                     Ok(i) => i,
                     Err(e) => {
                         warn!("Cannot create service invocation: {:?}", e);
-                        return Err(Status::internal(e.to_string()));
+                        let status = match e {
+                            err @ ServiceInvocationFactoryError::UnknownServiceMethod { .. } => {
+                                Status::not_found(err.to_string())
+                            }
+                            err @ ServiceInvocationFactoryError::KeyExtraction(_) => Status::internal(err.to_string())
+                        };
+                        return Err(status);
                     }
                 };
                 info!(restate.invocation.id = %service_invocation.id);

@@ -98,26 +98,29 @@ pub struct ServiceInvocation {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("failed creating the service invocation: {source:?}")]
-pub struct ServiceInvocationFactoryError {
-    source: Option<GenericError>,
+pub enum ServiceInvocationFactoryError {
+    #[error("service method '{service_name}/{method_name}' is unknown")]
+    UnknownServiceMethod {
+        service_name: String,
+        method_name: String,
+    },
+    #[error("failed extracting the key from the request payload: {0}")]
+    KeyExtraction(GenericError),
 }
 
 impl ServiceInvocationFactoryError {
-    pub fn new() -> Self {
-        Self { source: None }
-    }
-
-    pub fn from(source: impl Into<GenericError>) -> Self {
-        Self {
-            source: Some(source.into()),
+    pub fn unknown_service_method(
+        service_name: impl Into<String>,
+        method_name: impl Into<String>,
+    ) -> Self {
+        ServiceInvocationFactoryError::UnknownServiceMethod {
+            service_name: service_name.into(),
+            method_name: method_name.into(),
         }
     }
-}
 
-impl Default for ServiceInvocationFactoryError {
-    fn default() -> Self {
-        Self::new()
+    pub fn key_extraction_error(source: impl Into<GenericError>) -> Self {
+        ServiceInvocationFactoryError::KeyExtraction(source.into())
     }
 }
 
