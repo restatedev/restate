@@ -45,9 +45,9 @@ pub trait KeyExtractor {
 }
 
 /// This struct holds the key extractors for each known method of each known service.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct KeyExtractorsRegistry {
-    services: ArcSwap<HashMap<String, ServiceInstanceType>>,
+    services: Arc<ArcSwap<HashMap<String, ServiceInstanceType>>>,
 }
 
 impl KeyExtractorsRegistry {

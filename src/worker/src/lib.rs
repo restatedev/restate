@@ -9,6 +9,7 @@ use invoker::{EndpointMetadata, Invoker, RetryPolicy, UnboundedInvokerInputSende
 use network::UnboundedNetworkHandle;
 use partition::shuffle;
 use partition::RocksDBJournalReader;
+use service_key_extractor::KeyExtractorsRegistry;
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashMap;
 use storage_rocksdb::RocksDBStorage;
@@ -95,7 +96,8 @@ impl Worker {
         );
 
         let method_descriptor_registry = InMemoryMethodDescriptorRegistry::default();
-        let invocation_factory = DefaultServiceInvocationFactory::default();
+        let key_extractor_registry = KeyExtractorsRegistry::default();
+        let invocation_factory = DefaultServiceInvocationFactory::new(key_extractor_registry);
 
         let external_client_ingress = external_client_ingress.build(
             // TODO replace with proper network address once we have a distributed runtime
