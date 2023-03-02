@@ -10,7 +10,7 @@ pub struct Options {
     #[arg(
         long = "external-client-ingress-bind-address",
         env = "EXTERNAL_CLIENT_INGRESS_BIND_ADDRESS",
-        default_value = "0.0.0.0:8080"
+        default_value = "0.0.0.0:9090"
     )]
     bind_address: SocketAddr,
 
