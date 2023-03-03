@@ -1,5 +1,4 @@
 use super::protocol::{BoxBody, Protocol};
-use super::response_dispatcher::IngressResponseRequester;
 use super::*;
 
 use std::sync::Arc;
@@ -14,7 +13,7 @@ use futures::FutureExt;
 use http::{Request, Response};
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::Semaphore;
 use tower::{BoxError, Service};
 use tracing::{debug, info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -24,8 +23,7 @@ pub struct Handler<InvocationFactory, MethodRegistry> {
     ingress_id: IngressId,
     invocation_factory: InvocationFactory,
     method_registry: MethodRegistry,
-    response_requester: IngressResponseRequester,
-    ingress_output_sender: mpsc::Sender<IngressOutput>,
+    dispatcher_command_sender: DispatcherCommandSender,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
 
@@ -34,16 +32,14 @@ impl<InvocationFactory, MethodRegistry> Handler<InvocationFactory, MethodRegistr
         ingress_id: IngressId,
         invocation_factory: InvocationFactory,
         method_registry: MethodRegistry,
-        response_requester: IngressResponseRequester,
-        ingress_output_sender: mpsc::Sender<IngressOutput>,
+        dispatcher_command_sender: DispatcherCommandSender,
         global_concurrency_semaphore: Arc<Semaphore>,
     ) -> Self {
         Self {
             ingress_id,
             invocation_factory,
             method_registry,
-            response_requester,
-            ingress_output_sender,
+            dispatcher_command_sender,
             global_concurrency_semaphore,
         }
     }
@@ -120,8 +116,7 @@ where
         // Encapsulate in this closure the remaining part of the processing
         let ingress_id = self.ingress_id.clone();
         let invocation_factory = self.invocation_factory.clone();
-        let invocation_sender = self.ingress_output_sender.clone();
-        let response_requester = self.response_requester.clone();
+        let dispatcher_command_sender = self.dispatcher_command_sender.clone();
         let ingress_request_handler = move |ingress_request: IngressRequest| {
             let (req_headers, req_payload) = ingress_request;
 
@@ -160,20 +155,11 @@ where
                 info!(restate.invocation.id = %service_invocation.id);
                 trace!(restate.invocation.request_headers = ?req_headers);
 
-                // Register to the ResponseDispatcherLoop
-                let (response_registration_cmd, response_rx) =
-                    Command::prepare(service_invocation.id.clone());
-                if response_requester
-                    .send(response_registration_cmd)
-                    .is_err()
-                {
-                    warn!("Cannot register invocation to response dispatcher loop");
-                    return Err(Status::unavailable("Unavailable"));
-                }
-
                 // Send the service invocation
-                if invocation_sender.send(IngressOutput(service_invocation)).await.is_err() {
-                    warn!("Cannot send the invocation to the network component");
+                let (service_invocation_command, response_rx) =
+                    Command::prepare(service_invocation);
+                if dispatcher_command_sender.send(service_invocation_command).is_err() {
+                    debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                     return Err(Status::unavailable("Unavailable"));
                 }
 

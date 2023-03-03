@@ -1,18 +1,17 @@
 mod command;
 mod descriptors_registry;
+mod dispatcher;
 mod handler;
 mod options;
 mod protocol;
-mod response_dispatcher;
 mod server;
 
 pub(crate) use command::*;
 
 pub use descriptors_registry::InMemoryMethodDescriptorRegistry;
 pub use descriptors_registry::MethodDescriptorRegistry;
+pub use dispatcher::IngressDispatcherLoop;
 pub use options::Options;
-pub use response_dispatcher::IngressResponseSender;
-pub use response_dispatcher::ResponseDispatcherLoop;
 pub use server::HyperServerIngress;
 pub use server::StartSignal;
 
@@ -21,7 +20,10 @@ use bytestring::ByteString;
 use common::traits::KeyedMessage;
 use common::types::{AckKind, ServiceInvocation, ServiceInvocationId};
 use opentelemetry::Context;
+use tokio::sync::mpsc;
 use tonic::Status;
+
+// --- Data model used by handlers and protocol
 
 #[derive(Debug, Clone)]
 pub struct IngressRequestHeaders {
@@ -66,10 +68,18 @@ impl From<IngressError> for Status {
     }
 }
 
+// --- Input and output messages to interact with ingress
+
 #[derive(Debug, Clone)]
 pub struct IngressResponseMessage {
     pub service_invocation_id: ServiceInvocationId,
     pub result: Result<IngressResponse, IngressError>,
+}
+
+#[derive(Debug)]
+pub enum IngressInput {
+    Response(IngressResponseMessage),
+    MessageAck(AckKind),
 }
 
 #[derive(Debug)]
@@ -93,20 +103,11 @@ impl KeyedMessage for IngressOutput {
     }
 }
 
-#[derive(Debug)]
-pub enum IngressInput {
-    Response(IngressResponseMessage),
-    MessageAck(AckKind),
-}
+// --- Channels
 
-const _: () = {
-    fn assert_send<T: Send>() {}
-    fn assert_all() {
-        assert_send::<IngressRequest>();
-        assert_send::<IngressResult>();
-        assert_send::<IngressResponseMessage>();
-    }
-};
+pub type DispatcherCommandSender = UnboundedCommandSender<ServiceInvocation, IngressResult>;
+pub type IngressInputReceiver = mpsc::Receiver<IngressInput>;
+pub type IngressInputSender = mpsc::Sender<IngressInput>;
 
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
