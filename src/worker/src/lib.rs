@@ -1,12 +1,13 @@
 use crate::ingress_integration::{DefaultServiceInvocationFactory, ExternalClientIngressRunner};
 use crate::network_integration::FixedPartitionTable;
+use crate::partition::AckResponse;
 use common::types::{IngressId, PeerId, PeerTarget};
 use consensus::{Consensus, ProposalSender};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use ingress_grpc::{InMemoryMethodDescriptorRegistry, ResponseDispatcherLoop};
 use invoker::{EndpointMetadata, Invoker, RetryPolicy, UnboundedInvokerInputSender};
-use network::UnboundedNetworkHandle;
+use network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use partition::shuffle;
 use partition::RocksDBJournalReader;
 use service_key_extractor::KeyExtractorsRegistry;
@@ -25,11 +26,11 @@ mod network_integration;
 mod partition;
 mod util;
 
-type ConsensusCommand = consensus::Command<partition::Command>;
-type ConsensusMsg = PeerTarget<partition::Command>;
+type ConsensusCommand = consensus::Command<partition::AckCommand>;
+type ConsensusMsg = PeerTarget<partition::AckCommand>;
 type PartitionProcessor = partition::PartitionProcessor<
     ReceiverStream<ConsensusCommand>,
-    IdentitySender<partition::Command>,
+    IdentitySender<partition::AckCommand>,
     ProtobufRawEntryCodec,
     UnboundedInvokerInputSender,
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
@@ -56,7 +57,7 @@ pub struct Options {
 
 pub struct Worker {
     consensus: Consensus<
-        partition::Command,
+        partition::AckCommand,
         PollSender<ConsensusCommand>,
         ReceiverStream<ConsensusMsg>,
         PollSender<ConsensusMsg>,
@@ -131,6 +132,7 @@ impl Worker {
                     invoker_sender,
                     storage.clone(),
                     network_handle.clone(),
+                    network.create_partition_processor_sender(),
                 )
             })
             .unzip();
@@ -155,6 +157,7 @@ impl Worker {
         invoker_sender: UnboundedInvokerInputSender,
         storage: RocksDBStorage,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+        ack_sender: PartitionProcessorSender<AckResponse>,
     ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(
@@ -165,6 +168,7 @@ impl Worker {
             invoker_sender,
             storage,
             network_handle,
+            ack_sender,
         );
 
         ((peer_id, PollSender::new(command_tx)), processor)

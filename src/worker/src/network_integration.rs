@@ -2,7 +2,7 @@
 //! required formats when routing them through the network.
 
 use crate::partition;
-use crate::partition::shuffle;
+use crate::partition::{shuffle, AckTarget};
 use bytes::Bytes;
 use common::traits::KeyedMessage;
 use common::types::{PartitionKey, PeerId, ResponseResult};
@@ -14,78 +14,96 @@ use network::{
 };
 
 pub(super) type Network = network::Network<
-    partition::Command,
+    partition::AckCommand,
     shuffle::ShuffleInput,
     shuffle::ShuffleOutput,
-    ConsensusMessage,
-    IngressMessage,
+    ShuffleToConsensus,
+    ShuffleToIngress,
     ingress_grpc::IngressOutput,
     ingress_grpc::IngressInput,
-    partition::MessageAck,
-    partition::ShuffleMessageAck,
-    partition::IngressMessageAck,
+    partition::AckResponse,
+    partition::ShuffleAckResponse,
+    partition::IngressAckResponse,
     FixedPartitionTable,
 >;
 
-impl From<ingress_grpc::IngressOutput> for partition::Command {
+impl From<ingress_grpc::IngressOutput> for partition::AckCommand {
     fn from(value: ingress_grpc::IngressOutput) -> Self {
         let service_invocation = value.into_inner();
 
-        partition::Command::Invocation(service_invocation)
+        partition::AckCommand::no_ack(partition::Command::Invocation(service_invocation))
     }
 }
 
-impl From<partition::IngressMessageAck> for ingress_grpc::IngressInput {
-    fn from(value: partition::IngressMessageAck) -> Self {
-        ingress_grpc::IngressInput::MessageAck(value.0)
+impl From<partition::IngressAckResponse> for ingress_grpc::IngressInput {
+    fn from(value: partition::IngressAckResponse) -> Self {
+        ingress_grpc::IngressInput::MessageAck(value.kind)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct ConsensusMessage(shuffle::InvocationOrResponse);
+pub(crate) struct ShuffleToConsensus {
+    msg: shuffle::InvocationOrResponse,
+    shuffle_id: PeerId,
+    msg_index: u64,
+}
 
-impl KeyedMessage for ConsensusMessage {
+impl KeyedMessage for ShuffleToConsensus {
     type RoutingKey<'a> = &'a Bytes;
 
     fn routing_key(&self) -> &Bytes {
-        match &self.0 {
+        match &self.msg {
             shuffle::InvocationOrResponse::Invocation(invocation) => &invocation.id.service_id.key,
             shuffle::InvocationOrResponse::Response(response) => &response.id.service_id.key,
         }
     }
 }
 
-impl From<ConsensusMessage> for partition::Command {
-    fn from(value: ConsensusMessage) -> Self {
-        match value.0 {
+impl From<ShuffleToConsensus> for partition::AckCommand {
+    fn from(value: ShuffleToConsensus) -> Self {
+        let ShuffleToConsensus {
+            msg,
+            shuffle_id,
+            msg_index,
+        } = value;
+
+        let ack_target = AckTarget::shuffle(shuffle_id, msg_index);
+
+        match msg {
             shuffle::InvocationOrResponse::Invocation(invocation) => {
-                partition::Command::Invocation(invocation)
+                partition::AckCommand::ack(partition::Command::Invocation(invocation), ack_target)
             }
             shuffle::InvocationOrResponse::Response(response) => {
-                partition::Command::Response(response)
+                partition::AckCommand::ack(partition::Command::Response(response), ack_target)
             }
         }
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct IngressMessage(pub(crate) shuffle::IngressResponse);
+pub(crate) struct ShuffleToIngress(pub(crate) shuffle::IngressResponse);
 
-impl TargetConsensusOrIngress<ConsensusMessage, IngressMessage> for shuffle::ShuffleOutput {
-    fn target(self) -> ConsensusOrIngressTarget<ConsensusMessage, IngressMessage> {
-        match self {
-            shuffle::ShuffleOutput::PartitionProcessor(outbox_message) => {
-                ConsensusOrIngressTarget::Consensus(ConsensusMessage(outbox_message))
+impl TargetConsensusOrIngress<ShuffleToConsensus, ShuffleToIngress> for shuffle::ShuffleOutput {
+    fn target(self) -> ConsensusOrIngressTarget<ShuffleToConsensus, ShuffleToIngress> {
+        let (shuffle_id, msg_index, target) = self.into_inner();
+
+        match target {
+            shuffle::ShuffleTarget::PartitionProcessor(outbox_message) => {
+                ConsensusOrIngressTarget::Consensus(ShuffleToConsensus {
+                    msg: outbox_message,
+                    shuffle_id,
+                    msg_index,
+                })
             }
-            shuffle::ShuffleOutput::Ingress(invocation_response) => {
-                ConsensusOrIngressTarget::Ingress(IngressMessage(invocation_response))
+            shuffle::ShuffleTarget::Ingress(invocation_response) => {
+                ConsensusOrIngressTarget::Ingress(ShuffleToIngress(invocation_response))
             }
         }
     }
 }
 
-impl From<IngressMessage> for ingress_grpc::IngressInput {
-    fn from(value: IngressMessage) -> Self {
+impl From<ShuffleToIngress> for ingress_grpc::IngressInput {
+    fn from(value: ShuffleToIngress) -> Self {
         let shuffle::IngressResponse {
             service_invocation_id,
             response,
@@ -104,26 +122,26 @@ impl From<IngressMessage> for ingress_grpc::IngressInput {
     }
 }
 
-impl TargetShuffleOrIngress<partition::ShuffleMessageAck, partition::IngressMessageAck>
-    for partition::MessageAck
+impl TargetShuffleOrIngress<partition::ShuffleAckResponse, partition::IngressAckResponse>
+    for partition::AckResponse
 {
     fn target(
         self,
-    ) -> ShuffleOrIngressTarget<partition::ShuffleMessageAck, partition::IngressMessageAck> {
+    ) -> ShuffleOrIngressTarget<partition::ShuffleAckResponse, partition::IngressAckResponse> {
         match self {
-            partition::MessageAck::Shuffle(ack) => ShuffleOrIngressTarget::Shuffle(ack),
-            partition::MessageAck::Ingress(ack) => ShuffleOrIngressTarget::Ingress(ack),
+            partition::AckResponse::Shuffle(ack) => ShuffleOrIngressTarget::Shuffle(ack),
+            partition::AckResponse::Ingress(ack) => ShuffleOrIngressTarget::Ingress(ack),
         }
     }
 }
 
-impl From<partition::ShuffleMessageAck> for shuffle::ShuffleInput {
-    fn from(value: partition::ShuffleMessageAck) -> Self {
+impl From<partition::ShuffleAckResponse> for shuffle::ShuffleInput {
+    fn from(value: partition::ShuffleAckResponse) -> Self {
         shuffle::ShuffleInput(value.kind)
     }
 }
 
-impl TargetShuffle for partition::ShuffleMessageAck {
+impl TargetShuffle for partition::ShuffleAckResponse {
     fn shuffle_target(&self) -> PeerId {
         self.shuffle_target
     }

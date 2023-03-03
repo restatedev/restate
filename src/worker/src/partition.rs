@@ -1,5 +1,8 @@
-use common::types::{AckKind, EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
+use common::types::{
+    AckKind, EntryIndex, IngressId, InvocationId, PartitionId, PeerId, ServiceInvocationId,
+};
 use futures::{stream, Sink, SinkExt, Stream, StreamExt};
+use network::PartitionProcessorSender;
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fmt::Debug;
@@ -41,27 +44,13 @@ pub(super) struct PartitionProcessor<
 
     network_handle: NetworkHandle,
 
+    ack_tx: PartitionProcessorSender<AckResponse>,
+
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct RocksDBJournalReader;
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(super) enum MessageAck {
-    Shuffle(ShuffleMessageAck),
-    Ingress(IngressMessageAck),
-}
-
-#[derive(Debug)]
-pub(super) struct ShuffleMessageAck {
-    pub(crate) shuffle_target: PeerId,
-    pub(crate) kind: AckKind,
-}
-
-#[derive(Debug)]
-pub(super) struct IngressMessageAck(pub(crate) AckKind);
 
 impl invoker::JournalReader for RocksDBJournalReader {
     type JournalStream = stream::Empty<journal::raw::RawEntry>;
@@ -86,13 +75,14 @@ impl<CmdStream, ProposalSink, RawEntryCodec, InvokerInputSender, NetworkHandle, 
         Storage,
     >
 where
-    CmdStream: Stream<Item = consensus::Command<Command>>,
-    ProposalSink: Sink<Command>,
+    CmdStream: Stream<Item = consensus::Command<AckCommand>>,
+    ProposalSink: Sink<AckCommand>,
     RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     NetworkHandle: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     Storage: storage_api::Storage + Clone + Send + Sync + 'static,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         peer_id: PeerId,
         partition_id: PartitionId,
@@ -101,6 +91,7 @@ where
         invoker_tx: InvokerInputSender,
         storage: Storage,
         network_handle: NetworkHandle,
+        ack_tx: PartitionProcessorSender<AckResponse>,
     ) -> Self {
         Self {
             peer_id,
@@ -111,6 +102,7 @@ where
             state_machine: Default::default(),
             storage,
             network_handle,
+            ack_tx,
             _entry_codec: Default::default(),
         }
     }
@@ -125,6 +117,7 @@ where
             network_handle,
             storage,
             proposal_sink,
+            ack_tx,
             ..
         } = self;
         tokio::pin!(command_stream);
@@ -143,7 +136,9 @@ where
                 command = command_stream.next() => {
                     if let Some(command) = command {
                         match command {
-                            consensus::Command::Apply(fsm_command) => {
+                            consensus::Command::Apply(ackable_command) => {
+                                let (ack_target, fsm_command) = ackable_command.into_inner();
+
                                 effects.clear();
                                 state_machine.on_apply(fsm_command, &mut effects, &partition_storage).await?;
 
@@ -154,6 +149,10 @@ where
 
                                 let message_collector = result.commit().await?;
                                 leadership_state = message_collector.send().await?;
+
+                                if let Some(ack_target) = ack_target {
+                                    ack_tx.send(ack_target.acknowledge()).await?;
+                                }
                             }
                             consensus::Command::BecomeLeader(leader_epoch) => {
                                 info!(%peer_id, %partition_id, %leader_epoch, "Become leader.");
@@ -197,12 +196,16 @@ where
         match actuator_message {
             ActuatorOutput::Invoker(invoker_output) => {
                 // Err only if the consensus module is shutting down
-                let _ = proposal_sink.send(Command::Invoker(invoker_output)).await;
+                let _ = proposal_sink
+                    .send(AckCommand::no_ack(Command::Invoker(invoker_output)))
+                    .await;
             }
             ActuatorOutput::Shuffle(outbox_truncation) => {
                 // Err only if the consensus module is shutting down
                 let _ = proposal_sink
-                    .send(Command::OutboxTruncation(outbox_truncation.index()))
+                    .send(AckCommand::no_ack(Command::OutboxTruncation(
+                        outbox_truncation.index(),
+                    )))
                     .await;
             }
         };
@@ -217,4 +220,98 @@ pub(crate) enum InvocationStatus {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     Free,
+}
+
+#[derive(Debug)]
+pub(super) struct AckCommand {
+    command: Command,
+    ack_target: Option<AckTarget>,
+}
+
+impl AckCommand {
+    pub(super) fn ack(command: Command, ack_target: AckTarget) -> Self {
+        Self {
+            command,
+            ack_target: Some(ack_target),
+        }
+    }
+
+    pub(super) fn no_ack(command: Command) -> Self {
+        Self {
+            command,
+            ack_target: None,
+        }
+    }
+
+    fn into_inner(self) -> (Option<AckTarget>, Command) {
+        (self.ack_target, self.command)
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum AckTarget {
+    Shuffle {
+        shuffle_target: PeerId,
+        msg_index: u64,
+    },
+    #[allow(dead_code)]
+    Ingress {
+        ingress_id: IngressId,
+        msg_index: u64,
+    },
+}
+
+impl AckTarget {
+    pub(super) fn shuffle(shuffle_target: PeerId, msg_index: u64) -> Self {
+        AckTarget::Shuffle {
+            shuffle_target,
+            msg_index,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn ingress(ingress_id: IngressId, msg_index: u64) -> Self {
+        AckTarget::Ingress {
+            ingress_id,
+            msg_index,
+        }
+    }
+
+    fn acknowledge(self) -> AckResponse {
+        match self {
+            AckTarget::Shuffle {
+                shuffle_target,
+                msg_index,
+            } => AckResponse::Shuffle(ShuffleAckResponse {
+                shuffle_target,
+                kind: AckKind::Acknowledge(msg_index),
+            }),
+            AckTarget::Ingress {
+                ingress_id,
+                msg_index,
+            } => AckResponse::Ingress(IngressAckResponse {
+                _ingress_id: ingress_id,
+                kind: AckKind::Acknowledge(msg_index),
+            }),
+        }
+    }
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(super) enum AckResponse {
+    Shuffle(ShuffleAckResponse),
+    Ingress(IngressAckResponse),
+}
+
+#[derive(Debug)]
+pub(super) struct ShuffleAckResponse {
+    pub(crate) shuffle_target: PeerId,
+    pub(crate) kind: AckKind,
+}
+
+#[derive(Debug)]
+pub(super) struct IngressAckResponse {
+    pub(crate) _ingress_id: IngressId,
+    pub(crate) kind: AckKind,
 }

@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 mod routing;
 mod unbounded_handle;
 
-pub use routing::Network;
+pub use routing::{Network, PartitionProcessorSender};
 pub use unbounded_handle::UnboundedNetworkHandle;
 
 pub type ShuffleSender<T> = mpsc::Sender<T>;

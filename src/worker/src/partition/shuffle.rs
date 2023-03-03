@@ -56,29 +56,49 @@ pub(crate) struct IngressResponse {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(crate) enum ShuffleOutput {
+pub(crate) struct ShuffleOutput {
+    shuffle_id: PeerId,
+    msg_index: u64,
+    target: ShuffleTarget,
+}
+
+impl ShuffleOutput {
+    pub(crate) fn new(shuffle_id: PeerId, msg_index: u64, target: ShuffleTarget) -> Self {
+        Self {
+            shuffle_id,
+            msg_index,
+            target,
+        }
+    }
+
+    pub(crate) fn into_inner(self) -> (PeerId, u64, ShuffleTarget) {
+        (self.shuffle_id, self.msg_index, self.target)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ShuffleTarget {
     PartitionProcessor(InvocationOrResponse),
     Ingress(IngressResponse),
 }
 
-impl From<OutboxMessage> for ShuffleOutput {
+impl From<OutboxMessage> for ShuffleTarget {
     fn from(value: OutboxMessage) -> Self {
         match value {
             OutboxMessage::IngressResponse {
                 ingress_id,
                 service_invocation_id,
                 response,
-            } => ShuffleOutput::Ingress(IngressResponse {
+            } => ShuffleTarget::Ingress(IngressResponse {
                 _ingress_id: ingress_id,
                 service_invocation_id,
                 response,
             }),
             OutboxMessage::Response(response) => {
-                ShuffleOutput::PartitionProcessor(InvocationOrResponse::Response(response))
+                ShuffleTarget::PartitionProcessor(InvocationOrResponse::Response(response))
             }
             OutboxMessage::Invocation(invocation) => {
-                ShuffleOutput::PartitionProcessor(InvocationOrResponse::Invocation(invocation))
+                ShuffleTarget::PartitionProcessor(InvocationOrResponse::Invocation(invocation))
             }
         }
     }
@@ -175,6 +195,7 @@ where
         tokio::pin!(shutdown);
 
         let state_machine = StateMachine::new(
+            peer_id,
             |next_seq_number| outbox_reader.get_next_message(next_seq_number),
             |msg| network_tx.send(msg),
             &mut hint_rx,
@@ -210,7 +231,7 @@ where
 mod state_machine {
     use crate::partition::effects::OutboxMessage;
     use crate::partition::shuffle::{NewOutboxMessage, ShuffleInput, ShuffleOutput};
-    use common::types::AckKind;
+    use common::types::{AckKind, PeerId};
     use pin_project::pin_project;
     use std::future::Future;
     use std::marker::PhantomData;
@@ -230,6 +251,7 @@ mod state_machine {
 
     #[pin_project]
     pub(super) struct StateMachine<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError> {
+        shuffle_id: PeerId,
         current_sequence_number: u64,
         read_operation: ReadOp,
         send_operation: SendOp,
@@ -251,6 +273,7 @@ mod state_machine {
         ReadOp: Fn(u64) -> ReadFuture,
     {
         pub(super) fn new(
+            shuffle_id: PeerId,
             read_operation: ReadOp,
             send_operation: SendOp,
             hint_rx: &'a mut mpsc::Receiver<NewOutboxMessage>,
@@ -260,6 +283,7 @@ mod state_machine {
             let reading_future = read_operation(current_sequence_number);
 
             Self {
+                shuffle_id,
                 current_sequence_number,
                 read_operation,
                 send_operation,
@@ -287,7 +311,11 @@ mod state_machine {
                         if seq_number >= *this.current_sequence_number {
                             *this.current_sequence_number = seq_number;
 
-                            let send_future = (this.send_operation)(message.into());
+                            let send_future = (this.send_operation)(ShuffleOutput::new(
+                                *this.shuffle_id,
+                                seq_number,
+                                message.into(),
+                            ));
                             this.state.set(State::Sending(send_future));
                         } else {
                             let reading_future =
@@ -301,7 +329,11 @@ mod state_machine {
                         if let Some((seq_number, message)) = reading_result {
                             *this.current_sequence_number = seq_number;
 
-                            let send_future = (this.send_operation)(message.into());
+                            let send_future = (this.send_operation)(ShuffleOutput::new(
+                                *this.shuffle_id,
+                                seq_number,
+                                message.into(),
+                            ));
 
                             this.state.set(State::Sending(send_future));
                         } else {
