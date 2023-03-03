@@ -183,7 +183,8 @@ where
                         trace!(rpc.response = ?response_payload, "Complete external gRPC request successfully");
                         Ok(response_payload)
                     }
-                    Ok(Err(status)) => {
+                    Ok(Err(error)) => {
+                        let status: Status = error;
                         info!(rpc.grpc.status_code = ?status.code(), rpc.grpc.status_message = ?status.message(), "Complete external gRPC request with a failure");
                         Err(status)
                     }

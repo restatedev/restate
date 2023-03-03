@@ -94,7 +94,7 @@ impl ResponseDispatcherLoop {
                     .local_waiting_responses
                     .remove(&response.service_invocation_id)
                 {
-                    if let Err(Ok(response)) = sender.send(response.result) {
+                    if let Err(Ok(response)) = sender.send(response.result.map_err(Into::into)) {
                         warn!(
                             "Failed to send response '{:?}' because the handler has been closed, \
                     probably caused by the client connection that went away",

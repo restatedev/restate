@@ -142,9 +142,7 @@ impl Protocol {
         let ingress_request_body = Bytes::from(request_message.encode_to_vec());
         let response = match handler_fn((ingress_request_headers, ingress_request_body)).await {
             Ok(ingress_response_body) => ingress_response_body,
-            Err(status) => {
-                return connect_adapter::status::status_response(status).map(to_box_body)
-            }
+            Err(error) => return connect_adapter::status::status_response(error).map(to_box_body),
         };
 
         connect_adapter::encode_response(response, &descriptor, content_type).map(to_box_body)
