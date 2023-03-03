@@ -6,7 +6,10 @@ use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{JournalStatus, StateReader, StateReaderError};
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
-use common::types::{EntryIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId};
+use common::types::{
+    EntryIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId,
+    ServiceInvocationResponseSink,
+};
 use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
 use journal::raw::RawEntry;
@@ -60,6 +63,14 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
     ) -> BoxFuture<Result<bool, StateReaderError>> {
         todo!()
     }
+
+    fn get_response_sink(
+        &self,
+        _service_invocation_id: &ServiceInvocationId,
+    ) -> BoxFuture<Result<Option<crate::partition::state_machine::ResponseSink>, StateReaderError>>
+    {
+        todo!()
+    }
 }
 
 impl<Storage> InvocationReader for PartitionStorage<Storage> {
@@ -93,8 +104,9 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
 
     fn create_journal(
         &self,
-        _service_id: &ServiceId,
+        _service_invocation_id: &ServiceInvocationId,
         _method_name: impl AsRef<str>,
+        _response_sink: &ServiceInvocationResponseSink,
     ) -> Result<(), StateStorageError> {
         todo!()
     }

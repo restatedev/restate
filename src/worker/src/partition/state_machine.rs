@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InvocationResponse, ServiceId, ServiceInvocation, ServiceInvocationId,
+    EntryIndex, IngressId, InvocationId, InvocationResponse, ResponseResult, ServiceId,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -8,8 +9,7 @@ use invoker::Kind;
 use journal::raw::{RawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
 use journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
-    Entry, EntryResult, GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry,
-    SetStateEntry, SleepEntry,
+    Entry, GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
 };
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -47,6 +47,31 @@ pub(super) struct JournalStatus {
     pub(super) length: EntryIndex,
 }
 
+#[derive(Debug, Clone)]
+pub(super) enum ResponseSink {
+    Ingress(IngressId, ServiceInvocationId),
+    PartitionProcessor(ServiceInvocationId, EntryIndex),
+}
+
+impl ResponseSink {
+    #[allow(dead_code)]
+    pub(super) fn from_service_invocation_response_sink(
+        service_invocation_id: &ServiceInvocationId,
+        response_sink: &ServiceInvocationResponseSink,
+    ) -> Option<ResponseSink> {
+        match response_sink {
+            ServiceInvocationResponseSink::Ingress(ingress_id) => Some(ResponseSink::Ingress(
+                ingress_id.clone(),
+                service_invocation_id.clone(),
+            )),
+            ServiceInvocationResponseSink::None => None,
+            ServiceInvocationResponseSink::PartitionProcessor(entry_index) => Some(
+                ResponseSink::PartitionProcessor(service_invocation_id.clone(), *entry_index),
+            ),
+        }
+    }
+}
+
 pub type InboxEntry = (u64, ServiceInvocation);
 
 #[derive(Debug, thiserror::Error)]
@@ -80,6 +105,12 @@ pub(super) trait StateReader {
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<bool, StateReaderError>>;
+
+    // TODO: Replace with async trait or proper future
+    fn get_response_sink(
+        &self,
+        service_invocation_id: &ServiceInvocationId,
+    ) -> BoxFuture<Result<Option<ResponseSink>, StateReaderError>>;
 }
 
 #[derive(Debug, Default)]
@@ -266,13 +297,16 @@ where
                     .await?;
             }
             Kind::Failed { error, error_code } => {
-                let response = Self::create_response(EntryResult::Failure(
-                    error_code,
-                    error.to_string().into(),
-                ));
+                if let Some(response_sink) = state.get_response_sink(&service_invocation_id).await?
+                {
+                    let outbox_message = Self::create_response(
+                        response_sink,
+                        ResponseResult::Failure(error_code, error.to_string().into()),
+                    );
 
-                // TODO: We probably only need to send the response if we haven't send a response before
-                self.send_message(OutboxMessage::Response(response), effects);
+                    // TODO: We probably only need to send the response if we haven't send a response before
+                    self.send_message(outbox_message, effects);
+                }
 
                 self.complete_invocation(service_invocation_id, state, effects)
                     .await?;
@@ -309,12 +343,15 @@ where
                 );
             }
             RawEntryHeader::OutputStream => {
-                let OutputStreamEntry { result } =
-                    enum_inner!(Self::deserialize(&entry)?, Entry::OutputStream);
+                if let Some(response_sink) = state.get_response_sink(&service_invocation_id).await?
+                {
+                    let OutputStreamEntry { result } =
+                        enum_inner!(Self::deserialize(&entry)?, Entry::OutputStream);
 
-                let response = Self::create_response(result);
+                    let outbox_message = Self::create_response(response_sink, result.into());
 
-                self.send_message(OutboxMessage::Response(response), effects);
+                    self.send_message(outbox_message, effects);
+                }
             }
             RawEntryHeader::GetState { is_completed } => {
                 if !is_completed {
@@ -391,7 +428,7 @@ where
                 let entry = enum_inner!(Self::deserialize(&entry)?, Entry::CompleteAwakeable);
 
                 let response = Self::create_response_for_awakeable_entry(entry);
-                self.send_message(OutboxMessage::Response(response), effects);
+                self.send_message(response, effects);
             }
             RawEntryHeader::Custom {
                 requires_ack,
@@ -503,12 +540,43 @@ where
         todo!()
     }
 
-    fn create_response_for_awakeable_entry(_entry: CompleteAwakeableEntry) -> InvocationResponse {
-        todo!()
+    fn create_response_for_awakeable_entry(entry: CompleteAwakeableEntry) -> OutboxMessage {
+        let CompleteAwakeableEntry {
+            entry_index,
+            result,
+            service_name,
+            instance_key,
+            invocation_id,
+        } = entry;
+        OutboxMessage::Response(InvocationResponse {
+            entry_index,
+            result: result.into(),
+            id: ServiceInvocationId::new(
+                service_name,
+                instance_key,
+                InvocationId::from_slice(&invocation_id)
+                    .expect("Invocation id must be parse-able. If not, then this is a bug. Please contact the Restate developers."),
+            ),
+        })
     }
 
-    fn create_response(_result: EntryResult) -> InvocationResponse {
-        todo!()
+    fn create_response(response_sink: ResponseSink, result: ResponseResult) -> OutboxMessage {
+        match response_sink {
+            ResponseSink::Ingress(ingress_id, service_invocation_id) => {
+                OutboxMessage::IngressResponse {
+                    ingress_id,
+                    service_invocation_id,
+                    response: result,
+                }
+            }
+            ResponseSink::PartitionProcessor(service_invocation_id, entry_index) => {
+                OutboxMessage::Response(InvocationResponse {
+                    id: service_invocation_id,
+                    entry_index,
+                    result,
+                })
+            }
+        }
     }
 
     fn deserialize(raw_entry: &RawEntry) -> Result<Entry, RawEntryCodecError> {

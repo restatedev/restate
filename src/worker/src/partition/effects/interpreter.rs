@@ -1,7 +1,9 @@
 use crate::partition::effects::{Effect, Effects, OutboxMessage};
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
-use common::types::{EntryIndex, ServiceId, ServiceInvocation, ServiceInvocationId};
+use common::types::{
+    EntryIndex, ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+};
 use common::utils::GenericError;
 use futures::future::BoxFuture;
 use invoker::InvokeInputJournal;
@@ -69,8 +71,9 @@ pub(crate) trait StateStorage {
     // Journal operations
     fn create_journal(
         &self,
-        service_id: &ServiceId,
+        service_invocation_id: &ServiceInvocationId,
         method_name: impl AsRef<str>,
+        response_sink: &ServiceInvocationResponseSink,
     ) -> Result<(), StateStorageError>;
 
     fn drop_journal(&self, service_id: &ServiceId) -> Result<(), StateStorageError>;
@@ -228,9 +231,11 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     &service_invocation.id.service_id,
                     &InvocationStatus::Invoked(service_invocation.id.invocation_id),
                 )?;
+
                 state_storage.create_journal(
-                    &service_invocation.id.service_id,
+                    &service_invocation.id,
                     &service_invocation.method_name,
+                    &service_invocation.response_sink,
                 )?;
 
                 let input_entry =

@@ -21,6 +21,15 @@ pub enum EntryResult {
     Failure(i32, ByteString),
 }
 
+impl From<EntryResult> for ResponseResult {
+    fn from(value: EntryResult) -> Self {
+        match value {
+            EntryResult::Success(bytes) => ResponseResult::Success(bytes),
+            EntryResult::Failure(i32, error_msg) => ResponseResult::Failure(i32, error_msg),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PollInputStreamEntry {
     pub result: Bytes,
