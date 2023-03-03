@@ -41,7 +41,7 @@ pub(crate) type EnrichedRawEntry = RawEntry<EnrichedEntryHeader>;
 
 /// Enriched variant of the [`RawEntryHeader`] to store additional runtime specific information
 /// for the journal entries.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum EnrichedEntryHeader {
     PollInputStream {
         is_completed: bool,
@@ -74,7 +74,7 @@ pub(crate) enum EnrichedEntryHeader {
 }
 
 /// Result of the target service resolution
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ResolutionResult {
     Success {
         invocation_id: InvocationId,

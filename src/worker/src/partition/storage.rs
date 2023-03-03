@@ -15,6 +15,10 @@ use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
 use journal::CompletionResult;
 
+mod memory;
+
+pub use memory::InMemoryPartitionStorage;
+
 #[derive(Debug, Clone)]
 pub(super) struct PartitionStorage<Storage> {
     _partition_id: PartitionId,
@@ -22,6 +26,7 @@ pub(super) struct PartitionStorage<Storage> {
 }
 
 impl<Storage> PartitionStorage<Storage> {
+    #[allow(dead_code)]
     pub(super) fn new(partition_id: PartitionId, storage: Storage) -> Self {
         Self {
             _partition_id: partition_id,
@@ -29,6 +34,7 @@ impl<Storage> PartitionStorage<Storage> {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn create_transaction(&mut self) -> Transaction<'_, Storage> {
         Transaction::new(self)
     }
@@ -86,6 +92,7 @@ pub(super) struct Transaction<'a, Storage> {
 }
 
 impl<'a, Storage> Transaction<'a, Storage> {
+    #[allow(dead_code)]
     pub(super) fn new(inner: &'a mut PartitionStorage<Storage>) -> Self {
         Self { _inner: inner }
     }

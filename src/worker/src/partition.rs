@@ -22,22 +22,14 @@ pub(super) use crate::partition::ack::{
 use crate::partition::actuator_output_handler::ActuatorOutputHandler;
 use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::LeadershipState;
-use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
 pub(crate) use state_machine::Command;
 
 #[derive(Debug)]
-pub(super) struct PartitionProcessor<
-    RawEntryCodec,
-    InvokerInputSender,
-    NetworkHandle,
-    Storage,
-    KeyExtractor,
-> {
+pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
+{
     peer_id: PeerId,
     partition_id: PartitionId,
-
-    storage: Storage,
 
     command_rx: mpsc::Receiver<consensus::Command<AckableCommand>>,
     proposal_tx: IdentitySender<AckableCommand>,
@@ -71,13 +63,12 @@ impl invoker::JournalReader for RocksDBJournalReader {
     }
 }
 
-impl<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage, KeyExtractor>
-    PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage, KeyExtractor>
+impl<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
+    PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
 where
     RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     NetworkHandle: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-    Storage: storage_api::Storage + Clone + Send + Sync + 'static,
     KeyExtractor: service_key_extractor::KeyExtractor,
 {
     #[allow(clippy::too_many_arguments)]
@@ -87,7 +78,6 @@ where
         command_stream: mpsc::Receiver<consensus::Command<AckableCommand>>,
         proposal_sender: IdentitySender<AckableCommand>,
         invoker_tx: InvokerInputSender,
-        storage: Storage,
         network_handle: NetworkHandle,
         ack_tx: network::PartitionProcessorSender<AckResponse>,
         key_extractor: KeyExtractor,
@@ -99,7 +89,6 @@ where
             proposal_tx: proposal_sender,
             invoker_tx,
             state_machine: Default::default(),
-            storage,
             network_handle,
             ack_tx,
             key_extractor,
@@ -115,7 +104,6 @@ where
             mut state_machine,
             invoker_tx,
             network_handle,
-            storage,
             proposal_tx,
             ack_tx,
             key_extractor,
@@ -128,7 +116,7 @@ where
         let (mut actuator_stream, mut leadership_state) =
             LeadershipState::follower(peer_id, partition_id, invoker_tx, network_handle);
 
-        let mut partition_storage = PartitionStorage::new(partition_id, storage);
+        let mut partition_storage = storage::InMemoryPartitionStorage::new();
         let actuator_output_handler =
             ActuatorOutputHandler::<_, RawEntryCodec>::new(proposal_tx, key_extractor);
 

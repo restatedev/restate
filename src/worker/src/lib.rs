@@ -14,7 +14,6 @@ use partition::RocksDBJournalReader;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use service_protocol::codec::ProtobufRawEntryCodec;
-use storage_rocksdb::RocksDBStorage;
 use tokio::join;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -33,7 +32,6 @@ type PartitionProcessor = partition::PartitionProcessor<
     ProtobufRawEntryCodec,
     UnboundedInvokerInputSender,
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-    RocksDBStorage,
     KeyExtractorsRegistry,
 >;
 
@@ -88,12 +86,10 @@ impl Worker {
     ) -> Self {
         let Options {
             channel_size,
-            storage_rocksdb,
             external_client_ingress,
             ..
         } = opts;
 
-        let storage = storage_rocksdb.build();
         let num_partition_processors = 10;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
@@ -138,7 +134,6 @@ impl Worker {
                     idx,
                     proposal_sender,
                     invoker_sender,
-                    storage.clone(),
                     network_handle.clone(),
                     network.create_partition_processor_sender(),
                     key_extractor_registry.clone(),
@@ -165,7 +160,6 @@ impl Worker {
         peer_id: PeerId,
         proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: UnboundedInvokerInputSender,
-        storage: RocksDBStorage,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
         ack_sender: PartitionProcessorSender<partition::AckResponse>,
         key_extractor: KeyExtractorsRegistry,
@@ -177,7 +171,6 @@ impl Worker {
             command_rx,
             IdentitySender::new(peer_id, proposal_sender),
             invoker_sender,
-            storage,
             network_handle,
             ack_sender,
             key_extractor,
