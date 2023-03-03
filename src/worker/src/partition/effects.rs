@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InvocationResponse, ServiceId, ServiceInvocation, ServiceInvocationId,
+    EntryIndex, IngressId, InvocationResponse, ResponseResult, ServiceId, ServiceInvocation,
+    ServiceInvocationId,
 };
 use journal::raw::RawEntry;
 use journal::Completion;
@@ -18,6 +19,12 @@ pub(crate) use interpreter::{
 pub(crate) enum OutboxMessage {
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
+    #[allow(dead_code)]
+    IngressResponse {
+        ingress_id: IngressId,
+        service_invocation_id: ServiceInvocationId,
+        response: ResponseResult,
+    },
 }
 
 #[derive(Debug)]

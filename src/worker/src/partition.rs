@@ -16,7 +16,6 @@ mod storage;
 use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::{ActuatorOutput, LeadershipState};
 use crate::partition::storage::PartitionStorage;
-pub(crate) use effects::OutboxMessage;
 pub(crate) use state_machine::Command;
 
 #[derive(Debug)]

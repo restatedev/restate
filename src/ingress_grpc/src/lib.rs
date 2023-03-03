@@ -17,6 +17,7 @@ pub use server::HyperServerIngress;
 pub use server::StartSignal;
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use common::traits::KeyedMessage;
 use common::types::{AckKind, ServiceInvocation, ServiceInvocationId};
 use opentelemetry::Context;
@@ -39,15 +40,36 @@ impl IngressRequestHeaders {
     }
 }
 
+type IngressResult = Result<IngressResponse, Status>;
+
 pub type IngressRequest = (IngressRequestHeaders, Bytes);
 pub type IngressResponse = Bytes;
-pub type IngressError = Status;
-pub type IngressResult = Result<IngressResponse, IngressError>;
+
+#[derive(Debug, Clone)]
+pub struct IngressError {
+    code: i32,
+    error_msg: ByteString,
+}
+
+impl IngressError {
+    pub fn new(code: i32, error_msg: impl Into<ByteString>) -> Self {
+        Self {
+            code,
+            error_msg: error_msg.into(),
+        }
+    }
+}
+
+impl From<IngressError> for Status {
+    fn from(value: IngressError) -> Self {
+        Status::new(value.code.into(), value.error_msg)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct IngressResponseMessage {
     pub service_invocation_id: ServiceInvocationId,
-    pub result: IngressResult,
+    pub result: Result<IngressResponse, IngressError>,
 }
 
 #[derive(Debug)]

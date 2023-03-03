@@ -1,9 +1,11 @@
 use crate::partition::effects::OutboxMessage;
 use crate::partition::shuffle::state_machine::StateMachine;
-use common::types::{AckKind, PeerId};
+use common::types::{
+    AckKind, IngressId, InvocationResponse, PeerId, ResponseResult, ServiceInvocation,
+    ServiceInvocationId,
+};
 use common::utils::GenericError;
 use futures::future::BoxFuture;
-use ingress_grpc::IngressResponseMessage;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -41,10 +43,45 @@ impl OutboxTruncation {
 pub(crate) struct ShuffleInput(pub(crate) AckKind);
 
 #[derive(Debug, Clone)]
+pub(crate) enum InvocationOrResponse {
+    Invocation(ServiceInvocation),
+    Response(InvocationResponse),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IngressResponse {
+    pub(crate) _ingress_id: IngressId,
+    pub(crate) service_invocation_id: ServiceInvocationId,
+    pub(crate) response: ResponseResult,
+}
+
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) enum ShuffleOutput {
-    PartitionProcessor(OutboxMessage),
-    Ingress(IngressResponseMessage),
+    PartitionProcessor(InvocationOrResponse),
+    Ingress(IngressResponse),
+}
+
+impl From<OutboxMessage> for ShuffleOutput {
+    fn from(value: OutboxMessage) -> Self {
+        match value {
+            OutboxMessage::IngressResponse {
+                ingress_id,
+                service_invocation_id,
+                response,
+            } => ShuffleOutput::Ingress(IngressResponse {
+                _ingress_id: ingress_id,
+                service_invocation_id,
+                response,
+            }),
+            OutboxMessage::Response(response) => {
+                ShuffleOutput::PartitionProcessor(InvocationOrResponse::Response(response))
+            }
+            OutboxMessage::Invocation(invocation) => {
+                ShuffleOutput::PartitionProcessor(InvocationOrResponse::Invocation(invocation))
+            }
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -250,8 +287,7 @@ mod state_machine {
                         if seq_number >= *this.current_sequence_number {
                             *this.current_sequence_number = seq_number;
 
-                            let send_future =
-                                (this.send_operation)(ShuffleOutput::PartitionProcessor(message));
+                            let send_future = (this.send_operation)(message.into());
                             this.state.set(State::Sending(send_future));
                         } else {
                             let reading_future =
@@ -265,8 +301,7 @@ mod state_machine {
                         if let Some((seq_number, message)) = reading_result {
                             *this.current_sequence_number = seq_number;
 
-                            let send_future =
-                                (this.send_operation)(ShuffleOutput::PartitionProcessor(message));
+                            let send_future = (this.send_operation)(message.into());
 
                             this.state.set(State::Sending(send_future));
                         } else {
