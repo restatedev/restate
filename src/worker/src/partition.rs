@@ -210,7 +210,7 @@ where
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub(crate) enum InvocationStatus {
     Invoked(InvocationId),
     Suspended {
