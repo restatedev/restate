@@ -17,7 +17,7 @@ use invoker::{
 use journal::raw::{RawEntry, RawEntryCodec, RawEntryHeader};
 use journal::{Completion, CompletionResult};
 use prost::Message;
-use service_protocol::pb::PollInputStreamEntryMessage;
+use service_protocol::pb::protocol::PollInputStreamEntryMessage;
 use tokio::sync::{mpsc, Mutex};
 use tracing::debug;
 

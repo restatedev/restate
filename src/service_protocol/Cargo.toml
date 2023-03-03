@@ -7,16 +7,20 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = []
+protocol = []
+codec = ["protocol", "dep:thiserror", "dep:journal", "dep:paste"]
+discovery = []
 
 [dependencies]
 bytes = { workspace = true }
-paste = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
-thiserror = { workspace = true }
 
-journal = { workspace = true }
+thiserror = { workspace = true, optional = true }
+paste = { workspace = true, optional = true }
+journal = { workspace = true, optional = true }
 
 [build-dependencies]
 prost-build = { workspace = true }

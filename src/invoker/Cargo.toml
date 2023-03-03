@@ -28,9 +28,11 @@ opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
 
 journal = { workspace = true }
-service_protocol = { workspace = true }
+service_protocol = { workspace = true, features = ["protocol"] }
 
 [dev-dependencies]
 uuid = { workspace = true }
 test_utils = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+service_protocol = { workspace = true, features = ["codec"] }
