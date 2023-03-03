@@ -1,8 +1,8 @@
-use crate::response_dispatcher::IngressResponseRequester;
-use crate::{HyperServerIngress, IngressOutput, MethodDescriptorRegistry};
-use common::types::{IngressId, ServiceInvocationFactory};
+use super::*;
+
 use std::net::SocketAddr;
-use tokio::sync::mpsc;
+
+use common::types::{IngressId, ServiceInvocationFactory};
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
@@ -28,8 +28,7 @@ impl Options {
         ingress_id: IngressId,
         descriptor_registry: DescriptorRegistry,
         invocation_factory: InvocationFactory,
-        response_requester: IngressResponseRequester,
-        ingress_output_sender: mpsc::Sender<IngressOutput>,
+        dispatcher_command_sender: DispatcherCommandSender,
     ) -> HyperServerIngress<DescriptorRegistry, InvocationFactory>
     where
         DescriptorRegistry: MethodDescriptorRegistry + Clone + Send + 'static,
@@ -46,8 +45,7 @@ impl Options {
             ingress_id,
             descriptor_registry,
             invocation_factory,
-            response_requester,
-            ingress_output_sender,
+            dispatcher_command_sender,
         );
 
         hyper_ingress_server

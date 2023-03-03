@@ -4,7 +4,7 @@ use common::types::{IngressId, PeerId, PeerTarget};
 use consensus::Consensus;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use ingress_grpc::{InMemoryMethodDescriptorRegistry, ResponseDispatcherLoop};
+use ingress_grpc::{InMemoryMethodDescriptorRegistry, IngressDispatcherLoop};
 use invoker::{EndpointMetadata, Invoker, RetryPolicy, UnboundedInvokerInputSender};
 use network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use partition::ack::AckableCommand;
@@ -80,13 +80,14 @@ impl Worker {
         let num_partition_processors = 10;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
-        let response_dispatcher_loop = ResponseDispatcherLoop::default();
+        let ingress_dispatcher_loop = IngressDispatcherLoop::default();
 
         let network = network_integration::Network::new(
             raft_in_tx,
-            response_dispatcher_loop.create_response_sender(),
+            ingress_dispatcher_loop.create_response_sender(),
             FixedPartitionTable::new(num_partition_processors),
         );
+        let network_ingress_sender = network.create_ingress_sender();
 
         let method_descriptor_registry = InMemoryMethodDescriptorRegistry::default();
         let key_extractor_registry = KeyExtractorsRegistry::default();
@@ -101,8 +102,7 @@ impl Worker {
             ),
             method_descriptor_registry,
             invocation_factory,
-            response_dispatcher_loop.create_response_requester(),
-            network.create_ingress_sender(),
+            ingress_dispatcher_loop.create_command_sender(),
         );
 
         let mut consensus = Consensus::new(raft_in_rx, network.create_consensus_sender());
@@ -135,7 +135,8 @@ impl Worker {
             invoker,
             external_client_ingress_runner: ExternalClientIngressRunner::new(
                 external_client_ingress,
-                response_dispatcher_loop,
+                ingress_dispatcher_loop,
+                network_ingress_sender,
             ),
         }
     }

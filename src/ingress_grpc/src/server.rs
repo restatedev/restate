@@ -1,4 +1,3 @@
-use super::response_dispatcher::IngressResponseRequester;
 use super::*;
 
 use std::net::SocketAddr;
@@ -7,7 +6,7 @@ use std::sync::Arc;
 use common::types::{IngressId, ServiceInvocationFactory};
 use futures::FutureExt;
 use tokio::sync::oneshot;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::Semaphore;
 use tower::make::Shared;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
@@ -23,8 +22,7 @@ pub struct HyperServerIngress<DescriptorRegistry, InvocationFactory> {
     ingress_id: IngressId,
     method_descriptor_registry: DescriptorRegistry,
     invocation_factory: InvocationFactory,
-    response_requester: IngressResponseRequester,
-    ingress_output_sender: mpsc::Sender<IngressOutput>,
+    dispatcher_command_sender: DispatcherCommandSender,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
@@ -42,8 +40,7 @@ where
         ingress_id: IngressId,
         method_descriptor_registry: DescriptorRegistry,
         invocation_factory: InvocationFactory,
-        response_requester: IngressResponseRequester,
-        ingress_output_sender: mpsc::Sender<IngressOutput>,
+        dispatcher_command_sender: DispatcherCommandSender,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
 
@@ -53,8 +50,7 @@ where
             ingress_id,
             method_descriptor_registry,
             invocation_factory,
-            response_requester,
-            ingress_output_sender,
+            dispatcher_command_sender,
             start_signal_tx,
         };
 
@@ -68,8 +64,7 @@ where
             ingress_id,
             method_descriptor_registry,
             invocation_factory,
-            response_requester,
-            ingress_output_sender,
+            dispatcher_command_sender,
             start_signal_tx,
         } = self;
 
@@ -84,8 +79,7 @@ where
                     ingress_id,
                     invocation_factory,
                     method_descriptor_registry,
-                    response_requester,
-                    ingress_output_sender,
+                    dispatcher_command_sender,
                     global_concurrency_limit_semaphore,
                 )),
         );
@@ -155,11 +149,18 @@ mod tests {
 
     #[test(tokio::test)]
     async fn test_http_connect_call() {
-        let (drain, address, service_invocation_future, ingress_handle) =
-            bootstrap_test(pb::GreetingResponse {
-                greeting: "Igal".to_string(),
-            })
-            .await;
+        let (drain, address, cmd_fut, ingress_handle) = bootstrap_test().await;
+        let cmd_fut = tokio::spawn(async move {
+            let (service_invocation, response_tx) = cmd_fut.await.unwrap().unwrap().into_inner();
+            response_tx
+                .send(Ok(pb::GreetingResponse {
+                    greeting: "Igal".to_string(),
+                }
+                .encode_to_vec()
+                .into()))
+                .unwrap();
+            service_invocation
+        });
 
         // Send the request
         let json_payload = json!({"person": "Francesco"});
@@ -175,11 +176,7 @@ mod tests {
         assert_eq!(http_response.status(), StatusCode::OK);
 
         // Get the function invocation and assert on it
-        let mut service_invocation = service_invocation_future
-            .await
-            .unwrap()
-            .unwrap()
-            .into_inner();
+        let mut service_invocation = cmd_fut.await.unwrap();
         assert_eq!(
             service_invocation.id.service_id.service_name,
             "greeter.Greeter"
@@ -211,9 +208,14 @@ mod tests {
         let expected_greeting_response = pb::GreetingResponse {
             greeting: "Igal".to_string(),
         };
+        let encoded_greeting_response = Bytes::from(expected_greeting_response.encode_to_vec());
 
-        let (drain, address, service_invocation_future, ingress_handle) =
-            bootstrap_test(expected_greeting_response.clone()).await;
+        let (drain, address, cmd_fut, ingress_handle) = bootstrap_test().await;
+        let cmd_fut = tokio::spawn(async move {
+            let (service_invocation, response_tx) = cmd_fut.await.unwrap().unwrap().into_inner();
+            response_tx.send(Ok(encoded_greeting_response)).unwrap();
+            service_invocation
+        });
 
         let mut client = pb::greeter_client::GreeterClient::connect(format!("http://{address}"))
             .await
@@ -226,11 +228,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut service_invocation = service_invocation_future
-            .await
-            .unwrap()
-            .unwrap()
-            .into_inner();
+        let mut service_invocation = cmd_fut.await.unwrap();
         assert_eq!(
             service_invocation.id.service_id.service_name,
             "greeter.Greeter"
@@ -247,17 +245,14 @@ mod tests {
         ingress_handle.await.unwrap();
     }
 
-    async fn bootstrap_test(
-        res: pb::GreetingResponse,
-    ) -> (
+    async fn bootstrap_test() -> (
         Signal,
         SocketAddr,
-        JoinHandle<Option<IngressOutput>>,
+        JoinHandle<Option<Command<ServiceInvocation, IngressResult>>>,
         JoinHandle<()>,
     ) {
         let (drain, watch) = drain::channel();
-        let (service_invocation_tx, mut service_invocation_rx) = mpsc::channel(2);
-        let (registration_command_tx, mut registration_command_rx) = mpsc::unbounded_channel();
+        let (dispatcher_command_tx, mut dispatcher_command_rx) = mpsc::unbounded_channel();
 
         // Create the ingress and start it
         let (ingress, start_signal) = HyperServerIngress::new(
@@ -266,28 +261,16 @@ mod tests {
             IngressId("0.0.0.0:0".parse().unwrap()),
             test_descriptor_registry(),
             MockServiceInvocationFactory,
-            registration_command_tx,
-            service_invocation_tx,
+            dispatcher_command_tx,
         );
         let ingress_handle = tokio::spawn(ingress.run(watch));
 
-        // Mock the response
-        let serialized_response = Bytes::from(res.encode_to_vec());
-        tokio::spawn(async move {
-            registration_command_rx
-                .recv()
-                .await
-                .unwrap()
-                .reply(Ok(serialized_response))
-        });
-
         // Mock the service invocation receiver
-        let service_invocation_future =
-            tokio::spawn(async move { service_invocation_rx.recv().await });
+        let cmd_fut = tokio::spawn(async move { dispatcher_command_rx.recv().await });
 
         // Wait server to start
         let address = start_signal.await.unwrap();
 
-        (drain, address, service_invocation_future, ingress_handle)
+        (drain, address, cmd_fut, ingress_handle)
     }
 }

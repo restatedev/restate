@@ -22,6 +22,7 @@ prost-reflect = { workspace = true, features = ["serde", "reflect-well-known-typ
 # Futures
 pin-project = { workspace = true }
 futures = { workspace = true }
+futures_util = { workspace = true }
 
 # Tower + Hyper + Tonic + Tokio
 tower = { version = "0.4", features = ["util"] }
