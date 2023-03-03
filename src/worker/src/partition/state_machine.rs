@@ -296,8 +296,7 @@ where
             .length;
 
         debug_assert_eq!(
-            entry_index,
-            journal_length + 1,
+            entry_index, journal_length,
             "Expect to receive next journal entry"
         );
 

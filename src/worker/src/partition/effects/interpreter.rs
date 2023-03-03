@@ -238,7 +238,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
                 state_storage.store_journal_entry(
                     &service_invocation.id.service_id,
-                    1,
+                    0,
                     &input_entry,
                 )?;
 
