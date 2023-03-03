@@ -1,9 +1,9 @@
-use std::future::Future;
+use std::future::{poll_fn, Future};
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 
-use futures::future::poll_fn;
+use pin_project::pin_project;
 use tokio::sync::mpsc;
 
 pub use input::*;
@@ -28,11 +28,11 @@ pub trait PipeInput<T> {
 /// * _Ready_
 /// * _Closed_
 ///
-/// The state becomes _Ready_ when [`Self::poll_ready`] returns [`Poll::Ready`] with [`Ok`].
-/// After sending a message with [`Self::send`], the state transitions back to _Idle_,
-/// requiring to invoke [`Self::poll_ready`] again before the next [`Self::send`].
+/// The state becomes _Ready_ when [`PipeTarget::poll_ready`] returns [`Poll::Ready`] with [`Ok`].
+/// After sending a message with [`PipeTarget::send`], the state transitions back to _Idle_,
+/// requiring to invoke [`PipeTarget::poll_ready`] again before the next [`PipeTarget::send`].
 ///
-/// Both [`Self::poll_ready`] and [`Self::send`] return [`ClosedError`] if the backing target is closed.
+/// Both [`PipeTarget::poll_ready`] and [`PipeTarget::send`] return [`ClosedError`] if the backing target is closed.
 pub trait PipeTarget<U> {
     /// Returns [`Poll::Ready`] with [`Ok`] if the [`PipeTarget`] is ready to [`Self::send`] messages.
     ///
@@ -41,59 +41,138 @@ pub trait PipeTarget<U> {
 
     /// Send the message.
     ///
-    /// Panics if the [`PipeTarget`] is _Idle_, meaning there wasn't a previous successful call to [`Self::poll_ready`].
+    /// Panics if the [`PipeTarget`] is _Idle_, meaning there wasn't a previous successful call to [`PipeTarget::poll_ready`].
     fn send(self: Pin<&mut Self>, u: U) -> Result<(), ClosedError>;
 }
 
-pub struct Pipe<T, In, U, Target, Mapper, MapperFut> {
-    pipe_input: In,
-    pipe_target: Target,
-    mapper: Mapper,
+#[derive(Copy, Clone, PartialEq, Debug)]
+enum PipeState {
+    Idle,
+    Ready,
+    Closed,
+}
 
-    _mapper_fut: PhantomData<MapperFut>,
+/// [`Pipe`] is an abstraction to implement piping messages from one [`PipeInput`] to a [`PipeTarget`].
+///
+/// You can interact with the [`Pipe`]:
+///
+/// * Automatically using [`Pipe::run`], with a single future that polls the pipe in a loop until it's closed,
+///   applying a mapper [`FnMut`] to each input message.
+/// * Manually polling it, using [`Pipe::poll_next_input`] and [`Pipe::write`].
+///
+/// Use the manual polling API if between receiving and sending you need to mutate some data structure that the [`FnMut`] cannot own.
+///
+/// ## Manual polling API
+///
+/// The [`Pipe`] transitions through 3 states:
+///
+/// * _Idle_
+/// * _Ready_
+/// * _Closed_
+///
+/// The state becomes _Ready_ when [`Pipe::poll_next_input`] returns [`Poll::Ready`] with a value.
+/// After sending a message with [`Pipe::write`], the state transitions back to _Idle_,
+/// requiring to invoke [`Pipe::poll_next_input`] again before the next [`Pipe::write`].
+#[pin_project]
+pub struct Pipe<T, In, U, Target> {
+    #[pin]
+    pipe_input: In,
+    #[pin]
+    pipe_target: Target,
+
+    state: PipeState,
+
     _t: PhantomData<T>,
     _u: PhantomData<U>,
 }
 
-impl<T, In, U, Target, Mapper, MapperFut> Pipe<T, In, U, Target, Mapper, MapperFut>
+impl<T, In, U, Target> Pipe<T, In, U, Target>
 where
     In: PipeInput<T>,
     Target: PipeTarget<U>,
-    Mapper: FnMut(T) -> MapperFut,
-    MapperFut: Future<Output = U>,
 {
-    pub fn new(pipe_input: In, pipe_target: Target, mapper: Mapper) -> Self {
+    pub fn new(pipe_input: In, pipe_target: Target) -> Self {
         Self {
             pipe_input,
             pipe_target,
-            mapper,
-            _mapper_fut: Default::default(),
+            state: PipeState::Idle,
             _t: Default::default(),
             _u: Default::default(),
         }
     }
 
-    /// Returns when either pipe target, or input channel are closed
-    pub async fn run(self) {
-        let Pipe {
-            pipe_input,
-            pipe_target,
-            mut mapper,
-            ..
-        } = self;
+    pub fn poll_next_input(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<T, ClosedError>> {
+        let this = self.project();
+        let input = this.pipe_input;
+        let mut target = this.pipe_target;
+        let state = this.state;
 
-        tokio::pin!(pipe_input, pipe_target);
+        // Loop to wait for the target to be ready
+        loop {
+            match state {
+                PipeState::Idle => match ready!(target.as_mut().poll_ready(cx)) {
+                    Ok(_) => {
+                        *state = PipeState::Ready;
+                    }
+                    Err(_) => {
+                        *state = PipeState::Closed;
+                        return Poll::Ready(Err(ClosedError));
+                    }
+                },
+                PipeState::Ready => break,
+                PipeState::Closed => return Poll::Ready(Err(ClosedError)),
+            }
+        }
 
-        while let Ok(()) = poll_fn(|cx| pipe_target.as_mut().poll_ready(cx)).await {
-            let t = match poll_fn(|cx| pipe_input.as_mut().poll_recv(cx)).await {
-                Ok(t) => t,
-                Err(_) => {
-                    return;
+        Poll::Ready(match ready!(input.poll_recv(cx)) {
+            Ok(t) => Ok(t),
+            Err(_) => {
+                *state = PipeState::Closed;
+                Err(ClosedError)
+            }
+        })
+    }
+
+    /// Panics if the state of the [`Pipe`] is _Idle_, meaning there wasn't a previous successful call to [`Self::poll_next_input`].
+    pub fn write(self: Pin<&mut Self>, u: U) -> Result<(), ClosedError> {
+        let this = self.project();
+        let target = this.pipe_target;
+        let state = this.state;
+
+        return match state {
+            PipeState::Idle => {
+                panic!("Invoked write() before poll_next_input()")
+            }
+            PipeState::Ready => match target.send(u) {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    *state = PipeState::Closed;
+                    Err(e)
                 }
-            };
+            },
+            PipeState::Closed => Err(ClosedError),
+        };
+    }
 
+    /// Returns a future that polls the pipe in a loop until it's closed,
+    /// applying a mapper to each input message.
+    ///
+    /// The future completes when either the pipe input or target is closed.
+    pub async fn run<Mapper, MapperFut>(self, mut mapper: Mapper)
+    where
+        Mapper: FnMut(T) -> MapperFut,
+        MapperFut: Future<Output = U>,
+    {
+        tokio::pin! {
+            let pipe = self;
+        }
+
+        while let Ok(t) = poll_fn(|cx| pipe.as_mut().poll_next_input(cx)).await {
             let u = mapper(t).await;
-            if pipe_target.as_mut().send(u).is_err() {
+            if pipe.as_mut().write(u).is_err() {
                 return;
             }
         }
@@ -140,8 +219,6 @@ mod input {
 
 mod target {
     use super::*;
-
-    use pin_project::pin_project;
 
     pub fn new_sender_pipe_target<T>(tx: mpsc::Sender<T>) -> impl PipeTarget<T> {
         SenderPipeTarget {
@@ -217,18 +294,9 @@ mod target {
 mod multi_target {
     use super::*;
 
-    use pin_project::pin_project;
-
     pub enum EitherTarget<T1, T2> {
         Left(T1),
         Right(T2),
-    }
-
-    #[derive(Copy, Clone, PartialEq, Debug)]
-    pub enum PipeTargetState {
-        Idle,
-        Ready,
-        Closed,
     }
 
     #[pin_project]
@@ -238,8 +306,8 @@ mod multi_target {
         #[pin]
         right_target: PT2,
 
-        left_state: PipeTargetState,
-        right_state: PipeTargetState,
+        left_state: PipeState,
+        right_state: PipeState,
     }
 
     impl<PT1, PT2> EitherPipeTarget<PT1, PT2> {
@@ -247,8 +315,8 @@ mod multi_target {
             EitherPipeTarget {
                 left_target,
                 right_target,
-                left_state: PipeTargetState::Idle,
-                right_state: PipeTargetState::Idle,
+                left_state: PipeState::Idle,
+                right_state: PipeState::Idle,
             }
         }
     }
@@ -265,22 +333,22 @@ mod multi_target {
 
             loop {
                 match (*this.left_state, *this.right_state) {
-                    (PipeTargetState::Closed, _) | (_, PipeTargetState::Closed) => {
+                    (PipeState::Closed, _) | (_, PipeState::Closed) => {
                         return Poll::Ready(Err(ClosedError))
                     }
-                    (PipeTargetState::Idle, _) => {
+                    (PipeState::Idle, _) => {
                         *this.left_state = match ready!(left_target.as_mut().poll_ready(cx)) {
-                            Ok(()) => PipeTargetState::Ready,
-                            Err(_) => PipeTargetState::Closed,
+                            Ok(()) => PipeState::Ready,
+                            Err(_) => PipeState::Closed,
                         };
                     }
-                    (_, PipeTargetState::Idle) => {
+                    (_, PipeState::Idle) => {
                         *this.right_state = match ready!(right_target.as_mut().poll_ready(cx)) {
-                            Ok(()) => PipeTargetState::Ready,
-                            Err(_) => PipeTargetState::Closed,
+                            Ok(()) => PipeState::Ready,
+                            Err(_) => PipeState::Closed,
                         };
                     }
-                    (PipeTargetState::Ready, PipeTargetState::Ready) => return Poll::Ready(Ok(())),
+                    (PipeState::Ready, PipeState::Ready) => return Poll::Ready(Ok(())),
                 }
             }
         }
@@ -291,21 +359,21 @@ mod multi_target {
             let right_target = this.right_target;
 
             return match (*this.left_state, *this.right_state, msg) {
-                (PipeTargetState::Closed, _, EitherTarget::Left(_))
-                | (_, PipeTargetState::Closed, EitherTarget::Right(_)) => Err(ClosedError),
-                (PipeTargetState::Ready, _, EitherTarget::Left(left_msg)) => {
+                (PipeState::Closed, _, EitherTarget::Left(_))
+                | (_, PipeState::Closed, EitherTarget::Right(_)) => Err(ClosedError),
+                (PipeState::Ready, _, EitherTarget::Left(left_msg)) => {
                     let send_res = left_target.send(left_msg);
                     *this.left_state = match &send_res {
-                        Ok(_) => PipeTargetState::Idle,
-                        Err(_) => PipeTargetState::Closed,
+                        Ok(_) => PipeState::Idle,
+                        Err(_) => PipeState::Closed,
                     };
                     send_res
                 }
-                (_, PipeTargetState::Ready, EitherTarget::Right(right_msg)) => {
+                (_, PipeState::Ready, EitherTarget::Right(right_msg)) => {
                     let send_res = right_target.send(right_msg);
                     *this.right_state = match &send_res {
-                        Ok(_) => PipeTargetState::Idle,
-                        Err(_) => PipeTargetState::Closed,
+                        Ok(_) => PipeState::Idle,
+                        Err(_) => PipeState::Closed,
                     };
                     send_res
                 }
@@ -330,9 +398,8 @@ mod tests {
         let pipe = Pipe::new(
             ReceiverPipeInput::new(source_rx),
             new_sender_pipe_target(sink_tx),
-            |i| futures::future::ready(i + 1),
         );
-        let handle = tokio::spawn(pipe.run());
+        let handle = tokio::spawn(pipe.run(|i| futures::future::ready(i + 1)));
 
         // Send and receive
         source_tx.send(0_u32).await.unwrap();
@@ -358,16 +425,15 @@ mod tests {
                 new_sender_pipe_target(sink_left_tx),
                 new_sender_pipe_target(sink_right_tx),
             ),
-            |mut i| {
-                i += 1;
-                futures::future::ready(if i % 2 == 0 {
-                    EitherTarget::Left(i)
-                } else {
-                    EitherTarget::Right(i)
-                })
-            },
         );
-        let handle = tokio::spawn(pipe.run());
+        let handle = tokio::spawn(pipe.run(|mut i| {
+            i += 1;
+            futures::future::ready(if i % 2 == 0 {
+                EitherTarget::Left(i)
+            } else {
+                EitherTarget::Right(i)
+            })
+        }));
 
         // Send and receive
         source_tx.send(0_u32).await.unwrap();
