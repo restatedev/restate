@@ -42,6 +42,7 @@ pub(crate) enum Command {
     Response(InvocationResponse),
 }
 
+#[derive(Debug, Default)]
 pub(super) struct JournalStatus {
     pub(super) length: EntryIndex,
 }
