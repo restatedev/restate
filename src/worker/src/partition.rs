@@ -13,7 +13,7 @@ mod effects;
 mod leadership;
 pub mod shuffle;
 mod state_machine;
-mod storage;
+pub mod storage;
 mod types;
 
 pub(super) use crate::partition::ack::{
@@ -22,6 +22,7 @@ pub(super) use crate::partition::ack::{
 use crate::partition::actuator_output_handler::ActuatorOutputHandler;
 use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::LeadershipState;
+use crate::partition::storage::InMemoryPartitionStorage;
 use crate::util::IdentitySender;
 pub(crate) use state_machine::Command;
 
@@ -43,6 +44,8 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
     ack_tx: network::PartitionProcessorSender<AckResponse>,
 
     key_extractor: KeyExtractor,
+
+    in_memory_storage: InMemoryPartitionStorage,
 
     _entry_codec: PhantomData<RawEntryCodec>,
 }
@@ -81,6 +84,7 @@ where
         network_handle: NetworkHandle,
         ack_tx: network::PartitionProcessorSender<AckResponse>,
         key_extractor: KeyExtractor,
+        in_memory_storage: InMemoryPartitionStorage,
     ) -> Self {
         Self {
             peer_id,
@@ -93,6 +97,7 @@ where
             ack_tx,
             key_extractor,
             _entry_codec: Default::default(),
+            in_memory_storage,
         }
     }
 
@@ -107,6 +112,7 @@ where
             proposal_tx,
             ack_tx,
             key_extractor,
+            in_memory_storage,
             ..
         } = self;
 
@@ -116,7 +122,7 @@ where
         let (mut actuator_stream, mut leadership_state) =
             LeadershipState::follower(peer_id, partition_id, invoker_tx, network_handle);
 
-        let mut partition_storage = storage::InMemoryPartitionStorage::new();
+        let mut partition_storage = in_memory_storage;
         let actuator_output_handler =
             ActuatorOutputHandler::<_, RawEntryCodec>::new(proposal_tx, key_extractor);
 

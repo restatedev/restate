@@ -13,12 +13,14 @@ use common::types::{
     EntryIndex, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
     ServiceInvocationResponseSink,
 };
-use futures::future::{ok, BoxFuture};
+use futures::future::{err, ok, BoxFuture};
 use futures::{stream, FutureExt};
-use journal::raw::Header;
+use invoker::{JournalMetadata, JournalReader};
+use journal::raw::{Header, PlainRawEntry};
 use journal::CompletionResult;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::vec::IntoIter;
 
 #[derive(Debug, Clone)]
 pub struct InMemoryPartitionStorage {
@@ -37,7 +39,7 @@ impl InMemoryPartitionStorage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum EntryType {
     Entry(EnrichedRawEntry),
     CompletionResult(CompletionResult),
@@ -46,7 +48,6 @@ enum EntryType {
 #[derive(Debug, Default)]
 struct Journal {
     entries: Vec<EntryType>,
-    #[allow(dead_code)]
     method_name: String,
     length: usize,
     response_sink: Option<ResponseSink>,
@@ -577,5 +578,60 @@ impl OutboxReader for InMemoryPartitionStorage {
             .unwrap()
             .get_next_outbox_message(next_sequence_number))
         .boxed()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct InMemoryJournalReader {
+    storages: Arc<Mutex<Vec<InMemoryPartitionStorage>>>,
+}
+
+impl InMemoryJournalReader {
+    pub fn new() -> Self {
+        Self {
+            storages: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn register(&self, storage: InMemoryPartitionStorage) {
+        self.storages.lock().unwrap().push(storage);
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("could not find journal {0}")]
+pub struct InMemoryJournalReaderError(ServiceInvocationId);
+
+impl JournalReader for InMemoryJournalReader {
+    type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
+    type Error = InMemoryJournalReaderError;
+    type Future = BoxFuture<'static, Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
+
+    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future {
+        let storages = self.storages.lock().unwrap();
+
+        for storage in storages.iter() {
+            if let Some(journal) = storage.inner.lock().unwrap().journals.get(&sid.service_id) {
+                let meta = JournalMetadata {
+                    method: journal.method_name.clone(),
+                    journal_size: journal.length as EntryIndex,
+                    tracing_context: Default::default(),
+                };
+
+                let journal: Vec<PlainRawEntry> = journal.entries[0..journal.length]
+                    .iter()
+                    .map(|entry| match entry {
+                        EntryType::Entry(EnrichedRawEntry { header, entry }) => {
+                            PlainRawEntry::new(header.clone().into(), entry.clone())
+                        }
+                        EntryType::CompletionResult(_) => panic!("Should not happen."),
+                    })
+                    .collect();
+
+                return ok((meta, stream::iter(journal))).boxed();
+            }
+        }
+
+        err(InMemoryJournalReaderError(sid.clone())).boxed()
     }
 }

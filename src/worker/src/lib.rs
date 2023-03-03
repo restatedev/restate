@@ -1,5 +1,7 @@
 use crate::ingress_integration::ExternalClientIngressRunner;
 use crate::network_integration::FixedPartitionTable;
+use crate::partition::storage::memory::InMemoryJournalReader;
+use crate::partition::storage::InMemoryPartitionStorage;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use common::retry_policy::RetryPolicy;
 use common::types::{IngressId, PeerId, PeerTarget};
@@ -10,7 +12,6 @@ use invoker::{Invoker, UnboundedInvokerInputSender};
 use network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use partition::ack::AckableCommand;
 use partition::shuffle;
-use partition::RocksDBJournalReader;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use service_protocol::codec::ProtobufRawEntryCodec;
@@ -57,7 +58,7 @@ pub struct Worker {
     consensus: Consensus<PartitionProcessorCommand>,
     processors: Vec<PartitionProcessor>,
     network: network_integration::Network,
-    invoker: Invoker<ProtobufRawEntryCodec, RocksDBJournalReader, InMemoryServiceEndpointRegistry>,
+    invoker: Invoker<ProtobufRawEntryCodec, InMemoryJournalReader, InMemoryServiceEndpointRegistry>,
     external_client_ingress_runner: ExternalClientIngressRunner,
 }
 
@@ -120,9 +121,11 @@ impl Worker {
 
         let network_handle = network.create_network_handle();
 
+        let in_memory_journal_reader = InMemoryJournalReader::new();
+
         let invoker = Invoker::new(
             RetryPolicy::None,
-            RocksDBJournalReader,
+            in_memory_journal_reader.clone(),
             service_endpoint_registry,
         );
 
@@ -130,6 +133,8 @@ impl Worker {
             .map(|idx| {
                 let proposal_sender = consensus.create_proposal_sender();
                 let invoker_sender = invoker.create_sender();
+                let in_memory_storage = InMemoryPartitionStorage::new();
+                in_memory_journal_reader.register(in_memory_storage.clone());
                 Self::create_partition_processor(
                     idx,
                     proposal_sender,
@@ -137,6 +142,7 @@ impl Worker {
                     network_handle.clone(),
                     network.create_partition_processor_sender(),
                     key_extractor_registry.clone(),
+                    in_memory_storage,
                 )
             })
             .unzip();
@@ -156,6 +162,7 @@ impl Worker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_partition_processor(
         peer_id: PeerId,
         proposal_sender: mpsc::Sender<ConsensusMsg>,
@@ -163,6 +170,7 @@ impl Worker {
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
         ack_sender: PartitionProcessorSender<partition::AckResponse>,
         key_extractor: KeyExtractorsRegistry,
+        in_memory_storage: InMemoryPartitionStorage,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(
@@ -174,6 +182,7 @@ impl Worker {
             network_handle,
             ack_sender,
             key_extractor,
+            in_memory_storage,
         );
 
         ((peer_id, command_tx), processor)

@@ -15,7 +15,7 @@ use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
 use journal::CompletionResult;
 
-mod memory;
+pub mod memory;
 
 pub use memory::InMemoryPartitionStorage;
 
