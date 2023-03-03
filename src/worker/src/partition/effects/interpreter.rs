@@ -144,7 +144,7 @@ pub(crate) trait StateStorage {
         &self,
         service_id: &ServiceId,
         key: impl AsRef<[u8]>,
-    ) -> BoxFuture<Result<Bytes, StateStorageError>>;
+    ) -> BoxFuture<Result<Option<Bytes>, StateStorageError>>;
 
     fn clear_state(
         &self,
@@ -352,7 +352,11 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .load_state(&service_invocation_id.service_id, &key)
                     .await?;
 
-                Codec::write_completion(&mut raw_entry, CompletionResult::Success(value.clone()))?;
+                let completion_result = value
+                    .map(CompletionResult::Success)
+                    .unwrap_or(CompletionResult::Empty);
+
+                Codec::write_completion(&mut raw_entry, completion_result.clone())?;
 
                 Self::unchecked_append_journal_entry(
                     state_storage,
@@ -366,7 +370,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     service_invocation_id,
                     completion: Completion {
                         entry_index,
-                        result: CompletionResult::Success(value),
+                        result: completion_result,
                     },
                 })
             }

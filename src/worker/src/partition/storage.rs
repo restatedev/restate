@@ -198,7 +198,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _key: impl AsRef<[u8]>,
-    ) -> BoxFuture<Result<Bytes, StateStorageError>> {
+    ) -> BoxFuture<Result<Option<Bytes>, StateStorageError>> {
         todo!()
     }
 
