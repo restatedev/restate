@@ -1,9 +1,5 @@
 use bytes::Bytes;
-use common::types::{
-    EntryIndex, InvocationResponse, ServiceId, ServiceInvocation, ServiceInvocationId,
-};
-use common::utils::GenericError;
-use futures::future::BoxFuture;
+use common::types::{EntryIndex, InvocationResponse, ServiceInvocation, ServiceInvocationId};
 use invoker::Kind;
 use journal::raw::{RawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
 use journal::{
@@ -17,6 +13,7 @@ use tracing::{debug, trace};
 
 use crate::partition::effects::{Effects, OutboxMessage};
 use crate::partition::InvocationStatus;
+use crate::storage_traits::{StateReader, StateReaderError};
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum Error {
@@ -40,45 +37,6 @@ pub(crate) enum Command {
     Invocation(ServiceInvocation),
     #[allow(dead_code)]
     Response(InvocationResponse),
-}
-
-pub(super) struct JournalStatus {
-    pub(super) length: EntryIndex,
-}
-
-pub type InboxEntry = (u64, ServiceInvocation);
-
-#[derive(Debug, thiserror::Error)]
-#[error("failed reading state: {source:?}")]
-pub(super) struct StateReaderError {
-    source: Option<GenericError>,
-}
-
-pub(super) trait StateReader {
-    // TODO: Replace with async trait or proper future
-    fn get_invocation_status(
-        &self,
-        service_id: &ServiceId,
-    ) -> BoxFuture<Result<InvocationStatus, StateReaderError>>;
-
-    // TODO: Replace with async trait or proper future
-    fn peek_inbox(
-        &self,
-        service_id: &ServiceId,
-    ) -> BoxFuture<Result<Option<InboxEntry>, StateReaderError>>;
-
-    // TODO: Replace with async trait or proper future
-    fn get_journal_status(
-        &self,
-        service_id: &ServiceId,
-    ) -> BoxFuture<Result<JournalStatus, StateReaderError>>;
-
-    // TODO: Replace with async trait or proper future
-    fn is_entry_completed(
-        &self,
-        service_id: &ServiceId,
-        entry_index: EntryIndex,
-    ) -> BoxFuture<Result<bool, StateReaderError>>;
 }
 
 #[derive(Debug, Default)]

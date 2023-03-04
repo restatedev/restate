@@ -9,10 +9,7 @@ use std::vec::Drain;
 
 mod interpreter;
 
-pub(crate) use interpreter::{
-    ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
-    StateStorageError,
-};
+pub(crate) use interpreter::{ActuatorMessage, Interpreter, MessageCollector};
 
 #[derive(Debug, Clone)]
 pub(crate) enum OutboxMessage {

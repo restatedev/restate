@@ -1,7 +1,8 @@
 use crate::partition::effects::{ActuatorMessage, MessageCollector};
 use crate::partition::shuffle;
 use crate::partition::shuffle::{OutboxReader, Shuffle};
-use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId};
+use crate::storage_traits::InvocationReader;
+use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
 use common::utils::GenericError;
 use futures::{future, Stream, StreamExt};
 use invoker::{InvokeInputJournal, InvokerInputSender, InvokerNotRunning};
@@ -15,12 +16,6 @@ use tokio::sync::mpsc;
 use tokio::task;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::trace;
-
-pub(super) trait InvocationReader {
-    type InvokedInvocationStream: Stream<Item = ServiceInvocationId> + Unpin;
-
-    fn scan_invoked_invocations(&self) -> Self::InvokedInvocationStream;
-}
 
 pub(super) struct LeaderState {
     leader_epoch: LeaderEpoch,

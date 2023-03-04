@@ -1,10 +1,10 @@
-use crate::partition::effects::{
-    CommitError, Committable, OutboxMessage, StateStorage, StateStorageError,
-};
-use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
-use crate::partition::state_machine::{JournalStatus, StateReader, StateReaderError};
-use crate::partition::InvocationStatus;
+use crate::partition::{InvocationStatus, OutboxMessage};
+use crate::storage_traits::{
+    CommitError, Committable, InvocationReader, StateReader, StateReaderError, StateStorage,
+    StateStorageError,
+};
+use crate::JournalStatus;
 use bytes::Bytes;
 use common::types::{EntryIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId};
 use futures::future::BoxFuture;

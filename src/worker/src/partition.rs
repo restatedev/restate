@@ -1,7 +1,6 @@
-use common::types::{AckKind, EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
-use futures::{stream, Sink, SinkExt, Stream, StreamExt};
+use common::types::{AckKind, EntryIndex, InvocationId, PartitionId, PeerId};
+use futures::{Sink, SinkExt, Stream, StreamExt};
 use std::collections::HashSet;
-use std::convert::Infallible;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -45,9 +44,6 @@ pub(super) struct PartitionProcessor<
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct RocksDBJournalReader;
-
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(super) enum MessageAck {
@@ -63,19 +59,6 @@ pub(super) struct ShuffleMessageAck {
 
 #[derive(Debug)]
 pub(super) struct IngressMessageAck(pub(crate) AckKind);
-
-impl invoker::JournalReader for RocksDBJournalReader {
-    type JournalStream = stream::Empty<journal::raw::RawEntry>;
-    type Error = Infallible;
-    type Future = futures::future::Pending<
-        Result<(invoker::JournalMetadata, Self::JournalStream), Self::Error>,
-    >;
-
-    fn read_journal(&self, _sid: &ServiceInvocationId) -> Self::Future {
-        // TODO implement this
-        unimplemented!("Implement JournalReader")
-    }
-}
 
 impl<CmdStream, ProposalSink, RawEntryCodec, InvokerInputSender, NetworkHandle, Storage>
     PartitionProcessor<

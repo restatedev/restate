@@ -1,16 +1,19 @@
 use crate::ingress_integration::{DefaultServiceInvocationFactory, ExternalClientIngressRunner};
 use crate::network_integration::FixedPartitionTable;
-use common::types::{IngressId, PeerId, PeerTarget};
+use common::types::{
+    EntryIndex, IngressId, PeerId, PeerTarget, ServiceInvocation, ServiceInvocationId,
+};
 use consensus::{Consensus, ProposalSender};
 use futures::stream::FuturesUnordered;
-use futures::StreamExt;
+use futures::{stream, StreamExt};
 use ingress_grpc::{InMemoryMethodDescriptorRegistry, ResponseDispatcherLoop};
 use invoker::{EndpointMetadata, Invoker, RetryPolicy, UnboundedInvokerInputSender};
+use journal::raw::RawEntry;
 use network::UnboundedNetworkHandle;
 use partition::shuffle;
-use partition::RocksDBJournalReader;
 use service_protocol::codec::ProtobufRawEntryCodec;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use storage_rocksdb::RocksDBStorage;
 use tokio::join;
 use tokio::sync::mpsc;
@@ -22,6 +25,7 @@ use util::IdentitySender;
 mod ingress_integration;
 mod network_integration;
 mod partition;
+mod storage_traits;
 mod util;
 
 type ConsensusCommand = consensus::Command<partition::Command>;
@@ -34,6 +38,14 @@ type PartitionProcessor = partition::PartitionProcessor<
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     RocksDBStorage,
 >;
+
+// types from the state machine
+
+pub type InboxEntry = (u64, ServiceInvocation);
+
+pub struct JournalStatus {
+    pub length: EntryIndex,
+}
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
@@ -51,6 +63,22 @@ pub struct Options {
 
     #[command(flatten)]
     external_client_ingress: ingress_grpc::Options,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RocksDBJournalReader;
+
+impl invoker::JournalReader for RocksDBJournalReader {
+    type JournalStream = stream::Empty<RawEntry>;
+    type Error = Infallible;
+    type Future = futures::future::Pending<
+        Result<(invoker::JournalMetadata, Self::JournalStream), Self::Error>,
+    >;
+
+    fn read_journal(&self, _sid: &ServiceInvocationId) -> Self::Future {
+        // TODO implement this
+        unimplemented!("Implement JournalReader")
+    }
 }
 
 pub struct Worker {
