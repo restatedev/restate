@@ -1,5 +1,6 @@
-use crate::ingress_integration::{DefaultServiceInvocationFactory, ExternalClientIngressRunner};
+use crate::ingress_integration::ExternalClientIngressRunner;
 use crate::network_integration::FixedPartitionTable;
+use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use common::retry_policy::RetryPolicy;
 use common::types::{IngressId, PeerId, PeerTarget};
 use consensus::Consensus;
@@ -23,6 +24,7 @@ use util::IdentitySender;
 mod ingress_integration;
 mod network_integration;
 mod partition;
+mod service_invocation_factory;
 mod util;
 
 type PartitionProcessorCommand = AckableCommand;
