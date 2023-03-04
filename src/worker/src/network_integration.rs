@@ -2,7 +2,7 @@
 //! required formats when routing them through the network.
 
 use crate::partition;
-use crate::partition::{shuffle, AckTarget};
+use crate::partition::shuffle;
 use bytes::Bytes;
 use common::traits::KeyedMessage;
 use common::types::{PartitionKey, PeerId, ResponseResult};
@@ -14,7 +14,7 @@ use network::{
 };
 
 pub(super) type Network = network::Network<
-    partition::AckCommand,
+    partition::AckableCommand,
     shuffle::ShuffleInput,
     shuffle::ShuffleOutput,
     ShuffleToConsensus,
@@ -27,11 +27,11 @@ pub(super) type Network = network::Network<
     FixedPartitionTable,
 >;
 
-impl From<ingress_grpc::IngressOutput> for partition::AckCommand {
+impl From<ingress_grpc::IngressOutput> for partition::AckableCommand {
     fn from(value: ingress_grpc::IngressOutput) -> Self {
         let service_invocation = value.into_inner();
 
-        partition::AckCommand::no_ack(partition::Command::Invocation(service_invocation))
+        partition::AckableCommand::no_ack(partition::Command::Invocation(service_invocation))
     }
 }
 
@@ -59,7 +59,7 @@ impl KeyedMessage for ShuffleToConsensus {
     }
 }
 
-impl From<ShuffleToConsensus> for partition::AckCommand {
+impl From<ShuffleToConsensus> for partition::AckableCommand {
     fn from(value: ShuffleToConsensus) -> Self {
         let ShuffleToConsensus {
             msg,
@@ -67,14 +67,20 @@ impl From<ShuffleToConsensus> for partition::AckCommand {
             msg_index,
         } = value;
 
-        let ack_target = AckTarget::shuffle(shuffle_id, msg_index);
+        let ack_target = partition::AckTarget::shuffle(shuffle_id, msg_index);
 
         match msg {
             shuffle::InvocationOrResponse::Invocation(invocation) => {
-                partition::AckCommand::ack(partition::Command::Invocation(invocation), ack_target)
+                partition::AckableCommand::require_ack(
+                    partition::Command::Invocation(invocation),
+                    ack_target,
+                )
             }
             shuffle::InvocationOrResponse::Response(response) => {
-                partition::AckCommand::ack(partition::Command::Response(response), ack_target)
+                partition::AckableCommand::require_ack(
+                    partition::Command::Response(response),
+                    ack_target,
+                )
             }
         }
     }
