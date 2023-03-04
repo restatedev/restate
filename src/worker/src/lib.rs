@@ -16,8 +16,6 @@ use std::collections::HashMap;
 use storage_rocksdb::RocksDBStorage;
 use tokio::join;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::PollSender;
 use tracing::debug;
 use util::IdentitySender;
 
@@ -55,12 +53,7 @@ pub struct Options {
 }
 
 pub struct Worker {
-    consensus: Consensus<
-        PartitionProcessorCommand,
-        PollSender<ConsensusCommand>,
-        ReceiverStream<ConsensusMsg>,
-        PollSender<ConsensusMsg>,
-    >,
+    consensus: Consensus<PartitionProcessorCommand>,
     processors: Vec<PartitionProcessor>,
     network: network_integration::Network,
     invoker:
@@ -112,10 +105,7 @@ impl Worker {
             network.create_ingress_sender(),
         );
 
-        let mut consensus = Consensus::new(
-            ReceiverStream::new(raft_in_rx),
-            network.create_consensus_sender(),
-        );
+        let mut consensus = Consensus::new(raft_in_rx, network.create_consensus_sender());
 
         let network_handle = network.create_network_handle();
 
@@ -157,7 +147,7 @@ impl Worker {
         storage: RocksDBStorage,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
         ack_sender: PartitionProcessorSender<partition::AckResponse>,
-    ) -> ((PeerId, PollSender<ConsensusCommand>), PartitionProcessor) {
+    ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(
             peer_id,
@@ -170,7 +160,7 @@ impl Worker {
             ack_sender,
         );
 
-        ((peer_id, PollSender::new(command_tx)), processor)
+        ((peer_id, command_tx), processor)
     }
 
     pub async fn run(self, drain: drain::Watch) {

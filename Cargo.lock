@@ -398,7 +398,6 @@ dependencies = [
  "futures-sink",
  "network",
  "tokio",
- "tokio-util",
  "tracing",
 ]
 
@@ -961,7 +960,6 @@ dependencies = [
  "test_utils",
  "thiserror",
  "tokio",
- "tokio-util",
  "tonic",
  "tracing",
  "tracing-subscriber",
@@ -1215,7 +1213,6 @@ dependencies = [
  "pin-project",
  "thiserror",
  "tokio",
- "tokio-util",
  "tracing",
 ]
 
@@ -2741,7 +2738,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
- "tokio-util",
  "tracing",
 ]
 

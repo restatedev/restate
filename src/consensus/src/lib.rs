@@ -1,6 +1,4 @@
 use common::types::{LeaderEpoch, PeerId, PeerTarget};
-use futures::{SinkExt, Stream, StreamExt};
-use futures_sink::Sink;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::sync::mpsc;
@@ -22,39 +20,38 @@ pub type ProposalSender<T> = mpsc::Sender<T>;
 /// Component which is responsible for running the consensus algorithm for multiple replicated
 /// state machines. Consensus replicates messages of type `Cmd`.
 #[derive(Debug)]
-pub struct Consensus<Cmd, SmSink, RaftIn, RaftOut> {
+pub struct Consensus<Cmd> {
     /// Sinks to send replicated commands to the associated state machines
-    state_machines: HashMap<PeerId, SmSink>,
+    state_machines: HashMap<PeerId, mpsc::Sender<Command<Cmd>>>,
 
     /// Receiver of proposals from all associated state machines
     proposal_rx: mpsc::Receiver<PeerTarget<Cmd>>,
 
     /// Receiver of incoming raft messages
-    raft_in: RaftIn,
+    raft_rx: mpsc::Receiver<PeerTarget<Cmd>>,
 
     /// Sender for outgoing raft messages
-    _raft_out: RaftOut,
+    _raft_tx: mpsc::Sender<PeerTarget<Cmd>>,
 
     // used to create the ProposalSenders
     proposal_tx: mpsc::Sender<PeerTarget<Cmd>>,
 }
 
-impl<Cmd, SmSink, RaftIn, RaftOut> Consensus<Cmd, SmSink, RaftIn, RaftOut>
+impl<Cmd> Consensus<Cmd>
 where
-    Cmd: Send + Debug + 'static,
-    SmSink: Sink<Command<Cmd>> + Unpin,
-    SmSink::Error: std::error::Error + Send + Sync + 'static,
-    RaftIn: Stream<Item = PeerTarget<Cmd>>,
-    RaftOut: Sink<PeerTarget<Cmd>>,
+    Cmd: Debug + Send + Sync + 'static,
 {
-    pub fn new(raft_in: RaftIn, raft_out: RaftOut) -> Self {
+    pub fn new(
+        raft_rx: mpsc::Receiver<PeerTarget<Cmd>>,
+        raft_tx: mpsc::Sender<PeerTarget<Cmd>>,
+    ) -> Self {
         let (proposal_tx, proposal_rx) = mpsc::channel(64);
 
         Self {
             state_machines: HashMap::new(),
             proposal_rx,
-            raft_in,
-            _raft_out: raft_out,
+            raft_rx,
+            _raft_tx: raft_tx,
             proposal_tx,
         }
     }
@@ -65,7 +62,7 @@ where
 
     pub fn register_state_machines(
         &mut self,
-        state_machines: impl IntoIterator<Item = (PeerId, SmSink)>,
+        state_machines: impl IntoIterator<Item = (PeerId, mpsc::Sender<Command<Cmd>>)>,
     ) {
         self.state_machines.extend(state_machines);
     }
@@ -74,15 +71,13 @@ where
         let Consensus {
             mut proposal_rx,
             mut state_machines,
-            raft_in,
+            mut raft_rx,
             ..
         } = self;
 
         info!("Running the consensus driver.");
 
-        Self::announce_leadership(&mut state_machines).await?;
-
-        tokio::pin!(raft_in);
+        Self::announce_leadership(state_machines.values_mut()).await?;
 
         loop {
             tokio::select! {
@@ -95,7 +90,7 @@ where
                         state_machine.send(Command::Apply(proposal)).await?;
                     }
                 },
-                raft_msg = raft_in.next() => {
+                raft_msg = raft_rx.recv() => {
                     if let Some((target, raft_msg)) = raft_msg {
 
                         if let Some(state_machine) = state_machines.get_mut(&target) {
@@ -113,10 +108,10 @@ where
     }
 
     async fn announce_leadership(
-        state_machines: &mut HashMap<PeerId, SmSink>,
+        state_machines: impl IntoIterator<Item = &mut mpsc::Sender<Command<Cmd>>>,
     ) -> anyhow::Result<()> {
         debug!("Announcing leadership.");
-        for sink in state_machines.values_mut() {
+        for sink in state_machines {
             sink.send(Command::BecomeLeader(1)).await?
         }
 

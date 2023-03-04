@@ -22,7 +22,6 @@ paste = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 opentelemetry = { workspace = true }

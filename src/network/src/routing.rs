@@ -12,10 +12,9 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
-use tokio_util::sync::PollSender;
 use tracing::{debug, trace};
 
-pub type ConsensusSender<T> = PollSender<PeerTarget<T>>;
+pub type ConsensusSender<T> = mpsc::Sender<PeerTarget<T>>;
 
 pub type IngressSender<T> = mpsc::Sender<T>;
 
@@ -145,7 +144,7 @@ where
     }
 
     pub fn create_consensus_sender(&self) -> ConsensusSender<ConsensusMsg> {
-        PollSender::new(self.consensus_in_tx.clone())
+        self.consensus_in_tx.clone()
     }
 
     pub fn create_network_handle(&self) -> UnboundedNetworkHandle<ShuffleIn, ShuffleOut> {

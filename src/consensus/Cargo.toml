@@ -17,5 +17,4 @@ futures = { workspace = true }
 futures-sink = { workspace = true }
 network = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 tracing = { workspace = true }
