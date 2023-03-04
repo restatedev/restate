@@ -3,7 +3,8 @@ use super::*;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use common::types::{IngressId, ServiceInvocationFactory};
+use common::traits::ServiceInvocationFactory;
+use common::types::IngressId;
 use futures::FutureExt;
 use tokio::sync::oneshot;
 use tokio::sync::Semaphore;

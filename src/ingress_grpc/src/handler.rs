@@ -4,9 +4,9 @@ use super::*;
 use std::sync::Arc;
 use std::task::Poll;
 
+use common::traits::ServiceInvocationFactory;
 use common::types::{
-    IngressId, ServiceInvocationFactory, ServiceInvocationFactoryError,
-    ServiceInvocationResponseSink, SpanRelation,
+    IngressId, ServiceInvocationFactoryError, ServiceInvocationResponseSink, SpanRelation,
 };
 use futures::future::{ok, BoxFuture};
 use futures::FutureExt;

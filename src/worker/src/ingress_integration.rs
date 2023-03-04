@@ -1,7 +1,8 @@
 use bytes::Bytes;
+use common::traits::ServiceInvocationFactory;
 use common::types::{
-    InvocationId, ServiceInvocation, ServiceInvocationFactory, ServiceInvocationFactoryError,
-    ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation,
+    InvocationId, ServiceInvocation, ServiceInvocationFactoryError, ServiceInvocationId,
+    ServiceInvocationResponseSink, SpanRelation,
 };
 use ingress_grpc::{
     HyperServerIngress, InMemoryMethodDescriptorRegistry, IngressDispatcherLoop, IngressOutput,
