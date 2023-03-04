@@ -4,7 +4,6 @@ use futures_sink::Sink;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::sync::mpsc;
-use tokio_util::sync::PollSender;
 use tracing::{debug, info};
 
 /// Consensus commands that are sent to an associated state machine.
@@ -18,7 +17,7 @@ pub enum Command<T> {
     BecomeFollower,
 }
 
-pub type ProposalSender<T> = PollSender<T>;
+pub type ProposalSender<T> = mpsc::Sender<T>;
 
 /// Component which is responsible for running the consensus algorithm for multiple replicated
 /// state machines. Consensus replicates messages of type `Cmd`.
@@ -61,7 +60,7 @@ where
     }
 
     pub fn create_proposal_sender(&self) -> ProposalSender<PeerTarget<Cmd>> {
-        PollSender::new(self.proposal_tx.clone())
+        self.proposal_tx.clone()
     }
 
     pub fn register_state_machines(

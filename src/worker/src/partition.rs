@@ -1,10 +1,10 @@
 use common::types::{EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
-use futures::{stream, Sink, SinkExt, Stream, StreamExt};
+use futures::{stream, StreamExt};
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::pin::Pin;
+use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 pub mod ack;
@@ -20,24 +20,18 @@ pub(super) use crate::partition::ack::{
 use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::{ActuatorOutput, LeadershipState};
 use crate::partition::storage::PartitionStorage;
+use crate::util::IdentitySender;
 pub(crate) use state_machine::Command;
 
 #[derive(Debug)]
-pub(super) struct PartitionProcessor<
-    CmdStream,
-    ProposalSink,
-    RawEntryCodec,
-    InvokerInputSender,
-    NetworkHandle,
-    Storage,
-> {
+pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage> {
     peer_id: PeerId,
     partition_id: PartitionId,
 
     storage: Storage,
 
-    command_stream: CmdStream,
-    proposal_sink: ProposalSink,
+    command_rx: mpsc::Receiver<consensus::Command<AckableCommand>>,
+    proposal_tx: IdentitySender<AckableCommand>,
 
     invoker_tx: InvokerInputSender,
 
@@ -66,18 +60,9 @@ impl invoker::JournalReader for RocksDBJournalReader {
     }
 }
 
-impl<CmdStream, ProposalSink, RawEntryCodec, InvokerInputSender, NetworkHandle, Storage>
-    PartitionProcessor<
-        CmdStream,
-        ProposalSink,
-        RawEntryCodec,
-        InvokerInputSender,
-        NetworkHandle,
-        Storage,
-    >
+impl<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage>
+    PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage>
 where
-    CmdStream: Stream<Item = consensus::Command<AckableCommand>>,
-    ProposalSink: Sink<AckableCommand>,
     RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     NetworkHandle: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
@@ -87,8 +72,8 @@ where
     pub(super) fn new(
         peer_id: PeerId,
         partition_id: PartitionId,
-        command_stream: CmdStream,
-        proposal_sink: ProposalSink,
+        command_stream: mpsc::Receiver<consensus::Command<AckableCommand>>,
+        proposal_sender: IdentitySender<AckableCommand>,
         invoker_tx: InvokerInputSender,
         storage: Storage,
         network_handle: NetworkHandle,
@@ -97,8 +82,8 @@ where
         Self {
             peer_id,
             partition_id,
-            command_stream,
-            proposal_sink,
+            command_rx: command_stream,
+            proposal_tx: proposal_sender,
             invoker_tx,
             state_machine: Default::default(),
             storage,
@@ -112,17 +97,15 @@ where
         let PartitionProcessor {
             peer_id,
             partition_id,
-            command_stream,
+            mut command_rx,
             mut state_machine,
             invoker_tx,
             network_handle,
             storage,
-            proposal_sink,
+            proposal_tx,
             ack_tx,
             ..
         } = self;
-        tokio::pin!(command_stream);
-        tokio::pin!(proposal_sink);
 
         // The max number of effects should be 2 atm (e.g. RegisterTimer and AppendJournalEntry)
         let mut effects = Effects::with_capacity(2);
@@ -134,7 +117,7 @@ where
 
         loop {
             tokio::select! {
-                command = command_stream.next() => {
+                command = command_rx.recv() => {
                     if let Some(command) = command {
                         match command {
                             consensus::Command::Apply(ackable_command) => {
@@ -176,7 +159,7 @@ where
                 },
                 actuator_message = actuator_stream.next() => {
                     let actuator_message = actuator_message.ok_or(anyhow::anyhow!("actuator stream is closed"))?;
-                    Self::propose_actuator_message(actuator_message, &mut proposal_sink).await;
+                    Self::propose_actuator_message(actuator_message, &proposal_tx).await;
                 },
                 task_result = leadership_state.run_tasks() => {
                     Err(task_result)?
@@ -192,7 +175,7 @@ where
 
     async fn propose_actuator_message(
         actuator_message: ActuatorOutput,
-        proposal_sink: &mut Pin<&mut ProposalSink>,
+        proposal_sink: &IdentitySender<AckableCommand>,
     ) {
         match actuator_message {
             ActuatorOutput::Invoker(invoker_output) => {

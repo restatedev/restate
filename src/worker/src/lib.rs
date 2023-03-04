@@ -1,7 +1,7 @@
 use crate::ingress_integration::{DefaultServiceInvocationFactory, ExternalClientIngressRunner};
 use crate::network_integration::FixedPartitionTable;
 use common::types::{IngressId, PeerId, PeerTarget};
-use consensus::{Consensus, ProposalSender};
+use consensus::Consensus;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use ingress_grpc::{InMemoryMethodDescriptorRegistry, ResponseDispatcherLoop};
@@ -30,8 +30,6 @@ type PartitionProcessorCommand = AckableCommand;
 type ConsensusCommand = consensus::Command<PartitionProcessorCommand>;
 type ConsensusMsg = PeerTarget<PartitionProcessorCommand>;
 type PartitionProcessor = partition::PartitionProcessor<
-    ReceiverStream<ConsensusCommand>,
-    IdentitySender<PartitionProcessorCommand>,
     ProtobufRawEntryCodec,
     UnboundedInvokerInputSender,
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
@@ -154,7 +152,7 @@ impl Worker {
 
     fn create_partition_processor(
         peer_id: PeerId,
-        proposal_sender: ProposalSender<ConsensusMsg>,
+        proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: UnboundedInvokerInputSender,
         storage: RocksDBStorage,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
@@ -164,7 +162,7 @@ impl Worker {
         let processor = PartitionProcessor::new(
             peer_id,
             peer_id,
-            ReceiverStream::new(command_rx),
+            command_rx,
             IdentitySender::new(peer_id, proposal_sender),
             invoker_sender,
             storage,
