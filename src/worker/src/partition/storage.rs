@@ -1,8 +1,7 @@
-use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::{InvocationStatus, OutboxMessage};
 use crate::storage_traits::{
-    CommitError, Committable, InvocationReader, StateReader, StateReaderError, StateStorage,
-    StateStorageError,
+    CommitError, Committable, InvocationReader, OutboxReader, OutboxReaderError, StateReader,
+    StateReaderError, StateStorage, StateStorageError,
 };
 use crate::JournalStatus;
 use bytes::Bytes;

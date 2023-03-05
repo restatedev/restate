@@ -100,7 +100,6 @@ pub(crate) trait StateStorage {
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<Option<RawEntry>, StateStorageError>>;
 
-    // In-/outbox
     fn enqueue_into_inbox(
         &self,
         seq_number: u64,
@@ -163,4 +162,17 @@ pub(super) trait InvocationReader {
     type InvokedInvocationStream: Stream<Item = ServiceInvocationId> + Unpin;
 
     fn scan_invoked_invocations(&self) -> Self::InvokedInvocationStream;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to read outbox: {source:?}")]
+pub(super) struct OutboxReaderError {
+    source: Option<GenericError>,
+}
+
+pub(super) trait OutboxReader {
+    fn get_next_message(
+        &self,
+        next_sequence_number: u64,
+    ) -> BoxFuture<Result<Option<(u64, OutboxMessage)>, OutboxReaderError>>;
 }

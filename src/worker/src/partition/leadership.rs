@@ -1,7 +1,7 @@
 use crate::partition::effects::{ActuatorMessage, MessageCollector};
 use crate::partition::shuffle;
-use crate::partition::shuffle::{OutboxReader, Shuffle};
-use crate::storage_traits::InvocationReader;
+use crate::partition::shuffle::Shuffle;
+use crate::storage_traits::{InvocationReader, OutboxReader};
 use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
 use common::utils::GenericError;
 use futures::{future, Stream, StreamExt};
