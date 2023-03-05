@@ -1,5 +1,5 @@
-use crate::partition::{InvocationStatus, OutboxMessage};
-use crate::{InboxEntry, JournalStatus};
+use crate::partition::OutboxMessage;
+use crate::storage_domain::{InboxEntry, InvocationStatus, JournalStatus};
 use bytes::Bytes;
 use common::types::{EntryIndex, ServiceId, ServiceInvocation, ServiceInvocationId};
 use common::utils::GenericError;

@@ -1,8 +1,6 @@
 use crate::ingress_integration::{DefaultServiceInvocationFactory, ExternalClientIngressRunner};
 use crate::network_integration::FixedPartitionTable;
-use common::types::{
-    EntryIndex, IngressId, PeerId, PeerTarget, ServiceInvocation, ServiceInvocationId,
-};
+use common::types::{IngressId, PeerId, PeerTarget, ServiceInvocationId};
 use consensus::{Consensus, ProposalSender};
 use futures::stream::FuturesUnordered;
 use futures::{stream, StreamExt};
@@ -25,6 +23,8 @@ use util::IdentitySender;
 mod ingress_integration;
 mod network_integration;
 mod partition;
+
+mod storage_domain;
 mod storage_traits;
 mod util;
 
@@ -38,14 +38,6 @@ type PartitionProcessor = partition::PartitionProcessor<
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     RocksDBStorage,
 >;
-
-// types from the state machine
-
-pub type InboxEntry = (u64, ServiceInvocation);
-
-pub struct JournalStatus {
-    pub length: EntryIndex,
-}
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]

@@ -1,9 +1,9 @@
-use crate::partition::{InvocationStatus, OutboxMessage};
+use crate::partition::OutboxMessage;
+use crate::storage_domain::{InvocationStatus, JournalStatus};
 use crate::storage_traits::{
     CommitError, Committable, InvocationReader, OutboxReader, OutboxReaderError, StateReader,
     StateReaderError, StateStorage, StateStorageError,
 };
-use crate::JournalStatus;
 use bytes::Bytes;
 use common::types::{EntryIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId};
 use futures::future::BoxFuture;

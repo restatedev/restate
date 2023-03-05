@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 use tracing::{debug, trace};
 
 use crate::partition::effects::{Effects, OutboxMessage};
-use crate::partition::InvocationStatus;
+use crate::storage_domain::InvocationStatus;
 use crate::storage_traits::{StateReader, StateReaderError};
 
 #[derive(Debug, thiserror::Error)]

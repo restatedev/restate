@@ -1,6 +1,5 @@
-use common::types::{AckKind, EntryIndex, InvocationId, PartitionId, PeerId};
+use common::types::{AckKind, PartitionId, PeerId};
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use std::collections::HashSet;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -191,14 +190,4 @@ where
             }
         };
     }
-}
-
-#[derive(Debug, PartialEq)]
-pub(crate) enum InvocationStatus {
-    Invoked(InvocationId),
-    Suspended {
-        invocation_id: InvocationId,
-        waiting_for_completed_entries: HashSet<EntryIndex>,
-    },
-    Free,
 }

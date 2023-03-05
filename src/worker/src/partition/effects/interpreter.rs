@@ -1,5 +1,5 @@
 use crate::partition::effects::{Effect, Effects, OutboxMessage};
-use crate::partition::InvocationStatus;
+use crate::storage_domain::InvocationStatus;
 use crate::storage_traits::{CommitError, Committable, StateStorage, StateStorageError};
 use common::types::{EntryIndex, ServiceInvocationId};
 use invoker::InvokeInputJournal;
