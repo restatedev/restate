@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::time::Duration;
 
 /// This struct represents the policy to execute retries.
@@ -49,6 +50,26 @@ pub enum RetryPolicy {
 impl Default for RetryPolicy {
     fn default() -> Self {
         Self::None
+    }
+}
+
+impl RetryPolicy {
+    /// Retry the provided closure respecting this retry policy.
+    pub async fn retry_operation<T, E, Fn, Fut>(self, mut operation: Fn) -> Result<T, E>
+    where
+        Fn: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let mut retry_iter = self.into_iter();
+        loop {
+            match (operation().await, retry_iter.next()) {
+                (Ok(res), _) => return Ok(res),
+                (Err(e), None) => return Err(e),
+                (Err(_), Some(timer)) => {
+                    tokio::time::sleep(timer).await;
+                }
+            }
+        }
     }
 }
 

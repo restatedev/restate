@@ -16,4 +16,5 @@ serde = { workspace = true }
 uuid = { workspace = true }
 opentelemetry_api = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, default-features = false, features = ["time"]}
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
