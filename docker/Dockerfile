@@ -2,7 +2,11 @@ FROM --platform=$BUILDPLATFORM rust:1.66-bullseye AS tools
 RUN apt update && apt upgrade -y
 RUN apt -y install \
     gcc-x86-64-linux-gnu \
-    gcc-aarch64-linux-gnu
+    gcc-aarch64-linux-gnu \
+    protobuf-compiler \
+    libprotoc-dev \
+    clang \
+    llvm
 RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 COPY rust-toolchain.toml .
 # Install toolchain based on rust-toolchain.toml. See for more details: https://github.com/paketo-community/rustup/issues/56
