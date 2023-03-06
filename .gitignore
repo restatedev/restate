@@ -7,6 +7,6 @@
 
 # Added by cargo
 
-/target
+**/target
 
 **/.idea

@@ -2,6 +2,7 @@
 members = [
     "src/*"
 ]
+exclude = ["src/service_protocol_wireshark_dissector"]
 
 [workspace.package]
 version = "0.1.0"
