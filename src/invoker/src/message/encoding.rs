@@ -183,7 +183,7 @@ fn decode_protocol_message(
             ProtocolMessage::Suspension(pb::protocol::SuspensionMessage::decode(buf)?)
         }
         _ => ProtocolMessage::UnparsedEntry(RawEntry::new(
-            entry_to_raw_header(header),
+            message_header_to_raw_header(header),
             // NOTE: This is a no-op copy if the Buf is instance of Bytes.
             // In case of SegmentedBuf, this doesn't copy if the whole message is contained
             // in a single Bytes instance.
@@ -192,7 +192,7 @@ fn decode_protocol_message(
     })
 }
 
-fn entry_to_raw_header(message_header: &MessageHeader) -> RawEntryHeader {
+fn message_header_to_raw_header(message_header: &MessageHeader) -> RawEntryHeader {
     debug_assert!(
         !matches!(
             message_header.message_type(),
