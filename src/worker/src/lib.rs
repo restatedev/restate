@@ -35,6 +35,7 @@ type PartitionProcessor = partition::PartitionProcessor<
     UnboundedInvokerInputSender,
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     RocksDBStorage,
+    DefaultServiceInvocationFactory<KeyExtractorsRegistry>,
 >;
 
 #[derive(Debug, clap::Parser)]
@@ -104,7 +105,7 @@ impl Worker {
                     .expect("Loopback address needs to be valid."),
             ),
             method_descriptor_registry,
-            invocation_factory,
+            invocation_factory.clone(),
             ingress_dispatcher_loop.create_command_sender(),
         );
 
@@ -125,6 +126,7 @@ impl Worker {
                     storage.clone(),
                     network_handle.clone(),
                     network.create_partition_processor_sender(),
+                    invocation_factory.clone(),
                 )
             })
             .unzip();
@@ -151,6 +153,7 @@ impl Worker {
         storage: RocksDBStorage,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
         ack_sender: PartitionProcessorSender<partition::AckResponse>,
+        service_invocation_factory: DefaultServiceInvocationFactory<KeyExtractorsRegistry>,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(
@@ -162,6 +165,7 @@ impl Worker {
             storage,
             network_handle,
             ack_sender,
+            service_invocation_factory,
         );
 
         ((peer_id, command_tx), processor)

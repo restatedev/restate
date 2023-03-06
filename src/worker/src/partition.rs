@@ -1,3 +1,4 @@
+use common::traits;
 use common::types::{EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
 use futures::{stream, StreamExt};
 use std::collections::HashSet;
@@ -24,7 +25,13 @@ use crate::util::IdentitySender;
 pub(crate) use state_machine::Command;
 
 #[derive(Debug)]
-pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage> {
+pub(super) struct PartitionProcessor<
+    RawEntryCodec,
+    InvokerInputSender,
+    NetworkHandle,
+    Storage,
+    ServiceInvocationFactory,
+> {
     peer_id: PeerId,
     partition_id: PartitionId,
 
@@ -40,6 +47,8 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
     network_handle: NetworkHandle,
 
     ack_tx: network::PartitionProcessorSender<AckResponse>,
+
+    service_invocation_factory: ServiceInvocationFactory,
 
     _entry_codec: PhantomData<RawEntryCodec>,
 }
@@ -60,13 +69,20 @@ impl invoker::JournalReader for RocksDBJournalReader {
     }
 }
 
-impl<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage>
-    PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage>
+impl<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage, ServiceInvocationFactory>
+    PartitionProcessor<
+        RawEntryCodec,
+        InvokerInputSender,
+        NetworkHandle,
+        Storage,
+        ServiceInvocationFactory,
+    >
 where
     RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     NetworkHandle: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     Storage: storage_api::Storage + Clone + Send + Sync + 'static,
+    ServiceInvocationFactory: traits::ServiceInvocationFactory,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -78,6 +94,7 @@ where
         storage: Storage,
         network_handle: NetworkHandle,
         ack_tx: network::PartitionProcessorSender<AckResponse>,
+        service_invocation_factory: ServiceInvocationFactory,
     ) -> Self {
         Self {
             peer_id,
@@ -89,6 +106,7 @@ where
             storage,
             network_handle,
             ack_tx,
+            service_invocation_factory,
             _entry_codec: Default::default(),
         }
     }
