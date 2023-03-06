@@ -2,4 +2,3 @@
 docker/Dockerfile
 **/target
 target
-.cargo
