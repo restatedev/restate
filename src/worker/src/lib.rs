@@ -1,11 +1,12 @@
 use crate::ingress_integration::{DefaultServiceInvocationFactory, ExternalClientIngressRunner};
 use crate::network_integration::FixedPartitionTable;
+use common::retry_policy::RetryPolicy;
 use common::types::{IngressId, PeerId, PeerTarget};
 use consensus::Consensus;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use ingress_grpc::{InMemoryMethodDescriptorRegistry, IngressDispatcherLoop};
-use invoker::{EndpointMetadata, Invoker, RetryPolicy, UnboundedInvokerInputSender};
+use invoker::{EndpointMetadata, Invoker, UnboundedInvokerInputSender};
 use network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use partition::ack::AckableCommand;
 use partition::shuffle;

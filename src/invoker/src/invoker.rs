@@ -554,7 +554,7 @@ mod state_machine_coordinator {
                 service_invocation_id.clone(),
                 invoke_input_cmd.journal,
                 start_arguments,
-                InvocationStateMachine::create(),
+                InvocationStateMachine::create,
             )
             .await
         }
@@ -564,7 +564,7 @@ mod state_machine_coordinator {
             service_invocation_id: ServiceInvocationId,
             journal: InvokeInputJournal,
             start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
-            mut invocation_state_machine: InvocationStateMachine,
+            state_machine_factory: impl FnOnce(RetryPolicy) -> InvocationStateMachine,
         ) where
             JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
             JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
@@ -603,6 +603,8 @@ mod state_machine_coordinator {
                 .unwrap_or(start_arguments.default_retry_policy)
                 .clone();
 
+            let mut invocation_state_machine = state_machine_factory(retry_policy);
+
             // Start the InvocationTask
             let (completions_tx, completions_rx) = match metadata.protocol_type {
                 ProtocolType::RequestResponse => (None, None),
@@ -625,7 +627,7 @@ mod state_machine_coordinator {
             );
 
             // Transition the state machine, and store it
-            invocation_state_machine.start(abort_handle, completions_tx, retry_policy);
+            invocation_state_machine.start(abort_handle, completions_tx);
             self.invocation_state_machines
                 .insert(service_invocation_id, invocation_state_machine);
         }
@@ -702,7 +704,8 @@ mod state_machine_coordinator {
                         service_invocation_id,
                         InvokeInputJournal::NoCachedJournal,
                         start_arguments,
-                        sm,
+                        // In case we're retrying, we don't modify the retry policy
+                        |_| sm,
                     )
                     .await;
                 } else {
@@ -851,6 +854,7 @@ mod invocation_state_machine {
     use std::mem;
     use std::time::Duration;
 
+    use common::retry_policy;
     use journal::raw::RawEntryHeader;
     use journal::Completion;
     use tokio::sync::mpsc;
@@ -860,7 +864,7 @@ mod invocation_state_machine {
     #[derive(Debug)]
     pub(super) struct InvocationStateMachine {
         invocation_state: InvocationState,
-        current_attempt: usize,
+        retry_iter: retry_policy::Iter,
     }
 
     /// This struct tracks which entries the invocation task generates,
@@ -918,7 +922,6 @@ mod invocation_state_machine {
             // This can be none if the invocation task is request/response
             completions_tx: Option<mpsc::UnboundedSender<Completion>>,
             journal_tracker: JournalTracker,
-            retry_policy: RetryPolicy,
             abort_handle: AbortHandle,
         },
 
@@ -933,10 +936,10 @@ mod invocation_state_machine {
     }
 
     impl InvocationStateMachine {
-        pub(super) fn create() -> InvocationStateMachine {
+        pub(super) fn create(retry_policy: RetryPolicy) -> InvocationStateMachine {
             Self {
                 invocation_state: InvocationState::New,
-                current_attempt: 0,
+                retry_iter: retry_policy.into_iter(),
             }
         }
 
@@ -944,7 +947,6 @@ mod invocation_state_machine {
             &mut self,
             abort_handle: AbortHandle,
             completions_tx: Option<mpsc::UnboundedSender<Completion>>,
-            retry_policy: RetryPolicy,
         ) {
             debug_assert!(matches!(
                 &self.invocation_state,
@@ -954,10 +956,8 @@ mod invocation_state_machine {
             self.invocation_state = InvocationState::InFlight {
                 completions_tx,
                 journal_tracker: Default::default(),
-                retry_policy,
                 abort_handle,
             };
-            self.current_attempt += 1;
         }
 
         pub(super) fn abort(&mut self) {
@@ -1033,13 +1033,8 @@ mod invocation_state_machine {
 
             let (next_timer, journal_tracker) = match &self.invocation_state {
                 InvocationState::InFlight {
-                    retry_policy,
-                    journal_tracker,
-                    ..
-                } => (
-                    retry_policy.next_timer(self.current_attempt + 1),
-                    *journal_tracker,
-                ),
+                    journal_tracker, ..
+                } => (self.retry_iter.next(), *journal_tracker),
                 _ => unreachable!(),
             };
 
