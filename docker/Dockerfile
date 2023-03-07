@@ -1,8 +1,10 @@
 FROM --platform=$BUILDPLATFORM rust:1.66-bullseye AS tools
+# prepopulate cargo index
+RUN cargo search --limit=0
 RUN apt update && apt upgrade -y
 RUN apt -y install \
-    gcc-x86-64-linux-gnu \
-    gcc-aarch64-linux-gnu \
+    g++-x86-64-linux-gnu \
+    g++-aarch64-linux-gnu \
     protobuf-compiler \
     libprotoc-dev \
     clang \
@@ -14,7 +16,10 @@ RUN rustup show
 RUN rustup target add \
     x86_64-unknown-linux-gnu \
     aarch64-unknown-linux-gnu
-ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+ENV BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_gnu='--sysroot=/usr/x86_64-linux-gnu'
+ENV BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu='--sysroot=/usr/aarch64-linux-gnu'
 
 
 FROM --platform=$BUILDPLATFORM tools as builder

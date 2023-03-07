@@ -16,7 +16,7 @@ common = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
-hyper-tls = "0.5"
+hyper-rustls = { version = "0.23.2", features = ["http2"] }
 h2 = { version = "0.3.15", features = ["unstable"] }
 paste = { workspace = true }
 prost = { workspace = true }

@@ -12,7 +12,7 @@ use hyper::client::HttpConnector;
 use hyper::http::response::Parts;
 use hyper::http::HeaderValue;
 use hyper::{http, Body, Request, Uri};
-use hyper_tls::HttpsConnector;
+use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use journal::raw::RawEntry;
 use journal::Completion;
 use opentelemetry::propagation::TextMapPropagator;
@@ -526,9 +526,13 @@ where
 
     // TODO pooling https://github.com/restatedev/restate/issues/76
     fn get_client() -> hyper::Client<HttpsConnector<HttpConnector>, Body> {
-        hyper::Client::builder()
-            .http2_only(true)
-            .build::<_, Body>(HttpsConnector::new())
+        hyper::Client::builder().http2_only(true).build::<_, Body>(
+            HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .https_or_http()
+                .enable_http2()
+                .build(),
+        )
     }
 
     fn validate_response(mut parts: Parts) -> Result<(), InvocationTaskError> {
