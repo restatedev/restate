@@ -1,9 +1,12 @@
-use axum::response::IntoResponse;
-use axum::routing::{get, IntoMakeService};
-use axum::Router;
-use hyper::server::conn::AddrIncoming;
-use hyper::Server;
+mod rest_api;
+mod service;
+mod storage;
+
+use crate::storage::InMemoryMetaStorage;
+use rest_api::MetaRestEndpoint;
+use service::MetaService;
 use std::net::SocketAddr;
+use tokio::join;
 use tracing::debug;
 
 #[derive(Debug, clap::Parser)]
@@ -18,36 +21,56 @@ pub struct Options {
     rest_addr: SocketAddr,
 }
 
-pub struct Meta {
-    server: Server<AddrIncoming, IntoMakeService<Router>>,
-}
-
 impl Options {
     pub fn build(self) -> Meta {
-        let meta_api = Router::new().route("/", get(index));
-        let server = Server::bind(&self.rest_addr).serve(meta_api.into_make_service());
-
-        Meta { server }
-    }
-}
-
-impl Meta {
-    pub async fn run(self, drain: drain::Watch) -> Result<(), anyhow::Error> {
-        debug!(rest_addr = ?self.server.local_addr(), "Starting the meta component.");
-        let shutdown = drain.signaled();
-
-        tokio::select! {
-            result = self.server => {
-                result.map_err(Into::into)
-            },
-            _ = shutdown => {
-                debug!("Shutting meta down.");
-                Ok(())
-            }
+        Meta {
+            rest_endpoint: MetaRestEndpoint::new(self.rest_addr),
+            service: MetaService::new(),
         }
     }
 }
 
-async fn index() -> impl IntoResponse {
-    "Welcome to Restate :-)"
+pub struct Meta {
+    rest_endpoint: MetaRestEndpoint,
+    service: MetaService<InMemoryMetaStorage>,
+}
+
+impl Meta {
+    pub fn service_invocation_factory() {
+        unimplemented!("Return the service invocation factory");
+    }
+
+    pub fn method_descriptor_registry() {
+        unimplemented!("Return the method descriptor registry");
+    }
+
+    pub async fn run(self, drain: drain::Watch) {
+        let (shutdown_signal, shutdown_watch) = drain::channel();
+
+        let meta_handle = self.service.meta_handle();
+        let mut service_handle = tokio::spawn(self.service.run(shutdown_watch.clone()));
+        let mut rest_endpoint_handle =
+            tokio::spawn(self.rest_endpoint.run(meta_handle, shutdown_watch));
+
+        let shutdown = drain.signaled();
+
+        tokio::select! {
+            _ = shutdown => {
+                debug!("Initiating shutdown of meta");
+
+                shutdown_signal.drain().await;
+
+                // ignored because we are shutting down
+                let _ = join!(service_handle, rest_endpoint_handle);
+
+                debug!("Completed shutdown of meta");
+            },
+            rest_endpoint_result = &mut rest_endpoint_handle => {
+                panic!("Rest endpoint stopped running: {rest_endpoint_result:?}");
+            },
+            service_result = &mut service_handle => {
+                panic!("Service stopped running: {service_result:?}");
+            },
+        }
+    }
 }
