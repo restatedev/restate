@@ -694,8 +694,11 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "pin-project",
+ "test_utils",
  "thiserror",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
