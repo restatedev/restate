@@ -7,7 +7,7 @@ use std::{cmp, panic};
 use common::types::PartitionLeaderEpoch;
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
-use journal::raw::RawEntryCodec;
+use journal::raw::{PlainRawEntry, RawEntryCodec};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
@@ -201,7 +201,7 @@ impl<C, JR, JS, SER> Invoker<C, JR, SER>
 where
     C: RawEntryCodec,
     JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-    JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+    JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
     SER: ServiceEndpointRegistry,
 {
     pub fn new(
@@ -238,7 +238,7 @@ where
 impl<C, JR, JS, SER> Invoker<C, JR, SER>
 where
     JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-    JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+    JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
     SER: ServiceEndpointRegistry,
 {
     pub fn create_sender(&self) -> UnboundedInvokerInputSender {
@@ -352,11 +352,11 @@ where
                         };
 
                     match invocation_task_msg.inner {
-                        InvocationTaskOutputInner::NewEntry {entry_index, raw_entry} => {
+                        InvocationTaskOutputInner::NewEntry {entry_index, entry} => {
                             partition_state_machine.handle_new_entry(
                                 invocation_task_msg.service_invocation_id,
                                 entry_index,
-                                raw_entry
+                                entry
                             ).await
                         },
                         InvocationTaskOutputInner::Closed => {
@@ -542,7 +542,7 @@ mod state_machine_coordinator {
             start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
         ) where
             JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
             SER: ServiceEndpointRegistry,
         {
             let service_invocation_id = invoke_input_cmd.service_invocation_id;
@@ -567,7 +567,7 @@ mod state_machine_coordinator {
             state_machine_factory: impl FnOnce(RetryPolicy) -> InvocationStateMachine,
         ) where
             JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
             SER: ServiceEndpointRegistry,
         {
             // Resolve metadata
@@ -658,7 +658,7 @@ mod state_machine_coordinator {
             start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
         ) where
             JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
             SER: ServiceEndpointRegistry,
         {
             self.handle_retry_event(service_invocation_id, start_arguments, |sm| {
@@ -674,7 +674,7 @@ mod state_machine_coordinator {
             entry_index: EntryIndex,
         ) where
             JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
             SER: ServiceEndpointRegistry,
         {
             self.handle_retry_event(service_invocation_id, start_arguments, |sm| {
@@ -690,7 +690,7 @@ mod state_machine_coordinator {
             f: FN,
         ) where
             JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = RawEntry> + Unpin + Send + 'static,
+            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
             SER: ServiceEndpointRegistry,
             FN: FnOnce(&mut InvocationStateMachine),
         {
@@ -721,7 +721,7 @@ mod state_machine_coordinator {
             &mut self,
             service_invocation_id: ServiceInvocationId,
             entry_index: EntryIndex,
-            entry: RawEntry,
+            entry: PlainRawEntry,
         ) {
             if let Some(sm) = self
                 .invocation_state_machines
@@ -968,13 +968,13 @@ mod invocation_state_machine {
             }
         }
 
-        pub(super) fn notify_new_entry(&mut self, entry_index: EntryIndex, raw_entry: &RawEntry) {
+        pub(super) fn notify_new_entry(&mut self, entry_index: EntryIndex, entry: &PlainRawEntry) {
             debug_assert!(matches!(
                 &self.invocation_state,
                 InvocationState::InFlight { .. }
             ));
 
-            if raw_entry.header == RawEntryHeader::OutputStream {
+            if entry.header == RawEntryHeader::OutputStream {
                 self.invocation_state = InvocationState::WaitingClose;
                 return;
             }

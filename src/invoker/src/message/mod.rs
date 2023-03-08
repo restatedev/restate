@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use journal::raw::RawEntry;
+use journal::raw::{PlainRawEntry, RawEntry};
 use journal::{Completion, CompletionResult};
 use prost::Message;
 use service_protocol::pb;
@@ -18,7 +18,7 @@ pub enum ProtocolMessage {
     Suspension(pb::protocol::SuspensionMessage),
 
     // Entries are not parsed at this point
-    UnparsedEntry(RawEntry),
+    UnparsedEntry(PlainRawEntry),
 }
 
 impl ProtocolMessage {
@@ -58,8 +58,8 @@ impl From<Completion> for ProtocolMessage {
     }
 }
 
-impl From<RawEntry> for ProtocolMessage {
-    fn from(value: RawEntry) -> Self {
+impl From<PlainRawEntry> for ProtocolMessage {
+    fn from(value: PlainRawEntry) -> Self {
         Self::UnparsedEntry(value)
     }
 }

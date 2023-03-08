@@ -1,21 +1,24 @@
+use crate::enum_inner;
 use bytes::Bytes;
 use common::types::{
     EntryIndex, IngressId, InvocationId, InvocationResponse, ResponseResult, ServiceId,
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
-use invoker::Kind;
-use journal::raw::{RawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
+use journal::raw::{RawEntryCodec, RawEntryCodecError};
 use journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
     Entry, GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
 };
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::partition::effects::{Effects, OutboxMessage};
+use crate::partition::types::{
+    EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, ResolutionResult,
+};
 use crate::partition::InvocationStatus;
 
 #[derive(Debug, thiserror::Error)]
@@ -28,7 +31,7 @@ pub(super) enum Error {
 
 #[derive(Debug)]
 pub(crate) enum Command {
-    Invoker(invoker::OutputEffect),
+    Invoker(InvokerEffect),
     #[allow(dead_code)]
     Timer {
         service_invocation_id: ServiceInvocationId,
@@ -65,9 +68,13 @@ impl ResponseSink {
                 service_invocation_id.clone(),
             )),
             ServiceInvocationResponseSink::None => None,
-            ServiceInvocationResponseSink::PartitionProcessor(entry_index) => Some(
-                ResponseSink::PartitionProcessor(service_invocation_id.clone(), *entry_index),
-            ),
+            ServiceInvocationResponseSink::PartitionProcessor {
+                entry_index,
+                caller,
+            } => Some(ResponseSink::PartitionProcessor(
+                caller.clone(),
+                *entry_index,
+            )),
         }
     }
 }
@@ -120,53 +127,6 @@ pub(super) struct StateMachine<Codec> {
     outbox_seq_number: u64,
 
     _codec: PhantomData<Codec>,
-}
-
-/// Unwraps the inner value of a given enum variant.
-///
-/// # Panics
-/// If the enum variant does not match the given enum variant, it panics.
-///
-/// # Example
-///
-/// ```
-/// use worker::enum_inner;
-/// enum Enum {
-///     A(u64),
-///     B(String),
-/// }
-///
-/// let variant = Enum::A(42);
-///
-/// let inner = enum_inner!(variant, Enum::A);
-/// assert_eq!(inner, 42);
-/// ```
-///
-/// ## Expansion
-///
-/// The given example will expand to:
-///
-/// ```no_run
-/// enum Enum {
-///     A(u64),
-///     B(String),
-/// }
-///
-/// let variant = Enum::A(42);
-///
-/// let inner = match variant {
-///     Enum::A(inner) => inner,
-///     _ => panic!()
-/// };
-/// ```
-#[macro_export]
-macro_rules! enum_inner {
-    ($ty:expr, $variant:path) => {
-        match $ty {
-            $variant(inner) => inner,
-            _ => panic!("Unexpected enum type"),
-        }
-    };
 }
 
 impl<Codec> StateMachine<Codec>
@@ -242,10 +202,10 @@ where
         &mut self,
         effects: &mut Effects,
         state: &State,
-        invoker::OutputEffect {
+        InvokerEffect {
             service_invocation_id,
             kind,
-        }: invoker::OutputEffect,
+        }: InvokerEffect,
     ) -> Result<(), Error> {
         let status = state
             .get_invocation_status(&service_invocation_id.service_id)
@@ -260,7 +220,7 @@ where
         );
 
         match kind {
-            Kind::JournalEntry { entry_index, entry } => {
+            InvokerEffectKind::JournalEntry { entry_index, entry } => {
                 self.handle_journal_entry(
                     effects,
                     state,
@@ -270,7 +230,7 @@ where
                 )
                 .await?;
             }
-            Kind::Suspended {
+            InvokerEffectKind::Suspended {
                 waiting_for_completed_entries,
             } => {
                 debug_assert!(
@@ -292,11 +252,11 @@ where
 
                 effects.suspend_service(service_invocation_id, waiting_for_completed_entries);
             }
-            Kind::End => {
+            InvokerEffectKind::End => {
                 self.complete_invocation(service_invocation_id, state, effects)
                     .await?;
             }
-            Kind::Failed { error, error_code } => {
+            InvokerEffectKind::Failed { error, error_code } => {
                 if let Some(response_sink) = state.get_response_sink(&service_invocation_id).await?
                 {
                     let outbox_message = Self::create_response(
@@ -322,7 +282,7 @@ where
         state: &State,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
     ) -> Result<(), Error> {
         let journal_length = state
             .get_journal_status(&service_invocation_id.service_id)
@@ -334,60 +294,66 @@ where
             "Expect to receive next journal entry"
         );
 
-        match entry.header {
+        match journal_entry.header {
             // nothing to do
-            RawEntryHeader::PollInputStream { is_completed } => {
+            EnrichedEntryHeader::PollInputStream { is_completed } => {
                 debug_assert!(
                     !is_completed,
                     "Poll input stream entry must not be completed."
                 );
             }
-            RawEntryHeader::OutputStream => {
+            EnrichedEntryHeader::OutputStream => {
                 if let Some(response_sink) = state.get_response_sink(&service_invocation_id).await?
                 {
                     let OutputStreamEntry { result } =
-                        enum_inner!(Self::deserialize(&entry)?, Entry::OutputStream);
+                        enum_inner!(Codec::deserialize(&journal_entry)?, Entry::OutputStream);
 
                     let outbox_message = Self::create_response(response_sink, result.into());
 
                     self.send_message(outbox_message, effects);
                 }
             }
-            RawEntryHeader::GetState { is_completed } => {
+            EnrichedEntryHeader::GetState { is_completed } => {
                 if !is_completed {
                     let GetStateEntry { key, .. } =
-                        enum_inner!(Self::deserialize(&entry)?, Entry::GetState);
+                        enum_inner!(Codec::deserialize(&journal_entry)?, Entry::GetState);
 
                     effects.get_state_and_append_completed_entry(
                         key,
                         service_invocation_id,
                         entry_index,
-                        entry,
+                        journal_entry,
                     );
                     return Ok(());
                 }
             }
-            RawEntryHeader::SetState => {
+            EnrichedEntryHeader::SetState => {
                 let SetStateEntry { key, value } =
-                    enum_inner!(Self::deserialize(&entry)?, Entry::SetState);
+                    enum_inner!(Codec::deserialize(&journal_entry)?, Entry::SetState);
 
-                effects.set_state(service_invocation_id, key, value, entry, entry_index);
+                effects.set_state(
+                    service_invocation_id,
+                    key,
+                    value,
+                    journal_entry,
+                    entry_index,
+                );
                 // set_state includes append journal entry in order to avoid unnecessary clones.
                 // That's why we must return here.
                 return Ok(());
             }
-            RawEntryHeader::ClearState => {
+            EnrichedEntryHeader::ClearState => {
                 let ClearStateEntry { key } =
-                    enum_inner!(Self::deserialize(&entry)?, Entry::ClearState);
-                effects.clear_state(service_invocation_id, key, entry, entry_index);
+                    enum_inner!(Codec::deserialize(&journal_entry)?, Entry::ClearState);
+                effects.clear_state(service_invocation_id, key, journal_entry, entry_index);
                 // clear_state includes append journal entry in order to avoid unnecessary clones.
                 // That's why we must return here.
                 return Ok(());
             }
-            RawEntryHeader::Sleep { is_completed } => {
+            EnrichedEntryHeader::Sleep { is_completed } => {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
                 let SleepEntry { wake_up_time, .. } =
-                    enum_inner!(Self::deserialize(&entry)?, Entry::Sleep);
+                    enum_inner!(Codec::deserialize(&journal_entry)?, Entry::Sleep);
                 effects.register_timer(
                     wake_up_time as u64,
                     // Registering a timer generates multiple effects: timer registration and
@@ -397,40 +363,81 @@ where
                     entry_index,
                 );
             }
-            RawEntryHeader::Invoke { is_completed } => {
-                if !is_completed {
-                    let InvokeEntry { request, .. } =
-                        enum_inner!(Self::deserialize(&entry)?, Entry::Invoke);
+            EnrichedEntryHeader::Invoke {
+                ref resolution_result,
+                ..
+            } => {
+                if let Some(resolution_result) = resolution_result {
+                    match resolution_result {
+                        ResolutionResult::Success {
+                            service_key,
+                            invocation_id,
+                        } => {
+                            let InvokeEntry { request, .. } =
+                                enum_inner!(Codec::deserialize(&journal_entry)?, Entry::Invoke);
 
-                    let service_invocation = Self::create_service_invocation(
-                        request,
-                        Some((service_invocation_id.clone(), entry_index)),
-                    );
-                    self.send_message(OutboxMessage::Invocation(service_invocation), effects);
+                            let service_invocation = Self::create_service_invocation(
+                                *invocation_id,
+                                service_key.clone(),
+                                request,
+                                Some((service_invocation_id.clone(), entry_index)),
+                            );
+                            self.send_message(
+                                OutboxMessage::Invocation(service_invocation),
+                                effects,
+                            );
+                        }
+                        ResolutionResult::Failure { error_code, error } => effects
+                            .forward_completion(
+                                service_invocation_id.clone(),
+                                Completion::new(
+                                    entry_index,
+                                    CompletionResult::Failure(*error_code, error.clone()),
+                                ),
+                            ),
+                    }
                 } else {
-                    // no action needed for a completed invoke entry
+                    // no action needed for an invoke entry that has been completed by the service endpoint
                 }
             }
-            RawEntryHeader::BackgroundInvoke => {
-                let BackgroundInvokeEntry(request) =
-                    enum_inner!(Self::deserialize(&entry)?, Entry::BackgroundInvoke);
+            EnrichedEntryHeader::BackgroundInvoke {
+                ref resolution_result,
+            } => match resolution_result {
+                ResolutionResult::Success {
+                    service_key,
+                    invocation_id,
+                } => {
+                    let BackgroundInvokeEntry(request) =
+                        enum_inner!(Codec::deserialize(&journal_entry)?, Entry::BackgroundInvoke);
 
-                let service_invocation = Self::create_service_invocation(request, None);
-                self.send_message(OutboxMessage::Invocation(service_invocation), effects);
-            }
+                    let service_invocation = Self::create_service_invocation(
+                        *invocation_id,
+                        service_key.clone(),
+                        request,
+                        None,
+                    );
+                    self.send_message(OutboxMessage::Invocation(service_invocation), effects);
+                }
+                ResolutionResult::Failure { error_code, error } => {
+                    warn!("Failed to send background invocation: Error code: {error_code}, error message: {error}");
+                }
+            },
             // special handling because we can have a completion present
-            RawEntryHeader::Awakeable { is_completed } => {
+            EnrichedEntryHeader::Awakeable { is_completed } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
-                effects.append_awakeable_entry(service_invocation_id, entry_index, entry);
+                effects.append_awakeable_entry(service_invocation_id, entry_index, journal_entry);
                 return Ok(());
             }
-            RawEntryHeader::CompleteAwakeable => {
-                let entry = enum_inner!(Self::deserialize(&entry)?, Entry::CompleteAwakeable);
+            EnrichedEntryHeader::CompleteAwakeable => {
+                let entry = enum_inner!(
+                    Codec::deserialize(&journal_entry)?,
+                    Entry::CompleteAwakeable
+                );
 
                 let response = Self::create_response_for_awakeable_entry(entry);
                 self.send_message(response, effects);
             }
-            RawEntryHeader::Custom {
+            EnrichedEntryHeader::Custom {
                 requires_ack,
                 code: _,
             } => {
@@ -438,14 +445,14 @@ where
                     effects.append_journal_entry_and_ack_storage(
                         service_invocation_id,
                         entry_index,
-                        entry,
+                        journal_entry,
                     );
                     return Ok(());
                 }
             }
         }
 
-        effects.append_journal_entry(service_invocation_id, entry_index, entry);
+        effects.append_journal_entry(service_invocation_id, entry_index, journal_entry);
 
         Ok(())
     }
@@ -532,12 +539,34 @@ where
     }
 
     fn create_service_invocation(
-        _invoke_request: InvokeRequest,
-        _response_target: Option<(ServiceInvocationId, EntryIndex)>,
+        invocation_id: InvocationId,
+        invocation_key: Bytes,
+        invoke_request: InvokeRequest,
+        response_target: Option<(ServiceInvocationId, EntryIndex)>,
     ) -> ServiceInvocation {
-        // We might want to create the service invocation when receiving the journal entry from
-        // service endpoint. That way we can fail it fast if the service cannot be resolved.
-        todo!()
+        let InvokeRequest {
+            service_name,
+            method_name,
+            parameter,
+        } = invoke_request;
+
+        let response_sink = if let Some((caller, entry_index)) = response_target {
+            ServiceInvocationResponseSink::PartitionProcessor {
+                caller,
+                entry_index,
+            }
+        } else {
+            ServiceInvocationResponseSink::None
+        };
+
+        ServiceInvocation {
+            id: ServiceInvocationId::new(service_name, invocation_key, invocation_id),
+            method_name,
+            argument: parameter,
+            response_sink,
+            // TODO: Propagate span relation. See https://github.com/restatedev/restate/issues/165
+            span_relation: SpanRelation::None,
+        }
     }
 
     fn create_response_for_awakeable_entry(entry: CompleteAwakeableEntry) -> OutboxMessage {
@@ -577,9 +606,5 @@ where
                 })
             }
         }
-    }
-
-    fn deserialize(raw_entry: &RawEntry) -> Result<Entry, RawEntryCodecError> {
-        Codec::deserialize(raw_entry)
     }
 }

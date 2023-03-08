@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 bytes = { workspace = true }
+bytestring = { workspace = true }
 clap = { workspace = true }
 common = { workspace = true }
 consensus = { workspace = true }

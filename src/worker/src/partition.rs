@@ -1,4 +1,3 @@
-use common::traits;
 use common::types::{EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
 use futures::{stream, StreamExt};
 use std::collections::HashSet;
@@ -9,17 +8,21 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 pub mod ack;
+mod actuator_output_handler;
 mod effects;
 mod leadership;
 pub mod shuffle;
 mod state_machine;
 mod storage;
+mod types;
+mod util;
 
 pub(super) use crate::partition::ack::{
     AckResponse, AckTarget, AckableCommand, IngressAckResponse, ShuffleAckResponse,
 };
+use crate::partition::actuator_output_handler::ActuatorOutputHandler;
 use crate::partition::effects::{Effects, Interpreter};
-use crate::partition::leadership::{ActuatorOutput, LeadershipState};
+use crate::partition::leadership::LeadershipState;
 use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
 pub(crate) use state_machine::Command;
@@ -30,7 +33,7 @@ pub(super) struct PartitionProcessor<
     InvokerInputSender,
     NetworkHandle,
     Storage,
-    ServiceInvocationFactory,
+    KeyExtractor,
 > {
     peer_id: PeerId,
     partition_id: PartitionId,
@@ -48,7 +51,7 @@ pub(super) struct PartitionProcessor<
 
     ack_tx: network::PartitionProcessorSender<AckResponse>,
 
-    service_invocation_factory: ServiceInvocationFactory,
+    key_extractor: KeyExtractor,
 
     _entry_codec: PhantomData<RawEntryCodec>,
 }
@@ -57,7 +60,7 @@ pub(super) struct PartitionProcessor<
 pub(super) struct RocksDBJournalReader;
 
 impl invoker::JournalReader for RocksDBJournalReader {
-    type JournalStream = stream::Empty<journal::raw::RawEntry>;
+    type JournalStream = stream::Empty<journal::raw::PlainRawEntry>;
     type Error = Infallible;
     type Future = futures::future::Pending<
         Result<(invoker::JournalMetadata, Self::JournalStream), Self::Error>,
@@ -69,20 +72,14 @@ impl invoker::JournalReader for RocksDBJournalReader {
     }
 }
 
-impl<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage, ServiceInvocationFactory>
-    PartitionProcessor<
-        RawEntryCodec,
-        InvokerInputSender,
-        NetworkHandle,
-        Storage,
-        ServiceInvocationFactory,
-    >
+impl<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage, KeyExtractor>
+    PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, Storage, KeyExtractor>
 where
     RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: invoker::InvokerInputSender + Clone,
     NetworkHandle: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     Storage: storage_api::Storage + Clone + Send + Sync + 'static,
-    ServiceInvocationFactory: traits::ServiceInvocationFactory,
+    KeyExtractor: service_key_extractor::KeyExtractor,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -94,7 +91,7 @@ where
         storage: Storage,
         network_handle: NetworkHandle,
         ack_tx: network::PartitionProcessorSender<AckResponse>,
-        service_invocation_factory: ServiceInvocationFactory,
+        key_extractor: KeyExtractor,
     ) -> Self {
         Self {
             peer_id,
@@ -106,7 +103,7 @@ where
             storage,
             network_handle,
             ack_tx,
-            service_invocation_factory,
+            key_extractor,
             _entry_codec: Default::default(),
         }
     }
@@ -122,6 +119,7 @@ where
             storage,
             proposal_tx,
             ack_tx,
+            key_extractor,
             ..
         } = self;
 
@@ -132,6 +130,8 @@ where
             LeadershipState::follower(peer_id, partition_id, invoker_tx, network_handle);
 
         let mut partition_storage = PartitionStorage::new(partition_id, storage);
+        let actuator_output_handler =
+            ActuatorOutputHandler::<_, RawEntryCodec>::new(proposal_tx, key_extractor);
 
         loop {
             tokio::select! {
@@ -175,9 +175,9 @@ where
                         break;
                     }
                 },
-                actuator_message = actuator_stream.next() => {
-                    let actuator_message = actuator_message.ok_or(anyhow::anyhow!("actuator stream is closed"))?;
-                    Self::propose_actuator_message(actuator_message, &proposal_tx).await;
+                actuator_output = actuator_stream.next() => {
+                    let actuator_output = actuator_output.ok_or(anyhow::anyhow!("actuator stream is closed"))?;
+                    actuator_output_handler.handle(actuator_output).await;
                 },
                 task_result = leadership_state.run_tasks() => {
                     Err(task_result)?
@@ -189,28 +189,6 @@ where
         let _ = leadership_state.become_follower().await;
 
         Ok(())
-    }
-
-    async fn propose_actuator_message(
-        actuator_message: ActuatorOutput,
-        proposal_sink: &IdentitySender<AckableCommand>,
-    ) {
-        match actuator_message {
-            ActuatorOutput::Invoker(invoker_output) => {
-                // Err only if the consensus module is shutting down
-                let _ = proposal_sink
-                    .send(AckableCommand::no_ack(Command::Invoker(invoker_output)))
-                    .await;
-            }
-            ActuatorOutput::Shuffle(outbox_truncation) => {
-                // Err only if the consensus module is shutting down
-                let _ = proposal_sink
-                    .send(AckableCommand::no_ack(Command::OutboxTruncation(
-                        outbox_truncation.index(),
-                    )))
-                    .await;
-            }
-        };
     }
 }
 

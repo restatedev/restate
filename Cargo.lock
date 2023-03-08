@@ -3025,6 +3025,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "bytestring",
  "clap 4.1.6",
  "common",
  "consensus",

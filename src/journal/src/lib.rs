@@ -43,6 +43,15 @@ pub struct Completion {
     pub result: CompletionResult,
 }
 
+impl Completion {
+    pub fn new(entry_index: EntryIndex, result: CompletionResult) -> Self {
+        Self {
+            entry_index,
+            result,
+        }
+    }
+}
+
 impl From<ResponseResult> for CompletionResult {
     fn from(value: ResponseResult) -> Self {
         match value {

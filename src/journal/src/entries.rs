@@ -16,6 +16,21 @@ mod private {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryType {
+    PollInputStream,
+    OutputStream,
+    GetState,
+    SetState,
+    ClearState,
+    Sleep,
+    Invoke,
+    BackgroundInvoke,
+    Awakeable,
+    CompleteAwakeable,
+    Custom,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryResult {
     Success(Bytes),
     Failure(i32, ByteString),

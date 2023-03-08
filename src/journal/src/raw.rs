@@ -32,8 +32,14 @@ impl RawEntryHeader {
             RawEntryHeader::Custom { .. } => None,
         }
     }
+}
 
-    pub fn mark_completed(&mut self) {
+impl Header for RawEntryHeader {
+    fn is_completed(&self) -> Option<bool> {
+        self.is_completed()
+    }
+
+    fn mark_completed(&mut self) {
         match self {
             RawEntryHeader::PollInputStream { is_completed } => *is_completed = true,
             RawEntryHeader::OutputStream => {}
@@ -48,21 +54,39 @@ impl RawEntryHeader {
             RawEntryHeader::Custom { .. } => {}
         }
     }
+
+    fn to_entry_type(&self) -> EntryType {
+        match self {
+            RawEntryHeader::PollInputStream { .. } => EntryType::PollInputStream,
+            RawEntryHeader::OutputStream => EntryType::OutputStream,
+            RawEntryHeader::GetState { .. } => EntryType::GetState,
+            RawEntryHeader::SetState => EntryType::SetState,
+            RawEntryHeader::ClearState => EntryType::ClearState,
+            RawEntryHeader::Sleep { .. } => EntryType::Sleep,
+            RawEntryHeader::Invoke { .. } => EntryType::Invoke,
+            RawEntryHeader::BackgroundInvoke => EntryType::BackgroundInvoke,
+            RawEntryHeader::Awakeable { .. } => EntryType::Awakeable,
+            RawEntryHeader::CompleteAwakeable => EntryType::CompleteAwakeable,
+            RawEntryHeader::Custom { .. } => EntryType::Custom,
+        }
+    }
 }
 
 /// This struct represents a serialized journal entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawEntry {
-    pub header: RawEntryHeader,
+pub struct RawEntry<H> {
+    pub header: H,
     pub entry: Bytes,
 }
 
-impl RawEntry {
-    pub fn new(header: RawEntryHeader, entry: Bytes) -> Self {
+pub type PlainRawEntry = RawEntry<RawEntryHeader>;
+
+impl<H> RawEntry<H> {
+    pub fn new(header: H, entry: Bytes) -> Self {
         Self { header, entry }
     }
 
-    pub fn into_inner(self) -> (RawEntryHeader, Bytes) {
+    pub fn into_inner(self) -> (H, Bytes) {
         (self.header, self.entry)
     }
 }
@@ -70,12 +94,12 @@ impl RawEntry {
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot decode {ty:?}. {kind:?}")]
 pub struct RawEntryCodecError {
-    ty: RawEntryHeader,
+    ty: EntryType,
     kind: ErrorKind,
 }
 
 impl RawEntryCodecError {
-    pub fn new(ty: RawEntryHeader, kind: ErrorKind) -> Self {
+    pub fn new(ty: EntryType, kind: ErrorKind) -> Self {
         Self { ty, kind }
     }
 }
@@ -89,12 +113,20 @@ pub enum ErrorKind {
 }
 
 pub trait RawEntryCodec {
-    fn serialize_as_unary_input_entry(input_message: Bytes) -> RawEntry;
+    fn serialize_as_unary_input_entry(input_message: Bytes) -> PlainRawEntry;
 
-    fn deserialize(entry: &RawEntry) -> Result<Entry, RawEntryCodecError>;
+    fn deserialize<H: Header>(entry: &RawEntry<H>) -> Result<Entry, RawEntryCodecError>;
 
-    fn write_completion(
-        entry: &mut RawEntry,
+    fn write_completion<H: Header>(
+        entry: &mut RawEntry<H>,
         completion_result: CompletionResult,
     ) -> Result<(), RawEntryCodecError>;
+}
+
+pub trait Header {
+    fn is_completed(&self) -> Option<bool>;
+
+    fn mark_completed(&mut self);
+
+    fn to_entry_type(&self) -> EntryType;
 }

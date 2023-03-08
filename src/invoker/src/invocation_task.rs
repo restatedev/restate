@@ -13,7 +13,7 @@ use hyper::http::response::Parts;
 use hyper::http::HeaderValue;
 use hyper::{http, Body, Request, Uri};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
-use journal::raw::RawEntry;
+use journal::raw::PlainRawEntry;
 use journal::Completion;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
@@ -100,7 +100,7 @@ pub(crate) struct InvocationTaskOutput {
 pub(crate) enum InvocationTaskOutputInner {
     NewEntry {
         entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        entry: PlainRawEntry,
     },
     Closed,
     Suspended(HashSet<EntryIndex>),
@@ -174,7 +174,7 @@ macro_rules! shortcircuit {
 impl<JR, JS> InvocationTask<JR>
 where
     JR: JournalReader<JournalStream = JS>,
-    JS: Stream<Item = RawEntry> + Unpin,
+    JS: Stream<Item = PlainRawEntry> + Unpin,
 {
     pub fn new(
         partition: PartitionLeaderEpoch,
@@ -282,7 +282,7 @@ where
         mut journal_stream: JournalStream,
     ) -> TerminalLoopState<Body>
     where
-        JournalStream: Stream<Item = RawEntry> + Unpin,
+        JournalStream: Stream<Item = PlainRawEntry> + Unpin,
     {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
@@ -434,13 +434,13 @@ where
             ProtocolMessage::Suspension(suspension) => TerminalLoopState::Suspended(
                 HashSet::from_iter(suspension.entry_indexes.into_iter()),
             ),
-            ProtocolMessage::UnparsedEntry(raw_entry) => {
+            ProtocolMessage::UnparsedEntry(entry) => {
                 let _ = self.invoker_tx.send(InvocationTaskOutput {
                     partition: self.partition,
                     service_invocation_id: self.service_invocation_id.clone(),
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
-                        raw_entry,
+                        entry,
                     },
                 });
                 self.next_journal_index += 1;

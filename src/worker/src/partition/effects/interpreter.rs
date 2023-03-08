@@ -1,5 +1,7 @@
 use crate::partition::effects::{Effect, Effects, OutboxMessage};
+use crate::partition::types::{EnrichedEntryHeader, EnrichedRawEntry};
 use crate::partition::InvocationStatus;
+use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     EntryIndex, ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
@@ -7,7 +9,7 @@ use common::types::{
 use common::utils::GenericError;
 use futures::future::BoxFuture;
 use invoker::InvokeInputJournal;
-use journal::raw::{RawEntry, RawEntryCodec, RawEntryCodecError};
+use journal::raw::{RawEntryCodec, RawEntryCodecError, RawEntryHeader};
 use journal::{Completion, CompletionResult};
 use std::marker::PhantomData;
 use tracing::trace;
@@ -82,7 +84,7 @@ pub(crate) trait StateStorage {
         &self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
-        raw_entry: &RawEntry,
+        journal_entry: &EnrichedRawEntry,
     ) -> Result<(), StateStorageError>;
 
     fn store_completion_result(
@@ -104,7 +106,7 @@ pub(crate) trait StateStorage {
         &self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<RawEntry>, StateStorageError>>;
+    ) -> BoxFuture<Result<Option<EnrichedRawEntry>, StateStorageError>>;
 
     // In-/outbox
     fn enqueue_into_inbox(
@@ -238,8 +240,17 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     &service_invocation.response_sink,
                 )?;
 
-                let input_entry =
-                    Codec::serialize_as_unary_input_entry(service_invocation.argument);
+                let_assert!(
+                    journal::raw::RawEntry {
+                        header: RawEntryHeader::PollInputStream { is_completed },
+                        entry
+                    } = Codec::serialize_as_unary_input_entry(service_invocation.argument)
+                );
+
+                let input_entry = EnrichedRawEntry::new(
+                    EnrichedEntryHeader::PollInputStream { is_completed },
+                    entry,
+                );
 
                 state_storage.store_journal_entry(
                     &service_invocation.id.service_id,
@@ -313,7 +324,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 service_invocation_id,
                 key,
                 value,
-                raw_entry,
+                journal_entry,
                 entry_index,
             } => {
                 state_storage.store_state(&service_invocation_id.service_id, key, value)?;
@@ -322,14 +333,14 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     collector,
                     service_invocation_id,
                     entry_index,
-                    raw_entry,
+                    journal_entry,
                 )
                 .await?;
             }
             Effect::ClearState {
                 service_invocation_id,
                 key,
-                raw_entry,
+                journal_entry,
                 entry_index,
             } => {
                 state_storage.clear_state(&service_invocation_id.service_id, key)?;
@@ -338,14 +349,14 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     collector,
                     service_invocation_id,
                     entry_index,
-                    raw_entry,
+                    journal_entry,
                 )
                 .await?;
             }
             Effect::GetStateAndAppendCompletedEntry {
                 key,
                 service_invocation_id,
-                mut raw_entry,
+                mut journal_entry,
                 entry_index,
             } => {
                 let value = state_storage
@@ -356,14 +367,14 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .map(CompletionResult::Success)
                     .unwrap_or(CompletionResult::Empty);
 
-                Codec::write_completion(&mut raw_entry, completion_result.clone())?;
+                Codec::write_completion(&mut journal_entry, completion_result.clone())?;
 
                 Self::unchecked_append_journal_entry(
                     state_storage,
                     collector,
                     service_invocation_id.clone(),
                     entry_index,
-                    raw_entry,
+                    journal_entry,
                 )?;
 
                 collector.collect(ActuatorMessage::ForwardCompletion {
@@ -397,28 +408,28 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             Effect::AppendJournalEntry {
                 service_invocation_id,
                 entry_index,
-                raw_entry,
+                journal_entry,
             } => {
                 Self::append_journal_entry(
                     state_storage,
                     collector,
                     service_invocation_id,
                     entry_index,
-                    raw_entry,
+                    journal_entry,
                 )
                 .await?;
             }
             Effect::AppendAwakeableEntry {
                 service_invocation_id,
                 entry_index,
-                mut raw_entry,
+                mut journal_entry,
             } => {
                 // check whether the completion has arrived first
                 if let Some(completion_result) = state_storage
                     .load_completion_result(&service_invocation_id.service_id, entry_index)
                     .await?
                 {
-                    Codec::write_completion(&mut raw_entry, completion_result)?;
+                    Codec::write_completion(&mut journal_entry, completion_result)?;
                 }
 
                 Self::unchecked_append_journal_entry(
@@ -426,12 +437,12 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     collector,
                     service_invocation_id,
                     entry_index,
-                    raw_entry,
+                    journal_entry,
                 )?;
             }
             Effect::AppendJournalEntryAndAck {
                 service_invocation_id,
-                raw_entry,
+                journal_entry,
                 entry_index,
             } => {
                 Self::append_journal_entry(
@@ -439,7 +450,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     collector,
                     service_invocation_id.clone(),
                     entry_index,
-                    raw_entry,
+                    journal_entry,
                 )
                 .await?;
 
@@ -465,6 +476,15 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             } => {
                 Self::store_completion(state_storage, &service_invocation_id, entry_index, result)
                     .await?;
+            }
+            Effect::ForwardCompletion {
+                service_invocation_id,
+                completion,
+            } => {
+                collector.collect(ActuatorMessage::ForwardCompletion {
+                    service_invocation_id,
+                    completion,
+                });
             }
             Effect::StoreCompletionAndForward {
                 service_invocation_id,
@@ -538,15 +558,15 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         entry_index: EntryIndex,
         completion_result: CompletionResult,
     ) -> Result<bool, Error> {
-        if let Some(mut raw_entry) = state_storage
+        if let Some(mut journal_entry) = state_storage
             .load_journal_entry(&service_invocation_id.service_id, entry_index)
             .await?
         {
-            Codec::write_completion(&mut raw_entry, completion_result)?;
+            Codec::write_completion(&mut journal_entry, completion_result)?;
             state_storage.store_journal_entry(
                 &service_invocation_id.service_id,
                 entry_index,
-                &raw_entry,
+                &journal_entry,
             )?;
             Ok(true)
         } else {
@@ -564,7 +584,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         collector: &mut C,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
     ) -> Result<(), Error> {
         debug_assert!(
             state_storage
@@ -579,7 +599,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             collector,
             service_invocation_id,
             entry_index,
-            raw_entry,
+            journal_entry,
         )
     }
 
@@ -588,12 +608,12 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         collector: &mut C,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
     ) -> Result<(), Error> {
         state_storage.store_journal_entry(
             &service_invocation_id.service_id,
             entry_index,
-            &raw_entry,
+            &journal_entry,
         )?;
 
         collector.collect(ActuatorMessage::AckStoredEntry {

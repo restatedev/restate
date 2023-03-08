@@ -4,6 +4,7 @@ use crate::partition::effects::{
 use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{JournalStatus, StateReader, StateReaderError};
+use crate::partition::types::EnrichedRawEntry;
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
@@ -12,7 +13,6 @@ use common::types::{
 };
 use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
-use journal::raw::RawEntry;
 use journal::CompletionResult;
 
 #[derive(Debug, Clone)]
@@ -119,7 +119,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
-        _raw_entry: &RawEntry,
+        _journal_entry: &EnrichedRawEntry,
     ) -> Result<(), StateStorageError> {
         todo!()
     }
@@ -145,7 +145,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<RawEntry>, StateStorageError>> {
+    ) -> BoxFuture<Result<Option<EnrichedRawEntry>, StateStorageError>> {
         todo!()
     }
 

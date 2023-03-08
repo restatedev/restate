@@ -14,7 +14,7 @@ use futures::{stream, FutureExt};
 use invoker::{
     InvokeInputJournal, InvokerInputSender, JournalMetadata, JournalReader, Kind, OutputEffect,
 };
-use journal::raw::{RawEntry, RawEntryCodec, RawEntryHeader};
+use journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
 use journal::{Completion, CompletionResult};
 use prost::Message;
 use service_protocol::pb::protocol::PollInputStreamEntryMessage;
@@ -185,7 +185,7 @@ where
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryJournalStorage {
     #[allow(clippy::type_complexity)]
-    journals: Arc<Mutex<HashMap<ServiceInvocationId, (JournalMetadata, Vec<RawEntry>)>>>,
+    journals: Arc<Mutex<HashMap<ServiceInvocationId, (JournalMetadata, Vec<PlainRawEntry>)>>>,
 }
 
 impl InMemoryJournalStorage {
@@ -209,7 +209,11 @@ impl InMemoryJournalStorage {
         );
     }
 
-    pub async fn append_entry(&mut self, sid: &ServiceInvocationId, entry: impl Into<RawEntry>) {
+    pub async fn append_entry(
+        &mut self,
+        sid: &ServiceInvocationId,
+        entry: impl Into<PlainRawEntry>,
+    ) {
         let mut journals = self.journals.lock().await;
         let (meta, journal) = journals
             .get_mut(sid)
@@ -241,7 +245,7 @@ impl InMemoryJournalStorage {
 }
 
 impl JournalReader for InMemoryJournalStorage {
-    type JournalStream = stream::Iter<IntoIter<RawEntry>>;
+    type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
     type Error = Infallible;
     type Future = BoxFuture<'static, Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
 

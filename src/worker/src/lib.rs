@@ -35,7 +35,7 @@ type PartitionProcessor = partition::PartitionProcessor<
     UnboundedInvokerInputSender,
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     RocksDBStorage,
-    DefaultServiceInvocationFactory<KeyExtractorsRegistry>,
+    KeyExtractorsRegistry,
 >;
 
 #[derive(Debug, clap::Parser)]
@@ -95,7 +95,8 @@ impl Worker {
 
         let method_descriptor_registry = InMemoryMethodDescriptorRegistry::default();
         let key_extractor_registry = KeyExtractorsRegistry::default();
-        let invocation_factory = DefaultServiceInvocationFactory::new(key_extractor_registry);
+        let invocation_factory =
+            DefaultServiceInvocationFactory::new(key_extractor_registry.clone());
 
         let external_client_ingress = external_client_ingress.build(
             // TODO replace with proper network address once we have a distributed runtime
@@ -105,7 +106,7 @@ impl Worker {
                     .expect("Loopback address needs to be valid."),
             ),
             method_descriptor_registry,
-            invocation_factory.clone(),
+            invocation_factory,
             ingress_dispatcher_loop.create_command_sender(),
         );
 
@@ -126,7 +127,7 @@ impl Worker {
                     storage.clone(),
                     network_handle.clone(),
                     network.create_partition_processor_sender(),
-                    invocation_factory.clone(),
+                    key_extractor_registry.clone(),
                 )
             })
             .unzip();
@@ -153,7 +154,7 @@ impl Worker {
         storage: RocksDBStorage,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
         ack_sender: PartitionProcessorSender<partition::AckResponse>,
-        service_invocation_factory: DefaultServiceInvocationFactory<KeyExtractorsRegistry>,
+        key_extractor: KeyExtractorsRegistry,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(
@@ -165,7 +166,7 @@ impl Worker {
             storage,
             network_handle,
             ack_sender,
-            service_invocation_factory,
+            key_extractor,
         );
 
         ((peer_id, command_tx), processor)

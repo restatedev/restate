@@ -4,7 +4,7 @@ use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use journal::raw::*;
-use journal::{CompletionResult, Entry};
+use journal::{CompletionResult, Entry, EntryType};
 use prost::Message;
 
 /// This macro generates the pattern matching with arms per entry.
@@ -14,12 +14,12 @@ use prost::Message;
 macro_rules! match_decode {
     ($ty:expr, $buf:expr, { $($variant:ident),* }) => {
         match $ty {
-              $(RawEntryHeader::$variant { .. } => paste::paste! {
+              $(EntryType::$variant { .. } => paste::paste! {
                   protocol::[<$variant EntryMessage>]::decode($buf)
                     .map_err(|e| RawEntryCodecError::new($ty.clone(), ErrorKind::Decode { source: Some(e.into()) }))
                     .and_then(|msg| msg.try_into().map_err(|f| RawEntryCodecError::new($ty.clone(), ErrorKind::MissingField(f))))
               },)*
-             RawEntryHeader::Custom { .. } => Ok(Entry::Custom($buf.copy_to_bytes($buf.remaining()))),
+             EntryType::Custom => Ok(Entry::Custom($buf.copy_to_bytes($buf.remaining()))),
         }
     };
 }
@@ -28,7 +28,7 @@ macro_rules! match_decode {
 pub struct ProtobufRawEntryCodec;
 
 impl RawEntryCodec for ProtobufRawEntryCodec {
-    fn serialize_as_unary_input_entry(value: Bytes) -> RawEntry {
+    fn serialize_as_unary_input_entry(value: Bytes) -> PlainRawEntry {
         RawEntry::new(
             RawEntryHeader::PollInputStream { is_completed: true },
             protocol::PollInputStreamEntryMessage { value }
@@ -37,10 +37,10 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
         )
     }
 
-    fn deserialize(entry: &RawEntry) -> Result<Entry, RawEntryCodecError> {
+    fn deserialize<H: Header>(raw_entry: &RawEntry<H>) -> Result<Entry, RawEntryCodecError> {
         // We clone the entry Bytes here to ensure that the generated Message::decode
         // invocation reuses the same underlying byte array.
-        match_decode!(&entry.header, entry.entry.clone(), {
+        match_decode!(raw_entry.header.to_entry_type(), raw_entry.entry.clone(), {
             PollInputStream,
             OutputStream,
             GetState,
@@ -54,8 +54,8 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
         })
     }
 
-    fn write_completion(
-        entry: &mut RawEntry,
+    fn write_completion<H: Header>(
+        entry: &mut RawEntry<H>,
         completion_result: CompletionResult,
     ) -> Result<(), RawEntryCodecError> {
         debug_assert_eq!(entry.header.is_completed(), Some(false));
@@ -110,7 +110,7 @@ mod tests {
         let invoke_result = Bytes::from_static(b"output");
 
         // Create an invoke entry
-        let raw_entry: RawEntry = RawEntry::new(
+        let raw_entry: PlainRawEntry = RawEntry::new(
             RawEntryHeader::Invoke {
                 is_completed: false,
             },

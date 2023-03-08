@@ -8,7 +8,7 @@ use futures::Stream;
 use hyper::header::HeaderName;
 use hyper::http::HeaderValue;
 use hyper::Uri;
-use journal::raw::RawEntry;
+use journal::raw::PlainRawEntry;
 use journal::Completion;
 use opentelemetry::Context;
 use tokio::sync::mpsc;
@@ -79,7 +79,7 @@ pub struct JournalMetadata {
 }
 
 pub trait JournalReader {
-    type JournalStream: Stream<Item = RawEntry>;
+    type JournalStream: Stream<Item = PlainRawEntry>;
     type Error: std::error::Error + Send + Sync + 'static;
     type Future: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>> + Send;
 
@@ -91,7 +91,7 @@ pub trait JournalReader {
 #[derive(Debug)]
 pub enum InvokeInputJournal {
     NoCachedJournal,
-    CachedJournal(JournalMetadata, Vec<RawEntry>),
+    CachedJournal(JournalMetadata, Vec<PlainRawEntry>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -149,7 +149,7 @@ pub struct OutputEffect {
 pub enum Kind {
     JournalEntry {
         entry_index: EntryIndex,
-        entry: RawEntry,
+        entry: PlainRawEntry,
     },
     Suspended {
         waiting_for_completed_entries: HashSet<EntryIndex>,

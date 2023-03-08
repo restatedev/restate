@@ -3,13 +3,13 @@ use common::types::{
     EntryIndex, IngressId, InvocationResponse, ResponseResult, ServiceId, ServiceInvocation,
     ServiceInvocationId,
 };
-use journal::raw::RawEntry;
 use journal::Completion;
 use std::collections::HashSet;
 use std::vec::Drain;
 
 mod interpreter;
 
+use crate::partition::types::EnrichedRawEntry;
 pub(crate) use interpreter::{
     ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
     StateStorageError,
@@ -58,19 +58,19 @@ pub(crate) enum Effect {
         service_invocation_id: ServiceInvocationId,
         key: Bytes,
         value: Bytes,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     },
     ClearState {
         service_invocation_id: ServiceInvocationId,
         key: Bytes,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     },
     GetStateAndAppendCompletedEntry {
         key: Bytes,
         service_invocation_id: ServiceInvocationId,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     },
 
@@ -90,17 +90,17 @@ pub(crate) enum Effect {
     AppendJournalEntry {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
     },
     AppendAwakeableEntry {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
     },
     AppendJournalEntryAndAck {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
     },
     StoreCompletion {
         service_invocation_id: ServiceInvocationId,
@@ -113,6 +113,10 @@ pub(crate) enum Effect {
     StoreCompletionAndResume {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
+    },
+    ForwardCompletion {
+        completion: Completion,
+        service_invocation_id: ServiceInvocationId,
     },
 }
 
@@ -184,14 +188,14 @@ impl Effects {
         service_invocation_id: ServiceInvocationId,
         key: Bytes,
         value: Bytes,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     ) {
         self.effects.push(Effect::SetState {
             service_invocation_id,
             key,
             value,
-            raw_entry,
+            journal_entry,
             entry_index,
         })
     }
@@ -200,13 +204,13 @@ impl Effects {
         &mut self,
         service_invocation_id: ServiceInvocationId,
         key: Bytes,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     ) {
         self.effects.push(Effect::ClearState {
             service_invocation_id,
             key,
-            raw_entry,
+            journal_entry,
             entry_index,
         })
     }
@@ -216,13 +220,13 @@ impl Effects {
         key: Bytes,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
     ) {
         self.effects.push(Effect::GetStateAndAppendCompletedEntry {
             key,
             service_invocation_id,
             entry_index,
-            raw_entry,
+            journal_entry,
         })
     }
 
@@ -256,12 +260,12 @@ impl Effects {
         &mut self,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
     ) {
         self.effects.push(Effect::AppendJournalEntry {
             service_invocation_id,
             entry_index,
-            raw_entry,
+            journal_entry,
         })
     }
 
@@ -269,12 +273,12 @@ impl Effects {
         &mut self,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
     ) {
         self.effects.push(Effect::AppendAwakeableEntry {
             service_invocation_id,
             entry_index,
-            raw_entry,
+            journal_entry,
         })
     }
 
@@ -282,12 +286,12 @@ impl Effects {
         &mut self,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        raw_entry: RawEntry,
+        journal_entry: EnrichedRawEntry,
     ) {
         self.effects.push(Effect::AppendJournalEntryAndAck {
             service_invocation_id,
             entry_index,
-            raw_entry,
+            journal_entry,
         })
     }
 
@@ -302,6 +306,17 @@ impl Effects {
         completion: Completion,
     ) {
         self.effects.push(Effect::StoreCompletion {
+            service_invocation_id,
+            completion,
+        });
+    }
+
+    pub(crate) fn forward_completion(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        completion: Completion,
+    ) {
+        self.effects.push(Effect::ForwardCompletion {
             service_invocation_id,
             completion,
         });
