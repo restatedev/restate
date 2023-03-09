@@ -48,9 +48,10 @@ impl Meta {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         let meta_handle = self.service.meta_handle();
-        let mut service_handle = tokio::spawn(self.service.run(shutdown_watch.clone()));
-        let mut rest_endpoint_handle =
-            tokio::spawn(self.rest_endpoint.run(meta_handle, shutdown_watch));
+
+        let service_fut = self.service.run(shutdown_watch.clone());
+        let rest_endpoint_fut = self.rest_endpoint.run(meta_handle, shutdown_watch);
+        tokio::pin!(service_fut, rest_endpoint_fut);
 
         let shutdown = drain.signaled();
 
@@ -61,15 +62,15 @@ impl Meta {
                 shutdown_signal.drain().await;
 
                 // ignored because we are shutting down
-                let _ = join!(service_handle, rest_endpoint_handle);
+                let _ = join!(service_fut, rest_endpoint_fut);
 
                 debug!("Completed shutdown of meta");
             },
-            rest_endpoint_result = &mut rest_endpoint_handle => {
-                panic!("Rest endpoint stopped running: {rest_endpoint_result:?}");
+            _ = &mut rest_endpoint_fut => {
+                panic!("Rest endpoint stopped running");
             },
-            service_result = &mut service_handle => {
-                panic!("Service stopped running: {service_result:?}");
+            _ = &mut service_fut => {
+                panic!("Service stopped running");
             },
         }
     }
