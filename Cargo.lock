@@ -3024,6 +3024,7 @@ name = "worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "assert2",
  "bytes",
  "bytestring",
  "clap 4.1.6",

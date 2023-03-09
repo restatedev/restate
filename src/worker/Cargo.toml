@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+assert2 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 clap = { workspace = true }

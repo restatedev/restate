@@ -15,7 +15,6 @@ pub mod shuffle;
 mod state_machine;
 mod storage;
 mod types;
-mod util;
 
 pub(super) use crate::partition::ack::{
     AckResponse, AckTarget, AckableCommand, IngressAckResponse, ShuffleAckResponse,

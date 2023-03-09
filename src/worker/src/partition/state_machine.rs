@@ -1,4 +1,4 @@
-use crate::enum_inner;
+use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     EntryIndex, IngressId, InvocationId, InvocationResponse, ResponseResult, ServiceId,
@@ -305,8 +305,10 @@ where
             EnrichedEntryHeader::OutputStream => {
                 if let Some(response_sink) = state.get_response_sink(&service_invocation_id).await?
                 {
-                    let OutputStreamEntry { result } =
-                        enum_inner!(Codec::deserialize(&journal_entry)?, Entry::OutputStream);
+                    let_assert!(
+                        Entry::OutputStream(OutputStreamEntry { result }) =
+                            Codec::deserialize(&journal_entry)?
+                    );
 
                     let outbox_message = Self::create_response(response_sink, result.into());
 
@@ -315,8 +317,10 @@ where
             }
             EnrichedEntryHeader::GetState { is_completed } => {
                 if !is_completed {
-                    let GetStateEntry { key, .. } =
-                        enum_inner!(Codec::deserialize(&journal_entry)?, Entry::GetState);
+                    let_assert!(
+                        Entry::GetState(GetStateEntry { key, .. }) =
+                            Codec::deserialize(&journal_entry)?
+                    );
 
                     effects.get_state_and_append_completed_entry(
                         key,
@@ -328,8 +332,10 @@ where
                 }
             }
             EnrichedEntryHeader::SetState => {
-                let SetStateEntry { key, value } =
-                    enum_inner!(Codec::deserialize(&journal_entry)?, Entry::SetState);
+                let_assert!(
+                    Entry::SetState(SetStateEntry { key, value }) =
+                        Codec::deserialize(&journal_entry)?
+                );
 
                 effects.set_state(
                     service_invocation_id,
@@ -343,8 +349,10 @@ where
                 return Ok(());
             }
             EnrichedEntryHeader::ClearState => {
-                let ClearStateEntry { key } =
-                    enum_inner!(Codec::deserialize(&journal_entry)?, Entry::ClearState);
+                let_assert!(
+                    Entry::ClearState(ClearStateEntry { key }) =
+                        Codec::deserialize(&journal_entry)?
+                );
                 effects.clear_state(service_invocation_id, key, journal_entry, entry_index);
                 // clear_state includes append journal entry in order to avoid unnecessary clones.
                 // That's why we must return here.
@@ -352,8 +360,10 @@ where
             }
             EnrichedEntryHeader::Sleep { is_completed } => {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
-                let SleepEntry { wake_up_time, .. } =
-                    enum_inner!(Codec::deserialize(&journal_entry)?, Entry::Sleep);
+                let_assert!(
+                    Entry::Sleep(SleepEntry { wake_up_time, .. }) =
+                        Codec::deserialize(&journal_entry)?
+                );
                 effects.register_timer(
                     wake_up_time as u64,
                     // Registering a timer generates multiple effects: timer registration and
@@ -373,8 +383,10 @@ where
                             service_key,
                             invocation_id,
                         } => {
-                            let InvokeEntry { request, .. } =
-                                enum_inner!(Codec::deserialize(&journal_entry)?, Entry::Invoke);
+                            let_assert!(
+                                Entry::Invoke(InvokeEntry { request, .. }) =
+                                    Codec::deserialize(&journal_entry)?
+                            );
 
                             let service_invocation = Self::create_service_invocation(
                                 *invocation_id,
@@ -407,8 +419,10 @@ where
                     service_key,
                     invocation_id,
                 } => {
-                    let BackgroundInvokeEntry(request) =
-                        enum_inner!(Codec::deserialize(&journal_entry)?, Entry::BackgroundInvoke);
+                    let_assert!(
+                        Entry::BackgroundInvoke(BackgroundInvokeEntry(request)) =
+                            Codec::deserialize(&journal_entry)?
+                    );
 
                     let service_invocation = Self::create_service_invocation(
                         *invocation_id,
@@ -429,10 +443,7 @@ where
                 return Ok(());
             }
             EnrichedEntryHeader::CompleteAwakeable => {
-                let entry = enum_inner!(
-                    Codec::deserialize(&journal_entry)?,
-                    Entry::CompleteAwakeable
-                );
+                let_assert!(Entry::CompleteAwakeable(entry) = Codec::deserialize(&journal_entry)?);
 
                 let response = Self::create_response_for_awakeable_entry(entry);
                 self.send_message(response, effects);

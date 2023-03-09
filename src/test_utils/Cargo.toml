@@ -8,6 +8,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-assert2 = "0.3.10"
+assert2 = { workspace = true }
 test-log = { version = "0.2.11", default-features = false, features = ["trace"] }
 pretty_assertions = "1.3"

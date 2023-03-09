@@ -1,15 +1,15 @@
-use crate::enum_inner;
 use crate::partition::leadership::ActuatorOutput;
 use crate::partition::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, ResolutionResult,
 };
 use crate::partition::{AckableCommand, Command};
 use crate::util::IdentitySender;
+use assert2::let_assert;
 use bytes::Bytes;
 use common::types::InvocationId;
 use journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
 use journal::InvokeRequest;
-use journal::{CompletionResult, Entry};
+use journal::{BackgroundInvokeEntry, CompletionResult, Entry, InvokeEntry};
 use std::marker::PhantomData;
 
 /// Responsible for enriching and then proposing [`ActuatorOutput`].
@@ -103,9 +103,10 @@ where
             RawEntryHeader::Sleep { is_completed } => EnrichedEntryHeader::Sleep { is_completed },
             RawEntryHeader::Invoke { is_completed } => {
                 if !is_completed {
-                    let resolution_result = self
-                        .resolve_service_invocation_target(&raw_entry, |entry| {
-                            enum_inner!(entry, Entry::Invoke).request
+                    let resolution_result =
+                        self.resolve_service_invocation_target(&raw_entry, |entry| {
+                            let_assert!(Entry::Invoke(InvokeEntry { request, .. }) = entry);
+                            request
                         });
 
                     // complete journal entry in case that we could not resolve the service invocation target
@@ -136,9 +137,12 @@ where
                 }
             }
             RawEntryHeader::BackgroundInvoke => {
-                let resolution_result = self
-                    .resolve_service_invocation_target(&raw_entry, |entry| {
-                        enum_inner!(entry, Entry::BackgroundInvoke).0
+                let resolution_result =
+                    self.resolve_service_invocation_target(&raw_entry, |entry| {
+                        let_assert!(
+                            Entry::BackgroundInvoke(BackgroundInvokeEntry(request)) = entry
+                        );
+                        request
                     });
 
                 EnrichedEntryHeader::BackgroundInvoke { resolution_result }
