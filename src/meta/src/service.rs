@@ -1,15 +1,27 @@
 // --- Handle
 
+use std::collections::HashMap;
+
 use crate::storage::MetaStorage;
+use channel_interface_derive::request_response_channel_interface;
+use futures_util::channel_interface::ClosedError;
+use hyper::Uri;
 
-#[derive(Clone)]
-pub struct MetaHandle {}
-
-impl MetaHandle {
-    pub async fn register(&self) {
-        todo!("Implement command to send message to meta service loop and wait for response")
-    }
+#[derive(Debug, thiserror::Error)]
+pub enum MetaServiceError {
+    #[error("meta closed")]
+    Closed(#[from] ClosedError),
 }
+
+request_response_channel_interface!(
+    pub struct MetaHandle {
+        async fn register(
+            &self,
+            endpoint_uri: Uri,
+            endpoint_additional_headers: HashMap<String, String>
+        ) -> Result<Vec<String>, MetaServiceError>;
+    }
+);
 
 // -- Service implementation
 

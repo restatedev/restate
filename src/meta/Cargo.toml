@@ -19,6 +19,7 @@ hyper = { workspace = true, features = ["full"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+channel_interface_derive = { workspace = true }
 
 axum = "0.6.2"
 

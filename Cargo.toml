@@ -46,6 +46,7 @@ tracing-opentelemetry = { version = "0.18" }
 uuid = { version = "1.3.0", features = ["v7", "serde"] }
 
 # Own crates
+channel_interface_derive = { path = "src/channel_interface_derive" }
 config = { path = "src/config" }
 common = { path = "src/common" }
 consensus = { path = "src/consensus" }

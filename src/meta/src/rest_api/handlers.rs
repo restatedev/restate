@@ -19,10 +19,13 @@ impl RestEndpointState {
 
 pub async fn register_endpoint(
     State(state): State<Arc<RestEndpointState>>,
-    Json(_payload): Json<RegisterEndpointRequest>,
+    Json(payload): Json<RegisterEndpointRequest>,
 ) -> Result<Json<RegisterEndpointResponse>, MetaApiError> {
     #[allow(clippy::let_unit_value)]
-    let _registration_result = state.meta_handle.register().await;
+    let registration_result = state
+        .meta_handle
+        .register(payload.uri, payload.additional_headers.unwrap_or_default())
+        .await;
 
     unimplemented!();
     // let result: Result<Vec<String>, ()> = Ok(vec!["my-str".to_string()]);
