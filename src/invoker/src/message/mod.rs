@@ -13,9 +13,9 @@ pub use header::{MessageHeader, MessageKind, MessageType};
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolMessage {
     // Core
-    Start(pb::StartMessage),
-    Completion(pb::CompletionMessage),
-    Suspension(pb::SuspensionMessage),
+    Start(pb::protocol::StartMessage),
+    Completion(pb::protocol::CompletionMessage),
+    Suspension(pb::protocol::SuspensionMessage),
 
     // Entries are not parsed at this point
     UnparsedEntry(RawEntry),
@@ -27,7 +27,7 @@ impl ProtocolMessage {
         instance_key: Bytes,
         known_entries: u32,
     ) -> Self {
-        ProtocolMessage::Start(pb::StartMessage {
+        ProtocolMessage::Start(pb::protocol::StartMessage {
             invocation_id,
             instance_key,
             known_entries,
@@ -37,18 +37,22 @@ impl ProtocolMessage {
 
 impl From<Completion> for ProtocolMessage {
     fn from(completion: Completion) -> Self {
-        ProtocolMessage::Completion(pb::CompletionMessage {
+        ProtocolMessage::Completion(pb::protocol::CompletionMessage {
             entry_index: completion.entry_index,
             result: match completion.result {
                 CompletionResult::Ack => None,
-                CompletionResult::Empty => Some(pb::completion_message::Result::Empty(())),
-                CompletionResult::Success(b) => Some(pb::completion_message::Result::Value(b)),
-                CompletionResult::Failure(code, message) => {
-                    Some(pb::completion_message::Result::Failure(pb::Failure {
+                CompletionResult::Empty => {
+                    Some(pb::protocol::completion_message::Result::Empty(()))
+                }
+                CompletionResult::Success(b) => {
+                    Some(pb::protocol::completion_message::Result::Value(b))
+                }
+                CompletionResult::Failure(code, message) => Some(
+                    pb::protocol::completion_message::Result::Failure(pb::protocol::Failure {
                         code,
                         message: message.to_string(),
-                    }))
-                }
+                    }),
+                ),
             },
         })
     }

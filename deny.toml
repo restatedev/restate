@@ -82,7 +82,7 @@ skip = [
     { name = "clap" },
     { name = "clap_lex" },
 
-    # Clash between tonic clap dependency (outdated) and hyper-rustls
+    # Clash between tonic clap dependency (outdated) and hyper-rustls and prost-reflect
     { name = "base64" }
 ]
 deny = [

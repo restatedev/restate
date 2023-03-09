@@ -1,20 +1,27 @@
 //! This crate contains the code-generated structs of [service-protocol](https://github.com/restatedev/service-protocol) and the codec to use them.
 
+#[cfg(feature = "codec")]
 pub mod codec;
+#[cfg(feature = "discovery")]
+pub mod discovery;
 
+#[cfg(feature = "protocol")]
 pub mod pb {
-    #![allow(warnings)]
-    #![allow(clippy::all)]
-    #![allow(unknown_lints)]
-    include!(concat!(env!("OUT_DIR"), "/dev.restate.service.protocol.rs"));
+    pub mod protocol {
+        #![allow(warnings)]
+        #![allow(clippy::all)]
+        #![allow(unknown_lints)]
+        include!(concat!(env!("OUT_DIR"), "/dev.restate.service.protocol.rs"));
+    }
 }
 
 /// This module implements conversions back and forth from proto messages to [`journal::Entry`] model.
 /// These are used by the [`codec::ProtobufRawEntryCodec`].
+#[cfg(feature = "codec")]
 mod pb_into {
-    use journal::*;
+    use super::pb::protocol::*;
 
-    use super::pb::*;
+    use journal::*;
 
     impl TryFrom<PollInputStreamEntryMessage> for Entry {
         type Error = &'static str;

@@ -1,9 +1,11 @@
-use super::pb;
+use super::pb::protocol;
+
+use std::mem;
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use journal::raw::*;
 use journal::{CompletionResult, Entry};
 use prost::Message;
-use std::mem;
 
 /// This macro generates the pattern matching with arms per entry.
 /// For each entry it first executes `Message#decode` and then `try_into()`.
@@ -13,7 +15,7 @@ macro_rules! match_decode {
     ($ty:expr, $buf:expr, { $($variant:ident),* }) => {
         match $ty {
               $(RawEntryHeader::$variant { .. } => paste::paste! {
-                  pb::[<$variant EntryMessage>]::decode($buf)
+                  protocol::[<$variant EntryMessage>]::decode($buf)
                     .map_err(|e| RawEntryCodecError::new($ty.clone(), ErrorKind::Decode { source: Some(e.into()) }))
                     .and_then(|msg| msg.try_into().map_err(|f| RawEntryCodecError::new($ty.clone(), ErrorKind::MissingField(f))))
               },)*
@@ -29,7 +31,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
     fn serialize_as_unary_input_entry(value: Bytes) -> RawEntry {
         RawEntry::new(
             RawEntryHeader::PollInputStream { is_completed: true },
-            pb::PollInputStreamEntryMessage { value }
+            protocol::PollInputStreamEntryMessage { value }
                 .encode_to_vec()
                 .into(),
         )
@@ -65,10 +67,10 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
                 entry.header.mark_completed();
                 return Ok(());
             }
-            CompletionResult::Empty => pb::completion_message::Result::Empty(()),
-            CompletionResult::Success(b) => pb::completion_message::Result::Value(b),
+            CompletionResult::Empty => protocol::completion_message::Result::Empty(()),
+            CompletionResult::Success(b) => protocol::completion_message::Result::Value(b),
             CompletionResult::Failure(code, message) => {
-                pb::completion_message::Result::Failure(pb::Failure {
+                protocol::completion_message::Result::Failure(protocol::Failure {
                     code,
                     message: message.to_string(),
                 })
@@ -112,12 +114,12 @@ mod tests {
             RawEntryHeader::Invoke {
                 is_completed: false,
             },
-            pb::InvokeEntryMessage {
+            protocol::InvokeEntryMessage {
                 service_name: "MySvc".to_string(),
                 method_name: "MyMethod".to_string(),
 
                 parameter: Bytes::from_static(b"input"),
-                ..pb::InvokeEntryMessage::default()
+                ..protocol::InvokeEntryMessage::default()
             }
             .encode_to_vec()
             .into(),

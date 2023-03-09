@@ -17,7 +17,7 @@ bytestring = { workspace = true }
 serde = { workspace = true }
 serde_json = "1.0"
 prost = { workspace = true }
-prost-reflect = { workspace = true, features = ["serde", "reflect-well-known-types"] }
+prost-reflect = { workspace = true, features = ["serde"] }
 
 # Futures
 pin-project = { workspace = true }

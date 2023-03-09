@@ -175,9 +175,13 @@ fn decode_protocol_message(
     mut buf: impl Buf,
 ) -> Result<ProtocolMessage, prost::DecodeError> {
     Ok(match header.message_type() {
-        MessageType::Start => ProtocolMessage::Start(pb::StartMessage::decode(buf)?),
-        MessageType::Completion => ProtocolMessage::Completion(pb::CompletionMessage::decode(buf)?),
-        MessageType::Suspension => ProtocolMessage::Suspension(pb::SuspensionMessage::decode(buf)?),
+        MessageType::Start => ProtocolMessage::Start(pb::protocol::StartMessage::decode(buf)?),
+        MessageType::Completion => {
+            ProtocolMessage::Completion(pb::protocol::CompletionMessage::decode(buf)?)
+        }
+        MessageType::Suspension => {
+            ProtocolMessage::Suspension(pb::protocol::SuspensionMessage::decode(buf)?)
+        }
         _ => ProtocolMessage::UnparsedEntry(RawEntry::new(
             entry_to_raw_header(header),
             // NOTE: This is a no-op copy if the Buf is instance of Bytes.
@@ -275,7 +279,7 @@ mod tests {
         );
         let expected_msg_1: ProtocolMessage = RawEntry::new(
             RawEntryHeader::PollInputStream { is_completed: true },
-            pb::PollInputStreamEntryMessage {
+            pb::protocol::PollInputStreamEntryMessage {
                 value: Bytes::from_static("input".as_bytes()),
             }
             .encode_to_vec()
@@ -331,7 +335,7 @@ mod tests {
 
         let expected_msg: ProtocolMessage = RawEntry::new(
             RawEntryHeader::PollInputStream { is_completed: true },
-            pb::PollInputStreamEntryMessage {
+            pb::protocol::PollInputStreamEntryMessage {
                 value: Bytes::from_static("input".as_bytes()),
             }
             .encode_to_vec()

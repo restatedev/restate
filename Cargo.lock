@@ -385,6 +385,7 @@ dependencies = [
  "opentelemetry_api",
  "serde",
  "thiserror",
+ "tokio",
  "uuid",
  "xxhash-rust",
 ]
@@ -1589,17 +1590,38 @@ dependencies = [
 
 [[package]]
 name = "prost-reflect"
-version = "0.9.2"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d378290cd658b119ce87621931ef448017ef1a0044d7b681159d779e7e07b8f6"
+checksum = "b1c848c6e1773cb6f51228eda412c8872a61d24cb11a22efe7f9ea88fbff4f70"
 dependencies = [
- "base64 0.13.1",
+ "base64 0.21.0",
  "once_cell",
  "prost",
- "prost-build",
+ "prost-reflect-derive",
  "prost-types",
  "serde",
  "serde-value",
+]
+
+[[package]]
+name = "prost-reflect-build"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ec0abc381f0cc607d55639c942588dc5590bc5a61a980c8be0057b3e84393a6"
+dependencies = [
+ "prost-build",
+ "prost-reflect",
+]
+
+[[package]]
+name = "prost-reflect-derive"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b64ab4a39bdb1bdd258cb5e1cc078b0e955e40bcb3e7e2cb79231f04426d0dc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -1959,12 +1981,22 @@ name = "service_protocol"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "common",
+ "hyper",
+ "hyper-rustls",
  "journal",
  "paste",
  "prost",
  "prost-build",
+ "prost-reflect",
+ "prost-reflect-build",
  "prost-types",
+ "service_key_extractor",
+ "test_utils",
  "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -16,7 +16,7 @@ common = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
-hyper-rustls = { version = "0.23.2", features = ["http2"] }
+hyper-rustls = { workspace = true }
 h2 = { version = "0.3.15", features = ["unstable"] }
 paste = { workspace = true }
 prost = { workspace = true }
@@ -28,9 +28,11 @@ opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
 
 journal = { workspace = true }
-service_protocol = { workspace = true }
+service_protocol = { workspace = true, features = ["protocol"] }
 
 [dev-dependencies]
 uuid = { workspace = true }
 test_utils = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+service_protocol = { workspace = true, features = ["codec"] }

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
-use std::time::Duration;
 
+use common::retry_policy::RetryPolicy;
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
 use hyper::header::HeaderName;
@@ -27,39 +27,6 @@ mod timer;
 pub enum ProtocolType {
     RequestResponse,
     BidiStream,
-}
-
-#[derive(Debug, Clone)]
-pub enum RetryPolicy {
-    None,
-    FixedDelay {
-        interval: Duration,
-        max_attempts: usize,
-    },
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-impl RetryPolicy {
-    pub(crate) fn next_timer(&self, attempts_num: usize) -> Option<Duration> {
-        match self {
-            RetryPolicy::None => None,
-            RetryPolicy::FixedDelay {
-                interval,
-                max_attempts,
-            } => {
-                if attempts_num > *max_attempts {
-                    None
-                } else {
-                    Some(*interval)
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
