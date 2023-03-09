@@ -98,25 +98,25 @@ pub enum ServiceDiscoveryError {
     #[error("the service {0} is keyed but has no methods. You must specify at least one method.")]
     KeyedServiceWithoutMethods(String),
     #[error(
-        "Error when trying to parse the key of service method {} with input type {}. No key field found.{KEY_FIELD_ERROR_MESSAGE}",
+        "error when trying to parse the key of service method {} with input type {}. No key field found.{KEY_FIELD_ERROR_MESSAGE}",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
     MissingKeyField(MethodDescriptor),
     #[error(
-        "Error when trying to parse the key of service method {} with input type {}. More than one key field found.{KEY_FIELD_ERROR_MESSAGE}",
+        "error when trying to parse the key of service method {} with input type {}. More than one key field found.{KEY_FIELD_ERROR_MESSAGE}",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
     MoreThanOneKeyField(MethodDescriptor),
     #[error(
-        "Error when trying to parse the key of service method {} with input type {}. Bad key field type.{KEY_FIELD_ERROR_MESSAGE}",
+        "error when trying to parse the key of service method {} with input type {}. Bad key field type.{KEY_FIELD_ERROR_MESSAGE}",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
     BadKeyFieldType(MethodDescriptor),
     #[error(
-        "Error when trying to parse the key of service method {} with input type {}. The key type is different from other methods key types.{KEY_FIELD_ERROR_MESSAGE}",
+        "error when trying to parse the key of service method {} with input type {}. The key type is different from other methods key types.{KEY_FIELD_ERROR_MESSAGE}",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]

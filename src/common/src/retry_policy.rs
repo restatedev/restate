@@ -114,7 +114,10 @@ impl Iterator for Iter {
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self.policy {
             RetryPolicy::None => (0, Some(0)),
-            RetryPolicy::FixedDelay { max_attempts, .. } => (max_attempts, Some(max_attempts)),
+            RetryPolicy::FixedDelay { max_attempts, .. } => (
+                max_attempts - self.attempts,
+                Some(max_attempts - self.attempts),
+            ),
         }
     }
 }
