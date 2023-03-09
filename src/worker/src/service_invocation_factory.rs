@@ -4,19 +4,18 @@ use common::types::{
     InvocationId, ServiceInvocation, ServiceInvocationFactoryError, ServiceInvocationId,
     ServiceInvocationResponseSink, SpanRelation,
 };
-use service_key_extractor::KeyExtractor;
+use service_key_extractor::{KeyExtractor, KeyExtractorsRegistry};
 
 #[derive(Debug, Clone)]
-pub(super) struct DefaultServiceInvocationFactory<K> {
-    key_extractor: K,
+pub(super) struct DefaultServiceInvocationFactory {
+    key_extractor_registry: KeyExtractorsRegistry,
 }
 
-impl<K> DefaultServiceInvocationFactory<K>
-where
-    K: KeyExtractor + Clone,
-{
-    pub(super) fn new(key_extractor: K) -> Self {
-        Self { key_extractor }
+impl DefaultServiceInvocationFactory {
+    pub(super) fn new(key_extractor_registry: KeyExtractorsRegistry) -> Self {
+        Self {
+            key_extractor_registry,
+        }
     }
 
     fn extract_key(
@@ -25,7 +24,7 @@ where
         method_name: impl AsRef<str>,
         request_payload: Bytes,
     ) -> Result<Bytes, ServiceInvocationFactoryError> {
-        self.key_extractor
+        self.key_extractor_registry
             .extract(service_name.as_ref(), method_name.as_ref(), request_payload)
             .map_err(|err| match err {
                 service_key_extractor::Error::NotFound => {
@@ -39,10 +38,7 @@ where
     }
 }
 
-impl<K> ServiceInvocationFactory for DefaultServiceInvocationFactory<K>
-where
-    K: KeyExtractor + Clone,
-{
+impl ServiceInvocationFactory for DefaultServiceInvocationFactory {
     fn create(
         &self,
         service_name: &str,

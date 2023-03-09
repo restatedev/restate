@@ -2,14 +2,11 @@ use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use ingress_grpc::{
     HyperServerIngress, InMemoryMethodDescriptorRegistry, IngressDispatcherLoop, IngressOutput,
 };
-use service_key_extractor::KeyExtractorsRegistry;
 use tokio::select;
 use tokio::sync::mpsc;
 
-type ExternalClientIngress = HyperServerIngress<
-    InMemoryMethodDescriptorRegistry,
-    DefaultServiceInvocationFactory<KeyExtractorsRegistry>,
->;
+type ExternalClientIngress =
+    HyperServerIngress<InMemoryMethodDescriptorRegistry, DefaultServiceInvocationFactory>;
 
 pub(super) struct ExternalClientIngressRunner {
     ingress_dispatcher_loop: IngressDispatcherLoop,
