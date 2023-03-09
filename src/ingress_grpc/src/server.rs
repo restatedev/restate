@@ -3,7 +3,6 @@ use super::*;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use common::traits::ServiceInvocationFactory;
 use common::types::IngressId;
 use futures::FutureExt;
 use tokio::sync::oneshot;
@@ -108,10 +107,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use bytes::Bytes;
-    use common::types::{
-        ServiceInvocationFactoryError, ServiceInvocationId, ServiceInvocationResponseSink,
-        SpanRelation,
-    };
+    use common::types::{ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation};
     use drain::Signal;
     use http::header::CONTENT_TYPE;
     use http::StatusCode;

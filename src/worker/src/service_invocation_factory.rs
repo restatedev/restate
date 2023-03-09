@@ -1,9 +1,9 @@
 use bytes::Bytes;
-use common::traits::ServiceInvocationFactory;
 use common::types::{
-    InvocationId, ServiceInvocation, ServiceInvocationFactoryError, ServiceInvocationId,
-    ServiceInvocationResponseSink, SpanRelation,
+    InvocationId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    SpanRelation,
 };
+use ingress_grpc::{ServiceInvocationFactory, ServiceInvocationFactoryError};
 use service_key_extractor::{KeyExtractor, KeyExtractorsRegistry};
 
 #[derive(Debug, Clone)]

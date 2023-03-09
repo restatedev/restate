@@ -1,4 +1,3 @@
-use crate::utils::GenericError;
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::SpanContext;
@@ -95,33 +94,6 @@ pub struct ServiceInvocation {
     pub argument: Bytes,
     pub response_sink: ServiceInvocationResponseSink,
     pub span_relation: SpanRelation,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ServiceInvocationFactoryError {
-    #[error("service method '{service_name}/{method_name}' is unknown")]
-    UnknownServiceMethod {
-        service_name: String,
-        method_name: String,
-    },
-    #[error("failed extracting the key from the request payload: {0}")]
-    KeyExtraction(GenericError),
-}
-
-impl ServiceInvocationFactoryError {
-    pub fn unknown_service_method(
-        service_name: impl Into<String>,
-        method_name: impl Into<String>,
-    ) -> Self {
-        ServiceInvocationFactoryError::UnknownServiceMethod {
-            service_name: service_name.into(),
-            method_name: method_name.into(),
-        }
-    }
-
-    pub fn key_extraction_error(source: impl Into<GenericError>) -> Self {
-        ServiceInvocationFactoryError::KeyExtraction(source.into())
-    }
 }
 
 /// Representing a response for a caller

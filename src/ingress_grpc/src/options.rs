@@ -1,6 +1,5 @@
 use super::*;
 use crate::{HyperServerIngress, MethodDescriptorRegistry};
-use common::traits::ServiceInvocationFactory;
 use common::types::IngressId;
 use std::net::SocketAddr;
 

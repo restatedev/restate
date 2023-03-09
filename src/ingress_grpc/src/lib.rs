@@ -15,7 +15,10 @@ pub use server::StartSignal;
 use bytes::Bytes;
 use bytestring::ByteString;
 use common::traits::KeyedMessage;
-use common::types::{AckKind, ServiceInvocation, ServiceInvocationId};
+use common::types::{
+    AckKind, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation,
+};
+use common::utils::GenericError;
 use futures_util::command::*;
 use opentelemetry::Context;
 use tokio::sync::mpsc;
@@ -106,6 +109,52 @@ impl KeyedMessage for IngressOutput {
 pub type DispatcherCommandSender = UnboundedCommandSender<ServiceInvocation, IngressResult>;
 pub type IngressInputReceiver = mpsc::Receiver<IngressInput>;
 pub type IngressInputSender = mpsc::Sender<IngressInput>;
+
+// --- Traits
+
+#[derive(Debug, thiserror::Error)]
+pub enum ServiceInvocationFactoryError {
+    #[error("service method '{service_name}/{method_name}' is unknown")]
+    UnknownServiceMethod {
+        service_name: String,
+        method_name: String,
+    },
+    #[error("failed extracting the key from the request payload: {0}")]
+    KeyExtraction(GenericError),
+}
+
+impl ServiceInvocationFactoryError {
+    pub fn unknown_service_method(
+        service_name: impl Into<String>,
+        method_name: impl Into<String>,
+    ) -> Self {
+        ServiceInvocationFactoryError::UnknownServiceMethod {
+            service_name: service_name.into(),
+            method_name: method_name.into(),
+        }
+    }
+
+    pub fn key_extraction_error(source: impl Into<GenericError>) -> Self {
+        ServiceInvocationFactoryError::KeyExtraction(source.into())
+    }
+}
+
+/// Trait to create a new [`ServiceInvocation`].
+///
+/// This trait can be used by ingresses and partition processors to
+/// abstract the logic to perform key extraction and id generation.
+pub trait ServiceInvocationFactory {
+    /// Create a new service invocation.
+    // TODO: Probably needs to be asynchronous: https://github.com/restatedev/restate/issues/91
+    fn create(
+        &self,
+        service_name: &str,
+        method_name: &str,
+        request_payload: Bytes,
+        response_sink: ServiceInvocationResponseSink,
+        span_relation: SpanRelation,
+    ) -> Result<ServiceInvocation, ServiceInvocationFactoryError>;
+}
 
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]

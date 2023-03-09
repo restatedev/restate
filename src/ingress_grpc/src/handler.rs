@@ -4,10 +4,7 @@ use super::*;
 use std::sync::Arc;
 use std::task::Poll;
 
-use common::traits::ServiceInvocationFactory;
-use common::types::{
-    IngressId, ServiceInvocationFactoryError, ServiceInvocationResponseSink, SpanRelation,
-};
+use common::types::{IngressId, ServiceInvocationResponseSink, SpanRelation};
 use futures::future::{ok, BoxFuture};
 use futures::FutureExt;
 use http::{Request, Response};

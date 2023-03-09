@@ -44,6 +44,7 @@ tracing-opentelemetry = { workspace = true }
 clap = { workspace = true }
 drain = { workspace = true }
 arc-swap = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 hyper = { workspace = true, features = ["client"] }
