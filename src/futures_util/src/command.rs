@@ -48,11 +48,11 @@ pub type CommandResponseReceiver<T> = oneshot::Receiver<T>;
 ///
 /// A complete example:
 ///
-/// ```ignore
+/// ```
 /// use tokio::sync::mpsc;
 /// use tokio::task::JoinHandle;
 ///
-/// use crate::*;
+/// use futures_util::command::*;
 ///
 /// let (commands_tx, mut commands_rx) = mpsc::unbounded_channel();
 ///
@@ -61,7 +61,7 @@ pub type CommandResponseReceiver<T> = oneshot::Receiver<T>;
 ///     let (cmd, cmd_response_rx) = Command::prepare(10);
 ///
 ///     // Send it through the channel provided previously by component B
-///     commands_tx.send_wrap_err(cmd).unwrap();
+///     commands_tx.send(cmd).unwrap();
 ///
 ///     // Await for the response (optional)
 ///     let res: i32 = cmd_response_rx.await.unwrap();

@@ -1,12 +1,9 @@
-mod command;
 mod descriptors_registry;
 mod dispatcher;
 mod handler;
 mod options;
 mod protocol;
 mod server;
-
-pub(crate) use command::*;
 
 pub use descriptors_registry::InMemoryMethodDescriptorRegistry;
 pub use descriptors_registry::MethodDescriptorRegistry;
@@ -19,6 +16,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use common::traits::KeyedMessage;
 use common::types::{AckKind, ServiceInvocation, ServiceInvocationId};
+use futures_util::command::*;
 use opentelemetry::Context;
 use tokio::sync::mpsc;
 use tonic::Status;
