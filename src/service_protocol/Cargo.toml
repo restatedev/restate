@@ -11,7 +11,7 @@ publish = false
 default = []
 protocol = []
 codec = ["protocol", "dep:thiserror", "dep:journal", "dep:paste"]
-discovery = ["dep:thiserror", "dep:service_key_extractor", "dep:hyper", "dep:hyper-tls", "dep:prost-reflect"]
+discovery = ["dep:thiserror", "dep:service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -25,7 +25,7 @@ journal = { workspace = true, optional = true }
 
 service_key_extractor = { workspace = true, optional = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "runtime"], optional = true }
-hyper-tls = { workspace = true, optional = true }
+hyper-rustls = { workspace = true, optional = true }
 common = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }
 

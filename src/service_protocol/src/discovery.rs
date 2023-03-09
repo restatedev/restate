@@ -5,7 +5,7 @@ use common::retry_policy::RetryPolicy;
 use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, Client, Method, Request, Uri};
-use hyper_tls::HttpsConnector;
+use hyper_rustls::HttpsConnectorBuilder;
 use prost::{DecodeError, Message};
 use prost_reflect::{
     DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind, MethodDescriptor,
@@ -145,7 +145,14 @@ impl ServiceDiscovery {
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<DiscoveredMetadata, ServiceDiscoveryError> {
-        let client = Client::builder().build::<_, Body>(HttpsConnector::new());
+        let client = Client::builder().build::<_, Body>(
+            HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .https_or_http()
+                .enable_http1()
+                .enable_http2()
+                .build(),
+        );
         let uri = append_discover(&uri);
 
         let (mut parts, body) = self
