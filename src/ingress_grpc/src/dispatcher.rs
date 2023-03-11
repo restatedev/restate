@@ -5,11 +5,15 @@ use std::future::poll_fn;
 
 use common::types::ServiceInvocationId;
 use futures_util::pipe::{
-    new_sender_pipe_target, Pipe, ReceiverPipeInput, UnboundedReceiverPipeInput,
+    new_sender_pipe_target, ClosedError, Pipe, ReceiverPipeInput, UnboundedReceiverPipeInput,
 };
 use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed forwarding messages because: {0}")]
+pub struct IngressDispatcherLoopError(#[from] ClosedError);
 
 /// This loop is taking care of dispatching responses back to [super::RequestResponseHandler].
 ///
@@ -51,7 +55,11 @@ impl IngressDispatcherLoop {
         }
     }
 
-    pub async fn run(self, output_tx: mpsc::Sender<IngressOutput>, drain: drain::Watch) {
+    pub async fn run(
+        self,
+        output_tx: mpsc::Sender<IngressOutput>,
+        drain: drain::Watch,
+    ) -> Result<(), IngressDispatcherLoopError> {
         debug!("Running the ResponseDispatcher.");
 
         // TODO: Fix with https://github.com/restatedev/restate/issues/174
@@ -93,17 +101,19 @@ impl IngressDispatcherLoop {
                     break;
                 },
                 response = poll_fn(|cx| network_input_to_network_pipe.as_mut().poll_next_input(cx)) => {
-                    if let Some(output) = Self::handle_input(&mut local_waiting_responses, response.unwrap()) {
-                        network_input_to_network_pipe.as_mut().write(output).unwrap();
+                    if let Some(output) = Self::handle_input(&mut local_waiting_responses, response?) {
+                        network_input_to_network_pipe.as_mut().write(output)?;
                     }
                 },
                 res_cmd = poll_fn(|cx| server_commands_to_network_pipe.as_mut().poll_next_input(cx)) => {
                     server_commands_to_network_pipe.as_mut().write(
-                        Self::map_command(&mut local_waiting_responses, res_cmd.unwrap())
-                    ).unwrap()
+                        Self::map_command(&mut local_waiting_responses, res_cmd?)
+                    )?
                 }
             }
         }
+
+        Ok(())
     }
 
     pub fn create_response_sender(&self) -> IngressInputSender {
@@ -205,6 +215,6 @@ mod tests {
 
         // Close and check it did not panic
         drain_signal.drain().await;
-        loop_handle.await.unwrap()
+        loop_handle.await.unwrap().unwrap()
     }
 }

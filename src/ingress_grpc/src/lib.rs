@@ -7,7 +7,7 @@ mod server;
 
 pub use descriptors_registry::InMemoryMethodDescriptorRegistry;
 pub use descriptors_registry::MethodDescriptorRegistry;
-pub use dispatcher::IngressDispatcherLoop;
+pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
 pub use options::Options;
 pub use server::HyperServerIngress;
 pub use server::StartSignal;

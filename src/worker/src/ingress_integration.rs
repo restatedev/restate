@@ -1,6 +1,7 @@
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use ingress_grpc::{
-    HyperServerIngress, InMemoryMethodDescriptorRegistry, IngressDispatcherLoop, IngressOutput,
+    HyperServerIngress, InMemoryMethodDescriptorRegistry, IngressDispatcherLoop,
+    IngressDispatcherLoopError, IngressOutput,
 };
 use tokio::select;
 use tokio::sync::mpsc;
@@ -27,7 +28,10 @@ impl ExternalClientIngressRunner {
         }
     }
 
-    pub(super) async fn run(self, shutdown_watch: drain::Watch) {
+    pub(super) async fn run(
+        self,
+        shutdown_watch: drain::Watch,
+    ) -> Result<(), IngressDispatcherLoopError> {
         let ExternalClientIngressRunner {
             ingress_dispatcher_loop,
             external_client_ingress,
@@ -35,8 +39,10 @@ impl ExternalClientIngressRunner {
         } = self;
 
         select! {
-            _ = ingress_dispatcher_loop.run(sender, shutdown_watch.clone()) => {},
+            result = ingress_dispatcher_loop.run(sender, shutdown_watch.clone()) => result?,
             _ = external_client_ingress.run(shutdown_watch) => {},
         }
+
+        Ok(())
     }
 }
