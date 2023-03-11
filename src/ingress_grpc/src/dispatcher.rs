@@ -5,15 +5,15 @@ use std::future::poll_fn;
 
 use common::types::ServiceInvocationId;
 use futures_util::pipe::{
-    new_sender_pipe_target, ClosedError, Pipe, ReceiverPipeInput, UnboundedReceiverPipeInput,
+    new_sender_pipe_target, Pipe, PipeError, ReceiverPipeInput, UnboundedReceiverPipeInput,
 };
 use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, thiserror::Error)]
-#[error("failed forwarding messages because: {0}")]
-pub struct IngressDispatcherLoopError(#[from] ClosedError);
+#[error(transparent)]
+pub struct IngressDispatcherLoopError(#[from] PipeError);
 
 /// This loop is taking care of dispatching responses back to [super::RequestResponseHandler].
 ///
@@ -81,12 +81,12 @@ impl IngressDispatcherLoop {
         tokio::pin!(shutdown);
 
         let server_commands_to_network_pipe = Pipe::new(
-            UnboundedReceiverPipeInput::new(server_rx),
-            new_sender_pipe_target(output_tx.clone()),
+            UnboundedReceiverPipeInput::new(server_rx, "ingress rx"),
+            new_sender_pipe_target(output_tx.clone(), "network output tx"),
         );
         let network_input_to_network_pipe = Pipe::new(
-            ReceiverPipeInput::new(input_rx),
-            new_sender_pipe_target(output_tx),
+            ReceiverPipeInput::new(input_rx, "network input rx"),
+            new_sender_pipe_target(output_tx, "network output tx"),
         );
 
         tokio::pin!(
