@@ -58,6 +58,18 @@ pub trait TargetConsensusOrIngress<C, I> {
     fn target(self) -> ConsensusOrIngressTarget<C, I>;
 }
 
+pub enum ConsensusOrShuffleTarget<C, S> {
+    Consensus(C),
+    Shuffle(S),
+}
+
+/// Trait for messages that are sent to the consensus module or a shuffle
+pub trait TargetConsensusOrShuffle<C, S> {
+    /// Returns the target of a message. It can either be the consensus module
+    /// or a shuffle
+    fn target(self) -> ConsensusOrShuffleTarget<C, S>;
+}
+
 /// Trait for messages that are sent to a shuffle component or an ingress
 pub enum ShuffleOrIngressTarget<S, I> {
     Shuffle(S),

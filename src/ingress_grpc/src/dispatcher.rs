@@ -104,7 +104,7 @@ impl IngressDispatcherLoop {
     ) -> IngressOutput {
         let (service_invocation, reply_channel) = cmd.into_inner();
         local_waiting_responses.insert(service_invocation.id.clone(), reply_channel);
-        IngressOutput(service_invocation)
+        IngressOutput::Invocation(service_invocation)
     }
 
     #[allow(clippy::mutable_key_type)]
@@ -176,6 +176,7 @@ mod tests {
             .send(IngressInput::Response(IngressResponseMessage {
                 service_invocation_id: service_invocation.id.clone(),
                 result: Ok(Bytes::new()),
+                ack_target: AckTarget::new(0, 0),
             }))
             .await
             .unwrap();

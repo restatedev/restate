@@ -14,9 +14,9 @@ pub use server::StartSignal;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use common::traits::KeyedMessage;
 use common::types::{
-    AckKind, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation,
+    AckKind, PeerId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    SpanRelation,
 };
 use common::utils::GenericError;
 use futures_util::command::*;
@@ -75,6 +75,22 @@ impl From<IngressError> for Status {
 pub struct IngressResponseMessage {
     pub service_invocation_id: ServiceInvocationId,
     pub result: Result<IngressResponse, IngressError>,
+    pub ack_target: AckTarget,
+}
+
+#[derive(Debug, Clone)]
+pub struct AckTarget {
+    pub shuffle_target: PeerId,
+    pub msg_index: u64,
+}
+
+impl AckTarget {
+    pub fn new(shuffle_target: PeerId, msg_index: u64) -> Self {
+        Self {
+            shuffle_target,
+            msg_index,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -84,23 +100,24 @@ pub enum IngressInput {
 }
 
 #[derive(Debug)]
-pub struct IngressOutput(ServiceInvocation);
-
-impl IngressOutput {
-    pub fn new(service_invocation: ServiceInvocation) -> Self {
-        Self(service_invocation)
-    }
-
-    pub fn into_inner(self) -> ServiceInvocation {
-        self.0
-    }
+pub enum IngressOutput {
+    Invocation(ServiceInvocation),
+    Ack(AckResponse),
 }
 
-impl KeyedMessage for IngressOutput {
-    type RoutingKey<'a> = &'a Bytes;
+#[derive(Debug)]
+pub struct AckResponse {
+    pub shuffle_target: PeerId,
+    pub kind: AckKind,
+}
 
-    fn routing_key(&self) -> &Bytes {
-        &self.0.id.service_id.key
+impl IngressOutput {
+    pub fn service_invocation(service_invocation: ServiceInvocation) -> Self {
+        Self::Invocation(service_invocation)
+    }
+
+    pub fn shuffle_ack(ack_response: AckResponse) -> Self {
+        Self::Ack(ack_response)
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::{
-    ConsensusOrIngressTarget, NetworkCommand, PartitionTable, PartitionTableError,
-    ShuffleOrIngressTarget, TargetConsensusOrIngress, TargetShuffle, TargetShuffleOrIngress,
-    UnboundedNetworkHandle,
+    ConsensusOrIngressTarget, ConsensusOrShuffleTarget, NetworkCommand, PartitionTable,
+    PartitionTableError, ShuffleOrIngressTarget, TargetConsensusOrIngress,
+    TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress, UnboundedNetworkHandle,
 };
 use common::partitioner::HashPartitioner;
 use common::traits::KeyedMessage;
@@ -29,6 +29,8 @@ pub struct Network<
     ShuffleToCon,
     ShuffleToIngress,
     IngressOut,
+    IngressToCon,
+    IngressToShuffle,
     IngressIn,
     PPOut,
     PPToShuffle,
@@ -70,6 +72,8 @@ pub struct Network<
     _shuffle_to_con: PhantomData<ShuffleToCon>,
     _partition_processor_to_ingress: PhantomData<PPToIngress>,
     _partition_processor_to_shuffle: PhantomData<PPToShuffle>,
+    _ingress_to_shuffle: PhantomData<IngressToShuffle>,
+    _ingress_to_consensus: PhantomData<IngressToCon>,
 }
 
 impl<
@@ -79,6 +83,8 @@ impl<
         ShuffleToCon,
         ShuffleToIngress,
         IngressOut,
+        IngressToCon,
+        IngressToShuffle,
         IngressIn,
         PPOut,
         PPToShuffle,
@@ -92,6 +98,8 @@ impl<
         ShuffleToCon,
         ShuffleToIngress,
         IngressOut,
+        IngressToCon,
+        IngressToShuffle,
         IngressIn,
         PPOut,
         PPToShuffle,
@@ -104,7 +112,9 @@ where
     ShuffleOut: TargetConsensusOrIngress<ShuffleToCon, ShuffleToIngress>,
     ShuffleToCon: KeyedMessage + Into<ConsensusMsg> + Debug,
     ShuffleToIngress: Into<IngressIn> + Debug,
-    IngressOut: KeyedMessage + Into<ConsensusMsg> + Debug,
+    IngressOut: TargetConsensusOrShuffle<IngressToCon, IngressToShuffle>,
+    IngressToCon: KeyedMessage + Into<ConsensusMsg> + Debug,
+    IngressToShuffle: TargetShuffle + Into<ShuffleIn> + Debug,
     IngressIn: Debug + Send + Sync + 'static,
     PPOut: TargetShuffleOrIngress<PPToShuffle, PPToIngress>,
     PPToShuffle: TargetShuffle + Into<ShuffleIn> + Debug,
@@ -140,6 +150,8 @@ where
             _shuffle_to_ingress: Default::default(),
             _partition_processor_to_ingress: Default::default(),
             _partition_processor_to_shuffle: Default::default(),
+            _ingress_to_consensus: Default::default(),
+            _ingress_to_shuffle: Default::default(),
         }
     }
 
@@ -186,8 +198,12 @@ where
             ingress_tx.clone(),
             partition_table.clone(),
         );
-        let mut ingress_forwarder =
-            IngressForwarder::new(ingress_in_rx, consensus_tx.clone(), partition_table.clone());
+        let mut ingress_router = IngressRouter::new(
+            ingress_in_rx,
+            consensus_tx.clone(),
+            Arc::clone(&shuffles),
+            partition_table.clone(),
+        );
         let mut partition_processor_router = PartitionProcessorRouter::new(
             partition_processor_rx,
             ingress_tx.clone(),
@@ -204,7 +220,7 @@ where
                 result = shuffle_router.run() => {
                     result?
                 },
-                result = ingress_forwarder.run() => {
+                result = ingress_router.run() => {
                     result?
                 },
                 result = partition_processor_router.run() => {
@@ -339,45 +355,62 @@ where
 }
 
 #[derive(Debug, thiserror::Error)]
-enum IngressForwarderError<C> {
+enum IngressRouterError<C> {
     #[error("failed resolving target peer: {0}")]
     TargetPeerResolution(#[from] PartitionTableError),
     #[error("failed forwarding message: {0}")]
     ForwardingMessage(#[from] SendError<PeerTarget<C>>),
 }
 
-struct IngressForwarder<I, C, P> {
+struct IngressRouter<I, ItoC, ItoS, C, S, P> {
     receiver: mpsc::Receiver<I>,
     consensus_tx: mpsc::Sender<PeerTarget<C>>,
+    shuffle_txs: Arc<Mutex<HashMap<PeerId, mpsc::Sender<S>>>>,
     partition_table: P,
+
+    _ingress_to_consensus: PhantomData<ItoC>,
+    _ingress_to_shuffle: PhantomData<ItoS>,
 }
 
-impl<I, C, P> IngressForwarder<I, C, P>
+impl<I, ItoC, ItoS, C, S, P> IngressRouter<I, ItoC, ItoS, C, S, P>
 where
-    I: KeyedMessage + Into<C> + Debug,
+    I: TargetConsensusOrShuffle<ItoC, ItoS>,
+    ItoS: TargetShuffle + Into<S> + Debug,
+    ItoC: KeyedMessage + Into<C> + Debug,
     P: PartitionTable,
 {
     fn new(
         receiver: mpsc::Receiver<I>,
         consensus_tx: mpsc::Sender<PeerTarget<C>>,
+        shuffle_txs: Arc<Mutex<HashMap<PeerId, mpsc::Sender<S>>>>,
         partition_table: P,
     ) -> Self {
         Self {
             receiver,
             consensus_tx,
             partition_table,
+            shuffle_txs,
+            _ingress_to_shuffle: Default::default(),
+            _ingress_to_consensus: Default::default(),
         }
     }
 
-    async fn run(&mut self) -> Result<(), IngressForwarderError<C>> {
+    async fn run(&mut self) -> Result<(), IngressRouterError<C>> {
         while let Some(message) = self.receiver.recv().await {
-            let target_peer = lookup_target_peer(&message, &self.partition_table).await?;
+            match message.target() {
+                ConsensusOrShuffleTarget::Consensus(message) => {
+                    let target_peer = lookup_target_peer(&message, &self.partition_table).await?;
 
-            trace!(?message, "Forwarding ingress message to consensus.");
+                    trace!(?message, "Forwarding ingress message to consensus.");
 
-            self.consensus_tx
-                .send((target_peer, message.into()))
-                .await?
+                    self.consensus_tx
+                        .send((target_peer, message.into()))
+                        .await?
+                }
+                ConsensusOrShuffleTarget::Shuffle(message) => {
+                    send_to_shuffle(message, &self.shuffle_txs).await;
+                }
+            }
         }
 
         Ok(())
@@ -424,24 +457,7 @@ where
         while let Some(message) = self.receiver.recv().await {
             match message.target() {
                 ShuffleOrIngressTarget::Shuffle(msg) => {
-                    let shuffle_target = msg.shuffle_target();
-
-                    let shuffle_tx = self
-                        .shuffle_txs
-                        .lock()
-                        .unwrap()
-                        .get(&shuffle_target)
-                        .cloned();
-
-                    if let Some(shuffle_tx) = shuffle_tx {
-                        trace!(message = ?msg, "Routing partition processor message to shuffle.");
-                        // can fail if the shuffle was deregistered in the meantime
-                        let _ = shuffle_tx.send(msg.into()).await;
-                    } else {
-                        debug!(
-                            "Unknown shuffle target {shuffle_target}. Ignoring message {msg:?}."
-                        );
-                    }
+                    send_to_shuffle(msg, &self.shuffle_txs).await
                 }
                 ShuffleOrIngressTarget::Ingress(msg) => {
                     trace!(message = ?msg, "Routing partition processor message to ingress.");
@@ -454,5 +470,21 @@ where
         }
 
         Ok(())
+    }
+}
+
+async fn send_to_shuffle<M: TargetShuffle + Into<S> + Debug, S>(
+    message: M,
+    shuffle_txs: &Arc<Mutex<HashMap<PeerId, mpsc::Sender<S>>>>,
+) {
+    let shuffle_target = message.shuffle_target();
+    let shuffle_tx = shuffle_txs.lock().unwrap().get(&shuffle_target).cloned();
+
+    if let Some(shuffle_tx) = shuffle_tx {
+        trace!(?message, "Routing partition processor message to shuffle.");
+        // can fail if the shuffle was deregistered in the meantime
+        let _ = shuffle_tx.send(message.into()).await;
+    } else {
+        debug!("Unknown shuffle target {shuffle_target}. Ignoring message {message:?}.");
     }
 }
