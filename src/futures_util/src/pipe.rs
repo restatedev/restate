@@ -43,6 +43,9 @@ pub trait PipeTarget<U> {
     ///
     /// Panics if the [`PipeTarget`] is _Idle_, meaning there wasn't a previous successful call to [`PipeTarget::poll_ready`].
     fn send(self: Pin<&mut Self>, u: U) -> Result<(), ClosedError>;
+
+    /// Release acquired send capacity.
+    fn release(self: Pin<&mut Self>);
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -155,6 +158,18 @@ where
             },
             PipeState::Closed => Err(ClosedError),
         };
+    }
+
+    /// Releases the reserved send capacity for the pipe target. This requires calling
+    /// [`Self::poll_next_input`] before being allowed to write again.
+    pub fn release(self: Pin<&mut Self>) {
+        let this = self.project();
+        let state = this.state;
+
+        if *state == PipeState::Ready {
+            this.pipe_target.release();
+            *state = PipeState::Idle;
+        }
     }
 
     /// Returns a future that polls the pipe in a loop until it's closed,
@@ -288,6 +303,22 @@ mod target {
 
             Ok(())
         }
+
+        fn release(self: Pin<&mut Self>) {
+            let this = self.project();
+            let mut state = this.state;
+
+            match state.as_mut().project() {
+                SenderPipeTargetStateProj::ReadyToSend(permit) => {
+                    let sender = permit.take().unwrap().release();
+                    state.set(SenderPipeTargetState::Idle(Some(sender)))
+                }
+                SenderPipeTargetStateProj::Closed | SenderPipeTargetStateProj::Idle(_) => {}
+                SenderPipeTargetStateProj::Acquiring(_) => {
+                    panic!("Pipe target should not be in acquiring. This is a bug.")
+                }
+            }
+        }
     }
 }
 
@@ -382,6 +413,22 @@ mod multi_target {
                 }
             };
         }
+
+        fn release(self: Pin<&mut Self>) {
+            let this = self.project();
+            let left_state = this.left_state;
+            let right_state = this.right_state;
+
+            if *left_state == PipeState::Ready {
+                this.left_target.release();
+                *left_state = PipeState::Idle;
+            }
+
+            if *right_state == PipeState::Ready {
+                this.right_target.release();
+                *right_state = PipeState::Idle;
+            }
+        }
     }
 }
 
@@ -448,5 +495,56 @@ mod tests {
         drop(sink_right_rx);
         drop(source_tx);
         handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pipe_bounded_release() {
+        let (sink_tx, _sink_rx) = mpsc::channel::<u32>(1);
+        let (input_tx, input_rx) = mpsc::channel(1);
+
+        let pipe = Pipe::new(
+            ReceiverPipeInput::new(input_rx),
+            new_sender_pipe_target(sink_tx.clone()),
+        );
+        tokio::pin!(pipe);
+
+        input_tx.send(0_u32).await.unwrap();
+
+        let _ = poll_fn(|cx| pipe.as_mut().poll_next_input(cx))
+            .await
+            .unwrap();
+
+        assert_eq!(sink_tx.capacity(), 0);
+
+        pipe.release();
+
+        assert_eq!(sink_tx.capacity(), 1);
+    }
+
+    #[tokio::test]
+    async fn pipe_multi_bounded_release() {
+        let (sink_tx, _sink_rx) = mpsc::channel::<u32>(2);
+        let (input_tx, input_rx) = mpsc::channel(1);
+
+        let pipe = Pipe::new(
+            ReceiverPipeInput::new(input_rx),
+            EitherPipeTarget::new(
+                new_sender_pipe_target(sink_tx.clone()),
+                new_sender_pipe_target(sink_tx.clone()),
+            ),
+        );
+        tokio::pin!(pipe);
+
+        input_tx.send(0_u32).await.unwrap();
+
+        let _ = poll_fn(|cx| pipe.as_mut().poll_next_input(cx))
+            .await
+            .unwrap();
+
+        assert_eq!(sink_tx.capacity(), 0);
+
+        pipe.release();
+
+        assert_eq!(sink_tx.capacity(), 2);
     }
 }
