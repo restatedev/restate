@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::future::poll_fn;
 
 use common::types::ServiceInvocationId;
-use futures_util::pipe::{new_sender_pipe_target, Pipe, UnboundedReceiverPipeInput};
+use futures_util::pipe::{
+    new_sender_pipe_target, Pipe, ReceiverPipeInput, UnboundedReceiverPipeInput,
+};
 use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -52,10 +54,18 @@ impl IngressDispatcherLoop {
     pub async fn run(self, output_tx: mpsc::Sender<IngressOutput>, drain: drain::Watch) {
         debug!("Running the ResponseDispatcher.");
 
+        // TODO: Fix with https://github.com/restatedev/restate/issues/174
+        debug_assert!(
+            output_tx.max_capacity() >= 2,
+            "Output sender needs to have at least capacity \
+        of 2 in order to avoid deadlock by two pipes producing into the same channel. See \
+        https://github.com/restatedev/restate/issues/174 for more details."
+        );
+
         let IngressDispatcherLoop {
             mut local_waiting_responses,
             server_rx,
-            mut input_rx,
+            input_rx,
             ..
         } = self;
 
@@ -64,9 +74,17 @@ impl IngressDispatcherLoop {
 
         let server_commands_to_network_pipe = Pipe::new(
             UnboundedReceiverPipeInput::new(server_rx),
+            new_sender_pipe_target(output_tx.clone()),
+        );
+        let network_input_to_network_pipe = Pipe::new(
+            ReceiverPipeInput::new(input_rx),
             new_sender_pipe_target(output_tx),
         );
-        tokio::pin!(server_commands_to_network_pipe);
+
+        tokio::pin!(
+            server_commands_to_network_pipe,
+            network_input_to_network_pipe
+        );
 
         loop {
             select! {
@@ -74,8 +92,10 @@ impl IngressDispatcherLoop {
                     info!("Shut down of ResponseDispatcher requested. Shutting down now.");
                     break;
                 },
-                response = input_rx.recv() => {
-                    Self::handle_input(&mut local_waiting_responses, response.unwrap());
+                response = poll_fn(|cx| network_input_to_network_pipe.as_mut().poll_next_input(cx)) => {
+                    if let Some(output) = Self::handle_input(&mut local_waiting_responses, response.unwrap()) {
+                        network_input_to_network_pipe.as_mut().write(output).unwrap();
+                    }
                 },
                 res_cmd = poll_fn(|cx| server_commands_to_network_pipe.as_mut().poll_next_input(cx)) => {
                     server_commands_to_network_pipe.as_mut().write(
@@ -114,7 +134,7 @@ impl IngressDispatcherLoop {
             CommandResponseSender<IngressResult>,
         >,
         input: IngressInput,
-    ) {
+    ) -> Option<IngressOutput> {
         match input {
             IngressInput::Response(response) => {
                 if let Some(sender) =
@@ -130,6 +150,8 @@ impl IngressDispatcherLoop {
                 } else {
                     warn!("Failed to handle response '{:?}' because no handler was found locally waiting for its invocation key", &response);
                 }
+
+                Some(IngressOutput::Ack(response.ack_target.acknowledge()))
             }
             IngressInput::MessageAck { .. } => {
                 todo!("https://github.com/restatedev/restate/issues/132");
@@ -147,7 +169,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn test_closed_handler() {
-        let (output_tx, _output_rx) = mpsc::channel(1);
+        let (output_tx, _output_rx) = mpsc::channel(2);
 
         let ingress_dispatcher = IngressDispatcherLoop::default();
         let input_sender = ingress_dispatcher.create_response_sender();

@@ -91,6 +91,13 @@ impl AckTarget {
             msg_index,
         }
     }
+
+    fn acknowledge(self) -> AckResponse {
+        AckResponse {
+            shuffle_target: self.shuffle_target,
+            kind: AckKind::Acknowledge(self.msg_index),
+        }
+    }
 }
 
 #[derive(Debug)]
