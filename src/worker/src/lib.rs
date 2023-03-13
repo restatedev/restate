@@ -66,13 +66,21 @@ pub struct Worker {
 }
 
 impl Options {
-    pub fn build(self) -> Worker {
-        Worker::new(self)
+    pub fn build(
+        self,
+        method_descriptor_registry: InMemoryMethodDescriptorRegistry,
+        key_extractor_registry: KeyExtractorsRegistry,
+    ) -> Worker {
+        Worker::new(self, method_descriptor_registry, key_extractor_registry)
     }
 }
 
 impl Worker {
-    pub fn new(opts: Options) -> Self {
+    pub fn new(
+        opts: Options,
+        method_descriptor_registry: InMemoryMethodDescriptorRegistry,
+        key_extractor_registry: KeyExtractorsRegistry,
+    ) -> Self {
         let Options {
             channel_size,
             storage_rocksdb,
@@ -93,8 +101,6 @@ impl Worker {
         );
         let network_ingress_sender = network.create_ingress_sender();
 
-        let method_descriptor_registry = InMemoryMethodDescriptorRegistry::default();
-        let key_extractor_registry = KeyExtractorsRegistry::default();
         let invocation_factory =
             DefaultServiceInvocationFactory::new(key_extractor_registry.clone());
 

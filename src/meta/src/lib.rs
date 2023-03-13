@@ -3,10 +3,10 @@ mod service;
 mod storage;
 
 use crate::storage::InMemoryMetaStorage;
-use ingress_grpc::{InMemoryMethodDescriptorRegistry, MethodDescriptorRegistry};
+use ingress_grpc::InMemoryMethodDescriptorRegistry;
 use rest_api::MetaRestEndpoint;
 use service::MetaService;
-use service_key_extractor::{KeyExtractor, KeyExtractorsRegistry};
+use service_key_extractor::KeyExtractorsRegistry;
 use std::net::SocketAddr;
 use tokio::join;
 use tracing::debug;
@@ -52,11 +52,11 @@ pub struct Meta {
 }
 
 impl Meta {
-    pub fn key_extractors_registry(&self) -> impl KeyExtractor {
+    pub fn key_extractors_registry(&self) -> KeyExtractorsRegistry {
         self.key_extractors_registry.clone()
     }
 
-    pub fn method_descriptor_registry(&self) -> impl MethodDescriptorRegistry {
+    pub fn method_descriptor_registry(&self) -> InMemoryMethodDescriptorRegistry {
         self.method_descriptors_registry.clone()
     }
 
