@@ -1,10 +1,11 @@
 use super::header::UnknownMessageType;
 use super::*;
+
+use std::mem;
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
 use journal::raw::RawEntryHeader;
-use std::mem;
-use tracing::trace;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EncodingError {
@@ -28,8 +29,6 @@ impl Encoder {
     /// Encodes a message to bytes
     pub fn encode(&self, msg: ProtocolMessage) -> Bytes {
         let header = generate_header(&msg, self.protocol_version);
-
-        trace!(restate.protocol.message_header = ?header, restate.protocol.message = ?msg, "Sending message");
 
         let mut buf = BytesMut::with_capacity((header.frame_length() + 8) as usize);
         buf.put_u64(header.into());
@@ -263,8 +262,9 @@ fn raw_header_to_message_type(entry_header: &RawEntryHeader) -> MessageType {
 mod tests {
 
     use super::*;
+
+    use crate::pb;
     use journal::raw::RawEntryHeader;
-    use service_protocol::pb;
 
     #[test]
     fn fill_decoder_with_several_messages() {

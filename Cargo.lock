@@ -2201,6 +2201,7 @@ name = "service_protocol"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "bytes-utils",
  "common",
  "hyper",
  "hyper-rustls",
@@ -2217,6 +2218,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
