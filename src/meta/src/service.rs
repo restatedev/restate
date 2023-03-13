@@ -38,6 +38,8 @@ enum MetaHandleResponse {
 }
 
 impl MetaHandle {
+    // False positive with Bytes field
+    #[allow(clippy::mutable_key_type)]
     pub async fn register(
         &self,
         uri: Uri,
@@ -122,6 +124,8 @@ where
         }
     }
 
+    // False positive with Bytes field
+    #[allow(clippy::mutable_key_type)]
     async fn discover_endpoint(
         &mut self,
         uri: Uri,

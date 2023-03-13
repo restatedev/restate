@@ -29,6 +29,8 @@ pub async fn discover_endpoint(
     State(state): State<Arc<RestEndpointState>>,
     Json(payload): Json<RegisterEndpointRequest>,
 ) -> Result<Json<RegisterEndpointResponse>, MetaApiError> {
+    // False positive with Bytes field
+    #[allow(clippy::mutable_key_type)]
     let headers = payload
         .additional_headers
         .unwrap_or_default()
