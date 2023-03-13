@@ -17,8 +17,11 @@ pub(crate) use interpreter::{
 
 #[derive(Debug, Clone)]
 pub(crate) enum OutboxMessage {
-    Invocation(ServiceInvocation),
-    Response(InvocationResponse),
+    // Messages that are sent to another partition processor
+    ServiceInvocation(ServiceInvocation),
+    ServiceResponse(InvocationResponse),
+
+    // Message that is sent to an ingress as a response to an ingress message
     IngressResponse {
         ingress_id: IngressId,
         service_invocation_id: ServiceInvocationId,

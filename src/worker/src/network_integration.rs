@@ -193,14 +193,14 @@ mod shuffle_integration {
             let (shuffle_id, msg_index, target) = self.into_inner();
 
             match target {
-                shuffle::ShuffleTarget::PartitionProcessor(outbox_message) => {
+                shuffle::ShuffleMessageDestination::PartitionProcessor(outbox_message) => {
                     ConsensusOrIngressTarget::Consensus(ShuffleToConsensus {
                         msg: outbox_message,
                         shuffle_id,
                         msg_index,
                     })
                 }
-                shuffle::ShuffleTarget::Ingress(invocation_response) => {
+                shuffle::ShuffleMessageDestination::Ingress(invocation_response) => {
                     ConsensusOrIngressTarget::Ingress(ShuffleToIngress {
                         msg: invocation_response,
                         shuffle_id,

@@ -58,46 +58,54 @@ pub(crate) struct IngressResponse {
 pub(crate) struct ShuffleOutput {
     shuffle_id: PeerId,
     msg_index: u64,
-    target: ShuffleTarget,
+    message: ShuffleMessageDestination,
 }
 
 impl ShuffleOutput {
-    pub(crate) fn new(shuffle_id: PeerId, msg_index: u64, target: ShuffleTarget) -> Self {
+    pub(crate) fn new(
+        shuffle_id: PeerId,
+        msg_index: u64,
+        message: ShuffleMessageDestination,
+    ) -> Self {
         Self {
             shuffle_id,
             msg_index,
-            target,
+            message,
         }
     }
 
-    pub(crate) fn into_inner(self) -> (PeerId, u64, ShuffleTarget) {
-        (self.shuffle_id, self.msg_index, self.target)
+    pub(crate) fn into_inner(self) -> (PeerId, u64, ShuffleMessageDestination) {
+        (self.shuffle_id, self.msg_index, self.message)
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum ShuffleTarget {
+pub(crate) enum ShuffleMessageDestination {
     PartitionProcessor(InvocationOrResponse),
     Ingress(IngressResponse),
 }
 
-impl From<OutboxMessage> for ShuffleTarget {
+impl From<OutboxMessage> for ShuffleMessageDestination {
     fn from(value: OutboxMessage) -> Self {
         match value {
             OutboxMessage::IngressResponse {
                 ingress_id,
                 service_invocation_id,
                 response,
-            } => ShuffleTarget::Ingress(IngressResponse {
+            } => ShuffleMessageDestination::Ingress(IngressResponse {
                 _ingress_id: ingress_id,
                 service_invocation_id,
                 response,
             }),
-            OutboxMessage::Response(response) => {
-                ShuffleTarget::PartitionProcessor(InvocationOrResponse::Response(response))
+            OutboxMessage::ServiceResponse(response) => {
+                ShuffleMessageDestination::PartitionProcessor(InvocationOrResponse::Response(
+                    response,
+                ))
             }
-            OutboxMessage::Invocation(invocation) => {
-                ShuffleTarget::PartitionProcessor(InvocationOrResponse::Invocation(invocation))
+            OutboxMessage::ServiceInvocation(invocation) => {
+                ShuffleMessageDestination::PartitionProcessor(InvocationOrResponse::Invocation(
+                    invocation,
+                ))
             }
         }
     }

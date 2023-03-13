@@ -393,7 +393,7 @@ where
                                 Some((service_invocation_id.clone(), entry_index)),
                             );
                             self.send_message(
-                                OutboxMessage::Invocation(service_invocation),
+                                OutboxMessage::ServiceInvocation(service_invocation),
                                 effects,
                             );
                         }
@@ -428,7 +428,10 @@ where
                         request,
                         None,
                     );
-                    self.send_message(OutboxMessage::Invocation(service_invocation), effects);
+                    self.send_message(
+                        OutboxMessage::ServiceInvocation(service_invocation),
+                        effects,
+                    );
                 }
                 ResolutionResult::Failure { error_code, error } => {
                     warn!("Failed to send background invocation: Error code: {error_code}, error message: {error}");
@@ -586,7 +589,7 @@ where
             instance_key,
             invocation_id,
         } = entry;
-        OutboxMessage::Response(InvocationResponse {
+        OutboxMessage::ServiceResponse(InvocationResponse {
             entry_index,
             result: result.into(),
             id: ServiceInvocationId::new(
@@ -608,7 +611,7 @@ where
                 }
             }
             ResponseSink::PartitionProcessor(service_invocation_id, entry_index) => {
-                OutboxMessage::Response(InvocationResponse {
+                OutboxMessage::ServiceResponse(InvocationResponse {
                     id: service_invocation_id,
                     entry_index,
                     result,
