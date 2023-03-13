@@ -15,6 +15,7 @@ clap = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 futures_util = { workspace = true }
+prost-reflect = { workspace = true }
 hyper = { workspace = true, features = ["full"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }

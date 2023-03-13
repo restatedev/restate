@@ -2,6 +2,7 @@ mod rest_api;
 mod service;
 mod storage;
 
+use crate::storage::InMemoryMetaStorage;
 use ingress_grpc::{InMemoryMethodDescriptorRegistry, MethodDescriptorRegistry};
 use rest_api::MetaRestEndpoint;
 use service::MetaService;
@@ -9,7 +10,6 @@ use service_key_extractor::{KeyExtractor, KeyExtractorsRegistry};
 use std::net::SocketAddr;
 use tokio::join;
 use tracing::debug;
-use crate::storage::InMemoryMetaStorage;
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]

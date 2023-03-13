@@ -29,7 +29,7 @@ pub struct MetaHandle(UnboundedCommandSender<MetaHandleRequest, MetaHandleRespon
 enum MetaHandleRequest {
     DiscoverEndpoint {
         uri: Uri,
-        additional_headers: HashMap<String, String>,
+        additional_headers: HashMap<HeaderName, HeaderValue>,
     },
 }
 
@@ -41,7 +41,7 @@ impl MetaHandle {
     pub async fn register(
         &self,
         uri: Uri,
-        additional_headers: HashMap<String, String>,
+        additional_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<Vec<String>, MetaError> {
         let (cmd, response_tx) = Command::prepare(MetaHandleRequest::DiscoverEndpoint {
             uri,
@@ -125,8 +125,33 @@ where
     async fn discover_endpoint(
         &mut self,
         uri: Uri,
-        additional_headers: HashMap<String, String>,
+        additional_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<Vec<String>, MetaError> {
-        todo!()
+        let discovered_metadata = self
+            .service_discovery
+            .discover(uri, additional_headers)
+            .await?;
+
+        let mut registered_services = Vec::with_capacity(discovered_metadata.services.len());
+        for (service, service_instance_type) in discovered_metadata.services {
+            let service_descriptor = discovered_metadata
+                .descriptor_pool
+                .get_service_by_name(&service)
+                .expect("service discovery returns a service available in the descriptor pool");
+            registered_services.push(service.clone());
+            self.storage
+                .register_service(
+                    service.clone(),
+                    service_instance_type.clone(),
+                    service_descriptor.clone(),
+                )
+                .await?;
+            self.method_descriptors_registry
+                .register(service_descriptor);
+            self.key_extractors_registry
+                .register(service, service_instance_type);
+        }
+
+        Ok(registered_services)
     }
 }
