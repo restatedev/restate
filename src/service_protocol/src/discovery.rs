@@ -139,6 +139,21 @@ pub enum ServiceDiscoveryError {
     Hyper(#[from] hyper::Error),
 }
 
+impl ServiceDiscoveryError {
+    pub fn is_user_error(&self) -> bool {
+        match self {
+            ServiceDiscoveryError::ServiceNotFoundInDescriptor(_)
+            | ServiceDiscoveryError::MissingServiceTypeAnnotation(_)
+            | ServiceDiscoveryError::KeyedServiceWithoutMethods(_)
+            | ServiceDiscoveryError::MissingKeyField(_)
+            | ServiceDiscoveryError::MoreThanOneKeyField(_)
+            | ServiceDiscoveryError::BadKeyFieldType(_)
+            | ServiceDiscoveryError::DifferentKeyTypes(_) => true,
+            _ => false,
+        }
+    }
+}
+
 impl ServiceDiscovery {
     pub async fn discover(
         &self,

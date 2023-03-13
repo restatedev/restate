@@ -9,6 +9,8 @@ use crate::service::MetaError;
 /// and later converted to a response through the IntoResponse implementation
 #[derive(Debug, thiserror::Error)]
 pub enum MetaApiError {
+    #[error("The request field '{0}' is invalid. Reason: {1}")]
+    InvalidField(&'static str, String),
     #[error(transparent)]
     Meta(#[from] MetaError),
 }
@@ -21,8 +23,13 @@ struct ErrorDescriptionResponse {
 
 impl IntoResponse for MetaApiError {
     fn into_response(self) -> Response {
-        // TODO we should probably return 400 for some errors
-        let status_code = StatusCode::INTERNAL_SERVER_ERROR;
+        let status_code = match &self {
+            MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
+            MetaApiError::Meta(MetaError::Discovery(desc_error)) if desc_error.is_user_error() => {
+                StatusCode::BAD_REQUEST
+            }
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
         let body = Json(ErrorDescriptionResponse {
             message: self.to_string(),
         });

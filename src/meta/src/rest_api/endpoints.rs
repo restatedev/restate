@@ -6,6 +6,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::Uri;
 use axum::Json;
+use hyper::http::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::HashMap;
@@ -28,10 +29,20 @@ pub async fn discover_endpoint(
     State(state): State<Arc<RestEndpointState>>,
     Json(payload): Json<RegisterEndpointRequest>,
 ) -> Result<Json<RegisterEndpointResponse>, MetaApiError> {
-    let registration_result = state
-        .meta_handle()
-        .register(payload.uri, payload.additional_headers.unwrap_or_default())
-        .await;
+    let headers = payload
+        .additional_headers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| {
+            let header_name = HeaderName::try_from(k)
+                .map_err(|e| MetaApiError::InvalidField("additional_headers", e.to_string()))?;
+            let header_value = HeaderValue::try_from(v)
+                .map_err(|e| MetaApiError::InvalidField("additional_headers", e.to_string()))?;
+            Ok((header_name, header_value))
+        })
+        .collect::<Result<HashMap<HeaderName, HeaderValue>, MetaApiError>>()?;
+
+    let registration_result = state.meta_handle().register(payload.uri, headers).await;
     Ok(registration_result
         .map(|services| RegisterEndpointResponse { services })?
         .into())

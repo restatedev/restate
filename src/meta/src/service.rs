@@ -2,21 +2,23 @@
 
 use std::collections::HashMap;
 
+use crate::storage::{MetaStorage, MetaStorageError};
+use common::retry_policy::RetryPolicy;
 use futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
+use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
 use ingress_grpc::InMemoryMethodDescriptorRegistry;
 use service_key_extractor::KeyExtractorsRegistry;
-use service_protocol::discovery::ServiceDiscovery;
+use service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
 use tracing::debug;
-use common::retry_policy::RetryPolicy;
-
-use crate::storage::MetaStorage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetaError {
-    #[error("discovery error")]
-    DiscoveryError,
+    #[error(transparent)]
+    Discovery(#[from] ServiceDiscoveryError),
+    #[error(transparent)]
+    Storage(#[from] MetaStorageError),
     #[error("meta closed")]
     MetaClosed,
 }
