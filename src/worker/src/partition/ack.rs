@@ -34,7 +34,6 @@ pub(crate) enum AckTarget {
         shuffle_target: PeerId,
         msg_index: u64,
     },
-    #[allow(dead_code)]
     Ingress {
         ingress_id: IngressId,
         msg_index: u64,
@@ -49,7 +48,6 @@ impl AckTarget {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn ingress(ingress_id: IngressId, msg_index: u64) -> Self {
         AckTarget::Ingress {
             ingress_id,
@@ -78,7 +76,6 @@ impl AckTarget {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) enum AckResponse {
     Shuffle(ShuffleAckResponse),
     Ingress(IngressAckResponse),

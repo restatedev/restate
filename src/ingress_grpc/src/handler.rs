@@ -111,7 +111,7 @@ where
         };
 
         // Encapsulate in this closure the remaining part of the processing
-        let ingress_id = self.ingress_id.clone();
+        let ingress_id = self.ingress_id;
         let invocation_factory = self.invocation_factory.clone();
         let dispatcher_command_sender = self.dispatcher_command_sender.clone();
         let ingress_request_handler = move |ingress_request: IngressRequest| {

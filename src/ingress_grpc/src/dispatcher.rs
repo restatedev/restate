@@ -3,13 +3,13 @@ use super::*;
 use std::collections::HashMap;
 use std::future::poll_fn;
 
-use common::types::ServiceInvocationId;
+use common::types::{IngressId, ServiceInvocationId};
 use futures_util::pipe::{
     new_sender_pipe_target, Pipe, PipeError, ReceiverPipeInput, UnboundedReceiverPipeInput,
 };
 use tokio::select;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
@@ -23,9 +23,10 @@ pub struct IngressDispatcherLoopError(#[from] PipeError);
 ///
 /// To interact with the loop use [IngressInputSender] and [ResponseRequester].
 pub struct IngressDispatcherLoop {
-    // This channel and map can be unbounded,
-    // because we enforce concurrency limits in the ingress services using the global semaphore
-    local_waiting_responses: HashMap<ServiceInvocationId, CommandResponseSender<IngressResult>>,
+    ingress_id: IngressId,
+
+    // This channel can be unbounded, because we enforce concurrency limits in the ingress
+    // services using the global semaphore
     server_rx: UnboundedCommandReceiver<ServiceInvocation, IngressResult>,
 
     input_rx: IngressInputReceiver,
@@ -35,19 +36,13 @@ pub struct IngressDispatcherLoop {
     server_tx: DispatcherCommandSender,
 }
 
-impl Default for IngressDispatcherLoop {
-    fn default() -> Self {
-        IngressDispatcherLoop::new()
-    }
-}
-
 impl IngressDispatcherLoop {
-    pub fn new() -> IngressDispatcherLoop {
+    pub fn new(ingress_id: IngressId) -> IngressDispatcherLoop {
         let (input_tx, input_rx) = mpsc::channel(64);
         let (server_tx, server_rx) = mpsc::unbounded_channel();
 
         IngressDispatcherLoop {
-            local_waiting_responses: HashMap::new(),
+            ingress_id,
             input_rx,
             server_rx,
             input_tx,
@@ -71,7 +66,7 @@ impl IngressDispatcherLoop {
         );
 
         let IngressDispatcherLoop {
-            mut local_waiting_responses,
+            ingress_id,
             server_rx,
             input_rx,
             ..
@@ -94,6 +89,8 @@ impl IngressDispatcherLoop {
             network_input_to_network_pipe
         );
 
+        let mut handler = DispatcherLoopHandler::new(ingress_id);
+
         loop {
             select! {
                 _ = &mut shutdown => {
@@ -101,13 +98,13 @@ impl IngressDispatcherLoop {
                     break;
                 },
                 response = poll_fn(|cx| network_input_to_network_pipe.as_mut().poll_next_input(cx)) => {
-                    if let Some(output) = Self::handle_input(&mut local_waiting_responses, response?) {
+                    if let Some(output) = handler.handle_network_input(response?) {
                         network_input_to_network_pipe.as_mut().write(output)?;
                     }
                 },
                 res_cmd = poll_fn(|cx| server_commands_to_network_pipe.as_mut().poll_next_input(cx)) => {
                     server_commands_to_network_pipe.as_mut().write(
-                        Self::map_command(&mut local_waiting_responses, res_cmd?)
+                        handler.handle_ingress_command(res_cmd?)
                     )?
                 }
             }
@@ -123,32 +120,32 @@ impl IngressDispatcherLoop {
     pub fn create_command_sender(&self) -> DispatcherCommandSender {
         self.server_tx.clone()
     }
+}
 
-    #[allow(clippy::mutable_key_type)]
-    fn map_command(
-        local_waiting_responses: &mut HashMap<
-            ServiceInvocationId,
-            CommandResponseSender<IngressResult>,
-        >,
-        cmd: Command<ServiceInvocation, IngressResult>,
-    ) -> IngressOutput {
-        let (service_invocation, reply_channel) = cmd.into_inner();
-        local_waiting_responses.insert(service_invocation.id.clone(), reply_channel);
-        IngressOutput::Invocation(service_invocation)
+struct DispatcherLoopHandler {
+    ingress_id: IngressId,
+    msg_index: u64,
+
+    // This map can be unbounded, because we enforce concurrency limits in the ingress
+    // services using the global semaphore
+    waiting_responses: HashMap<ServiceInvocationId, CommandResponseSender<IngressResult>>,
+}
+
+impl DispatcherLoopHandler {
+    fn new(ingress_id: IngressId) -> Self {
+        Self {
+            ingress_id,
+            msg_index: 0,
+            waiting_responses: HashMap::new(),
+        }
     }
 
-    #[allow(clippy::mutable_key_type)]
-    fn handle_input(
-        local_waiting_responses: &mut HashMap<
-            ServiceInvocationId,
-            CommandResponseSender<IngressResult>,
-        >,
-        input: IngressInput,
-    ) -> Option<IngressOutput> {
+    fn handle_network_input(&mut self, input: IngressInput) -> Option<IngressOutput> {
         match input {
             IngressInput::Response(response) => {
-                if let Some(sender) =
-                    local_waiting_responses.remove(&response.service_invocation_id)
+                if let Some(sender) = self
+                    .waiting_responses
+                    .remove(&response.service_invocation_id)
                 {
                     if let Err(Ok(response)) = sender.send(response.result.map_err(Into::into)) {
                         warn!(
@@ -163,10 +160,26 @@ impl IngressDispatcherLoop {
 
                 Some(IngressOutput::Ack(response.ack_target.acknowledge()))
             }
-            IngressInput::MessageAck { .. } => {
-                todo!("https://github.com/restatedev/restate/issues/132");
+            IngressInput::MessageAck(ack_kind) => {
+                trace!("Received message ack: {ack_kind:?}.");
+                None
             }
         }
+    }
+
+    #[allow(clippy::mutable_key_type)]
+    fn handle_ingress_command(
+        &mut self,
+        cmd: Command<ServiceInvocation, IngressResult>,
+    ) -> IngressOutput {
+        let (service_invocation, reply_channel) = cmd.into_inner();
+        self.waiting_responses
+            .insert(service_invocation.id.clone(), reply_channel);
+
+        let current_msg_index = self.msg_index;
+        self.msg_index += 1;
+
+        IngressOutput::service_invocation(service_invocation, self.ingress_id, current_msg_index)
     }
 }
 
@@ -181,7 +194,8 @@ mod tests {
     async fn test_closed_handler() {
         let (output_tx, _output_rx) = mpsc::channel(2);
 
-        let ingress_dispatcher = IngressDispatcherLoop::default();
+        let ingress_dispatcher =
+            IngressDispatcherLoop::new(IngressId("127.0.0.1:0".parse().unwrap()));
         let input_sender = ingress_dispatcher.create_response_sender();
         let command_sender = ingress_dispatcher.create_command_sender();
 

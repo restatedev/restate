@@ -6,7 +6,7 @@ use common::types::{IngressId, PeerId, PeerTarget};
 use consensus::Consensus;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use ingress_grpc::{InMemoryMethodDescriptorRegistry, IngressDispatcherLoop};
+use ingress_grpc::InMemoryMethodDescriptorRegistry;
 use invoker::{EndpointMetadata, Invoker, UnboundedInvokerInputSender};
 use network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use partition::ack::AckableCommand;
@@ -92,7 +92,21 @@ impl Worker {
         let num_partition_processors = 10;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
-        let ingress_dispatcher_loop = IngressDispatcherLoop::default();
+        let external_client_ingress_id = IngressId(
+            "127.0.0.1:0"
+                .parse()
+                .expect("Loopback address needs to be valid."),
+        );
+
+        let invocation_factory =
+            DefaultServiceInvocationFactory::new(key_extractor_registry.clone());
+
+        let (ingress_dispatcher_loop, external_client_ingress) = external_client_ingress.build(
+            // TODO replace with proper network address once we have a distributed runtime
+            external_client_ingress_id,
+            method_descriptor_registry,
+            invocation_factory,
+        );
 
         let network = network_integration::Network::new(
             raft_in_tx,
@@ -100,21 +114,6 @@ impl Worker {
             FixedPartitionTable::new(num_partition_processors),
         );
         let network_ingress_sender = network.create_ingress_sender();
-
-        let invocation_factory =
-            DefaultServiceInvocationFactory::new(key_extractor_registry.clone());
-
-        let external_client_ingress = external_client_ingress.build(
-            // TODO replace with proper network address once we have a distributed runtime
-            IngressId(
-                "127.0.0.1:0"
-                    .parse()
-                    .expect("Loopback address needs to be valid."),
-            ),
-            method_descriptor_registry,
-            invocation_factory,
-            ingress_dispatcher_loop.create_command_sender(),
-        );
 
         let mut consensus = Consensus::new(raft_in_rx, network.create_consensus_sender());
 

@@ -64,7 +64,7 @@ impl ResponseSink {
     ) -> Option<ResponseSink> {
         match response_sink {
             ServiceInvocationResponseSink::Ingress(ingress_id) => Some(ResponseSink::Ingress(
-                ingress_id.clone(),
+                *ingress_id,
                 service_invocation_id.clone(),
             )),
             ServiceInvocationResponseSink::None => None,

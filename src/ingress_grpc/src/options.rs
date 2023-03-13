@@ -27,8 +27,10 @@ impl Options {
         ingress_id: IngressId,
         descriptor_registry: DescriptorRegistry,
         invocation_factory: InvocationFactory,
-        dispatcher_command_sender: DispatcherCommandSender,
-    ) -> HyperServerIngress<DescriptorRegistry, InvocationFactory>
+    ) -> (
+        IngressDispatcherLoop,
+        HyperServerIngress<DescriptorRegistry, InvocationFactory>,
+    )
     where
         DescriptorRegistry: MethodDescriptorRegistry + Clone + Send + 'static,
         InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
@@ -38,15 +40,17 @@ impl Options {
             concurrency_limit,
         } = self;
 
+        let ingress_dispatcher_loop = IngressDispatcherLoop::new(ingress_id);
+
         let (hyper_ingress_server, _) = HyperServerIngress::new(
             bind_address,
             concurrency_limit,
             ingress_id,
             descriptor_registry,
             invocation_factory,
-            dispatcher_command_sender,
+            ingress_dispatcher_loop.create_command_sender(),
         );
 
-        hyper_ingress_server
+        (ingress_dispatcher_loop, hyper_ingress_server)
     }
 }

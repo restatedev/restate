@@ -110,7 +110,7 @@ pub enum ResponseResult {
     Failure(i32, ByteString),
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct IngressId(pub std::net::SocketAddr);
 
 /// Definition of the sink where to send the result of a service invocation.

@@ -48,7 +48,7 @@ mod ingress_integration {
     use crate::partition::shuffle;
     use bytes::Bytes;
     use common::traits::KeyedMessage;
-    use common::types::{AckKind, PeerId, ServiceInvocation};
+    use common::types::{AckKind, IngressId, PeerId, ServiceInvocation};
     use network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
@@ -56,9 +56,15 @@ mod ingress_integration {
     {
         fn target(self) -> ConsensusOrShuffleTarget<IngressToConsensus, IngressToShuffle> {
             match self {
-                ingress_grpc::IngressOutput::Invocation(service_invocation) => {
-                    ConsensusOrShuffleTarget::Consensus(IngressToConsensus(service_invocation))
-                }
+                ingress_grpc::IngressOutput::Invocation {
+                    service_invocation,
+                    ingress_id,
+                    msg_index,
+                } => ConsensusOrShuffleTarget::Consensus(IngressToConsensus {
+                    service_invocation,
+                    ingress_id,
+                    msg_index,
+                }),
                 ingress_grpc::IngressOutput::Ack(ingress_grpc::AckResponse {
                     kind,
                     shuffle_target,
@@ -71,19 +77,32 @@ mod ingress_integration {
     }
 
     #[derive(Debug)]
-    pub(crate) struct IngressToConsensus(ServiceInvocation);
+    pub(crate) struct IngressToConsensus {
+        service_invocation: ServiceInvocation,
+        ingress_id: IngressId,
+        msg_index: u64,
+    }
 
     impl KeyedMessage for IngressToConsensus {
         type RoutingKey<'a> = &'a Bytes;
 
         fn routing_key(&self) -> Self::RoutingKey<'_> {
-            &self.0.id.service_id.key
+            &self.service_invocation.id.service_id.key
         }
     }
 
     impl From<IngressToConsensus> for partition::AckableCommand {
-        fn from(IngressToConsensus(service_invocation): IngressToConsensus) -> Self {
-            partition::AckableCommand::no_ack(partition::Command::Invocation(service_invocation))
+        fn from(ingress_to_consensus: IngressToConsensus) -> Self {
+            let IngressToConsensus {
+                service_invocation,
+                ingress_id,
+                msg_index,
+            } = ingress_to_consensus;
+
+            partition::AckableCommand::require_ack(
+                partition::Command::Invocation(service_invocation),
+                partition::AckTarget::ingress(ingress_id, msg_index),
+            )
         }
     }
 
@@ -102,12 +121,6 @@ mod ingress_integration {
     impl TargetShuffle for IngressToShuffle {
         fn shuffle_target(&self) -> PeerId {
             self.shuffle_target
-        }
-    }
-
-    impl From<partition::IngressAckResponse> for ingress_grpc::IngressInput {
-        fn from(value: partition::IngressAckResponse) -> Self {
-            ingress_grpc::IngressInput::MessageAck(value.kind)
         }
     }
 }
@@ -216,7 +229,7 @@ mod shuffle_integration {
                 ResponseResult::Failure(i32, error_msg) => Err(IngressError::new(i32, error_msg)),
             };
 
-            ingress_grpc::IngressInput::Response(IngressResponseMessage {
+            ingress_grpc::IngressInput::response(IngressResponseMessage {
                 service_invocation_id,
                 result,
                 ack_target: ingress_grpc::AckTarget::new(shuffle_id, msg_index),
@@ -254,6 +267,12 @@ mod partition_integration {
     impl TargetShuffle for partition::ShuffleAckResponse {
         fn shuffle_target(&self) -> PeerId {
             self.shuffle_target
+        }
+    }
+
+    impl From<partition::IngressAckResponse> for ingress_grpc::IngressInput {
+        fn from(value: partition::IngressAckResponse) -> Self {
+            ingress_grpc::IngressInput::message_ack(value.kind)
         }
     }
 }
