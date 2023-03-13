@@ -28,7 +28,7 @@ opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
 
 journal = { workspace = true }
-service_protocol = { workspace = true, features = ["protocol"] }
+service_protocol = { workspace = true, features = ["message"] }
 
 [dev-dependencies]
 uuid = { workspace = true }

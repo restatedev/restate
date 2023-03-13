@@ -18,14 +18,14 @@ use journal::Completion;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
+use service_protocol::message::{
+    Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
+};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tracing::trace;
 
-use super::message::{
-    Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
-};
 use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader, ProtocolType};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.

@@ -13,8 +13,6 @@ use journal::Completion;
 use opentelemetry::Context;
 use tokio::sync::mpsc;
 
-mod message;
-
 mod invoker;
 pub use crate::invoker::*;
 
