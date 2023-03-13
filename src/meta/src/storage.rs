@@ -9,6 +9,7 @@ pub trait MetaStorage {
     fn register(&self) -> BoxFuture<Result<(), MetaStorageError>>;
 }
 
+#[derive(Debug, Default)]
 pub struct InMemoryMetaStorage {}
 
 impl MetaStorage for InMemoryMetaStorage {
