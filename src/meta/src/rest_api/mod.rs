@@ -1,10 +1,9 @@
 //! This module implements the Meta API endpoint.
 
-mod data;
-mod handlers;
+mod endpoints;
+mod error;
+mod state;
 
-use crate::rest_api::handlers::RestEndpointState;
-use crate::service::MetaHandle;
 use axum::routing::post;
 use axum::Router;
 use futures::FutureExt;
@@ -12,6 +11,8 @@ use hyper::Server;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{debug, warn};
+
+use crate::service::MetaHandle;
 
 pub struct MetaRestEndpoint {
     rest_addr: SocketAddr,
@@ -23,11 +24,11 @@ impl MetaRestEndpoint {
     }
 
     pub async fn run(self, meta_handle: MetaHandle, drain: drain::Watch) {
-        let shared_state = Arc::new(RestEndpointState::new(meta_handle));
+        let shared_state = Arc::new(state::RestEndpointState::new(meta_handle));
 
         // Setup the router
         let meta_api = Router::new()
-            .route("/discover", post(handlers::register_endpoint))
+            .route("/endpoint/discover", post(endpoints::discover_endpoint))
             .with_state(shared_state);
 
         // Start the server

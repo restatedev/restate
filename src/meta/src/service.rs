@@ -1,13 +1,54 @@
+#![allow(dead_code)]
+
 // --- Handle
+
+use futures_util::command::{Command, UnboundedCommandSender};
+use hyper::Uri;
+use std::collections::HashMap;
 
 use crate::storage::MetaStorage;
 
+#[derive(Debug, thiserror::Error)]
+pub enum MetaError {
+    #[error("discovery error")]
+    DiscoveryError,
+    #[error("meta closed")]
+    MetaClosed,
+}
+
 #[derive(Clone)]
-pub struct MetaHandle {}
+pub struct MetaHandle(UnboundedCommandSender<MetaHandleRequest, MetaHandleResponse>);
+
+enum MetaHandleRequest {
+    DiscoverEndpoint {
+        uri: Uri,
+        additional_headers: HashMap<String, String>,
+    },
+}
+
+enum MetaHandleResponse {
+    DiscoverEndpoint(Result<Vec<String>, MetaError>),
+}
 
 impl MetaHandle {
-    pub async fn register(&self) {
-        todo!("Implement command to send message to meta service loop and wait for response")
+    pub async fn register(
+        &self,
+        uri: Uri,
+        additional_headers: HashMap<String, String>,
+    ) -> Result<Vec<String>, MetaError> {
+        let (cmd, response_tx) = Command::prepare(MetaHandleRequest::DiscoverEndpoint {
+            uri,
+            additional_headers,
+        });
+        self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
+        response_tx
+            .await
+            .map(|res| match res {
+                MetaHandleResponse::DiscoverEndpoint(res) => res,
+                #[allow(unreachable_patterns)]
+                _ => panic!("Unexpected response message, this is a bug"),
+            })
+            .map_err(|_e| MetaError::MetaClosed)?
     }
 }
 
