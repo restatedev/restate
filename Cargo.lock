@@ -1299,7 +1299,6 @@ dependencies = [
 name = "meta"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "axum",
  "clap 4.1.6",
  "common",

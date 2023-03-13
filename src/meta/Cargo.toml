@@ -10,24 +10,31 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = { workspace = true }
+# Config
 clap = { workspace = true }
+
+# Async
 drain = { workspace = true }
 futures = { workspace = true }
 futures_util = { workspace = true }
-prost-reflect = { workspace = true }
-hyper = { workspace = true, features = ["full"] }
 tokio = { workspace = true, features = ["full"] }
-tracing = { workspace = true }
-thiserror = { workspace = true }
 
+# Rest API
+hyper = { workspace = true, features = ["full"] }
 axum = "0.6.2"
 
+# Serde
 serde = { workspace = true }
 serde_with = "2.2"
 serde_json = "1.0"
 
+# Service discovery and metadata
 common = { workspace = true }
 service_key_extractor = { workspace = true }
 ingress_grpc = { workspace = true }
 service_protocol = { workspace = true, features = ["discovery"] }
+prost-reflect = { workspace = true }
+
+# Others
+tracing = { workspace = true }
+thiserror = { workspace = true }
