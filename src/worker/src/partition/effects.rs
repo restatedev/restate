@@ -19,7 +19,6 @@ pub(crate) use interpreter::{
 pub(crate) enum OutboxMessage {
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
-    #[allow(dead_code)]
     IngressResponse {
         ingress_id: IngressId,
         service_invocation_id: ServiceInvocationId,

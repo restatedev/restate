@@ -38,10 +38,8 @@ pub(crate) enum Command {
         entry_index: EntryIndex,
         timestamp: u64,
     },
-    #[allow(dead_code)]
     OutboxTruncation(u64),
     Invocation(ServiceInvocation),
-    #[allow(dead_code)]
     Response(InvocationResponse),
 }
 

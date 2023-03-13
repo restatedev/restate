@@ -39,7 +39,6 @@ impl OutboxTruncation {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct ShuffleInput(pub(crate) AckKind);
 
 #[derive(Debug, Clone)]
