@@ -7,10 +7,7 @@ use bytes::Bytes;
 use common::retry_policy::RetryPolicy;
 use common::types::ServiceInvocationId;
 use hyper::Uri;
-use invoker::{
-    DeliveryOptions, EndpointMetadata, Invoker, Kind, OutputEffect, ProtocolType,
-    UnboundedInvokerInputSender,
-};
+use invoker::{Invoker, Kind, OutputEffect, UnboundedInvokerInputSender};
 use journal::raw::{RawEntryCodec, RawEntryHeader};
 use journal::{
     Completion, CompletionResult, Entry, EntryResult, GetStateEntry, GetStateValue,
@@ -18,8 +15,10 @@ use journal::{
 };
 use mocks::{InMemoryJournalStorage, SimulatorAction};
 use prost::Message;
+use service_metadata::{
+    DeliveryOptions, EndpointMetadata, InMemoryServiceEndpointRegistry, ProtocolType,
+};
 use service_protocol::codec::ProtobufRawEntryCodec;
-use std::collections::HashMap;
 use test_utils::{assert, assert_eq, let_assert, test};
 use uuid::Uuid;
 
@@ -125,21 +124,22 @@ async fn bidi_stream() {
     // Mock journal reader
     let journal_reader = InMemoryJournalStorage::default();
 
+    let mut service_endpoint_registry = InMemoryServiceEndpointRegistry::default();
+    service_endpoint_registry.register_service_endpoint(
+        sid.service_id.service_name.to_string(),
+        EndpointMetadata::new(
+            Uri::from_static("http://localhost:8080"),
+            ProtocolType::BidiStream,
+            DeliveryOptions::default(),
+        ),
+    );
+
     // Start invoker
-    let remote_invoker =
-        Invoker::<ProtobufRawEntryCodec, _, HashMap<String, EndpointMetadata>>::new(
-            RetryPolicy::default(),
-            journal_reader.clone(),
-            [(
-                sid.service_id.service_name.clone().to_string(),
-                EndpointMetadata::new(
-                    Uri::from_static("http://localhost:8080"),
-                    ProtocolType::BidiStream,
-                    DeliveryOptions::default(),
-                ),
-            )]
-            .into(),
-        );
+    let remote_invoker = Invoker::<ProtobufRawEntryCodec, _, _>::new(
+        RetryPolicy::default(),
+        journal_reader.clone(),
+        service_endpoint_registry,
+    );
 
     // Build the partition processor simulator
     let mut partition_processor_simulator =

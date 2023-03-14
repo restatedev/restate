@@ -1,13 +1,9 @@
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
 
 use common::retry_policy::RetryPolicy;
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
-use hyper::header::HeaderName;
-use hyper::http::HeaderValue;
-use hyper::Uri;
 use journal::raw::PlainRawEntry;
 use journal::Completion;
 use opentelemetry::Context;
@@ -18,51 +14,6 @@ pub use crate::invoker::*;
 
 mod invocation_task;
 mod timer;
-
-// --- Service Endpoint Registry
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum ProtocolType {
-    RequestResponse,
-    BidiStream,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DeliveryOptions {
-    additional_headers: HashMap<HeaderName, HeaderValue>,
-    retry_policy: Option<RetryPolicy>,
-}
-
-#[derive(Debug, Clone)]
-pub struct EndpointMetadata {
-    address: Uri,
-    protocol_type: ProtocolType,
-    delivery_options: DeliveryOptions,
-}
-
-impl EndpointMetadata {
-    pub fn new(
-        address: Uri,
-        protocol_type: ProtocolType,
-        delivery_options: DeliveryOptions,
-    ) -> Self {
-        Self {
-            address,
-            protocol_type,
-            delivery_options,
-        }
-    }
-}
-
-pub trait ServiceEndpointRegistry {
-    fn resolve_endpoint(&self, service_name: impl AsRef<str>) -> Option<EndpointMetadata>;
-}
-
-impl ServiceEndpointRegistry for HashMap<String, EndpointMetadata> {
-    fn resolve_endpoint(&self, service_name: impl AsRef<str>) -> Option<EndpointMetadata> {
-        self.get(service_name.as_ref()).cloned()
-    }
-}
 
 // --- Journal Reader
 

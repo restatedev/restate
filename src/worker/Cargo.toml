@@ -29,6 +29,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
 service_key_extractor = { workspace = true }
+service_metadata = { workspace = true }
 service_protocol = { workspace = true, features = ["codec"] }
 storage_api = { workspace = true}
 storage_rocksdb = { workspace = true}

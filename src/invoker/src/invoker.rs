@@ -8,6 +8,7 @@ use common::types::PartitionLeaderEpoch;
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
 use journal::raw::{PlainRawEntry, RawEntryCodec};
+use service_metadata::ServiceEndpointRegistry;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
@@ -426,6 +427,7 @@ mod state_machine_coordinator {
 
     use crate::invocation_task::{InvocationTask, InvocationTaskError};
 
+    use service_metadata::{ProtocolType, ServiceEndpointRegistry};
     use tonic::Code;
     use tracing::warn;
 
@@ -597,16 +599,14 @@ mod state_machine_coordinator {
             };
 
             let retry_policy = metadata
-                .delivery_options
-                .retry_policy
-                .as_ref()
+                .retry_policy()
                 .unwrap_or(start_arguments.default_retry_policy)
                 .clone();
 
             let mut invocation_state_machine = state_machine_factory(retry_policy);
 
             // Start the InvocationTask
-            let (completions_tx, completions_rx) = match metadata.protocol_type {
+            let (completions_tx, completions_rx) = match metadata.protocol_type() {
                 ProtocolType::RequestResponse => (None, None),
                 ProtocolType::BidiStream => {
                     let (tx, rx) = mpsc::unbounded_channel();

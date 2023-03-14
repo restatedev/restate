@@ -7,14 +7,14 @@ use consensus::Consensus;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use ingress_grpc::InMemoryMethodDescriptorRegistry;
-use invoker::{EndpointMetadata, Invoker, UnboundedInvokerInputSender};
+use invoker::{Invoker, UnboundedInvokerInputSender};
 use network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use partition::ack::AckableCommand;
 use partition::shuffle;
 use partition::RocksDBJournalReader;
 use service_key_extractor::KeyExtractorsRegistry;
+use service_metadata::InMemoryServiceEndpointRegistry;
 use service_protocol::codec::ProtobufRawEntryCodec;
-use std::collections::HashMap;
 use storage_rocksdb::RocksDBStorage;
 use tokio::join;
 use tokio::sync::mpsc;
@@ -60,8 +60,7 @@ pub struct Worker {
     consensus: Consensus<PartitionProcessorCommand>,
     processors: Vec<PartitionProcessor>,
     network: network_integration::Network,
-    invoker:
-        Invoker<ProtobufRawEntryCodec, RocksDBJournalReader, HashMap<String, EndpointMetadata>>,
+    invoker: Invoker<ProtobufRawEntryCodec, RocksDBJournalReader, InMemoryServiceEndpointRegistry>,
     external_client_ingress_runner: ExternalClientIngressRunner,
 }
 

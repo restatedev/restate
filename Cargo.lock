@@ -1102,6 +1102,7 @@ dependencies = [
  "opentelemetry-http",
  "paste",
  "prost",
+ "service_metadata",
  "service_protocol",
  "test_utils",
  "thiserror",
@@ -2179,6 +2180,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "service_metadata"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "common",
+ "hyper",
+]
+
+[[package]]
 name = "service_protocol"
 version = "0.1.0"
 dependencies = [
@@ -3021,6 +3031,7 @@ dependencies = [
  "network",
  "pin-project",
  "service_key_extractor",
+ "service_metadata",
  "service_protocol",
  "storage_api",
  "storage_rocksdb",

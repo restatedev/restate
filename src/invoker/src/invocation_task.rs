@@ -18,6 +18,7 @@ use journal::Completion;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
+use service_metadata::{EndpointMetadata, ProtocolType};
 use service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
@@ -26,7 +27,7 @@ use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tracing::trace;
 
-use super::{EndpointMetadata, InvokeInputJournal, JournalMetadata, JournalReader, ProtocolType};
+use super::{InvokeInputJournal, JournalMetadata, JournalReader};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -457,7 +458,7 @@ where
             .method(http::Method::POST)
             .header(http::header::CONTENT_TYPE, APPLICATION_RESTATE)
             .uri(Self::append_path(
-                &self.endpoint_metadata.address,
+                self.endpoint_metadata.address(),
                 &[
                     self.service_invocation_id
                         .service_id
@@ -469,7 +470,7 @@ where
             ));
 
         // In case it's bidi stream, force HTTP/2
-        if self.endpoint_metadata.protocol_type == ProtocolType::BidiStream {
+        if self.endpoint_metadata.protocol_type() == ProtocolType::BidiStream {
             http_request_builder = http_request_builder.version(http::Version::HTTP_2);
         }
 
@@ -484,9 +485,7 @@ where
         );
 
         // Inject additional headers
-        for (header_name, header_value) in
-            &self.endpoint_metadata.delivery_options.additional_headers
-        {
+        for (header_name, header_value) in self.endpoint_metadata.additional_headers() {
             http_request_builder = http_request_builder.header(header_name, header_value);
         }
 
