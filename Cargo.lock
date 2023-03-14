@@ -1787,31 +1787,9 @@ dependencies = [
  "base64 0.21.0",
  "once_cell",
  "prost",
- "prost-reflect-derive",
  "prost-types",
  "serde",
  "serde-value",
-]
-
-[[package]]
-name = "prost-reflect-build"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ec0abc381f0cc607d55639c942588dc5590bc5a61a980c8be0057b3e84393a6"
-dependencies = [
- "prost-build",
- "prost-reflect",
-]
-
-[[package]]
-name = "prost-reflect-derive"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b64ab4a39bdb1bdd258cb5e1cc078b0e955e40bcb3e7e2cb79231f04426d0dc"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -2213,7 +2191,6 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-reflect",
- "prost-reflect-build",
  "prost-types",
  "service_key_extractor",
  "test_utils",
