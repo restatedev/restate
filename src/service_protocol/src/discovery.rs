@@ -159,8 +159,8 @@ impl ServiceDiscovery {
     #[allow(clippy::mutable_key_type)]
     pub async fn discover(
         &self,
-        uri: Uri,
-        additional_headers: HashMap<HeaderName, HeaderValue>,
+        uri: &Uri,
+        additional_headers: &HashMap<HeaderName, HeaderValue>,
     ) -> Result<DiscoveredMetadata, ServiceDiscoveryError> {
         let client = Client::builder().build::<_, Body>(
             HttpsConnectorBuilder::new()
@@ -170,7 +170,7 @@ impl ServiceDiscovery {
                 .enable_http2()
                 .build(),
         );
-        let uri = append_discover(&uri);
+        let uri = append_discover(uri);
 
         let (mut parts, body) = self
             .retry_policy

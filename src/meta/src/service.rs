@@ -9,6 +9,9 @@ use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
 use ingress_grpc::InMemoryMethodDescriptorRegistry;
 use service_key_extractor::KeyExtractorsRegistry;
+use service_metadata::{
+    DeliveryOptions, EndpointMetadata, InMemoryServiceEndpointRegistry, ProtocolType,
+};
 use service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -66,6 +69,7 @@ impl MetaHandle {
 pub struct MetaService<Storage> {
     key_extractors_registry: KeyExtractorsRegistry,
     method_descriptors_registry: InMemoryMethodDescriptorRegistry,
+    service_endpoint_registry: InMemoryServiceEndpointRegistry,
     service_discovery: ServiceDiscovery,
 
     storage: Storage,
@@ -81,6 +85,7 @@ where
     pub fn new(
         key_extractors_registry: KeyExtractorsRegistry,
         method_descriptors_registry: InMemoryMethodDescriptorRegistry,
+        service_endpoint_registry: InMemoryServiceEndpointRegistry,
         storage: Storage,
         service_discovery_retry_policy: RetryPolicy,
     ) -> Self {
@@ -89,6 +94,7 @@ where
         Self {
             key_extractors_registry,
             method_descriptors_registry,
+            service_endpoint_registry,
             service_discovery: ServiceDiscovery::new(service_discovery_retry_policy),
             storage,
             handle: MetaHandle(api_cmd_tx),
@@ -133,7 +139,7 @@ where
     ) -> Result<Vec<String>, MetaError> {
         let discovered_metadata = self
             .service_discovery
-            .discover(uri, additional_headers)
+            .discover(&uri, &additional_headers)
             .await?;
 
         let mut registered_services = Vec::with_capacity(discovered_metadata.services.len());
@@ -153,7 +159,15 @@ where
             self.method_descriptors_registry
                 .register(service_descriptor);
             self.key_extractors_registry
-                .register(service, service_instance_type);
+                .register(service.clone(), service_instance_type);
+            self.service_endpoint_registry.register_service_endpoint(
+                service,
+                EndpointMetadata::new(
+                    uri.clone(),
+                    ProtocolType::BidiStream, // TODO needs to support RequestResponse as well: https://github.com/restatedev/restate/issues/183
+                    DeliveryOptions::new(additional_headers.clone(), None), // TODO needs to support retry policies as well: https://github.com/restatedev/restate/issues/184
+                ),
+            );
         }
 
         Ok(registered_services)

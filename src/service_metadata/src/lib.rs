@@ -19,6 +19,20 @@ pub struct DeliveryOptions {
     retry_policy: Option<RetryPolicy>,
 }
 
+impl DeliveryOptions {
+    // false positive because of inner Bytes field of HeaderName
+    #[allow(clippy::mutable_key_type)]
+    pub fn new(
+        additional_headers: HashMap<HeaderName, HeaderValue>,
+        retry_policy: Option<RetryPolicy>,
+    ) -> Self {
+        Self {
+            additional_headers,
+            retry_policy,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EndpointMetadata {
     address: Uri,

@@ -32,6 +32,7 @@ serde_json = "1.0"
 common = { workspace = true }
 service_key_extractor = { workspace = true }
 ingress_grpc = { workspace = true }
+service_metadata = { workspace = true }
 service_protocol = { workspace = true, features = ["discovery"] }
 prost-reflect = { workspace = true }
 

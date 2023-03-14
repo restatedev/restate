@@ -1313,6 +1313,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "service_key_extractor",
+ "service_metadata",
  "service_protocol",
  "thiserror",
  "tokio",

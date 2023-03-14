@@ -23,6 +23,7 @@ impl Options {
         let worker = self.worker_options.build(
             meta.method_descriptor_registry(),
             meta.key_extractors_registry(),
+            meta.service_endpoint_registry(),
         );
 
         Application { meta, worker }

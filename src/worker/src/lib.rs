@@ -69,8 +69,14 @@ impl Options {
         self,
         method_descriptor_registry: InMemoryMethodDescriptorRegistry,
         key_extractor_registry: KeyExtractorsRegistry,
+        service_endpoint_registry: InMemoryServiceEndpointRegistry,
     ) -> Worker {
-        Worker::new(self, method_descriptor_registry, key_extractor_registry)
+        Worker::new(
+            self,
+            method_descriptor_registry,
+            key_extractor_registry,
+            service_endpoint_registry,
+        )
     }
 }
 
@@ -79,6 +85,7 @@ impl Worker {
         opts: Options,
         method_descriptor_registry: InMemoryMethodDescriptorRegistry,
         key_extractor_registry: KeyExtractorsRegistry,
+        service_endpoint_registry: InMemoryServiceEndpointRegistry,
     ) -> Self {
         let Options {
             channel_size,
@@ -118,7 +125,11 @@ impl Worker {
 
         let network_handle = network.create_network_handle();
 
-        let invoker = Invoker::new(RetryPolicy::None, RocksDBJournalReader, Default::default());
+        let invoker = Invoker::new(
+            RetryPolicy::None,
+            RocksDBJournalReader,
+            service_endpoint_registry,
+        );
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {

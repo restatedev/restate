@@ -7,6 +7,7 @@ use ingress_grpc::InMemoryMethodDescriptorRegistry;
 use rest_api::MetaRestEndpoint;
 use service::MetaService;
 use service_key_extractor::KeyExtractorsRegistry;
+use service_metadata::InMemoryServiceEndpointRegistry;
 use std::net::SocketAddr;
 use tokio::join;
 use tracing::debug;
@@ -27,9 +28,11 @@ impl Options {
     pub fn build(self) -> Meta {
         let key_extractors_registry = KeyExtractorsRegistry::default();
         let method_descriptors_registry = InMemoryMethodDescriptorRegistry::default();
+        let service_endpoint_registry = InMemoryServiceEndpointRegistry::default();
         let service = MetaService::new(
             key_extractors_registry.clone(),
             method_descriptors_registry.clone(),
+            service_endpoint_registry.clone(),
             InMemoryMetaStorage::default(),
             Default::default(),
         );
@@ -37,6 +40,7 @@ impl Options {
         Meta {
             key_extractors_registry,
             method_descriptors_registry,
+            service_endpoint_registry,
             rest_endpoint: MetaRestEndpoint::new(self.rest_addr),
             service,
         }
@@ -46,6 +50,7 @@ impl Options {
 pub struct Meta {
     key_extractors_registry: KeyExtractorsRegistry,
     method_descriptors_registry: InMemoryMethodDescriptorRegistry,
+    service_endpoint_registry: InMemoryServiceEndpointRegistry,
 
     rest_endpoint: MetaRestEndpoint,
     service: MetaService<InMemoryMetaStorage>,
@@ -58,6 +63,10 @@ impl Meta {
 
     pub fn method_descriptor_registry(&self) -> InMemoryMethodDescriptorRegistry {
         self.method_descriptors_registry.clone()
+    }
+
+    pub fn service_endpoint_registry(&self) -> InMemoryServiceEndpointRegistry {
+        self.service_endpoint_registry.clone()
     }
 
     pub async fn run(self, drain: drain::Watch) {

@@ -9,7 +9,7 @@ pub trait ServiceEndpointRegistry {
     fn resolve_endpoint(&self, service_name: impl AsRef<str>) -> Option<EndpointMetadata>;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct InMemoryServiceEndpointRegistry {
     registry: Arc<ArcSwap<HashMap<String, EndpointMetadata>>>,
 }
