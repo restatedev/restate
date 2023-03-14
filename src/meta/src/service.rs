@@ -14,7 +14,7 @@ use service_metadata::{
 };
 use service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, info};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetaError {
@@ -137,6 +137,8 @@ where
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<Vec<String>, MetaError> {
+        debug!("Starting discovery of Restate services at service endpoint '{uri}'.");
+
         let discovered_metadata = self
             .service_discovery
             .discover(&uri, &additional_headers)
@@ -156,6 +158,15 @@ where
                     service_descriptor.clone(),
                 )
                 .await?;
+
+            info!("Discovered service '{service}' running at '{uri}'.");
+
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                service_descriptor
+                    .methods()
+                    .for_each(|method| debug!("Discovered '{service}/{}'", method.name()));
+            }
+
             self.method_descriptors_registry
                 .register(service_descriptor);
             self.key_extractors_registry
