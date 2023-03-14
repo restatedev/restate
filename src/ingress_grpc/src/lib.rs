@@ -15,7 +15,7 @@ pub use server::StartSignal;
 use bytes::Bytes;
 use bytestring::ByteString;
 use common::types::{
-    AckKind, IngressId, PeerId, ServiceInvocation, ServiceInvocationId,
+    AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation, ServiceInvocationId,
     ServiceInvocationResponseSink, SpanRelation,
 };
 use common::utils::GenericError;
@@ -81,11 +81,11 @@ pub struct IngressResponseMessage {
 #[derive(Debug, Clone)]
 pub struct AckTarget {
     pub shuffle_target: PeerId,
-    pub msg_index: u64,
+    pub msg_index: MessageIndex,
 }
 
 impl AckTarget {
-    pub fn new(shuffle_target: PeerId, msg_index: u64) -> Self {
+    pub fn new(shuffle_target: PeerId, msg_index: MessageIndex) -> Self {
         Self {
             shuffle_target,
             msg_index,
@@ -121,7 +121,7 @@ pub enum IngressOutput {
     Invocation {
         service_invocation: ServiceInvocation,
         ingress_id: IngressId,
-        msg_index: u64,
+        msg_index: MessageIndex,
     },
     Ack(AckResponse),
 }
@@ -136,7 +136,7 @@ impl IngressOutput {
     pub fn service_invocation(
         service_invocation: ServiceInvocation,
         ingress_id: IngressId,
-        msg_index: u64,
+        msg_index: MessageIndex,
     ) -> Self {
         Self::Invocation {
             service_invocation,

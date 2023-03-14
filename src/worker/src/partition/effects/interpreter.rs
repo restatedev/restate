@@ -4,7 +4,8 @@ use crate::partition::InvocationStatus;
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    EntryIndex, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
+    ServiceInvocationResponseSink,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -29,7 +30,7 @@ pub(crate) enum ActuatorMessage {
         invoke_input_journal: InvokeInputJournal,
     },
     NewOutboxMessage {
-        seq_number: u64,
+        seq_number: MessageIndex,
         message: OutboxMessage,
     },
     #[allow(dead_code)]
@@ -111,26 +112,29 @@ pub(crate) trait StateStorage {
     // In-/outbox
     fn enqueue_into_inbox(
         &self,
-        seq_number: u64,
+        seq_number: MessageIndex,
         service_invocation: &ServiceInvocation,
     ) -> Result<(), StateStorageError>;
 
     fn enqueue_into_outbox(
         &self,
-        seq_number: u64,
+        seq_number: MessageIndex,
         message: &OutboxMessage,
     ) -> Result<(), StateStorageError>;
 
-    fn store_inbox_seq_number(&self, seq_number: u64) -> Result<(), StateStorageError>;
+    fn store_inbox_seq_number(&self, seq_number: MessageIndex) -> Result<(), StateStorageError>;
 
-    fn store_outbox_seq_number(&self, seq_number: u64) -> Result<(), StateStorageError>;
+    fn store_outbox_seq_number(&self, seq_number: MessageIndex) -> Result<(), StateStorageError>;
 
-    fn truncate_outbox(&self, outbox_sequence_number: u64) -> Result<(), StateStorageError>;
+    fn truncate_outbox(
+        &self,
+        outbox_sequence_number: MessageIndex,
+    ) -> Result<(), StateStorageError>;
 
     fn truncate_inbox(
         &self,
         service_id: &ServiceId,
-        inbox_sequence_number: u64,
+        inbox_sequence_number: MessageIndex,
     ) -> Result<(), StateStorageError>;
 
     // State

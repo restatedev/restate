@@ -1,8 +1,8 @@
 use crate::partition::effects::OutboxMessage;
 use crate::partition::shuffle::state_machine::StateMachine;
 use common::types::{
-    AckKind, IngressId, InvocationResponse, PeerId, ResponseResult, ServiceInvocation,
-    ServiceInvocationId,
+    AckKind, IngressId, InvocationResponse, MessageIndex, PeerId, ResponseResult,
+    ServiceInvocation, ServiceInvocationId,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -12,12 +12,12 @@ use tracing::debug;
 
 #[derive(Debug)]
 pub(crate) struct NewOutboxMessage {
-    seq_number: u64,
+    seq_number: MessageIndex,
     message: OutboxMessage,
 }
 
 impl NewOutboxMessage {
-    pub(crate) fn new(seq_number: u64, message: OutboxMessage) -> Self {
+    pub(crate) fn new(seq_number: MessageIndex, message: OutboxMessage) -> Self {
         Self {
             seq_number,
             message,
@@ -26,14 +26,14 @@ impl NewOutboxMessage {
 }
 
 #[derive(Debug)]
-pub(crate) struct OutboxTruncation(u64);
+pub(crate) struct OutboxTruncation(MessageIndex);
 
 impl OutboxTruncation {
-    fn new(truncation_index: u64) -> Self {
+    fn new(truncation_index: MessageIndex) -> Self {
         Self(truncation_index)
     }
 
-    pub(crate) fn index(&self) -> u64 {
+    pub(crate) fn index(&self) -> MessageIndex {
         self.0
     }
 }
@@ -57,14 +57,14 @@ pub(crate) struct IngressResponse {
 #[derive(Debug, Clone)]
 pub(crate) struct ShuffleOutput {
     shuffle_id: PeerId,
-    msg_index: u64,
+    msg_index: MessageIndex,
     message: ShuffleMessageDestination,
 }
 
 impl ShuffleOutput {
     pub(crate) fn new(
         shuffle_id: PeerId,
-        msg_index: u64,
+        msg_index: MessageIndex,
         message: ShuffleMessageDestination,
     ) -> Self {
         Self {
@@ -74,7 +74,7 @@ impl ShuffleOutput {
         }
     }
 
-    pub(crate) fn into_inner(self) -> (PeerId, u64, ShuffleMessageDestination) {
+    pub(crate) fn into_inner(self) -> (PeerId, MessageIndex, ShuffleMessageDestination) {
         (self.shuffle_id, self.msg_index, self.message)
     }
 }
@@ -120,8 +120,8 @@ pub(super) struct OutboxReaderError {
 pub(super) trait OutboxReader {
     fn get_next_message(
         &self,
-        next_sequence_number: u64,
-    ) -> BoxFuture<Result<Option<(u64, OutboxMessage)>, OutboxReaderError>>;
+        next_sequence_number: MessageIndex,
+    ) -> BoxFuture<Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>>;
 }
 
 pub(super) type NetworkSender<T> = mpsc::Sender<T>;
@@ -238,7 +238,7 @@ where
 mod state_machine {
     use crate::partition::effects::OutboxMessage;
     use crate::partition::shuffle::{NewOutboxMessage, ShuffleInput, ShuffleOutput};
-    use common::types::{AckKind, PeerId};
+    use common::types::{AckKind, MessageIndex, PeerId};
     use pin_project::pin_project;
     use std::future::Future;
     use std::marker::PhantomData;
@@ -259,7 +259,7 @@ mod state_machine {
     #[pin_project]
     pub(super) struct StateMachine<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError> {
         shuffle_id: PeerId,
-        current_sequence_number: u64,
+        current_sequence_number: MessageIndex,
         read_operation: ReadOp,
         send_operation: SendOp,
         hint_rx: &'a mut mpsc::Receiver<NewOutboxMessage>,
@@ -276,8 +276,8 @@ mod state_machine {
         SendFuture: Future<Output = Result<(), mpsc::error::SendError<ShuffleOutput>>>,
         SendOp: Fn(ShuffleOutput) -> SendFuture,
         ReadError: std::error::Error + Send + Sync + 'static,
-        ReadFuture: Future<Output = Result<Option<(u64, OutboxMessage)>, ReadError>>,
-        ReadOp: Fn(u64) -> ReadFuture,
+        ReadFuture: Future<Output = Result<Option<(MessageIndex, OutboxMessage)>, ReadError>>,
+        ReadOp: Fn(MessageIndex) -> ReadFuture,
     {
         pub(super) fn new(
             shuffle_id: PeerId,
@@ -373,7 +373,7 @@ mod state_machine {
         pub(super) fn on_network_input(
             self: Pin<&mut Self>,
             network_input: ShuffleInput,
-        ) -> Option<u64> {
+        ) -> Option<MessageIndex> {
             match network_input.0 {
                 AckKind::Acknowledge(seq_number) => {
                     if seq_number >= self.current_sequence_number {
@@ -396,7 +396,7 @@ mod state_machine {
             }
         }
 
-        fn read_next_message(self: Pin<&mut Self>, next_sequence_number: u64) {
+        fn read_next_message(self: Pin<&mut Self>, next_sequence_number: MessageIndex) {
             let mut this = self.project();
             let read_future = (this.read_operation)(next_sequence_number);
 

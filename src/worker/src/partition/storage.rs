@@ -8,7 +8,7 @@ use crate::partition::types::EnrichedRawEntry;
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId,
+    EntryIndex, MessageIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId,
     ServiceInvocationResponseSink,
 };
 use futures::future::BoxFuture;
@@ -45,7 +45,7 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
     fn peek_inbox(
         &self,
         _service_id: &ServiceId,
-    ) -> BoxFuture<Result<Option<(u64, ServiceInvocation)>, StateReaderError>> {
+    ) -> BoxFuture<Result<Option<(MessageIndex, ServiceInvocation)>, StateReaderError>> {
         todo!()
     }
 
@@ -151,7 +151,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
 
     fn enqueue_into_inbox(
         &self,
-        _seq_number: u64,
+        _seq_number: MessageIndex,
         _service_invocation: &ServiceInvocation,
     ) -> Result<(), StateStorageError> {
         todo!()
@@ -159,28 +159,31 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
 
     fn enqueue_into_outbox(
         &self,
-        _seq_number: u64,
+        _seq_number: MessageIndex,
         _message: &OutboxMessage,
     ) -> Result<(), StateStorageError> {
         todo!()
     }
 
-    fn store_inbox_seq_number(&self, _seq_number: u64) -> Result<(), StateStorageError> {
+    fn store_inbox_seq_number(&self, _seq_number: MessageIndex) -> Result<(), StateStorageError> {
         todo!()
     }
 
-    fn store_outbox_seq_number(&self, _seq_number: u64) -> Result<(), StateStorageError> {
+    fn store_outbox_seq_number(&self, _seq_number: MessageIndex) -> Result<(), StateStorageError> {
         todo!()
     }
 
-    fn truncate_outbox(&self, _outbox_sequence_number: u64) -> Result<(), StateStorageError> {
+    fn truncate_outbox(
+        &self,
+        _outbox_sequence_number: MessageIndex,
+    ) -> Result<(), StateStorageError> {
         todo!()
     }
 
     fn truncate_inbox(
         &self,
         _service_id: &ServiceId,
-        _inbox_sequence_number: u64,
+        _inbox_sequence_number: MessageIndex,
     ) -> Result<(), StateStorageError> {
         todo!()
     }
@@ -232,8 +235,8 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
 impl<Storage> OutboxReader for PartitionStorage<Storage> {
     fn get_next_message(
         &self,
-        _next_sequence_number: u64,
-    ) -> BoxFuture<Result<Option<(u64, OutboxMessage)>, OutboxReaderError>> {
+        _next_sequence_number: MessageIndex,
+    ) -> BoxFuture<Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>> {
         future::ok(None).boxed()
     }
 }

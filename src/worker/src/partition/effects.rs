@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, IngressId, InvocationResponse, ResponseResult, ServiceId, ServiceInvocation,
-    ServiceInvocationId,
+    EntryIndex, IngressId, InvocationResponse, MessageIndex, ResponseResult, ServiceId,
+    ServiceInvocation, ServiceInvocationId,
 };
 use journal::Completion;
 use std::collections::HashSet;
@@ -42,17 +42,17 @@ pub(crate) enum Effect {
 
     // In-/outbox
     EnqueueIntoInbox {
-        seq_number: u64,
+        seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
     },
     EnqueueIntoOutbox {
-        seq_number: u64,
+        seq_number: MessageIndex,
         message: OutboxMessage,
     },
-    TruncateOutbox(u64),
+    TruncateOutbox(MessageIndex),
     DropJournalAndPopInbox {
         service_id: ServiceId,
-        inbox_sequence_number: u64,
+        inbox_sequence_number: MessageIndex,
     },
 
     // State
@@ -169,7 +169,7 @@ impl Effects {
 
     pub(crate) fn enqueue_into_inbox(
         &mut self,
-        seq_number: u64,
+        seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
     ) {
         self.effects.push(Effect::EnqueueIntoInbox {
@@ -178,7 +178,7 @@ impl Effects {
         })
     }
 
-    pub(crate) fn enqueue_into_outbox(&mut self, seq_number: u64, message: OutboxMessage) {
+    pub(crate) fn enqueue_into_outbox(&mut self, seq_number: MessageIndex, message: OutboxMessage) {
         self.effects.push(Effect::EnqueueIntoOutbox {
             seq_number,
             message,
@@ -297,7 +297,7 @@ impl Effects {
         })
     }
 
-    pub(crate) fn truncate_outbox(&mut self, outbox_sequence_number: u64) {
+    pub(crate) fn truncate_outbox(&mut self, outbox_sequence_number: MessageIndex) {
         self.effects
             .push(Effect::TruncateOutbox(outbox_sequence_number));
     }
@@ -349,7 +349,7 @@ impl Effects {
     pub(crate) fn drop_journal_and_pop_inbox(
         &mut self,
         service_id: ServiceId,
-        inbox_sequence_number: u64,
+        inbox_sequence_number: MessageIndex,
     ) {
         self.effects.push(Effect::DropJournalAndPopInbox {
             service_id,

@@ -1,8 +1,8 @@
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, IngressId, InvocationId, InvocationResponse, ResponseResult, ServiceId,
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation,
+    EntryIndex, IngressId, InvocationId, InvocationResponse, MessageIndex, ResponseResult,
+    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -38,7 +38,7 @@ pub(crate) enum Command {
         entry_index: EntryIndex,
         timestamp: u64,
     },
-    OutboxTruncation(u64),
+    OutboxTruncation(MessageIndex),
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
 }
@@ -77,7 +77,7 @@ impl ResponseSink {
     }
 }
 
-pub type InboxEntry = (u64, ServiceInvocation);
+pub type InboxEntry = (MessageIndex, ServiceInvocation);
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading state: {source:?}")]
@@ -121,8 +121,8 @@ pub(super) trait StateReader {
 #[derive(Debug, Default)]
 pub(super) struct StateMachine<Codec> {
     // initialized from persistent storage
-    inbox_seq_number: u64,
-    outbox_seq_number: u64,
+    inbox_seq_number: MessageIndex,
+    outbox_seq_number: MessageIndex,
 
     _codec: PhantomData<Codec>,
 }

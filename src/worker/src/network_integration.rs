@@ -48,7 +48,7 @@ mod ingress_integration {
     use crate::partition::shuffle;
     use bytes::Bytes;
     use common::traits::KeyedMessage;
-    use common::types::{AckKind, IngressId, PeerId, ServiceInvocation};
+    use common::types::{AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation};
     use network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
@@ -80,7 +80,7 @@ mod ingress_integration {
     pub(crate) struct IngressToConsensus {
         service_invocation: ServiceInvocation,
         ingress_id: IngressId,
-        msg_index: u64,
+        msg_index: MessageIndex,
     }
 
     impl KeyedMessage for IngressToConsensus {
@@ -130,7 +130,7 @@ mod shuffle_integration {
     use crate::partition::shuffle;
     use bytes::Bytes;
     use common::traits::KeyedMessage;
-    use common::types::{PeerId, ResponseResult};
+    use common::types::{MessageIndex, PeerId, ResponseResult};
     use ingress_grpc::{IngressError, IngressResponseMessage};
     use network::{ConsensusOrIngressTarget, TargetConsensusOrIngress};
 
@@ -138,7 +138,7 @@ mod shuffle_integration {
     pub(crate) struct ShuffleToConsensus {
         msg: shuffle::InvocationOrResponse,
         shuffle_id: PeerId,
-        msg_index: u64,
+        msg_index: MessageIndex,
     }
 
     impl KeyedMessage for ShuffleToConsensus {
@@ -185,7 +185,7 @@ mod shuffle_integration {
     pub(crate) struct ShuffleToIngress {
         msg: shuffle::IngressResponse,
         shuffle_id: PeerId,
-        msg_index: u64,
+        msg_index: MessageIndex,
     }
 
     impl TargetConsensusOrIngress<ShuffleToConsensus, ShuffleToIngress> for shuffle::ShuffleOutput {

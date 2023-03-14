@@ -1,5 +1,5 @@
 use crate::partition;
-use common::types::{AckKind, IngressId, PeerId};
+use common::types::{AckKind, IngressId, MessageIndex, PeerId};
 
 /// Envelope for [`partition::Command`] that might require an explicit acknowledge.
 #[derive(Debug)]
@@ -32,23 +32,23 @@ impl AckableCommand {
 pub(crate) enum AckTarget {
     Shuffle {
         shuffle_target: PeerId,
-        msg_index: u64,
+        msg_index: MessageIndex,
     },
     Ingress {
         ingress_id: IngressId,
-        msg_index: u64,
+        msg_index: MessageIndex,
     },
 }
 
 impl AckTarget {
-    pub(crate) fn shuffle(shuffle_target: PeerId, msg_index: u64) -> Self {
+    pub(crate) fn shuffle(shuffle_target: PeerId, msg_index: MessageIndex) -> Self {
         AckTarget::Shuffle {
             shuffle_target,
             msg_index,
         }
     }
 
-    pub(crate) fn ingress(ingress_id: IngressId, msg_index: u64) -> Self {
+    pub(crate) fn ingress(ingress_id: IngressId, msg_index: MessageIndex) -> Self {
         AckTarget::Ingress {
             ingress_id,
             msg_index,

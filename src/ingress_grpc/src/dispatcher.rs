@@ -124,7 +124,7 @@ impl IngressDispatcherLoop {
 
 struct DispatcherLoopHandler {
     ingress_id: IngressId,
-    msg_index: u64,
+    msg_index: MessageIndex,
 
     // This map can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
