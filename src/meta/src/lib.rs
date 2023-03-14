@@ -84,10 +84,8 @@ impl Meta {
             _ = shutdown => {
                 debug!("Initiating shutdown of meta");
 
-                shutdown_signal.drain().await;
-
                 // ignored because we are shutting down
-                let _ = join!(service_fut, rest_endpoint_fut);
+                let _ = join!(shutdown_signal.drain(), service_fut, rest_endpoint_fut);
 
                 debug!("Completed shutdown of meta");
             },
