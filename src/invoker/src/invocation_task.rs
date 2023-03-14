@@ -472,6 +472,7 @@ where
         let mut http_request_builder = Request::builder()
             .method(http::Method::POST)
             .header(http::header::CONTENT_TYPE, APPLICATION_RESTATE)
+            .header(http::header::ACCEPT, APPLICATION_RESTATE)
             .uri(Self::append_path(
                 self.endpoint_metadata.address(),
                 &[
