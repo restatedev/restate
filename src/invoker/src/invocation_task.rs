@@ -476,6 +476,7 @@ where
             .uri(Self::append_path(
                 self.endpoint_metadata.address(),
                 &[
+                    "invoke",
                     self.service_invocation_id
                         .service_id
                         .service_name
@@ -509,6 +510,8 @@ where
             .body(req_body)
             // This fails only in case the URI is malformed, which should never happen
             .expect("The request builder shouldn't fail");
+
+        trace!("Request URI: {}", http_request.uri());
 
         (http_stream_tx, http_request)
     }
