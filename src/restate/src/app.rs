@@ -20,7 +20,10 @@ pub(crate) struct Application {
 impl Options {
     pub(crate) fn build(self) -> Application {
         let meta = self.meta_options.build();
-        let worker = self.worker_options.build();
+        let worker = self.worker_options.build(
+            meta.method_descriptor_registry(),
+            meta.key_extractors_registry(),
+        );
 
         Application { meta, worker }
     }

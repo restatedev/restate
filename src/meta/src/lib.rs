@@ -3,8 +3,10 @@ mod service;
 mod storage;
 
 use crate::storage::InMemoryMetaStorage;
+use ingress_grpc::InMemoryMethodDescriptorRegistry;
 use rest_api::MetaRestEndpoint;
 use service::MetaService;
+use service_key_extractor::KeyExtractorsRegistry;
 use std::net::SocketAddr;
 use tokio::join;
 use tracing::debug;
@@ -23,25 +25,39 @@ pub struct Options {
 
 impl Options {
     pub fn build(self) -> Meta {
+        let key_extractors_registry = KeyExtractorsRegistry::default();
+        let method_descriptors_registry = InMemoryMethodDescriptorRegistry::default();
+        let service = MetaService::new(
+            key_extractors_registry.clone(),
+            method_descriptors_registry.clone(),
+            InMemoryMetaStorage::default(),
+            Default::default(),
+        );
+
         Meta {
+            key_extractors_registry,
+            method_descriptors_registry,
             rest_endpoint: MetaRestEndpoint::new(self.rest_addr),
-            service: MetaService::new(),
+            service,
         }
     }
 }
 
 pub struct Meta {
+    key_extractors_registry: KeyExtractorsRegistry,
+    method_descriptors_registry: InMemoryMethodDescriptorRegistry,
+
     rest_endpoint: MetaRestEndpoint,
     service: MetaService<InMemoryMetaStorage>,
 }
 
 impl Meta {
-    pub fn service_invocation_factory() {
-        unimplemented!("Return the service invocation factory");
+    pub fn key_extractors_registry(&self) -> KeyExtractorsRegistry {
+        self.key_extractors_registry.clone()
     }
 
-    pub fn method_descriptor_registry() {
-        unimplemented!("Return the method descriptor registry");
+    pub fn method_descriptor_registry(&self) -> InMemoryMethodDescriptorRegistry {
+        self.method_descriptors_registry.clone()
     }
 
     pub async fn run(self, drain: drain::Watch) {

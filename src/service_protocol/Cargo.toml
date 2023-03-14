@@ -11,7 +11,7 @@ publish = false
 default = []
 protocol = []
 codec = ["protocol", "dep:thiserror", "dep:journal", "dep:paste"]
-discovery = ["dep:thiserror", "dep:service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect"]
+discovery = ["dep:thiserror", "dep:service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:common"]
 
 [dependencies]
 bytes = { workspace = true }

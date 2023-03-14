@@ -18,16 +18,16 @@ use service_key_extractor::{KeyStructure, ServiceInstanceType};
 #[allow(clippy::declare_interior_mutable_const)]
 const APPLICATION_PROTO: HeaderValue = HeaderValue::from_static("application/proto");
 
-const SERVICE_TYPE_EXT: &'static str = "dev.restate.ext.service_type";
-const FIELD_EXT: &'static str = "dev.restate.ext.field";
+const SERVICE_TYPE_EXT: &str = "dev.restate.ext.service_type";
+const FIELD_EXT: &str = "dev.restate.ext.field";
 
 const UNKEYED_SERVICE_EXT: i32 = 0;
 const KEYED_SERVICE_EXT: i32 = 1;
 const SINGLETON_SERVICE_EXT: i32 = 2;
 
-const DISCOVER_PATH: &'static str = "/discover";
+const DISCOVER_PATH: &str = "/discover";
 
-const KEY_FIELD_ERROR_MESSAGE: &'static str = r"
+const KEY_FIELD_ERROR_MESSAGE: &str = r"
         When a service is keyed, it must have for each method a field annotated with `dev.restate.ext.field`, for example:
 
         service HelloWorld {{
@@ -139,7 +139,24 @@ pub enum ServiceDiscoveryError {
     Hyper(#[from] hyper::Error),
 }
 
+impl ServiceDiscoveryError {
+    pub fn is_user_error(&self) -> bool {
+        matches!(
+            self,
+            ServiceDiscoveryError::ServiceNotFoundInDescriptor(_)
+                | ServiceDiscoveryError::MissingServiceTypeAnnotation(_)
+                | ServiceDiscoveryError::KeyedServiceWithoutMethods(_)
+                | ServiceDiscoveryError::MissingKeyField(_)
+                | ServiceDiscoveryError::MoreThanOneKeyField(_)
+                | ServiceDiscoveryError::BadKeyFieldType(_)
+                | ServiceDiscoveryError::DifferentKeyTypes(_)
+        )
+    }
+}
+
 impl ServiceDiscovery {
+    // False positive with Bytes field
+    #[allow(clippy::mutable_key_type)]
     pub async fn discover(
         &self,
         uri: Uri,
@@ -192,6 +209,8 @@ impl ServiceDiscovery {
         // No need to retry these: if the validation fails, they're sdk bugs.
         let content_type = parts.headers.remove(CONTENT_TYPE);
         match content_type {
+            // False positive with Bytes field
+            #[allow(clippy::borrow_interior_mutable_const)]
             Some(ct) if ct == APPLICATION_PROTO => {}
             _ => {
                 return Err(ServiceDiscoveryError::BadResponse(
@@ -260,12 +279,12 @@ pub fn infer_service_type(
         // This can happen only if the restate dependency is bad?
         .ok_or_else(|| ServiceDiscoveryError::BadOrMissingRestateDependencyInDescriptor)?;
 
-    return match service_instance_type {
+    match service_instance_type {
         UNKEYED_SERVICE_EXT => Ok(ServiceInstanceType::Unkeyed),
         KEYED_SERVICE_EXT => infer_keyed_service_type(desc, restate_key_extension),
-        SINGLETON_SERVICE_EXT => return Ok(ServiceInstanceType::Singleton),
+        SINGLETON_SERVICE_EXT => Ok(ServiceInstanceType::Singleton),
         _ => Err(ServiceDiscoveryError::BadOrMissingRestateDependencyInDescriptor),
-    };
+    }
 }
 
 pub fn infer_keyed_service_type(
@@ -334,7 +353,7 @@ fn resolve_key_field(
         .fields()
         .filter(|f| f.options().has_extension(restate_key_extension))
         .collect::<Vec<_>>();
-    if key_fields.len() == 0 {
+    if key_fields.is_empty() {
         return Err(ServiceDiscoveryError::MissingKeyField(
             method_descriptor.clone(),
         ));

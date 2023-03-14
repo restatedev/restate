@@ -1299,16 +1299,20 @@ dependencies = [
 name = "meta"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "axum",
  "clap 4.1.6",
+ "common",
  "drain",
  "futures",
  "futures_util",
  "hyper",
+ "ingress_grpc",
+ "prost-reflect",
  "serde",
  "serde_json",
  "serde_with",
+ "service_key_extractor",
+ "service_protocol",
  "thiserror",
  "tokio",
  "tracing",
