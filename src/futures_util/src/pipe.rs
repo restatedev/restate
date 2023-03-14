@@ -149,7 +149,10 @@ where
                 panic!("Invoked write() before poll_next_input()")
             }
             PipeState::Ready => match target.send(u) {
-                Ok(_) => Ok(()),
+                Ok(_) => {
+                    *state = PipeState::Idle;
+                    Ok(())
+                }
                 Err(e) => {
                     *state = PipeState::Closed(e);
                     Err(e)
@@ -403,6 +406,7 @@ mod multi_target {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::future;
 
     #[tokio::test]
     async fn pipe_bounded_to_bounded() {
@@ -463,5 +467,27 @@ mod tests {
         drop(sink_right_rx);
         drop(source_tx);
         handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pipe_two_messages() {
+        let (input_tx, input_rx) = mpsc::channel(2);
+        let (output_tx, mut output_rx) = mpsc::channel(2);
+
+        let pipe = Pipe::new(
+            ReceiverPipeInput::new(input_rx, "input"),
+            new_sender_pipe_target(output_tx, "output"),
+        );
+
+        let pipe_handle = tokio::spawn(pipe.run(future::ready));
+
+        input_tx.send(1u32).await.unwrap();
+        input_tx.send(2u32).await.unwrap();
+
+        assert_eq!(output_rx.recv().await.unwrap(), 1u32);
+        assert_eq!(output_rx.recv().await.unwrap(), 2u32);
+
+        drop(input_tx);
+        pipe_handle.await.unwrap();
     }
 }
