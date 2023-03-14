@@ -37,7 +37,7 @@ const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/r
 pub(crate) enum InvocationTaskError {
     #[error("unexpected http status code: {0}")]
     UnexpectedResponse(http::StatusCode),
-    #[error("unexpected http status code: {0:?}")]
+    #[error("unexpected content type: {0:?}")]
     UnexpectedContentType(Option<HeaderValue>),
     #[error("received unexpected message: {0:?}")]
     UnexpectedMessage(MessageType),
