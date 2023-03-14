@@ -4,6 +4,8 @@
 pub mod codec;
 #[cfg(feature = "discovery")]
 pub mod discovery;
+#[cfg(feature = "message")]
+pub mod message;
 
 #[cfg(feature = "protocol")]
 pub mod pb {

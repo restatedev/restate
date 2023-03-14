@@ -1,8 +1,12 @@
+//! Module containing definitions of Protocol messages,
+//! including encoding and decoding of headers and message payloads.
+
+use super::pb;
+
 use bytes::Bytes;
 use journal::raw::{PlainRawEntry, RawEntry};
 use journal::{Completion, CompletionResult};
 use prost::Message;
-use service_protocol::pb;
 
 mod encoding;
 mod header;
