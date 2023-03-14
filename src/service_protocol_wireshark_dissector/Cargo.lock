@@ -102,7 +102,7 @@ dependencies = [
  "bytestring",
  "opentelemetry_api",
  "serde",
- "thiserror",
+ "tokio",
  "uuid",
  "xxhash-rust",
 ]
@@ -214,6 +214,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
 
 [[package]]
+name = "hermit-abi"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee512640fe35acbfb4bb779db6f0d80704c2cacfa2e39b601ef3e3f47d1ae4c7"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -322,6 +331,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
 
 [[package]]
+name = "mio"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b9d9a46eff5b4ff64b45a9e316a6d1e0bc719ef429cbec4dc630684212bfdf9"
+dependencies = [
+ "libc",
+ "log",
+ "wasi",
+ "windows-sys 0.45.0",
+]
+
+[[package]]
 name = "mlua"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -366,6 +387,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "578ede34cf02f8924ab9447f50c28075b4d3e5b269972345e7e0372b38c6cdcd"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "num_cpus"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fac9e2da13b5eb447a6ce3d392f23a29d8694bff781bf03a16cd9ac8697593b"
+dependencies = [
+ "hermit-abi",
+ "libc",
 ]
 
 [[package]]
@@ -600,6 +631,7 @@ name = "service_protocol"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "bytes-utils",
  "journal",
  "paste",
  "prost",
@@ -613,13 +645,19 @@ name = "service_protocol_wireshark_dissector"
 version = "0.0.0"
 dependencies = [
  "bytes",
- "bytes-utils",
  "journal",
  "mlua",
- "prost",
  "service_protocol",
  "thiserror",
- "tracing",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8229b473baa5980ac72ef434c4415e70c4b5e71b423043adb4ba059f89c99a1"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -676,35 +714,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing"
-version = "0.1.37"
+name = "tokio"
+version = "1.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ce8c33a8d48bd45d624a6e523445fd21ec13d3653cd51f681abf67418f54eb8"
+checksum = "03201d01c3c27a29c8a5cee5b55a93ddae1ccf6f08f65365c2c918f8c1b76f64"
 dependencies = [
- "cfg-if",
+ "autocfg",
+ "libc",
+ "mio",
+ "num_cpus",
  "pin-project-lite",
- "tracing-attributes",
- "tracing-core",
+ "signal-hook-registry",
+ "tokio-macros",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
-name = "tracing-attributes"
-version = "0.1.23"
+name = "tokio-macros"
+version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4017f8f45139870ca7e672686113917c71c7a6e02d4924eda67186083c03081a"
+checksum = "d266c00fde287f55d3f1c3e96c500c362a2b8c695076ec180f27918820bc6df8"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "tracing-core"
-version = "0.1.30"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24eb03ba0eab1fd845050058ce5e616558e8f8d8fca633e6b163fe25c797213a"
-dependencies = [
- "once_cell",
 ]
 
 [[package]]

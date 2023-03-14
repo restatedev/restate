@@ -18,12 +18,9 @@ luajit = ["mlua/luajit"]
 
 [dependencies]
 # Dependencies needed to decode packets
-service_protocol = { path = "../service_protocol" }
+service_protocol = { path = "../service_protocol", features = ["codec", "message"] }
 journal = { path = "../journal" }
-tracing = "0.1"
 bytes = "1.4"
-bytes-utils = "0.1"
-prost = "0.11"
 thiserror = "1.0"
 
 # Lua
