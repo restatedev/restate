@@ -10,6 +10,7 @@ use futures::FutureExt;
 use http::{Request, Response};
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
+use service_metadata::MethodDescriptorRegistry;
 use tokio::sync::Semaphore;
 use tower::{BoxError, Service};
 use tracing::{debug, info, info_span, trace, warn, Instrument};

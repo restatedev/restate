@@ -1,12 +1,9 @@
-mod descriptors_registry;
 mod dispatcher;
 mod handler;
 mod options;
 mod protocol;
 mod server;
 
-pub use descriptors_registry::InMemoryMethodDescriptorRegistry;
-pub use descriptors_registry::MethodDescriptorRegistry;
 pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
 pub use options::Options;
 pub use server::HyperServerIngress;
@@ -205,8 +202,6 @@ pub trait ServiceInvocationFactory {
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
-    use super::*;
-
     pub(super) mod pb {
         #![allow(warnings)]
         #![allow(clippy::all)]
@@ -215,6 +210,7 @@ mod mocks {
     }
 
     use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
+    use service_metadata::InMemoryMethodDescriptorRegistry;
 
     static DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin"));
 

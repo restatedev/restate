@@ -1056,6 +1056,7 @@ dependencies = [
  "prost-reflect",
  "serde",
  "serde_json",
+ "service_metadata",
  "test_utils",
  "thiserror",
  "tokio",
@@ -1307,7 +1308,6 @@ dependencies = [
  "futures",
  "futures_util",
  "hyper",
- "ingress_grpc",
  "prost-reflect",
  "serde",
  "serde_json",
@@ -2187,6 +2187,7 @@ dependencies = [
  "arc-swap",
  "common",
  "hyper",
+ "prost-reflect",
 ]
 
 [[package]]

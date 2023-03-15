@@ -7,10 +7,10 @@ use common::retry_policy::RetryPolicy;
 use futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
-use ingress_grpc::InMemoryMethodDescriptorRegistry;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{
-    DeliveryOptions, EndpointMetadata, InMemoryServiceEndpointRegistry, ProtocolType,
+    DeliveryOptions, EndpointMetadata, InMemoryMethodDescriptorRegistry,
+    InMemoryServiceEndpointRegistry, ProtocolType,
 };
 use service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;

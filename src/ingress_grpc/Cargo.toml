@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 # Restate
 common = { workspace = true }
+service_metadata = { workspace = true }
 
 # Encoding/Decoding
 bytes = { workspace = true }

@@ -13,3 +13,4 @@ publish = false
 arc-swap = { workspace = true }
 common = { workspace = true }
 hyper = { workspace = true }
+prost-reflect = { workspace = true }

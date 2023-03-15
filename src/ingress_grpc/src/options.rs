@@ -1,6 +1,7 @@
 use super::*;
-use crate::{HyperServerIngress, MethodDescriptorRegistry};
+use crate::HyperServerIngress;
 use common::types::IngressId;
+use service_metadata::MethodDescriptorRegistry;
 use std::net::SocketAddr;
 
 #[derive(Debug, clap::Parser)]

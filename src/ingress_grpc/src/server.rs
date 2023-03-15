@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use common::types::IngressId;
 use futures::FutureExt;
+use service_metadata::MethodDescriptorRegistry;
 use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
 use tower::make::Shared;
