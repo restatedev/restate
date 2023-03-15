@@ -12,7 +12,7 @@ default = []
 protocol = []
 message = ["protocol", "dep:bytes-utils"]
 codec = ["protocol", "dep:thiserror", "dep:journal", "dep:paste"]
-discovery = ["dep:thiserror", "dep:service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:common"]
+discovery = ["dep:thiserror", "dep:service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:common", "dep:service_metadata"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -30,6 +30,7 @@ hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "runt
 hyper-rustls = { workspace = true, optional = true }
 common = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }
+service_metadata = { workspace = true, optional = true }
 
 [dev-dependencies]
 test_utils = { workspace = true }

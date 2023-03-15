@@ -12,6 +12,7 @@ use prost_reflect::{
     ServiceDescriptor,
 };
 use service_key_extractor::{KeyStructure, ServiceInstanceType};
+use service_metadata::ProtocolType;
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -43,16 +44,24 @@ const KEY_FIELD_ERROR_MESSAGE: &str = r"
         The key field can be either a primitive or a custom message.
         The key field must have the same type for every method.";
 
-// We manually define the protobuf structs here because prost-build
-// won't parse extensions in ServiceDiscoveryResponse.files
-// We can simplify this code once https://github.com/tokio-rs/prost/pull/591 is fixed
 mod pb {
     use super::*;
 
-    // We don't need this for the time being, until we add request parameters
-    // #[derive(Clone, PartialEq, prost::Message)]
-    // pub struct ServiceDiscoveryRequest {}
+    mod generated_structs {
+        #![allow(warnings)]
+        #![allow(clippy::all)]
+        #![allow(unknown_lints)]
+        include!(concat!(
+            env!("OUT_DIR"),
+            "/dev.restate.service.discovery.rs"
+        ));
+    }
+    pub use generated_structs::ProtocolMode;
+    pub use generated_structs::ServiceDiscoveryRequest;
 
+    // We manually define the protobuf struct for the response here because prost-build
+    // won't parse extensions in ServiceDiscoveryResponse.files
+    // We can simplify this code once https://github.com/tokio-rs/prost/pull/591 is fixed
     #[derive(Clone, PartialEq, prost::Message)]
     pub struct ServiceDiscoveryResponse {
         // This field is different from what is defined in the protobuf schema.
@@ -68,6 +77,8 @@ mod pb {
         pub min_protocol_version: u32,
         #[prost(uint32, tag = "4")]
         pub max_protocol_version: u32,
+        #[prost(enumeration = "ProtocolMode", tag = "5")]
+        pub protocol_mode: i32,
     }
 }
 
@@ -86,6 +97,7 @@ impl ServiceDiscovery {
 pub struct DiscoveredMetadata {
     pub services: Vec<(String, ServiceInstanceType)>,
     pub descriptor_pool: DescriptorPool,
+    pub protocol_type: ProtocolType,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -123,7 +135,7 @@ pub enum ServiceDiscoveryError {
     DifferentKeyTypes(MethodDescriptor),
 
     // Errors most likely related to SDK bugs
-    #[error("received a bad response from the SDK. This might be a symptom of an SDK bug")]
+    #[error("received a bad response from the SDK: {0}. This might be a symptom of an SDK bug")]
     BadResponse(&'static str),
     #[error("received a bad response from the SDK that cannot be decoded: {0}. This might be a symptom of an SDK bug")]
     Decode(#[from] DecodeError),
@@ -189,7 +201,7 @@ impl ServiceDiscovery {
                     .extend(additional_headers.clone().into_iter());
 
                 let request = request_builder
-                    .body(Body::empty())
+                    .body(Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()))
                     .expect("Building the request is not supposed to fail");
 
                 async move {
@@ -257,6 +269,15 @@ impl ServiceDiscovery {
         Ok(DiscoveredMetadata {
             services,
             descriptor_pool,
+            protocol_type: match pb::ProtocolMode::from_i32(response.protocol_mode) {
+                Some(pb::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
+                Some(pb::ProtocolMode::RequestResponse) => ProtocolType::RequestResponse,
+                None => {
+                    return Err(ServiceDiscoveryError::BadResponse(
+                        "cannot decode protocol_mode",
+                    ))
+                }
+            },
         })
     }
 }
