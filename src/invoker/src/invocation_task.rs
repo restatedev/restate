@@ -317,7 +317,12 @@ where
                 opt_je = journal_stream.next(), if !journal_stream.is_terminated() => {
                     match opt_je {
                         Some(je) => {
-                            shortcircuit!(self.write(http_stream_tx_res.as_mut().expect("the journal stream returned Some after returning None"), ProtocolMessage::UnparsedEntry(je)).await);
+                            let http_stream_tx = http_stream_tx_res
+                                .as_mut()
+                                .expect(
+                                    "the http response stream should exist as there are journal stream entries to replay. \
+                                    Perhaps the journal stream returned Some after returning None?");
+                            shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
                             self.next_journal_index += 1;
                         },
                         None if self.endpoint_metadata.protocol_type == ProtocolType::RequestResponse => {
