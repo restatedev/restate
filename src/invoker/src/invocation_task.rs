@@ -6,6 +6,7 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
+use futures::stream::FusedStream;
 use futures::{future, stream, Stream, StreamExt};
 use hyper::body::Sender;
 use hyper::client::HttpConnector;
@@ -246,9 +247,9 @@ where
         );
 
         // Start the request
-        let mut http_stream_rx = shortcircuit!(
+        let (mut http_stream_tx, mut http_stream_rx) = shortcircuit!(
             self.wait_response_and_replay_end_loop(
-                &mut http_stream_tx,
+                http_stream_tx,
                 client,
                 http_request,
                 journal_stream,
@@ -259,14 +260,16 @@ where
         // Check all the entries have been replayed
         debug_assert_eq!(self.next_journal_index, journal_metadata.journal_size);
 
-        // If we have the invoker_rx, we can use the bidi stream loop,
+        // If we have the invoker_rx and the http_stream_tx, we can use the bidi stream loop,
         // which both reads the invoker_rx and the http_stream_rx
-        if let Some(invoker_rx) = self.invoker_rx.take() {
+        if let (Some(invoker_rx), Some(http_stream_tx)) =
+            (self.invoker_rx.take(), http_stream_tx.take())
+        {
             shortcircuit!(
-                self.bidi_stream_loop(&mut http_stream_tx, invoker_rx, &mut http_stream_rx)
+                self.bidi_stream_loop(http_stream_tx, invoker_rx, &mut http_stream_rx)
                     .await
             );
-        }
+        };
 
         // We don't have the invoker_rx, so we simply consume the response
         self.response_stream_loop(&mut http_stream_rx).await
@@ -277,11 +280,11 @@ where
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
     async fn wait_response_and_replay_end_loop<JournalStream>(
         &mut self,
-        http_stream_tx: &mut Sender,
+        http_stream_tx: Sender,
         client: hyper::Client<HttpsConnector<HttpConnector>>,
         req: Request<Body>,
-        mut journal_stream: JournalStream,
-    ) -> TerminalLoopState<Body>
+        journal_stream: JournalStream,
+    ) -> TerminalLoopState<(Option<Sender>, Body)>
     where
         JournalStream: Stream<Item = PlainRawEntry> + Unpin,
     {
@@ -292,8 +295,10 @@ where
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
         let mut req_fut = AbortOnDrop(tokio::task::spawn(client.request(req)));
+        let mut journal_stream = journal_stream.fuse();
 
         let mut http_stream_rx_res = None;
+        let mut http_stream_tx_res = Some(http_stream_tx);
 
         loop {
             tokio::select! {
@@ -309,22 +314,37 @@ where
 
                     http_stream_rx_res = Some(http_stream_rx);
                 },
-                Some(je) = journal_stream.next() => {
-                    shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
-                    self.next_journal_index += 1;
+                opt_je = journal_stream.next(), if !journal_stream.is_terminated() => {
+                    match opt_je {
+                        Some(je) => {
+                            let http_stream_tx = http_stream_tx_res
+                                .as_mut()
+                                .expect(
+                                    "the http response stream should exist as there are journal stream entries to replay. \
+                                    Perhaps the journal stream returned Some after returning None?");
+                            shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
+                            self.next_journal_index += 1;
+                        },
+                        None if self.endpoint_metadata.protocol_type() == ProtocolType::RequestResponse => {
+                            // We need to close the request stream now,
+                            // as we don't have anything else to send anymore
+                            http_stream_tx_res = None;
+                        },
+                        _ => {}
+                    }
                 },
                 else => break,
             }
         }
 
         trace!("Finished to replay the journal");
-        TerminalLoopState::Continue(http_stream_rx_res.unwrap())
+        TerminalLoopState::Continue((http_stream_tx_res, http_stream_rx_res.unwrap()))
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
     async fn bidi_stream_loop(
         &mut self,
-        http_stream_tx: &mut Sender,
+        mut http_stream_tx: Sender,
         mut invoker_rx: mpsc::UnboundedReceiver<Completion>,
         http_stream_rx: &mut Body,
     ) -> TerminalLoopState<()> {
@@ -334,7 +354,7 @@ where
                     match opt_completion {
                         Some(completion) => {
                             trace!("Sending the completion to the wire");
-                            shortcircuit!(self.write(http_stream_tx, completion.into()).await);
+                            shortcircuit!(self.write(&mut http_stream_tx, completion.into()).await);
                         },
                         None => {
                             // Completion channel is closed,
@@ -457,9 +477,11 @@ where
         let mut http_request_builder = Request::builder()
             .method(http::Method::POST)
             .header(http::header::CONTENT_TYPE, APPLICATION_RESTATE)
+            .header(http::header::ACCEPT, APPLICATION_RESTATE)
             .uri(Self::append_path(
                 self.endpoint_metadata.address(),
                 &[
+                    "invoke",
                     self.service_invocation_id
                         .service_id
                         .service_name
@@ -493,6 +515,8 @@ where
             .body(req_body)
             // This fails only in case the URI is malformed, which should never happen
             .expect("The request builder shouldn't fail");
+
+        trace!("Request URI: {}", http_request.uri());
 
         (http_stream_tx, http_request)
     }
