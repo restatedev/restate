@@ -26,12 +26,12 @@ pub trait PipeInput<T> {
 ///
 /// The [`PipeTarget`] transitions through 3 states:
 ///
-/// * _Idle_
+/// * _NotReady_: Initial state
 /// * _Ready_
-/// * _Closed_
+/// * _Closed_: Terminal state
 ///
 /// The state becomes _Ready_ when [`PipeTarget::poll_ready`] returns [`Poll::Ready`] with [`Ok`].
-/// After sending a message with [`PipeTarget::send`], the state transitions back to _Idle_,
+/// After sending a message with [`PipeTarget::send`], the state transitions back to _NotReady_,
 /// requiring to invoke [`PipeTarget::poll_ready`] again before the next [`PipeTarget::send`].
 ///
 /// Both [`PipeTarget::poll_ready`] and [`PipeTarget::send`] return [`PipeError`] if the backing target is closed.
@@ -43,13 +43,13 @@ pub trait PipeTarget<U> {
 
     /// Send the message.
     ///
-    /// Panics if the [`PipeTarget`] is _Idle_, meaning there wasn't a previous successful call to [`PipeTarget::poll_ready`].
+    /// Panics if the [`PipeTarget`] is _NotReady_, meaning there wasn't a previous successful call to [`PipeTarget::poll_ready`].
     fn send(self: Pin<&mut Self>, u: U) -> Result<(), PipeError>;
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 enum PipeState {
-    Idle,
+    NotReady,
     Ready,
     Closed(PipeError),
 }
@@ -68,12 +68,12 @@ enum PipeState {
 ///
 /// The [`Pipe`] transitions through 3 states:
 ///
-/// * _Idle_
+/// * _NotReady_: Initial state
 /// * _Ready_
-/// * _Closed_
+/// * _Closed_: Terminal state
 ///
 /// The state becomes _Ready_ when [`Pipe::poll_next_input`] returns [`Poll::Ready`] with a value.
-/// After sending a message with [`Pipe::write`], the state transitions back to _Idle_,
+/// After sending a message with [`Pipe::write`], the state transitions back to _NotReady_,
 /// requiring to invoke [`Pipe::poll_next_input`] again before the next [`Pipe::write`].
 #[pin_project]
 pub struct Pipe<T, In, U, Target> {
@@ -97,7 +97,7 @@ where
         Self {
             pipe_input,
             pipe_target,
-            state: PipeState::Idle,
+            state: PipeState::NotReady,
             _t: Default::default(),
             _u: Default::default(),
         }
@@ -115,7 +115,7 @@ where
         // Loop to wait for the target to be ready
         loop {
             match state {
-                PipeState::Idle => match ready!(target.as_mut().poll_ready(cx)) {
+                PipeState::NotReady => match ready!(target.as_mut().poll_ready(cx)) {
                     Ok(_) => {
                         *state = PipeState::Ready;
                     }
@@ -138,19 +138,19 @@ where
         })
     }
 
-    /// Panics if the state of the [`Pipe`] is _Idle_, meaning there wasn't a previous successful call to [`Self::poll_next_input`].
+    /// Panics if the state of the [`Pipe`] is _NotReady_, meaning there wasn't a previous successful call to [`Self::poll_next_input`].
     pub fn write(self: Pin<&mut Self>, u: U) -> Result<(), PipeError> {
         let this = self.project();
         let target = this.pipe_target;
         let state = this.state;
 
         return match state {
-            PipeState::Idle => {
+            PipeState::NotReady => {
                 panic!("Invoked write() before poll_next_input()")
             }
             PipeState::Ready => match target.send(u) {
                 Ok(_) => {
-                    *state = PipeState::Idle;
+                    *state = PipeState::NotReady;
                     Ok(())
                 }
                 Err(e) => {
@@ -237,7 +237,7 @@ mod target {
     ) -> impl PipeTarget<T> {
         SenderPipeTarget {
             name,
-            acquire_fn: mpsc::Sender::reserve_owned,
+            send_fn: |tx: mpsc::Sender<T>, t| async { tx.send(t).await.map(|_| tx) },
             state: SenderPipeTargetState::Idle(Some(tx)),
         }
     }
@@ -245,43 +245,39 @@ mod target {
     #[pin_project(project = SenderPipeTargetStateProj)]
     enum SenderPipeTargetState<T, Fut> {
         Idle(Option<mpsc::Sender<T>>),
-        Acquiring(#[pin] Fut),
-        ReadyToSend(Option<mpsc::OwnedPermit<T>>),
+        Sending(#[pin] Fut),
         Closed(PipeError),
     }
 
     #[pin_project]
-    struct SenderPipeTarget<T, AcquireFn, Fut> {
+    struct SenderPipeTarget<T, SendFn, Fut> {
         name: &'static str,
-        acquire_fn: AcquireFn,
+        send_fn: SendFn,
+
         #[pin]
         state: SenderPipeTargetState<T, Fut>,
     }
 
-    impl<T, AcquireFn, Fut> PipeTarget<T> for SenderPipeTarget<T, AcquireFn, Fut>
+    impl<T, SendFn, Fut> PipeTarget<T> for SenderPipeTarget<T, SendFn, Fut>
     where
-        AcquireFn: Fn(mpsc::Sender<T>) -> Fut,
-        Fut: Future<Output = Result<mpsc::OwnedPermit<T>, mpsc::error::SendError<()>>>,
+        SendFn: Fn(mpsc::Sender<T>, T) -> Fut,
+        Fut: Future<Output = Result<mpsc::Sender<T>, mpsc::error::SendError<T>>>,
     {
         fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), PipeError>> {
             let this = self.project();
-            let acquire_fn = this.acquire_fn;
             let mut state = this.state;
 
             loop {
                 let projected_state = state.as_mut().project();
 
                 let new_state = match projected_state {
-                    SenderPipeTargetStateProj::Idle(tx) => {
-                        SenderPipeTargetState::Acquiring((acquire_fn)(tx.take().unwrap()))
-                    }
-                    SenderPipeTargetStateProj::Acquiring(fut) => match ready!(fut.poll(cx)) {
-                        Ok(permit) => SenderPipeTargetState::ReadyToSend(Some(permit)),
+                    SenderPipeTargetStateProj::Sending(fut) => match ready!(fut.poll(cx)) {
+                        Ok(tx) => SenderPipeTargetState::Idle(Some(tx)),
                         Err(_) => {
                             SenderPipeTargetState::Closed(PipeError::ChannelClosed(this.name))
                         }
                     },
-                    SenderPipeTargetStateProj::ReadyToSend(_) => return Poll::Ready(Ok(())),
+                    SenderPipeTargetStateProj::Idle(_) => return Poll::Ready(Ok(())),
                     SenderPipeTargetStateProj::Closed(err) => return Poll::Ready(Err(*err)),
                 };
 
@@ -291,18 +287,18 @@ mod target {
 
         fn send(self: Pin<&mut Self>, t: T) -> Result<(), PipeError> {
             let this = self.project();
+            let send_fn = this.send_fn;
             let mut state = this.state;
 
-            let permit = match state.as_mut().project() {
-                SenderPipeTargetStateProj::ReadyToSend(permit) => permit.take().unwrap(),
+            let tx = match state.as_mut().project() {
+                SenderPipeTargetStateProj::Idle(tx) => tx.take().unwrap(),
                 SenderPipeTargetStateProj::Closed(err) => return Err(*err),
                 _ => {
                     panic!("Target is not ready");
                 }
             };
 
-            let sender = permit.send(t);
-            state.set(SenderPipeTargetState::Idle(Some(sender)));
+            state.set(SenderPipeTargetState::Sending(send_fn(tx, t)));
 
             Ok(())
         }
@@ -333,8 +329,8 @@ mod multi_target {
             EitherPipeTarget {
                 left_target,
                 right_target,
-                left_state: PipeState::Idle,
-                right_state: PipeState::Idle,
+                left_state: PipeState::NotReady,
+                right_state: PipeState::NotReady,
             }
         }
     }
@@ -354,13 +350,13 @@ mod multi_target {
                     (PipeState::Closed(err), _) | (_, PipeState::Closed(err)) => {
                         return Poll::Ready(Err(err))
                     }
-                    (PipeState::Idle, _) => {
+                    (PipeState::NotReady, _) => {
                         *this.left_state = match ready!(left_target.as_mut().poll_ready(cx)) {
                             Ok(()) => PipeState::Ready,
                             Err(err) => PipeState::Closed(err),
                         };
                     }
-                    (_, PipeState::Idle) => {
+                    (_, PipeState::NotReady) => {
                         *this.right_state = match ready!(right_target.as_mut().poll_ready(cx)) {
                             Ok(()) => PipeState::Ready,
                             Err(err) => PipeState::Closed(err),
@@ -382,7 +378,7 @@ mod multi_target {
                 (PipeState::Ready, _, EitherTarget::Left(left_msg)) => {
                     let send_res = left_target.send(left_msg);
                     *this.left_state = match &send_res {
-                        Ok(_) => PipeState::Idle,
+                        Ok(_) => PipeState::NotReady,
                         Err(err) => PipeState::Closed(*err),
                     };
                     send_res
@@ -390,7 +386,7 @@ mod multi_target {
                 (_, PipeState::Ready, EitherTarget::Right(right_msg)) => {
                     let send_res = right_target.send(right_msg);
                     *this.right_state = match &send_res {
-                        Ok(_) => PipeState::Idle,
+                        Ok(_) => PipeState::NotReady,
                         Err(err) => PipeState::Closed(*err),
                     };
                     send_res
