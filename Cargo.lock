@@ -1317,6 +1317,7 @@ dependencies = [
  "service_protocol",
  "thiserror",
  "tokio",
+ "tower",
  "tracing",
 ]
 
