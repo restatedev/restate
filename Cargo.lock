@@ -2186,7 +2186,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "common",
- "hyper",
+ "http",
  "prost-reflect",
 ]
 

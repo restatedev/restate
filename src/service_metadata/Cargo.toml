@@ -12,5 +12,5 @@ publish = false
 [dependencies]
 arc-swap = { workspace = true }
 common = { workspace = true }
-hyper = { workspace = true }
+http = "0.2.9"
 prost-reflect = { workspace = true }

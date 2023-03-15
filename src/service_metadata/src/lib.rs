@@ -1,6 +1,6 @@
 use common::retry_policy::RetryPolicy;
-use hyper::header::{HeaderName, HeaderValue};
-use hyper::Uri;
+use http::header::{HeaderName, HeaderValue};
+use http::Uri;
 use std::collections::HashMap;
 
 mod descriptors_registry;
