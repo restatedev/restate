@@ -325,7 +325,7 @@ where
                             shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
                             self.next_journal_index += 1;
                         },
-                        None if self.endpoint_metadata.protocol_type == ProtocolType::RequestResponse => {
+                        None if self.endpoint_metadata.protocol_type() == ProtocolType::RequestResponse => {
                             // We need to close the request stream now,
                             // as we don't have anything else to send anymore
                             http_stream_tx_res = None;
