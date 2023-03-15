@@ -2206,6 +2206,7 @@ dependencies = [
  "prost-reflect",
  "prost-types",
  "service_key_extractor",
+ "service_metadata",
  "test_utils",
  "thiserror",
  "tokio",

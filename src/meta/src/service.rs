@@ -1,8 +1,7 @@
-// --- Handle
+use super::storage::{MetaStorage, MetaStorageError};
 
 use std::collections::HashMap;
 
-use crate::storage::{MetaStorage, MetaStorageError};
 use common::retry_policy::RetryPolicy;
 use futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use hyper::http::{HeaderName, HeaderValue};
@@ -10,7 +9,7 @@ use hyper::Uri;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{
     DeliveryOptions, EndpointMetadata, InMemoryMethodDescriptorRegistry,
-    InMemoryServiceEndpointRegistry, ProtocolType,
+    InMemoryServiceEndpointRegistry,
 };
 use service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
@@ -175,7 +174,7 @@ where
                 service,
                 EndpointMetadata::new(
                     uri.clone(),
-                    ProtocolType::BidiStream, // TODO needs to support RequestResponse as well: https://github.com/restatedev/restate/issues/183
+                    discovered_metadata.protocol_type,
                     DeliveryOptions::new(additional_headers.clone(), None), // TODO needs to support retry policies as well: https://github.com/restatedev/restate/issues/184
                 ),
             );
