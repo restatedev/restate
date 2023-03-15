@@ -21,6 +21,15 @@ pub struct Options {
         default_value = "0.0.0.0:8081"
     )]
     rest_addr: SocketAddr,
+    /// Concurrency limit for the Meta Operational REST APIs
+    #[arg(
+        long = "meta-rest-api-concurrency-limit",
+        env = "META_REST_API_CONCURRENCY_LIMIT",
+        default_value_t = 1000
+    )]
+    // We cannot name it concurrency_limit because clap won't like it,
+    // because otherwise there will be two different concurrency_limit fields in the parent options struct.
+    meta_concurrency_limit: usize,
 }
 
 impl Options {
@@ -40,7 +49,7 @@ impl Options {
             key_extractors_registry,
             method_descriptors_registry,
             service_endpoint_registry,
-            rest_endpoint: MetaRestEndpoint::new(self.rest_addr),
+            rest_endpoint: MetaRestEndpoint::new(self.rest_addr, self.meta_concurrency_limit),
             service,
         }
     }
