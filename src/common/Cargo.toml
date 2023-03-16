@@ -15,5 +15,7 @@ bytestring = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 opentelemetry_api = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 tokio = { workspace = true, default-features = false, features = ["time"]}
+tracing = { workspace = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
