@@ -7,6 +7,7 @@ use pin_project::pin_project;
 use tokio::sync::mpsc;
 
 pub use input::*;
+pub use multi_input::*;
 pub use multi_target::*;
 pub use target::*;
 
@@ -184,6 +185,13 @@ where
     }
 }
 
+/// Generic data structure to identify an input/output message from/to left/right channel.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Either<T1, T2> {
+    Left(T1),
+    Right(T2),
+}
+
 mod input {
     use super::*;
 
@@ -224,6 +232,62 @@ mod input {
                 .rx
                 .poll_recv(cx)
                 .map(|opt| opt.ok_or(PipeError::ChannelClosed(self.name)))
+        }
+    }
+}
+
+mod multi_input {
+    use super::*;
+
+    #[pin_project]
+    pub struct EitherPipeInput<PT1, PT2> {
+        #[pin]
+        left_input: PT1,
+        #[pin]
+        right_input: PT2,
+
+        poll_left_first: bool,
+    }
+
+    impl<PT1, PT2> EitherPipeInput<PT1, PT2> {
+        pub fn new(left_input: PT1, right_input: PT2) -> Self {
+            Self {
+                left_input,
+                right_input,
+                poll_left_first: true,
+            }
+        }
+    }
+
+    impl<PT1, PT2, T1, T2> PipeInput<Either<T1, T2>> for EitherPipeInput<PT1, PT2>
+    where
+        PT1: PipeInput<T1>,
+        PT2: PipeInput<T2>,
+    {
+        fn poll_recv(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<Either<T1, T2>, PipeError>> {
+            let this = self.project();
+            let poll_left_first = this.poll_left_first;
+            let left_input = this.left_input;
+            let right_input = this.right_input;
+
+            let (fired_left, res) = if *poll_left_first {
+                if let Poll::Ready(res) = left_input.poll_recv(cx) {
+                    (true, res.map(Either::Left))
+                } else {
+                    (false, ready!(right_input.poll_recv(cx)).map(Either::Right))
+                }
+            } else if let Poll::Ready(res) = right_input.poll_recv(cx) {
+                (false, res.map(Either::Right))
+            } else {
+                (true, ready!(left_input.poll_recv(cx)).map(Either::Left))
+            };
+
+            // Set the poll flag to flag the one that didn't return in this poll iteration
+            *poll_left_first = !fired_left;
+            Poll::Ready(res)
         }
     }
 }
@@ -308,11 +372,6 @@ mod target {
 mod multi_target {
     use super::*;
 
-    pub enum EitherTarget<T1, T2> {
-        Left(T1),
-        Right(T2),
-    }
-
     #[pin_project]
     pub struct EitherPipeTarget<PT1, PT2> {
         #[pin]
@@ -335,7 +394,7 @@ mod multi_target {
         }
     }
 
-    impl<T1, T2, PT1, PT2> PipeTarget<EitherTarget<T1, T2>> for EitherPipeTarget<PT1, PT2>
+    impl<T1, T2, PT1, PT2> PipeTarget<Either<T1, T2>> for EitherPipeTarget<PT1, PT2>
     where
         PT1: PipeTarget<T1>,
         PT2: PipeTarget<T2>,
@@ -367,15 +426,15 @@ mod multi_target {
             }
         }
 
-        fn send(self: Pin<&mut Self>, msg: EitherTarget<T1, T2>) -> Result<(), PipeError> {
+        fn send(self: Pin<&mut Self>, msg: Either<T1, T2>) -> Result<(), PipeError> {
             let this = self.project();
             let left_target = this.left_target;
             let right_target = this.right_target;
 
             return match (*this.left_state, *this.right_state, msg) {
-                (PipeState::Closed(err), _, EitherTarget::Left(_))
-                | (_, PipeState::Closed(err), EitherTarget::Right(_)) => Err(err),
-                (PipeState::Ready, _, EitherTarget::Left(left_msg)) => {
+                (PipeState::Closed(err), _, Either::Left(_))
+                | (_, PipeState::Closed(err), Either::Right(_)) => Err(err),
+                (PipeState::Ready, _, Either::Left(left_msg)) => {
                     let send_res = left_target.send(left_msg);
                     *this.left_state = match &send_res {
                         Ok(_) => PipeState::NotReady,
@@ -383,7 +442,7 @@ mod multi_target {
                     };
                     send_res
                 }
-                (_, PipeState::Ready, EitherTarget::Right(right_msg)) => {
+                (_, PipeState::Ready, Either::Right(right_msg)) => {
                     let send_res = right_target.send(right_msg);
                     *this.right_state = match &send_res {
                         Ok(_) => PipeState::NotReady,
@@ -402,6 +461,7 @@ mod multi_target {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use futures::future;
 
     #[tokio::test]
@@ -444,9 +504,9 @@ mod tests {
         let handle = tokio::spawn(pipe.run(|mut i| {
             i += 1;
             futures::future::ready(if i % 2 == 0 {
-                EitherTarget::Left(i)
+                Either::Left(i)
             } else {
-                EitherTarget::Right(i)
+                Either::Right(i)
             })
         }));
 
@@ -484,6 +544,36 @@ mod tests {
         assert_eq!(output_rx.recv().await.unwrap(), 2u32);
 
         drop(input_tx);
+        pipe_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn multi_input_pipe() {
+        let (input_1_tx, input_1_rx) = mpsc::channel(2);
+        let (input_2_tx, input_2_rx) = mpsc::channel(2);
+        let (output_tx, mut output_rx) = mpsc::channel(1);
+
+        let pipe = Pipe::new(
+            EitherPipeInput::new(
+                ReceiverPipeInput::new(input_1_rx, "input_left"),
+                ReceiverPipeInput::new(input_2_rx, "input_right"),
+            ),
+            new_sender_pipe_target(output_tx, "output"),
+        );
+
+        input_1_tx.send(1u32).await.unwrap();
+        input_1_tx.send(3u32).await.unwrap();
+        input_2_tx.send(2u32).await.unwrap();
+
+        let pipe_handle = tokio::spawn(pipe.run(future::ready));
+
+        // Ensure fairness
+        assert_eq!(output_rx.recv().await.unwrap(), Either::Left(1u32));
+        assert_eq!(output_rx.recv().await.unwrap(), Either::Right(2u32));
+        assert_eq!(output_rx.recv().await.unwrap(), Either::Left(3u32));
+
+        drop(input_1_tx);
+        drop(input_2_tx);
         pipe_handle.await.unwrap();
     }
 }
