@@ -3,13 +3,13 @@ use std::collections::BinaryHeap;
 use std::time::SystemTime;
 
 #[derive(Debug)]
-pub(crate) struct Timer<T> {
+pub struct Timer<T> {
     sleep_until: SystemTime,
     payload: T,
 }
 
 impl<T> Timer<T> {
-    pub(crate) fn into_inner(self) -> T {
+    pub fn into_inner(self) -> T {
         self.payload
     }
 }
@@ -35,7 +35,7 @@ impl<T> PartialEq for Timer<T> {
 impl<T> Eq for Timer<T> {}
 
 #[derive(Debug)]
-pub(crate) struct TimerQueue<T>(BinaryHeap<Reverse<Timer<T>>>);
+pub struct TimerQueue<T>(BinaryHeap<Reverse<Timer<T>>>);
 
 impl<T> Default for TimerQueue<T> {
     fn default() -> Self {
@@ -44,18 +44,18 @@ impl<T> Default for TimerQueue<T> {
 }
 
 impl<T> TimerQueue<T> {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self(BinaryHeap::new())
     }
 
-    pub(crate) fn sleep_until(&mut self, sleep_until: SystemTime, payload: T) {
+    pub fn sleep_until(&mut self, sleep_until: SystemTime, payload: T) {
         self.0.push(Reverse(Timer {
             sleep_until,
             payload,
         }))
     }
 
-    pub(crate) async fn await_timer(&mut self) -> Timer<T> {
+    pub async fn await_timer(&mut self) -> Timer<T> {
         if let Some(Reverse(Timer { sleep_until, .. })) = self.0.peek() {
             let system_now = SystemTime::now();
             if let Ok(sleep) = sleep_until.duration_since(system_now) {

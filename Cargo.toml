@@ -66,6 +66,7 @@ storage_api = {path = "src/storage_api"}
 storage_rocksdb = { path = "src/storage_rocksdb" }
 test_utils = { path = "src/test_utils" }
 timer = { path = "src/timer" }
+timer_queue = { path = "src/timer_queue" }
 tracing_instrumentation = { path = "src/tracing_instrumentation" }
 worker = { path = "src/worker" }
 

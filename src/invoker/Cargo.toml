@@ -30,6 +30,7 @@ opentelemetry-http = { workspace = true }
 journal = { workspace = true }
 service_metadata = { workspace = true }
 service_protocol = { workspace = true, features = ["message"] }
+timer_queue = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }

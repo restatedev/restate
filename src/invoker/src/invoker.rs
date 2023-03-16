@@ -9,13 +9,13 @@ use futures::stream;
 use futures::stream::{PollNext, StreamExt};
 use journal::raw::{PlainRawEntry, RawEntryCodec};
 use service_metadata::ServiceEndpointRegistry;
+use timer_queue::TimerQueue;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
 
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use crate::invoker::state_machine_coordinator::StartInvocationTaskArguments;
-use crate::timer::TimerQueue;
 
 #[derive(Debug, Clone)]
 pub struct UnboundedInvokerInputSender {

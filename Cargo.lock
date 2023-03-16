@@ -1107,6 +1107,7 @@ dependencies = [
  "service_protocol",
  "test_utils",
  "thiserror",
+ "timer_queue",
  "tokio",
  "tonic",
  "tracing",
@@ -2443,6 +2444,14 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "timer_queue"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
 ]
 
 [[package]]
