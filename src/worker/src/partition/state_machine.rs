@@ -18,7 +18,7 @@ use tracing::{debug, trace, warn};
 use crate::partition::effects::{Effects, OutboxMessage};
 use crate::partition::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, ResolutionResult,
-    TimerEffect,
+    Timer,
 };
 use crate::partition::InvocationStatus;
 
@@ -33,7 +33,7 @@ pub(super) enum Error {
 #[derive(Debug)]
 pub(crate) enum Command {
     Invoker(InvokerEffect),
-    Timer(TimerEffect),
+    Timer(Timer),
     OutboxTruncation(MessageIndex),
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
@@ -170,21 +170,21 @@ where
             Command::OutboxTruncation(index) => {
                 effects.truncate_outbox(index);
             }
-            Command::Timer(timer_effect) => {
-                self.on_timer_effect(timer_effect, state, effects).await?;
+            Command::Timer(timer) => {
+                self.on_timer(timer, state, effects).await?;
             }
         }
 
         Ok(())
     }
 
-    async fn on_timer_effect<State: StateReader>(
+    async fn on_timer<State: StateReader>(
         &mut self,
-        TimerEffect {
+        Timer {
             service_invocation_id,
             entry_index,
-            timestamp: wake_up_time,
-        }: TimerEffect,
+            wake_up_time,
+        }: Timer,
         state: &State,
         effects: &mut Effects,
     ) -> Result<(), Error> {
@@ -196,7 +196,7 @@ where
 
         let completion = Completion {
             entry_index,
-            result: CompletionResult::Success(Bytes::new()),
+            result: CompletionResult::Empty,
         };
         Self::handle_completion(service_invocation_id, completion, state, effects).await?;
 

@@ -13,5 +13,6 @@ publish = false
 common = { workspace = true }
 drain = { workspace = true }
 thiserror = { workspace = true }
+timer_queue = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -33,7 +33,6 @@ pub(crate) enum ActuatorMessage {
         seq_number: MessageIndex,
         message: OutboxMessage,
     },
-    #[allow(dead_code)]
     RegisterTimer {
         service_invocation_id: ServiceInvocationId,
         wake_up_time: u64,

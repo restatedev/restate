@@ -69,7 +69,7 @@ impl ServiceInvocationId {
 ///
 /// Services are isolated by key. This means that there cannot be two concurrent
 /// invocations for the same service instance (service name, key).
-#[derive(Eq, Hash, PartialEq, Clone, Debug, Serialize, Deserialize)]
+#[derive(Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
 pub struct ServiceId {
     /// Identifies the grpc service
     pub service_name: ByteString,

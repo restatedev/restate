@@ -24,8 +24,9 @@ use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::LeadershipState;
 use crate::partition::storage::InMemoryPartitionStorage;
 use crate::util::IdentitySender;
+use crate::TimerHandle;
 pub(crate) use state_machine::Command;
-use timer::TimerHandle;
+pub(super) use types::Timer;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>

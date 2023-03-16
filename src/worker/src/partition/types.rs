@@ -165,8 +165,22 @@ impl From<EnrichedEntryHeader> for RawEntryHeader {
 }
 
 #[derive(Debug)]
-pub(crate) struct TimerEffect {
+pub(crate) struct Timer {
     pub service_invocation_id: ServiceInvocationId,
+    pub wake_up_time: u64,
     pub entry_index: EntryIndex,
-    pub timestamp: u64,
+}
+
+impl Timer {
+    pub(crate) fn new(
+        service_invocation_id: ServiceInvocationId,
+        entry_index: EntryIndex,
+        wake_up_time: u64,
+    ) -> Self {
+        Self {
+            service_invocation_id,
+            entry_index,
+            wake_up_time,
+        }
+    }
 }

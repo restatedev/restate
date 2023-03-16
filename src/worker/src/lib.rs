@@ -4,6 +4,7 @@ use crate::ingress_integration::ExternalClientIngressRunner;
 use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::memory::InMemoryJournalReader;
 use crate::partition::storage::InMemoryPartitionStorage;
+use crate::partition::Timer;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use common::retry_policy::RetryPolicy;
 use common::types::{IngressId, PeerId, PeerTarget};
@@ -17,7 +18,6 @@ use partition::shuffle;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use service_protocol::codec::ProtobufRawEntryCodec;
-use timer::{Service, TimerHandle};
 use tokio::join;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -38,6 +38,9 @@ type PartitionProcessor = partition::PartitionProcessor<
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
     KeyExtractorsRegistry,
 >;
+type TimerService = timer::Service<Timer>;
+type TimerHandle = timer::TimerHandle<Timer>;
+type TimerOutput = timer::Output<Timer>;
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]
@@ -63,7 +66,7 @@ pub struct Worker {
     network: network_integration::Network,
     invoker: Invoker<ProtobufRawEntryCodec, InMemoryJournalReader, InMemoryServiceEndpointRegistry>,
     external_client_ingress_runner: ExternalClientIngressRunner,
-    timer: Service,
+    timer: TimerService,
 }
 
 impl Options {
@@ -133,7 +136,7 @@ impl Worker {
             service_endpoint_registry,
         );
 
-        let timer = Service::new();
+        let timer = timer::Service::new();
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {

@@ -1,16 +1,17 @@
 use crate::partition::effects::{
     CommitError, Committable, OutboxMessage, StateStorage, StateStorageError,
 };
-use crate::partition::leadership::InvocationReader;
+use crate::partition::leadership::{InvocationReader, TimerReader};
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{
     InboxEntry, JournalStatus, ResponseSink, StateReader, StateReaderError,
 };
-use crate::partition::types::EnrichedRawEntry;
+use crate::partition::storage::memory::timer_key::{TimerKey, TimerKeyRef};
+use crate::partition::types::{EnrichedRawEntry, Timer};
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
+    EntryIndex, InvocationId, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
     ServiceInvocationResponseSink,
 };
 use futures::future::{err, ok, BoxFuture};
@@ -18,9 +19,11 @@ use futures::{stream, FutureExt};
 use invoker::{JournalMetadata, JournalReader};
 use journal::raw::{Header, PlainRawEntry};
 use journal::CompletionResult;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::vec::IntoIter;
+
+mod timer_key;
 
 #[derive(Debug, Clone)]
 pub struct InMemoryPartitionStorage {
@@ -119,6 +122,7 @@ struct Storage {
     journals: HashMap<ServiceId, Journal>,
     outbox: VecDeque<(MessageIndex, OutboxMessage)>,
     state: HashMap<ServiceId, HashMap<Bytes, Bytes>>,
+    timers: BTreeMap<TimerKey, InvocationId>,
 }
 
 impl Storage {
@@ -129,6 +133,7 @@ impl Storage {
             journals: HashMap::new(),
             outbox: VecDeque::new(),
             state: HashMap::new(),
+            timers: BTreeMap::new(),
         }
     }
 
@@ -321,6 +326,27 @@ impl Storage {
         self.journals
             .get(&service_invocation_id.service_id)
             .and_then(|journal| journal.response_sink.clone())
+    }
+
+    fn store_timer(
+        &mut self,
+        service_invocation_id: &ServiceInvocationId,
+        wake_up_time: u64,
+        entry_index: EntryIndex,
+    ) {
+        self.timers.insert(
+            TimerKey::new(
+                service_invocation_id.service_id.clone(),
+                wake_up_time,
+                entry_index,
+            ),
+            service_invocation_id.invocation_id,
+        );
+    }
+
+    fn delete_timer(&mut self, service_id: &ServiceId, wake_up_time: u64, entry_index: EntryIndex) {
+        self.timers
+            .remove(&(service_id, wake_up_time, entry_index) as &dyn TimerKeyRef);
     }
 }
 
@@ -548,20 +574,28 @@ impl<'a> StateStorage for Transaction<'a> {
 
     fn store_timer(
         &self,
-        _service_invocation_id: &ServiceInvocationId,
-        _wake_up_time: u64,
-        _entry_index: EntryIndex,
+        service_invocation_id: &ServiceInvocationId,
+        wake_up_time: u64,
+        entry_index: EntryIndex,
     ) -> Result<(), StateStorageError> {
-        todo!()
+        self.inner
+            .lock()
+            .unwrap()
+            .store_timer(service_invocation_id, wake_up_time, entry_index);
+        Ok(())
     }
 
     fn delete_timer(
         &self,
-        _service_id: &ServiceId,
-        _wake_up_time: u64,
-        _entry_index: EntryIndex,
+        service_id: &ServiceId,
+        wake_up_time: u64,
+        entry_index: EntryIndex,
     ) -> Result<(), StateStorageError> {
-        todo!()
+        self.inner
+            .lock()
+            .unwrap()
+            .delete_timer(service_id, wake_up_time, entry_index);
+        Ok(())
     }
 }
 
@@ -590,6 +624,33 @@ impl OutboxReader for InMemoryPartitionStorage {
             .unwrap()
             .get_next_outbox_message(next_sequence_number))
         .boxed()
+    }
+}
+
+impl TimerReader for InMemoryPartitionStorage {
+    type TimerStream = stream::Iter<IntoIter<Timer>>;
+
+    fn scan_timers(&self) -> Self::TimerStream {
+        let timers: Vec<Timer> = self
+            .inner
+            .lock()
+            .unwrap()
+            .timers
+            .iter()
+            .map(|(timer_key, invocation_id)| {
+                let (service_id, wake_up_time, entry_index) = timer_key.clone().into_inner();
+                Timer::new(
+                    ServiceInvocationId {
+                        service_id,
+                        invocation_id: *invocation_id,
+                    },
+                    entry_index,
+                    wake_up_time,
+                )
+            })
+            .collect();
+
+        stream::iter(timers)
     }
 }
 

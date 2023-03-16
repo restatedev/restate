@@ -1,10 +1,11 @@
 use crate::partition::leadership::ActuatorOutput;
 use crate::partition::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, ResolutionResult,
-    TimerEffect,
+    Timer,
 };
 use crate::partition::{AckableCommand, Command};
 use crate::util::IdentitySender;
+use crate::TimerOutput;
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::InvocationId;
@@ -212,7 +213,9 @@ where
             .extract(service_name, service_method, payload)
     }
 
-    fn map_timer_output_into_effect(&self, _timer_output: timer::Output) -> TimerEffect {
-        todo!()
+    fn map_timer_output_into_effect(&self, timer_output: TimerOutput) -> Timer {
+        match timer_output {
+            TimerOutput::TimerFired(timer) => timer,
+        }
     }
 }
