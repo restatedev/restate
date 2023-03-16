@@ -5,7 +5,8 @@ use std::future::poll_fn;
 
 use common::types::{IngressId, ServiceInvocationId};
 use futures_util::pipe::{
-    new_sender_pipe_target, Pipe, PipeError, ReceiverPipeInput, UnboundedReceiverPipeInput,
+    new_sender_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
+    UnboundedReceiverPipeInput,
 };
 use tokio::select;
 use tokio::sync::mpsc;
@@ -57,14 +58,6 @@ impl IngressDispatcherLoop {
     ) -> Result<(), IngressDispatcherLoopError> {
         debug!("Running the ResponseDispatcher.");
 
-        // TODO: Fix with https://github.com/restatedev/restate/issues/174
-        debug_assert!(
-            output_tx.max_capacity() >= 2,
-            "Output sender needs to have at least capacity \
-        of 2 in order to avoid deadlock by two pipes producing into the same channel. See \
-        https://github.com/restatedev/restate/issues/174 for more details."
-        );
-
         let IngressDispatcherLoop {
             ingress_id,
             server_rx,
@@ -75,19 +68,15 @@ impl IngressDispatcherLoop {
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
 
-        let server_commands_to_network_pipe = Pipe::new(
-            UnboundedReceiverPipeInput::new(server_rx, "ingress rx"),
+        let pipe = Pipe::new(
+            EitherPipeInput::new(
+                ReceiverPipeInput::new(input_rx, "network input rx"),
+                UnboundedReceiverPipeInput::new(server_rx, "ingress rx"),
+            ),
             new_sender_pipe_target(output_tx.clone(), "network output tx"),
         );
-        let network_input_to_network_pipe = Pipe::new(
-            ReceiverPipeInput::new(input_rx, "network input rx"),
-            new_sender_pipe_target(output_tx, "network output tx"),
-        );
 
-        tokio::pin!(
-            server_commands_to_network_pipe,
-            network_input_to_network_pipe
-        );
+        tokio::pin!(pipe);
 
         let mut handler = DispatcherLoopHandler::new(ingress_id);
 
@@ -97,15 +86,17 @@ impl IngressDispatcherLoop {
                     info!("Shut down of ResponseDispatcher requested. Shutting down now.");
                     break;
                 },
-                response = poll_fn(|cx| network_input_to_network_pipe.as_mut().poll_next_input(cx)) => {
-                    if let Some(output) = handler.handle_network_input(response?) {
-                        network_input_to_network_pipe.as_mut().write(output)?;
+                pipe_input = poll_fn(|cx| pipe.as_mut().poll_next_input(cx)) => {
+                    match pipe_input? {
+                        Either::Left(ingress_input) => {
+                            if let Some(output) = handler.handle_network_input(ingress_input) {
+                                pipe.as_mut().write(output)?;
+                            }
+                        },
+                        Either::Right(cmd) => pipe.as_mut().write(
+                            handler.handle_ingress_command(cmd)
+                        )?
                     }
-                },
-                res_cmd = poll_fn(|cx| server_commands_to_network_pipe.as_mut().poll_next_input(cx)) => {
-                    server_commands_to_network_pipe.as_mut().write(
-                        handler.handle_ingress_command(res_cmd?)
-                    )?
                 }
             }
         }
