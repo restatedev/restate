@@ -35,6 +35,7 @@ pub(super) struct FollowerState<I, N> {
     partition_id: PartitionId,
     invoker_tx: I,
     network_handle: N,
+    timer_handle: timer::TimerHandle,
 }
 
 pub(super) enum ActuatorMessageCollector<I, N> {
@@ -164,6 +165,8 @@ pub(crate) enum Error {
     Invoker(#[from] InvokerNotRunning),
     #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Network(#[from] NetworkNotRunning),
+    #[error(transparent)]
+    Timer(#[from] timer::Error),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
     FailedShuffleTask(#[from] anyhow::Error),
 }
@@ -187,6 +190,7 @@ where
         partition_id: PartitionId,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
+        timer_handle: timer::TimerHandle,
     ) -> (ActuatorStream, Self) {
         (
             ActuatorStream::Follower,
@@ -195,6 +199,7 @@ where
                 partition_id,
                 invoker_tx,
                 network_handle,
+                timer_handle,
             }),
         )
     }
@@ -228,25 +233,19 @@ where
         SR: OutboxReader + InvocationReader + Send + Sync + 'static,
     {
         if let LeadershipState::Follower(mut follower_state) = self {
-            let (invoker_tx, invoker_rx) = mpsc::channel(1);
+            let invoker_rx = Self::register_at_invoker(
+                &mut follower_state.invoker_tx,
+                (follower_state.partition_id, leader_epoch),
+                &state_reader,
+            )
+            .await?;
 
-            follower_state
-                .invoker_tx
-                .register_partition((follower_state.partition_id, leader_epoch), invoker_tx)
-                .await?;
-
-            let mut invoked_invocations = state_reader.scan_invoked_invocations();
-
-            while let Some(service_invocation_id) = invoked_invocations.next().await {
-                follower_state
-                    .invoker_tx
-                    .invoke(
-                        (follower_state.partition_id, leader_epoch),
-                        service_invocation_id,
-                        InvokeInputJournal::NoCachedJournal,
-                    )
-                    .await?;
-            }
+            let timer_rx = Self::register_at_timer_service(
+                &follower_state.timer_handle,
+                (follower_state.partition_id, leader_epoch),
+                &state_reader,
+            )
+            .await?;
 
             let (shuffle_tx, shuffle_rx) = mpsc::channel(1);
 
@@ -268,7 +267,7 @@ where
             let shuffle_handle = tokio::spawn(shuffle.run(shutdown_watch));
 
             Ok((
-                ActuatorStream::leader(invoker_rx, shuffle_rx),
+                ActuatorStream::leader(invoker_rx, shuffle_rx, timer_rx),
                 LeadershipState::Leader {
                     follower_state,
                     leader_state: LeaderState {
@@ -287,6 +286,51 @@ where
         }
     }
 
+    async fn register_at_invoker<SR>(
+        invoker_handle: &mut InvokerInputSender,
+        partition_leader_epoch: PartitionLeaderEpoch,
+        state_reader: &SR,
+    ) -> Result<mpsc::Receiver<invoker::OutputEffect>, Error>
+    where
+        SR: OutboxReader + InvocationReader + Send + Sync + 'static,
+    {
+        let (invoker_tx, invoker_rx) = mpsc::channel(1);
+
+        invoker_handle
+            .register_partition(partition_leader_epoch, invoker_tx)
+            .await?;
+
+        let mut invoked_invocations = state_reader.scan_invoked_invocations();
+
+        while let Some(service_invocation_id) = invoked_invocations.next().await {
+            invoker_handle
+                .invoke(
+                    partition_leader_epoch,
+                    service_invocation_id,
+                    InvokeInputJournal::NoCachedJournal,
+                )
+                .await?;
+        }
+
+        Ok(invoker_rx)
+    }
+
+    async fn register_at_timer_service<SR>(
+        timer_handle: &timer::TimerHandle,
+        partition_leader_epoch: PartitionLeaderEpoch,
+        _state_reader: &SR,
+    ) -> Result<mpsc::Receiver<timer::Output>, Error> {
+        let (timer_tx, timer_rx) = mpsc::channel(1);
+
+        timer_handle
+            .register(partition_leader_epoch, timer_tx)
+            .await?;
+
+        // TODO: Scan for next timer and register timer
+
+        Ok(timer_rx)
+    }
+
     pub(super) async fn become_follower(self) -> Result<(ActuatorStream, Self), Error> {
         if let LeadershipState::Leader {
             follower_state:
@@ -295,6 +339,7 @@ where
                     partition_id,
                     mut invoker_tx,
                     network_handle,
+                    timer_handle,
                 },
             leader_state:
                 LeaderState {
@@ -308,14 +353,16 @@ where
             // trigger shut down of all leadership tasks
             shutdown_signal.drain().await;
 
-            let (shuffle_result, abort_result, unregister_result) = tokio::join!(
+            let (shuffle_result, abort_result, network_unregister_result, timer_unregister_result) = tokio::join!(
                 shuffle_handle,
                 invoker_tx.abort_all_partition((partition_id, leader_epoch)),
                 network_handle.unregister_shuffle(peer_id),
+                timer_handle.unregister((partition_id, leader_epoch)),
             );
 
             abort_result?;
-            unregister_result?;
+            network_unregister_result?;
+            timer_unregister_result?;
 
             if let Err(err) = shuffle_result {
                 if err.is_panic() {
@@ -330,6 +377,7 @@ where
                 partition_id,
                 invoker_tx,
                 network_handle,
+                timer_handle,
             ))
         } else {
             Ok((ActuatorStream::Follower, self))
@@ -397,6 +445,7 @@ pub(super) enum ActuatorStream {
     Leader {
         invoker_stream: ReceiverStream<invoker::OutputEffect>,
         shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
+        timer_stream: ReceiverStream<timer::Output>,
     },
 }
 
@@ -404,10 +453,12 @@ impl ActuatorStream {
     fn leader(
         invoker_rx: mpsc::Receiver<invoker::OutputEffect>,
         shuffle_rx: mpsc::Receiver<shuffle::OutboxTruncation>,
+        timer_rx: mpsc::Receiver<timer::Output>,
     ) -> Self {
         ActuatorStream::Leader {
             invoker_stream: ReceiverStream::new(invoker_rx),
             shuffle_stream: ReceiverStream::new(shuffle_rx),
+            timer_stream: ReceiverStream::new(timer_rx),
         }
     }
 }
@@ -424,6 +475,7 @@ pub(super) enum TaskError {
 pub(super) enum ActuatorOutput {
     Invoker(invoker::OutputEffect),
     Shuffle(shuffle::OutboxTruncation),
+    Timer(timer::Output),
 }
 
 impl Stream for ActuatorStream {
@@ -435,11 +487,14 @@ impl Stream for ActuatorStream {
             ActuatorStream::Leader {
                 invoker_stream,
                 shuffle_stream,
+                timer_stream,
             } => {
                 let invoker_stream = invoker_stream.map(ActuatorOutput::Invoker);
                 let shuffle_stream = shuffle_stream.map(ActuatorOutput::Shuffle);
+                let timer_stream = timer_stream.map(ActuatorOutput::Timer);
 
-                let mut all_streams = futures::stream_select!(invoker_stream, shuffle_stream);
+                let mut all_streams =
+                    futures::stream_select!(invoker_stream, shuffle_stream, timer_stream);
                 Pin::new(&mut all_streams).poll_next(cx)
             }
         }

@@ -18,6 +18,7 @@ use tracing::{debug, trace, warn};
 use crate::partition::effects::{Effects, OutboxMessage};
 use crate::partition::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, ResolutionResult,
+    TimerEffect,
 };
 use crate::partition::InvocationStatus;
 
@@ -32,12 +33,7 @@ pub(super) enum Error {
 #[derive(Debug)]
 pub(crate) enum Command {
     Invoker(InvokerEffect),
-    #[allow(dead_code)]
-    Timer {
-        service_invocation_id: ServiceInvocationId,
-        entry_index: EntryIndex,
-        timestamp: u64,
-    },
+    Timer(TimerEffect),
     OutboxTruncation(MessageIndex),
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
@@ -174,24 +170,35 @@ where
             Command::OutboxTruncation(index) => {
                 effects.truncate_outbox(index);
             }
-            Command::Timer {
-                service_invocation_id,
-                entry_index,
-                timestamp: wake_up_time,
-            } => {
-                effects.delete_timer(
-                    wake_up_time,
-                    service_invocation_id.service_id.clone(),
-                    entry_index,
-                );
-
-                let completion = Completion {
-                    entry_index,
-                    result: CompletionResult::Success(Bytes::new()),
-                };
-                Self::handle_completion(service_invocation_id, completion, state, effects).await?;
+            Command::Timer(timer_effect) => {
+                self.on_timer_effect(timer_effect, state, effects).await?;
             }
         }
+
+        Ok(())
+    }
+
+    async fn on_timer_effect<State: StateReader>(
+        &mut self,
+        TimerEffect {
+            service_invocation_id,
+            entry_index,
+            timestamp: wake_up_time,
+        }: TimerEffect,
+        state: &State,
+        effects: &mut Effects,
+    ) -> Result<(), Error> {
+        effects.delete_timer(
+            wake_up_time,
+            service_invocation_id.service_id.clone(),
+            entry_index,
+        );
+
+        let completion = Completion {
+            entry_index,
+            result: CompletionResult::Success(Bytes::new()),
+        };
+        Self::handle_completion(service_invocation_id, completion, state, effects).await?;
 
         Ok(())
     }

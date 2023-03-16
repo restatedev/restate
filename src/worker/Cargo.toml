@@ -25,6 +25,7 @@ journal = { workspace = true }
 network = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
+timer = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }

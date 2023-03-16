@@ -163,3 +163,10 @@ impl From<EnrichedEntryHeader> for RawEntryHeader {
         }
     }
 }
+
+#[derive(Debug)]
+pub(crate) struct TimerEffect {
+    pub service_invocation_id: ServiceInvocationId,
+    pub entry_index: EntryIndex,
+    pub timestamp: u64,
+}

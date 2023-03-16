@@ -25,6 +25,7 @@ use crate::partition::leadership::LeadershipState;
 use crate::partition::storage::InMemoryPartitionStorage;
 use crate::util::IdentitySender;
 pub(crate) use state_machine::Command;
+use timer::TimerHandle;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
@@ -40,6 +41,8 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
     state_machine: state_machine::StateMachine<RawEntryCodec>,
 
     network_handle: NetworkHandle,
+
+    timer_handle: TimerHandle,
 
     ack_tx: network::PartitionProcessorSender<AckResponse>,
 
@@ -85,6 +88,7 @@ where
         ack_tx: network::PartitionProcessorSender<AckResponse>,
         key_extractor: KeyExtractor,
         in_memory_storage: InMemoryPartitionStorage,
+        timer_handle: TimerHandle,
     ) -> Self {
         Self {
             peer_id,
@@ -98,6 +102,7 @@ where
             key_extractor,
             _entry_codec: Default::default(),
             in_memory_storage,
+            timer_handle,
         }
     }
 
@@ -113,14 +118,20 @@ where
             ack_tx,
             key_extractor,
             in_memory_storage,
+            timer_handle,
             ..
         } = self;
 
         // The max number of effects should be 2 atm (e.g. RegisterTimer and AppendJournalEntry)
         let mut effects = Effects::with_capacity(2);
 
-        let (mut actuator_stream, mut leadership_state) =
-            LeadershipState::follower(peer_id, partition_id, invoker_tx, network_handle);
+        let (mut actuator_stream, mut leadership_state) = LeadershipState::follower(
+            peer_id,
+            partition_id,
+            invoker_tx,
+            network_handle,
+            timer_handle,
+        );
 
         let mut partition_storage = in_memory_storage;
         let actuator_output_handler =

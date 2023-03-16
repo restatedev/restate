@@ -1,6 +1,7 @@
 use crate::partition::leadership::ActuatorOutput;
 use crate::partition::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, ResolutionResult,
+    TimerEffect,
 };
 use crate::partition::{AckableCommand, Command};
 use crate::util::IdentitySender;
@@ -54,6 +55,15 @@ where
                     .send(AckableCommand::no_ack(Command::OutboxTruncation(
                         outbox_truncation.index(),
                     )))
+                    .await;
+            }
+            ActuatorOutput::Timer(timer_output) => {
+                let timer_effect = self.map_timer_output_into_effect(timer_output);
+
+                // Err only if the consensus module is shutting down
+                let _ = self
+                    .proposal_tx
+                    .send(AckableCommand::no_ack(Command::Timer(timer_effect)))
                     .await;
             }
         };
@@ -200,5 +210,9 @@ where
     ) -> Result<Bytes, service_key_extractor::Error> {
         self.key_extractor
             .extract(service_name, service_method, payload)
+    }
+
+    fn map_timer_output_into_effect(&self, _timer_output: timer::Output) -> TimerEffect {
+        todo!()
     }
 }

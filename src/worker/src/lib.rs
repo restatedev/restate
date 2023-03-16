@@ -1,3 +1,5 @@
+extern crate core;
+
 use crate::ingress_integration::ExternalClientIngressRunner;
 use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::memory::InMemoryJournalReader;
@@ -15,6 +17,7 @@ use partition::shuffle;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use service_protocol::codec::ProtobufRawEntryCodec;
+use timer::{Service, TimerHandle};
 use tokio::join;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -60,6 +63,7 @@ pub struct Worker {
     network: network_integration::Network,
     invoker: Invoker<ProtobufRawEntryCodec, InMemoryJournalReader, InMemoryServiceEndpointRegistry>,
     external_client_ingress_runner: ExternalClientIngressRunner,
+    timer: Service,
 }
 
 impl Options {
@@ -129,10 +133,13 @@ impl Worker {
             service_endpoint_registry,
         );
 
+        let timer = Service::new();
+
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {
                 let proposal_sender = consensus.create_proposal_sender();
                 let invoker_sender = invoker.create_sender();
+                let timer_handle = timer.create_timer_handle();
                 let in_memory_storage = InMemoryPartitionStorage::new();
                 in_memory_journal_reader.register(in_memory_storage.clone());
                 Self::create_partition_processor(
@@ -143,6 +150,7 @@ impl Worker {
                     network.create_partition_processor_sender(),
                     key_extractor_registry.clone(),
                     in_memory_storage,
+                    timer_handle,
                 )
             })
             .unzip();
@@ -159,6 +167,7 @@ impl Worker {
                 ingress_dispatcher_loop,
                 network_ingress_sender,
             ),
+            timer,
         }
     }
 
@@ -171,6 +180,7 @@ impl Worker {
         ack_sender: PartitionProcessorSender<partition::AckResponse>,
         key_extractor: KeyExtractorsRegistry,
         in_memory_storage: InMemoryPartitionStorage,
+        timer_handle: TimerHandle,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(
@@ -183,6 +193,7 @@ impl Worker {
             ack_sender,
             key_extractor,
             in_memory_storage,
+            timer_handle,
         );
 
         ((peer_id, command_tx), processor)
@@ -196,6 +207,7 @@ impl Worker {
                 .run(shutdown_watch.clone()),
         );
         let mut invoker_handle = tokio::spawn(self.invoker.run(shutdown_watch.clone()));
+        let mut timer_handle = tokio::spawn(self.timer.run(shutdown_watch.clone()));
         let mut network_handle = tokio::spawn(self.network.run(shutdown_watch));
         let mut consensus_handle = tokio::spawn(self.consensus.run());
         let mut processors_handles: FuturesUnordered<_> = self
@@ -215,7 +227,13 @@ impl Worker {
                 shutdown_signal.drain().await;
 
                 // ignored because we are shutting down
-                let _ = join!(network_handle, consensus_handle, processors_handles.collect::<Vec<_>>(), invoker_handle, external_client_ingress_handle);
+                let _ = join!(
+                    network_handle,
+                    consensus_handle,
+                    processors_handles.collect::<Vec<_>>(),
+                    invoker_handle,
+                    external_client_ingress_handle,
+                    timer_handle);
 
                 debug!("Completed shutdown of worker");
             },
@@ -233,6 +251,9 @@ impl Worker {
             },
             external_client_ingress_result = &mut external_client_ingress_handle => {
                 panic!("External client ingress stopped running: {external_client_ingress_result:?}");
+            },
+            timer_result = &mut timer_handle => {
+                panic!("Timer service stopped running: {timer_result:?}");
             }
         }
     }
