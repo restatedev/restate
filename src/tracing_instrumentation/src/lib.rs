@@ -68,6 +68,8 @@ impl Options {
                     )
                     .with_ansi(!self.disable_ansi_log),
             );
+        #[cfg(feature = "console-subscriber")]
+        let layers = layers.with(console_subscriber::spawn());
 
         if let Some(jaeger_endpoint) = &self.jaeger_endpoint {
             layers

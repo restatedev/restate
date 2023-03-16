@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 clap = { workspace = true }
+console-subscriber = { version = "0.1.8", optional = true }
 opentelemetry = { workspace = true, features = ["rt-tokio-current-thread", "rt-tokio"] }
 opentelemetry-jaeger = { version = "0.17", features = ["rt-tokio-current-thread", "rt-tokio"] }
 opentelemetry-semantic-conventions = "0.10"

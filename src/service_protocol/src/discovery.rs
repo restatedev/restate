@@ -178,11 +178,10 @@ impl ServiceDiscovery {
         uri: &Uri,
         additional_headers: &HashMap<HeaderName, HeaderValue>,
     ) -> Result<DiscoveredMetadata, ServiceDiscoveryError> {
-        let client = Client::builder().build::<_, Body>(
+        let client = Client::builder().http2_only(true).build::<_, Body>(
             HttpsConnectorBuilder::new()
                 .with_native_roots()
                 .https_or_http()
-                .enable_http1()
                 .enable_http2()
                 .build(),
         );
