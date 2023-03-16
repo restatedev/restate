@@ -8,7 +8,8 @@ RUN apt -y install \
     protobuf-compiler \
     libprotoc-dev \
     clang \
-    llvm
+    llvm \
+    ca-certificates
 RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 COPY rust-toolchain.toml .
 # Install toolchain based on rust-toolchain.toml. See for more details: https://github.com/paketo-community/rustup/issues/56
@@ -34,6 +35,8 @@ RUN just arch=$TARGETARCH build --release && \
 FROM debian:bullseye-slim AS runtime
 COPY --from=builder /restate/target/release/restate /usr/local/bin
 COPY --from=builder /restate/NOTICE /NOTICE
+# copy OS roots
+COPY --from=builder /etc/ssl /etc/ssl
 ENV RUST_LOG="warn,runtime=info"
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/restate"]

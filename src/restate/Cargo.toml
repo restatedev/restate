@@ -21,3 +21,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing_instrumentation = { workspace = true }
 worker = { workspace = true }
+
+[features]
+console = ["tokio/full", "tokio/tracing", "tracing_instrumentation/console-subscriber"]
