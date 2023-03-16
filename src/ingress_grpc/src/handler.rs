@@ -118,25 +118,32 @@ where
         let ingress_request_handler = move |ingress_request: IngressRequest| {
             let (req_headers, req_payload) = ingress_request;
 
-            // Create the span and attach it to the next async block
-            let span = info_span!(
-                "Ingress invocation",
+            // Create the ingress span and attach it to the next async block.
+            // This span is committed once the async block terminates, recording the execution time of the invocation.
+            // Another span is created later by the ServiceInvocationFactory, for the ServiceInvocation itself,
+            // which is used by the Restate components to correctly link to a single parent span
+            // to commit intermediate results of the processing.
+            let ingress_span = info_span!(
+                "ingress_service_invocation",
                 rpc.system = "grpc",
                 rpc.service = %req_headers.service_name,
                 rpc.method = %req_headers.method_name
             );
-            trace!(parent: &span, rpc.request = ?req_payload);
+            // Attach this ingress_span to the parent parsed from the headers, if any.
+            span_relation(req_headers.tracing_context.span().span_context())
+                .attach_to_span(&ingress_span);
+            trace!(parent: &ingress_span, rpc.request = ?req_payload);
+
+            // We need the context to link it to the service invocation span
+            let ingress_span_context = ingress_span.context().span().span_context().clone();
 
             async move {
                 // Create the service_invocation
-                let service_invocation = match invocation_factory.create(
+                let (service_invocation, service_invocation_span) = match invocation_factory.create(
                     &req_headers.service_name,
                     &req_headers.method_name,
                     req_payload,
                     ServiceInvocationResponseSink::Ingress(ingress_id),
-                    SpanRelation::from_parent(create_parent_span_context(
-                        req_headers.tracing_context.span().span_context(),
-                    )),
                 ) {
                     Ok(i) => i,
                     Err(e) => {
@@ -150,16 +157,23 @@ where
                         return Err(status);
                     }
                 };
-                info!(restate.invocation.id = %service_invocation.id);
-                trace!(restate.invocation.request_headers = ?req_headers);
+                // Be aware that between this enter and the drop later there must not be any .await
+                let enter_service_invocation_span = service_invocation_span.enter();
+
+                // Link the service invocation span to the parent span
+                SpanRelation::Parent(ingress_span_context).attach_to_span(&service_invocation_span);
+                trace!(parent: &service_invocation_span, restate.invocation.request_headers = ?req_headers);
 
                 // Send the service invocation
                 let (service_invocation_command, response_rx) =
                     Command::prepare(service_invocation);
                 if dispatcher_command_sender.send(service_invocation_command).is_err() {
-                    debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
+                    debug!(parent: &service_invocation_span, "Ingress dispatcher is closed while there is still an invocation in flight.");
                     return Err(Status::unavailable("Unavailable"));
                 }
+
+                // Drop the service invocation span to commit it
+                drop(enter_service_invocation_span);
 
                 // Wait on response
                 return match response_rx.await {
@@ -177,7 +191,7 @@ where
                         Err(Status::unavailable("Unavailable"))
                     }
                 }
-            }.instrument(span)
+            }.instrument(ingress_span)
         };
 
         // Let the protocol handle the request
@@ -200,14 +214,10 @@ where
     }
 }
 
-fn create_parent_span_context(request_span: &SpanContext) -> SpanContext {
+fn span_relation(request_span: &SpanContext) -> SpanRelation {
     if request_span.is_valid() {
-        request_span.clone()
+        SpanRelation::Parent(request_span.clone())
     } else {
-        tracing::Span::current()
-            .context()
-            .span()
-            .span_context()
-            .clone()
+        SpanRelation::None
     }
 }

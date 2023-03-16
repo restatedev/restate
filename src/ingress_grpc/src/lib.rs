@@ -13,13 +13,14 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use common::types::{
     AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink, SpanRelation,
+    ServiceInvocationResponseSink,
 };
 use common::utils::GenericError;
 use futures_util::command::*;
 use opentelemetry::Context;
 use tokio::sync::mpsc;
 use tonic::Status;
+use tracing::Span;
 
 // --- Data model used by handlers and protocol
 
@@ -195,8 +196,7 @@ pub trait ServiceInvocationFactory {
         method_name: &str,
         request_payload: Bytes,
         response_sink: ServiceInvocationResponseSink,
-        span_relation: SpanRelation,
-    ) -> Result<ServiceInvocation, ServiceInvocationFactoryError>;
+    ) -> Result<(ServiceInvocation, Span), ServiceInvocationFactoryError>;
 }
 
 // Contains some mocks we use in unit tests in this crate
