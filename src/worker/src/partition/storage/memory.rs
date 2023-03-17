@@ -206,7 +206,9 @@ impl Storage {
         entry_index: EntryIndex,
         journal_entry: &EnrichedRawEntry,
     ) {
-        let journal = self.journals.get_mut(service_id).unwrap();
+        let journal = self.journals.get_mut(service_id).expect(
+            "Expect that the journal for {service_id} has been created before. This is a bug.",
+        );
         journal.store_entry(entry_index as usize, journal_entry.clone());
     }
 
@@ -216,7 +218,9 @@ impl Storage {
         entry_index: EntryIndex,
         completion_result: &CompletionResult,
     ) {
-        let journal = self.journals.get_mut(service_id).unwrap();
+        let journal = self.journals.get_mut(service_id).expect(
+            "Expect that the journal for {service_id} has been created before. This is a bug.",
+        );
         journal.store_completion_result(entry_index as usize, completion_result.clone());
     }
 
@@ -225,7 +229,9 @@ impl Storage {
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> Option<CompletionResult> {
-        let journal = self.journals.get(service_id).unwrap();
+        let journal = self.journals.get(service_id).expect(
+            "Expect that the journal for {service_id} has been created before. This is a bug.",
+        );
         journal.get_completion_result(entry_index as usize)
     }
 
@@ -234,7 +240,9 @@ impl Storage {
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> Option<EnrichedRawEntry> {
-        let journal = self.journals.get(service_id).unwrap();
+        let journal = self.journals.get(service_id).expect(
+            "Expect that the journal for {service_id} has been created before. This is a bug.",
+        );
         journal.get_entry(entry_index as usize)
     }
 
