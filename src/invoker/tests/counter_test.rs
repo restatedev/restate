@@ -47,7 +47,8 @@ fn register_counter_test_steps(partition_processor_simulator: &mut PartitionProc
                 service_invocation_id,
                 kind: Kind::JournalEntry {
                     entry_index: 1,
-                    entry
+                    entry,
+                    ..
                 }
             } = out
         );
@@ -80,7 +81,8 @@ fn register_set_state_and_output_steps(
             OutputEffect {
                 kind: Kind::JournalEntry {
                     entry_index: 2,
-                    entry
+                    entry,
+                    ..
                 },
                 ..
             } = out
@@ -94,7 +96,8 @@ fn register_set_state_and_output_steps(
             OutputEffect {
                 kind: Kind::JournalEntry {
                     entry_index: 3,
-                    entry
+                    entry,
+                    ..
                 },
                 ..
             } = out

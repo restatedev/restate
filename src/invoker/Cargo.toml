@@ -24,6 +24,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
 

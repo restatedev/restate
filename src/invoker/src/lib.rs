@@ -1,12 +1,15 @@
 use std::collections::HashSet;
 use std::future::Future;
+use std::sync::Arc;
 
 use common::retry_policy::RetryPolicy;
-use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
+use common::types::{
+    EntryIndex, PartitionLeaderEpoch, ServiceInvocationId, ServiceInvocationSpanContext,
+};
 use futures::Stream;
 use journal::raw::PlainRawEntry;
 use journal::Completion;
-use opentelemetry::Context;
+use opentelemetry::trace::SpanContext;
 use tokio::sync::mpsc;
 
 mod invoker;
@@ -20,10 +23,10 @@ mod invocation_task;
 pub struct JournalMetadata {
     pub method: String,
 
-    /// Span attached to this invocation.
-    pub tracing_context: Context,
-
     pub journal_size: EntryIndex,
+
+    /// SpanContext to use to attach spans as child of this span.
+    pub span_context: ServiceInvocationSpanContext,
 }
 
 pub trait JournalReader {
@@ -98,6 +101,8 @@ pub enum Kind {
     JournalEntry {
         entry_index: EntryIndex,
         entry: PlainRawEntry,
+        /// If this entry generates new spans, use this SpanContext as parent span
+        parent_span_context: Arc<SpanContext>,
     },
     Suspended {
         waiting_for_completed_entries: HashSet<EntryIndex>,

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec::IntoIter;
 
-use common::types::{EntryIndex, ServiceInvocationId};
+use common::types::{EntryIndex, ServiceInvocationId, ServiceInvocationSpanContext};
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use invoker::{
@@ -135,7 +135,10 @@ where
 
                     if let OutputEffect {
                         service_invocation_id,
-                        kind: Kind::JournalEntry { entry_index, entry },
+                        kind:
+                            Kind::JournalEntry {
+                                entry_index, entry, ..
+                            },
                     } = &out
                     {
                         self.journals
@@ -196,12 +199,20 @@ impl InMemoryJournalStorage {
     ) {
         let mut journals = self.journals.lock().await;
 
+        let method = method.into();
+        let (span_context, _) = ServiceInvocationSpanContext::start(
+            &sid.service_id.service_name,
+            &method,
+            &sid.service_id.key,
+            sid.invocation_id,
+        );
+
         journals.insert(
             sid,
             (
                 JournalMetadata {
-                    method: method.into(),
-                    tracing_context: Default::default(),
+                    method,
+                    span_context,
                     journal_size: 0,
                 },
                 vec![],

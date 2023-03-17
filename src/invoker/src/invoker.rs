@@ -353,11 +353,12 @@ where
                         };
 
                     match invocation_task_msg.inner {
-                        InvocationTaskOutputInner::NewEntry {entry_index, entry} => {
+                        InvocationTaskOutputInner::NewEntry {entry_index, entry, parent_span_context} => {
                             partition_state_machine.handle_new_entry(
                                 invocation_task_msg.service_invocation_id,
                                 entry_index,
-                                entry
+                                entry,
+                                parent_span_context
                             ).await
                         },
                         InvocationTaskOutputInner::Closed => {
@@ -722,6 +723,7 @@ mod state_machine_coordinator {
             service_invocation_id: ServiceInvocationId,
             entry_index: EntryIndex,
             entry: PlainRawEntry,
+            parent_span_context: Arc<SpanContext>,
         ) {
             if let Some(sm) = self
                 .invocation_state_machines
@@ -732,7 +734,11 @@ mod state_machine_coordinator {
                     .output_tx
                     .send(OutputEffect {
                         service_invocation_id,
-                        kind: Kind::JournalEntry { entry_index, entry },
+                        kind: Kind::JournalEntry {
+                            entry_index,
+                            entry,
+                            parent_span_context,
+                        },
                     })
                     .await;
             }

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
@@ -18,6 +19,7 @@ use journal::raw::PlainRawEntry;
 use journal::Completion;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
+use opentelemetry::trace::SpanContext;
 use opentelemetry_http::HeaderInjector;
 use service_metadata::{EndpointMetadata, ProtocolType};
 use service_protocol::message::{
@@ -26,7 +28,8 @@ use service_protocol::message::{
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
-use tracing::trace;
+use tracing::{info, info_span, trace, Instrument, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use super::{InvokeInputJournal, JournalMetadata, JournalReader};
 
@@ -103,6 +106,7 @@ pub(crate) enum InvocationTaskOutputInner {
     NewEntry {
         entry_index: EntryIndex,
         entry: PlainRawEntry,
+        parent_span_context: Arc<SpanContext>,
     },
     Closed,
     Suspended(HashSet<EntryIndex>),
@@ -201,9 +205,20 @@ where
     }
 
     /// Loop opening the request to service endpoint and consuming the stream
-    #[tracing::instrument(name = "run", level = "trace", skip_all, fields(restate.sid = %self.service_invocation_id))]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
-        let result = self.run_internal(input_journal).await;
+        // Create the span representing the lifecycle of this invocation task
+        let invocation_task_span = info_span!(
+            "invoker_invocation_task",
+            rpc.system = "restate",
+            rpc.service = %self.service_invocation_id.service_id.service_name,
+            restate.invocation.key = ?self.service_invocation_id.service_id.key,
+            restate.invocation.id = %self.service_invocation_id.invocation_id,
+            restate.protocol.mode = ?self.endpoint_metadata.protocol_type()
+        );
+        let result = async { self.run_internal(input_journal).await }
+            .instrument(invocation_task_span)
+            .await;
+
         let inner = match result {
             TerminalLoopState::Continue(_) => {
                 unreachable!("This is not supposed to happen")
@@ -236,15 +251,28 @@ where
             ),
         };
 
+        // Resolve the uri to use for the request
+        let uri = self.prepare_uri(&journal_metadata);
+        let journal_size = journal_metadata.journal_size;
+
+        // Attach parent and uri to the current span
+        let invocation_task_span = Span::current();
+        journal_metadata
+            .span_context
+            .as_parent()
+            .attach_to_span(&invocation_task_span);
+        info!(http.url = %uri);
+
+        // Create an arc of the parent SpanContext.
+        // We send this with every journal entry to correctly link new spans generated from journal entries.
+        let service_invocation_span_context = Arc::new(journal_metadata.span_context.into());
+
         // Acquire an HTTP client
         let client = Self::get_client();
 
         // Prepare the request and send start message
-        let (mut http_stream_tx, http_request) = self.prepare_request(&journal_metadata);
-        shortcircuit!(
-            self.write_start(&mut http_stream_tx, &journal_metadata)
-                .await
-        );
+        let (mut http_stream_tx, http_request) = self.prepare_request(uri);
+        shortcircuit!(self.write_start(&mut http_stream_tx, journal_size).await);
 
         // Start the request
         let (mut http_stream_tx, mut http_stream_rx) = shortcircuit!(
@@ -258,7 +286,7 @@ where
         );
 
         // Check all the entries have been replayed
-        debug_assert_eq!(self.next_journal_index, journal_metadata.journal_size);
+        debug_assert_eq!(self.next_journal_index, journal_size);
 
         // If we have the invoker_rx and the http_stream_tx, we can use the bidi stream loop,
         // which both reads the invoker_rx and the http_stream_rx
@@ -266,13 +294,19 @@ where
             (self.invoker_rx.take(), http_stream_tx.take())
         {
             shortcircuit!(
-                self.bidi_stream_loop(http_stream_tx, invoker_rx, &mut http_stream_rx)
-                    .await
+                self.bidi_stream_loop(
+                    &service_invocation_span_context,
+                    http_stream_tx,
+                    invoker_rx,
+                    &mut http_stream_rx
+                )
+                .await
             );
         };
 
         // We don't have the invoker_rx, so we simply consume the response
-        self.response_stream_loop(&mut http_stream_rx).await
+        self.response_stream_loop(&service_invocation_span_context, &mut http_stream_rx)
+            .await
     }
 
     // --- Loops
@@ -344,6 +378,7 @@ where
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
     async fn bidi_stream_loop(
         &mut self,
+        parent_span_context: &Arc<SpanContext>,
         mut http_stream_tx: Sender,
         mut invoker_rx: mpsc::UnboundedReceiver<Completion>,
         http_stream_rx: &mut Body,
@@ -366,7 +401,7 @@ where
                 },
                 opt_buf = http_stream_rx.next() => {
                     match opt_buf {
-                        Some(Ok(buf)) => shortcircuit!(self.handle_read(buf)),
+                        Some(Ok(buf)) => shortcircuit!(self.handle_read(parent_span_context, buf)),
                         Some(Err(hyper_err)) => shortcircuit!(hyper_err),
                         None => {
                             // Response stream is closed. No further processing is needed.
@@ -378,10 +413,14 @@ where
         }
     }
 
-    async fn response_stream_loop(&mut self, http_stream_rx: &mut Body) -> TerminalLoopState<()> {
+    async fn response_stream_loop(
+        &mut self,
+        parent_span_context: &Arc<SpanContext>,
+        http_stream_rx: &mut Body,
+    ) -> TerminalLoopState<()> {
         while let Some(buf_res) = http_stream_rx.next().await {
             match buf_res {
-                Ok(buf) => shortcircuit!(self.handle_read(buf)),
+                Ok(buf) => shortcircuit!(self.handle_read(parent_span_context, buf)),
                 Err(hyper_err) => shortcircuit!(hyper_err),
             }
         }
@@ -394,7 +433,7 @@ where
     async fn write_start(
         &mut self,
         http_stream_tx: &mut Sender,
-        journal_metadata: &JournalMetadata,
+        journal_size: u32,
     ) -> Result<(), InvocationTaskError> {
         // Send the invoke frame
         self.write(
@@ -406,7 +445,7 @@ where
                     .to_vec()
                     .into(),
                 self.service_invocation_id.service_id.key.clone(),
-                journal_metadata.journal_size,
+                journal_size,
             ),
         )
         .await
@@ -429,11 +468,15 @@ where
         Ok(())
     }
 
-    fn handle_read(&mut self, buf: Bytes) -> TerminalLoopState<()> {
+    fn handle_read(
+        &mut self,
+        parent_span_context: &Arc<SpanContext>,
+        buf: Bytes,
+    ) -> TerminalLoopState<()> {
         self.decoder.push(buf);
 
         while let Some((frame_header, frame)) = shortcircuit!(self.decoder.consume_next()) {
-            shortcircuit!(self.handle_message(frame_header, frame));
+            shortcircuit!(self.handle_message(parent_span_context, frame_header, frame));
         }
 
         TerminalLoopState::Continue(())
@@ -441,6 +484,7 @@ where
 
     fn handle_message(
         &mut self,
+        parent_span_context: &Arc<SpanContext>,
         mh: MessageHeader,
         message: ProtocolMessage,
     ) -> TerminalLoopState<()> {
@@ -462,6 +506,7 @@ where
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
                         entry,
+                        parent_span_context: parent_span_context.clone(),
                     },
                 });
                 self.next_journal_index += 1;
@@ -472,24 +517,28 @@ where
 
     // --- HTTP related methods
 
-    fn prepare_request(&mut self, journal_metadata: &JournalMetadata) -> (Sender, Request<Body>) {
+    fn prepare_uri(&self, journal_metadata: &JournalMetadata) -> Uri {
+        Self::append_path(
+            self.endpoint_metadata.address(),
+            &[
+                "invoke",
+                self.service_invocation_id
+                    .service_id
+                    .service_name
+                    .chars()
+                    .as_str(),
+                &journal_metadata.method,
+            ],
+        )
+    }
+
+    fn prepare_request(&mut self, uri: Uri) -> (Sender, Request<Body>) {
         let (http_stream_tx, req_body) = Body::channel();
         let mut http_request_builder = Request::builder()
             .method(http::Method::POST)
             .header(http::header::CONTENT_TYPE, APPLICATION_RESTATE)
             .header(http::header::ACCEPT, APPLICATION_RESTATE)
-            .uri(Self::append_path(
-                self.endpoint_metadata.address(),
-                &[
-                    "invoke",
-                    self.service_invocation_id
-                        .service_id
-                        .service_name
-                        .chars()
-                        .as_str(),
-                    &journal_metadata.method,
-                ],
-            ));
+            .uri(uri);
 
         // In case it's bidi stream, force HTTP/2
         if self.endpoint_metadata.protocol_type() == ProtocolType::BidiStream {
@@ -498,7 +547,7 @@ where
 
         // Inject OpenTelemetry context
         TraceContextPropagator::new().inject_context(
-            &journal_metadata.tracing_context,
+            &Span::current().context(),
             &mut HeaderInjector(
                 http_request_builder
                     .headers_mut()
