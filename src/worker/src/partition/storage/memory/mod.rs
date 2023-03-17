@@ -161,8 +161,9 @@ impl Storage {
             .get(service_id)
             .map(|journal| JournalStatus {
                 length: journal.len() as EntryIndex,
+                span_context: journal.span_context.clone(),
             })
-            .unwrap_or(JournalStatus::default())
+            .expect("Journal should be available")
     }
 
     fn is_entry_completed(&self, service_id: &ServiceId, entry_index: EntryIndex) -> bool {

@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, IngressId, InvocationResponse, MessageIndex, ResponseResult, ServiceId,
-    ServiceInvocation, ServiceInvocationId,
+    EntryIndex, IngressId, InvocationId, InvocationResponse, MessageIndex, ResponseResult,
+    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
 };
 use journal::Completion;
 use std::collections::HashSet;
@@ -119,6 +119,13 @@ pub(crate) enum Effect {
     ForwardCompletion {
         completion: Completion,
         service_invocation_id: ServiceInvocationId,
+    },
+
+    // Tracing
+    NotifyInvocationResult {
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
+        result: Result<(), (i32, String)>,
     },
 }
 
@@ -355,5 +362,18 @@ impl Effects {
             service_id,
             inbox_sequence_number,
         });
+    }
+
+    pub(crate) fn notify_invocation_result(
+        &mut self,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
+        result: Result<(), (i32, String)>,
+    ) {
+        self.effects.push(Effect::NotifyInvocationResult {
+            invocation_id,
+            span_context,
+            result,
+        })
     }
 }

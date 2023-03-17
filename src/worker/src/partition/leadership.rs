@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::trace;
+use tracing::{info_span, trace};
 
 pub(super) trait InvocationReader {
     type InvokedInvocationStream: Stream<Item = ServiceInvocationId> + Unpin;
@@ -160,6 +160,29 @@ where
                             completion,
                         )
                         .await?
+                }
+                ActuatorMessage::CommitEndSpan {
+                    invocation_id,
+                    span_context,
+                    result,
+                } => {
+                    let span = match result {
+                        Ok(_) => {
+                            info_span!(
+                                "end_invocation",
+                                restate.invocation.id = %invocation_id,
+                                restate.invocation.result = "success")
+                        }
+                        Err((status_code, status_message)) => {
+                            info_span!("end_invocation",
+                                restate.invocation.id = %invocation_id,
+                                restate.invocation.result = "failure",
+                                restate.result.failure.status_code = status_code,
+                                restate.result.failure.status_message = status_message)
+                        }
+                    };
+                    span_context.as_parent().attach_to_span(&span);
+                    let _ = span.enter();
                 }
             }
         }

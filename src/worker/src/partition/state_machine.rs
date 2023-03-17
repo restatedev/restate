@@ -40,9 +40,10 @@ pub(crate) enum Command {
     Response(InvocationResponse),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct JournalStatus {
     pub(super) length: EntryIndex,
+    pub(super) span_context: ServiceInvocationSpanContext,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +260,8 @@ where
                 effects.suspend_service(service_invocation_id, waiting_for_completed_entries);
             }
             InvokerEffectKind::End => {
+                self.notify_invocation_result(&service_invocation_id, state, effects)
+                    .await?;
                 self.complete_invocation(service_invocation_id, state, effects)
                     .await?;
             }
@@ -274,6 +277,8 @@ where
                     self.send_message(outbox_message, effects);
                 }
 
+                self.notify_invocation_result(&service_invocation_id, state, effects)
+                    .await?;
                 self.complete_invocation(service_invocation_id, state, effects)
                     .await?;
             }
@@ -532,6 +537,21 @@ where
                 )
             }
         }
+
+        Ok(())
+    }
+
+    async fn notify_invocation_result<State: StateReader>(
+        &mut self,
+        service_invocation_id: &ServiceInvocationId,
+        state: &State,
+        effects: &mut Effects,
+    ) -> Result<(), Error> {
+        let span_context = state
+            .get_journal_status(&service_invocation_id.service_id)
+            .await?
+            .span_context;
+        effects.notify_invocation_result(service_invocation_id.invocation_id, span_context, Ok(()));
 
         Ok(())
     }

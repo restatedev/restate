@@ -4,7 +4,7 @@ use crate::partition::InvocationStatus;
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
+    EntryIndex, InvocationId, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
@@ -45,6 +45,11 @@ pub(crate) enum ActuatorMessage {
     ForwardCompletion {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
+    },
+    CommitEndSpan {
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
+        result: Result<(), (i32, String)>,
     },
 }
 
@@ -551,6 +556,15 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 state_storage.drop_journal(&service_id)?;
                 state_storage.truncate_inbox(&service_id, inbox_sequence_number)?;
             }
+            Effect::NotifyInvocationResult {
+                invocation_id,
+                span_context,
+                result,
+            } => collector.collect(ActuatorMessage::CommitEndSpan {
+                invocation_id,
+                span_context,
+                result,
+            }),
         }
 
         Ok(())
