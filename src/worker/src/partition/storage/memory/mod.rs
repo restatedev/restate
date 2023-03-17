@@ -12,7 +12,7 @@ use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
     EntryIndex, InvocationId, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use futures::future::{err, ok, BoxFuture};
 use futures::{stream, FutureExt};
@@ -48,12 +48,13 @@ enum EntryType {
     CompletionResult(CompletionResult),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Journal {
     entries: Vec<EntryType>,
     method_name: String,
     length: usize,
     response_sink: Option<ResponseSink>,
+    span_context: ServiceInvocationSpanContext,
 }
 
 impl Journal {
@@ -105,12 +106,17 @@ impl Journal {
             .cloned()
     }
 
-    fn new(method_name: String, response_sink: Option<ResponseSink>) -> Self {
+    fn new(
+        method_name: String,
+        response_sink: Option<ResponseSink>,
+        span_context: ServiceInvocationSpanContext,
+    ) -> Self {
         Self {
             method_name,
             entries: Vec::new(),
             length: 0,
             response_sink,
+            span_context,
         }
     }
 }
@@ -188,6 +194,7 @@ impl Storage {
         service_invocation_id: &ServiceInvocationId,
         method_name: impl AsRef<str>,
         response_sink: &ServiceInvocationResponseSink,
+        span_context: ServiceInvocationSpanContext,
     ) {
         self.journals.insert(
             service_invocation_id.service_id.clone(),
@@ -197,6 +204,7 @@ impl Storage {
                     service_invocation_id,
                     response_sink,
                 ),
+                span_context,
             ),
         );
     }
@@ -420,11 +428,13 @@ impl<'a> StateStorage for Transaction<'a> {
         service_invocation_id: &ServiceInvocationId,
         method_name: impl AsRef<str>,
         response_sink: &ServiceInvocationResponseSink,
+        span_context: ServiceInvocationSpanContext,
     ) -> Result<(), StateStorageError> {
         self.inner.lock().unwrap().create_journal(
             service_invocation_id,
             method_name,
             response_sink,
+            span_context,
         );
         Ok(())
     }
@@ -703,7 +713,7 @@ impl JournalReader for InMemoryJournalReader {
                 let meta = JournalMetadata {
                     method: journal.method_name.clone(),
                     journal_size: journal.length as EntryIndex,
-                    tracing_context: Default::default(),
+                    span_context: journal.span_context.clone(),
                 };
 
                 let journal: Vec<PlainRawEntry> = journal.entries[0..journal.length]

@@ -5,7 +5,7 @@ use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     EntryIndex, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -76,6 +76,7 @@ pub(crate) trait StateStorage {
         service_invocation_id: &ServiceInvocationId,
         method_name: impl AsRef<str>,
         response_sink: &ServiceInvocationResponseSink,
+        span_context: ServiceInvocationSpanContext,
     ) -> Result<(), StateStorageError>;
 
     fn drop_journal(&self, service_id: &ServiceId) -> Result<(), StateStorageError>;
@@ -241,6 +242,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     &service_invocation.id,
                     &service_invocation.method_name,
                     &service_invocation.response_sink,
+                    service_invocation.span_context,
                 )?;
 
                 let_assert!(

@@ -2,7 +2,8 @@ use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     EntryIndex, IngressId, InvocationId, InvocationResponse, MessageIndex, ResponseResult,
-    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation,
+    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -387,6 +388,7 @@ where
                         ResolutionResult::Success {
                             service_key,
                             invocation_id,
+                            span_context,
                         } => {
                             let_assert!(
                                 Entry::Invoke(InvokeEntry { request, .. }) =
@@ -398,6 +400,7 @@ where
                                 service_key.clone(),
                                 request,
                                 Some((service_invocation_id.clone(), entry_index)),
+                                span_context.clone(),
                             );
                             self.send_message(
                                 OutboxMessage::ServiceInvocation(service_invocation),
@@ -423,6 +426,7 @@ where
                 ResolutionResult::Success {
                     service_key,
                     invocation_id,
+                    span_context,
                 } => {
                     let_assert!(
                         Entry::BackgroundInvoke(BackgroundInvokeEntry(request)) =
@@ -434,6 +438,7 @@ where
                         service_key.clone(),
                         request,
                         None,
+                        span_context.clone(),
                     );
                     self.send_message(
                         OutboxMessage::ServiceInvocation(service_invocation),
@@ -562,6 +567,7 @@ where
         invocation_key: Bytes,
         invoke_request: InvokeRequest,
         response_target: Option<(ServiceInvocationId, EntryIndex)>,
+        span_context: ServiceInvocationSpanContext,
     ) -> ServiceInvocation {
         let InvokeRequest {
             service_name,
@@ -583,8 +589,7 @@ where
             method_name,
             argument: parameter,
             response_sink,
-            // TODO: Propagate span relation. See https://github.com/restatedev/restate/issues/165
-            span_relation: SpanRelation::None,
+            span_context,
         }
     }
 

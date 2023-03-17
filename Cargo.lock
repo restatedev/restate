@@ -423,6 +423,8 @@ dependencies = [
  "opentelemetry_api",
  "serde",
  "tokio",
+ "tracing",
+ "tracing-opentelemetry",
  "uuid",
  "xxhash-rust",
 ]
@@ -1189,6 +1191,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
 ]
@@ -3144,6 +3147,7 @@ dependencies = [
  "invoker",
  "journal",
  "network",
+ "opentelemetry_api",
  "pin-project",
  "service_key_extractor",
  "service_metadata",

@@ -28,6 +28,7 @@ thiserror = { workspace = true }
 timer = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+opentelemetry_api = { workspace = true }
 tracing = { workspace = true }
 service_key_extractor = { workspace = true }
 service_metadata = { workspace = true }
