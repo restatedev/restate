@@ -606,10 +606,25 @@ impl<'a> Committable for Transaction<'a> {
 }
 
 impl InvocationReader for InMemoryPartitionStorage {
-    type InvokedInvocationStream = stream::Empty<ServiceInvocationId>;
+    type InvokedInvocationStream = stream::Iter<IntoIter<ServiceInvocationId>>;
 
     fn scan_invoked_invocations(&self) -> Self::InvokedInvocationStream {
-        stream::empty()
+        let invoked_invocations: Vec<ServiceInvocationId> = self
+            .inner
+            .lock()
+            .unwrap()
+            .invocation_status
+            .iter()
+            .filter_map(|(service_id, status)| match status {
+                InvocationStatus::Invoked(invocation_id) => Some(ServiceInvocationId {
+                    service_id: service_id.clone(),
+                    invocation_id: *invocation_id,
+                }),
+                _ => None,
+            })
+            .collect();
+
+        stream::iter(invoked_invocations)
     }
 }
 
