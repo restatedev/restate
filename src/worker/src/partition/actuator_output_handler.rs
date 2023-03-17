@@ -8,11 +8,13 @@ use crate::util::IdentitySender;
 use crate::TimerOutput;
 use assert2::let_assert;
 use bytes::Bytes;
-use common::types::InvocationId;
+use common::types::{InvocationId, ServiceInvocationSpanContext, SpanRelation};
 use journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
 use journal::InvokeRequest;
 use journal::{BackgroundInvokeEntry, CompletionResult, Entry, InvokeEntry};
+use opentelemetry_api::trace::SpanContext;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 /// Responsible for enriching and then proposing [`ActuatorOutput`].
 pub(super) struct ActuatorOutputHandler<KeyExtractor, Codec> {
@@ -84,9 +86,13 @@ where
 
     fn map_kind_into_effect_kind(&self, kind: invoker::Kind) -> InvokerEffectKind {
         match kind {
-            invoker::Kind::JournalEntry { entry_index, entry } => InvokerEffectKind::JournalEntry {
+            invoker::Kind::JournalEntry {
                 entry_index,
-                entry: self.enrich_journal_entry(entry),
+                entry,
+                parent_span_context,
+            } => InvokerEffectKind::JournalEntry {
+                entry_index,
+                entry: self.enrich_journal_entry(entry, parent_span_context),
             },
             invoker::Kind::Suspended {
                 waiting_for_completed_entries,
@@ -100,7 +106,11 @@ where
         }
     }
 
-    fn enrich_journal_entry(&self, mut raw_entry: PlainRawEntry) -> EnrichedRawEntry {
+    fn enrich_journal_entry(
+        &self,
+        mut raw_entry: PlainRawEntry,
+        parent_span_context: Arc<SpanContext>,
+    ) -> EnrichedRawEntry {
         let enriched_header = match raw_entry.header {
             RawEntryHeader::PollInputStream { is_completed } => {
                 EnrichedEntryHeader::PollInputStream { is_completed }
@@ -114,11 +124,14 @@ where
             RawEntryHeader::Sleep { is_completed } => EnrichedEntryHeader::Sleep { is_completed },
             RawEntryHeader::Invoke { is_completed } => {
                 if !is_completed {
-                    let resolution_result =
-                        self.resolve_service_invocation_target(&raw_entry, |entry| {
+                    let resolution_result = self.resolve_service_invocation_target(
+                        &raw_entry,
+                        |entry| {
                             let_assert!(Entry::Invoke(InvokeEntry { request, .. }) = entry);
                             request
-                        });
+                        },
+                        SpanRelation::Parent(parent_span_context.as_ref().clone()),
+                    );
 
                     // complete journal entry in case that we could not resolve the service invocation target
                     let is_completed = if let ResolutionResult::Failure {
@@ -148,13 +161,16 @@ where
                 }
             }
             RawEntryHeader::BackgroundInvoke => {
-                let resolution_result =
-                    self.resolve_service_invocation_target(&raw_entry, |entry| {
+                let resolution_result = self.resolve_service_invocation_target(
+                    &raw_entry,
+                    |entry| {
                         let_assert!(
                             Entry::BackgroundInvoke(BackgroundInvokeEntry(request)) = entry
                         );
                         request
-                    });
+                    },
+                    SpanRelation::CausedBy(parent_span_context.as_ref().clone()),
+                );
 
                 EnrichedEntryHeader::BackgroundInvoke { resolution_result }
             }
@@ -174,6 +190,7 @@ where
         &self,
         raw_entry: &PlainRawEntry,
         request_extractor: impl Fn(Entry) -> InvokeRequest,
+        span_relation: SpanRelation,
     ) -> ResolutionResult {
         let entry = Codec::deserialize(raw_entry);
 
@@ -188,14 +205,34 @@ where
 
         let request = request_extractor(entry);
 
-        let service_key =
-            self.extract_service_key(request.service_name, request.method_name, request.parameter);
+        let service_key = self.extract_service_key(
+            &request.service_name,
+            &request.method_name,
+            request.parameter,
+        );
 
         match service_key {
-            Ok(service_key) => ResolutionResult::Success {
-                invocation_id: InvocationId::now_v7(),
-                service_key,
-            },
+            Ok(service_key) => {
+                let invocation_id = InvocationId::now_v7();
+
+                // Create the span context
+                let (span_context, span) = ServiceInvocationSpanContext::start(
+                    &request.service_name,
+                    &request.method_name,
+                    &service_key,
+                    invocation_id,
+                );
+
+                // Attach the relation and enter the span
+                span_relation.attach_to_span(&span);
+                let _guard = span.enter();
+
+                ResolutionResult::Success {
+                    invocation_id,
+                    service_key,
+                    span_context,
+                }
+            }
             Err(err) => ResolutionResult::Failure {
                 error_code: 13,
                 error: err.to_string().into(),
