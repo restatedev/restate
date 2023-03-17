@@ -273,7 +273,7 @@ impl Storage {
         if let Some(inbox) = self.inboxes.get_mut(service_id) {
             let partition_point =
                 inbox.partition_point(|(seq_number, _)| *seq_number <= seq_number_to_truncate);
-            drop(inbox.drain(..=partition_point));
+            drop(inbox.drain(..partition_point));
 
             if inbox.is_empty() {
                 self.inboxes.remove(service_id);
