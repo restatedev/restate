@@ -19,7 +19,7 @@ use tracing::{debug, trace, warn};
 use crate::partition::effects::{Effects, OutboxMessage};
 use crate::partition::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, ResolutionResult,
-    Timer,
+    TimerValue,
 };
 use crate::partition::InvocationStatus;
 
@@ -34,7 +34,7 @@ pub(super) enum Error {
 #[derive(Debug)]
 pub(crate) enum Command {
     Invoker(InvokerEffect),
-    Timer(Timer),
+    Timer(TimerValue),
     OutboxTruncation(MessageIndex),
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
@@ -182,11 +182,11 @@ where
 
     async fn on_timer<State: StateReader>(
         &mut self,
-        Timer {
+        TimerValue {
             service_invocation_id,
             entry_index,
             wake_up_time,
-        }: Timer,
+        }: TimerValue,
         state: &State,
         effects: &mut Effects,
     ) -> Result<(), Error> {

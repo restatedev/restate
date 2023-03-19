@@ -1,13 +1,13 @@
 use crate::partition::effects::{
     CommitError, Committable, OutboxMessage, StateStorage, StateStorageError,
 };
-use crate::partition::leadership::{InvocationReader, TimerReader};
+use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{
     InboxEntry, JournalStatus, ResponseSink, StateReader, StateReaderError,
 };
 use crate::partition::storage::memory::timer_key::{TimerKey, TimerKeyRef};
-use crate::partition::types::{EnrichedRawEntry, Timer};
+use crate::partition::types::{EnrichedRawEntry, TimerValue};
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
@@ -21,7 +21,9 @@ use journal::raw::{Header, PlainRawEntry};
 use journal::CompletionResult;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 use std::vec::IntoIter;
+use timer::TimerReader;
 
 mod timer_key;
 
@@ -345,8 +347,8 @@ impl Storage {
     ) {
         self.timers.insert(
             TimerKey::new(
-                service_invocation_id.service_id.clone(),
                 wake_up_time,
+                service_invocation_id.service_id.clone(),
                 entry_index,
             ),
             service_invocation_id.invocation_id,
@@ -653,24 +655,32 @@ impl OutboxReader for InMemoryPartitionStorage {
     }
 }
 
-impl TimerReader for InMemoryPartitionStorage {
-    type TimerStream = stream::Iter<IntoIter<Timer>>;
+impl TimerReader<TimerValue> for InMemoryPartitionStorage {
+    type TimerStream = stream::Iter<IntoIter<TimerValue>>;
 
-    fn scan_timers(&self) -> Self::TimerStream {
-        let timers: Vec<Timer> = self
+    fn scan_timers(&self, earliest_wake_up_time: SystemTime) -> Self::TimerStream {
+        let earliest_wake_up_time = u64::try_from(
+            earliest_wake_up_time
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("Unix epoch is the start")
+                .as_millis(),
+        )
+        .expect("Millis since epoch must fit into u64.");
+
+        let timers: Vec<TimerValue> = self
             .inner
             .lock()
             .unwrap()
             .timers
-            .iter()
+            .range(TimerKey::from_wake_up_time(earliest_wake_up_time)..)
             .map(|(timer_key, invocation_id)| {
-                let (service_id, wake_up_time, entry_index) = timer_key.clone().into_inner();
-                Timer::new(
+                let (wake_up_time, service_id, entry_index) = timer_key.clone().into_inner();
+                TimerValue::new(
                     ServiceInvocationId {
-                        service_id,
+                        service_id: service_id.expect("Must be known."),
                         invocation_id: *invocation_id,
                     },
-                    entry_index,
+                    entry_index.expect("Must be known."),
                     wake_up_time,
                 )
             })

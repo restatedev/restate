@@ -2537,6 +2537,7 @@ dependencies = [
  "thiserror",
  "timer_queue",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
 

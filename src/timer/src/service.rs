@@ -1,62 +1,82 @@
-use crate::{Input, Output, TimerHandle};
-use common::types::PartitionLeaderEpoch;
-use std::collections::HashMap;
+use crate::{Input, Output, Timer, TimerHandle};
 use std::time::SystemTime;
 use timer_queue::TimerQueue;
 use tokio::sync::mpsc;
+use tokio_stream::{Stream, StreamExt};
 use tracing::debug;
 
+pub trait TimerReader<T>
+where
+    T: Timer,
+{
+    type TimerStream: Stream<Item = T> + Unpin + Send;
+
+    fn scan_timers(&self, earliest_wake_up_time: SystemTime) -> Self::TimerStream;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ServiceError {
+    #[error("output receiver of timer service is closed")]
+    OutputClosed,
+}
+
 #[derive(Debug)]
-pub struct Service<T> {
+pub struct Service<T, TR> {
     input_rx: mpsc::Receiver<Input<T>>,
+
+    output_tx: mpsc::Sender<Output<T>>,
+
+    timer_reader: TR,
 
     // used to create the timer handle
     input_tx: mpsc::Sender<Input<T>>,
 }
 
-impl<T> Default for Service<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> Service<T> {
-    pub fn new() -> Self {
+impl<T, TR> Service<T, TR>
+where
+    T: Timer,
+    TR: TimerReader<T>,
+{
+    pub fn new(output_tx: mpsc::Sender<Output<T>>, timer_reader: TR) -> Self {
         let (input_tx, input_rx) = mpsc::channel(64);
 
-        Self { input_rx, input_tx }
+        Self {
+            input_rx,
+            output_tx,
+            timer_reader,
+            input_tx,
+        }
     }
 
     pub fn create_timer_handle(&self) -> TimerHandle<T> {
         TimerHandle::new(self.input_tx.clone())
     }
 
-    pub async fn run(self, drain: drain::Watch) {
+    pub async fn run(self, drain: drain::Watch) -> Result<(), ServiceError> {
         debug!("Running the timer service.");
 
-        let Self { mut input_rx, .. } = self;
+        let Self {
+            mut input_rx,
+            output_tx,
+            timer_reader,
+            ..
+        } = self;
 
         let shutdown_signal = drain.signaled();
         tokio::pin!(shutdown_signal);
 
-        let mut timer_logic = TimerLogic::<T>::new();
+        let mut timer_logic = Self::initialize_timer(output_tx, timer_reader).await;
 
         loop {
             tokio::select! {
                 Some(input) = input_rx.recv() => {
                     match input {
-                        Input::Register { partition_leader_epoch, output_tx } => {
-                            timer_logic.register_listener(partition_leader_epoch, output_tx);
-                        },
-                        Input::Unregister(partition_leader_epoch) => {
-                            timer_logic.unregister_listener(&partition_leader_epoch);
-                        }
-                        Input::Timer { partition_leader_epoch, wake_up_time, payload } => {
-                            timer_logic.register_timer(partition_leader_epoch, wake_up_time, payload);
+                        Input::Timer { wake_up_time, payload } => {
+                            timer_logic.add_timer(wake_up_time, payload);
                         }
                     }
                 },
-                _ = timer_logic.run() => {},
+                result = timer_logic.run() => result?,
                 _ = &mut shutdown_signal => {
                     break;
                 }
@@ -64,50 +84,50 @@ impl<T> Service<T> {
         }
 
         debug!("Shut down the timer service.");
+
+        Ok(())
+    }
+
+    async fn initialize_timer(
+        output_tx: mpsc::Sender<Output<T>>,
+        timer_reader: TR,
+    ) -> TimerLogic<T> {
+        let mut timer_logic = TimerLogic::new(output_tx);
+
+        let mut timer_stream = timer_reader.scan_timers(SystemTime::UNIX_EPOCH);
+
+        while let Some(timer) = timer_stream.next().await {
+            timer_logic.add_timer(timer.wake_up_time(), timer);
+        }
+
+        timer_logic
     }
 }
 
 struct TimerLogic<T> {
-    listeners: HashMap<PartitionLeaderEpoch, mpsc::Sender<Output<T>>>,
-    timer_queue: TimerQueue<(PartitionLeaderEpoch, T)>,
+    output_tx: mpsc::Sender<Output<T>>,
+    timer_queue: TimerQueue<T>,
 }
 
 impl<T> TimerLogic<T> {
-    fn new() -> Self {
+    fn new(output_tx: mpsc::Sender<Output<T>>) -> Self {
         Self {
-            listeners: Default::default(),
+            output_tx,
             timer_queue: TimerQueue::new(),
         }
     }
 
-    fn register_listener(
-        &mut self,
-        partition_leader_epoch: PartitionLeaderEpoch,
-        output_tx: mpsc::Sender<Output<T>>,
-    ) {
-        self.listeners.insert(partition_leader_epoch, output_tx);
+    fn add_timer(&mut self, wake_up_time: SystemTime, payload: T) {
+        self.timer_queue.sleep_until(wake_up_time, payload);
     }
 
-    fn unregister_listener(&mut self, partition_leader_epoch: &PartitionLeaderEpoch) {
-        self.listeners.remove(partition_leader_epoch);
-    }
-
-    fn register_timer(
-        &mut self,
-        partition_leader_epoch: PartitionLeaderEpoch,
-        wake_up_time: SystemTime,
-        payload: T,
-    ) {
-        self.timer_queue
-            .sleep_until(wake_up_time, (partition_leader_epoch, payload));
-    }
-
-    async fn run(&mut self) {
-        let (partition_leader_epoch, payload) = self.timer_queue.await_timer().await.into_inner();
-
-        if let Some(listener) = self.listeners.get(&partition_leader_epoch) {
-            // listener might no longer be running, this can happen in case of a leadership change
-            let _ = listener.send(Output::TimerFired(payload)).await;
+    async fn run(&mut self) -> Result<(), ServiceError> {
+        loop {
+            let payload = self.timer_queue.await_timer().await.into_inner();
+            self.output_tx
+                .send(Output::TimerFired(payload))
+                .await
+                .map_err(|_| ServiceError::OutputClosed)?;
         }
     }
 }

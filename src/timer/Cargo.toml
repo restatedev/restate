@@ -15,4 +15,5 @@ drain = { workspace = true }
 thiserror = { workspace = true }
 timer_queue = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tracing = { workspace = true }

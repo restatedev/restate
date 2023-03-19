@@ -1,7 +1,6 @@
 use crate::partition::effects::{ActuatorMessage, MessageCollector};
 use crate::partition::shuffle::{OutboxReader, Shuffle};
-use crate::partition::{shuffle, Timer};
-use crate::{TimerHandle, TimerOutput};
+use crate::partition::{shuffle, TimerHandle, TimerOutput, TimerValue};
 use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId};
 use common::utils::GenericError;
 use futures::{future, Stream, StreamExt};
@@ -13,8 +12,10 @@ use std::panic;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
+use timer::TimerReader;
 use tokio::sync::mpsc;
 use tokio::task;
+use tokio::task::JoinError;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info_span, trace};
 
@@ -24,17 +25,13 @@ pub(super) trait InvocationReader {
     fn scan_invoked_invocations(&self) -> Self::InvokedInvocationStream;
 }
 
-pub(super) trait TimerReader {
-    type TimerStream: Stream<Item = Timer> + Unpin;
-
-    fn scan_timers(&self) -> Self::TimerStream;
-}
-
 pub(super) struct LeaderState {
     leader_epoch: LeaderEpoch,
     shutdown_signal: drain::Signal,
     shuffle_hint_tx: mpsc::Sender<shuffle::NewOutboxMessage>,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
+    timer_handle: TimerHandle,
+    timer_join_handle: task::JoinHandle<Result<(), timer::ServiceError>>,
     message_buffer: Vec<ActuatorMessage>,
 }
 
@@ -43,7 +40,6 @@ pub(super) struct FollowerState<I, N> {
     partition_id: PartitionId,
     invoker_tx: I,
     network_handle: N,
-    timer_handle: TimerHandle,
 }
 
 pub(super) enum ActuatorMessageCollector<I, N> {
@@ -76,7 +72,7 @@ where
                 Self::send_actuator_messages(
                     (follower_state.partition_id, leader_state.leader_epoch),
                     &mut follower_state.invoker_tx,
-                    &follower_state.timer_handle,
+                    &leader_state.timer_handle,
                     &mut leader_state.shuffle_hint_tx,
                     leader_state.message_buffer.drain(..),
                 )
@@ -132,8 +128,7 @@ where
                     timer_handle
                         .add_timer(
                             SystemTime::UNIX_EPOCH.add(Duration::from_millis(wake_up_time)),
-                            partition_leader_epoch,
-                            Timer::new(service_invocation_id, entry_index, wake_up_time),
+                            TimerValue::new(service_invocation_id, entry_index, wake_up_time),
                         )
                         .await?;
                 }
@@ -212,7 +207,7 @@ pub(crate) enum Error {
     #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Network(#[from] NetworkNotRunning),
     #[error(transparent)]
-    Timer(#[from] timer::Error),
+    FailedTimerTask(#[from] timer::ServiceError),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
     FailedShuffleTask(#[from] anyhow::Error),
 }
@@ -236,7 +231,6 @@ where
         partition_id: PartitionId,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
-        timer_handle: TimerHandle,
     ) -> (ActuatorStream, Self) {
         (
             ActuatorStream::Follower,
@@ -245,38 +239,41 @@ where
                 partition_id,
                 invoker_tx,
                 network_handle,
-                timer_handle,
             }),
         )
     }
 
-    pub(super) async fn become_leader<SR>(
+    pub(super) async fn become_leader<SR, TR>(
         self,
         leader_epoch: LeaderEpoch,
         state_reader: SR,
+        timer_reader: TR,
     ) -> Result<(ActuatorStream, Self), Error>
     where
-        SR: InvocationReader + OutboxReader + TimerReader + Send + Sync + 'static,
+        SR: InvocationReader + OutboxReader + Send + Sync + 'static,
+        TR: TimerReader<TimerValue> + Send + 'static,
     {
         if let LeadershipState::Follower { .. } = self {
-            self.unchecked_become_leader(leader_epoch, state_reader)
+            self.unchecked_become_leader(leader_epoch, state_reader, timer_reader)
                 .await
         } else {
             let (_, follower_state) = self.become_follower().await?;
 
             follower_state
-                .unchecked_become_leader(leader_epoch, state_reader)
+                .unchecked_become_leader(leader_epoch, state_reader, timer_reader)
                 .await
         }
     }
 
-    async fn unchecked_become_leader<SR>(
+    async fn unchecked_become_leader<SR, TR>(
         self,
         leader_epoch: LeaderEpoch,
         state_reader: SR,
+        timer_reader: TR,
     ) -> Result<(ActuatorStream, Self), Error>
     where
-        SR: OutboxReader + InvocationReader + TimerReader + Send + Sync + 'static,
+        SR: OutboxReader + InvocationReader + Send + Sync + 'static,
+        TR: TimerReader<TimerValue> + Send + 'static,
     {
         if let LeadershipState::Follower(mut follower_state) = self {
             let invoker_rx = Self::register_at_invoker(
@@ -286,12 +283,10 @@ where
             )
             .await?;
 
-            let timer_rx = Self::register_at_timer_service(
-                &follower_state.timer_handle,
-                (follower_state.partition_id, leader_epoch),
-                &state_reader,
-            )
-            .await?;
+            let (timer_tx, timer_rx) = mpsc::channel(1);
+
+            let timer = timer::Service::new(timer_tx, timer_reader);
+            let timer_handle = timer.create_timer_handle();
 
             let (shuffle_tx, shuffle_rx) = mpsc::channel(1);
 
@@ -310,6 +305,8 @@ where
             let shuffle_hint_tx = shuffle.create_hint_sender();
 
             let (shutdown_signal, shutdown_watch) = drain::channel();
+
+            let timer_join_handle = tokio::spawn(timer.run(shutdown_watch.clone()));
             let shuffle_handle = tokio::spawn(shuffle.run(shutdown_watch));
 
             Ok((
@@ -321,6 +318,8 @@ where
                         shutdown_signal,
                         shuffle_hint_tx,
                         shuffle_handle,
+                        timer_handle,
+                        timer_join_handle,
                         // The max number of actuator messages should be 2 atm (e.g. RegisterTimer and
                         // AckStoredEntry)
                         message_buffer: Vec::with_capacity(2),
@@ -361,38 +360,6 @@ where
         Ok(invoker_rx)
     }
 
-    async fn register_at_timer_service<TR>(
-        timer_handle: &TimerHandle,
-        partition_leader_epoch: PartitionLeaderEpoch,
-        timer_reader: &TR,
-    ) -> Result<mpsc::Receiver<TimerOutput>, Error>
-    where
-        TR: TimerReader,
-    {
-        let (timer_tx, timer_rx) = mpsc::channel(1);
-
-        timer_handle
-            .register(partition_leader_epoch, timer_tx)
-            .await?;
-
-        while let Some(Timer {
-            service_invocation_id,
-            wake_up_time,
-            entry_index,
-        }) = timer_reader.scan_timers().next().await
-        {
-            timer_handle
-                .add_timer(
-                    SystemTime::UNIX_EPOCH.add(Duration::from_millis(wake_up_time)),
-                    partition_leader_epoch,
-                    Timer::new(service_invocation_id, entry_index, wake_up_time),
-                )
-                .await?;
-        }
-
-        Ok(timer_rx)
-    }
-
     pub(super) async fn become_follower(self) -> Result<(ActuatorStream, Self), Error> {
         if let LeadershipState::Leader {
             follower_state:
@@ -401,13 +368,13 @@ where
                     partition_id,
                     mut invoker_tx,
                     network_handle,
-                    timer_handle,
                 },
             leader_state:
                 LeaderState {
                     leader_epoch,
                     shutdown_signal,
                     shuffle_handle,
+                    timer_join_handle,
                     ..
                 },
         } = self
@@ -415,34 +382,39 @@ where
             // trigger shut down of all leadership tasks
             shutdown_signal.drain().await;
 
-            let (shuffle_result, abort_result, network_unregister_result, timer_unregister_result) = tokio::join!(
+            let (shuffle_result, timer_result, abort_result, network_unregister_result) = tokio::join!(
                 shuffle_handle,
+                timer_join_handle,
                 invoker_tx.abort_all_partition((partition_id, leader_epoch)),
                 network_handle.unregister_shuffle(peer_id),
-                timer_handle.unregister((partition_id, leader_epoch)),
             );
 
             abort_result?;
             network_unregister_result?;
-            timer_unregister_result?;
 
-            if let Err(err) = shuffle_result {
-                if err.is_panic() {
-                    panic::resume_unwind(err.into_panic());
-                }
-            } else {
-                shuffle_result.unwrap()?;
-            }
+            Self::unwrap_task_result(shuffle_result)?;
+            Self::unwrap_task_result(timer_result)?;
 
             Ok(Self::follower(
                 peer_id,
                 partition_id,
                 invoker_tx,
                 network_handle,
-                timer_handle,
             ))
         } else {
             Ok((ActuatorStream::Follower, self))
+        }
+    }
+
+    fn unwrap_task_result<E>(result: Result<Result<(), E>, JoinError>) -> Result<(), E> {
+        if let Err(err) = result {
+            if err.is_panic() {
+                panic::resume_unwind(err.into_panic());
+            }
+
+            Ok(())
+        } else {
+            result.unwrap()
         }
     }
 
@@ -470,36 +442,59 @@ where
         match self {
             LeadershipState::Follower { .. } => future::pending().await,
             LeadershipState::Leader {
-                leader_state: LeaderState { shuffle_handle, .. },
+                leader_state:
+                    LeaderState {
+                        shuffle_handle,
+                        timer_join_handle,
+                        ..
+                    },
                 ..
             } => {
-                let result = shuffle_handle.await;
+                tokio::select! {
+                    result = shuffle_handle => Self::into_task_result("shuffle", result),
+                    result = timer_join_handle => Self::into_task_result("timer", result),
 
-                if let Err(err) = result {
-                    if err.is_panic() {
-                        panic::resume_unwind(err.into_panic());
-                    }
-
-                    TaskResult::FailedTask(TaskError::Cancelled)
-                } else {
-                    let result = result.unwrap();
-
-                    result
-                        .err()
-                        .map(|err| TaskResult::FailedTask(TaskError::Error(err.into())))
-                        .unwrap_or(TaskResult::TerminatedTask)
                 }
             }
+        }
+    }
+
+    fn into_task_result<E: Into<GenericError>>(
+        name: &'static str,
+        result: Result<Result<(), E>, JoinError>,
+    ) -> TaskResult {
+        if let Err(err) = result {
+            if err.is_panic() {
+                panic::resume_unwind(err.into_panic());
+            }
+
+            TaskResult::FailedTask {
+                name,
+                error: TaskError::Cancelled,
+            }
+        } else {
+            let result = result.unwrap();
+
+            result
+                .err()
+                .map(|err| TaskResult::FailedTask {
+                    name,
+                    error: TaskError::Error(err.into()),
+                })
+                .unwrap_or(TaskResult::TerminatedTask(name))
         }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum TaskResult {
-    #[error("task terminated unexpectedly")]
-    TerminatedTask,
-    #[error(transparent)]
-    FailedTask(#[from] TaskError),
+    #[error("task '{0}' terminated unexpectedly")]
+    TerminatedTask(&'static str),
+    #[error("task '{name}' failed: {error}")]
+    FailedTask {
+        name: &'static str,
+        error: TaskError,
+    },
 }
 
 pub(super) enum ActuatorStream {

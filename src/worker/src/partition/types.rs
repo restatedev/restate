@@ -5,6 +5,8 @@ use invoker::InvokerError;
 use journal::raw::{Header, RawEntry, RawEntryHeader};
 use journal::EntryType;
 use std::collections::HashSet;
+use std::ops::Add;
+use std::time::{Duration, SystemTime};
 
 #[derive(Debug)]
 pub(crate) struct InvokerEffect {
@@ -167,13 +169,13 @@ impl From<EnrichedEntryHeader> for RawEntryHeader {
 }
 
 #[derive(Debug)]
-pub(crate) struct Timer {
+pub(crate) struct TimerValue {
     pub service_invocation_id: ServiceInvocationId,
     pub wake_up_time: u64,
     pub entry_index: EntryIndex,
 }
 
-impl Timer {
+impl TimerValue {
     pub(crate) fn new(
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
@@ -184,5 +186,11 @@ impl Timer {
             entry_index,
             wake_up_time,
         }
+    }
+}
+
+impl timer::Timer for TimerValue {
+    fn wake_up_time(&self) -> SystemTime {
+        SystemTime::UNIX_EPOCH.add(Duration::from_millis(self.wake_up_time))
     }
 }
