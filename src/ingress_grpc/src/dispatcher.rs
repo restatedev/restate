@@ -200,6 +200,7 @@ mod tests {
             method_name,
             Default::default(),
             ServiceInvocationResponseSink::Ingress(IngressId("0.0.0.0:0".parse().unwrap())),
+            SpanRelation::None,
         );
         let (cmd, cmd_rx) = Command::prepare(service_invocation.clone());
         command_sender.send(cmd).unwrap();

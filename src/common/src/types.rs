@@ -110,12 +110,14 @@ impl ServiceInvocation {
         method_name: ByteString,
         argument: Bytes,
         response_sink: ServiceInvocationResponseSink,
+        related_span: SpanRelation,
     ) -> (Self, Span) {
         let (span_context, span) = ServiceInvocationSpanContext::start(
             &id.service_id.service_name,
             &method_name,
             &id.service_id.key,
             id.invocation_id,
+            related_span,
         );
         (
             Self {
@@ -174,15 +176,26 @@ impl ServiceInvocationSpanContext {
         method_name: &str,
         service_key: impl fmt::Debug,
         invocation_id: impl Display,
+        related_span: SpanRelation,
     ) -> (ServiceInvocationSpanContext, Span) {
         // Create the span
         let span = info_span!(
-            "service_invocation",
+            "enqueue_service_invocation",
             rpc.system = "restate",
             rpc.service = service_name,
             rpc.method = method_name,
             restate.invocation.key = ?service_key,
             restate.invocation.id = %invocation_id);
+
+        // Attach the related span.
+        // Note: As it stands with tracing_opentelemetry 0.18 there seems to be
+        // an ordering relationship between using OpenTelemetrySpanExt::context() and
+        // OpenTelemetrySpanExt::set_parent().
+        // If we invert the order, the spans won't link correctly because they'll have a different Trace ID.
+        // This is the reason why this method gets a SpanRelation, rather than letting the caller
+        // link the spans.
+        // https://github.com/tokio-rs/tracing/issues/2520
+        related_span.attach_to_span(&span);
 
         // Retrieve the OTEL SpanContext we want to propagate
         let span_context = span.context().span().span_context().clone();
@@ -217,8 +230,9 @@ impl SpanRelation {
     /// Attach this [`SpanRelation`] to the given [`Span`]
     pub fn attach_to_span(self, span: &Span) {
         match self {
-            SpanRelation::Parent(parent) => span
-                .set_parent(opentelemetry_api::Context::current().with_remote_span_context(parent)),
+            SpanRelation::Parent(parent) => {
+                span.set_parent(opentelemetry_api::Context::new().with_remote_span_context(parent))
+            }
             SpanRelation::CausedBy(cause) => span.add_link(cause),
             _ => {}
         };

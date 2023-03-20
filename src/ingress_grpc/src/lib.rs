@@ -13,7 +13,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use common::types::{
     AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink,
+    ServiceInvocationResponseSink, SpanRelation,
 };
 use common::utils::GenericError;
 use futures_util::command::*;
@@ -196,6 +196,7 @@ pub trait ServiceInvocationFactory {
         method_name: &str,
         request_payload: Bytes,
         response_sink: ServiceInvocationResponseSink,
+        span_relation: SpanRelation,
     ) -> Result<(ServiceInvocation, Span), ServiceInvocationFactoryError>;
 }
 

@@ -144,6 +144,7 @@ where
                     &req_headers.method_name,
                     req_payload,
                     ServiceInvocationResponseSink::Ingress(ingress_id),
+                    SpanRelation::Parent(ingress_span_context)
                 ) {
                     Ok(i) => i,
                     Err(e) => {
@@ -157,18 +158,18 @@ where
                         return Err(status);
                     }
                 };
+
                 // Be aware that between this enter and the drop later there must not be any .await
                 let enter_service_invocation_span = service_invocation_span.enter();
 
-                // Link the service invocation span to the parent span
-                SpanRelation::Parent(ingress_span_context).attach_to_span(&service_invocation_span);
-                trace!(parent: &service_invocation_span, restate.invocation.request_headers = ?req_headers);
+                // More trace info
+                trace!(restate.invocation.request_headers = ?req_headers);
 
                 // Send the service invocation
                 let (service_invocation_command, response_rx) =
                     Command::prepare(service_invocation);
                 if dispatcher_command_sender.send(service_invocation_command).is_err() {
-                    debug!(parent: &service_invocation_span, "Ingress dispatcher is closed while there is still an invocation in flight.");
+                    debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                     return Err(Status::unavailable("Unavailable"));
                 }
 

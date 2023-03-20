@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use common::types::{
     InvocationId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    SpanRelation,
 };
 use ingress_grpc::{ServiceInvocationFactory, ServiceInvocationFactoryError};
 use service_key_extractor::{KeyExtractor, KeyExtractorsRegistry};
@@ -45,6 +46,7 @@ impl ServiceInvocationFactory for DefaultServiceInvocationFactory {
         method_name: &str,
         request_payload: Bytes,
         response_sink: ServiceInvocationResponseSink,
+        span_relation: SpanRelation,
     ) -> Result<(ServiceInvocation, Span), ServiceInvocationFactoryError> {
         let key = self.extract_key(service_name, method_name, request_payload.clone())?;
 
@@ -53,6 +55,7 @@ impl ServiceInvocationFactory for DefaultServiceInvocationFactory {
             method_name.into(),
             request_payload,
             response_sink,
+            span_relation,
         ))
     }
 }

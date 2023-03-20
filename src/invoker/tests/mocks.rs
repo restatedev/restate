@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec::IntoIter;
 
-use common::types::{EntryIndex, ServiceInvocationId, ServiceInvocationSpanContext};
+use common::types::{EntryIndex, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation};
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use invoker::{
@@ -205,6 +205,7 @@ impl InMemoryJournalStorage {
             &method,
             &sid.service_id.key,
             sid.invocation_id,
+            SpanRelation::None,
         );
 
         journals.insert(

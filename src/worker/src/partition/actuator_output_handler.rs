@@ -221,11 +221,11 @@ where
                     &request.method_name,
                     &service_key,
                     invocation_id,
+                    span_relation,
                 );
 
-                // Attach the relation and enter the span
-                span_relation.attach_to_span(&span);
-                let _guard = span.enter();
+                // Enter the span to commit it
+                let _ = span.enter();
 
                 ResolutionResult::Success {
                     invocation_id,
