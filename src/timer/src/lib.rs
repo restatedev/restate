@@ -1,6 +1,6 @@
 extern crate core;
 
-use std::time::SystemTime;
+use common::types::MillisSinceEpoch;
 use tokio::sync::mpsc;
 
 mod service;
@@ -9,7 +9,7 @@ pub use service::{Service, ServiceError, TimerReader};
 
 enum Input<T> {
     Timer {
-        wake_up_time: SystemTime,
+        wake_up_time: MillisSinceEpoch,
         payload: T,
     },
 }
@@ -35,7 +35,7 @@ impl<T> TimerHandle<T> {
         Self { input_tx }
     }
 
-    pub async fn add_timer(&self, wake_up_time: SystemTime, payload: T) -> Result<(), Error> {
+    pub async fn add_timer(&self, wake_up_time: MillisSinceEpoch, payload: T) -> Result<(), Error> {
         self.input_tx
             .send(Input::Timer {
                 wake_up_time,
@@ -47,5 +47,5 @@ impl<T> TimerHandle<T> {
 }
 
 pub trait Timer {
-    fn wake_up_time(&self) -> SystemTime;
+    fn wake_up_time(&self) -> MillisSinceEpoch;
 }

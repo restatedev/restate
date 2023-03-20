@@ -7,11 +7,10 @@ use futures::{future, Stream, StreamExt};
 use invoker::{InvokeInputJournal, InvokerInputSender, InvokerNotRunning};
 use network::NetworkNotRunning;
 use std::fmt::Debug;
-use std::ops::{Add, DerefMut};
+use std::ops::DerefMut;
 use std::panic;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::{Duration, SystemTime};
 use timer::TimerReader;
 use tokio::sync::mpsc;
 use tokio::task;
@@ -127,7 +126,7 @@ where
                 } => {
                     timer_handle
                         .add_timer(
-                            SystemTime::UNIX_EPOCH.add(Duration::from_millis(wake_up_time)),
+                            wake_up_time,
                             TimerValue::new(service_invocation_id, entry_index, wake_up_time),
                         )
                         .await?;

@@ -1,9 +1,9 @@
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, IngressId, InvocationId, InvocationResponse, MessageIndex, ResponseResult,
-    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext,
+    EntryIndex, IngressId, InvocationId, InvocationResponse, MessageIndex, MillisSinceEpoch,
+    ResponseResult, ServiceId, ServiceInvocation, ServiceInvocationId,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -376,7 +376,7 @@ where
                         Codec::deserialize(&journal_entry)?
                 );
                 effects.register_timer(
-                    wake_up_time as u64,
+                    MillisSinceEpoch::new(wake_up_time as u64),
                     // Registering a timer generates multiple effects: timer registration and
                     // journal append which each generate actuator messages for the timer service
                     // and the invoker --> Cloning required

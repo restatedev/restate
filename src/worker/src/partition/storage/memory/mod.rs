@@ -11,8 +11,8 @@ use crate::partition::types::{EnrichedRawEntry, TimerValue};
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InvocationId, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    EntryIndex, InvocationId, MessageIndex, MillisSinceEpoch, ServiceId, ServiceInvocation,
+    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use futures::future::{err, ok, BoxFuture};
 use futures::{stream, FutureExt};
@@ -21,7 +21,6 @@ use journal::raw::{Header, PlainRawEntry};
 use journal::CompletionResult;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 use std::vec::IntoIter;
 use timer::TimerReader;
 
@@ -342,7 +341,7 @@ impl Storage {
     fn store_timer(
         &mut self,
         service_invocation_id: &ServiceInvocationId,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) {
         self.timers.insert(
@@ -355,7 +354,12 @@ impl Storage {
         );
     }
 
-    fn delete_timer(&mut self, service_id: &ServiceId, wake_up_time: u64, entry_index: EntryIndex) {
+    fn delete_timer(
+        &mut self,
+        service_id: &ServiceId,
+        wake_up_time: MillisSinceEpoch,
+        entry_index: EntryIndex,
+    ) {
         self.timers
             .remove(&(service_id, wake_up_time, entry_index) as &dyn TimerKeyRef);
     }
@@ -588,7 +592,7 @@ impl<'a> StateStorage for Transaction<'a> {
     fn store_timer(
         &self,
         service_invocation_id: &ServiceInvocationId,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Result<(), StateStorageError> {
         self.inner
@@ -601,7 +605,7 @@ impl<'a> StateStorage for Transaction<'a> {
     fn delete_timer(
         &self,
         service_id: &ServiceId,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Result<(), StateStorageError> {
         self.inner
@@ -658,15 +662,7 @@ impl OutboxReader for InMemoryPartitionStorage {
 impl TimerReader<TimerValue> for InMemoryPartitionStorage {
     type TimerStream = stream::Iter<IntoIter<TimerValue>>;
 
-    fn scan_timers(&self, earliest_wake_up_time: SystemTime) -> Self::TimerStream {
-        let earliest_wake_up_time = u64::try_from(
-            earliest_wake_up_time
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("Unix epoch is the start")
-                .as_millis(),
-        )
-        .expect("Millis since epoch must fit into u64.");
-
+    fn scan_timers(&self, earliest_wake_up_time: MillisSinceEpoch) -> Self::TimerStream {
         let timers: Vec<TimerValue> = self
             .inner
             .lock()

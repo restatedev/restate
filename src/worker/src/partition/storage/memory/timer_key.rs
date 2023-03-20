@@ -1,16 +1,20 @@
-use common::types::{EntryIndex, ServiceId};
+use common::types::{EntryIndex, MillisSinceEpoch, ServiceId};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 
 #[derive(Debug, Eq, Clone, PartialEq)]
 pub struct TimerKey {
-    wake_up_time: u64,
+    wake_up_time: MillisSinceEpoch,
     service_id: Option<ServiceId>,
     entry_index: Option<EntryIndex>,
 }
 
 impl TimerKey {
-    pub fn new(wake_up_time: u64, service_id: ServiceId, entry_index: EntryIndex) -> Self {
+    pub fn new(
+        wake_up_time: MillisSinceEpoch,
+        service_id: ServiceId,
+        entry_index: EntryIndex,
+    ) -> Self {
         Self {
             wake_up_time,
             service_id: Some(service_id),
@@ -18,7 +22,7 @@ impl TimerKey {
         }
     }
 
-    pub fn from_wake_up_time(wake_up_time: u64) -> Self {
+    pub fn from_wake_up_time(wake_up_time: MillisSinceEpoch) -> Self {
         Self {
             wake_up_time,
             service_id: None,
@@ -26,7 +30,7 @@ impl TimerKey {
         }
     }
 
-    pub fn into_inner(self) -> (u64, Option<ServiceId>, Option<EntryIndex>) {
+    pub fn into_inner(self) -> (MillisSinceEpoch, Option<ServiceId>, Option<EntryIndex>) {
         (self.wake_up_time, self.service_id, self.entry_index)
     }
 }
@@ -48,7 +52,7 @@ impl Ord for TimerKey {
 
 pub trait TimerKeyRef {
     fn service_id(&self) -> Option<&ServiceId>;
-    fn wake_up_time(&self) -> u64;
+    fn wake_up_time(&self) -> MillisSinceEpoch;
     fn entry_index(&self) -> Option<EntryIndex>;
 }
 
@@ -57,7 +61,7 @@ impl TimerKeyRef for TimerKey {
         self.service_id.as_ref()
     }
 
-    fn wake_up_time(&self) -> u64 {
+    fn wake_up_time(&self) -> MillisSinceEpoch {
         self.wake_up_time
     }
 
@@ -97,12 +101,12 @@ impl<'a> Borrow<dyn TimerKeyRef + 'a> for TimerKey {
     }
 }
 
-impl TimerKeyRef for (&ServiceId, u64, EntryIndex) {
+impl TimerKeyRef for (&ServiceId, MillisSinceEpoch, EntryIndex) {
     fn service_id(&self) -> Option<&ServiceId> {
         Some(self.0)
     }
 
-    fn wake_up_time(&self) -> u64 {
+    fn wake_up_time(&self) -> MillisSinceEpoch {
         self.1
     }
 

@@ -8,8 +8,8 @@ use crate::partition::types::EnrichedRawEntry;
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, MessageIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    EntryIndex, MessageIndex, MillisSinceEpoch, PartitionId, ServiceId, ServiceInvocation,
+    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
@@ -224,7 +224,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
     fn store_timer(
         &self,
         _service_invocation_id: &ServiceInvocationId,
-        _wake_up_time: u64,
+        _wake_up_time: MillisSinceEpoch,
         _entry_index: EntryIndex,
     ) -> Result<(), StateStorageError> {
         todo!()
@@ -233,7 +233,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
     fn delete_timer(
         &self,
         _service_id: &ServiceId,
-        _wake_up_time: u64,
+        _wake_up_time: MillisSinceEpoch,
         _entry_index: EntryIndex,
     ) -> Result<(), StateStorageError> {
         todo!()

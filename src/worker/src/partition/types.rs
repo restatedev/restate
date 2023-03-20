@@ -1,12 +1,12 @@
 use bytes::Bytes;
 use bytestring::ByteString;
-use common::types::{EntryIndex, InvocationId, ServiceInvocationId, ServiceInvocationSpanContext};
+use common::types::{
+    EntryIndex, InvocationId, MillisSinceEpoch, ServiceInvocationId, ServiceInvocationSpanContext,
+};
 use invoker::InvokerError;
 use journal::raw::{Header, RawEntry, RawEntryHeader};
 use journal::EntryType;
 use std::collections::HashSet;
-use std::ops::Add;
-use std::time::{Duration, SystemTime};
 
 #[derive(Debug)]
 pub(crate) struct InvokerEffect {
@@ -171,7 +171,7 @@ impl From<EnrichedEntryHeader> for RawEntryHeader {
 #[derive(Debug)]
 pub(crate) struct TimerValue {
     pub service_invocation_id: ServiceInvocationId,
-    pub wake_up_time: u64,
+    pub wake_up_time: MillisSinceEpoch,
     pub entry_index: EntryIndex,
 }
 
@@ -179,7 +179,7 @@ impl TimerValue {
     pub(crate) fn new(
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
     ) -> Self {
         Self {
             service_invocation_id,
@@ -190,7 +190,7 @@ impl TimerValue {
 }
 
 impl timer::Timer for TimerValue {
-    fn wake_up_time(&self) -> SystemTime {
-        SystemTime::UNIX_EPOCH.add(Duration::from_millis(self.wake_up_time))
+    fn wake_up_time(&self) -> MillisSinceEpoch {
+        self.wake_up_time
     }
 }

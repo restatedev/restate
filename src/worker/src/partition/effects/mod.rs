@@ -1,7 +1,8 @@
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, IngressId, InvocationId, InvocationResponse, MessageIndex, ResponseResult,
-    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
+    EntryIndex, IngressId, InvocationId, InvocationResponse, MessageIndex, MillisSinceEpoch,
+    ResponseResult, ServiceId, ServiceInvocation, ServiceInvocationId,
+    ServiceInvocationSpanContext,
 };
 use journal::Completion;
 use std::collections::HashSet;
@@ -79,12 +80,12 @@ pub(crate) enum Effect {
     // Timers
     RegisterTimer {
         service_invocation_id: ServiceInvocationId,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     },
     DeleteTimer {
         service_id: ServiceId,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     },
 
@@ -241,7 +242,7 @@ impl Effects {
 
     pub(crate) fn register_timer(
         &mut self,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
     ) {
@@ -254,7 +255,7 @@ impl Effects {
 
     pub(crate) fn delete_timer(
         &mut self,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
         service_id: ServiceId,
         entry_index: EntryIndex,
     ) {

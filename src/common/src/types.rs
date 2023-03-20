@@ -250,3 +250,19 @@ pub enum AckKind {
     Acknowledge(MessageIndex),
     Duplicate(MessageIndex),
 }
+
+/// Milliseconds since the unix epoch
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MillisSinceEpoch(u64);
+
+impl MillisSinceEpoch {
+    pub const UNIX_EPOCH: MillisSinceEpoch = MillisSinceEpoch::new(0);
+
+    pub const fn new(millis_since_epoch: u64) -> Self {
+        MillisSinceEpoch(millis_since_epoch)
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}

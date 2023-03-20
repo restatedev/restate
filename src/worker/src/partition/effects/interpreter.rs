@@ -4,8 +4,8 @@ use crate::partition::InvocationStatus;
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InvocationId, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    EntryIndex, InvocationId, MessageIndex, MillisSinceEpoch, ServiceId, ServiceInvocation,
+    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -35,7 +35,7 @@ pub(crate) enum ActuatorMessage {
     },
     RegisterTimer {
         service_invocation_id: ServiceInvocationId,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     },
     AckStoredEntry {
@@ -167,14 +167,14 @@ pub(crate) trait StateStorage {
     fn store_timer(
         &self,
         service_invocation_id: &ServiceInvocationId,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Result<(), StateStorageError>;
 
     fn delete_timer(
         &self,
         service_id: &ServiceId,
-        wake_up_time: u64,
+        wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Result<(), StateStorageError>;
 }

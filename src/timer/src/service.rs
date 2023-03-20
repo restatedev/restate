@@ -1,5 +1,7 @@
 use crate::{Input, Output, Timer, TimerHandle};
-use std::time::SystemTime;
+use common::types::MillisSinceEpoch;
+use std::ops::Add;
+use std::time::{Duration, SystemTime};
 use timer_queue::TimerQueue;
 use tokio::sync::mpsc;
 use tokio_stream::{Stream, StreamExt};
@@ -11,7 +13,7 @@ where
 {
     type TimerStream: Stream<Item = T> + Unpin + Send;
 
-    fn scan_timers(&self, earliest_wake_up_time: SystemTime) -> Self::TimerStream;
+    fn scan_timers(&self, earliest_wake_up_time: MillisSinceEpoch) -> Self::TimerStream;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,7 +96,7 @@ where
     ) -> TimerLogic<T> {
         let mut timer_logic = TimerLogic::new(output_tx);
 
-        let mut timer_stream = timer_reader.scan_timers(SystemTime::UNIX_EPOCH);
+        let mut timer_stream = timer_reader.scan_timers(MillisSinceEpoch::UNIX_EPOCH);
 
         while let Some(timer) = timer_stream.next().await {
             timer_logic.add_timer(timer.wake_up_time(), timer);
@@ -117,7 +119,9 @@ impl<T> TimerLogic<T> {
         }
     }
 
-    fn add_timer(&mut self, wake_up_time: SystemTime, payload: T) {
+    fn add_timer(&mut self, wake_up_time: MillisSinceEpoch, payload: T) {
+        let wake_up_time = Self::millis_since_epoch_to_system_time(wake_up_time);
+
         self.timer_queue.sleep_until(wake_up_time, payload);
     }
 
@@ -129,5 +133,9 @@ impl<T> TimerLogic<T> {
                 .await
                 .map_err(|_| ServiceError::OutputClosed)?;
         }
+    }
+
+    fn millis_since_epoch_to_system_time(millis_since_epoch: MillisSinceEpoch) -> SystemTime {
+        SystemTime::UNIX_EPOCH.add(Duration::from_millis(millis_since_epoch.as_u64()))
     }
 }
