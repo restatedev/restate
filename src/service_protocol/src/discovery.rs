@@ -19,7 +19,8 @@ use service_metadata::ProtocolType;
 #[allow(clippy::declare_interior_mutable_const)]
 const APPLICATION_PROTO: HeaderValue = HeaderValue::from_static("application/proto");
 
-const RESERVED_SERVICE_NAME_PREFIX: &str = "dev.restate.";
+const RESTATE_SERVICE_NAME_PREFIX: &str = "dev.restate.";
+const GRPC_SERVICE_NAME_PREFIX: &str = "grpc.";
 const SERVICE_TYPE_EXT: &str = "dev.restate.ext.service_type";
 const FIELD_EXT: &str = "dev.restate.ext.field";
 
@@ -110,7 +111,7 @@ pub enum ServiceDiscoveryError {
     MissingServiceTypeAnnotation(String),
     #[error("the service {0} is keyed but has no methods. You must specify at least one method.")]
     KeyedServiceWithoutMethods(String),
-    #[error("the service {0} is reserved. Service name should must not start with 'dev.restate'.")]
+    #[error("the service {0} is reserved. Service name should must not start with 'dev.restate' or 'grpc'.")]
     ServiceNameReserved(String),
     #[error(
         "error when trying to parse the key of service method {} with input type {}. No key field found.{KEY_FIELD_ERROR_MESSAGE}",
@@ -261,9 +262,9 @@ impl ServiceDiscovery {
         // Infer service instance type
         let mut services = Vec::with_capacity(service_descriptors.len());
         for svc_desc in service_descriptors {
-            if svc_desc
-                .full_name()
-                .starts_with(RESERVED_SERVICE_NAME_PREFIX)
+            let svc_name = svc_desc.full_name();
+            if svc_name.starts_with(RESTATE_SERVICE_NAME_PREFIX)
+                || svc_name.starts_with(GRPC_SERVICE_NAME_PREFIX)
             {
                 return Err(ServiceDiscoveryError::ServiceNameReserved(
                     svc_desc.full_name().to_string(),
@@ -274,7 +275,7 @@ impl ServiceDiscovery {
                 &restate_service_type_extension,
                 &restate_key_extension,
             )?;
-            services.push((svc_desc.full_name().to_string(), service_type))
+            services.push((svc_name.to_string(), service_type))
         }
 
         Ok(DiscoveredMetadata {
