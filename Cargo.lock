@@ -435,8 +435,12 @@ dependencies = [
  "futures",
  "futures-sink",
  "network",
+ "pin-project",
+ "test_utils",
+ "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

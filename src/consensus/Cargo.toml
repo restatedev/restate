@@ -16,5 +16,11 @@ drain = { workspace = true }
 futures = { workspace = true }
 futures-sink = { workspace = true }
 network = { workspace = true }
+pin-project = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+test_utils = { workspace = true }
+tracing-subscriber = { workspace = true }

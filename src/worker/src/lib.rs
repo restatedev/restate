@@ -125,7 +125,8 @@ impl Worker {
         );
         let network_ingress_sender = network.create_ingress_sender();
 
-        let mut consensus = Consensus::new(raft_in_rx, network.create_consensus_sender());
+        let mut consensus =
+            Consensus::new(raft_in_rx, network.create_consensus_sender(), channel_size);
 
         let network_handle = network.create_network_handle();
 
