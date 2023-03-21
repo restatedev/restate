@@ -19,6 +19,7 @@ use service_metadata::ProtocolType;
 #[allow(clippy::declare_interior_mutable_const)]
 const APPLICATION_PROTO: HeaderValue = HeaderValue::from_static("application/proto");
 
+const RESERVED_SERVICE_NAME_PREFIX: &str = "dev.restate.";
 const SERVICE_TYPE_EXT: &str = "dev.restate.ext.service_type";
 const FIELD_EXT: &str = "dev.restate.ext.field";
 
@@ -109,6 +110,8 @@ pub enum ServiceDiscoveryError {
     MissingServiceTypeAnnotation(String),
     #[error("the service {0} is keyed but has no methods. You must specify at least one method.")]
     KeyedServiceWithoutMethods(String),
+    #[error("the service {0} is reserved. Service name should must not start with 'dev.restate'.")]
+    ServiceNameReserved(String),
     #[error(
         "error when trying to parse the key of service method {} with input type {}. No key field found.{KEY_FIELD_ERROR_MESSAGE}",
         MethodDescriptor::full_name(.0),
@@ -258,6 +261,14 @@ impl ServiceDiscovery {
         // Infer service instance type
         let mut services = Vec::with_capacity(service_descriptors.len());
         for svc_desc in service_descriptors {
+            if svc_desc
+                .full_name()
+                .starts_with(RESERVED_SERVICE_NAME_PREFIX)
+            {
+                return Err(ServiceDiscoveryError::ServiceNameReserved(
+                    svc_desc.full_name().to_string(),
+                ));
+            }
             let service_type = infer_service_type(
                 &svc_desc,
                 &restate_service_type_extension,
