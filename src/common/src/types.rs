@@ -180,7 +180,7 @@ impl ServiceInvocationSpanContext {
     ) -> (ServiceInvocationSpanContext, Span) {
         // Create the span
         let span = info_span!(
-            "enqueue_service_invocation",
+            "service_invocation",
             rpc.system = "restate",
             rpc.service = service_name,
             rpc.method = method_name,

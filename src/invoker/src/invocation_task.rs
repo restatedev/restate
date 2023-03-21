@@ -506,7 +506,7 @@ where
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
                         entry,
-                        parent_span_context: parent_span_context.clone(),
+                        parent_span_context: Arc::clone(parent_span_context),
                     },
                 });
                 self.next_journal_index += 1;
