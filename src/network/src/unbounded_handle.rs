@@ -43,15 +43,15 @@ where
         )
     }
 
-    fn create_shuffle_sender(&self) -> ShuffleSender<ShuffleOut> {
-        self.shuffle_tx.clone()
-    }
-
     fn unregister_shuffle(&self, peer_id: PeerId) -> Self::Future {
         futures::future::ready(
             self.network_command_tx
                 .send(NetworkCommand::UnregisterShuffle { peer_id })
                 .map_err(|_| NetworkNotRunning),
         )
+    }
+
+    fn create_shuffle_sender(&self) -> ShuffleSender<ShuffleOut> {
+        self.shuffle_tx.clone()
     }
 }
