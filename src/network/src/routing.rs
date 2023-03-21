@@ -9,6 +9,7 @@ use crate::{
 use common::partitioner::HashPartitioner;
 use common::traits::KeyedMessage;
 use common::types::{PeerId, PeerTarget};
+use common::utils::GenericError;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -26,6 +27,26 @@ pub type ConsensusSender<T> = mpsc::Sender<PeerTarget<T>>;
 pub type IngressSender<T> = mpsc::Sender<T>;
 
 pub type PartitionProcessorSender<T> = mpsc::Sender<T>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum RoutingError {
+    #[error("consensus forwarder terminated: {0}")]
+    ConsensusForwarder(TerminationCause),
+    #[error("shuffle router terminated: {0}")]
+    ShuffleRouter(TerminationCause),
+    #[error("ingress router terminated: {0}")]
+    IngressRouter(TerminationCause),
+    #[error("partition processor router terminated: {0}")]
+    PartitionProcessorRouter(TerminationCause),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TerminationCause {
+    #[error("unexpected termination")]
+    Unexpected,
+    #[error("error: {0}")]
+    Error(#[from] GenericError),
+}
 
 /// Component which is responsible for routing messages from different components.
 #[derive(Debug)]
@@ -179,7 +200,7 @@ where
         self.partition_processor_tx.clone()
     }
 
-    pub async fn run(self, drain: drain::Watch) -> anyhow::Result<()> {
+    pub async fn run(self, drain: drain::Watch) -> Result<(), RoutingError> {
         let Network {
             consensus_in_rx,
             consensus_tx,
@@ -233,16 +254,16 @@ where
         loop {
             tokio::select! {
                 result = &mut consensus_forwarder => {
-                    result?
+                    Err(RoutingError::ConsensusForwarder(Self::result_into_termination_cause(result)))?;
                 },
                 result = &mut shuffle_router => {
-                    result?
+                    Err(RoutingError::ShuffleRouter(Self::result_into_termination_cause(result)))?;
                 },
                 result = &mut ingress_router => {
-                    result?
+                    Err(RoutingError::IngressRouter(Self::result_into_termination_cause(result)))?;
                 },
                 result = &mut partition_processor_router => {
-                    result?
+                    Err(RoutingError::PartitionProcessorRouter(Self::result_into_termination_cause(result)))?;
                 },
                 command = network_command_rx.recv() => {
                     let command = command.expect("Network owns the command sender, that's why the receiver will never be closed.");
@@ -265,6 +286,15 @@ where
         }
 
         Ok(())
+    }
+
+    fn result_into_termination_cause<E: std::error::Error + Send + Sync + 'static>(
+        result: Result<(), E>,
+    ) -> TerminationCause {
+        result
+            .map_err(|err| TerminationCause::Error(err.into()))
+            .err()
+            .unwrap_or(TerminationCause::Unexpected)
     }
 }
 
