@@ -121,6 +121,7 @@ impl Worker {
             raft_in_tx,
             ingress_dispatcher_loop.create_response_sender(),
             FixedPartitionTable::new(num_partition_processors),
+            channel_size,
         );
         let network_ingress_sender = network.create_ingress_sender();
 

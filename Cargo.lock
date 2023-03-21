@@ -1362,9 +1362,11 @@ dependencies = [
  "drain",
  "futures",
  "pin-project",
+ "test_utils",
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
