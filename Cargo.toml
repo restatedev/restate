@@ -65,6 +65,7 @@ service_key_extractor = { path = "src/service_key_extractor" }
 service_metadata = { path = "src/service_metadata" }
 service_protocol = { path = "src/service_protocol" }
 storage_api = {path = "src/storage_api"}
+storage_proto = {path = "src/storage_proto"}
 storage_rocksdb = { path = "src/storage_rocksdb" }
 test_utils = { path = "src/test_utils" }
 timer = { path = "src/timer" }

@@ -1,47 +1,53 @@
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum TableKind {
-    State,
-    Inbox,
-    Outbox,
-    Deduplication,
-    PartitionStateMachine,
-    Timers,
+use common::utils::GenericError;
+use futures_util::future::BoxFuture;
+use futures_util::stream::BoxStream;
+
+//
+// A Generic storage Error
+//
+
+#[derive(Debug, thiserror::Error)]
+pub enum StorageError {
+    #[error("generic storage error: {0}")]
+    Generic(#[from] GenericError),
 }
 
-pub trait StorageDeserializer {
-    fn from_bytes(bytes: impl AsRef<[u8]>) -> Self;
+//
+// The following future definitions are temporary upto the point
+// where async interfaces will be a thing in Rust.
+//
+pub type GetFuture<'a, T> = BoxFuture<'a, Result<T, StorageError>>;
+pub type PutFuture = futures_util::future::Ready<()>;
+pub type GetStream<'a, T> = BoxStream<'a, Result<T, StorageError>>;
+
+pub fn ready() -> PutFuture {
+    futures_util::future::ready(())
 }
 
-pub trait StorageReader {
-    fn get<K: AsRef<[u8]>, V: StorageDeserializer>(&self, table: TableKind, key: K) -> Option<V>;
+pub mod deduplication_table;
+pub mod fsm_table;
+pub mod inbox_table;
+pub mod journal_table;
+pub mod outbox_table;
+pub mod state_table;
+pub mod status_table;
+pub mod timer_table;
 
-    fn copy_prefix_into<P, K, V>(
-        &self,
-        table: TableKind,
-        start_key: P,
-        start_key_prefix_len: usize,
-        target: &mut Vec<(K, V)>,
-    ) where
-        P: AsRef<[u8]>,
-        K: StorageDeserializer,
-        V: StorageDeserializer;
+pub trait Storage {
+    type TransactionType: Transaction;
+
+    fn transaction(&self) -> Self::TransactionType;
 }
 
-pub trait Storage: StorageReader {
-    type WriteTransactionType<'a>: WriteTransaction<'a>
-    where
-        Self: 'a;
-
-    fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, table: TableKind, key: K, value: V);
-
-    #[allow(clippy::needless_lifetimes)]
-    fn transaction<'a>(&'a self) -> Self::WriteTransactionType<'a>;
-}
-
-pub trait WriteTransaction<'a> {
-    fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, table: TableKind, key: K, value: V);
-
-    fn delete(&mut self, table: TableKind, key: impl AsRef<[u8]>);
-
-    fn commit(self);
+pub trait Transaction:
+    state_table::StateTable
+    + status_table::StatusTable
+    + inbox_table::InboxTable
+    + outbox_table::OutboxTable
+    + deduplication_table::DeduplicationTable
+    + journal_table::JournalTable
+    + fsm_table::FsmTable
+    + timer_table::TimerTable
+{
+    fn commit(self) -> GetFuture<'static, ()>;
 }

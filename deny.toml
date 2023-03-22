@@ -75,6 +75,14 @@ skip = [
     # requiring windows and hermit syscalls with conflicting version.
     # Also see https://github.com/rust-lang/cargo/issues/1197
     { name = "windows-sys" },
+    { name = "windows-targets" },
+    { name = "windows_x86_64_msvc" },
+    { name = "windows_x86_64_gnullvm" },
+    { name = "windows_aarch64_gnullvm" },
+    { name = "windows_x86_64_gnu" },
+    { name = "windows_i686_gnu" },
+    { name = "windows_i686_msvc" },
+    { name = "windows_aarch64_msvc" },
     { name = "hermit-abi" },
     # Clash between prost-reflect and tracing_instrumentation
     { name = "ordered-float" },
@@ -84,7 +92,13 @@ skip = [
     { name = "clap_lex" },
 
     # Clash between tonic clap dependency (outdated) and hyper-rustls and prost-reflect
-    { name = "base64" }
+    { name = "base64" },
+
+    # The following is an internal dependecy needed by librocksdb-sys
+    { name = "syn" },
+
+    # The following is a dev and build dependecy used by tempfile but clashes with open telemetry.
+    { name = "redox_syscall"},
 ]
 deny = [
     # Each entry the name of a crate and a version range. If version is

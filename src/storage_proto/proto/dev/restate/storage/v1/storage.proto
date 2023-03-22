@@ -1,0 +1,282 @@
+syntax = "proto3";
+
+package dev.restate.storage.v1;
+
+// ---------------------------------------------------------------------
+// Common
+// ---------------------------------------------------------------------
+
+message ServiceInvocationId {
+    bytes service_name = 1;
+    bytes service_key = 2;
+    bytes invocation_id = 3;
+}
+
+// ---------------------------------------------------------------------
+// Service Invocation
+// ---------------------------------------------------------------------
+
+message JournalMeta {
+    bytes method_name = 1;
+    uint32 length = 2;
+    SpanContext span_context = 4;
+}
+
+message InvocationStatus {
+
+    message Invoked {
+        bytes invocation_id = 1;
+        JournalMeta journal_meta = 2;
+        ServiceInvocationResponseSink response_sink = 3;
+    }
+
+    message Suspended {
+        bytes invocation_id = 1;
+        JournalMeta journal_meta = 2;
+        ServiceInvocationResponseSink response_sink = 3;
+        repeated uint32 waiting_for_completed_entries = 4;
+    }
+
+    message Free {
+    }
+
+    oneof status {
+        Invoked invoked = 1;
+        Suspended suspended = 2;
+        Free free = 3;
+    }
+}
+
+message ServiceInvocationResponseSink {
+
+    message PartitionProcessor {
+        ServiceInvocationId caller = 1;
+        uint32 entry_index = 2;
+    }
+
+    message Ingress {
+        string ingress_id = 1;
+    }
+
+    message None {
+    }
+
+    oneof response_sink {
+        None none = 1;
+        PartitionProcessor partition_processor = 2;
+        Ingress ingress = 3;
+    }
+}
+
+message SpanContext {
+    bytes trace_id = 1;
+    uint64 span_id = 2;
+    uint32 trace_flags = 3;
+    bool is_remote = 4;
+    string trace_state = 5;
+}
+
+message ServiceInvocation {
+    ServiceInvocationId id = 1;
+    bytes method_name = 2;
+    bytes argument = 3;
+    ServiceInvocationResponseSink response_sink = 4;
+    SpanContext span_context = 5;
+}
+
+message InboxEntry {
+    ServiceInvocation service_invocation = 2;
+}
+
+message InvocationResolutionResult {
+
+    message None {
+    }
+
+    message Success {
+        bytes invocation_id = 1;
+        bytes service_key = 2;
+        SpanContext span_context = 3;
+    }
+
+    message Failure {
+        int32 error_code  = 1;
+        bytes error = 2;
+    }
+
+    oneof result {
+        None none = 1;
+        Success success = 2;
+        Failure failure = 3;
+    }
+}
+
+message BackgroundCallResolutionResult {
+
+    message Success {
+        bytes invocation_id = 1;
+        bytes service_key = 2;
+        SpanContext span_context = 3;
+    }
+
+    message Failure {
+        int32 error_code  = 1;
+        bytes error = 2;
+    }
+
+    oneof result {
+        Success success = 1;
+        Failure failure = 2;
+    }
+}
+message EnrichedEntryHeader {
+
+    message PollInputStream {
+        bool is_completed = 1;
+    }
+
+    message OutputStream {
+    }
+
+    message GetState {
+        bool is_completed = 1;
+    }
+
+    message SetState {
+    }
+
+    message ClearState {
+    }
+
+    message Sleep {
+        bool is_completed = 1;
+    }
+
+    message Invoke {
+        bool is_completed = 1;
+        InvocationResolutionResult resolution_result = 2;
+    }
+
+    message BackgroundCall {
+        BackgroundCallResolutionResult resolution_result = 1;
+    }
+
+    message Awakeable {
+        bool is_completed = 1;
+    }
+
+    message CompleteAwakeable {
+
+    }
+
+    message Custom {
+        uint32 code = 1;
+        bool requires_ack = 2;
+    }
+
+    oneof kind {
+        PollInputStream poll_input_stream = 1;
+        OutputStream output_stream = 2;
+        GetState get_state = 3;
+        SetState set_state = 4;
+        ClearState clear_state = 5;
+        Sleep sleep = 6;
+        Invoke invoke = 7;
+        BackgroundCall background_call = 8;
+        Awakeable awakeable = 9;
+        CompleteAwakeable complete_awakeable = 10;
+        Custom custom = 11;
+    }
+}
+
+message JournalEntry {
+
+    message Entry {
+        EnrichedEntryHeader header = 1;
+        bytes raw_entry = 2;
+    }
+
+    message CompletionResult {
+        message Ack {
+        }
+
+        message Empty {
+        }
+
+        message Success {
+            bytes value = 1;
+        }
+
+        message Failure {
+            int32 error_code = 1;
+            bytes message = 2;
+        }
+
+        oneof result {
+            Ack ack = 1;
+            Empty empty = 2;
+            Success success = 3;
+            Failure failure = 4;
+        }
+    }
+
+    oneof kind {
+        Entry entry = 1;
+        CompletionResult completion_result = 2;
+    }
+}
+
+
+
+message ResponseResult {
+    message ResponseSuccess {
+        bytes value = 1;
+    }
+
+    message ResponseFailure {
+        int32 failure_code = 1;
+        bytes failure_message = 2;
+    }
+
+    oneof response_result {
+        ResponseSuccess response_success = 1;
+        ResponseFailure response_failure = 2;
+    }
+}
+
+// ---------------------------------------------------------------------
+// Outbox
+// ---------------------------------------------------------------------
+
+message OutboxMessage {
+
+    message OutboxServiceInvocation {
+        ServiceInvocation service_invocation = 1;
+    }
+
+    message OutboxServiceInvocationResponse {
+        ServiceInvocationId service_invocation_id = 1;
+        uint32 entry_index = 2;
+        ResponseResult response_result = 3;
+    }
+
+    message OutboxIngressResponse {
+        ServiceInvocationId service_invocation_id = 1;
+        string ingress_id = 2;
+        ResponseResult response_result = 3;
+    }
+
+    oneof outbox_message {
+        OutboxServiceInvocation service_invocation_case = 1;
+        OutboxServiceInvocationResponse service_invocation_response = 2;
+        OutboxIngressResponse ingress_response = 3;
+    }
+
+}
+
+// ---------------------------------------------------------------------
+// Timer
+// ---------------------------------------------------------------------
+
+message Timer {
+}
