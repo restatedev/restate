@@ -21,6 +21,16 @@ jobs:
       RUST_BACKTRACE: full
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
+    services:
+      verifier:
+        image: ghcr.io/restatedev/restate-verification:latest
+        ports:
+          - "8000:8000"
+        options: >-
+          --health-cmd "curl --http2-prior-knowledge 127.0.0.1:8000/health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v3
 
@@ -52,3 +62,6 @@ jobs:
 
       - name: Run tests
         run: just test
+
+      - name: Run verification test
+        run: just verification-test

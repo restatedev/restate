@@ -10,6 +10,10 @@ description.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[dev-dependencies]
+assert_cmd = "2.0.10"
+hyper = { workspace = true }
+
 [dependencies]
 clap = { version = "4.1", features = ["derive", "env"] }
 drain = { workspace = true }
