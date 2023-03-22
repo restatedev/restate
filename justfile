@@ -66,6 +66,9 @@ run *flags: (_target-installed _target)
 test: (_target-installed _target)
     cargo test {{ _target-option }} --workspace --all-features
 
+verification-test: (_target-installed _target)
+    cargo test {{ _target-option }} --package restate verification --all-features -- --ignored --exact
+
 # Runs lints and tests
 verify: lint test
 
