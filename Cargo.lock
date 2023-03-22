@@ -1342,6 +1342,7 @@ dependencies = [
  "opentelemetry-http",
  "pin-project",
  "prost",
+ "prost-build",
  "prost-reflect",
  "serde",
  "serde_json",
