@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 arc-swap = { workspace = true }
 common = { workspace = true }
+service_key_extractor = { workspace = true }
 http = "0.2.9"
 prost-reflect = { workspace = true }
 serde = { workspace = true }
