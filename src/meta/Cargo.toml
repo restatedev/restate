@@ -39,3 +39,8 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 codederror = { workspace = true }
 errors = { workspace = true, features = ["include_doc"] }
+
+# TODO remove this once we have meta-registry
+#  used for reflections registry
+#  see https://github.com/restatedev/restate/issues/43
+ingress_grpc = { workspace = true }

@@ -32,7 +32,7 @@ http = "0.2"
 http-body = "0.4"
 hyper = { workspace = true, features = ["http1", "http2", "server", "tcp", "stream", "runtime"] }
 tokio = { workspace = true }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["codegen", "prost"] }
 tonic-web = "0.5.0"
 
 # Tracing

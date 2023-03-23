@@ -9,6 +9,7 @@ use common::types::{IngressId, PeerId, PeerTarget};
 use consensus::Consensus;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use ingress_grpc::ReflectionRegistry;
 use invoker::{Invoker, UnboundedInvokerInputSender};
 use network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use partition::ack::AckableCommand;
@@ -73,12 +74,14 @@ impl Options {
         self,
         method_descriptor_registry: InMemoryMethodDescriptorRegistry,
         key_extractor_registry: KeyExtractorsRegistry,
+        reflections_registry: ReflectionRegistry,
         service_endpoint_registry: InMemoryServiceEndpointRegistry,
     ) -> Worker {
         Worker::new(
             self,
             method_descriptor_registry,
             key_extractor_registry,
+            reflections_registry,
             service_endpoint_registry,
         )
     }
@@ -89,6 +92,7 @@ impl Worker {
         opts: Options,
         method_descriptor_registry: InMemoryMethodDescriptorRegistry,
         key_extractor_registry: KeyExtractorsRegistry,
+        reflections_registry: ReflectionRegistry,
         service_endpoint_registry: InMemoryServiceEndpointRegistry,
     ) -> Self {
         let Options {
@@ -115,6 +119,7 @@ impl Worker {
             external_client_ingress_id,
             method_descriptor_registry,
             invocation_factory,
+            reflections_registry,
         );
 
         let network = network_integration::Network::new(

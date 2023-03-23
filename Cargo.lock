@@ -1623,6 +1623,7 @@ dependencies = [
  "futures",
  "futures_util",
  "hyper",
+ "ingress_grpc",
  "prost-reflect",
  "serde",
  "serde_json",

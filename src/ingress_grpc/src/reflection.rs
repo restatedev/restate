@@ -16,7 +16,7 @@ use prost::Message;
 use prost_reflect::prost_types::{DescriptorProto, EnumDescriptorProto, FileDescriptorProto};
 use prost_reflect::{DescriptorPool, FileDescriptor, ServiceDescriptor};
 use tonic::{Request, Response, Status, Streaming};
-use tracing::warn;
+use tracing::debug;
 
 mod pb {
     #![allow(warnings)]
@@ -32,9 +32,10 @@ pub use pb::server_reflection_server::ServerReflectionServer;
 struct ReflectionServiceState {
     service_names: Vec<pb::ServiceResponse>,
 
+    // The usize here is used for reference count
     files: HashMap<String, (usize, Bytes)>,
 
-    // Symbols contains the fully qualified names of:
+    // Symbols contain the fully qualified names of:
     // * Services
     // * Methods
     // * Message
@@ -59,7 +60,7 @@ impl ReflectionServiceState {
         {
             Ok(_) => {
                 // No need to reinsert
-                todo!("We should remove the old symbols first? Or we don't allow this at all?")
+                // TODO We should remove the old symbols first? Or we don't allow this at all?
             }
             Err(insert_index) => {
                 // This insert retains the order
@@ -68,32 +69,37 @@ impl ReflectionServiceState {
         }
 
         let mut files_to_insert = HashMap::new();
-        for (symbol_name, related_files) in symbols_index {
+        for (symbol_name, related_files) in &symbols_index {
             for related_file in related_files {
-                let maybe_file = self.files.get_mut(&related_file);
+                let maybe_file = self.files.get_mut(related_file);
                 if let Some((count, _)) = maybe_file {
-                    *count = *count + 1;
-                    warn!("Found a type collision when registering service {} symbol {}. \
+                    *count += 1;
+                    // TODO should this be warn?
+                    debug!("Found a type collision when registering service {} symbol {}. \
                     This might indicate two services are sharing the same type definitions, \
                     which is fine as long as the type definitions are equal/compatible with each other.", service_name, symbol_name);
                 } else {
-                    let file_to_insert = maybe_files_to_add.get(&related_file).unwrap().clone();
-                    files_to_insert.insert(related_file, (1, file_to_insert));
+                    let file_to_insert = maybe_files_to_add.get(related_file).unwrap().clone();
+                    files_to_insert.insert(related_file.clone(), (1, file_to_insert));
                 }
             }
         }
         self.files.extend(files_to_insert);
+        self.symbols_index.extend(symbols_index);
     }
 
+    #[allow(dead_code)]
     fn remove_service(&mut self, _service_name: String) {
         todo!("Start by looking for the service name, parse the file descriptor and then walk it back to remove all the symbols. Can reuse process_file below");
     }
 
     fn get_file(&self, file_name: &str) -> Option<Bytes> {
+        debug!("Get file {}", file_name);
         self.files.get(file_name).map(|(_, bytes)| bytes.clone())
     }
 
     fn get_symbol(&self, symbol_name: &str) -> Option<Vec<Bytes>> {
+        debug!("Get symbol {}", symbol_name);
         self.symbols_index.get(symbol_name).map(|files| {
             files
                 .iter()
@@ -103,7 +109,7 @@ impl ReflectionServiceState {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ReflectionRegistry {
     reflection_service_state: Arc<ArcSwap<ReflectionServiceState>>,
 }
@@ -117,7 +123,7 @@ pub enum RegistrationError {
 }
 
 impl ReflectionRegistry {
-    pub fn register_new_service(
+    pub fn register_new_services(
         &mut self,
         services: Vec<String>,
         descriptor_pool: DescriptorPool,
@@ -164,7 +170,12 @@ impl ReflectionRegistry {
                     .collect::<Vec<_>>(),
             );
 
-            discovered_services.push((service_name, service_symbols))
+            debug!(
+                "Symbols associated to service '{}': {:?}",
+                service_name,
+                service_symbols.keys()
+            );
+            discovered_services.push((service_name, service_symbols));
         }
 
         // Now serialize the discovered files
@@ -192,21 +203,22 @@ impl ReflectionRegistry {
 }
 
 fn collect_service_related_file_descriptors(svc_desc: ServiceDescriptor) -> Vec<FileDescriptor> {
-    collect_self_and_dependencies(svc_desc.parent_file())
+    rec_collect_dependencies(svc_desc.parent_file())
 }
 
-fn collect_self_and_dependencies(file_desc: FileDescriptor) -> Vec<FileDescriptor> {
+fn rec_collect_dependencies(file_desc: FileDescriptor) -> Vec<FileDescriptor> {
     let mut result = vec![];
     result.push(file_desc.clone());
     for dependency in file_desc.dependencies() {
-        result.extend(collect_self_and_dependencies(dependency))
+        result.extend(rec_collect_dependencies(dependency))
     }
 
-    return result;
+    result
 }
 
 // --- Took from tonic-reflection
 // I teared off indexing fields and enum variants, as this is not done by the Java grpc implementation
+// https://github.com/hyperium/tonic/blob/9990e6ef9d00394b5662719662062cc85e6e4700/tonic-reflection/src/server.rs
 
 fn process_file(
     symbols: &mut HashSet<String>,
@@ -260,7 +272,7 @@ fn process_enum(
     en: &EnumDescriptorProto,
 ) -> Result<(), RegistrationError> {
     let enum_name = extract_name(prefix, "enum", en.name.as_ref())?;
-    symbols.insert(enum_name.clone());
+    symbols.insert(enum_name);
     Ok(())
 }
 
@@ -323,6 +335,7 @@ impl ReflectionServiceStream {
                 MessageResponse::AllExtensionNumbersResponse(ExtensionNumberResponse::default())
             }
             MessageRequest::ListServices(_) => {
+                debug!("List services");
                 MessageResponse::ListServicesResponse(ListServiceResponse {
                     service: self.state.service_names.clone(),
                 })
@@ -351,7 +364,7 @@ impl Stream for ReflectionServiceStream {
             ))));
         };
 
-        let message_response = match self.handle_request(&message_request) {
+        let message_response = match self.handle_request(message_request) {
             Ok(resp_msg) => resp_msg,
             Err(status) => MessageResponse::ErrorResponse(ErrorResponse {
                 error_code: status.code() as i32,
