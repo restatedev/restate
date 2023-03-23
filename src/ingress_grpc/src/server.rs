@@ -3,6 +3,7 @@ use super::*;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use crate::reflection::ServerReflection;
 use common::types::IngressId;
 use futures::FutureExt;
 use service_metadata::MethodDescriptorRegistry;
@@ -15,7 +16,7 @@ use tracing::{info, warn};
 
 pub type StartSignal = oneshot::Receiver<SocketAddr>;
 
-pub struct HyperServerIngress<DescriptorRegistry, InvocationFactory> {
+pub struct HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionService> {
     listening_addr: SocketAddr,
     concurrency_limit: usize,
 
@@ -23,17 +24,19 @@ pub struct HyperServerIngress<DescriptorRegistry, InvocationFactory> {
     ingress_id: IngressId,
     method_descriptor_registry: DescriptorRegistry,
     invocation_factory: InvocationFactory,
+    reflection_service: ReflectionService,
     dispatcher_command_sender: DispatcherCommandSender,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
 }
 
-impl<DescriptorRegistry, InvocationFactory>
-    HyperServerIngress<DescriptorRegistry, InvocationFactory>
+impl<DescriptorRegistry, InvocationFactory, ReflectionService>
+    HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionService>
 where
     DescriptorRegistry: MethodDescriptorRegistry + Clone + Send + 'static,
     InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
+    ReflectionService: ServerReflection,
 {
     pub fn new(
         listening_addr: SocketAddr,
@@ -41,6 +44,7 @@ where
         ingress_id: IngressId,
         method_descriptor_registry: DescriptorRegistry,
         invocation_factory: InvocationFactory,
+        reflection_service: ReflectionService,
         dispatcher_command_sender: DispatcherCommandSender,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
@@ -51,6 +55,7 @@ where
             ingress_id,
             method_descriptor_registry,
             invocation_factory,
+            reflection_service,
             dispatcher_command_sender,
             start_signal_tx,
         };
@@ -65,6 +70,7 @@ where
             ingress_id,
             method_descriptor_registry,
             invocation_factory,
+            reflection_service,
             dispatcher_command_sender,
             start_signal_tx,
         } = self;
@@ -80,6 +86,7 @@ where
                     ingress_id,
                     invocation_factory,
                     method_descriptor_registry,
+                    reflection_service,
                     dispatcher_command_sender,
                     global_concurrency_limit_semaphore,
                 )),
@@ -121,6 +128,7 @@ mod tests {
     use test_utils::{assert_eq, test};
 
     use crate::mocks::*;
+    use crate::reflection::ReflectionRegistry;
 
     // Could be shipped by the common crate with feature "mocks" enabled
     #[derive(Clone)]
@@ -259,6 +267,7 @@ mod tests {
             IngressId("0.0.0.0:0".parse().unwrap()),
             test_descriptor_registry(),
             MockServiceInvocationFactory,
+            ReflectionRegistry::default(),
             dispatcher_command_tx,
         );
         let ingress_handle = tokio::spawn(ingress.run(watch));

@@ -2,8 +2,8 @@ mod dispatcher;
 mod handler;
 mod options;
 mod protocol;
-mod server;
 mod reflection;
+mod server;
 
 pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
 pub use options::Options;

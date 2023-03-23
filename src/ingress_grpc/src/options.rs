@@ -1,5 +1,7 @@
+use super::reflection::ServerReflection;
+use super::HyperServerIngress;
 use super::*;
-use crate::HyperServerIngress;
+
 use common::types::IngressId;
 use serde::{Deserialize, Serialize};
 use service_metadata::MethodDescriptorRegistry;
@@ -21,18 +23,20 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn build<DescriptorRegistry, InvocationFactory>(
+    pub fn build<DescriptorRegistry, InvocationFactory, ReflectionService>(
         self,
         ingress_id: IngressId,
         descriptor_registry: DescriptorRegistry,
         invocation_factory: InvocationFactory,
+        reflection_service: ReflectionService,
     ) -> (
         IngressDispatcherLoop,
-        HyperServerIngress<DescriptorRegistry, InvocationFactory>,
+        HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionService>,
     )
     where
         DescriptorRegistry: MethodDescriptorRegistry + Clone + Send + 'static,
         InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
+        ReflectionService: ServerReflection,
     {
         let Options {
             bind_address,
@@ -47,6 +51,7 @@ impl Options {
             ingress_id,
             descriptor_registry,
             invocation_factory,
+            reflection_service,
             ingress_dispatcher_loop.create_command_sender(),
         );
 
