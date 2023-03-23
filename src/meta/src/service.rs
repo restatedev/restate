@@ -9,7 +9,7 @@ use hyper::Uri;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{
     DeliveryOptions, EndpointMetadata, InMemoryMethodDescriptorRegistry,
-    InMemoryServiceEndpointRegistry,
+    InMemoryServiceEndpointRegistry, ServiceMetadata,
 };
 use service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
@@ -139,40 +139,54 @@ where
             .discover(&uri, &additional_headers)
             .await?;
 
-        let mut registered_services = Vec::with_capacity(discovered_metadata.services.len());
-        for (service, service_instance_type) in discovered_metadata.services {
+        // Store the new endpoint in storage
+        let endpoint_metadata = EndpointMetadata::new(
+            uri.clone(),
+            discovered_metadata.protocol_type,
+            DeliveryOptions::new(additional_headers.clone(), None), // TODO needs to support retry policies as well: https://github.com/restatedev/restate/issues/184
+        );
+        let services = discovered_metadata
+            .services
+            .into_iter()
+            .map(|(svc_name, instance_type)| ServiceMetadata::new(svc_name, instance_type))
+            .collect::<Vec<_>>();
+        self.storage
+            .register_endpoint(
+                &endpoint_metadata,
+                &services,
+                discovered_metadata.descriptor_pool.clone(),
+            )
+            .await?;
+
+        // Propagate changes
+        let mut registered_services = Vec::with_capacity(services.len());
+        for service_meta in services {
             let service_descriptor = discovered_metadata
                 .descriptor_pool
-                .get_service_by_name(&service)
+                .get_service_by_name(service_meta.name())
                 .expect("service discovery returns a service available in the descriptor pool");
-            registered_services.push(service.clone());
-            self.storage
-                .register_service(
-                    service.clone(),
-                    service_instance_type.clone(),
-                    service_descriptor.clone(),
-                )
-                .await?;
+            registered_services.push(service_meta.name().to_string());
 
-            info!("Discovered service '{service}' running at '{uri}'.");
+            info!(
+                "Discovered service '{}' running at '{uri}'.",
+                service_meta.name()
+            );
 
             if tracing::enabled!(tracing::Level::DEBUG) {
-                service_descriptor
-                    .methods()
-                    .for_each(|method| debug!("Discovered '{service}/{}'", method.name()));
+                service_descriptor.methods().for_each(|method| {
+                    debug!("Discovered '{}/{}'", service_meta.name(), method.name())
+                });
             }
 
             self.method_descriptors_registry
                 .register(service_descriptor);
-            self.key_extractors_registry
-                .register(service.clone(), service_instance_type);
+            self.key_extractors_registry.register(
+                service_meta.name().to_string(),
+                service_meta.instance_type().clone(),
+            );
             self.service_endpoint_registry.register_service_endpoint(
-                service,
-                EndpointMetadata::new(
-                    uri.clone(),
-                    discovered_metadata.protocol_type,
-                    DeliveryOptions::new(additional_headers.clone(), None), // TODO needs to support retry policies as well: https://github.com/restatedev/restate/issues/184
-                ),
+                service_meta.name().to_string(),
+                endpoint_metadata.clone(),
             );
         }
 

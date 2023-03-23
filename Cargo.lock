@@ -452,8 +452,6 @@ dependencies = [
  "opentelemetry_api",
  "serde",
  "tokio",
- "tracing",
- "tracing-opentelemetry",
  "uuid",
  "xxhash-rust",
 ]
@@ -1306,7 +1304,6 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
 ]
@@ -2466,8 +2463,7 @@ dependencies = [
  "common",
  "http",
  "prost-reflect",
- "serde",
- "serde_with",
+ "service_key_extractor",
 ]
 
 [[package]]
@@ -3390,7 +3386,6 @@ dependencies = [
  "invoker",
  "journal",
  "network",
- "opentelemetry_api",
  "pin-project",
  "serde",
  "service_key_extractor",
