@@ -4,3 +4,9 @@ rustflags = [
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
 ]
+
+[env]
+# See README.md of codederror crate
+CODEDERROR_PADDING = "4"
+CODEDERROR_CODE_FORMAT = "RT-{code}"
+CODEDERROR_HELP_FORMAT = "For more details, look at the docs with https://restate.dev/doc/errors/{code_str}"
