@@ -11,6 +11,8 @@ use crate::service::MetaError;
 pub enum MetaApiError {
     #[error("The request field '{0}' is invalid. Reason: {1}")]
     InvalidField(&'static str, String),
+    #[error("The requested {0} '{1}' does not exist")]
+    NotFound(&'static str, String),
     #[error(transparent)]
     Meta(#[from] MetaError),
 }
@@ -25,6 +27,7 @@ impl IntoResponse for MetaApiError {
     fn into_response(self) -> Response {
         let status_code = match &self {
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
+            MetaApiError::NotFound(_, _) => StatusCode::NOT_FOUND,
             MetaApiError::Meta(MetaError::Discovery(desc_error)) if desc_error.is_user_error() => {
                 StatusCode::BAD_REQUEST
             }

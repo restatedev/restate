@@ -1,15 +1,14 @@
 use super::error::*;
 use super::state::*;
-
-use std::sync::Arc;
-
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::Uri;
 use axum::Json;
 use hyper::http::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use service_metadata::{EndpointMetadata, ServiceEndpointRegistry};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[serde_as]
 #[derive(Debug, Deserialize)]
@@ -25,8 +24,8 @@ pub struct RegisterEndpointResponse {
 }
 
 /// Discover endpoint and return discovered endpoints.
-pub async fn discover_endpoint(
-    State(state): State<Arc<RestEndpointState>>,
+pub async fn discover_endpoint<S: ServiceEndpointRegistry, M>(
+    State(state): State<Arc<RestEndpointState<S, M>>>,
     Json(payload): Json<RegisterEndpointRequest>,
 ) -> Result<Json<RegisterEndpointResponse>, MetaApiError> {
     let headers = payload
@@ -46,4 +45,59 @@ pub async fn discover_endpoint(
     Ok(registration_result
         .map(|services| RegisterEndpointResponse { services })?
         .into())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListEndpointsRequest {}
+
+#[derive(Debug, Serialize)]
+pub struct ListEndpointsResponse {
+    endpoints: Vec<GetEndpointResponse>,
+}
+
+/// List discovered endpoints
+pub async fn list_endpoints<S: ServiceEndpointRegistry, M>(
+    State(state): State<Arc<RestEndpointState<S, M>>>,
+    Query(_): Query<ListEndpointsRequest>,
+) -> Result<Json<ListEndpointsResponse>, MetaApiError> {
+    Ok(ListEndpointsResponse {
+        endpoints: state
+            .service_endpoint_registry()
+            .list_endpoints()
+            .iter()
+            .map(|(service_name, metadata)| GetEndpointResponse {
+                service_name: service_name.clone(),
+                metadata: metadata.clone(),
+            })
+            .collect(),
+    }
+    .into())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetEndpointRequest {}
+
+#[derive(Debug, Serialize)]
+pub struct GetEndpointResponse {
+    service_name: String,
+    metadata: EndpointMetadata,
+}
+
+/// Get an endpoint
+pub async fn get_endpoint<S: ServiceEndpointRegistry, M>(
+    State(state): State<Arc<RestEndpointState<S, M>>>,
+    Path(service_name): Path<String>,
+    Query(_): Query<GetEndpointRequest>,
+) -> Result<Json<GetEndpointResponse>, MetaApiError> {
+    let endpoint = state
+        .service_endpoint_registry()
+        .resolve_endpoint(service_name.clone());
+    match endpoint {
+        Some(metadata) => Ok(GetEndpointResponse {
+            service_name,
+            metadata,
+        }
+        .into()),
+        None => Err(MetaApiError::NotFound("service", service_name)),
+    }
 }

@@ -11,6 +11,8 @@ pub trait MethodDescriptorRegistry {
         svc_name: &str,
         method_name: &str,
     ) -> Option<MethodDescriptor>;
+
+    fn list_methods(&self, svc_name: &str) -> Option<HashMap<String, MethodDescriptor>>;
 }
 
 type ServiceMethods = HashMap<String, MethodDescriptor>;
@@ -62,5 +64,9 @@ impl MethodDescriptorRegistry for InMemoryMethodDescriptorRegistry {
             // We clone it in order to not holding the reference to self.services
             // MethodDescriptor just holds an Arc, so copying is cheap
             .cloned()
+    }
+
+    fn list_methods(&self, svc_name: &str) -> Option<HashMap<String, MethodDescriptor>> {
+        self.services.load().get(svc_name).cloned()
     }
 }

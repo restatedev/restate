@@ -2,14 +2,16 @@
 
 mod endpoints;
 mod error;
+mod methods;
 mod state;
 
 use axum::error_handling::HandleErrorLayer;
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
 use futures::FutureExt;
 use hyper::Server;
+use service_metadata::{MethodDescriptorRegistry, ServiceEndpointRegistry};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceBuilder;
@@ -30,12 +32,32 @@ impl MetaRestEndpoint {
         }
     }
 
-    pub async fn run(self, meta_handle: MetaHandle, drain: drain::Watch) {
-        let shared_state = Arc::new(state::RestEndpointState::new(meta_handle));
+    pub async fn run<
+        S: ServiceEndpointRegistry + Send + Sync + 'static,
+        M: MethodDescriptorRegistry + Send + Sync + 'static,
+    >(
+        self,
+        meta_handle: MetaHandle,
+        service_endpoint_registry: S,
+        method_descriptor_registry: M,
+        drain: drain::Watch,
+    ) {
+        let shared_state = Arc::new(state::RestEndpointState::new(
+            meta_handle,
+            service_endpoint_registry,
+            method_descriptor_registry,
+        ));
 
         // Setup the router
         let meta_api = Router::new()
             .route("/endpoint/discover", post(endpoints::discover_endpoint))
+            .route("/endpoint/", get(endpoints::list_endpoints))
+            .route("/endpoint/:endpoint", get(endpoints::get_endpoint))
+            .route("/endpoint/:endpoint/method/", get(methods::list_methods))
+            .route(
+                "/endpoint/:endpoint/method/:method",
+                get(methods::get_method),
+            )
             .with_state(shared_state)
             .layer(
                 ServiceBuilder::new()

@@ -14,3 +14,5 @@ arc-swap = { workspace = true }
 common = { workspace = true }
 http = "0.2.9"
 prost-reflect = { workspace = true }
+serde = { workspace = true }
+serde_with = "2.2"
