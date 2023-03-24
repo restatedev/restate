@@ -22,8 +22,6 @@ pub struct DeliveryOptions {
 }
 
 impl DeliveryOptions {
-    // false positive because of inner Bytes field of HeaderName
-    #[allow(clippy::mutable_key_type)]
     pub fn new(
         additional_headers: HashMap<HeaderName, HeaderValue>,
         retry_policy: Option<RetryPolicy>,
@@ -67,8 +65,6 @@ impl EndpointMetadata {
         self.delivery_options.retry_policy.as_ref()
     }
 
-    // false positive because of inner Bytes field of HeaderName
-    #[allow(clippy::mutable_key_type)]
     pub fn additional_headers(&self) -> &HashMap<HeaderName, HeaderValue> {
         &self.delivery_options.additional_headers
     }

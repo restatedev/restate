@@ -158,7 +158,6 @@ impl DispatcherLoopHandler {
         }
     }
 
-    #[allow(clippy::mutable_key_type)]
     fn handle_ingress_command(
         &mut self,
         cmd: Command<ServiceInvocation, IngressResult>,

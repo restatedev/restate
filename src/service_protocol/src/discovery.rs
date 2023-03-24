@@ -171,8 +171,6 @@ impl ServiceDiscoveryError {
 }
 
 impl ServiceDiscovery {
-    // False positive with Bytes field
-    #[allow(clippy::mutable_key_type)]
     pub async fn discover(
         &self,
         uri: &Uri,
