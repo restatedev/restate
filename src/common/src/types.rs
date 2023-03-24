@@ -1,7 +1,6 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::{SpanContext, TraceContextExt};
-use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use tracing::{info_span, Span};
@@ -33,7 +32,8 @@ pub type InvocationId = Uuid;
 ///
 /// A service invocation id is composed of a [`ServiceId`] and an [`InvocationId`]
 /// that makes the id unique.
-#[derive(Eq, Hash, PartialEq, Clone, Debug, Serialize, Deserialize)]
+#[derive(Eq, Hash, PartialEq, Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ServiceInvocationId {
     /// Identifies the invoked service
     pub service_id: ServiceId,
@@ -71,7 +71,8 @@ impl ServiceInvocationId {
 ///
 /// Services are isolated by key. This means that there cannot be two concurrent
 /// invocations for the same service instance (service name, key).
-#[derive(Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
+#[derive(Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ServiceId {
     /// Identifies the grpc service
     pub service_name: ByteString,
