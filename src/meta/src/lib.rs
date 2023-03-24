@@ -81,9 +81,16 @@ impl Meta {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         let meta_handle = self.service.meta_handle();
+        let service_endpoint_registry = self.service_endpoint_registry();
+        let method_descriptor_registry = self.method_descriptor_registry();
 
         let service_fut = self.service.run(shutdown_watch.clone());
-        let rest_endpoint_fut = self.rest_endpoint.run(meta_handle, shutdown_watch);
+        let rest_endpoint_fut = self.rest_endpoint.run(
+            meta_handle,
+            service_endpoint_registry,
+            method_descriptor_registry,
+            shutdown_watch,
+        );
         tokio::pin!(service_fut, rest_endpoint_fut);
 
         let shutdown = drain.signaled();

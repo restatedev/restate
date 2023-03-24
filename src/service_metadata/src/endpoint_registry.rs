@@ -7,6 +7,8 @@ use std::sync::Arc;
 pub trait ServiceEndpointRegistry {
     /// Resolve for a given service name the [`EndpointMetadata`].
     fn resolve_endpoint(&self, service_name: impl AsRef<str>) -> Option<EndpointMetadata>;
+
+    fn list_endpoints(&self) -> HashMap<String, EndpointMetadata>;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -30,5 +32,9 @@ impl InMemoryServiceEndpointRegistry {
 impl ServiceEndpointRegistry for InMemoryServiceEndpointRegistry {
     fn resolve_endpoint(&self, service_name: impl AsRef<str>) -> Option<EndpointMetadata> {
         self.registry.load().get(service_name.as_ref()).cloned()
+    }
+
+    fn list_endpoints(&self) -> HashMap<String, EndpointMetadata> {
+        self.registry.load().as_ref().clone()
     }
 }

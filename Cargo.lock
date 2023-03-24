@@ -2281,6 +2281,8 @@ dependencies = [
  "common",
  "http",
  "prost-reflect",
+ "serde",
+ "serde_with",
 ]
 
 [[package]]

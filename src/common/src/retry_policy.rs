@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::future::Future;
 use std::time::Duration;
 
@@ -38,7 +39,7 @@ use std::time::Duration;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum RetryPolicy {
     None,
     FixedDelay {
