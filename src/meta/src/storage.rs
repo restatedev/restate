@@ -6,7 +6,7 @@ use hyper::Uri;
 use prost_reflect::DescriptorPool;
 use serde::{Deserialize, Serialize};
 use tokio::io;
-use tracing::warn;
+use tracing::{info, warn};
 use service_metadata::{EndpointMetadata, ServiceMetadata};
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +52,8 @@ pub struct FileMetaStorage {
 
 impl FileMetaStorage {
     pub fn new(root_path: PathBuf) -> Self {
+        info!("MetaStorage root path: {}", root_path.display());
+
         Self {
             root_path,
         }

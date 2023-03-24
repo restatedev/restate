@@ -2,6 +2,7 @@ mod rest_api;
 mod service;
 mod storage;
 
+use crate::storage::FileMetaStorage;
 use rest_api::MetaRestEndpoint;
 use serde::{Deserialize, Serialize};
 use service::MetaService;
@@ -19,6 +20,8 @@ pub struct Options {
 
     /// Concurrency limit for the Meta Operational REST APIs
     meta_concurrency_limit: usize,
+    /// Root path for Meta storage
+    meta_storage_path: String,
 }
 
 impl Default for Options {
@@ -39,7 +42,7 @@ impl Options {
             key_extractors_registry.clone(),
             method_descriptors_registry.clone(),
             service_endpoint_registry.clone(),
-            InMemoryMetaStorage::default(),
+            FileMetaStorage::new(self.meta_storage_path.into()),
             Default::default(),
         );
 
@@ -59,7 +62,7 @@ pub struct Meta {
     service_endpoint_registry: InMemoryServiceEndpointRegistry,
 
     rest_endpoint: MetaRestEndpoint,
-    service: MetaService<InMemoryMetaStorage>,
+    service: MetaService<FileMetaStorage>,
 }
 
 impl Meta {
