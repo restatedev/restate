@@ -662,13 +662,27 @@ impl OutboxReader for InMemoryPartitionStorage {
 impl TimerReader<TimerValue> for InMemoryPartitionStorage {
     type TimerStream = stream::Iter<IntoIter<TimerValue>>;
 
-    fn scan_timers(&self, earliest_wake_up_time: MillisSinceEpoch) -> Self::TimerStream {
+    fn scan_timers(
+        &self,
+        num_timers: usize,
+        previous_timer_key: Option<TimerValue>,
+    ) -> Self::TimerStream {
+        let next_timer_key = previous_timer_key
+            .map(|timer_value| {
+                TimerKey::new(
+                    timer_value.wake_up_time,
+                    timer_value.service_invocation_id.service_id,
+                    timer_value.entry_index + 1,
+                )
+            })
+            .unwrap_or(TimerKey::from_wake_up_time(MillisSinceEpoch::UNIX_EPOCH));
+
         let timers: Vec<TimerValue> = self
             .inner
             .lock()
             .unwrap()
             .timers
-            .range(TimerKey::from_wake_up_time(earliest_wake_up_time)..)
+            .range(next_timer_key..)
             .map(|(timer_key, invocation_id)| {
                 let (wake_up_time, service_id, entry_index) = timer_key.clone().into_inner();
                 TimerValue::new(
@@ -680,6 +694,7 @@ impl TimerReader<TimerValue> for InMemoryPartitionStorage {
                     wake_up_time,
                 )
             })
+            .take(num_timers)
             .collect();
 
         stream::iter(timers)

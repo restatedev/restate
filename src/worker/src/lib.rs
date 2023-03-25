@@ -50,6 +50,9 @@ pub struct Options {
     channel_size: usize,
 
     #[command(flatten)]
+    timer_service: timer::Options,
+
+    #[command(flatten)]
     storage_rocksdb: storage_rocksdb::Options,
 
     #[command(flatten)]
@@ -90,6 +93,7 @@ impl Worker {
         let Options {
             channel_size,
             external_client_ingress,
+            timer_service,
             ..
         } = opts;
 
@@ -141,6 +145,7 @@ impl Worker {
                 in_memory_journal_reader.register(in_memory_storage.clone());
                 Self::create_partition_processor(
                     idx,
+                    timer_service.clone(),
                     proposal_sender,
                     invoker_sender,
                     network_handle.clone(),
@@ -169,6 +174,7 @@ impl Worker {
     #[allow(clippy::too_many_arguments)]
     fn create_partition_processor(
         peer_id: PeerId,
+        timer_service_options: timer::Options,
         proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: UnboundedInvokerInputSender,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
@@ -180,6 +186,7 @@ impl Worker {
         let processor = PartitionProcessor::new(
             peer_id,
             peer_id,
+            timer_service_options,
             command_rx,
             IdentitySender::new(peer_id, proposal_sender),
             invoker_sender,

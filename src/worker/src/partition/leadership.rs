@@ -30,13 +30,14 @@ pub(super) struct LeaderState {
     shuffle_hint_tx: mpsc::Sender<shuffle::NewOutboxMessage>,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
     timer_handle: TimerHandle,
-    timer_join_handle: task::JoinHandle<Result<(), timer::ServiceError>>,
+    timer_join_handle: task::JoinHandle<Result<(), timer::TimerServiceError>>,
     message_buffer: Vec<ActuatorMessage>,
 }
 
 pub(super) struct FollowerState<I, N> {
     peer_id: PeerId,
     partition_id: PartitionId,
+    timer_service_options: timer::Options,
     invoker_tx: I,
     network_handle: N,
 }
@@ -125,10 +126,11 @@ where
                     entry_index,
                 } => {
                     timer_handle
-                        .add_timer(
+                        .add_timer(TimerValue::new(
+                            service_invocation_id,
+                            entry_index,
                             wake_up_time,
-                            TimerValue::new(service_invocation_id, entry_index, wake_up_time),
-                        )
+                        ))
                         .await?;
                 }
                 ActuatorMessage::AckStoredEntry {
@@ -206,7 +208,7 @@ pub(crate) enum Error {
     #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Network(#[from] NetworkNotRunning),
     #[error(transparent)]
-    FailedTimerTask(#[from] timer::ServiceError),
+    FailedTimerTask(#[from] timer::TimerServiceError),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
     FailedShuffleTask(#[from] anyhow::Error),
 }
@@ -228,12 +230,14 @@ where
     pub(super) fn follower(
         peer_id: PeerId,
         partition_id: PartitionId,
+        timer_service_options: timer::Options,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
     ) -> (ActuatorStream, Self) {
         (
             ActuatorStream::Follower,
             Self::Follower(FollowerState {
+                timer_service_options,
                 peer_id,
                 partition_id,
                 invoker_tx,
@@ -250,7 +254,7 @@ where
     ) -> Result<(ActuatorStream, Self), Error>
     where
         SR: InvocationReader + OutboxReader + Send + Sync + 'static,
-        TR: TimerReader<TimerValue> + Send + 'static,
+        TR: TimerReader<TimerValue> + Send + Sync + 'static,
     {
         if let LeadershipState::Follower { .. } = self {
             self.unchecked_become_leader(leader_epoch, state_reader, timer_reader)
@@ -272,7 +276,7 @@ where
     ) -> Result<(ActuatorStream, Self), Error>
     where
         SR: OutboxReader + InvocationReader + Send + Sync + 'static,
-        TR: TimerReader<TimerValue> + Send + 'static,
+        TR: TimerReader<TimerValue> + Send + Sync + 'static,
     {
         if let LeadershipState::Follower(mut follower_state) = self {
             let invoker_rx = Self::register_at_invoker(
@@ -284,7 +288,11 @@ where
 
             let (timer_tx, timer_rx) = mpsc::channel(1);
 
-            let timer = timer::Service::new(timer_tx, timer_reader);
+            let timer = follower_state.timer_service_options.build(
+                timer_tx,
+                timer_reader,
+                timer::TokioClock,
+            );
             let timer_handle = timer.create_timer_handle();
 
             let (shuffle_tx, shuffle_rx) = mpsc::channel(1);
@@ -365,6 +373,7 @@ where
                 FollowerState {
                     peer_id,
                     partition_id,
+                    timer_service_options: num_in_memory_timers,
                     mut invoker_tx,
                     network_handle,
                 },
@@ -397,6 +406,7 @@ where
             Ok(Self::follower(
                 peer_id,
                 partition_id,
+                num_in_memory_timers,
                 invoker_tx,
                 network_handle,
             ))

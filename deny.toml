@@ -21,6 +21,7 @@ allow = [
     "ISC",
     "BSL-1.0",
     "OpenSSL",
+    "MPL-2.0",
 ]
 deny = []
 # Lint level for licenses considered copyleft

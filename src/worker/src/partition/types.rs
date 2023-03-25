@@ -6,6 +6,7 @@ use common::types::{
 use invoker::InvokerError;
 use journal::raw::{Header, RawEntry, RawEntryHeader};
 use journal::EntryType;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
 #[derive(Debug)]
@@ -168,7 +169,7 @@ impl From<EnrichedEntryHeader> for RawEntryHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub(crate) struct TimerValue {
     pub service_invocation_id: ServiceInvocationId,
     pub wake_up_time: MillisSinceEpoch,
@@ -189,7 +190,39 @@ impl TimerValue {
     }
 }
 
+impl PartialOrd for TimerValue {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TimerValue {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.wake_up_time
+            .cmp(&other.wake_up_time)
+            .then_with(|| {
+                self.service_invocation_id
+                    .service_id
+                    .cmp(&other.service_invocation_id.service_id)
+            })
+            .then_with(|| self.entry_index.cmp(&other.entry_index))
+            .then_with(|| {
+                self.service_invocation_id
+                    .invocation_id
+                    .cmp(&other.service_invocation_id.invocation_id)
+            })
+    }
+}
+
 impl timer::Timer for TimerValue {
+    type TimerKey = TimerValue;
+
+    fn timer_key(&self) -> Self::TimerKey {
+        self.clone()
+    }
+}
+
+impl timer::TimerKey for TimerValue {
     fn wake_up_time(&self) -> MillisSinceEpoch {
         self.wake_up_time
     }

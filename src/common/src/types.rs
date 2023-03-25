@@ -3,7 +3,7 @@ use bytestring::ByteString;
 use opentelemetry_api::trace::{SpanContext, TraceContextExt};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
 use tracing::{info_span, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
@@ -252,11 +252,12 @@ pub enum AckKind {
 }
 
 /// Milliseconds since the unix epoch
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MillisSinceEpoch(u64);
 
 impl MillisSinceEpoch {
     pub const UNIX_EPOCH: MillisSinceEpoch = MillisSinceEpoch::new(0);
+    pub const MAX: MillisSinceEpoch = MillisSinceEpoch::new(u64::MAX);
 
     pub const fn new(millis_since_epoch: u64) -> Self {
         MillisSinceEpoch(millis_since_epoch)
@@ -264,5 +265,17 @@ impl MillisSinceEpoch {
 
     pub fn as_u64(&self) -> u64 {
         self.0
+    }
+}
+
+impl From<u64> for MillisSinceEpoch {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl Display for MillisSinceEpoch {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ms since epoch", self.0)
     }
 }

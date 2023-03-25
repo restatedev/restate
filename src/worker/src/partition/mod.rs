@@ -36,6 +36,8 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
     peer_id: PeerId,
     partition_id: PartitionId,
 
+    timer_service_options: timer::Options,
+
     command_rx: mpsc::Receiver<consensus::Command<AckableCommand>>,
     proposal_tx: IdentitySender<AckableCommand>,
 
@@ -82,6 +84,7 @@ where
     pub(super) fn new(
         peer_id: PeerId,
         partition_id: PartitionId,
+        timer_service_options: timer::Options,
         command_stream: mpsc::Receiver<consensus::Command<AckableCommand>>,
         proposal_sender: IdentitySender<AckableCommand>,
         invoker_tx: InvokerInputSender,
@@ -93,6 +96,7 @@ where
         Self {
             peer_id,
             partition_id,
+            timer_service_options,
             command_rx: command_stream,
             proposal_tx: proposal_sender,
             invoker_tx,
@@ -109,6 +113,7 @@ where
         let PartitionProcessor {
             peer_id,
             partition_id,
+            timer_service_options,
             mut command_rx,
             mut state_machine,
             invoker_tx,
@@ -123,8 +128,13 @@ where
         // The max number of effects should be 2 atm (e.g. RegisterTimer and AppendJournalEntry)
         let mut effects = Effects::with_capacity(2);
 
-        let (mut actuator_stream, mut leadership_state) =
-            LeadershipState::follower(peer_id, partition_id, invoker_tx, network_handle);
+        let (mut actuator_stream, mut leadership_state) = LeadershipState::follower(
+            peer_id,
+            partition_id,
+            timer_service_options,
+            invoker_tx,
+            network_handle,
+        );
 
         let mut partition_storage = in_memory_storage;
         let actuator_output_handler =
