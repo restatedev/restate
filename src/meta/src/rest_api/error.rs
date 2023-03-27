@@ -11,11 +11,18 @@ use crate::service::MetaError;
 pub enum MetaApiError {
     #[error("The request field '{0}' is invalid. Reason: {1}")]
     InvalidField(&'static str, String),
-    #[error("The requested {0} '{1}' does not exist")]
-    NotFound(&'static str, String),
+    #[error("The requested service '{0}' does not exist")]
+    ServiceNotFound(String),
+    #[error("The requested method '{method_name}' on service '{service_name}' does not exist")]
+    MethodNotFound {
+        service_name: String,
+        method_name: String,
+    },
     #[error(transparent)]
     Meta(#[from] MetaError),
 }
+
+impl MetaApiError {}
 
 /// To format the error response body.
 #[derive(Debug, Serialize)]
@@ -27,7 +34,11 @@ impl IntoResponse for MetaApiError {
     fn into_response(self) -> Response {
         let status_code = match &self {
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
-            MetaApiError::NotFound(_, _) => StatusCode::NOT_FOUND,
+            MetaApiError::ServiceNotFound(_) => StatusCode::NOT_FOUND,
+            MetaApiError::MethodNotFound {
+                service_name: _,
+                method_name: _,
+            } => StatusCode::NOT_FOUND,
             MetaApiError::Meta(MetaError::Discovery(desc_error)) if desc_error.is_user_error() => {
                 StatusCode::BAD_REQUEST
             }

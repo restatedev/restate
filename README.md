@@ -31,7 +31,7 @@ In order to change the log level, configure the [`RUST_LOG` env variable](https:
 After the runtime is running, you can register a service running on `localhost:8080` via `curl`:
 
 ```shell
-curl -X POST localhost:8081/endpoint/discover -H 'content-type: application/json' -d '{"uri": "http://localhost:8080"}'
+curl -X POST localhost:8081/services/discover -H 'content-type: application/json' -d '{"uri": "http://localhost:8080"}'
 ```
 
 This assumes that the runtime is running on `localhost:8081`.
