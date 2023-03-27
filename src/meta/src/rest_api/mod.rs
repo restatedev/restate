@@ -1,8 +1,8 @@
 //! This module implements the Meta API endpoint.
 
-mod endpoints;
 mod error;
 mod methods;
+mod services;
 mod state;
 
 use axum::error_handling::HandleErrorLayer;
@@ -50,13 +50,24 @@ impl MetaRestEndpoint {
 
         // Setup the router
         let meta_api = Router::new()
-            .route("/endpoint/discover", post(endpoints::discover_endpoint))
-            .route("/endpoint/", get(endpoints::list_endpoints))
-            .route("/endpoint/:endpoint", get(endpoints::get_endpoint))
-            .route("/endpoint/:endpoint/method/", get(methods::list_methods))
+            // deprecated url
             .route(
-                "/endpoint/:endpoint/method/:method",
-                get(methods::get_method),
+                "/endpoint/discover",
+                post(services::discover_service_endpoint),
+            )
+            .route(
+                "/services/discover",
+                post(services::discover_service_endpoint),
+            )
+            .route("/services/", get(services::list_services))
+            .route("/services/:service", get(services::get_service))
+            .route(
+                "/services/:service/methods/",
+                get(methods::list_service_methods),
+            )
+            .route(
+                "/services/:service/methods/:method",
+                get(methods::get_service_method),
             )
             .with_state(shared_state)
             .layer(

@@ -29,16 +29,17 @@ mod header_map {
     use serde::Serializer;
     use std::collections::HashMap;
 
-    #[allow(clippy::mutable_key_type)]
     pub fn serialize<S: Serializer>(
         headers: &HashMap<HeaderName, HeaderValue>,
         ser: S,
     ) -> Result<S::Ok, S::Error> {
-        ser.collect_map(
-            headers
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.to_str().unwrap())),
-        )
+        ser.collect_map(headers.iter().map(|(k, v)| {
+            (
+                k.as_str(),
+                v.to_str()
+                    .expect("additional_headers map contains non-ASCII characters"),
+            )
+        }))
     }
 }
 
