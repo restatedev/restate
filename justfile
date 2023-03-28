@@ -67,7 +67,7 @@ test: (_target-installed _target)
     cargo test {{ _target-option }} --workspace --all-features
 
 verification-test: (_target-installed _target)
-    cargo test {{ _target-option }} --package restate verification --all-features -- --ignored --exact
+    cargo test {{ _target-option }} --package restate verification --all-features -- --ignored --exact --nocapture
 
 # Runs lints and tests
 verify: lint test

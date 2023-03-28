@@ -10,10 +10,6 @@ description.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dev-dependencies]
-assert_cmd = "2.0.10"
-hyper = { workspace = true }
-
 [dependencies]
 clap = { version = "4.1", features = ["derive", "env"] }
 drain = { workspace = true }
@@ -28,6 +24,16 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing_instrumentation = { workspace = true }
 worker = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2.0.10"
+common = { workspace = true }
+hyper = { workspace = true }
+rand = "0.8.5"
+tempfile = "3.4.0"
+test_utils = { workspace = true }
+thiserror = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [features]
 console = ["tokio/full", "tokio/tracing", "tracing_instrumentation/console-subscriber"]
