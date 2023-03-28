@@ -502,14 +502,9 @@ where
                 waiting_for_completed_entries,
             } => {
                 if invocation_id == service_invocation_id.invocation_id {
-                    for entry_index in &waiting_for_completed_entries {
-                        if state
-                            .is_entry_completed(&service_invocation_id.service_id, *entry_index)
-                            .await?
-                        {
-                            effects.store_completion_and_resume(service_invocation_id, completion);
-                            return Ok(());
-                        }
+                    if waiting_for_completed_entries.contains(&completion.entry_index) {
+                        effects.store_completion_and_resume(service_invocation_id, completion);
+                        return Ok(());
                     }
 
                     effects.store_completion(service_invocation_id, completion);
