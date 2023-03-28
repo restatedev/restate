@@ -38,25 +38,23 @@ type PartitionProcessor = partition::PartitionProcessor<
     KeyExtractorsRegistry,
 >;
 
-#[derive(Debug, clap::Parser)]
-#[group(skip)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Options {
     /// Bounded channel size
-    #[arg(
-        long = "worker-channel-size",
-        env = "WORKER_CHANNEL_SIZE",
-        default_value = "64"
-    )]
     channel_size: usize,
-
-    #[command(flatten)]
-    timer_service: timer::Options,
-
-    #[command(flatten)]
+    timer: timer::Options,
     storage_rocksdb: storage_rocksdb::Options,
+    ingress_grpc: ingress_grpc::Options,
+}
 
-    #[command(flatten)]
-    external_client_ingress: ingress_grpc::Options,
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            channel_size: 64,
+            storage_rocksdb: Default::default(),
+            ingress_grpc: Default::default(),
+        }
+    }
 }
 
 pub struct Worker {
@@ -92,6 +90,7 @@ impl Worker {
     ) -> Self {
         let Options {
             channel_size,
+            ingress_grpc: external_client_ingress,
             external_client_ingress,
             timer_service,
             ..

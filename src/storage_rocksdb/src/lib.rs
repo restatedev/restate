@@ -23,16 +23,18 @@ fn cf_name(kind: TableKind) -> &'static str {
     }
 }
 
-#[derive(Debug, clap::Parser)]
-#[group(skip)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Options {
-    ///  Storage path
-    #[arg(
-        long = "worker-storage-path",
-        env = "WORKER_STORAGE_PATH",
-        default_value = "target/db/"
-    )]
+    /// Storage path
     path: String,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            path: "target/db/".to_string(),
+        }
+    }
 }
 
 impl Options {

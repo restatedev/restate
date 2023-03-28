@@ -2,34 +2,33 @@ mod rest_api;
 mod service;
 mod storage;
 
-use crate::storage::InMemoryMetaStorage;
+use std::net::SocketAddr;
+
 use rest_api::MetaRestEndpoint;
+use serde::{Deserialize, Serialize};
 use service::MetaService;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
-use std::net::SocketAddr;
+use storage::InMemoryMetaStorage;
 use tokio::join;
 use tracing::debug;
 
-#[derive(Debug, clap::Parser)]
-#[group(skip)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Options {
     /// Address of the REST endpoint
-    #[arg(
-        long = "meta-rest-addr",
-        env = "META_REST_ADDRESS",
-        default_value = "0.0.0.0:8081"
-    )]
-    rest_addr: SocketAddr,
+    rest_address: SocketAddr,
+
     /// Concurrency limit for the Meta Operational REST APIs
-    #[arg(
-        long = "meta-rest-api-concurrency-limit",
-        env = "META_REST_API_CONCURRENCY_LIMIT",
-        default_value_t = 1000
-    )]
-    // We cannot name it concurrency_limit because clap won't like it,
-    // because otherwise there will be two different concurrency_limit fields in the parent options struct.
     meta_concurrency_limit: usize,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            rest_address: "0.0.0.0:8081".parse().unwrap(),
+            meta_concurrency_limit: 1000,
+        }
+    }
 }
 
 impl Options {
@@ -49,7 +48,7 @@ impl Options {
             key_extractors_registry,
             method_descriptors_registry,
             service_endpoint_registry,
-            rest_endpoint: MetaRestEndpoint::new(self.rest_addr, self.meta_concurrency_limit),
+            rest_endpoint: MetaRestEndpoint::new(self.rest_address, self.meta_concurrency_limit),
             service,
         }
     }

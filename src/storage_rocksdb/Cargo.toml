@@ -10,6 +10,6 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = {workspace = true}
+serde = {workspace = true}
 storage_api = { workspace = true }
 rocksdb = "0.19.0"

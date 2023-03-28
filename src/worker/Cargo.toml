@@ -14,7 +14,6 @@ anyhow = { workspace = true }
 assert2 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-clap = { workspace = true }
 common = { workspace = true }
 consensus = { workspace = true }
 drain = { workspace = true }
@@ -30,6 +29,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 opentelemetry_api = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true }
 service_key_extractor = { workspace = true }
 service_metadata = { workspace = true }
 service_protocol = { workspace = true, features = ["codec"] }

@@ -15,14 +15,12 @@ pub struct Error {
 
 pub type TracingResult<T> = Result<T, Error>;
 
-#[derive(Debug, clap::Parser, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Options {
     /// Specify to expose OTEL spans to Jaeger
-    #[arg(long = "tracing-jaeger-endpoint", env = "TRACING_JAEGER_ENDPOINT")]
     jaeger_endpoint: Option<String>,
 
     /// Disable ANSI colors for formatted output
-    #[arg(long = "tracing-disable-ansi-log", env = "TRACING_DISABLE_ANSI_LOG")]
     disable_ansi_log: bool,
 }
 
@@ -34,27 +32,6 @@ impl Options {
     /// # Panics
     /// This method will panic if there is already a global subscriber configured. Moreover, it will
     /// panic if it is executed outside of a Tokio runtime.
-    ///
-    /// Example:
-    /// ```
-    /// use clap::Parser;
-    ///
-    /// #[derive(Debug, clap::Parser)]
-    /// #[group(skip)]
-    /// struct Options {
-    ///     #[clap(flatten)]
-    ///     tracing: tracing_instrumentation::Options,
-    /// }
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    /// let options = Options::parse();
-    ///     options
-    ///         .tracing
-    ///         .init("service", "instance")
-    ///         .unwrap()
-    /// }
-    /// ```
     pub fn init(&self, service_name: impl Display, instance_id: impl Display) -> TracingResult<()> {
         let layers = tracing_subscriber::registry()
             .with(EnvFilter::from_default_env())

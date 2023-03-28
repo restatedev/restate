@@ -1,25 +1,25 @@
 use super::*;
-use crate::HyperServerIngress;
-use common::types::IngressId;
-use service_metadata::MethodDescriptorRegistry;
+
 use std::net::SocketAddr;
 
-#[derive(Debug, clap::Parser)]
-#[group(skip)]
-pub struct Options {
-    #[arg(
-        long = "external-client-ingress-bind-address",
-        env = "EXTERNAL_CLIENT_INGRESS_BIND_ADDRESS",
-        default_value = "0.0.0.0:9090"
-    )]
-    bind_address: SocketAddr,
+use crate::HyperServerIngress;
+use common::types::IngressId;
+use serde::{Deserialize, Serialize};
+use service_metadata::MethodDescriptorRegistry;
 
-    #[arg(
-        long = "external-client-ingress-concurrency-limit",
-        env = "EXTERNAL_CLIENT_INGRESS_CONCURRENCY_LIMIT",
-        default_value_t = 1000
-    )]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Options {
+    bind_address: SocketAddr,
     concurrency_limit: usize,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            bind_address: "0.0.0.0:9090".parse().unwrap(),
+            concurrency_limit: 1000,
+        }
+    }
 }
 
 impl Options {
