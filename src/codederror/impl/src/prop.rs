@@ -21,19 +21,13 @@ impl Variant<'_> {
 }
 
 fn code_field<'a, 'b>(fields: &'a [Field<'b>]) -> Option<&'a Field<'b>> {
-    for field in fields {
-        if field.attrs.code_marker.is_some() {
-            return Some(field);
-        }
-    }
-    None
+    fields
+        .iter()
+        .find(|&field| field.attrs.code_marker.is_some())
 }
 
 fn hint_field<'a, 'b>(fields: &'a [Field<'b>]) -> Option<&'a Field<'b>> {
-    for field in fields {
-        if field.attrs.hint_marker.is_some() {
-            return Some(field);
-        }
-    }
-    None
+    fields
+        .iter()
+        .find(|&field| field.attrs.hint_marker.is_some())
 }
