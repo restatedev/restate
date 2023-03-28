@@ -2254,6 +2254,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap 4.1.6",
+ "common",
  "drain",
  "figment",
  "futures-util",
@@ -2261,10 +2262,15 @@ dependencies = [
  "hyper",
  "meta",
  "pin-project",
+ "rand",
  "serde",
  "serde_with",
+ "tempfile",
+ "test_utils",
+ "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "tracing_instrumentation",
  "worker",
 ]

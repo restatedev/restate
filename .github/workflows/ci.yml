@@ -65,3 +65,6 @@ jobs:
 
       - name: Run verification test
         run: just verification-test
+        env:
+          TMPDIR: ${{ runner.temp }}
+          RUST_LOG: "info"
