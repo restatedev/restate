@@ -1,3 +1,6 @@
+//! Some parts copied from https://github.com/dtolnay/thiserror/blob/master/impl/src/attr.rs
+//! License APL 2.0 or MIT
+
 use syn::parse::{Nothing, ParseStream};
 use syn::{Attribute, Error as SynError, LitInt, LitStr, Result};
 

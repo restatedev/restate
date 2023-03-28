@@ -1,3 +1,6 @@
+//! Some parts copied from https://github.com/dtolnay/thiserror/blob/master/impl/src/ast.rs
+//! License APL 2.0 or MIT
+
 use crate::attr::{self, Attrs};
 use crate::generics::ParamsInScope;
 use proc_macro2::Span;

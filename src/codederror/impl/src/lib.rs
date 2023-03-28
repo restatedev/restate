@@ -1,3 +1,6 @@
+//! Some parts of this codebase were took from https://github.com/dtolnay/thiserror/blob/master/impl/src
+//! License APL 2.0 or MIT
+
 extern crate proc_macro;
 
 mod ast;
