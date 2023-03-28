@@ -166,6 +166,27 @@ enum OtherInputCommand {
     RegisterPartition(mpsc::Sender<OutputEffect>),
 }
 
+#[derive(Debug, Default)]
+pub struct Options {
+    retry_policy: RetryPolicy,
+}
+
+impl Options {
+    pub fn build<C, JR, JS, SER>(
+        self,
+        journal_reader: JR,
+        service_endpoint_registry: SER,
+    ) -> Invoker<C, JR, SER>
+    where
+        C: RawEntryCodec,
+        JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+        JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+        SER: ServiceEndpointRegistry,
+    {
+        Invoker::new(self.retry_policy, journal_reader, service_endpoint_registry)
+    }
+}
+
 #[derive(Debug)]
 pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
@@ -205,11 +226,7 @@ where
     JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
     SER: ServiceEndpointRegistry,
 {
-    pub fn new(
-        retry_policy: RetryPolicy,
-        journal_reader: JR,
-        service_endpoint_registry: SER,
-    ) -> Self {
+    fn new(retry_policy: RetryPolicy, journal_reader: JR, service_endpoint_registry: SER) -> Self {
         let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
         let (resume_input_tx, resume_input_rx) = mpsc::unbounded_channel();
         let (other_input_tx, other_input_rx) = mpsc::unbounded_channel();

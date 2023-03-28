@@ -5,7 +5,6 @@ use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::memory::InMemoryJournalReader;
 use crate::partition::storage::InMemoryPartitionStorage;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
-use common::retry_policy::RetryPolicy;
 use common::types::{IngressId, PeerId, PeerTarget};
 use consensus::Consensus;
 use futures::stream::FuturesUnordered;
@@ -131,11 +130,8 @@ impl Worker {
 
         let in_memory_journal_reader = InMemoryJournalReader::new();
 
-        let invoker = Invoker::new(
-            RetryPolicy::None,
-            in_memory_journal_reader.clone(),
-            service_endpoint_registry,
-        );
+        let invoker = invoker::Options::default()
+            .build(in_memory_journal_reader.clone(), service_endpoint_registry);
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {
