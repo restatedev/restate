@@ -4,6 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use bytes::Bytes;
 use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
@@ -28,7 +29,7 @@ use service_protocol::message::{
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
-use tracing::{info, info_span, trace, Instrument, Span};
+use tracing::{debug, info, info_span, trace, Instrument, Span, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use super::{InvokeInputJournal, JournalMetadata, JournalReader};
@@ -54,6 +55,9 @@ pub(crate) enum InvocationTaskError {
     Network(hyper::Error),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
     UnexpectedJoinError(#[from] JoinError),
+    // TODO introduce hint with CodedError to increase timeout config
+    #[error("response timeout")]
+    ResponseTimeout,
     #[error(transparent)]
     Other(#[from] Box<dyn Error + Send + Sync + 'static>),
 }
@@ -66,6 +70,7 @@ impl InvocationTaskError {
             InvocationTaskError::Network(_)
                 | InvocationTaskError::UnexpectedJoinError(_)
                 | InvocationTaskError::Other(_)
+                | InvocationTaskError::ResponseTimeout
         )
     }
 }
@@ -125,6 +130,8 @@ pub(crate) struct InvocationTask<JR> {
     partition: PartitionLeaderEpoch,
     service_invocation_id: ServiceInvocationId,
     endpoint_metadata: EndpointMetadata,
+    bidi_stream_inactivity_graceful_close_timer: Duration,
+    response_inactivity_close_timer: Duration,
 
     next_journal_index: EntryIndex,
 
@@ -182,11 +189,14 @@ where
     JR: JournalReader<JournalStream = JS>,
     JS: Stream<Item = PlainRawEntry> + Unpin,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         partition: PartitionLeaderEpoch,
         sid: ServiceInvocationId,
         protocol_version: u16,
         endpoint_metadata: EndpointMetadata,
+        bidi_stream_inactivity_graceful_close_timer: Duration,
+        response_inactivity_close_timer: Duration,
         journal_reader: JR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
@@ -195,6 +205,8 @@ where
             partition,
             service_invocation_id: sid,
             endpoint_metadata,
+            bidi_stream_inactivity_graceful_close_timer,
+            response_inactivity_close_timer,
             next_journal_index: 0,
             journal_reader,
             invoker_tx,
@@ -410,6 +422,12 @@ where
                         }
                     }
                 },
+                _ = tokio::time::sleep(self.bidi_stream_inactivity_graceful_close_timer) => {
+                    debug!("Inactivity detected, going to suspend invocation");
+                    // Just return. This will drop the invoker_rx and http_stream_tx,
+                    // closing the request stream and the invoker input channel.
+                    return TerminalLoopState::Continue(())
+                },
             }
         }
     }
@@ -419,14 +437,24 @@ where
         parent_span_context: &Arc<SpanContext>,
         http_stream_rx: &mut Body,
     ) -> TerminalLoopState<()> {
-        while let Some(buf_res) = http_stream_rx.next().await {
-            match buf_res {
-                Ok(buf) => shortcircuit!(self.handle_read(parent_span_context, buf)),
-                Err(hyper_err) => shortcircuit!(hyper_err),
+        loop {
+            tokio::select! {
+                opt_buf = http_stream_rx.next() => {
+                    match opt_buf {
+                        Some(Ok(buf)) => shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        Some(Err(hyper_err)) => shortcircuit!(hyper_err),
+                        None => {
+                            // Response stream is closed. No further processing is needed.
+                            return TerminalLoopState::Closed
+                        }
+                    }
+                },
+                _ = tokio::time::sleep(self.response_inactivity_close_timer) => {
+                    warn!("Inactivity detected, going to close invocation");
+                    return TerminalLoopState::Failed(InvocationTaskError::ResponseTimeout)
+                },
             }
         }
-
-        TerminalLoopState::Closed
     }
 
     // --- Read and write methods
