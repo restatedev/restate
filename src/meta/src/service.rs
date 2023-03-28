@@ -1,11 +1,13 @@
 use super::storage::{MetaStorage, MetaStorageError};
 
+use futures::StreamExt;
 use std::collections::HashMap;
 
 use common::retry_policy::RetryPolicy;
 use futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
+use prost_reflect::DescriptorPool;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{
     DeliveryOptions, EndpointMetadata, InMemoryMethodDescriptorRegistry,
@@ -13,7 +15,7 @@ use service_metadata::{
 };
 use service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetaError {
@@ -107,6 +109,11 @@ where
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
 
+        if let Err(e) = self.reload().await {
+            error!("Cannot start meta: {e}");
+            return;
+        }
+
         loop {
             tokio::select! {
                 cmd = self.api_cmd_rx.recv() => {
@@ -127,6 +134,28 @@ where
         }
     }
 
+    async fn reload(&mut self) -> Result<(), MetaError> {
+        let mut endpoints_stream = self.storage.reload().await?;
+
+        while let Some(res) = endpoints_stream.next().await {
+            let (endpoint_metadata, services, descriptor_pool) = res?;
+            for service_meta in services {
+                info!(
+                    "Reloading service '{}' running at '{}'.",
+                    service_meta.name(),
+                    endpoint_metadata.address()
+                );
+                self.propagate_service_registration(
+                    service_meta,
+                    endpoint_metadata.clone(),
+                    &descriptor_pool,
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     async fn discover_endpoint(
         &mut self,
         uri: Uri,
@@ -143,7 +172,7 @@ where
         let endpoint_metadata = EndpointMetadata::new(
             uri.clone(),
             discovered_metadata.protocol_type,
-            DeliveryOptions::new(additional_headers.clone(), None), // TODO needs to support retry policies as well: https://github.com/restatedev/restate/issues/184
+            DeliveryOptions::new(additional_headers, None), // TODO needs to support retry policies as well: https://github.com/restatedev/restate/issues/184
         );
         let services = discovered_metadata
             .services
@@ -161,35 +190,49 @@ where
         // Propagate changes
         let mut registered_services = Vec::with_capacity(services.len());
         for service_meta in services {
-            let service_descriptor = discovered_metadata
-                .descriptor_pool
-                .get_service_by_name(service_meta.name())
-                .expect("service discovery returns a service available in the descriptor pool");
             registered_services.push(service_meta.name().to_string());
-
             info!(
                 "Discovered service '{}' running at '{uri}'.",
                 service_meta.name()
             );
 
-            if tracing::enabled!(tracing::Level::DEBUG) {
-                service_descriptor.methods().for_each(|method| {
-                    debug!("Discovered '{}/{}'", service_meta.name(), method.name())
-                });
-            }
-
-            self.method_descriptors_registry
-                .register(service_descriptor);
-            self.key_extractors_registry.register(
-                service_meta.name().to_string(),
-                service_meta.instance_type().clone(),
-            );
-            self.service_endpoint_registry.register_service_endpoint(
-                service_meta.name().to_string(),
+            self.propagate_service_registration(
+                service_meta,
                 endpoint_metadata.clone(),
+                &discovered_metadata.descriptor_pool,
             );
         }
 
         Ok(registered_services)
+    }
+
+    fn propagate_service_registration(
+        &mut self,
+        service_meta: ServiceMetadata,
+        endpoint_metadata: EndpointMetadata,
+        descriptor_pool: &DescriptorPool,
+    ) {
+        let service_descriptor = descriptor_pool
+            .get_service_by_name(service_meta.name())
+            .expect("Service mut be available in the descriptor pool. This is a runtime bug.");
+
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            service_descriptor.methods().for_each(|method| {
+                debug!(
+                    "Registering method '{}/{}'",
+                    service_meta.name(),
+                    method.name()
+                )
+            });
+        }
+
+        self.method_descriptors_registry
+            .register(service_descriptor);
+        self.key_extractors_registry.register(
+            service_meta.name().to_string(),
+            service_meta.instance_type().clone(),
+        );
+        self.service_endpoint_registry
+            .register_service_endpoint(service_meta.name().to_string(), endpoint_metadata);
     }
 }
