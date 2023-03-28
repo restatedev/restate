@@ -160,6 +160,7 @@ where
                 };
 
                 // Be aware that between this enter and the drop later there must not be any .await
+                // https://docs.rs/tracing/latest/tracing/struct.Span.html#in-asynchronous-code
                 let enter_service_invocation_span = service_invocation_span.enter();
 
                 // More trace info

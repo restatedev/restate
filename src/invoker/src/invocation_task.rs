@@ -215,7 +215,8 @@ where
             restate.invocation.id = %self.service_invocation_id.invocation_id,
             restate.protocol.mode = ?self.endpoint_metadata.protocol_type()
         );
-        let result = async { self.run_internal(input_journal).await }
+        let result = self
+            .run_internal(input_journal)
             .instrument(invocation_task_span)
             .await;
 
