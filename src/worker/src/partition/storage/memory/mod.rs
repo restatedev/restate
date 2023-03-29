@@ -4,7 +4,7 @@ use crate::partition::effects::{
 use crate::partition::leadership::{InvocationReader, TimerReader};
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{
-    InboxEntry, JournalMetadata, ResponseSink, StateReader, StateReaderError,
+    InboxEntry, JournalStatus, ResponseSink, StateReader, StateReaderError,
 };
 use crate::partition::storage::memory::timer_key::{TimerKey, TimerKeyRef};
 use crate::partition::types::{EnrichedRawEntry, Timer};
@@ -16,7 +16,7 @@ use common::types::{
 };
 use futures::future::{err, ok, BoxFuture};
 use futures::{stream, FutureExt};
-use invoker::JournalReader;
+use invoker::{JournalMetadata, JournalReader};
 use journal::raw::{Header, PlainRawEntry};
 use journal::CompletionResult;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -156,10 +156,10 @@ impl Storage {
             .and_then(|inbox| inbox.front().cloned())
     }
 
-    fn get_journal_status(&self, service_id: &ServiceId) -> JournalMetadata {
+    fn get_journal_status(&self, service_id: &ServiceId) -> JournalStatus {
         self.journals
             .get(service_id)
-            .map(|journal| JournalMetadata {
+            .map(|journal| JournalStatus {
                 length: journal.len() as EntryIndex,
                 span_context: journal.span_context.clone(),
             })
@@ -377,7 +377,7 @@ impl StateReader for InMemoryPartitionStorage {
     fn get_journal_status(
         &self,
         service_id: &ServiceId,
-    ) -> BoxFuture<Result<JournalMetadata, StateReaderError>> {
+    ) -> BoxFuture<Result<JournalStatus, StateReaderError>> {
         ok(self.inner.lock().unwrap().get_journal_status(service_id)).boxed()
     }
 
@@ -704,15 +704,14 @@ pub struct InMemoryJournalReaderError(ServiceInvocationId);
 impl JournalReader for InMemoryJournalReader {
     type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
     type Error = InMemoryJournalReaderError;
-    type Future =
-        BoxFuture<'static, Result<(invoker::JournalMetadata, Self::JournalStream), Self::Error>>;
+    type Future = BoxFuture<'static, Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
 
     fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future {
         let storages = self.storages.lock().unwrap();
 
         for storage in storages.iter() {
             if let Some(journal) = storage.inner.lock().unwrap().journals.get(&sid.service_id) {
-                let meta = invoker::JournalMetadata {
+                let meta = JournalMetadata {
                     method: journal.method_name.clone(),
                     journal_size: journal.length as EntryIndex,
                     span_context: journal.span_context.clone(),

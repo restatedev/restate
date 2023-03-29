@@ -3,7 +3,7 @@ use crate::partition::effects::{
 };
 use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
-use crate::partition::state_machine::{JournalMetadata, StateReader, StateReaderError};
+use crate::partition::state_machine::{JournalStatus, StateReader, StateReaderError};
 use crate::partition::types::EnrichedRawEntry;
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
@@ -58,7 +58,7 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
     fn get_journal_status(
         &self,
         _service_id: &ServiceId,
-    ) -> BoxFuture<Result<JournalMetadata, StateReaderError>> {
+    ) -> BoxFuture<Result<JournalStatus, StateReaderError>> {
         todo!()
     }
 

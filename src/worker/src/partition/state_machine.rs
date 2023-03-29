@@ -41,7 +41,7 @@ pub(crate) enum Command {
 }
 
 #[derive(Debug)]
-pub(super) struct JournalMetadata {
+pub(super) struct JournalStatus {
     pub(super) length: EntryIndex,
     pub(super) span_context: ServiceInvocationSpanContext,
 }
@@ -100,7 +100,7 @@ pub(super) trait StateReader {
     fn get_journal_status(
         &self,
         service_id: &ServiceId,
-    ) -> BoxFuture<Result<JournalMetadata, StateReaderError>>;
+    ) -> BoxFuture<Result<JournalStatus, StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
     fn is_entry_completed(
