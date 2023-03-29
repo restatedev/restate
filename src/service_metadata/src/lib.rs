@@ -55,6 +55,7 @@ mod header_map_serde {
             ))
         }
     }
+
     impl TryFrom<HeaderMapSerde> for HashMap<HeaderName, HeaderValue> {
         type Error = GenericError;
 

@@ -153,17 +153,19 @@ impl MetaStorage for FileMetaStorage {
             MetaStorageError,
         >,
     > {
-        let read_dir_fut = tokio::fs::read_dir(self.root_path.clone());
+        let root_path = self.root_path.clone();
         async move {
-            let read_dir = read_dir_fut.await?;
+            // Try to create a dir, in case it doesn't exist
+            let _ = tokio::fs::create_dir(&root_path).await;
+
+            let read_dir = tokio::fs::read_dir(root_path).await?;
 
             Ok(StreamExt::boxed(stream::try_unfold(
                 read_dir,
                 |mut read_dir| async move {
                     // Loop until it finds the first .json file
-                    let mut entry;
-                    loop {
-                        entry = read_dir.next_entry().await?;
+                    let entry = loop {
+                        let entry = read_dir.next_entry().await?;
                         match &entry {
                             None => {
                                 // No more entries in this dir
@@ -177,13 +179,13 @@ impl MetaStorage for FileMetaStorage {
                                     == Some(JSON_EXTENSION) =>
                             {
                                 // Found a .json file
-                                break;
+                                break entry;
                             }
                             _ => {
                                 // Continue looping
                             }
                         }
-                    }
+                    };
 
                     // Entry is the json metadata descriptor
                     let metadata_file_path = entry.unwrap().path();
