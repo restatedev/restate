@@ -1,0 +1,25 @@
+[package]
+name = "errors"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = []
+include_doc = ["termimad"]
+
+[dependencies]
+codederror = { workspace = true }
+paste = { workspace = true }
+termimad = { version = "0.23", optional = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+thiserror = { workspace = true }
+test_utils = { workspace = true }
+tracing-subscriber = { workspace = true }
