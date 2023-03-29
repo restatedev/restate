@@ -1,49 +1,53 @@
 use std::io;
 
-use codederror::CodedError;
+use codederror::*;
 use thiserror::Error;
 
 pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
+pub const E0001: Code = error_code!(
+    "E0001",
+    help = "Ask developers for help about error code E0001",
+    description = "long description 1"
+);
+pub const E0002: Code = error_code!(
+    "E0002",
+    help = "Ask on the street about E0002",
+    description = "long description 2"
+);
+pub const E0003: Code = error_code!(
+    "E0003",
+    help = "I know a friend which knows a friend that knows about E0003",
+    description = "long description 3"
+);
+
 #[derive(Error, CodedError, Debug)]
 #[code(unknown)]
 #[error("some error")]
-pub struct NoCodeNoHintsError {}
+pub struct NoCodeError {}
 
 #[derive(Error, CodedError, Debug)]
-#[code(3)]
-#[error("some error")]
-pub struct NoHintsError {}
-
-#[derive(Error, CodedError, Debug)]
-#[code(2)]
+#[code(E0002)]
 #[error("some error from partition")]
-#[hint("whatever")]
 pub struct OtherError {}
 
 #[derive(Error, CodedError, Debug)]
-#[hint("Please contact the developers!")]
 pub enum Error {
     #[error("partition {partition_id} error: {source}")]
-    #[hint("do this to fix it")]
     Partition {
         partition_id: u64,
         #[source]
-        #[hint]
         #[code]
         source: OtherError,
     },
 
-    #[code(1)]
-    #[hint("fix the config")]
-    #[hint("ask developers help")]
+    #[code(E0001)]
     #[error("configuration error: {0}")]
     Configuration(String),
 
     #[error("other coded: {0:?}")]
     OtherCoded(
         #[from]
-        #[hint]
         #[code]
         OtherError,
     ),
@@ -54,10 +58,9 @@ pub enum Error {
 }
 
 #[derive(thiserror::Error, codederror::CodedError, Debug)]
-#[code(3)]
+#[code(E0003)]
 pub enum TopLevelCodeError {
     #[error("io error when accessing to {file}: {source:?}")]
-    #[hint("Check the path is correct and the file/directory can be read by the current user")]
     Io {
         file: String,
         #[source]
@@ -66,31 +69,26 @@ pub enum TopLevelCodeError {
 }
 
 #[test]
-fn code_and_hint() {
+fn code() {
     let e = Error::Configuration("this config error happened".to_string());
 
     assert_eq!(
         format!("{}", e.decorate()),
-        r"[RT-0001] configuration error: this config error happened
-
-Hints:
-* fix the config
-* ask developers help
-* Please contact the developers!
-
-For more details, look at the docs with https://restate.dev/doc/errors/RT-0001"
+        r"[E0001] configuration error: this config error happened. Ask developers for help about error code E0001"
     );
 }
 
 #[test]
-fn no_hints() {
-    let e = NoHintsError {};
+fn code_and_description() {
+    let e = Error::Configuration("this config error happened".to_string());
 
     assert_eq!(
-        format!("{}", e.decorate()),
-        r"[RT-0003] some error
+        format!("{:#}", e.decorate()),
+        r"[E0001] configuration error: this config error happened
 
-For more details, look at the docs with https://restate.dev/doc/errors/RT-0003"
+long description 1
+
+Ask developers for help about error code E0001"
     );
 }
 
@@ -98,24 +96,11 @@ For more details, look at the docs with https://restate.dev/doc/errors/RT-0003"
 fn no_code() {
     let e = Error::Other("some other error happened".to_string().into());
 
-    assert_eq!(
-        format!("{}", e.decorate()),
-        r"some other error happened
-
-Hints:
-* Please contact the developers!"
-    );
+    assert_eq!(format!("{}", e.decorate()), r"some other error happened");
 }
 
 #[test]
-fn no_code_no_hints() {
-    let e = NoCodeNoHintsError {};
-
-    assert_eq!(format!("{}", e.decorate()), "some error");
-}
-
-#[test]
-fn source_code_hint_propagation_named_field() {
+fn source_code_propagation_named_field() {
     let e = Error::Partition {
         partition_id: 1,
         source: OtherError {},
@@ -123,30 +108,17 @@ fn source_code_hint_propagation_named_field() {
 
     assert_eq!(
         format!("{}", e.decorate()),
-        r"[RT-0002] partition 1 error: some error from partition
-
-Hints:
-* whatever
-* do this to fix it
-* Please contact the developers!
-
-For more details, look at the docs with https://restate.dev/doc/errors/RT-0002"
+        r"[E0002] partition 1 error: some error from partition. Ask on the street about E0002"
     );
 }
 
 #[test]
-fn source_code_hint_propagation_unnamed_field() {
+fn source_code_propagation_unnamed_field() {
     let e: Error = OtherError {}.into();
 
     assert_eq!(
         format!("{}", e.decorate()),
-        r"[RT-0002] other coded: OtherError
-
-Hints:
-* whatever
-* Please contact the developers!
-
-For more details, look at the docs with https://restate.dev/doc/errors/RT-0002"
+        r"[E0002] other coded: OtherError. Ask on the street about E0002"
     );
 }
 
@@ -159,11 +131,6 @@ fn top_level_enum_code() {
 
     assert_eq!(
         format!("{}", e.decorate()),
-        r"[RT-0003] io error when accessing to myfile.txt: Kind(NotFound)
-
-Hints:
-* Check the path is correct and the file/directory can be read by the current user
-
-For more details, look at the docs with https://restate.dev/doc/errors/RT-0003"
+        r"[E0003] io error when accessing to myfile.txt: Kind(NotFound). I know a friend which knows a friend that knows about E0003"
     );
 }

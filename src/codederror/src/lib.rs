@@ -1,19 +1,30 @@
-//! This library extends [`thiserror`] to decorate errors with two additional metadata:
-//! error code and hints to fix it. These can be useful in projects where errors are indexed by a code,
-//! for example as the [Rust compiler errors](https://doc.rust-lang.org/error-index.html).
+//! This library extends [`thiserror`] to decorate errors with additional metadata:
+//! error code, help string and long error description.
+//!
+//! These can be useful in projects where errors are indexed by a code, for example as the
+//! [Rust compiler errors](https://doc.rust-lang.org/error-index.html).
 //!
 //! # Example
 //!
 //! ```rust
 //! use thiserror::Error;
-//! use codederror::CodedError;
+//! use codederror::{error_code, CodedError, Code};
+//!
+//! // Define error codes
+//! pub const E0001: Code = error_code!(
+//!     "E0001",
+//!     help="Look E0001 in the documentation"
+//! );
+//! pub const E0002: Code = error_code!(
+//!     "E0002",
+//!     help="Ask developers about error code 0002",
+//!     description="Don't know much about it to be fair"
+//! );
 //!
 //! // To derive CodedError you need to derive thiserror::Error and fmt::Debug
 //! #[derive(Error, CodedError, Debug)]
-//! #[hint("Please contact the developers!")]
 //! pub enum Error {
-//!     #[code(1)]
-//!     #[hint("Fix the config")]
+//!     #[code(E0001)]
 //!     #[error("configuration error: {0}")]
 //!     Configuration(String),
 //!
@@ -22,103 +33,84 @@
 //!         user_id: u64,
 //!         #[source]
 //!         #[code] // Take code from OtherError
-//!         #[hint] // Add hints from OtherError to hints of Error
 //!         source: OtherError,
 //!     },
 //!
 //!     #[error(transparent)]
 //!     #[code(unknown)] // No code available for this variant
-//!     Other(#[from] GenericError),
+//!     Other(#[from] BoxError),
 //! }
 //!
 //! #[derive(Error, CodedError, Debug)]
-//! #[code(2)]
+//! #[code(E0002)]
 //! #[error("some other error")]
-//! #[hint("Turn off and on")]
 //! pub struct OtherError {}
 //!
-//! pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
+//! # pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 //!
 //! # fn main() {
 //! let e = Error::User {user_id: 1, source: OtherError {}};
 //!
+//! // The Display trait is implemented by thiserror
 //! println!("{}", e);
-//! // This will print:
 //! // user 1 error: some other error
 //!
+//! // Using decorate will enable printing code and the help message
 //! println!("{}", e.decorate());
-//! // This will print:
-//! // [0002] user 1 error: some other error
+//! // [E0002] user 1 error: some other error
 //! //
-//! // Hints:
-//! // * Turn off and on
-//! // * Please contact the developers!
-//! //
-//! // Error code 0002
+//! // Look E0002 in the documentation
 //!
+//! // Printing in alternate mode will print the description as well
+//! println!("{:#}", e.decorate());
+//! // [E0002] user 1 error: some other error
+//! //
+//! // Don't know much about it to be fair
+//! //
+//! // Look E0002 in the documentation
+//!
+//! // You can also use the Debug format
 //! println!("{:#?}", e.decorate());
-//! // This will print:
 //! // CodedError {
-//! //     code: "Error code 0002",
+//! //     code: "E002",
 //! //     inner: user 1 error: some other error,
-//! //     hints: [
-//! //         "Turn off and on",
-//! //         "Please contact the developers!",
-//! //     ],
 //! // }
 //! # }
 //!
 //! ```
 //!
-//! # Formatting options
-//!
-//! You can modify the code formatting options for the crate you're implementing by setting the following
-//! environment variables in your [`config.toml`](https://doc.rust-lang.org/nightly/cargo/reference/config.html#env):
-//!
-//! ```toml
-//! [env]
-//! CODEDERROR_PADDING = "4"
-//! # Available variables:
-//! # - code: numeric padded value
-//! CODEDERROR_CODE_FORMAT = "APP-{code}"
-//! # Available variables:
-//! # - code: numeric padded value
-//! # - code_str: code formatted using CODEDERROR_CODE_FORMAT
-//! CODEDERROR_HELP_FORMAT = "For more details, look at the docs with http://mydocs.com/{code_str}"
-//! ```
-//!
-//! In case of the previous example, the display output becomes:
-//!
-//! ```text
-//! [APP-0002] user 1 error: some other error
-//!
-//!  Hints:
-//!  * Turn off and on
-//!  * Please contact the developers!
-//!
-//!  For more details, look at the docs with http://mydocs.com/APP-0002
-//! ```
-//!
-//! This crate uses [`strfmt`] to format strings, make sure you use the correct format pattern.
-//!
 //! [`thiserror`]: https://docs.rs/thiserror
-//! [`strfmt`]: https://docs.rs/strfmt
 
 use std::fmt;
-use std::fmt::{format, Debug, Display};
+use std::fmt::{Debug, Display};
 use std::ops::Deref;
 
 pub use codederror_impl::*;
 
-/// This trait defines a coded error, that is an error with code and hints metadata.
+// TODO doc
+#[macro_export]
+macro_rules! error_code {
+    ($code:literal) => {
+        Code::new($code, None, None)
+    };
+    ($code:literal, help=$help:literal) => {
+        Code::new($code, Some($help), None)
+    };
+    ($code:literal, description=$description:literal) => {
+        Code::new($code, None, Some($description))
+    };
+    ($code:literal, help=$help:literal, description=$description:literal) => {
+        Code::new($code, Some($help), Some($description))
+    };
+}
+
+/// This trait defines a coded error, that is an error with an error code.
 ///
 /// This trait provides the method [`decorate`](`CodedError::decorate`),
 /// which returns a struct implementing [`fmt::Display`], printing error message, cause, code and hints.
 pub trait CodedError: std::error::Error + Sized {
     #[doc(hidden)]
-    fn code(&self) -> Option<Code>;
-    #[doc(hidden)]
-    fn fmt_hints(&self, f: &mut HintFormatter<'_, '_>) -> fmt::Result;
+    fn code(&self) -> Option<&'static Code>;
 
     /// Create a [`DecoratedError`] from a reference of this error.
     fn decorate(&self) -> DecoratedError<'_, Self> {
@@ -136,7 +128,7 @@ pub trait CodedError: std::error::Error + Sized {
 }
 
 /// This struct implements [`Display`] and [`Debug`] for a [CodedError],
-/// adding code and hints to the error message.
+/// adding the code and help string to the error message.
 ///
 /// Sample:
 /// ```rust
@@ -174,17 +166,22 @@ impl<'a, T: 'a> Deref for DecoratedErrorInner<'a, T> {
 impl<T: CodedError> Display for DecoratedError<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(code) = self.this.code() {
-            write!(f, "[{}] ", code.code_str)?;
+            write!(f, "[{}] ", code.code)?;
         }
         write!(f, "{}", self.this.deref())?;
-        let mut hint_formatter = HintFormatter::FanOut {
-            first: true,
-            inner: f,
-        };
-        self.this.fmt_hints(&mut hint_formatter)?;
+        if f.alternate() {
+            if let Some(description) = self.this.code().and_then(|c| c.description) {
+                write!(f, "\n\n{}", description)?;
+            }
+        }
 
-        if let Some(code) = self.this.code() {
-            write!(f, "\n\n{}", code.help_str)?;
+        if let Some(help) = self.this.code().and_then(|c| c.help) {
+            if f.alternate() {
+                // Add new lines after description
+                write!(f, "\n\n{}", help)?;
+            } else {
+                write!(f, ". {}", help)?;
+            }
         }
 
         Ok(())
@@ -193,15 +190,9 @@ impl<T: CodedError> Display for DecoratedError<'_, T> {
 
 impl<T: CodedError> Debug for DecoratedError<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut collected_hints = vec![];
-
-        let mut hint_formatter = HintFormatter::Collecting(&mut collected_hints);
-        self.this.fmt_hints(&mut hint_formatter)?;
-
         f.debug_struct("CodedError")
             .field("code", &self.this.code())
             .field("inner", &format_args!("{}", self.this.deref()))
-            .field("hints", &collected_hints)
             .finish()
     }
 }
@@ -217,49 +208,41 @@ impl<T: CodedError> std::error::Error for DecoratedError<'_, T> {
     }
 }
 
-#[doc(hidden)]
-pub enum HintFormatter<'a, 'b> {
-    FanOut {
-        first: bool,
-        inner: &'a mut fmt::Formatter<'b>,
-    },
-    Collecting(&'a mut Vec<String>),
+#[derive(Debug, Copy, Clone)]
+pub struct Code {
+    code: &'static str,
+    help: Option<&'static str>,
+    description: Option<&'static str>,
 }
 
-impl<'a, 'b> HintFormatter<'a, 'b> {
-    pub fn write_fmt_next(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
-        match self {
-            HintFormatter::FanOut { first, inner } => {
-                if *first {
-                    write!((*inner), "\n\nHints:")?;
-                    *first = false;
-                }
-                write!((*inner), "\n* ")?;
-                (*inner).write_fmt(args)
-            }
-            HintFormatter::Collecting(v) => {
-                (*v).push(format(args));
-                Ok(())
-            }
+impl Code {
+    pub const fn new(
+        code: &'static str,
+        help: Option<&'static str>,
+        description: Option<&'static str>,
+    ) -> Self {
+        Self {
+            code,
+            help,
+            description,
         }
     }
-}
 
-#[doc(hidden)]
-pub struct Code {
-    pub value: u32,
-    pub code_str: &'static str,
-    pub help_str: &'static str,
-}
+    pub const fn code(&self) -> &'static str {
+        self.code
+    }
 
-impl Debug for Code {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.help_str)
+    pub const fn help(&self) -> Option<&'static str> {
+        self.help
+    }
+
+    pub const fn description(&self) -> Option<&'static str> {
+        self.description
     }
 }
 
 impl Display for Code {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.help_str)
+        write!(f, "{}", self.code)
     }
 }

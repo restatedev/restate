@@ -1,31 +1,28 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned, ToTokens};
-use std::collections::HashMap;
-use strfmt::strfmt;
 use syn::spanned::Spanned;
-use syn::{Data, DeriveInput, LitInt, LitStr, Member, Result, Visibility};
+use syn::{Data, DeriveInput, Member, Result, Visibility};
 
 use crate::ast::{Enum, Field, Input, Struct};
 use crate::attr::Code;
 use crate::generics::InferredBounds;
-use crate::Config;
 
-pub fn derive(config: Config, node: &DeriveInput) -> Result<TokenStream> {
+pub fn derive(node: &DeriveInput) -> Result<TokenStream> {
     let input = Input::from_syn(node)?;
     input.validate()?;
     Ok(match input {
-        Input::Struct(input) => impl_struct(config, input),
-        Input::Enum(input) => impl_enum(config, input),
+        Input::Struct(input) => impl_struct(input),
+        Input::Enum(input) => impl_enum(input),
     })
 }
 
-fn impl_struct(config: Config, input: Struct) -> TokenStream {
+fn impl_struct(input: Struct) -> TokenStream {
     let ty = &input.ident;
     let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
     let mut coded_error_inferred_bounds = InferredBounds::new();
 
     let code_body = if let Some(code) = input.attrs.code {
-        impl_code(&config, &code)
+        impl_code(&code)
     } else {
         // Delegate code to field
         let code_field = input.code_field().unwrap();
@@ -36,36 +33,8 @@ fn impl_struct(config: Config, input: Struct) -> TokenStream {
         quote! { self.#member.code() }
     };
     let code_method = quote! {
-        fn code(&self) -> std::option::Option<codederror::Code> {
+        fn code(&self) -> std::option::Option<&'static codederror::Code> {
             #code_body
-        }
-    };
-
-    let mut fmt_hints_body = quote! {};
-    // Print the hint from the field first, as it might be more useful because it's more specialized
-    if let Some(hint_field) = input.hint_field() {
-        if hint_field.contains_generic {
-            coded_error_inferred_bounds.insert(hint_field.ty, quote!(codederror::CodedError));
-        }
-        let member = &hint_field.member;
-        fmt_hints_body = quote! {
-            #fmt_hints_body
-            self.#member.fmt_hints(__formatter)?;
-        }
-    }
-    for display in input.attrs.hints {
-        fmt_hints_body = quote! {
-            #fmt_hints_body
-            __formatter.write_fmt_next(format_args!(#display))?;
-        }
-    }
-    fmt_hints_body = quote! {
-        #fmt_hints_body
-        std::result::Result::Ok(())
-    };
-    let fmt_hints_method = quote! {
-        fn fmt_hints(&self, __formatter: &mut codederror::HintFormatter<'_, '_>) -> std::fmt::Result {
-            #fmt_hints_body
         }
     };
 
@@ -75,23 +44,22 @@ fn impl_struct(config: Config, input: Struct) -> TokenStream {
         #[allow(unused_variables)]
         impl #impl_generics #coded_error_trait for #ty #ty_generics #coded_error_where_clause {
             #code_method
-            #fmt_hints_method
         }
     }
 }
 
-fn impl_enum(config: Config, input: Enum) -> TokenStream {
+fn impl_enum(input: Enum) -> TokenStream {
     let ty = &input.ident;
     let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
     let mut coded_error_inferred_bounds = InferredBounds::new();
 
     // Generate code()
-    let root_code = input.attrs.code.map(|code| impl_code(&config, &code));
+    let root_code = input.attrs.code.map(|code| impl_code(&code));
     let code_method_arms = input.variants.iter().map(|variant| {
         let ident = &variant.ident;
         let pat = fields_pat(&variant.fields);
-        if let Some(code) = variant.attrs.code {
-            let code = impl_code(&config, &code);
+        if let Some(ref code) = variant.attrs.code {
+            let code = impl_code(code);
             quote! {
                 #ty::#ident #pat => #code,
             }
@@ -111,52 +79,9 @@ fn impl_enum(config: Config, input: Enum) -> TokenStream {
         }
     });
     let code_method = quote! {
-        fn code(&self) -> std::option::Option<codederror::Code> {
+        fn code(&self) -> std::option::Option<&'static codederror::Code> {
            match self {
                 #(#code_method_arms)*
-            }
-        }
-    };
-
-    // Generate fmt_hints()
-    let root_hints = input.attrs.hints;
-    let fmt_hint_method_arms = input.variants.iter().map(|variant| {
-        let ident = &variant.ident;
-        let pat = fields_pat(&variant.fields);
-
-        let mut fmt_hints_body = quote!();
-        if let Some(hint_field) = variant.hint_field() {
-            if hint_field.contains_generic {
-                coded_error_inferred_bounds.insert(hint_field.ty, quote!(codederror::CodedError));
-            }
-            let member = member_identifier(hint_field);
-            fmt_hints_body = quote! {
-                #fmt_hints_body
-                #member.fmt_hints(__formatter)?;
-            };
-        }
-
-        // Append variant and enum hints
-        let mut hints = variant.attrs.hints.clone();
-        hints.extend_from_slice(&root_hints);
-        for display in hints {
-            fmt_hints_body = quote! {
-                #fmt_hints_body
-                __formatter.write_fmt_next(format_args!(#display))?;
-            }
-        }
-
-        quote! {
-            #ty::#ident #pat => {
-                #fmt_hints_body
-                std::result::Result::Ok(())
-            },
-        }
-    });
-    let fmt_hints_method = quote! {
-        fn fmt_hints(&self, __formatter: &mut codederror::HintFormatter<'_, '_>) -> std::fmt::Result {
-           match self {
-                #(#fmt_hint_method_arms)*
             }
         }
     };
@@ -167,7 +92,6 @@ fn impl_enum(config: Config, input: Enum) -> TokenStream {
         #[allow(unused_variables)]
         impl #impl_generics #coded_error_trait for #ty #ty_generics #coded_error_where_clause {
             #code_method
-            #fmt_hints_method
         }
     }
 }
@@ -215,28 +139,11 @@ fn spanned_coded_error_trait(input: &DeriveInput) -> TokenStream {
     quote!(#path #error)
 }
 
-fn impl_code(config: &Config, code: &Code) -> TokenStream {
-    if let Some(code_value) = code.value {
-        let code_padded = format!("{:0padding$}", code_value, padding = config.padding);
-        let mut vars = HashMap::new();
-        vars.insert("code".to_string(), code_padded);
-
-        let value_lit = LitInt::new(&code_value.to_string(), code.original.span());
-        let code_str = strfmt(config.code_format, &vars).unwrap();
-        let code_str_lit = LitStr::new(&code_str, code.original.span());
-
-        vars.insert("code_str".to_string(), code_str);
-        let help_str_lit = LitStr::new(
-            &strfmt(config.code_help_format, &vars).unwrap(),
-            code.original.span(),
-        );
+fn impl_code(code: &Code) -> TokenStream {
+    if let Some(ref code_ident) = code.value {
         quote! {
             std::option::Option::Some(
-                codederror::Code {
-                    value: #value_lit,
-                    code_str: #code_str_lit,
-                    help_str: #help_str_lit,
-                }
+                &#code_ident
             )
         }
     } else {

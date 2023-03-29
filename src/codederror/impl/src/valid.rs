@@ -72,12 +72,6 @@ impl Variant<'_> {
 }
 
 fn check_non_field_attrs(attrs: &Attrs) -> Result<()> {
-    if let Some(hint_marker) = &attrs.hint_marker {
-        return Err(Error::new_spanned(
-            hint_marker,
-            "not expected here; the #[hint] attribute belongs to a field",
-        ));
-    }
     if let Some(code_marker) = &attrs.code_marker {
         return Err(Error::new_spanned(
             code_marker,
@@ -99,13 +93,7 @@ impl Field<'_> {
                 "not expected here; the #[code(...)] attribute belongs on top of a struct or an enum variant",
             ));
         }
-        if !self.attrs.hints.is_empty() {
-            return Err(Error::new_spanned(
-                self.attrs.hints.first().unwrap(),
-                "not expected here; the #[hint(...)] attribute belongs on top of a struct, or an enum or an enum variant",
-            ));
-        }
-        if (self.attrs.hint_marker.is_some() || self.attrs.code_marker.is_some())
+        if self.attrs.code_marker.is_some()
             && self.attrs.from.is_none()
             && self.attrs.source.is_none()
         {

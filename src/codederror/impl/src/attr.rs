@@ -1,20 +1,19 @@
 //! Some parts copied from https://github.com/dtolnay/thiserror/blob/master/impl/src/attr.rs
 //! License APL 2.0 or MIT
 
+use proc_macro2::Ident;
 use syn::parse::{Nothing, ParseStream};
-use syn::{Attribute, Error as SynError, LitInt, LitStr, Result};
+use syn::{Attribute, Error as SynError, Result};
 
 pub struct Attrs<'a> {
     // We parse these just to figure out who should we delegate to during codegen
     pub source: Option<&'a Attribute>,
     pub from: Option<&'a Attribute>,
 
-    // Variant or top level struct/enum attributes
-    pub hints: Vec<LitStr>,
+    // Variant or top level struct/enum attribute
     pub code: Option<Code<'a>>,
 
-    // Markers for source and from
-    pub hint_marker: Option<&'a Attribute>,
+    // Marker for source and from
     pub code_marker: Option<&'a Attribute>,
 }
 
@@ -42,14 +41,6 @@ impl<'a> Attrs<'a> {
         self.code_marker = Some(attr);
         Ok(())
     }
-
-    pub fn mark_hint(&mut self, attr: &'a Attribute) -> Result<()> {
-        if self.hint_marker.is_some() {
-            return Err(SynError::new_spanned(attr, "duplicate #[hint] attribute"));
-        }
-        self.hint_marker = Some(attr);
-        Ok(())
-    }
 }
 
 #[derive(Copy, Clone)]
@@ -58,22 +49,18 @@ pub struct Error<'a> {
     pub is_transparent: bool,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct Code<'a> {
     pub original: &'a Attribute,
     // If empty -> Unknown
-    pub value: Option<u32>,
+    pub value: Option<Ident>,
 }
 
 pub fn get(input: &[Attribute]) -> Result<Attrs> {
     let mut attrs = Attrs {
         source: None,
         from: None,
-
-        hints: vec![],
         code: None,
-
-        hint_marker: None,
         code_marker: None,
     };
 
@@ -87,25 +74,12 @@ pub fn get(input: &[Attribute]) -> Result<Attrs> {
                 continue;
             }
             attrs.mark_from(attr)?;
-        } else if attr.path.is_ident("hint") {
-            parse_hint_attribute(&mut attrs, attr)?;
         } else if attr.path.is_ident("code") {
             parse_code_attribute(&mut attrs, attr)?;
         }
     }
 
     Ok(attrs)
-}
-
-fn parse_hint_attribute<'a>(attrs: &mut Attrs<'a>, attr: &'a Attribute) -> Result<()> {
-    if attr.tokens.is_empty() {
-        return attrs.mark_hint(attr);
-    }
-
-    attr.parse_args_with(|input: ParseStream| {
-        attrs.hints.push(input.parse()?);
-        Ok(())
-    })
 }
 
 fn parse_code_attribute<'a>(attrs: &mut Attrs<'a>, attr: &'a Attribute) -> Result<()> {
@@ -127,16 +101,16 @@ fn parse_code_attribute<'a>(attrs: &mut Attrs<'a>, attr: &'a Attribute) -> Resul
                 value: None
             });
             Ok(())
-        } else if let Ok(lit_int) = input.parse::<LitInt>() {
+        } else if let Ok(ident) = input.parse::<Ident>() {
             attrs.code = Some(Code {
                 original: attr,
-                value: Some(lit_int.base10_parse()?)
+                value: Some(ident)
             });
             Ok(())
         } else {
             Err(SynError::new_spanned(
                 attr,
-                "#[code(...)] attribute can contain either an int literal, with the error code, or the unknown keyword",
+                "#[code(...)] attribute can contain either an identifier to a const Code instance, or the unknown keyword",
             ))
         }
     })
