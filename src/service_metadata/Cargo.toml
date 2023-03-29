@@ -21,5 +21,3 @@ serde_with = { workspace = true, optional = true }
 service_key_extractor = { workspace = true }
 http = "0.2.9"
 prost-reflect = { workspace = true }
-serde = { workspace = true }
-serde_with = "2.2"
