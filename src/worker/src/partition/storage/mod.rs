@@ -9,7 +9,7 @@ use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
     EntryIndex, MessageIndex, PartitionId, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
@@ -114,6 +114,7 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         _service_invocation_id: &ServiceInvocationId,
         _method_name: impl AsRef<str>,
         _response_sink: &ServiceInvocationResponseSink,
+        _span_context: ServiceInvocationSpanContext,
     ) -> Result<(), StateStorageError> {
         todo!()
     }

@@ -177,7 +177,7 @@ impl DispatcherLoopHandler {
 mod tests {
     use super::*;
 
-    use common::types::{IngressId, ServiceInvocationResponseSink, SpanRelation};
+    use common::types::IngressId;
     use test_utils::test;
 
     #[test(tokio::test)]
@@ -193,16 +193,15 @@ mod tests {
         let (drain_signal, watch) = drain::channel();
         let loop_handle = tokio::spawn(ingress_dispatcher.run(output_tx, watch));
 
-        // Ask for a response, then drop the receiver
-        let service_invocation = ServiceInvocation {
-            id: ServiceInvocationId::new("MySvc", "MyMethod", uuid::Uuid::now_v7()),
-            method_name: Default::default(),
-            argument: Default::default(),
-            response_sink: ServiceInvocationResponseSink::Ingress(IngressId(
-                "0.0.0.0:0".parse().unwrap(),
-            )),
-            span_relation: SpanRelation::None,
-        };
+        // Ask for a response, then drop the receiver=
+        let method_name = ByteString::from_static("pippo");
+        let (service_invocation, _) = ServiceInvocation::new(
+            ServiceInvocationId::new("MySvc", "MyMethod", uuid::Uuid::now_v7()),
+            method_name,
+            Default::default(),
+            ServiceInvocationResponseSink::Ingress(IngressId("0.0.0.0:0".parse().unwrap())),
+            SpanRelation::None,
+        );
         let (cmd, cmd_rx) = Command::prepare(service_invocation.clone());
         command_sender.send(cmd).unwrap();
         drop(cmd_rx);

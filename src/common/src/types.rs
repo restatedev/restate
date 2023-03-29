@@ -1,9 +1,11 @@
 use bytes::Bytes;
 use bytestring::ByteString;
-use opentelemetry_api::trace::SpanContext;
+use opentelemetry_api::trace::{SpanContext, TraceContextExt};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::Display;
+use tracing::{info_span, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 /// Identifying a member of a raft group
@@ -93,7 +95,41 @@ pub struct ServiceInvocation {
     pub method_name: ByteString,
     pub argument: Bytes,
     pub response_sink: ServiceInvocationResponseSink,
-    pub span_relation: SpanRelation,
+    pub span_context: ServiceInvocationSpanContext,
+}
+
+impl ServiceInvocation {
+    /// Create a new [`ServiceInvocation`].
+    ///
+    /// This method returns the [`Span`] associated to the created [`ServiceInvocation`].
+    /// It is not required to keep this [`Span`] around for the whole lifecycle of the invocation.
+    /// On the contrary, it is encouraged to drop it as soon as possible,
+    /// to let the exporter commit this span to jaeger/zipkin to visualize intermediate results of the invocation.
+    pub fn new(
+        id: ServiceInvocationId,
+        method_name: ByteString,
+        argument: Bytes,
+        response_sink: ServiceInvocationResponseSink,
+        related_span: SpanRelation,
+    ) -> (Self, Span) {
+        let (span_context, span) = ServiceInvocationSpanContext::start(
+            &id.service_id.service_name,
+            &method_name,
+            &id.service_id.key,
+            id.invocation_id,
+            related_span,
+        );
+        (
+            Self {
+                id,
+                method_name,
+                argument,
+                response_sink,
+                span_context,
+            },
+            span,
+        )
+    }
 }
 
 /// Representing a response for a caller
@@ -127,6 +163,61 @@ pub enum ServiceInvocationResponseSink {
     None,
 }
 
+/// This struct contains the relevant span information for a [`ServiceInvocation`].
+/// It can be used to create related spans, such as child spans,
+/// using [`ServiceInvocationSpanContext::as_cause`] or [`ServiceInvocationSpanContext::as_parent`].
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ServiceInvocationSpanContext(SpanContext);
+
+impl ServiceInvocationSpanContext {
+    /// See [`ServiceInvocation::new`] for more details.
+    pub fn start(
+        service_name: &str,
+        method_name: &str,
+        service_key: impl fmt::Debug,
+        invocation_id: impl Display,
+        related_span: SpanRelation,
+    ) -> (ServiceInvocationSpanContext, Span) {
+        // Create the span
+        let span = info_span!(
+            "service_invocation",
+            rpc.system = "restate",
+            rpc.service = service_name,
+            rpc.method = method_name,
+            restate.invocation.key = ?service_key,
+            restate.invocation.id = %invocation_id);
+
+        // Attach the related span.
+        // Note: As it stands with tracing_opentelemetry 0.18 there seems to be
+        // an ordering relationship between using OpenTelemetrySpanExt::context() and
+        // OpenTelemetrySpanExt::set_parent().
+        // If we invert the order, the spans won't link correctly because they'll have a different Trace ID.
+        // This is the reason why this method gets a SpanRelation, rather than letting the caller
+        // link the spans.
+        // https://github.com/tokio-rs/tracing/issues/2520
+        related_span.attach_to_span(&span);
+
+        // Retrieve the OTEL SpanContext we want to propagate
+        let span_context = span.context().span().span_context().clone();
+
+        (ServiceInvocationSpanContext(span_context), span)
+    }
+
+    pub fn as_cause(&self) -> SpanRelation {
+        SpanRelation::CausedBy(self.0.clone())
+    }
+
+    pub fn as_parent(&self) -> SpanRelation {
+        SpanRelation::Parent(self.0.clone())
+    }
+}
+
+impl From<ServiceInvocationSpanContext> for SpanContext {
+    fn from(value: ServiceInvocationSpanContext) -> Self {
+        value.0
+    }
+}
+
 /// Span relation, used to propagate tracing contexts.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SpanRelation {
@@ -136,26 +227,15 @@ pub enum SpanRelation {
 }
 
 impl SpanRelation {
-    pub fn from_parent(span_context: SpanContext) -> Self {
-        SpanRelation::Parent(span_context)
-    }
-
-    pub fn from_cause(span_context: SpanContext) -> Self {
-        SpanRelation::CausedBy(span_context)
-    }
-
-    pub fn to_parent(&self) -> Option<SpanContext> {
+    /// Attach this [`SpanRelation`] to the given [`Span`]
+    pub fn attach_to_span(self, span: &Span) {
         match self {
-            SpanRelation::Parent(context) => Some(context.clone()),
-            _ => None,
-        }
-    }
-
-    pub fn to_cause(&self) -> Option<SpanContext> {
-        match self {
-            SpanRelation::CausedBy(context) => Some(context.clone()),
-            _ => None,
-        }
+            SpanRelation::Parent(parent) => {
+                span.set_parent(opentelemetry_api::Context::new().with_remote_span_context(parent))
+            }
+            SpanRelation::CausedBy(cause) => span.add_link(cause),
+            _ => {}
+        };
     }
 }
 

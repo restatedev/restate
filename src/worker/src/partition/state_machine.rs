@@ -2,7 +2,8 @@ use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     EntryIndex, IngressId, InvocationId, InvocationResponse, MessageIndex, ResponseResult,
-    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation,
+    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -39,9 +40,10 @@ pub(crate) enum Command {
     Response(InvocationResponse),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct JournalStatus {
     pub(super) length: EntryIndex,
+    pub(super) span_context: ServiceInvocationSpanContext,
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +260,8 @@ where
                 effects.suspend_service(service_invocation_id, waiting_for_completed_entries);
             }
             InvokerEffectKind::End => {
+                self.notify_invocation_result(&service_invocation_id, state, effects)
+                    .await?;
                 self.complete_invocation(service_invocation_id, state, effects)
                     .await?;
             }
@@ -273,6 +277,8 @@ where
                     self.send_message(outbox_message, effects);
                 }
 
+                self.notify_invocation_result(&service_invocation_id, state, effects)
+                    .await?;
                 self.complete_invocation(service_invocation_id, state, effects)
                     .await?;
             }
@@ -387,6 +393,7 @@ where
                         ResolutionResult::Success {
                             service_key,
                             invocation_id,
+                            span_context,
                         } => {
                             let_assert!(
                                 Entry::Invoke(InvokeEntry { request, .. }) =
@@ -398,6 +405,7 @@ where
                                 service_key.clone(),
                                 request,
                                 Some((service_invocation_id.clone(), entry_index)),
+                                span_context.clone(),
                             );
                             self.send_message(
                                 OutboxMessage::ServiceInvocation(service_invocation),
@@ -423,6 +431,7 @@ where
                 ResolutionResult::Success {
                     service_key,
                     invocation_id,
+                    span_context,
                 } => {
                     let_assert!(
                         Entry::BackgroundInvoke(BackgroundInvokeEntry(request)) =
@@ -434,6 +443,7 @@ where
                         service_key.clone(),
                         request,
                         None,
+                        span_context.clone(),
                     );
                     self.send_message(
                         OutboxMessage::ServiceInvocation(service_invocation),
@@ -526,6 +536,21 @@ where
         Ok(())
     }
 
+    async fn notify_invocation_result<State: StateReader>(
+        &mut self,
+        service_invocation_id: &ServiceInvocationId,
+        state: &State,
+        effects: &mut Effects,
+    ) -> Result<(), Error> {
+        let span_context = state
+            .get_journal_status(&service_invocation_id.service_id)
+            .await?
+            .span_context;
+        effects.notify_invocation_result(service_invocation_id.invocation_id, span_context, Ok(()));
+
+        Ok(())
+    }
+
     async fn complete_invocation<State: StateReader>(
         &mut self,
         service_invocation_id: ServiceInvocationId,
@@ -557,6 +582,7 @@ where
         invocation_key: Bytes,
         invoke_request: InvokeRequest,
         response_target: Option<(ServiceInvocationId, EntryIndex)>,
+        span_context: ServiceInvocationSpanContext,
     ) -> ServiceInvocation {
         let InvokeRequest {
             service_name,
@@ -578,8 +604,7 @@ where
             method_name,
             argument: parameter,
             response_sink,
-            // TODO: Propagate span relation. See https://github.com/restatedev/restate/issues/165
-            span_relation: SpanRelation::None,
+            span_context,
         }
     }
 

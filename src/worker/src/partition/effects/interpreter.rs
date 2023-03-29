@@ -4,8 +4,8 @@ use crate::partition::InvocationStatus;
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink,
+    EntryIndex, InvocationId, MessageIndex, ServiceId, ServiceInvocation, ServiceInvocationId,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -46,6 +46,11 @@ pub(crate) enum ActuatorMessage {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
     },
+    CommitEndSpan {
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
+        result: Result<(), (i32, String)>,
+    },
 }
 
 pub(crate) trait MessageCollector {
@@ -76,6 +81,7 @@ pub(crate) trait StateStorage {
         service_invocation_id: &ServiceInvocationId,
         method_name: impl AsRef<str>,
         response_sink: &ServiceInvocationResponseSink,
+        span_context: ServiceInvocationSpanContext,
     ) -> Result<(), StateStorageError>;
 
     fn drop_journal(&self, service_id: &ServiceId) -> Result<(), StateStorageError>;
@@ -241,6 +247,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     &service_invocation.id,
                     &service_invocation.method_name,
                     &service_invocation.response_sink,
+                    service_invocation.span_context,
                 )?;
 
                 let_assert!(
@@ -549,6 +556,15 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 state_storage.drop_journal(&service_id)?;
                 state_storage.truncate_inbox(&service_id, inbox_sequence_number)?;
             }
+            Effect::NotifyInvocationResult {
+                invocation_id,
+                span_context,
+                result,
+            } => collector.collect(ActuatorMessage::CommitEndSpan {
+                invocation_id,
+                span_context,
+                result,
+            }),
         }
 
         Ok(())

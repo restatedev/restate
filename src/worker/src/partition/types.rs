@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use bytestring::ByteString;
-use common::types::{EntryIndex, InvocationId, ServiceInvocationId};
+use common::types::{EntryIndex, InvocationId, ServiceInvocationId, ServiceInvocationSpanContext};
 use invoker::InvokerError;
 use journal::raw::{Header, RawEntry, RawEntryHeader};
 use journal::EntryType;
@@ -79,6 +79,8 @@ pub(crate) enum ResolutionResult {
     Success {
         invocation_id: InvocationId,
         service_key: Bytes,
+        // When resolving the service and generating its id, we also generate the associated span
+        span_context: ServiceInvocationSpanContext,
     },
     Failure {
         error_code: i32,
