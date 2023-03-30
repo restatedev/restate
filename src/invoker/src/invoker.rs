@@ -170,13 +170,14 @@ enum OtherInputCommand {
 #[derive(Debug)]
 pub struct Options {
     retry_policy: RetryPolicy,
+
     /// This timer is used to gracefully shutdown a bidirectional stream
     /// after inactivity on both request and response streams.
     ///
     /// When this timer is fired, the invocation will be closed gracefully
     /// by closing the request stream, triggering a suspension on the sdk,
     /// in case the sdk is waiting on a completion. This won't affect the response stream.
-    bidi_stream_inactivity_graceful_close_timer: Duration,
+    bidi_stream_suspension_timeout: Duration,
 
     /// This timer is used to forcefully shutdown an invocation when only the response stream is open.
     ///
@@ -189,18 +190,17 @@ pub struct Options {
     ///   Check [`bidi_stream_inactivity_graceful_close_timer`] to configure a timer on the request stream.
     ///
     /// When this timer is fired, the response stream will be aborted,
-    /// potentially **interrupting** user code!
-    ///
-    /// Note: This timer MUST be bigger than [`bidi_stream_inactivity_graceful_close_timer`].
-    response_inactivity_close_timer: Duration,
+    /// potentially **interrupting** user code! If the user code needs longer to complete,
+    /// then this value needs to be set accordingly.
+    response_inactivity_close_timeout: Duration,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             retry_policy: RetryPolicy::None,
-            bidi_stream_inactivity_graceful_close_timer: Duration::from_secs(60),
-            response_inactivity_close_timer: Duration::from_secs(60) * 60,
+            bidi_stream_suspension_timeout: Duration::from_secs(60),
+            response_inactivity_close_timeout: Duration::from_secs(60) * 60,
         }
     }
 }
@@ -217,10 +217,6 @@ impl Options {
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
         SER: ServiceEndpointRegistry,
     {
-        assert!(
-            self.bidi_stream_inactivity_graceful_close_timer < self.response_inactivity_close_timer
-        );
-
         let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
         let (resume_input_tx, resume_input_rx) = mpsc::unbounded_channel();
         let (other_input_tx, other_input_rx) = mpsc::unbounded_channel();
@@ -241,9 +237,8 @@ impl Options {
             invocation_tasks: Default::default(),
             retry_timers: Default::default(),
             retry_policy: self.retry_policy,
-            bidi_stream_inactivity_graceful_close_timer: self
-                .bidi_stream_inactivity_graceful_close_timer,
-            response_inactivity_close_timer: self.response_inactivity_close_timer,
+            bidi_stream_suspension_timeout: self.bidi_stream_suspension_timeout,
+            response_inactivity_close_timeout: self.response_inactivity_close_timeout,
             journal_reader,
             _codec: PhantomData::<C>::default(),
         }
@@ -277,8 +272,8 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
 
     retry_policy: RetryPolicy,
-    bidi_stream_inactivity_graceful_close_timer: Duration,
-    response_inactivity_close_timer: Duration,
+    bidi_stream_suspension_timeout: Duration,
+    response_inactivity_close_timeout: Duration,
     journal_reader: JournalReader,
 
     _codec: PhantomData<Codec>,
@@ -311,8 +306,8 @@ where
             mut retry_timers,
             journal_reader,
             retry_policy,
-            bidi_stream_inactivity_graceful_close_timer,
-            response_inactivity_close_timer,
+            bidi_stream_suspension_timeout,
+            response_inactivity_close_timeout,
             ..
         } = self;
 
@@ -355,8 +350,8 @@ where
                                         &journal_reader,
                                         &service_endpoint_registry,
                                         &retry_policy,
-                                        bidi_stream_inactivity_graceful_close_timer,
-                                        response_inactivity_close_timer,
+                                        bidi_stream_suspension_timeout,
+                                        response_inactivity_close_timeout,
                                         &mut invocation_tasks,
                                         &invocation_tasks_tx
                                     )
@@ -386,8 +381,8 @@ where
                                         &journal_reader,
                                         &service_endpoint_registry,
                                         &retry_policy,
-                                        bidi_stream_inactivity_graceful_close_timer,
-                                        response_inactivity_close_timer,
+                                        bidi_stream_suspension_timeout,
+                                        response_inactivity_close_timeout,
                                         &mut invocation_tasks,
                                         &invocation_tasks_tx
                                     ),
@@ -445,8 +440,8 @@ where
                                 &journal_reader,
                                 &service_endpoint_registry,
                                 &retry_policy,
-                                bidi_stream_inactivity_graceful_close_timer,
-                                response_inactivity_close_timer,
+                                bidi_stream_suspension_timeout,
+                                response_inactivity_close_timeout,
                                 &mut invocation_tasks,
                                 &invocation_tasks_tx
                             )
@@ -505,8 +500,8 @@ mod state_machine_coordinator {
         journal_reader: &'a JR,
         service_endpoint_registry: &'a SER,
         default_retry_policy: &'a RetryPolicy,
-        bidi_stream_inactivity_graceful_close_timer: Duration,
-        response_inactivity_close_timer: Duration,
+        bidi_stream_suspension_timeout: Duration,
+        response_inactivity_close_timeout: Duration,
         invocation_tasks: &'a mut JoinSet<()>,
         invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
     }
@@ -516,8 +511,8 @@ mod state_machine_coordinator {
             journal_reader: &'a JR,
             service_endpoint_registry: &'a SER,
             default_retry_policy: &'a RetryPolicy,
-            bidi_stream_inactivity_graceful_close_timer: Duration,
-            response_inactivity_close_timer: Duration,
+            bidi_stream_suspension_timeout: Duration,
+            response_inactivity_close_timeout: Duration,
             invocation_tasks: &'a mut JoinSet<()>,
             invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
         ) -> Self {
@@ -525,8 +520,8 @@ mod state_machine_coordinator {
                 journal_reader,
                 service_endpoint_registry,
                 default_retry_policy,
-                bidi_stream_inactivity_graceful_close_timer,
-                response_inactivity_close_timer,
+                bidi_stream_suspension_timeout,
+                response_inactivity_close_timeout,
                 invocation_tasks,
                 invocation_tasks_tx,
             }
@@ -682,8 +677,8 @@ mod state_machine_coordinator {
                     service_invocation_id.clone(),
                     0,
                     metadata,
-                    start_arguments.bidi_stream_inactivity_graceful_close_timer,
-                    start_arguments.response_inactivity_close_timer,
+                    start_arguments.bidi_stream_suspension_timeout,
+                    start_arguments.response_inactivity_close_timeout,
                     start_arguments.journal_reader.clone(),
                     start_arguments.invocation_tasks_tx.clone(),
                     completions_rx,
