@@ -21,7 +21,7 @@ struct RestateArguments {
         short,
         long = "config-file",
         env = "RESTATE_CONFIG",
-        default_value = "restate.config.yaml",
+        default_value = "restate.yaml",
         value_name = "FILE"
     )]
     config_file: PathBuf,
