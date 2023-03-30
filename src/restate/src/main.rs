@@ -1,10 +1,9 @@
-use std::path::PathBuf;
-
 use app::Application;
 use clap::Parser;
 use config::Configuration;
 use figment::providers::{Env, Format, Serialized, Yaml};
 use figment::Figment;
+use std::path::PathBuf;
 use tracing::{info, warn};
 
 mod app;

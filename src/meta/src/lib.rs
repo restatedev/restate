@@ -2,13 +2,12 @@ mod rest_api;
 mod service;
 mod storage;
 
-use std::net::SocketAddr;
-
 use rest_api::MetaRestEndpoint;
 use serde::{Deserialize, Serialize};
 use service::MetaService;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
+use std::net::SocketAddr;
 use storage::InMemoryMetaStorage;
 use tokio::join;
 use tracing::debug;

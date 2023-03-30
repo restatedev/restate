@@ -1,11 +1,9 @@
 use super::*;
-
-use std::net::SocketAddr;
-
 use crate::HyperServerIngress;
 use common::types::IngressId;
 use serde::{Deserialize, Serialize};
 use service_metadata::MethodDescriptorRegistry;
+use std::net::SocketAddr;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Options {
