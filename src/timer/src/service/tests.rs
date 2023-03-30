@@ -314,6 +314,9 @@ async fn earlier_timers_replace_older_ones() {
     let (shutdown_signal, shutdown_watch) = drain::channel();
     let join_handle = tokio::spawn(service.run(shutdown_watch));
 
+    // give timer service the chance to load the initial timers
+    tokio::task::yield_now().await;
+
     let new_timer = TimerValue::new(0, 5.into());
     timer_reader.add_timer(new_timer);
     timer_handle.add_timer(new_timer).await.unwrap();
