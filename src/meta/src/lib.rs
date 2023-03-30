@@ -11,7 +11,7 @@ use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpoint
 use std::net::SocketAddr;
 use storage::InMemoryMetaStorage;
 use tokio::join;
-use tracing::debug;
+use tracing::{debug, error};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Options {
@@ -108,7 +108,10 @@ impl Meta {
             _ = &mut rest_endpoint_fut => {
                 panic!("Rest endpoint stopped running");
             },
-            _ = &mut service_fut => {
+            res = &mut service_fut => {
+                if let Err(e) = res {
+                     error!("Cannot start meta: {e}");
+                }
                 panic!("Service stopped running");
             },
         }

@@ -105,14 +105,11 @@ where
         self.handle.clone()
     }
 
-    pub async fn run(mut self, drain: drain::Watch) {
+    pub async fn run(mut self, drain: drain::Watch) -> Result<(), MetaError> {
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
 
-        if let Err(e) = self.reload().await {
-            error!("Cannot start meta: {e}");
-            return;
-        }
+        self.reload().await?;
 
         loop {
             tokio::select! {
@@ -128,7 +125,7 @@ where
                 },
                 _ = shutdown.as_mut() => {
                     debug!("Shutdown meta");
-                    return;
+                    return Ok(());
                 },
             }
         }
