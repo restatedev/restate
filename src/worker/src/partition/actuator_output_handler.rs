@@ -4,8 +4,7 @@ use assert2::let_assert;
 use bytes::Bytes;
 use common::types::InvocationId;
 use journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
-use journal::InvokeRequest;
-use journal::{BackgroundInvokeEntry, CompletionResult, Entry, InvokeEntry};
+use journal::{BackgroundInvokeEntry, CompletionResult, Entry, InvokeEntry, InvokeRequest};
 
 use crate::partition::leadership::ActuatorOutput;
 use crate::partition::types::{
@@ -122,7 +121,8 @@ where
                             request
                         });
 
-                    // complete journal entry in case that we could not resolve the service invocation target
+                    // complete journal entry in case that we could not resolve the service
+                    // invocation target
                     let is_completed = if let ResolutionResult::Failure {
                         error_code,
                         ref error,
@@ -142,7 +142,8 @@ where
                         resolution_result: Some(resolution_result),
                     }
                 } else {
-                    // No need to service resolution if the entry was completed by the service endpoint
+                    // No need to service resolution if the entry was completed by the service
+                    // endpoint
                     EnrichedEntryHeader::Invoke {
                         is_completed,
                         resolution_result: None,

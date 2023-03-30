@@ -30,7 +30,8 @@ pub struct Options {
 impl Options {
     /// Instruments the process with logging and tracing.
     ///
-    /// The opentelemetry tracer provider is automatically shut down when this struct is being dropped.
+    /// The opentelemetry tracer provider is automatically shut down when this struct is being
+    /// dropped.
     ///
     /// # Panics
     /// This method will panic if there is already a global subscriber configured. Moreover, it will

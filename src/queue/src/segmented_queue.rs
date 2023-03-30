@@ -31,7 +31,6 @@ use crate::segmented_queue::Segment::{
 ///     assert_eq!(queue.dequeue().await, Some(1));
 ///     assert_eq!(queue.dequeue().await, Some(2));
 /// }
-///
 /// ```
 pub struct SegmentQueue<T> {
     segments: VecDeque<Segment<T>>,
@@ -44,7 +43,8 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     /// creates a new spillable segment queue.
     ///
     /// # Arguments
-    /// * spillable_base_path - the base path to spill the segments there. Please note that the directory is expected to exists and be writable.
+    /// * spillable_base_path - the base path to spill the segments there. Please note that the
+    ///   directory is expected to exists and be writable.
     /// * in_memory_element_threshold - the number of elements to hold in memory, before spilling.
     pub fn new(spillable_base_path: impl AsRef<Path>, in_memory_element_threshold: usize) -> Self {
         assert!(in_memory_element_threshold > 0);
@@ -58,7 +58,8 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
 
     /// enqueues an element of type T to the queue.
     /// Please note, that if the number of elements that are currently enqueued is greater than the
-    /// threshold provided, this operation might take some time to complete, as it has to flush the queue to disk.
+    /// threshold provided, this operation might take some time to complete, as it has to flush the
+    /// queue to disk.
     pub async fn enqueue(&mut self, element: T) {
         if self.enqueue_internal(element) < self.in_memory_element_threshold {
             return;
@@ -88,8 +89,8 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     }
 
     /// dequeues an element of type T that was previously encoded.
-    /// note that this operation might take a while to complete as it might have to load a previously
-    /// serialized element from disk.
+    /// note that this operation might take a while to complete as it might have to load a
+    /// previously serialized element from disk.
     pub async fn dequeue(&mut self) -> Option<T> {
         match self.segments.front_mut() {
             Some(segment) => {
@@ -129,7 +130,6 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     /// segment.
     /// If the last segment isn't mutable or does not exists, it would create one.
     /// This function returns the size of the mutable segment after insertion.
-    ///
     fn enqueue_internal(&mut self, element: T) -> usize {
         match self.segments.back_mut() {
             Some(segment) if segment.is_mutable() => {

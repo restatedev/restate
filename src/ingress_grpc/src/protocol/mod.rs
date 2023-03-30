@@ -97,8 +97,9 @@ impl Protocol {
         // because it gets the ownership of the service, rather than a &self mut borrow.
         //
         // There is no reason to get the ownership, as the service could be reused.
-        // There is also no reason for which Grpc::unary() should invoke twice Service::call() within
-        // its code (you can verify this point by looking inside the Grpc::unary() implementation).
+        // There is also no reason for which Grpc::unary() should invoke twice Service::call()
+        // within its code (you can verify this point by looking inside the Grpc::unary()
+        // implementation).
         //
         // Hence we can safely provide a service which after the first Service::call()
         // is consumed and it cannot be reused anymore.

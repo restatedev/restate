@@ -753,7 +753,8 @@ mod state_machine_coordinator {
                     }
                 } else {
                     // Protocol violation.
-                    // We haven't received any output stream entry, but the invocation task was closed
+                    // We haven't received any output stream entry, but the invocation task was
+                    // closed
                     warn!(
                         restate.sid = %service_invocation_id,
                         "Protocol violation when executing the invocation. \
@@ -871,11 +872,13 @@ mod invocation_state_machine {
     /// and which ones have been already stored and acked by the partition processor.
     /// This information is used to decide when it's safe to retry.
     ///
-    /// Every time the invocation task generates a new entry, the index is notified to this struct with
-    /// [`JournalTracker::notify_entry_sent_to_partition_processor`], and every time the invoker receives
-    /// [`OtherInputCommand::StoredEntryAck`], the index is notified to this struct with [`JournalTracker::notify_acked_entry_from_partition_processor`].
+    /// Every time the invocation task generates a new entry, the index is notified to this struct
+    /// with [`JournalTracker::notify_entry_sent_to_partition_processor`], and every time the
+    /// invoker receives [`OtherInputCommand::StoredEntryAck`], the index is notified to this
+    /// struct with [`JournalTracker::notify_acked_entry_from_partition_processor`].
     ///
-    /// After the retry timer is fired, we can check whether we can retry immediately or not with [`JournalTracker::can_retry`].
+    /// After the retry timer is fired, we can check whether we can retry immediately or not with
+    /// [`JournalTracker::can_retry`].
     #[derive(Default, Debug, Copy, Clone)]
     struct JournalTracker {
         last_acked_entry_from_partition_processor: Option<EntryIndex>,
@@ -1024,7 +1027,8 @@ mod invocation_state_machine {
             }
         }
 
-        /// Returns Some() with the timer for the next retry, otherwise None if retry limit exhausted
+        /// Returns Some() with the timer for the next retry, otherwise None if retry limit
+        /// exhausted
         pub(super) fn handle_task_error(&mut self) -> Option<Duration> {
             debug_assert!(matches!(
                 &self.invocation_state,

@@ -18,9 +18,9 @@ pub struct IngressDispatcherLoopError(#[from] PipeError);
 
 /// This loop is taking care of dispatching responses back to [super::RequestResponseHandler].
 ///
-/// The reason to have a separate loop, rather than a simple channel to communicate back the response,
-/// is that you need multiplexing between different processes, in case the request came to an handler
-/// which lives in a separate process of the partition processor leader.
+/// The reason to have a separate loop, rather than a simple channel to communicate back the
+/// response, is that you need multiplexing between different processes, in case the request came to
+/// an handler which lives in a separate process of the partition processor leader.
 ///
 /// To interact with the loop use [IngressInputSender] and [ResponseRequester].
 pub struct IngressDispatcherLoop {

@@ -300,8 +300,8 @@ where
                         shutdown_signal,
                         shuffle_hint_tx,
                         shuffle_handle,
-                        // The max number of actuator messages should be 2 atm (e.g. RegisterTimer and
-                        // AckStoredEntry)
+                        // The max number of actuator messages should be 2 atm (e.g. RegisterTimer
+                        // and AckStoredEntry)
                         message_buffer: Vec::with_capacity(2),
                     },
                 },

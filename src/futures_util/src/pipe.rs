@@ -34,16 +34,19 @@ pub trait PipeInput<T> {
 /// After sending a message with [`PipeTarget::send`], the state transitions back to _NotReady_,
 /// requiring to invoke [`PipeTarget::poll_ready`] again before the next [`PipeTarget::send`].
 ///
-/// Both [`PipeTarget::poll_ready`] and [`PipeTarget::send`] return [`PipeError`] if the backing target is closed.
+/// Both [`PipeTarget::poll_ready`] and [`PipeTarget::send`] return [`PipeError`] if the backing
+/// target is closed.
 pub trait PipeTarget<U> {
-    /// Returns [`Poll::Ready`] with [`Ok`] if the [`PipeTarget`] is ready to [`Self::send`] messages.
+    /// Returns [`Poll::Ready`] with [`Ok`] if the [`PipeTarget`] is ready to [`Self::send`]
+    /// messages.
     ///
     /// Might be invoked multiple times after it's _Ready_.
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), PipeError>>;
 
     /// Send the message.
     ///
-    /// Panics if the [`PipeTarget`] is _NotReady_, meaning there wasn't a previous successful call to [`PipeTarget::poll_ready`].
+    /// Panics if the [`PipeTarget`] is _NotReady_, meaning there wasn't a previous successful call
+    /// to [`PipeTarget::poll_ready`].
     fn send(self: Pin<&mut Self>, u: U) -> Result<(), PipeError>;
 }
 
@@ -54,15 +57,17 @@ enum PipeState {
     Closed(PipeError),
 }
 
-/// [`Pipe`] is an abstraction to implement piping messages from one [`PipeInput`] to a [`PipeTarget`].
+/// [`Pipe`] is an abstraction to implement piping messages from one [`PipeInput`] to a
+/// [`PipeTarget`].
 ///
 /// You can interact with the [`Pipe`]:
 ///
-/// * Automatically using [`Pipe::run`], with a single future that polls the pipe in a loop until it's closed,
-///   applying a mapper [`FnMut`] to each input message.
+/// * Automatically using [`Pipe::run`], with a single future that polls the pipe in a loop until
+///   it's closed, applying a mapper [`FnMut`] to each input message.
 /// * Manually polling it, using [`Pipe::poll_next_input`] and [`Pipe::write`].
 ///
-/// Use the manual polling API if between receiving and sending you need to mutate some data structure that the [`FnMut`] cannot own.
+/// Use the manual polling API if between receiving and sending you need to mutate some data
+/// structure that the [`FnMut`] cannot own.
 ///
 /// ## Manual polling API
 ///
@@ -138,7 +143,8 @@ where
         })
     }
 
-    /// Panics if the state of the [`Pipe`] is _NotReady_, meaning there wasn't a previous successful call to [`Self::poll_next_input`].
+    /// Panics if the state of the [`Pipe`] is _NotReady_, meaning there wasn't a previous
+    /// successful call to [`Self::poll_next_input`].
     pub fn write(self: Pin<&mut Self>, u: U) -> Result<(), PipeError> {
         let this = self.project();
         let target = this.pipe_target;

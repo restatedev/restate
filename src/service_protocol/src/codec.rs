@@ -9,8 +9,8 @@ use super::pb::protocol;
 
 /// This macro generates the pattern matching with arms per entry.
 /// For each entry it first executes `Message#decode` and then `try_into()`.
-/// It expects that for each `{...}Entry` there is a valid `TryFrom<{...}Message>` implementation with `Error = &'static str`.
-/// These implementations are available in [`super::pb_into`].
+/// It expects that for each `{...}Entry` there is a valid `TryFrom<{...}Message>` implementation
+/// with `Error = &'static str`. These implementations are available in [`super::pb_into`].
 macro_rules! match_decode {
     ($ty:expr, $buf:expr, { $($variant:ident),* }) => {
         match $ty {

@@ -280,7 +280,9 @@ impl From<MessageHeader> for u64 {
 #[cfg(test)]
 mod tests {
 
-    use super::{MessageKind::*, MessageType::*, *};
+    use super::MessageKind::*;
+    use super::MessageType::*;
+    use super::*;
 
     macro_rules! roundtrip_test {
         ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr) => {

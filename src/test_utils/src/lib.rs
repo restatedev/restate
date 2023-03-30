@@ -4,7 +4,8 @@
 //! use test_utils::{assert, test, assert_vec, assert_eq, assert_ne};
 //! ```
 //!
-//! Note: You cannot import them with a glob import, as the compiler won't be able to distinguish our imports and the stdlib imports.
+//! Note: You cannot import them with a glob import, as the compiler won't be able to distinguish
+//! our imports and the stdlib imports.
 
 /// Macro for assert Vec properties. Examples:
 ///
@@ -24,7 +25,6 @@
 /// assert_vec!(v => contains_once |el: &u16| *el == 1_u16);
 /// assert_vec!(v => contains 1 |el: &u16| *el == 1_u16);
 /// ```
-///
 #[macro_export]
 macro_rules! assert_vec {
     ($vec:expr => is_empty) => {

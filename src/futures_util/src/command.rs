@@ -32,16 +32,17 @@ impl<T> CommandResponseSender<T> {
 
 pub type CommandResponseReceiver<T> = oneshot::Receiver<T>;
 
-/// A [`Command`] is a type modelling the interaction between two async components (e.g. two [`EventLoop`]s).
-/// You should use this type when the command's processor needs a way to reply back to the command's issuer.
+/// A [`Command`] is a type modelling the interaction between two async components (e.g. two
+/// [`EventLoop`]s). You should use this type when the command's processor needs a way to reply back
+/// to the command's issuer.
 ///
 /// A command lifecycle works as follows:
 /// 1. Component **A** creates a new [`Command`] with [`Command::prepare`], providing the payload.
 /// 2. Component **A** sends the command instance through channel to Component **B**.
-/// 3. (Optional) Component **A** awaits for the command response using the provided [`CommandResponseReceiver`].
-/// 4. Component **B** reads the command and unpacks it with [`Command::into_inner`].
-/// 5. Component **B** sends the response back through the provided [`CommandResponseSender`].
-/// 6. (Optional) Component **A** process the command response.
+/// 3. (Optional) Component **A** awaits for the command response using the provided
+/// [`CommandResponseReceiver`]. 4. Component **B** reads the command and unpacks it with
+/// [`Command::into_inner`]. 5. Component **B** sends the response back through the provided
+/// [`CommandResponseSender`]. 6. (Optional) Component **A** process the command response.
 ///
 /// If the command issuer does not need an ack back from the command processor,
 /// It can create the command by using [`Command::fire_and_forget`].

@@ -24,8 +24,7 @@ use service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
 use tokio::sync::mpsc;
-use tokio::task::JoinError;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 use tracing::trace;
 
 use super::{InvokeInputJournal, JournalMetadata, JournalReader};
@@ -277,7 +276,8 @@ where
 
     // --- Loops
 
-    /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
+    /// This loop concurrently pushes journal entries and waits for the response headers and end of
+    /// replay.
     async fn wait_response_and_replay_end_loop<JournalStream>(
         &mut self,
         http_stream_tx: Sender,
@@ -291,8 +291,8 @@ where
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.
-        // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
-        // spawned somewhere else (perhaps in the connection pool).
+        // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a
+        // task spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
         let mut req_fut = AbortOnDrop(tokio::task::spawn(client.request(req)));
         let mut journal_stream = journal_stream.fuse();
@@ -341,7 +341,8 @@ where
         TerminalLoopState::Continue((http_stream_tx_res, http_stream_rx_res.unwrap()))
     }
 
-    /// This loop concurrently reads the http response stream and journal completions from the invoker.
+    /// This loop concurrently reads the http response stream and journal completions from the
+    /// invoker.
     async fn bidi_stream_loop(
         &mut self,
         mut http_stream_tx: Sender,

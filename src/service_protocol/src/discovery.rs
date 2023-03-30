@@ -58,8 +58,7 @@ mod pb {
             "/dev.restate.service.discovery.rs"
         ));
     }
-    pub use generated_structs::ProtocolMode;
-    pub use generated_structs::ServiceDiscoveryRequest;
+    pub use generated_structs::{ProtocolMode, ServiceDiscoveryRequest};
 
     // We manually define the protobuf struct for the response here because prost-build
     // won't parse extensions in ServiceDiscoveryResponse.files
@@ -69,8 +68,9 @@ mod pb {
         // This field is different from what is defined in the protobuf schema.
         // google.protobuf.FileDescriptorSet files = 1;
         //
-        // Because nested messages are serialized as byte arrays, we simply load the raw byte arrays
-        // and parse them below using DescriptorPool::decode() with prost-reflect, which can deserialize extensions.
+        // Because nested messages are serialized as byte arrays, we simply load the raw byte
+        // arrays and parse them below using DescriptorPool::decode() with prost-reflect,
+        // which can deserialize extensions.
         #[prost(bytes, tag = "1")]
         pub files: Bytes,
         #[prost(string, repeated, tag = "2")]
@@ -237,7 +237,8 @@ impl ServiceDiscovery {
         let descriptor_pool = DescriptorPool::decode(response.files)?;
 
         // Find the Restate extensions in the DescriptorPool.
-        // If they're not available, the descriptor pool is incomplete/doesn't contain the restate dependencies.
+        // If they're not available, the descriptor pool is incomplete/doesn't contain the restate
+        // dependencies.
         let restate_service_type_extension = descriptor_pool
             .get_extension_by_name(SERVICE_TYPE_EXT)
             .ok_or(ServiceDiscoveryError::BadOrMissingRestateDependencyInDescriptor)?;

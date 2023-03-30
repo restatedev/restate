@@ -1,5 +1,4 @@
-use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -8,8 +7,8 @@ use bytes::Bytes;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceInstanceType {
     Keyed {
-        /// The `key_structure` of the key field. Every method in a keyed service MUST have the same key type,
-        /// hence the key structure is the same.
+        /// The `key_structure` of the key field. Every method in a keyed service MUST have the
+        /// same key type, hence the key structure is the same.
         key_structure: KeyStructure,
         /// Each method request message might represent the key with a different field number. E.g.
         ///
@@ -283,7 +282,8 @@ mod impls {
         Ok(result_buf.freeze())
     }
 
-    /// This behaves similarly to [decode_varint], but without parsing the number, but simply returning the bytes composing it.
+    /// This behaves similarly to [decode_varint], but without parsing the number, but simply
+    /// returning the bytes composing it.
     fn slice_varint_bytes(buf: &mut Bytes) -> Result<Bytes, Error> {
         let len = buf.len();
         if len == 0 {

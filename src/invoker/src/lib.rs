@@ -104,7 +104,8 @@ pub enum Kind {
     },
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,
-    /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
+    /// This is sent when the invoker exhausted all its attempts to make progress on the specific
+    /// invocation.
     Failed {
         error_code: i32,
         error: InvokerError,

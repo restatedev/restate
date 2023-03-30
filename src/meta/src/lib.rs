@@ -30,7 +30,8 @@ pub struct Options {
         default_value_t = 1000
     )]
     // We cannot name it concurrency_limit because clap won't like it,
-    // because otherwise there will be two different concurrency_limit fields in the parent options struct.
+    // because otherwise there will be two different concurrency_limit fields in the parent options
+    // struct.
     meta_concurrency_limit: usize,
 }
 

@@ -15,8 +15,7 @@ pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
 use futures_util::command::*;
 use opentelemetry::Context;
 pub use options::Options;
-pub use server::HyperServerIngress;
-pub use server::StartSignal;
+pub use server::{HyperServerIngress, StartSignal};
 use tokio::sync::mpsc;
 use tonic::Status;
 

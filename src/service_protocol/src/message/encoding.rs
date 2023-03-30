@@ -35,8 +35,8 @@ impl Encoder {
 
         // Note:
         // prost::EncodeError can be triggered only by a buffer smaller than required,
-        // but because we create the buffer a couple of lines above using the size computed by prost,
-        // this can happen only if there is a very bad bug in prost.
+        // but because we create the buffer a couple of lines above using the size computed by
+        // prost, this can happen only if there is a very bad bug in prost.
         encode_msg(&msg, &mut buf).expect(
             "Encoding messages should be infallible, \
             this error indicates a bug in the invoker code. \

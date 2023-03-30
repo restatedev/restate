@@ -270,7 +270,8 @@ where
                         ResponseResult::Failure(error_code, error.to_string().into()),
                     );
 
-                    // TODO: We probably only need to send the response if we haven't send a response before
+                    // TODO: We probably only need to send the response if we haven't send a
+                    // response before
                     self.send_message(outbox_message, effects);
                 }
 
@@ -415,7 +416,8 @@ where
                             ),
                     }
                 } else {
-                    // no action needed for an invoke entry that has been completed by the service endpoint
+                    // no action needed for an invoke entry that has been completed by the service
+                    // endpoint
                 }
             }
             EnrichedEntryHeader::BackgroundInvoke {

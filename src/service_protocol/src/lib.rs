@@ -17,8 +17,8 @@ pub mod pb {
     }
 }
 
-/// This module implements conversions back and forth from proto messages to [`journal::Entry`] model.
-/// These are used by the [`codec::ProtobufRawEntryCodec`].
+/// This module implements conversions back and forth from proto messages to [`journal::Entry`]
+/// model. These are used by the [`codec::ProtobufRawEntryCodec`].
 #[cfg(feature = "codec")]
 mod pb_into {
     use journal::*;
