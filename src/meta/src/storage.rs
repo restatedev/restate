@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use base64::Engine;
 use futures::future::BoxFuture;
@@ -154,41 +155,28 @@ impl MetaStorage for FileMetaStorage {
         >,
     > {
         let root_path = self.root_path.clone();
-        async move {
+        FutureExt::boxed(async move {
             // Try to create a dir, in case it doesn't exist
             let _ = tokio::fs::create_dir(&root_path).await;
 
-            let read_dir = tokio::fs::read_dir(root_path).await?;
+            // Find all the metadata files in the root path directory, then sort them by modified date
+            let mut read_dir = tokio::fs::read_dir(root_path).await?;
+            let mut metadata_files = vec![];
+            while let Some(dir_entry) = read_dir.next_entry().await? {
+                if dir_entry
+                    .path()
+                    .extension()
+                    .and_then(|os_str| os_str.to_str())
+                    == Some(JSON_EXTENSION)
+                {
+                    metadata_files.push((dir_entry.path(), dir_entry.metadata().await?.modified()?))
+                }
+            }
+            metadata_files.sort_by(|a, b| SystemTime::cmp(&a.1, &b.1));
 
-            Ok(StreamExt::boxed(stream::try_unfold(
-                read_dir,
-                |mut read_dir| async move {
-                    // Loop until it finds the first .json file
-                    let entry = loop {
-                        let entry = read_dir.next_entry().await?;
-                        match &entry {
-                            None => {
-                                // No more entries in this dir
-                                return Ok(None);
-                            }
-                            Some(dir_entry)
-                                if dir_entry
-                                    .path()
-                                    .extension()
-                                    .and_then(|os_str| os_str.to_str())
-                                    == Some(JSON_EXTENSION) =>
-                            {
-                                // Found a .json file
-                                break entry;
-                            }
-                            _ => {
-                                // Continue looping
-                            }
-                        }
-                    };
-
-                    // Entry is the json metadata descriptor
-                    let metadata_file_path = entry.unwrap().path();
+            let result_stream =
+                stream::iter(metadata_files).then(|(metadata_file_path, _)| async move {
+                    // Metadata_file_path is the json metadata descriptor
                     trace!("Reloading metadata file {}", metadata_file_path.display());
                     let metadata_bytes = tokio::fs::read(&metadata_file_path).await?;
                     let metadata_file: MetadataFile = serde_json::from_slice(&metadata_bytes)?;
@@ -206,18 +194,15 @@ impl MetaStorage for FileMetaStorage {
                         tokio::fs::read(&descriptor_pool_file).await?.as_ref(),
                     )?;
 
-                    Ok(Some((
-                        (
-                            metadata_file.endpoint_metadata,
-                            metadata_file.exposed_services,
-                            descriptor_pool,
-                        ),
-                        read_dir,
-                    )))
-                },
-            )))
-        }
-        .boxed()
+                    Ok((
+                        metadata_file.endpoint_metadata,
+                        metadata_file.exposed_services,
+                        descriptor_pool,
+                    ))
+                });
+
+            Ok(StreamExt::boxed(result_stream))
+        })
     }
 }
 
