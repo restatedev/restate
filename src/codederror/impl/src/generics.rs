@@ -1,3 +1,6 @@
+//! Some parts copied from https://github.com/dtolnay/thiserror/blob/39aaeb00ff270a49e3c254d7b38b10e934d3c7a5/impl/src/generics.rs
+//! License Apache-2.0 or MIT
+
 use proc_macro2::TokenStream;
 use quote::ToTokens;
 use std::collections::btree_map::Entry;

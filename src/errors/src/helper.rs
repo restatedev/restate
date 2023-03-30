@@ -1,5 +1,12 @@
-/// This macro generates const declaration of Code for each defined code.
-/// If the feature `include_doc` is enabled, this will load the code description in the binaries.
+/// This macro generates const declaration of [`codederror::Code`] for each provided code name. E.g.:
+///
+/// ```rust,ignore
+/// const RT0001_DESCRIPTION: Option<&'static str> = Some(include_str!("error_codes/RT0001.md"));
+/// pub const RT0001: Code = Code::new("RT0001", "For more details, look at the docs with https://restate.dev/doc/errors/RT0001", RT0001_DESCRIPTION);
+/// ```
+///
+/// If the feature `include_doc` is enabled, this will load the code description in the binaries,
+/// otherwise errors won't have an hardcoded description.
 macro_rules! declare_restate_error_codes {
     ($($code:ident),* $(,)?) => {
         $(

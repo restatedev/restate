@@ -87,7 +87,28 @@ use std::ops::Deref;
 
 pub use codederror_impl::*;
 
-// TODO doc
+/// This macro provides constructors for error codes, to be used in the [`CodedError`] derive macro.
+/// See the module documentation for more details.
+///
+/// ```rust
+/// use codederror::{Code, error_code};
+///
+/// // Define an error code
+/// pub const E0001: Code = error_code!("E0001");
+///
+/// // Define an error code with an help string
+/// pub const E0002: Code = error_code!(
+///     "E0002",
+///     help="Look E0002 in the documentation."
+/// );
+///
+/// // Define an error code with an help string and a long description
+/// pub const E0003: Code = error_code!(
+///     "E0003",
+///     help="Ask developers about error code E0003.",
+///     description="Don't know much about it to be fair, but I think by changing the configuration entry 'stop_E0003: true' you won't encounter this issue anymore."
+///  );
+/// ```
 #[macro_export]
 macro_rules! error_code {
     ($code:literal) => {
@@ -107,7 +128,7 @@ macro_rules! error_code {
 /// This trait defines a coded error, that is an error with an error code.
 ///
 /// This trait provides the method [`decorate`](`CodedError::decorate`),
-/// which returns a struct implementing [`fmt::Display`], printing error message, cause, code and hints.
+/// which returns a struct implementing [`fmt::Display`], printing error message, cause and code.
 pub trait CodedError: std::error::Error + Sized {
     #[doc(hidden)]
     fn code(&self) -> Option<&'static Code>;
@@ -134,13 +155,24 @@ pub trait CodedError: std::error::Error + Sized {
 /// ```rust
 /// # fn print(e: impl codederror::CodedError) {
 /// println!("{}", e.decorate());
-/// // [RT-0001] configuration error: this config error happened
+/// // [E0002] user 1 error: some other error
 /// //
-/// // Hints:
-/// // * Fix the config
-/// // * Please contact the developers!
+/// // Look E0002 in the documentation
+///
+/// // Printing in alternate mode will print the description as well
+/// println!("{:#}", e.decorate());
+/// // [E0002] user 1 error: some other error
 /// //
-/// // For more details, please open http://mydocs.com/RT-0001
+/// // Don't know much about it to be fair
+/// //
+/// // Look E0002 in the documentation
+///
+/// // You can also use the Debug format
+/// println!("{:#?}", e.decorate());
+/// // CodedError {
+/// //     code: "E002",
+/// //     inner: user 1 error: some other error,
+/// // }
 /// # }
 /// ```
 pub struct DecoratedError<'a, T> {

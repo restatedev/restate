@@ -17,7 +17,7 @@ pub const E0002: Code = error_code!(
 );
 pub const E0003: Code = error_code!(
     "E0003",
-    help = "I know a friend which knows a friend that knows about E0003",
+    help = "I know a friend who knows a friend that knows about E0003",
     description = "long description 3"
 );
 
@@ -131,6 +131,6 @@ fn top_level_enum_code() {
 
     assert_eq!(
         format!("{}", e.decorate()),
-        r"[E0003] io error when accessing to myfile.txt: Kind(NotFound). I know a friend which knows a friend that knows about E0003"
+        r"[E0003] io error when accessing to myfile.txt: Kind(NotFound). I know a friend who knows a friend that knows about E0003"
     );
 }

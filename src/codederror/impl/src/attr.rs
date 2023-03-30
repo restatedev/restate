@@ -1,5 +1,5 @@
-//! Some parts copied from https://github.com/dtolnay/thiserror/blob/master/impl/src/attr.rs
-//! License APL 2.0 or MIT
+//! Some parts copied from https://github.com/dtolnay/thiserror/blob/39aaeb00ff270a49e3c254d7b38b10e934d3c7a5/impl/src/attr.rs
+//! License Apache-2.0 or MIT
 
 use proc_macro2::Ident;
 use syn::parse::{Nothing, ParseStream};
