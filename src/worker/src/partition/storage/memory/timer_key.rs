@@ -1,6 +1,7 @@
-use common::types::{EntryIndex, ServiceId};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
+
+use common::types::{EntryIndex, ServiceId};
 
 #[derive(Debug, Eq, Clone, PartialEq)]
 pub struct TimerKey {

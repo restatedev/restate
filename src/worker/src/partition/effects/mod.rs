@@ -1,19 +1,21 @@
+use std::collections::HashSet;
+use std::vec::Drain;
+
 use bytes::Bytes;
 use common::types::{
     EntryIndex, IngressId, InvocationResponse, MessageIndex, ResponseResult, ServiceId,
     ServiceInvocation, ServiceInvocationId,
 };
 use journal::Completion;
-use std::collections::HashSet;
-use std::vec::Drain;
 
 mod interpreter;
 
-use crate::partition::types::EnrichedRawEntry;
 pub(crate) use interpreter::{
     ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
     StateStorageError,
 };
+
+use crate::partition::types::EnrichedRawEntry;
 
 #[derive(Debug, Clone)]
 pub(crate) enum OutboxMessage {

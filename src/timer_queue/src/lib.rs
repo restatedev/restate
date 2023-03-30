@@ -81,10 +81,10 @@ impl<T> FromIterator<(SystemTime, T)> for TimerQueue<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use std::ops::Add;
     use std::time::{Duration, Instant, SystemTime};
+
+    use super::*;
 
     #[tokio::test]
     async fn test_simple_timer() {

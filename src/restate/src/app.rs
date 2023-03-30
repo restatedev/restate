@@ -1,5 +1,6 @@
-use meta::Meta;
 use std::fmt::Debug;
+
+use meta::Meta;
 use worker::Worker;
 
 #[derive(Debug, clap::Parser)]

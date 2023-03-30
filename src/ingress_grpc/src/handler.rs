@@ -1,6 +1,3 @@
-use super::protocol::{BoxBody, Protocol};
-use super::*;
-
 use std::sync::Arc;
 use std::task::Poll;
 
@@ -15,6 +12,9 @@ use tokio::sync::Semaphore;
 use tower::{BoxError, Service};
 use tracing::{debug, info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+use super::protocol::{BoxBody, Protocol};
+use super::*;
 
 #[derive(Clone)]
 pub struct Handler<InvocationFactory, MethodRegistry> {

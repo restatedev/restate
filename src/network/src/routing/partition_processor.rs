@@ -1,13 +1,15 @@
-use crate::routing::send_to_shuffle;
-use crate::{ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress};
-use common::types::PeerId;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
+
+use common::types::PeerId;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tracing::trace;
+
+use crate::routing::send_to_shuffle;
+use crate::{ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress};
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum PartitionProcessorRouterError<I> {

@@ -4,14 +4,15 @@ mod endpoints;
 mod error;
 mod state;
 
+use std::net::SocketAddr;
+use std::sync::Arc;
+
 use axum::error_handling::HandleErrorLayer;
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::Router;
 use futures::FutureExt;
 use hyper::Server;
-use std::net::SocketAddr;
-use std::sync::Arc;
 use tower::ServiceBuilder;
 use tracing::{debug, warn};
 

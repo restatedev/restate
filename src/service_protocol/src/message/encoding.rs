@@ -1,11 +1,11 @@
-use super::header::UnknownMessageType;
-use super::*;
-
 use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
 use journal::raw::RawEntryHeader;
+
+use super::header::UnknownMessageType;
+use super::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EncodingError {
@@ -261,10 +261,10 @@ fn raw_header_to_message_type(entry_header: &RawEntryHeader) -> MessageType {
 #[cfg(test)]
 mod tests {
 
-    use super::*;
-
-    use crate::pb;
     use journal::raw::RawEntryHeader;
+
+    use super::*;
+    use crate::pb;
 
     #[test]
     fn fill_decoder_with_several_messages() {

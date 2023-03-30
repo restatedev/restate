@@ -2,14 +2,16 @@ mod rest_api;
 mod service;
 mod storage;
 
-use crate::storage::InMemoryMetaStorage;
+use std::net::SocketAddr;
+
 use rest_api::MetaRestEndpoint;
 use service::MetaService;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
-use std::net::SocketAddr;
 use tokio::join;
 use tracing::debug;
+
+use crate::storage::InMemoryMetaStorage;
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]

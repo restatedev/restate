@@ -1,10 +1,11 @@
+use std::collections::HashSet;
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use common::types::{EntryIndex, InvocationId, ServiceInvocationId};
 use invoker::InvokerError;
 use journal::raw::{Header, RawEntry, RawEntryHeader};
 use journal::EntryType;
-use std::collections::HashSet;
 
 #[derive(Debug)]
 pub(crate) struct InvokerEffect {

@@ -1,5 +1,3 @@
-use super::*;
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -12,6 +10,8 @@ use tower::make::Shared;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
+
+use super::*;
 
 pub type StartSignal = oneshot::Receiver<SocketAddr>;
 
@@ -103,8 +103,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use std::net::SocketAddr;
 
     use bytes::Bytes;
@@ -115,11 +113,11 @@ mod tests {
     use hyper::Body;
     use prost::Message;
     use serde_json::json;
+    use test_utils::{assert_eq, test};
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
-    use test_utils::{assert_eq, test};
-
+    use super::*;
     use crate::mocks::*;
 
     // Could be shipped by the common crate with feature "mocks" enabled

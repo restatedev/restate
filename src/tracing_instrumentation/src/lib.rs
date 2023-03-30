@@ -1,5 +1,6 @@
-use opentelemetry::trace::TraceError;
 use std::fmt::Display;
+
+use opentelemetry::trace::TraceError;
 use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;

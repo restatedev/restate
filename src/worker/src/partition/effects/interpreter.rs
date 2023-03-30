@@ -1,6 +1,5 @@
-use crate::partition::effects::{Effect, Effects, OutboxMessage};
-use crate::partition::types::{EnrichedEntryHeader, EnrichedRawEntry};
-use crate::partition::InvocationStatus;
+use std::marker::PhantomData;
+
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
@@ -12,8 +11,11 @@ use futures::future::BoxFuture;
 use invoker::InvokeInputJournal;
 use journal::raw::{RawEntryCodec, RawEntryCodecError, RawEntryHeader};
 use journal::{Completion, CompletionResult};
-use std::marker::PhantomData;
 use tracing::trace;
+
+use crate::partition::effects::{Effect, Effects, OutboxMessage};
+use crate::partition::types::{EnrichedEntryHeader, EnrichedRawEntry};
+use crate::partition::InvocationStatus;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {

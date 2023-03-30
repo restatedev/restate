@@ -1,3 +1,15 @@
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
+
+use common::partitioner::HashPartitioner;
+use common::traits::KeyedMessage;
+use common::types::{PeerId, PeerTarget};
+use common::utils::GenericError;
+use tokio::sync::mpsc;
+use tracing::{debug, trace};
+
 use crate::routing::consensus::ConsensusForwarder;
 use crate::routing::ingress::IngressRouter;
 use crate::routing::partition_processor::PartitionProcessorRouter;
@@ -6,16 +18,6 @@ use crate::{
     NetworkCommand, PartitionTable, PartitionTableError, TargetConsensusOrIngress,
     TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress, UnboundedNetworkHandle,
 };
-use common::partitioner::HashPartitioner;
-use common::traits::KeyedMessage;
-use common::types::{PeerId, PeerTarget};
-use common::utils::GenericError;
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
-use tracing::{debug, trace};
 
 mod consensus;
 mod ingress;

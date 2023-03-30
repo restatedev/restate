@@ -1,7 +1,8 @@
+use std::collections::HashMap;
+
 use common::retry_policy::RetryPolicy;
 use http::header::{HeaderName, HeaderValue};
 use http::Uri;
-use std::collections::HashMap;
 
 mod descriptors_registry;
 mod endpoint_registry;

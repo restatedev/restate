@@ -1,10 +1,11 @@
-use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use ingress_grpc::{
     HyperServerIngress, IngressDispatcherLoop, IngressDispatcherLoopError, IngressOutput,
 };
 use service_metadata::InMemoryMethodDescriptorRegistry;
 use tokio::select;
 use tokio::sync::mpsc;
+
+use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 
 type ExternalClientIngress =
     HyperServerIngress<InMemoryMethodDescriptorRegistry, DefaultServiceInvocationFactory>;

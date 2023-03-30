@@ -21,9 +21,9 @@ pub mod pb {
 /// These are used by the [`codec::ProtobufRawEntryCodec`].
 #[cfg(feature = "codec")]
 mod pb_into {
-    use super::pb::protocol::*;
-
     use journal::*;
+
+    use super::pb::protocol::*;
 
     impl TryFrom<PollInputStreamEntryMessage> for Entry {
         type Error = &'static str;

@@ -1,5 +1,3 @@
-use super::*;
-
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::{cmp, panic};
@@ -14,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
 
+use super::*;
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use crate::invoker::state_machine_coordinator::StartInvocationTaskArguments;
 
@@ -421,15 +420,15 @@ where
 }
 
 mod state_machine_coordinator {
-    use super::invocation_state_machine::InvocationStateMachine;
-    use super::*;
     use std::time::SystemTime;
-
-    use crate::invocation_task::{InvocationTask, InvocationTaskError};
 
     use service_metadata::{ProtocolType, ServiceEndpointRegistry};
     use tonic::Code;
     use tracing::warn;
+
+    use super::invocation_state_machine::InvocationStateMachine;
+    use super::*;
+    use crate::invocation_task::{InvocationTask, InvocationTaskError};
 
     #[derive(Debug, thiserror::Error)]
     #[error("Cannot find service {0} in the service endpoint registry")]
@@ -850,7 +849,6 @@ mod state_machine_coordinator {
 }
 
 mod invocation_state_machine {
-    use super::*;
     use std::mem;
     use std::time::Duration;
 
@@ -859,6 +857,8 @@ mod invocation_state_machine {
     use journal::Completion;
     use tokio::sync::mpsc;
     use tokio::task::AbortHandle;
+
+    use super::*;
 
     /// Component encapsulating the business logic of the invocation state machine
     #[derive(Debug)]

@@ -1,8 +1,10 @@
-use super::*;
-use crate::HyperServerIngress;
+use std::net::SocketAddr;
+
 use common::types::IngressId;
 use service_metadata::MethodDescriptorRegistry;
-use std::net::SocketAddr;
+
+use super::*;
+use crate::HyperServerIngress;
 
 #[derive(Debug, clap::Parser)]
 #[group(skip)]

@@ -1,5 +1,6 @@
-use rocksdb::WriteBatch;
 use std::sync::Arc;
+
+use rocksdb::WriteBatch;
 use storage_api::TableKind::{Deduplication, Inbox, Outbox, PartitionStateMachine, State, Timers};
 use storage_api::{Storage, StorageDeserializer, StorageReader, TableKind, WriteTransaction};
 

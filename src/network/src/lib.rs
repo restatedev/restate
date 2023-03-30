@@ -1,6 +1,7 @@
-use common::types::{PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::future::Future;
+
+use common::types::{PartitionKey, PeerId};
 use tokio::sync::mpsc;
 
 mod routing;

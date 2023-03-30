@@ -1,10 +1,11 @@
-use common::types::PeerId;
-use futures::ready;
-use pin_project::pin_project;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
+use common::types::PeerId;
+use futures::ready;
+use pin_project::pin_project;
 use tokio::sync::mpsc;
 
 #[derive(Debug)]

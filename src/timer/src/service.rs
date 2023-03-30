@@ -1,10 +1,12 @@
-use crate::{Input, Output, TimerHandle};
-use common::types::PartitionLeaderEpoch;
 use std::collections::HashMap;
 use std::time::SystemTime;
+
+use common::types::PartitionLeaderEpoch;
 use timer_queue::TimerQueue;
 use tokio::sync::mpsc;
 use tracing::debug;
+
+use crate::{Input, Output, TimerHandle};
 
 #[derive(Debug)]
 pub struct Service<T> {

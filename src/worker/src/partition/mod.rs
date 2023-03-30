@@ -1,9 +1,10 @@
-use common::types::{EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
-use futures::{stream, StreamExt};
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+
+use common::types::{EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
+use futures::{stream, StreamExt};
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
@@ -16,6 +17,9 @@ mod state_machine;
 pub mod storage;
 mod types;
 
+pub(crate) use state_machine::Command;
+pub(super) use types::Timer;
+
 pub(super) use crate::partition::ack::{
     AckResponse, AckTarget, AckableCommand, IngressAckResponse, ShuffleAckResponse,
 };
@@ -25,8 +29,6 @@ use crate::partition::leadership::LeadershipState;
 use crate::partition::storage::InMemoryPartitionStorage;
 use crate::util::IdentitySender;
 use crate::TimerHandle;
-pub(crate) use state_machine::Command;
-pub(super) use types::Timer;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>

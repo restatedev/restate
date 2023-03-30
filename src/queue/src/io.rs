@@ -1,9 +1,10 @@
-use bincode::{DefaultOptions, Options};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::collections::VecDeque;
 use std::io::Cursor;
 use std::path::PathBuf;
+
+use bincode::{DefaultOptions, Options};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 const ENCODE_ERR_MSG: &str =

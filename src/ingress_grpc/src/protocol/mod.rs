@@ -2,8 +2,6 @@ mod connect_adapter;
 mod tonic_adapter;
 mod tower_utils;
 
-use super::*;
-
 use std::future::Future;
 
 use bytes::Bytes;
@@ -18,6 +16,8 @@ use tonic::server::Grpc;
 use tonic::Status;
 use tower::{BoxError, Layer, Service};
 use tower_utils::service_fn_once;
+
+use super::*;
 
 pub(crate) enum Protocol {
     // Use tonic (gRPC or gRPC-Web)
@@ -162,15 +162,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    use crate::mocks::*;
     use futures::future::{ok, Ready};
     use http::header::CONTENT_TYPE;
     use http::{Method, Request, StatusCode};
     use hyper::body::HttpBody;
     use serde_json::json;
     use test_utils::{assert_eq, test};
+
+    use super::*;
+    use crate::mocks::*;
 
     fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<IngressResult> {
         let person = pb::GreetingRequest::decode(ingress_req.1).unwrap().person;

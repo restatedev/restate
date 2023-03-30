@@ -1,7 +1,8 @@
 extern crate core;
 
-use common::types::PartitionLeaderEpoch;
 use std::time::SystemTime;
+
+use common::types::PartitionLeaderEpoch;
 use tokio::sync::mpsc;
 
 mod service;

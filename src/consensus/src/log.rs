@@ -1,7 +1,8 @@
-use crate::sender::{StateMachineOwnedPermit, StateMachineSender};
-use crate::Command;
 use std::collections::VecDeque;
 use std::mem;
+
+use crate::sender::{StateMachineOwnedPermit, StateMachineSender};
+use crate::Command;
 
 #[derive(Debug)]
 pub(super) struct CommandLog<Cmd> {

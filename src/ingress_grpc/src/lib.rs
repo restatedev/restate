@@ -4,11 +4,6 @@ mod options;
 mod protocol;
 mod server;
 
-pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
-pub use options::Options;
-pub use server::HyperServerIngress;
-pub use server::StartSignal;
-
 use bytes::Bytes;
 use bytestring::ByteString;
 use common::types::{
@@ -16,8 +11,12 @@ use common::types::{
     ServiceInvocationResponseSink, SpanRelation,
 };
 use common::utils::GenericError;
+pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
 use futures_util::command::*;
 use opentelemetry::Context;
+pub use options::Options;
+pub use server::HyperServerIngress;
+pub use server::StartSignal;
 use tokio::sync::mpsc;
 use tonic::Status;
 

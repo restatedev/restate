@@ -1,5 +1,3 @@
-use super::*;
-
 use std::collections::HashMap;
 use std::future::poll_fn;
 
@@ -11,6 +9,8 @@ use futures_util::pipe::{
 use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
+
+use super::*;
 
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
@@ -175,10 +175,10 @@ impl DispatcherLoopHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use common::types::{IngressId, ServiceInvocationResponseSink, SpanRelation};
     use test_utils::test;
+
+    use super::*;
 
     #[test(tokio::test)]
     async fn test_closed_handler() {

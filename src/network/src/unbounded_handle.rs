@@ -1,6 +1,7 @@
-use crate::{NetworkCommand, NetworkHandle, NetworkNotRunning, ShuffleSender};
 use common::types::PeerId;
 use tokio::sync::mpsc;
+
+use crate::{NetworkCommand, NetworkHandle, NetworkNotRunning, ShuffleSender};
 
 #[derive(Debug, Clone)]
 pub struct UnboundedNetworkHandle<ShuffleIn, ShuffleOut> {

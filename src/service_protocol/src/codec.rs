@@ -1,11 +1,11 @@
-use super::pb::protocol;
-
 use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use journal::raw::*;
 use journal::{CompletionResult, Entry, EntryType};
 use prost::Message;
+
+use super::pb::protocol;
 
 /// This macro generates the pattern matching with arms per entry.
 /// For each entry it first executes `Message#decode` and then `try_into()`.
@@ -100,10 +100,10 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use bytes::Bytes;
     use journal::EntryResult;
+
+    use super::*;
 
     #[test]
     fn complete_invoke() {

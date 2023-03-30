@@ -151,10 +151,10 @@ impl<T: Send, R: Send> From<Command<T, R>> for (T, CommandResponseSender<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use test_utils::{assert_eq, test};
     use tokio::sync::mpsc;
+
+    use super::*;
 
     #[test(tokio::test)]
     async fn test_back_and_forth() {

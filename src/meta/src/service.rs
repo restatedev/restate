@@ -1,5 +1,3 @@
-use super::storage::{MetaStorage, MetaStorageError};
-
 use std::collections::HashMap;
 
 use common::retry_policy::RetryPolicy;
@@ -14,6 +12,8 @@ use service_metadata::{
 use service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
 use tracing::{debug, info};
+
+use super::storage::{MetaStorage, MetaStorageError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetaError {

@@ -1,5 +1,6 @@
-use crate::partition;
 use common::types::{AckKind, IngressId, MessageIndex, PeerId};
+
+use crate::partition;
 
 /// Envelope for [`partition::Command`] that might require an explicit acknowledge.
 #[derive(Debug)]

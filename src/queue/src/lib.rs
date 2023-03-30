@@ -5,8 +5,9 @@ pub use segmented_queue::SegmentQueue;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[tokio::test]
     async fn simple_example() {

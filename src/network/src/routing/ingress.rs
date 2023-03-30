@@ -1,17 +1,19 @@
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
+
+use common::traits::KeyedMessage;
+use common::types::{PeerId, PeerTarget};
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
+use tracing::trace;
+
 use crate::routing::{lookup_target_peer, send_to_shuffle};
 use crate::{
     ConsensusOrShuffleTarget, PartitionTable, PartitionTableError, TargetConsensusOrShuffle,
     TargetShuffle,
 };
-use common::traits::KeyedMessage;
-use common::types::{PeerId, PeerTarget};
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::SendError;
-use tracing::trace;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum IngressRouterError<C> {

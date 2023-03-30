@@ -1,5 +1,6 @@
-use crate::types::PartitionKey;
 use std::hash::{Hash, Hasher};
+
+use crate::types::PartitionKey;
 
 /// Computes the [`PartitionKey`] based on xxh3 hashing.
 pub struct HashPartitioner;

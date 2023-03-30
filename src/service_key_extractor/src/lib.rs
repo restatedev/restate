@@ -1,8 +1,9 @@
-use arc_swap::ArcSwap;
-use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use bytes::Bytes;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceInstanceType {
@@ -102,12 +103,12 @@ pub enum Error {
 }
 
 mod impls {
-    use super::*;
-
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use prost::encoding::WireType::*;
     use prost::encoding::{decode_key, decode_varint, skip_field, DecodeContext, WireType};
     use uuid::Uuid;
+
+    use super::*;
 
     fn generate_random_key() -> Bytes {
         Bytes::copy_from_slice(Uuid::new_v4().as_bytes())
@@ -323,14 +324,15 @@ mod impls {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
+        use std::collections::BTreeMap;
+        use std::fmt::Write;
 
         use prost::encoding::{
             encode_key, encode_varint, encoded_len_varint, key_len, DecodeContext,
         };
         use prost::{length_delimiter_len, DecodeError, Message};
-        use std::collections::BTreeMap;
-        use std::fmt::Write;
+
+        use super::*;
 
         #[derive(Debug)]
         struct MockMessage {

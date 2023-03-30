@@ -1,12 +1,14 @@
-use crate::log::CommandLog;
-use crate::sender::StateMachineSender;
+use std::collections::HashMap;
+use std::fmt::Debug;
+
 use common::types::{LeaderEpoch, PeerId, PeerTarget};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use std::collections::HashMap;
-use std::fmt::Debug;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
+
+use crate::log::CommandLog;
+use crate::sender::StateMachineSender;
 
 mod log;
 mod sender;
@@ -161,9 +163,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{Command, Consensus};
     use test_utils::test;
     use tokio::sync::mpsc;
+
+    use crate::{Command, Consensus};
 
     #[test(tokio::test)]
     async fn unbounded_log() {

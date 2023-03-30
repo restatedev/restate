@@ -1,9 +1,10 @@
+use std::fmt;
+use std::fmt::Display;
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::SpanContext;
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::fmt::Display;
 use uuid::Uuid;
 
 /// Identifying a member of a raft group

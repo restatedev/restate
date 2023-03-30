@@ -3,13 +3,12 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 
-use pin_project::pin_project;
-use tokio::sync::mpsc;
-
 pub use input::*;
 pub use multi_input::*;
 pub use multi_target::*;
+use pin_project::pin_project;
 pub use target::*;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Copy, Clone, PartialEq, thiserror::Error)]
 pub enum PipeError {
@@ -460,9 +459,9 @@ mod multi_target {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use futures::future;
+
+    use super::*;
 
     #[tokio::test]
     async fn pipe_bounded_to_bounded() {

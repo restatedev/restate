@@ -1,14 +1,16 @@
-use crate::partition::effects::OutboxMessage;
-use crate::partition::shuffle::state_machine::StateMachine;
+use std::time::Duration;
+
 use common::types::{
     AckKind, IngressId, InvocationResponse, MessageIndex, PeerId, ResponseResult,
     ServiceInvocation, ServiceInvocationId,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
+
+use crate::partition::effects::OutboxMessage;
+use crate::partition::shuffle::state_machine::StateMachine;
 
 #[derive(Debug)]
 pub(crate) struct NewOutboxMessage {
@@ -236,17 +238,19 @@ where
 }
 
 mod state_machine {
-    use crate::partition::effects::OutboxMessage;
-    use crate::partition::shuffle::{NewOutboxMessage, ShuffleInput, ShuffleOutput};
-    use common::types::{AckKind, MessageIndex, PeerId};
-    use pin_project::pin_project;
     use std::future::Future;
     use std::marker::PhantomData;
     use std::pin::Pin;
     use std::time::Duration;
+
+    use common::types::{AckKind, MessageIndex, PeerId};
+    use pin_project::pin_project;
     use tokio::sync::mpsc;
     use tokio::time::Sleep;
     use tracing::{debug, trace};
+
+    use crate::partition::effects::OutboxMessage;
+    use crate::partition::shuffle::{NewOutboxMessage, ShuffleInput, ShuffleOutput};
 
     #[pin_project(project = StateProj)]
     enum State<ReadFuture, SendFuture> {

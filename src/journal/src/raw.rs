@@ -1,5 +1,6 @@
-use super::*;
 use common::utils::GenericError;
+
+use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawEntryHeader {

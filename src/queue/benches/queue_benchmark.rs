@@ -1,7 +1,8 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use queue::SegmentQueue;
 use std::path;
 use std::time::Duration;
+
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use queue::SegmentQueue;
 use tempfile::tempdir;
 use tokio::runtime::Builder;
 

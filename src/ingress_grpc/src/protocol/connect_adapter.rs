@@ -1,4 +1,5 @@
 use bytes::Buf;
+use content_type::ConnectContentType;
 use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use http::request::Parts;
 use http::{Method, Request, Response, StatusCode};
@@ -7,8 +8,6 @@ use prost_reflect::{DynamicMessage, MethodDescriptor};
 use serde::Serialize;
 use tonic::{Code, Status};
 use tracing::warn;
-
-use content_type::ConnectContentType;
 
 pub(super) async fn decode_request(
     request: Request<Body>,
@@ -117,13 +116,13 @@ fn is_get_allowed(desc: &MethodDescriptor) -> bool {
 }
 
 pub(super) mod content_type {
-    use super::*;
-
     use bytes::{Buf, BufMut, BytesMut};
     use http::HeaderValue;
     use prost::Message;
     use prost_reflect::MessageDescriptor;
     use tower::BoxError;
+
+    use super::*;
 
     const APPLICATION_JSON: &str = "application/json";
     const APPLICATION_PROTO: &str = "application/proto";
@@ -193,12 +192,12 @@ pub(super) mod content_type {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
-        use crate::mocks::greeter_get_count_method_descriptor;
-
         use bytes::Bytes;
         use http::HeaderValue;
         use test_utils::assert_eq;
+
+        use super::*;
+        use crate::mocks::greeter_get_count_method_descriptor;
 
         #[test]
         fn resolve_json() {
@@ -359,15 +358,15 @@ pub(super) mod status {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    use crate::mocks::{greeter_greet_method_descriptor, pb};
     use bytes::Bytes;
     use http::StatusCode;
     use http_body::Body;
     use prost::Message;
     use serde_json::json;
     use test_utils::{assert_eq, test};
+
+    use super::*;
+    use crate::mocks::{greeter_greet_method_descriptor, pb};
 
     #[test(tokio::test)]
     async fn decode_greet_json() {

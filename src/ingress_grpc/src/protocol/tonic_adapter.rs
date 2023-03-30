@@ -1,5 +1,3 @@
-use super::*;
-
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{ready, Poll};
@@ -9,6 +7,8 @@ use pin_project::pin_project;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 use tonic::server::UnaryService;
 use tonic::Status;
+
+use super::*;
 
 // --- UnaryService adapter that can execute call only once
 

@@ -1,11 +1,5 @@
 extern crate core;
 
-use crate::ingress_integration::ExternalClientIngressRunner;
-use crate::network_integration::FixedPartitionTable;
-use crate::partition::storage::memory::InMemoryJournalReader;
-use crate::partition::storage::InMemoryPartitionStorage;
-use crate::partition::Timer;
-use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use common::retry_policy::RetryPolicy;
 use common::types::{IngressId, PeerId, PeerTarget};
 use consensus::Consensus;
@@ -22,6 +16,13 @@ use tokio::join;
 use tokio::sync::mpsc;
 use tracing::debug;
 use util::IdentitySender;
+
+use crate::ingress_integration::ExternalClientIngressRunner;
+use crate::network_integration::FixedPartitionTable;
+use crate::partition::storage::memory::InMemoryJournalReader;
+use crate::partition::storage::InMemoryPartitionStorage;
+use crate::partition::Timer;
+use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 
 mod ingress_integration;
 mod network_integration;

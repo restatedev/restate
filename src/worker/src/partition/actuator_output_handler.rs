@@ -1,3 +1,12 @@
+use std::marker::PhantomData;
+
+use assert2::let_assert;
+use bytes::Bytes;
+use common::types::InvocationId;
+use journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
+use journal::InvokeRequest;
+use journal::{BackgroundInvokeEntry, CompletionResult, Entry, InvokeEntry};
+
 use crate::partition::leadership::ActuatorOutput;
 use crate::partition::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, ResolutionResult,
@@ -6,13 +15,6 @@ use crate::partition::types::{
 use crate::partition::{AckableCommand, Command};
 use crate::util::IdentitySender;
 use crate::TimerOutput;
-use assert2::let_assert;
-use bytes::Bytes;
-use common::types::InvocationId;
-use journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
-use journal::InvokeRequest;
-use journal::{BackgroundInvokeEntry, CompletionResult, Entry, InvokeEntry};
-use std::marker::PhantomData;
 
 /// Responsible for enriching and then proposing [`ActuatorOutput`].
 pub(super) struct ActuatorOutputHandler<KeyExtractor, Codec> {

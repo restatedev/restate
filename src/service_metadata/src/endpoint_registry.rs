@@ -1,7 +1,9 @@
-use crate::EndpointMetadata;
-use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+
+use crate::EndpointMetadata;
 
 /// Trait for resolving the service endpoint information
 pub trait ServiceEndpointRegistry {

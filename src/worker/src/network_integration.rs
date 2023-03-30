@@ -1,11 +1,12 @@
 //! This module contains the glue code for converting the various messages into their
 //! required formats when routing them through the network.
 
-use crate::partition;
-use crate::partition::shuffle;
 use common::types::PartitionKey;
 use futures::future::{ok, Ready};
 use network::{PartitionTable, PartitionTableError};
+
+use crate::partition;
+use crate::partition::shuffle;
 
 pub(super) type Network = network::Network<
     partition::AckableCommand,
@@ -44,12 +45,13 @@ impl PartitionTable for FixedPartitionTable {
 }
 
 mod ingress_integration {
-    use crate::partition;
-    use crate::partition::shuffle;
     use bytes::Bytes;
     use common::traits::KeyedMessage;
     use common::types::{AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation};
     use network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
+
+    use crate::partition;
+    use crate::partition::shuffle;
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
         for ingress_grpc::IngressOutput
@@ -126,13 +128,14 @@ mod ingress_integration {
 }
 
 mod shuffle_integration {
-    use crate::partition;
-    use crate::partition::shuffle;
     use bytes::Bytes;
     use common::traits::KeyedMessage;
     use common::types::{MessageIndex, PeerId, ResponseResult};
     use ingress_grpc::{IngressError, IngressResponseMessage};
     use network::{ConsensusOrIngressTarget, TargetConsensusOrIngress};
+
+    use crate::partition;
+    use crate::partition::shuffle;
 
     #[derive(Debug)]
     pub(crate) struct ShuffleToConsensus {
@@ -239,10 +242,11 @@ mod shuffle_integration {
 }
 
 mod partition_integration {
-    use crate::partition;
-    use crate::partition::shuffle;
     use common::types::PeerId;
     use network::{ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress};
+
+    use crate::partition;
+    use crate::partition::shuffle;
 
     impl TargetShuffleOrIngress<partition::ShuffleAckResponse, partition::IngressAckResponse>
         for partition::AckResponse
