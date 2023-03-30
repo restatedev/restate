@@ -46,10 +46,10 @@ clean:
     cargo clean
 
 fmt:
-    cargo fmt --all
+    cargo +nightly fmt --all
 
 check-fmt:
-    cargo fmt --all -- --check
+    cargo +nightly fmt --all -- --check
 
 clippy: (_target-installed _target)
     cargo clippy {{ _target-option }} --all-targets -- -D warnings
