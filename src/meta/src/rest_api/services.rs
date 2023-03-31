@@ -39,7 +39,7 @@ pub async fn discover_service_endpoint<S: ServiceEndpointRegistry, M>(
                 .map_err(|e| MetaApiError::InvalidField("additional_headers", e.to_string()))?;
             Ok((header_name, header_value))
         })
-        .collect::<Result<HashMap<HeaderName, HeaderValue>, MetaApiError>>()?;
+        .collect::<Result<HashMap<_, _>, MetaApiError>>()?;
 
     let registration_result = state.meta_handle().register(payload.uri, headers).await;
     Ok(registration_result

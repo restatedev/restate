@@ -2,15 +2,15 @@ mod rest_api;
 mod service;
 mod storage;
 
+use crate::storage::FileMetaStorage;
 use rest_api::MetaRestEndpoint;
 use serde::{Deserialize, Serialize};
 use service::MetaService;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use std::net::SocketAddr;
-use storage::InMemoryMetaStorage;
 use tokio::join;
-use tracing::debug;
+use tracing::{debug, error};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Options {
@@ -18,14 +18,18 @@ pub struct Options {
     rest_address: SocketAddr,
 
     /// Concurrency limit for the Meta Operational REST APIs
-    meta_concurrency_limit: usize,
+    rest_concurrency_limit: usize,
+
+    /// Root path for Meta storage
+    storage_path: String,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             rest_address: "0.0.0.0:8081".parse().unwrap(),
-            meta_concurrency_limit: 1000,
+            rest_concurrency_limit: 1000,
+            storage_path: "target/meta/".to_string(),
         }
     }
 }
@@ -39,7 +43,7 @@ impl Options {
             key_extractors_registry.clone(),
             method_descriptors_registry.clone(),
             service_endpoint_registry.clone(),
-            InMemoryMetaStorage::default(),
+            FileMetaStorage::new(self.storage_path.into()),
             Default::default(),
         );
 
@@ -47,7 +51,7 @@ impl Options {
             key_extractors_registry,
             method_descriptors_registry,
             service_endpoint_registry,
-            rest_endpoint: MetaRestEndpoint::new(self.rest_address, self.meta_concurrency_limit),
+            rest_endpoint: MetaRestEndpoint::new(self.rest_address, self.rest_concurrency_limit),
             service,
         }
     }
@@ -59,7 +63,7 @@ pub struct Meta {
     service_endpoint_registry: InMemoryServiceEndpointRegistry,
 
     rest_endpoint: MetaRestEndpoint,
-    service: MetaService<InMemoryMetaStorage>,
+    service: MetaService<FileMetaStorage>,
 }
 
 impl Meta {
@@ -105,7 +109,10 @@ impl Meta {
             _ = &mut rest_endpoint_fut => {
                 panic!("Rest endpoint stopped running");
             },
-            _ = &mut service_fut => {
+            res = &mut service_fut => {
+                if let Err(e) = res {
+                     error!("Cannot start meta: {e}");
+                }
                 panic!("Service stopped running");
             },
         }

@@ -9,10 +9,15 @@ publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = []
+serde = ["dep:serde", "dep:serde_with", "common/serde", "service_key_extractor/serde"]
+
 [dependencies]
 arc-swap = { workspace = true }
 common = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_with = { workspace = true, optional = true }
+service_key_extractor = { workspace = true }
 http = "0.2.9"
 prost-reflect = { workspace = true }
-serde = { workspace = true }
-serde_with = "2.2"

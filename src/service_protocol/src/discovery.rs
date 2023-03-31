@@ -96,7 +96,7 @@ impl ServiceDiscovery {
 }
 
 #[derive(Debug)]
-pub struct DiscoveredMetadata {
+pub struct DiscoveredEndpointMetadata {
     pub services: Vec<(String, ServiceInstanceType)>,
     pub descriptor_pool: DescriptorPool,
     pub protocol_type: ProtocolType,
@@ -175,7 +175,7 @@ impl ServiceDiscovery {
         &self,
         uri: &Uri,
         additional_headers: &HashMap<HeaderName, HeaderValue>,
-    ) -> Result<DiscoveredMetadata, ServiceDiscoveryError> {
+    ) -> Result<DiscoveredEndpointMetadata, ServiceDiscoveryError> {
         let client = Client::builder().http2_only(true).build::<_, Body>(
             HttpsConnectorBuilder::new()
                 .with_native_roots()
@@ -275,7 +275,7 @@ impl ServiceDiscovery {
             services.push((svc_name.to_string(), service_type))
         }
 
-        Ok(DiscoveredMetadata {
+        Ok(DiscoveredEndpointMetadata {
             services,
             descriptor_pool,
             protocol_type: match pb::ProtocolMode::from_i32(response.protocol_mode) {

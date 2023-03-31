@@ -1499,6 +1499,7 @@ name = "meta"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.21.0",
  "common",
  "drain",
  "futures",
@@ -2454,6 +2455,7 @@ dependencies = [
  "bytes",
  "common",
  "prost",
+ "serde",
  "thiserror",
  "uuid",
 ]
@@ -2468,6 +2470,7 @@ dependencies = [
  "prost-reflect",
  "serde",
  "serde_with",
+ "service_key_extractor",
 ]
 
 [[package]]

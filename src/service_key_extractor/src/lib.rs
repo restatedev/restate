@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ServiceInstanceType {
     Keyed {
         /// The `key_structure` of the key field. Every method in a keyed service MUST have the same key type,
@@ -29,6 +30,7 @@ pub enum ServiceInstanceType {
 
 /// This structure provides the directives to the key parser to parse nested messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum KeyStructure {
     Scalar,
     Nested(BTreeMap<u32, KeyStructure>),
