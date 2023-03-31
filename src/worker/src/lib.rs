@@ -5,7 +5,6 @@ use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::memory::InMemoryJournalReader;
 use crate::partition::storage::InMemoryPartitionStorage;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
-use common::retry_policy::RetryPolicy;
 use common::types::{IngressId, PeerId, PeerTarget};
 use consensus::Consensus;
 use futures::stream::FuturesUnordered;
@@ -46,6 +45,7 @@ pub struct Options {
     timers: timer::Options,
     storage_rocksdb: storage_rocksdb::Options,
     ingress_grpc: ingress_grpc::Options,
+    invoker: invoker::Options,
 }
 
 impl Default for Options {
@@ -55,6 +55,7 @@ impl Default for Options {
             timers: Default::default(),
             storage_rocksdb: Default::default(),
             ingress_grpc: Default::default(),
+            invoker: Default::default(),
         }
     }
 }
@@ -131,11 +132,9 @@ impl Worker {
 
         let in_memory_journal_reader = InMemoryJournalReader::new();
 
-        let invoker = Invoker::new(
-            RetryPolicy::None,
-            in_memory_journal_reader.clone(),
-            service_endpoint_registry,
-        );
+        let invoker = opts
+            .invoker
+            .build(in_memory_journal_reader.clone(), service_endpoint_registry);
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {

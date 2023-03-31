@@ -2,6 +2,7 @@ use super::*;
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::time::Duration;
 use std::{cmp, panic};
 
 use common::types::PartitionLeaderEpoch;
@@ -166,6 +167,84 @@ enum OtherInputCommand {
     RegisterPartition(mpsc::Sender<OutputEffect>),
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct Options {
+    retry_policy: RetryPolicy,
+
+    /// This timer is used to gracefully shutdown a bidirectional stream
+    /// after inactivity on both request and response streams.
+    ///
+    /// When this timer is fired, the invocation will be closed gracefully
+    /// by closing the request stream, triggering a suspension on the sdk,
+    /// in case the sdk is waiting on a completion. This won't affect the response stream.
+    suspension_timeout: Duration,
+
+    /// This timer is used to forcefully shutdown an invocation when only the response stream is open.
+    ///
+    /// In other words:
+    ///
+    /// * When protocol mode is [`service_metadata::ProtocolType::RequestResponse`],
+    ///   this timer will start as soon as the replay of the journal is completed.
+    /// * When protocol mode is [`service_metadata::ProtocolType::BidiStream`],
+    ///   this timer will start after the request stream has been closed.
+    ///   Check [`bidi_stream_inactivity_graceful_close_timer`] to configure a timer on the request stream.
+    ///
+    /// When this timer is fired, the response stream will be aborted,
+    /// potentially **interrupting** user code! If the user code needs longer to complete,
+    /// then this value needs to be set accordingly.
+    response_abort_timeout: Duration,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            retry_policy: RetryPolicy::None,
+            suspension_timeout: Duration::from_secs(60),
+            response_abort_timeout: Duration::from_secs(60) * 60,
+        }
+    }
+}
+
+impl Options {
+    pub fn build<C, JR, JS, SER>(
+        self,
+        journal_reader: JR,
+        service_endpoint_registry: SER,
+    ) -> Invoker<C, JR, SER>
+    where
+        C: RawEntryCodec,
+        JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+        JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+        SER: ServiceEndpointRegistry,
+    {
+        let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
+        let (resume_input_tx, resume_input_rx) = mpsc::unbounded_channel();
+        let (other_input_tx, other_input_rx) = mpsc::unbounded_channel();
+
+        let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
+
+        Invoker {
+            invoke_input_rx,
+            resume_input_rx,
+            other_input_rx,
+            state_machine_coordinator: Default::default(),
+            invoke_input_tx,
+            resume_input_tx,
+            other_input_tx,
+            service_endpoint_registry,
+            invocation_tasks_tx,
+            invocation_tasks_rx,
+            invocation_tasks: Default::default(),
+            retry_timers: Default::default(),
+            retry_policy: self.retry_policy,
+            suspension_timeout: self.suspension_timeout,
+            response_abort_timeout: self.response_abort_timeout,
+            journal_reader,
+            _codec: PhantomData::<C>::default(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
@@ -193,47 +272,11 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
 
     retry_policy: RetryPolicy,
+    suspension_timeout: Duration,
+    response_abort_timeout: Duration,
     journal_reader: JournalReader,
 
     _codec: PhantomData<Codec>,
-}
-
-impl<C, JR, JS, SER> Invoker<C, JR, SER>
-where
-    C: RawEntryCodec,
-    JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-    JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
-    SER: ServiceEndpointRegistry,
-{
-    pub fn new(
-        retry_policy: RetryPolicy,
-        journal_reader: JR,
-        service_endpoint_registry: SER,
-    ) -> Self {
-        let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
-        let (resume_input_tx, resume_input_rx) = mpsc::unbounded_channel();
-        let (other_input_tx, other_input_rx) = mpsc::unbounded_channel();
-
-        let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
-
-        Invoker {
-            invoke_input_rx,
-            resume_input_rx,
-            other_input_rx,
-            state_machine_coordinator: Default::default(),
-            invoke_input_tx,
-            resume_input_tx,
-            other_input_tx,
-            service_endpoint_registry,
-            invocation_tasks_tx,
-            invocation_tasks_rx,
-            invocation_tasks: Default::default(),
-            retry_timers: Default::default(),
-            retry_policy,
-            journal_reader,
-            _codec: PhantomData::<C>::default(),
-        }
-    }
 }
 
 impl<C, JR, JS, SER> Invoker<C, JR, SER>
@@ -263,6 +306,8 @@ where
             mut retry_timers,
             journal_reader,
             retry_policy,
+            suspension_timeout,
+            response_abort_timeout,
             ..
         } = self;
 
@@ -305,6 +350,8 @@ where
                                         &journal_reader,
                                         &service_endpoint_registry,
                                         &retry_policy,
+                                        suspension_timeout,
+                                        response_abort_timeout,
                                         &mut invocation_tasks,
                                         &invocation_tasks_tx
                                     )
@@ -334,6 +381,8 @@ where
                                         &journal_reader,
                                         &service_endpoint_registry,
                                         &retry_policy,
+                                        suspension_timeout,
+                                        response_abort_timeout,
                                         &mut invocation_tasks,
                                         &invocation_tasks_tx
                                     ),
@@ -391,6 +440,8 @@ where
                                 &journal_reader,
                                 &service_endpoint_registry,
                                 &retry_policy,
+                                suspension_timeout,
+                                response_abort_timeout,
                                 &mut invocation_tasks,
                                 &invocation_tasks_tx
                             )
@@ -428,6 +479,7 @@ mod state_machine_coordinator {
 
     use crate::invocation_task::{InvocationTask, InvocationTaskError};
 
+    use errors::warn_it;
     use service_metadata::{ProtocolType, ServiceEndpointRegistry};
     use tonic::Code;
     use tracing::warn;
@@ -449,6 +501,8 @@ mod state_machine_coordinator {
         journal_reader: &'a JR,
         service_endpoint_registry: &'a SER,
         default_retry_policy: &'a RetryPolicy,
+        suspension_timeout: Duration,
+        response_abort_timeout: Duration,
         invocation_tasks: &'a mut JoinSet<()>,
         invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
     }
@@ -458,6 +512,8 @@ mod state_machine_coordinator {
             journal_reader: &'a JR,
             service_endpoint_registry: &'a SER,
             default_retry_policy: &'a RetryPolicy,
+            suspension_timeout: Duration,
+            response_abort_timeout: Duration,
             invocation_tasks: &'a mut JoinSet<()>,
             invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
         ) -> Self {
@@ -465,6 +521,8 @@ mod state_machine_coordinator {
                 journal_reader,
                 service_endpoint_registry,
                 default_retry_policy,
+                suspension_timeout,
+                response_abort_timeout,
                 invocation_tasks,
                 invocation_tasks_tx,
             }
@@ -620,6 +678,8 @@ mod state_machine_coordinator {
                     service_invocation_id.clone(),
                     0,
                     metadata,
+                    start_arguments.suspension_timeout,
+                    start_arguments.response_abort_timeout,
                     start_arguments.journal_reader.clone(),
                     start_arguments.invocation_tasks_tx.clone(),
                     completions_rx,
@@ -790,10 +850,10 @@ mod state_machine_coordinator {
                 .invocation_state_machines
                 .remove(&service_invocation_id)
             {
-                warn!(
+                warn_it!(
+                    error,
                     restate.sid = %service_invocation_id,
-                    "Error when executing the invocation: {}",
-                    error
+                    "Error when executing the invocation",
                 );
 
                 match sm.handle_task_error() {

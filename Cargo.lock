@@ -1287,8 +1287,10 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "bytes-utils",
+ "codederror",
  "common",
  "drain",
+ "errors",
  "futures",
  "h2",
  "hyper",
@@ -1298,6 +1300,7 @@ dependencies = [
  "opentelemetry-http",
  "paste",
  "prost",
+ "serde",
  "service_metadata",
  "service_protocol",
  "test_utils",

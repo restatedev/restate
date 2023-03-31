@@ -4,7 +4,6 @@
 mod mocks;
 
 use bytes::Bytes;
-use common::retry_policy::RetryPolicy;
 use common::types::ServiceInvocationId;
 use hyper::Uri;
 use invoker::{Invoker, Kind, OutputEffect, UnboundedInvokerInputSender};
@@ -138,11 +137,12 @@ async fn bidi_stream() {
     );
 
     // Start invoker
-    let remote_invoker = Invoker::<ProtobufRawEntryCodec, _, _>::new(
-        RetryPolicy::default(),
-        journal_reader.clone(),
-        service_endpoint_registry,
-    );
+    let options = invoker::Options::default();
+    let remote_invoker: Invoker<
+        ProtobufRawEntryCodec,
+        InMemoryJournalStorage,
+        InMemoryServiceEndpointRegistry,
+    > = options.build(journal_reader.clone(), service_endpoint_registry);
 
     // Build the partition processor simulator
     let mut partition_processor_simulator =
