@@ -12,7 +12,7 @@ publish = false
 [dependencies]
 bytes = { workspace = true }
 bytes-utils = { workspace = true }
-common = { workspace = true }
+common = { workspace = true, features = ["serde"] }
 drain = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
