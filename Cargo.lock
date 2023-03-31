@@ -2753,12 +2753,12 @@ name = "timer"
 version = "0.1.0"
 dependencies = [
  "ahash",
- "clap 4.1.6",
  "common",
  "drain",
  "futures-util",
  "pin-project",
  "priority-queue",
+ "serde",
  "test_utils",
  "thiserror",
  "tokio",
