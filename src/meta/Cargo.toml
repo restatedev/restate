@@ -10,9 +10,6 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# Config
-clap = { workspace = true }
-
 # Async
 drain = { workspace = true }
 futures = { workspace = true }
