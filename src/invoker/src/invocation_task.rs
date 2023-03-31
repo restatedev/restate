@@ -138,8 +138,8 @@ pub(crate) struct InvocationTask<JR> {
     partition: PartitionLeaderEpoch,
     service_invocation_id: ServiceInvocationId,
     endpoint_metadata: EndpointMetadata,
-    bidi_stream_suspension_timeout: Duration,
-    response_inactivity_close_timeout: Duration,
+    suspension_timeout: Duration,
+    response_abort_timeout: Duration,
 
     next_journal_index: EntryIndex,
 
@@ -203,8 +203,8 @@ where
         sid: ServiceInvocationId,
         protocol_version: u16,
         endpoint_metadata: EndpointMetadata,
-        bidi_stream_suspension_timeout: Duration,
-        response_inactivity_close_timeout: Duration,
+        suspension_timeout: Duration,
+        response_abort_timeout: Duration,
         journal_reader: JR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
@@ -213,8 +213,8 @@ where
             partition,
             service_invocation_id: sid,
             endpoint_metadata,
-            bidi_stream_suspension_timeout,
-            response_inactivity_close_timeout,
+            suspension_timeout,
+            response_abort_timeout,
             next_journal_index: 0,
             journal_reader,
             invoker_tx,
@@ -430,7 +430,7 @@ where
                         }
                     }
                 },
-                _ = tokio::time::sleep(self.bidi_stream_suspension_timeout) => {
+                _ = tokio::time::sleep(self.suspension_timeout) => {
                     debug!("Inactivity detected, going to suspend invocation");
                     // Just return. This will drop the invoker_rx and http_stream_tx,
                     // closing the request stream and the invoker input channel.
@@ -457,7 +457,7 @@ where
                         }
                     }
                 },
-                _ = tokio::time::sleep(self.response_inactivity_close_timeout) => {
+                _ = tokio::time::sleep(self.response_abort_timeout) => {
                     warn!("Inactivity detected, going to close invocation");
                     return TerminalLoopState::Failed(InvocationTaskError::ResponseTimeout)
                 },
