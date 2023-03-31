@@ -9,7 +9,9 @@ use hyper::Uri;
 use prost_reflect::DescriptorPool;
 use serde::{Deserialize, Serialize};
 use service_metadata::{EndpointMetadata, ServiceMetadata};
+use tokio::fs::File;
 use tokio::io;
+use tokio::io::AsyncWriteExt;
 use tracing::{info, trace, warn};
 
 #[derive(Debug, thiserror::Error)]
@@ -130,12 +132,17 @@ impl MetaStorage for FileMetaStorage {
             remove_if_exists(&metadata_file_path).await?;
             remove_if_exists(&descriptor_file_path).await?;
 
-            tokio::fs::write(
-                metadata_file_path,
-                serde_json::to_vec_pretty(&metadata_file_struct)?,
-            )
-            .await?;
-            tokio::fs::write(descriptor_file_path, descriptor_pool.encode_to_vec()).await?;
+            let metadata_buf = serde_json::to_vec_pretty(&metadata_file_struct)?;
+            let descriptor_pool_buf = descriptor_pool.encode_to_vec();
+
+            let mut metadata_file = File::create(metadata_file_path).await?;
+            let mut descriptor_file = File::create(descriptor_file_path).await?;
+
+            futures::try_join!(
+                metadata_file.write_all(&metadata_buf),
+                descriptor_file.write_all(&descriptor_pool_buf)
+            )?;
+            futures::try_join!(metadata_file.sync_all(), descriptor_file.sync_all())?;
 
             Ok(())
         }
