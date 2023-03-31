@@ -11,21 +11,44 @@ pub trait Clock {
     fn sleep_until(&mut self, wake_up_time: MillisSinceEpoch) -> Option<Self::SleepFuture>;
 }
 
-pub struct TokioClock;
+#[derive(Debug)]
+pub struct TokioClock {
+    last_time_measurement: MillisSinceEpoch,
+}
+
+impl Default for TokioClock {
+    fn default() -> Self {
+        Self {
+            last_time_measurement: MillisSinceEpoch::UNIX_EPOCH,
+        }
+    }
+}
 
 impl Clock for TokioClock {
     type SleepFuture = tokio::time::Sleep;
 
     fn sleep_until(&mut self, wake_up_time: MillisSinceEpoch) -> Option<Self::SleepFuture> {
-        let now = SystemTime::now();
-
-        if let Ok(duration) = SystemTime::UNIX_EPOCH
-            .add(Duration::from_millis(wake_up_time.as_u64()))
-            .duration_since(now)
-        {
-            Some(tokio::time::sleep(duration))
-        } else {
+        if self.last_time_measurement >= wake_up_time {
             None
+        } else {
+            let now = SystemTime::now();
+            self.last_time_measurement = MillisSinceEpoch::new(
+                u64::try_from(
+                    now.duration_since(SystemTime::UNIX_EPOCH)
+                        .expect("Unix epoch is smaller than now.")
+                        .as_millis(),
+                )
+                .expect("Time since epoch as millis must fit in u64."),
+            );
+
+            if let Ok(duration) = SystemTime::UNIX_EPOCH
+                .add(Duration::from_millis(wake_up_time.as_u64()))
+                .duration_since(now)
+            {
+                Some(tokio::time::sleep(duration))
+            } else {
+                None
+            }
         }
     }
 }

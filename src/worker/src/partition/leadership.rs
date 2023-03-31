@@ -291,7 +291,7 @@ where
             let timer = follower_state.timer_service_options.build(
                 timer_tx,
                 timer_reader,
-                timer::TokioClock,
+                timer::TokioClock::default(),
             );
             let timer_handle = timer.create_timer_handle();
 

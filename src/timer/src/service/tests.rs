@@ -119,7 +119,12 @@ impl TimerKey for TimerValue {
 #[test(tokio::test)]
 async fn no_timer_is_dropped() {
     let (output_tx, mut output_rx) = mpsc::channel(1);
-    let service = TimerService::new(None, output_tx, MockTimerReader::new(), TokioClock);
+    let service = TimerService::new(
+        None,
+        output_tx,
+        MockTimerReader::new(),
+        TokioClock::default(),
+    );
     let timer_handle = service.create_timer_handle();
 
     let (shutdown_signal, shutdown_watch) = drain::channel();
@@ -153,7 +158,12 @@ async fn no_timer_is_dropped() {
 async fn timers_fire_in_wake_up_order() {
     let num_timers = 10;
     let (output_tx, mut output_rx) = mpsc::channel(num_timers as usize);
-    let service = TimerService::new(None, output_tx, MockTimerReader::new(), TokioClock);
+    let service = TimerService::new(
+        None,
+        output_tx,
+        MockTimerReader::new(),
+        TokioClock::default(),
+    );
 
     let timer_handle = service.create_timer_handle();
     let (shutdown_signal, shutdown_watch) = drain::channel();
