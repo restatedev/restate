@@ -479,6 +479,7 @@ mod state_machine_coordinator {
 
     use crate::invocation_task::{InvocationTask, InvocationTaskError};
 
+    use errors::warn_it;
     use service_metadata::{ProtocolType, ServiceEndpointRegistry};
     use tonic::Code;
     use tracing::warn;
@@ -849,10 +850,10 @@ mod state_machine_coordinator {
                 .invocation_state_machines
                 .remove(&service_invocation_id)
             {
-                warn!(
+                warn_it!(
+                    error,
                     restate.sid = %service_invocation_id,
-                    "Error when executing the invocation: {}",
-                    error
+                    "Error when executing the invocation",
                 );
 
                 match sm.handle_task_error() {

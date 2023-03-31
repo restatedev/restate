@@ -23,11 +23,11 @@ use codederror::CodedError;
 #[macro_export]
 macro_rules! info_it {
     ($err:expr) => {
-        tracing::info!(error = tracing::field::display($err.decorate()));
+        tracing::info!(error = tracing::field::display(codederror::CodedError::decorate(&$err)));
         $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
     };
     ($err:expr, $($field:tt)*) => {
-        tracing::info!(error = tracing::field::display($err.decorate()), $($field)*);
+        tracing::info!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), $($field)*);
         $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
     };
 }
@@ -36,11 +36,11 @@ macro_rules! info_it {
 #[macro_export]
 macro_rules! warn_it {
     ($err:expr) => {
-        tracing::warn!(error = tracing::field::display($err.decorate()));
+        tracing::warn!(error = tracing::field::display(codederror::CodedError::decorate(&$err)));
         $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
     };
     ($err:expr, $($field:tt)*) => {
-        tracing::warn!(error = tracing::field::display($err.decorate()), $($field)*);
+        tracing::warn!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), $($field)*);
         $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
     };
 }
@@ -49,11 +49,11 @@ macro_rules! warn_it {
 #[macro_export]
 macro_rules! error_it {
     ($err:expr) => {
-        tracing::error!(error = tracing::field::display($err.decorate()));
+        tracing::error!(error = tracing::field::display(codederror::CodedError::decorate(&$err)));
         $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
     };
     ($err:expr, $($field:tt)*) => {
-        tracing::error!(error = tracing::field::display($err.decorate()), $($field)*);
+        tracing::error!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), $($field)*);
         $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
     };
 }

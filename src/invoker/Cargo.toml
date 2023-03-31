@@ -28,6 +28,8 @@ tracing-opentelemetry = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
 
+codederror = { workspace = true }
+errors = { workspace = true }
 journal = { workspace = true }
 service_metadata = { workspace = true }
 service_protocol = { workspace = true, features = ["message"] }

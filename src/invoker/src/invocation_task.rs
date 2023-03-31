@@ -29,7 +29,7 @@ use service_protocol::message::{
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
-use tracing::{debug, info, info_span, trace, Instrument, Span, warn};
+use tracing::{debug, info, info_span, trace, warn, Instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use super::{InvokeInputJournal, JournalMetadata, JournalReader};
@@ -39,26 +39,34 @@ use super::{InvokeInputJournal, JournalMetadata, JournalReader};
 #[allow(clippy::declare_interior_mutable_const)]
 const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/restate");
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub(crate) enum InvocationTaskError {
     #[error("unexpected http status code: {0}")]
+    #[code(unknown)]
     UnexpectedResponse(http::StatusCode),
     #[error("unexpected content type: {0:?}")]
+    #[code(unknown)]
     UnexpectedContentType(Option<HeaderValue>),
     #[error("received unexpected message: {0:?}")]
+    #[code(unknown)]
     UnexpectedMessage(MessageType),
     #[error("encoding/decoding error: {0}")]
+    #[code(unknown)]
     Encoding(#[from] EncodingError),
     #[error("error when trying to read the journal: {0}")]
+    #[code(unknown)]
     JournalReader(Box<dyn Error + Send + Sync + 'static>),
     #[error("other hyper error: {0}")]
+    #[code(unknown)]
     Network(hyper::Error),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
+    #[code(unknown)]
     UnexpectedJoinError(#[from] JoinError),
-    // TODO introduce hint with CodedError to increase timeout config
     #[error("response timeout")]
+    #[code(errors::RT0001)]
     ResponseTimeout,
     #[error(transparent)]
+    #[code(unknown)]
     Other(#[from] Box<dyn Error + Send + Sync + 'static>),
 }
 

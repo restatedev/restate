@@ -1,9 +1,8 @@
 //! Some parts copied from https://github.com/dtolnay/thiserror/blob/39aaeb00ff270a49e3c254d7b38b10e934d3c7a5/impl/src/attr.rs
 //! License Apache-2.0 or MIT
 
-use proc_macro2::Ident;
 use syn::parse::{Nothing, ParseStream};
-use syn::{Attribute, Error as SynError, Result};
+use syn::{Attribute, Error as SynError, Path, Result};
 
 pub struct Attrs<'a> {
     // We parse these just to figure out who should we delegate to during codegen
@@ -53,7 +52,7 @@ pub struct Error<'a> {
 pub struct Code<'a> {
     pub original: &'a Attribute,
     // If empty -> Unknown
-    pub value: Option<Ident>,
+    pub value: Option<Path>,
 }
 
 pub fn get(input: &[Attribute]) -> Result<Attrs> {
@@ -101,7 +100,7 @@ fn parse_code_attribute<'a>(attrs: &mut Attrs<'a>, attr: &'a Attribute) -> Resul
                 value: None
             });
             Ok(())
-        } else if let Ok(ident) = input.parse::<Ident>() {
+        } else if let Ok(ident) = input.parse::<Path>() {
             attrs.code = Some(Code {
                 original: attr,
                 value: Some(ident)
