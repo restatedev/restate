@@ -9,7 +9,6 @@ use service::MetaService;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use std::net::SocketAddr;
-use storage::InMemoryMetaStorage;
 use tokio::join;
 use tracing::{debug, error};
 
@@ -19,16 +18,18 @@ pub struct Options {
     rest_address: SocketAddr,
 
     /// Concurrency limit for the Meta Operational REST APIs
-    meta_concurrency_limit: usize,
+    rest_concurrency_limit: usize,
+
     /// Root path for Meta storage
-    meta_storage_path: String,
+    storage_path: String,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             rest_address: "0.0.0.0:8081".parse().unwrap(),
-            meta_concurrency_limit: 1000,
+            rest_concurrency_limit: 1000,
+            storage_path: "target/meta/".to_string(),
         }
     }
 }
@@ -42,7 +43,7 @@ impl Options {
             key_extractors_registry.clone(),
             method_descriptors_registry.clone(),
             service_endpoint_registry.clone(),
-            FileMetaStorage::new(self.meta_storage_path.into()),
+            FileMetaStorage::new(self.storage_path.into()),
             Default::default(),
         );
 
@@ -50,7 +51,7 @@ impl Options {
             key_extractors_registry,
             method_descriptors_registry,
             service_endpoint_registry,
-            rest_endpoint: MetaRestEndpoint::new(self.rest_address, self.meta_concurrency_limit),
+            rest_endpoint: MetaRestEndpoint::new(self.rest_address, self.rest_concurrency_limit),
             service,
         }
     }
