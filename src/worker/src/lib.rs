@@ -45,6 +45,7 @@ pub struct Options {
     timers: timer::Options,
     storage_rocksdb: storage_rocksdb::Options,
     ingress_grpc: ingress_grpc::Options,
+    invoker: invoker::Options,
 }
 
 impl Default for Options {
@@ -54,6 +55,7 @@ impl Default for Options {
             timers: Default::default(),
             storage_rocksdb: Default::default(),
             ingress_grpc: Default::default(),
+            invoker: Default::default(),
         }
     }
 }
@@ -130,7 +132,8 @@ impl Worker {
 
         let in_memory_journal_reader = InMemoryJournalReader::new();
 
-        let invoker = invoker::Options::default()
+        let invoker = opts
+            .invoker
             .build(in_memory_journal_reader.clone(), service_endpoint_registry);
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
