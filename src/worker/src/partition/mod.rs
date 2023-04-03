@@ -1,6 +1,5 @@
-use common::types::{EntryIndex, InvocationId, PartitionId, PeerId, ServiceInvocationId};
+use common::types::{PartitionId, PeerId, ServiceInvocationId};
 use futures::{stream, StreamExt};
-use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -201,14 +200,4 @@ where
 
         Ok(())
     }
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub(crate) enum InvocationStatus {
-    Invoked(InvocationId),
-    Suspended {
-        invocation_id: InvocationId,
-        waiting_for_completed_entries: HashSet<EntryIndex>,
-    },
-    Free,
 }

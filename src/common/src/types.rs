@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::{SpanContext, TraceContextExt};
+use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use tracing::{info_span, Span};
@@ -278,6 +279,25 @@ impl From<u64> for MillisSinceEpoch {
 impl Display for MillisSinceEpoch {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{} ms since epoch", self.0)
+    }
+}
+
+/// Status of a service instance.
+#[derive(Debug, PartialEq, Clone)]
+pub enum InvocationStatus {
+    Invoked(InvocationId),
+    Suspended {
+        invocation_id: InvocationId,
+        /// If journal entries in this list get completed, the invocation can be resumed
+        waiting_for_completed_entries: HashSet<EntryIndex>,
+    },
+    /// Service instance is currently not invoked
+    Free,
+}
+
+impl Default for InvocationStatus {
+    fn default() -> Self {
+        InvocationStatus::Free
     }
 }
 

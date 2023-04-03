@@ -1,9 +1,10 @@
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InboxEntry, InvocationId, InvocationResponse, JournalStatus, MessageIndex,
-    MillisSinceEpoch, OutboxMessage, ResponseResult, ResponseSink, ServiceId, ServiceInvocation,
-    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    EntryIndex, InboxEntry, InvocationId, InvocationResponse, InvocationStatus, JournalStatus,
+    MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseResult, ResponseSink, ServiceId,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -21,7 +22,6 @@ use crate::partition::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, ResolutionResult,
     TimerValue,
 };
-use crate::partition::InvocationStatus;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum Error {
