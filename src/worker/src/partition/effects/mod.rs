@@ -10,6 +10,7 @@ use std::vec::Drain;
 
 mod interpreter;
 
+use crate::partition::TimerValue;
 pub(crate) use interpreter::{
     ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
     StateStorageError,
@@ -91,9 +92,7 @@ pub(crate) enum Effect {
 
     // Timers
     RegisterTimer {
-        service_invocation_id: ServiceInvocationId,
-        wake_up_time: MillisSinceEpoch,
-        entry_index: EntryIndex,
+        timer_value: TimerValue,
     },
     DeleteTimer {
         service_invocation_id: ServiceInvocationId,
@@ -293,17 +292,8 @@ impl Effects {
         })
     }
 
-    pub(crate) fn register_timer(
-        &mut self,
-        wake_up_time: MillisSinceEpoch,
-        service_invocation_id: ServiceInvocationId,
-        entry_index: EntryIndex,
-    ) {
-        self.effects.push(Effect::RegisterTimer {
-            service_invocation_id,
-            wake_up_time,
-            entry_index,
-        })
+    pub(crate) fn register_timer(&mut self, timer_value: TimerValue) {
+        self.effects.push(Effect::RegisterTimer { timer_value })
     }
 
     pub(crate) fn delete_timer(

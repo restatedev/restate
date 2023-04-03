@@ -1,11 +1,12 @@
 use crate::partition::effects::{Effect, Effects, JournalInformation};
+use crate::partition::TimerValue;
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId,
     InvocationStatus, InvokedStatus, JournalMetadata, MessageIndex, MillisSinceEpoch,
     OutboxMessage, ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
-    SuspendedStatus,
+    SuspendedStatus, Timer,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -33,11 +34,7 @@ pub(crate) enum ActuatorMessage {
         seq_number: MessageIndex,
         message: OutboxMessage,
     },
-    RegisterTimer {
-        service_invocation_id: ServiceInvocationId,
-        wake_up_time: MillisSinceEpoch,
-        entry_index: EntryIndex,
-    },
+    RegisterTimer(TimerValue),
     AckStoredEntry {
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
@@ -172,6 +169,7 @@ pub(crate) trait StateStorage {
         service_invocation_id: ServiceInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
+        timer: Timer,
     ) -> BoxFuture<Result<(), StateStorageError>>;
 
     fn delete_timer(
@@ -465,20 +463,17 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     },
                 })
             }
-            Effect::RegisterTimer {
-                service_invocation_id,
-                wake_up_time,
-                entry_index,
-            } => {
+            Effect::RegisterTimer { timer_value } => {
                 state_storage
-                    .store_timer(service_invocation_id.clone(), wake_up_time, entry_index)
+                    .store_timer(
+                        timer_value.service_invocation_id.clone(),
+                        timer_value.wake_up_time,
+                        timer_value.entry_index,
+                        timer_value.value.clone(),
+                    )
                     .await?;
 
-                collector.collect(ActuatorMessage::RegisterTimer {
-                    service_invocation_id,
-                    wake_up_time,
-                    entry_index,
-                });
+                collector.collect(ActuatorMessage::RegisterTimer(timer_value));
             }
             Effect::DeleteTimer {
                 service_invocation_id,

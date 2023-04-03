@@ -4,7 +4,7 @@ use common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId,
     InvocationResponse, InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch,
     OutboxMessage, ResolutionResult, ResponseResult, ServiceId, ServiceInvocation,
-    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Timer,
 };
 use futures::future::BoxFuture;
 use journal::raw::{RawEntryCodec, RawEntryCodecError};
@@ -133,18 +133,33 @@ where
             service_invocation_id,
             entry_index,
             wake_up_time,
+            value,
         }: TimerValue,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(), Error> {
         effects.delete_timer(wake_up_time, service_invocation_id.clone(), entry_index);
 
-        let completion = Completion {
-            entry_index,
-            result: CompletionResult::Empty,
-        };
-        Self::handle_completion(service_invocation_id, completion, state, effects).await?;
-
+        match value {
+            Timer::CompleteSleepEntry => {
+                Self::handle_completion(
+                    service_invocation_id,
+                    Completion {
+                        entry_index,
+                        result: CompletionResult::Empty,
+                    },
+                    state,
+                    effects,
+                )
+                .await?;
+            }
+            Timer::Invoke(service_invocation) => {
+                self.send_message(
+                    OutboxMessage::ServiceInvocation(service_invocation),
+                    effects,
+                );
+            }
+        }
         Ok(())
     }
 
@@ -353,14 +368,14 @@ where
                     Entry::Sleep(SleepEntry { wake_up_time, .. }) =
                         Codec::deserialize(&journal_entry)?
                 );
-                effects.register_timer(
-                    MillisSinceEpoch::new(wake_up_time as u64),
+                effects.register_timer(TimerValue::new_sleep(
                     // Registering a timer generates multiple effects: timer registration and
                     // journal append which each generate actuator messages for the timer service
                     // and the invoker --> Cloning required
                     service_invocation_id.clone(),
+                    MillisSinceEpoch::new(wake_up_time as u64),
                     entry_index,
-                );
+                ));
             }
             EnrichedEntryHeader::Invoke {
                 ref resolution_result,
@@ -412,8 +427,10 @@ where
                     span_context,
                 } => {
                     let_assert!(
-                        Entry::BackgroundInvoke(BackgroundInvokeEntry(request)) =
-                            Codec::deserialize(&journal_entry)?
+                        Entry::BackgroundInvoke(BackgroundInvokeEntry {
+                            request,
+                            invoke_time
+                        }) = Codec::deserialize(&journal_entry)?
                     );
 
                     let service_invocation = Self::create_service_invocation(
@@ -423,10 +440,21 @@ where
                         None,
                         span_context.clone(),
                     );
-                    self.send_message(
-                        OutboxMessage::ServiceInvocation(service_invocation),
-                        effects,
-                    );
+
+                    // 0 is equal to not set, meaning execute now
+                    if invoke_time == 0 {
+                        self.send_message(
+                            OutboxMessage::ServiceInvocation(service_invocation),
+                            effects,
+                        );
+                    } else {
+                        effects.register_timer(TimerValue::new_invoke(
+                            service_invocation_id.clone(),
+                            MillisSinceEpoch::new(invoke_time as u64),
+                            entry_index,
+                            service_invocation,
+                        ));
+                    }
                 }
                 ResolutionResult::Failure { error_code, error } => {
                     warn!("Failed to send background invocation: Error code: {error_code}, error message: {error}");

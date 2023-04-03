@@ -1,7 +1,10 @@
-use common::types::{EnrichedRawEntry, EntryIndex, MillisSinceEpoch, ServiceInvocationId};
+use common::types::{
+    EnrichedRawEntry, EntryIndex, MillisSinceEpoch, ServiceInvocation, ServiceInvocationId, Timer,
+};
 use invoker::InvokerError;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug)]
 pub(crate) struct InvokerEffect {
@@ -34,26 +37,61 @@ pub(crate) enum InvokerEffectKind {
     },
 }
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct TimerValue {
     pub service_invocation_id: ServiceInvocationId,
     pub wake_up_time: MillisSinceEpoch,
     pub entry_index: EntryIndex,
+    pub value: Timer,
 }
 
 impl TimerValue {
-    pub(crate) fn new(
+    pub(crate) fn new_sleep(
         service_invocation_id: ServiceInvocationId,
-        entry_index: EntryIndex,
         wake_up_time: MillisSinceEpoch,
+        entry_index: EntryIndex,
     ) -> Self {
         Self {
             service_invocation_id,
-            entry_index,
             wake_up_time,
+            entry_index,
+            value: Timer::CompleteSleepEntry,
+        }
+    }
+
+    pub(crate) fn new_invoke(
+        service_invocation_id: ServiceInvocationId,
+        wake_up_time: MillisSinceEpoch,
+        entry_index: EntryIndex,
+        service_invocation: ServiceInvocation,
+    ) -> Self {
+        Self {
+            service_invocation_id,
+            wake_up_time,
+            entry_index,
+            value: Timer::Invoke(service_invocation),
         }
     }
 }
+
+impl Hash for TimerValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Hash::hash(&self.service_invocation_id, state);
+        Hash::hash(&self.wake_up_time, state);
+        Hash::hash(&self.entry_index, state);
+        // We don't hash the value field.
+    }
+}
+
+impl PartialEq for TimerValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.service_invocation_id == other.service_invocation_id
+            && self.wake_up_time == other.wake_up_time
+            && self.entry_index == other.entry_index
+    }
+}
+
+impl Eq for TimerValue {}
 
 impl PartialOrd for TimerValue {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {

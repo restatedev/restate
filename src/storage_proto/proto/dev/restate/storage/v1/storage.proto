@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+import "google/protobuf/empty.proto";
+
 package dev.restate.storage.v1;
 
 // ---------------------------------------------------------------------
@@ -279,4 +281,8 @@ message OutboxMessage {
 // ---------------------------------------------------------------------
 
 message Timer {
+    oneof value {
+        google.protobuf.Empty complete_sleep_entry = 1;
+        ServiceInvocation invoke = 2;
+    }
 }

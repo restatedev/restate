@@ -27,7 +27,7 @@ pub mod storage {
             use crate::storage::v1::{
                 background_call_resolution_result, enriched_entry_header,
                 invocation_resolution_result, invocation_status, outbox_message, response_result,
-                BackgroundCallResolutionResult, EnrichedEntryHeader, InboxEntry,
+                timer, BackgroundCallResolutionResult, EnrichedEntryHeader, InboxEntry,
                 InvocationResolutionResult, InvocationStatus, JournalEntry, JournalMeta,
                 OutboxMessage, ResponseResult, ServiceInvocation, ServiceInvocationId,
                 ServiceInvocationResponseSink, SpanContext, Timer,
@@ -1046,14 +1046,30 @@ pub mod storage {
             impl TryFrom<Timer> for common::types::Timer {
                 type Error = ConversionError;
 
-                fn try_from(_value: Timer) -> Result<Self, Self::Error> {
-                    Ok(common::types::Timer)
+                fn try_from(value: Timer) -> Result<Self, Self::Error> {
+                    Ok(
+                        match value.value.ok_or(ConversionError::missing_field("value"))? {
+                            timer::Value::CompleteSleepEntry(_) => {
+                                common::types::Timer::CompleteSleepEntry
+                            }
+                            timer::Value::Invoke(si) => common::types::Timer::Invoke(
+                                common::types::ServiceInvocation::try_from(si)?,
+                            ),
+                        },
+                    )
                 }
             }
 
             impl From<common::types::Timer> for Timer {
-                fn from(_value: common::types::Timer) -> Self {
-                    Timer::default()
+                fn from(value: common::types::Timer) -> Self {
+                    match value {
+                        common::types::Timer::CompleteSleepEntry => Timer {
+                            value: Some(timer::Value::CompleteSleepEntry(Default::default())),
+                        },
+                        common::types::Timer::Invoke(si) => Timer {
+                            value: Some(timer::Value::Invoke(ServiceInvocation::from(si))),
+                        },
+                    }
                 }
             }
         }

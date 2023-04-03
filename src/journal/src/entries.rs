@@ -116,7 +116,10 @@ impl CompletableEntry for InvokeEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackgroundInvokeEntry(pub InvokeRequest);
+pub struct BackgroundInvokeEntry {
+    pub request: InvokeRequest,
+    pub invoke_time: i64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwakeableEntry {

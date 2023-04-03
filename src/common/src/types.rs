@@ -97,7 +97,7 @@ impl ServiceId {
 }
 
 /// Representing a service invocation
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceInvocation {
     pub id: ServiceInvocationId,
     pub method_name: ByteString,
@@ -518,4 +518,7 @@ pub struct TimerKey {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Timer;
+pub enum Timer {
+    CompleteSleepEntry,
+    Invoke(ServiceInvocation),
+}
