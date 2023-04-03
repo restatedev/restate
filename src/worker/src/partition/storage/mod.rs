@@ -411,6 +411,7 @@ where
         service_invocation_id: ServiceInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
+        timer: Timer,
     ) -> BoxFuture<Result<(), StateStorageError>> {
         async move {
             let timer_key = TimerKey {
@@ -420,7 +421,7 @@ where
             };
 
             self.inner
-                .add_timer(self.partition_id, &timer_key, Timer)
+                .add_timer(self.partition_id, &timer_key, timer)
                 .await;
             Ok(())
         }

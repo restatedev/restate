@@ -1,4 +1,6 @@
-use common::types::{ServiceId, ServiceInvocationId, Timer, TimerKey};
+use common::types::{
+    ServiceId, ServiceInvocation, ServiceInvocationId, SpanRelation, Timer, TimerKey,
+};
 use futures_util::StreamExt;
 use storage_api::timer_table::TimerTable;
 use storage_api::{Storage, Transaction};
@@ -15,7 +17,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 0,
             timestamp: 0,
         },
-        Timer,
+        Timer::CompleteSleepEntry,
     )
     .await;
 
@@ -29,10 +31,20 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 1,
             timestamp: 0,
         },
-        Timer,
+        Timer::CompleteSleepEntry,
     )
     .await;
 
+    let (service_invocation, _) = ServiceInvocation::new(
+        ServiceInvocationId {
+            service_id: ServiceId::new("svc-2", "key-2"),
+            invocation_id: Default::default(),
+        },
+        "mymethod".to_string().into(),
+        Default::default(),
+        None,
+        SpanRelation::None,
+    );
     txn.add_timer(
         1337,
         &TimerKey {
@@ -43,7 +55,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 2,
             timestamp: 1,
         },
-        Timer,
+        Timer::Invoke(service_invocation),
     )
     .await;
 }

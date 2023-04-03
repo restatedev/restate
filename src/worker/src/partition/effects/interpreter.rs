@@ -5,7 +5,7 @@ use common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId,
     InvocationStatus, InvokedStatus, JournalMetadata, MessageIndex, MillisSinceEpoch,
     OutboxMessage, ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
-    SuspendedStatus,
+    SuspendedStatus, Timer,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -172,6 +172,7 @@ pub(crate) trait StateStorage {
         service_invocation_id: ServiceInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
+        timer: Timer,
     ) -> BoxFuture<Result<(), StateStorageError>>;
 
     fn delete_timer(
@@ -471,7 +472,12 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 entry_index,
             } => {
                 state_storage
-                    .store_timer(service_invocation_id.clone(), wake_up_time, entry_index)
+                    .store_timer(
+                        service_invocation_id.clone(),
+                        wake_up_time,
+                        entry_index,
+                        Timer::CompleteSleepEntry,
+                    )
                     .await?;
 
                 collector.collect(ActuatorMessage::RegisterTimer {
