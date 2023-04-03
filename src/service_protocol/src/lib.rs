@@ -118,13 +118,14 @@ mod pb_into {
         type Error = &'static str;
 
         fn try_from(msg: BackgroundInvokeEntryMessage) -> Result<Self, Self::Error> {
-            Ok(Self::BackgroundInvoke(BackgroundInvokeEntry(
-                InvokeRequest {
+            Ok(Self::BackgroundInvoke(BackgroundInvokeEntry {
+                request: InvokeRequest {
                     service_name: msg.service_name.into(),
                     method_name: msg.method_name.into(),
                     parameter: msg.parameter,
                 },
-            )))
+                invoke_time: msg.invoke_time,
+            }))
         }
     }
 

@@ -164,7 +164,7 @@ where
                     &raw_entry,
                     |entry| {
                         let_assert!(
-                            Entry::BackgroundInvoke(BackgroundInvokeEntry(request)) = entry
+                            Entry::BackgroundInvoke(BackgroundInvokeEntry { request, .. }) = entry
                         );
                         request
                     },

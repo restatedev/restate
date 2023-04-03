@@ -412,7 +412,7 @@ where
                     span_context,
                 } => {
                     let_assert!(
-                        Entry::BackgroundInvoke(BackgroundInvokeEntry(request)) =
+                        Entry::BackgroundInvoke(BackgroundInvokeEntry { request, .. }) =
                             Codec::deserialize(&journal_entry)?
                     );
 
