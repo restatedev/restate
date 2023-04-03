@@ -19,6 +19,8 @@ jobs:
         os: [ubuntu-latest]
     env:
       RUST_BACKTRACE: full
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v3
 
@@ -35,6 +37,9 @@ jobs:
         uses: extractions/setup-just@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.3
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
