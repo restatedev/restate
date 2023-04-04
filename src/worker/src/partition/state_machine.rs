@@ -1,9 +1,9 @@
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InboxEntry, InvocationId, InvocationResponse, MessageIndex, MillisSinceEpoch,
-    ResponseResult, ResponseSink, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    EntryIndex, InboxEntry, InvocationId, InvocationResponse, JournalStatus, MessageIndex,
+    MillisSinceEpoch, ResponseResult, ResponseSink, ServiceId, ServiceInvocation,
+    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -38,12 +38,6 @@ pub(crate) enum Command {
     OutboxTruncation(MessageIndex),
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
-}
-
-#[derive(Debug)]
-pub(super) struct JournalStatus {
-    pub(super) length: EntryIndex,
-    pub(super) span_context: ServiceInvocationSpanContext,
 }
 
 #[derive(Debug, thiserror::Error)]
