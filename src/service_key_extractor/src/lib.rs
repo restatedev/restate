@@ -1,4 +1,4 @@
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, Guard};
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -38,12 +38,34 @@ pub enum KeyStructure {
 
 /// A key extractor provides the logic to extract a key out of a request payload.
 pub trait KeyExtractor {
+    /// Extract performs key extraction from a request payload, returning the key in a Restate internal format.
+    ///
+    /// To perform the inverse operation, check the [`KeyExpander`] trait.
     fn extract(
         &self,
         service_name: impl AsRef<str>,
         service_method: impl AsRef<str>,
         payload: Bytes,
     ) -> Result<Bytes, Error>;
+}
+
+/// A key expander provides the inverse function of a [`KeyExtractor`].
+#[cfg(feature = "expand")]
+pub trait KeyExpander {
+    /// Expand takes a Restate key and assigns it to the key field of a [`prost_reflect::DynamicMessage`] generated from the given `descriptor`.
+    ///
+    /// The provided [`descriptor`] MUST be the same descriptor of the request message of the given `service_name` and `service_method`.
+    ///
+    /// The result of this method is a message matching the provided `descriptor` with only the key field filled.
+    ///
+    /// This message can be mapped back and forth to JSON using `prost-reflect` `serde` feature.
+    fn expand(
+        &self,
+        service_name: impl AsRef<str>,
+        service_method: impl AsRef<str>,
+        descriptor: prost_reflect::MessageDescriptor,
+        key: Bytes,
+    ) -> Result<prost_reflect::DynamicMessage, Error>;
 }
 
 /// This struct holds the key extractors for each known method of each known service.
@@ -70,6 +92,17 @@ impl KeyExtractorsRegistry {
 
         self.services.store(Arc::new(new_services));
     }
+
+    fn resolve_instance_type(
+        services: &Guard<Arc<HashMap<String, ServiceInstanceType>>>,
+        service_name: impl AsRef<str>,
+    ) -> Result<&ServiceInstanceType, Error> {
+        let service_instance_type = services
+            .get(service_name.as_ref())
+            .ok_or_else(|| Error::NotFound)?;
+
+        Ok(service_instance_type)
+    }
 }
 
 impl KeyExtractor for KeyExtractorsRegistry {
@@ -79,15 +112,26 @@ impl KeyExtractor for KeyExtractorsRegistry {
         service_method: impl AsRef<str>,
         payload: Bytes,
     ) -> Result<Bytes, Error> {
-        let service_name_ref = service_name.as_ref();
-
         let services = self.services.load();
+        let service_instance_type =
+            KeyExtractorsRegistry::resolve_instance_type(&services, service_name.as_ref())?;
+        service_instance_type.extract(service_name, service_method.as_ref(), payload)
+    }
+}
 
-        let service_instance_type = services
-            .get(service_name_ref)
-            .ok_or_else(|| Error::NotFound)?;
-
-        service_instance_type.extract(service_name_ref, service_method.as_ref(), payload)
+#[cfg(feature = "expand")]
+impl KeyExpander for KeyExtractorsRegistry {
+    fn expand(
+        &self,
+        service_name: impl AsRef<str>,
+        service_method: impl AsRef<str>,
+        descriptor: prost_reflect::MessageDescriptor,
+        key: Bytes,
+    ) -> Result<prost_reflect::DynamicMessage, Error> {
+        let services = self.services.load();
+        let service_instance_type =
+            KeyExtractorsRegistry::resolve_instance_type(&services, service_name.as_ref())?;
+        service_instance_type.expand(service_name, service_method.as_ref(), descriptor, key)
     }
 }
 
@@ -101,9 +145,12 @@ pub enum Error {
     Decode(#[from] prost::DecodeError),
     #[error("cannot resolve key extractor")]
     NotFound,
+    #[cfg(feature = "expand")]
+    #[error("unexpected service instance type to expand the key. Only keys of keyed services can be expanded")]
+    UnexpectedServiceInstanceType,
 }
 
-mod impls {
+mod extract_impls {
     use super::*;
 
     use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -813,6 +860,229 @@ mod impls {
                 Bytes::new()
             );
         }
+    }
+}
+
+#[cfg(feature = "expand")]
+mod expand_impls {
+    use super::*;
+    use bytes::{BufMut, BytesMut};
+
+    use prost::encoding::{encode_key, key_len, WireType};
+    use prost_reflect::{DynamicMessage, Kind, MessageDescriptor};
+
+    impl KeyExpander for ServiceInstanceType {
+        fn expand(
+            &self,
+            _service_name: impl AsRef<str>,
+            service_method: impl AsRef<str>,
+            descriptor: MessageDescriptor,
+            restate_key: Bytes,
+        ) -> Result<DynamicMessage, Error> {
+            if let ServiceInstanceType::Keyed {
+                service_methods_key_field_root_number,
+                ..
+            } = self
+            {
+                // Find out the root field number and kind
+                let root_number = *service_methods_key_field_root_number
+                    .get(service_method.as_ref())
+                    .ok_or(Error::NotFound)?;
+                let field_descriptor_kind = descriptor
+                    .get_field(root_number)
+                    .ok_or(Error::NotFound)?
+                    .kind();
+
+                // Prepare the buffer for the protobuf
+                let mut b = BytesMut::with_capacity(key_len(root_number) + restate_key.len());
+
+                // Encode the key of the protobuf field
+                encode_key(
+                    root_number,
+                    kind_to_wire_type(&field_descriptor_kind),
+                    &mut b,
+                );
+
+                // Append the restate key buffer
+                b.put(restate_key);
+
+                // Now this message should be a well formed protobuf message, we can create the DynamicMessage
+                Ok(DynamicMessage::decode(descriptor, b.freeze())?)
+            } else {
+                return Err(Error::UnexpectedServiceInstanceType);
+            }
+        }
+    }
+
+    // Function took from https://github.com/andrewhickman/prost-reflect/blob/a3a8e9cc2373b9b090781f277ba9068c064504d5/prost-reflect/src/descriptor/api.rs#L94
+    // Double license Apache-1.0 and MIT
+    fn kind_to_wire_type(kind: &Kind) -> WireType {
+        match kind {
+            Kind::Double | Kind::Fixed64 | Kind::Sfixed64 => WireType::SixtyFourBit,
+            Kind::Float | Kind::Fixed32 | Kind::Sfixed32 => WireType::ThirtyTwoBit,
+            Kind::Enum(_)
+            | Kind::Int32
+            | Kind::Int64
+            | Kind::Uint32
+            | Kind::Uint64
+            | Kind::Sint32
+            | Kind::Sint64
+            | Kind::Bool => WireType::Varint,
+            Kind::String | Kind::Bytes | Kind::Message(_) => WireType::LengthDelimited,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        use prost::Message;
+        use prost_reflect::DescriptorPool;
+
+        mod pb {
+            #![allow(warnings)]
+            #![allow(clippy::all)]
+            #![allow(unknown_lints)]
+            include!(concat!(env!("OUT_DIR"), "/test.rs"));
+        }
+        use pb::*;
+
+        static DESCRIPTOR: &[u8] =
+            include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin"));
+        static METHOD_NAME: &str = "test";
+
+        fn test_descriptor_message() -> MessageDescriptor {
+            DescriptorPool::decode(DESCRIPTOR)
+                .unwrap()
+                .get_message_by_name("test.TestMessage")
+                .unwrap()
+        }
+
+        fn test_message() -> TestMessage {
+            TestMessage {
+                string: "my_string".to_string(),
+                bytes: b"my_bytes".to_vec().into(),
+                number: 5,
+                nested_message: Some(NestedKey {
+                    a: "A".to_string(),
+                    b: "B".to_string(),
+                    c: 10,
+                    ..Default::default()
+                }),
+            }
+        }
+
+        fn nested_key_structure() -> KeyStructure {
+            KeyStructure::Nested(BTreeMap::from([
+                (1, KeyStructure::Scalar),
+                (2, KeyStructure::Scalar),
+                (3, KeyStructure::Scalar),
+                (
+                    4,
+                    KeyStructure::Nested(BTreeMap::from([(1, KeyStructure::Scalar)])),
+                ),
+            ]))
+        }
+
+        fn mock_keyed_service_instance_type(
+            key_structure: KeyStructure,
+            field_number: u32,
+        ) -> ServiceInstanceType {
+            ServiceInstanceType::Keyed {
+                key_structure,
+                service_methods_key_field_root_number: HashMap::from([(
+                    METHOD_NAME.to_string(),
+                    field_number,
+                )]),
+            }
+        }
+
+        // This macro generates test cases for the above TestMessage that extract the key and then expand it.
+        // $field_name indicate which field to use as key.
+        // $key_structure specifies the KeyStructure
+        // The third variant of the macro allows to specify both test name and test message
+        macro_rules! expand_tests {
+            ($field_name:ident) => {
+                expand_tests!($field_name, KeyStructure::Scalar);
+            };
+            ($field_name:ident, $key_structure:expr) => {
+                expand_tests!(
+                    test: $field_name,
+                    field_name: $field_name,
+                    key_structure: $key_structure,
+                    test_message: test_message()
+                );
+            };
+            (test: $test_name:ident, field_name: $field_name:ident, key_structure: $key_structure:expr, test_message: $test_message:expr) => {
+                mod $test_name {
+                    use super::*;
+
+                    #[test]
+                    fn expand() {
+                        let test_descriptor_message = test_descriptor_message();
+                        let field_number = test_descriptor_message
+                            .get_field_by_name(stringify!($field_name))
+                            .expect("Field should exist")
+                            .number();
+
+                        // Create test message and service instance type
+                        let test_message = $test_message;
+                        let service_instance_type =
+                            mock_keyed_service_instance_type($key_structure, field_number);
+
+                        // Extract the restate key
+                        let restate_key = service_instance_type
+                            .extract("", METHOD_NAME, test_message.encode_to_vec().into())
+                            .expect("successful key extraction");
+
+                        // Now expand the key again into a message
+                        let expanded_message = service_instance_type
+                            .expand("", METHOD_NAME, test_descriptor_message, restate_key)
+                            .expect("successful key expansion");
+
+                        // Transcode back to original message
+                        let test_message_expanded = expanded_message
+                            .transcode_to::<TestMessage>()
+                            .expect("transcoding to TestMessage");
+
+                        // Assert expanded field is equal to the one from the original message
+                        assert_eq!(test_message_expanded.$field_name, test_message.$field_name)
+                    }
+                }
+            };
+        }
+
+        expand_tests!(string);
+        expand_tests!(bytes);
+        expand_tests!(number);
+        expand_tests!(nested_message, nested_key_structure());
+        expand_tests!(
+            test: nested_message_with_default,
+            field_name: nested_message,
+            key_structure: nested_key_structure(),
+            test_message: TestMessage {
+                nested_message: Some(NestedKey {
+                    b: "b".to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        );
+        expand_tests!(
+            test: double_nested_message,
+            field_name: nested_message,
+            key_structure: nested_key_structure(),
+            test_message: TestMessage {
+                nested_message: Some(NestedKey {
+                    b: "b".to_string(),
+                    other: Some(OtherMessage {
+                        d: "d".to_string()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        );
     }
 }
 

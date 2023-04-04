@@ -2458,6 +2458,8 @@ dependencies = [
  "bytes",
  "common",
  "prost",
+ "prost-build",
+ "prost-reflect",
  "serde",
  "thiserror",
  "uuid",
