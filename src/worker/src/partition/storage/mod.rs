@@ -8,7 +8,7 @@ use crate::partition::types::EnrichedRawEntry;
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InboxEntry, MessageIndex, MillisSinceEpoch, PartitionId, ServiceId,
+    EntryIndex, InboxEntry, MessageIndex, MillisSinceEpoch, PartitionId, ResponseSink, ServiceId,
     ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
     ServiceInvocationSpanContext,
 };
@@ -74,8 +74,7 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
     fn get_response_sink(
         &self,
         _service_invocation_id: &ServiceInvocationId,
-    ) -> BoxFuture<Result<Option<crate::partition::state_machine::ResponseSink>, StateReaderError>>
-    {
+    ) -> BoxFuture<Result<Option<ResponseSink>, StateReaderError>> {
         todo!()
     }
 }
