@@ -325,3 +325,10 @@ impl ResponseSink {
         }
     }
 }
+
+/// Status of a given journal
+#[derive(Debug)]
+pub struct JournalStatus {
+    pub length: EntryIndex,
+    pub span_context: ServiceInvocationSpanContext,
+}

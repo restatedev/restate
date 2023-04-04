@@ -3,13 +3,13 @@ use crate::partition::effects::{
 };
 use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
-use crate::partition::state_machine::{JournalStatus, StateReader, StateReaderError};
+use crate::partition::state_machine::{StateReader, StateReaderError};
 use crate::partition::types::EnrichedRawEntry;
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InboxEntry, MessageIndex, MillisSinceEpoch, PartitionId, ResponseSink, ServiceId,
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    EntryIndex, InboxEntry, JournalStatus, MessageIndex, MillisSinceEpoch, PartitionId,
+    ResponseSink, ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
     ServiceInvocationSpanContext,
 };
 use futures::future::BoxFuture;
