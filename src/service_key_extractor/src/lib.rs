@@ -112,7 +112,7 @@ mod impls {
     use uuid::Uuid;
 
     fn generate_random_key() -> Bytes {
-        Bytes::copy_from_slice(Uuid::new_v4().as_bytes())
+        Bytes::copy_from_slice(Uuid::now_v7().as_bytes())
     }
 
     impl KeyExtractor for ServiceInstanceType {

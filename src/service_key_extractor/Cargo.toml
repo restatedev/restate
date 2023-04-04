@@ -18,7 +18,7 @@ arc-swap = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
+uuid = { workspace = true }
 
 common = { workspace = true }
 
