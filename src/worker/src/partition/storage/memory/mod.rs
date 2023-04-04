@@ -3,16 +3,15 @@ use crate::partition::effects::{
 };
 use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
-use crate::partition::state_machine::{
-    InboxEntry, JournalStatus, ResponseSink, StateReader, StateReaderError,
-};
+use crate::partition::state_machine::{JournalStatus, ResponseSink, StateReader, StateReaderError};
 use crate::partition::storage::memory::timer_key::{TimerKey, TimerKeyRef};
 use crate::partition::types::{EnrichedRawEntry, TimerValue};
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InvocationId, MessageIndex, MillisSinceEpoch, ServiceId, ServiceInvocation,
-    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    EntryIndex, InboxEntry, InvocationId, MessageIndex, MillisSinceEpoch, ServiceId,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext,
 };
 use futures::future::{err, ok, BoxFuture};
 use futures::{stream, FutureExt};
@@ -269,7 +268,7 @@ impl Storage {
         self.inboxes
             .entry(service_invocation.id.service_id.clone())
             .or_insert(VecDeque::new())
-            .push_back((seq_number, service_invocation.clone()))
+            .push_back(InboxEntry::new(seq_number, service_invocation.clone()))
     }
 
     fn enqueue_into_outbox(&mut self, seq_number: MessageIndex, message: &OutboxMessage) {
@@ -286,8 +285,12 @@ impl Storage {
 
     fn truncate_inbox(&mut self, service_id: &ServiceId, seq_number_to_truncate: MessageIndex) {
         if let Some(inbox) = self.inboxes.get_mut(service_id) {
-            let partition_point =
-                inbox.partition_point(|(seq_number, _)| *seq_number <= seq_number_to_truncate);
+            let partition_point = inbox.partition_point(
+                |InboxEntry {
+                     inbox_sequence_number,
+                     ..
+                 }| *inbox_sequence_number <= seq_number_to_truncate,
+            );
             drop(inbox.drain(..partition_point));
 
             if inbox.is_empty() {

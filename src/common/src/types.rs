@@ -280,3 +280,19 @@ impl Display for MillisSinceEpoch {
         write!(f, "{} ms since epoch", self.0)
     }
 }
+
+/// Entry of the inbox
+#[derive(Debug, Clone)]
+pub struct InboxEntry {
+    pub inbox_sequence_number: MessageIndex,
+    pub service_invocation: ServiceInvocation,
+}
+
+impl InboxEntry {
+    pub fn new(inbox_sequence_number: MessageIndex, service_invocation: ServiceInvocation) -> Self {
+        Self {
+            inbox_sequence_number,
+            service_invocation,
+        }
+    }
+}
