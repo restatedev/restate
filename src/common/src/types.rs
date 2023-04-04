@@ -296,3 +296,32 @@ impl InboxEntry {
         }
     }
 }
+
+/// State machine representation of the [`ServiceInvocationResponseSink`]
+#[derive(Debug, Clone)]
+pub enum ResponseSink {
+    Ingress(IngressId, ServiceInvocationId),
+    PartitionProcessor(ServiceInvocationId, EntryIndex),
+}
+
+impl ResponseSink {
+    pub fn from_service_invocation_response_sink(
+        service_invocation_id: &ServiceInvocationId,
+        response_sink: &ServiceInvocationResponseSink,
+    ) -> Option<ResponseSink> {
+        match response_sink {
+            ServiceInvocationResponseSink::Ingress(ingress_id) => Some(ResponseSink::Ingress(
+                *ingress_id,
+                service_invocation_id.clone(),
+            )),
+            ServiceInvocationResponseSink::None => None,
+            ServiceInvocationResponseSink::PartitionProcessor {
+                entry_index,
+                caller,
+            } => Some(ResponseSink::PartitionProcessor(
+                caller.clone(),
+                *entry_index,
+            )),
+        }
+    }
+}
