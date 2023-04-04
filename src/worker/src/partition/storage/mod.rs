@@ -8,8 +8,9 @@ use crate::partition::types::EnrichedRawEntry;
 use crate::partition::InvocationStatus;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, MessageIndex, MillisSinceEpoch, PartitionId, ServiceId, ServiceInvocation,
-    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    EntryIndex, InboxEntry, MessageIndex, MillisSinceEpoch, PartitionId, ServiceId,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext,
 };
 use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
@@ -51,7 +52,7 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
     fn peek_inbox(
         &self,
         _service_id: &ServiceId,
-    ) -> BoxFuture<Result<Option<(MessageIndex, ServiceInvocation)>, StateReaderError>> {
+    ) -> BoxFuture<Result<Option<InboxEntry>, StateReaderError>> {
         todo!()
     }
 

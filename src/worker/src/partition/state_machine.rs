@@ -1,8 +1,8 @@
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, IngressId, InvocationId, InvocationResponse, MessageIndex, MillisSinceEpoch,
-    ResponseResult, ServiceId, ServiceInvocation, ServiceInvocationId,
+    EntryIndex, InboxEntry, IngressId, InvocationId, InvocationResponse, MessageIndex,
+    MillisSinceEpoch, ResponseResult, ServiceId, ServiceInvocation, ServiceInvocationId,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
@@ -74,8 +74,6 @@ impl ResponseSink {
         }
     }
 }
-
-pub type InboxEntry = (MessageIndex, ServiceInvocation);
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading state: {source:?}")]
@@ -557,8 +555,10 @@ where
         state: &State,
         effects: &mut Effects,
     ) -> Result<(), Error> {
-        if let Some((inbox_sequence_number, service_invocation)) =
-            state.peek_inbox(&service_invocation_id.service_id).await?
+        if let Some(InboxEntry {
+            inbox_sequence_number,
+            service_invocation,
+        }) = state.peek_inbox(&service_invocation_id.service_id).await?
         {
             effects.drop_journal_and_pop_inbox(
                 service_invocation_id.service_id,
