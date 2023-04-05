@@ -1066,6 +1066,7 @@ mod expand_impls {
 
     // Function took from https://github.com/andrewhickman/prost-reflect/blob/a3a8e9cc2373b9b090781f277ba9068c064504d5/prost-reflect/src/descriptor/api.rs#L94
     // Double license Apache-1.0 and MIT
+    // TODO https://github.com/andrewhickman/prost-reflect/issues/33
     fn kind_to_wire_type(kind: &Kind) -> WireType {
         match kind {
             Kind::Double | Kind::Fixed64 | Kind::Sfixed64 => WireType::SixtyFourBit,
