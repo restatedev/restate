@@ -155,7 +155,9 @@ mod extract_impls {
 
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use prost::encoding::WireType::*;
-    use prost::encoding::{decode_key, decode_varint, skip_field, DecodeContext, WireType};
+    use prost::encoding::{
+        decode_key, decode_varint, encode_key, encode_varint, skip_field, DecodeContext, WireType,
+    };
     use uuid::Uuid;
 
     fn generate_random_key() -> Bytes {
@@ -186,7 +188,19 @@ mod extract_impls {
         }
     }
 
-    /// This is the start of the key extraction algorithm
+    /// This is the start of the key extraction algorithm.
+    ///
+    /// ## Restate key representation:
+    ///
+    /// This function manipulates the input message as follows:
+    ///
+    /// 1. Skips all the fields of the input message until it reaches the key field.
+    /// 2. If the field is scalar, slice it and return it.
+    /// 3. If the field is a message, this algorithm traverses the field making sure
+    ///    the final representation has the fields ordered.
+    ///
+    /// The final slice won't contain the key (tag and wire_type tuple) of the root field of the key,
+    /// as it can be different across methods, but the rest of the field will be encoded as regular protobuf.
     fn root_extract(
         mut buf: Bytes,
         root_key_field_number: u32,
@@ -201,7 +215,15 @@ mod extract_impls {
         }
 
         // Start recursive extract
-        deep_extract(&mut buf, root_key_field_wire_type.unwrap(), key_structure)
+        deep_extract(
+            &mut buf,
+            root_key_field_number,
+            root_key_field_wire_type.unwrap(),
+            key_structure,
+            // We don't write the key for the root field,
+            // as it might be different across request messages.
+            false,
+        )
     }
 
     /// This will move the buffer up to the beginning of the target field.
@@ -230,10 +252,25 @@ mod extract_impls {
 
     fn deep_extract(
         buf: &mut Bytes,
+        current_field_number: u32,
         current_wire_type: WireType,
         current_parser_directive: &KeyStructure,
+        should_write_key: bool,
     ) -> Result<Bytes, Error> {
         let mut result_buf = BytesMut::new();
+
+        if should_write_key {
+            encode_key(
+                current_field_number,
+                match current_wire_type {
+                    // We convert group fields to length delimited,
+                    // check below the StartGroup/Nested match arm
+                    StartGroup => LengthDelimited,
+                    wt => wt,
+                },
+                &mut result_buf,
+            );
+        }
 
         match (current_wire_type, current_parser_directive) {
             // Primitive cases
@@ -241,12 +278,14 @@ mod extract_impls {
             (ThirtyTwoBit, _) => result_buf.put(slice_const_bytes(buf, 4)?),
             (SixtyFourBit, _) => result_buf.put(slice_const_bytes(buf, 8)?),
             (LengthDelimited, KeyStructure::Scalar) => {
-                result_buf.put(slice_length_delimited_bytes(buf)?)
+                let (length, field_slice) = slice_length_delimited_bytes(buf)?;
+                encode_varint(length, &mut result_buf);
+                result_buf.put(field_slice)
             }
 
             // Composite cases
             (StartGroup, KeyStructure::Nested(expected_message_fields)) => {
-                let mut message_fields = HashMap::with_capacity(expected_message_fields.len());
+                let mut message_fields = Vec::with_capacity(expected_message_fields.len());
                 loop {
                     let (next_field_number, next_wire_type) = decode_key(buf)?;
                     if next_wire_type == EndGroup {
@@ -264,26 +303,37 @@ mod extract_impls {
                             continue;
                         }
                         Some(next_parser_directive) => {
-                            message_fields.insert(
+                            message_fields.push((
                                 next_field_number,
-                                deep_extract(buf, next_wire_type, next_parser_directive)?,
-                            );
+                                deep_extract(
+                                    buf,
+                                    next_field_number,
+                                    next_wire_type,
+                                    next_parser_directive,
+                                    true,
+                                )?,
+                            ));
                         }
                     };
                 }
-                expected_message_fields
-                    .keys()
-                    .map(|k| {
-                        message_fields
-                            .remove(k)
-                            // Ensure we have defaulting
-                            .unwrap_or_default()
-                    })
-                    .for_each(|b| result_buf.put(b));
+                // Reorder fields
+                message_fields.sort_by(|(index_a, _), (index_b, _)| index_a.cmp(index_b));
+
+                // Compute length delimited message length
+                let inner_message_length: usize =
+                    message_fields.iter().map(|(_, buf)| buf.len()).sum();
+                encode_varint(inner_message_length as u64, &mut result_buf);
+
+                println!("{}: {:?}", inner_message_length, message_fields);
+
+                // Write the fields
+                for (_, b) in message_fields {
+                    result_buf.put(b)
+                }
             }
 
             (LengthDelimited, KeyStructure::Nested(expected_message_fields)) => {
-                let mut message_fields = HashMap::with_capacity(expected_message_fields.len());
+                let mut message_fields = Vec::with_capacity(expected_message_fields.len());
                 let inner_message_len = decode_varint(buf)? as usize;
                 let mut current_buf = buf.split_to(inner_message_len);
                 while current_buf.has_remaining() {
@@ -299,27 +349,32 @@ mod extract_impls {
                             )?;
                         }
                         Some(next_parser_directive) => {
-                            message_fields.insert(
+                            message_fields.push((
                                 next_field_number,
                                 deep_extract(
                                     &mut current_buf,
+                                    next_field_number,
                                     next_wire_type,
                                     next_parser_directive,
+                                    true,
                                 )?,
-                            );
+                            ));
                         }
                     };
                 }
+                // Reorder fields
+                message_fields.sort_by(|(index_a, _), (index_b, _)| index_a.cmp(index_b));
 
-                expected_message_fields
-                    .keys()
-                    .map(|k| {
-                        message_fields
-                            .remove(k)
-                            // Ensure we have defaulting
-                            .unwrap_or_default()
-                    })
-                    .for_each(|b| result_buf.put(b));
+                // Compute length delimited message length
+                // We recompute it as the size could be different if we converted a nested message that was a group
+                let inner_message_length: usize =
+                    message_fields.iter().map(|(_, buf)| buf.len()).sum();
+                encode_varint(inner_message_length as u64, &mut result_buf);
+
+                // Write the fields
+                for (_, b) in message_fields {
+                    result_buf.put(b)
+                }
             }
 
             // Expecting a primitive message, but got composite -> schema mismatch
@@ -364,22 +419,19 @@ mod extract_impls {
         Ok(res)
     }
 
-    fn slice_length_delimited_bytes(buf: &mut Bytes) -> Result<Bytes, Error> {
+    fn slice_length_delimited_bytes(buf: &mut Bytes) -> Result<(u64, Bytes), Error> {
         let length = decode_varint(buf)?;
 
-        slice_const_bytes(buf, length as usize)
+        Ok((length, slice_const_bytes(buf, length as usize)?))
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
 
-        use prost::encoding::{
-            encode_key, encode_varint, encoded_len_varint, key_len, DecodeContext,
-        };
+        use prost::encoding::{encode_key, encode_varint, key_len, DecodeContext};
         use prost::{length_delimiter_len, DecodeError, Message};
         use std::collections::BTreeMap;
-        use std::fmt::Write;
 
         #[derive(Debug)]
         struct MockMessage {
@@ -389,6 +441,7 @@ mod extract_impls {
             ordered_encoding: bool,
             nested: bool,
             unknown_field: bool,
+            skip_b: bool,
         }
 
         impl Default for MockMessage {
@@ -400,15 +453,25 @@ mod extract_impls {
                     ordered_encoding: true,
                     nested: false,
                     unknown_field: false,
+                    skip_b: false,
                 }
             }
         }
 
         impl MockMessage {
-            fn fill_expected_buf(&self, buf: &mut BytesMut) {
-                buf.write_str(&self.a).unwrap();
-                buf.write_str(&self.b).unwrap();
-                buf.write_str(&self.c).unwrap();
+            fn fill_expected_buf(&self, out_buf: &mut BytesMut) {
+                let mut msg_buf = BytesMut::new();
+
+                // Write fields
+                self.write_a(&mut msg_buf);
+                self.write_b(false, &mut msg_buf);
+                self.write_c(&mut msg_buf);
+
+                let msg_buf = msg_buf.freeze();
+
+                // Write the msg_buf in the output buf
+                encode_varint(msg_buf.len() as u64, out_buf);
+                out_buf.put(msg_buf);
             }
 
             fn parser_directive(nested: bool) -> KeyStructure {
@@ -416,7 +479,7 @@ mod extract_impls {
                     KeyStructure::Nested(BTreeMap::from([
                         (
                             1,
-                            KeyStructure::Nested(BTreeMap::from([(2, KeyStructure::Scalar)])),
+                            KeyStructure::Nested(BTreeMap::from([(1, KeyStructure::Scalar)])),
                         ),
                         (
                             2,
@@ -435,31 +498,22 @@ mod extract_impls {
 
             fn write_a<B: BufMut>(&self, buf: &mut B) {
                 if self.nested {
-                    // Encode a as nested message
-                    encode_key(1, LengthDelimited, buf);
-                    encode_varint(
-                        key_len(2) as u64
-                            + encoded_len_varint(self.a.len() as u64) as u64
-                            + self.a.len() as u64,
-                        buf,
-                    );
-                    // Nested message
-                    encode_key(2, LengthDelimited, buf);
-                    encode_varint(self.a.len() as u64, buf);
-                    buf.put_slice(self.a.as_bytes());
+                    Self::write_in_length_delimited(1, &self.a, buf);
                 } else {
                     prost::encoding::string::encode(1, &self.a, buf);
                 }
             }
 
-            fn write_b<B: BufMut>(&self, buf: &mut B) {
+            fn write_b<B: BufMut>(&self, nested_as_group: bool, buf: &mut B) {
+                if self.skip_b {
+                    return;
+                }
                 if self.nested {
-                    // Encode b as nested group
-                    encode_key(2, StartGroup, buf);
-                    encode_key(1, LengthDelimited, buf);
-                    encode_varint(self.b.len() as u64, buf);
-                    buf.put_slice(self.b.as_bytes());
-                    encode_key(2, EndGroup, buf);
+                    if nested_as_group {
+                        Self::write_in_nested_group(2, &self.b, buf);
+                    } else {
+                        Self::write_in_length_delimited(2, &self.b, buf);
+                    }
                 } else {
                     prost::encoding::string::encode(2, &self.b, buf);
                 }
@@ -474,6 +528,18 @@ mod extract_impls {
                     prost::encoding::string::encode(10, &self.c, buf);
                 }
             }
+
+            fn write_in_length_delimited<B: BufMut>(tag: u32, str: &String, buf: &mut B) {
+                encode_key(tag, LengthDelimited, buf);
+                encode_varint(prost::encoding::string::encoded_len(1, str) as u64, buf);
+                prost::encoding::string::encode(1, str, buf);
+            }
+
+            fn write_in_nested_group<B: BufMut>(tag: u32, str: &String, buf: &mut B) {
+                encode_key(tag, StartGroup, buf);
+                prost::encoding::string::encode(1, str, buf);
+                encode_key(tag, EndGroup, buf);
+            }
         }
 
         impl Message for MockMessage {
@@ -484,14 +550,14 @@ mod extract_impls {
             {
                 if self.ordered_encoding {
                     self.write_a(buf);
-                    self.write_b(buf);
+                    self.write_b(true, buf);
                     self.write_c(buf);
                     self.write_unknown_field(buf);
                 } else {
                     self.write_c(buf);
                     self.write_a(buf);
                     self.write_unknown_field(buf);
-                    self.write_b(buf);
+                    self.write_b(true, buf);
                 }
             }
 
@@ -511,8 +577,11 @@ mod extract_impls {
 
             fn encoded_len(&self) -> usize {
                 let mut strings_len = prost::encoding::string::encoded_len(1, &self.a)
-                    + prost::encoding::string::encoded_len(2, &self.b)
                     + prost::encoding::string::encoded_len(3, &self.c);
+
+                if !self.skip_b {
+                    strings_len += prost::encoding::string::encoded_len(2, &self.b);
+                }
 
                 if self.unknown_field {
                     strings_len += prost::encoding::string::encoded_len(10, &self.c);
@@ -524,7 +593,7 @@ mod extract_impls {
                         (2 * key_len(2))
                         // Length encoded Message needs one key + 1 varint for the length
                         + key_len(1) +
-                            length_delimiter_len(key_len(2) + length_delimiter_len(self.a.len()) + self.a.len());
+                            length_delimiter_len(key_len(1) + length_delimiter_len(self.a.len()) + self.a.len());
                 }
                 strings_len
             }
@@ -706,12 +775,18 @@ mod extract_impls {
         extract_tests!(
             string,
             item: "my awesome string".to_string(),
-            fill_expected_buf: |buf: &mut BytesMut, val: String| buf.put_slice(val.as_bytes())
+            fill_expected_buf: |buf: &mut BytesMut, val: String| {
+                encode_varint(val.len().try_into().unwrap(), buf);
+                buf.put_slice(val.as_bytes());
+            }
         );
         extract_tests!(
             bytes,
             item: Bytes::from_static(&[1_u8, 2, 3]),
-            fill_expected_buf: |buf: &mut BytesMut, val: Bytes| buf.put_slice(&val)
+            fill_expected_buf: |buf: &mut BytesMut, val: Bytes| {
+                encode_varint(val.len().try_into().unwrap(), buf);
+                buf.put_slice(&val);
+            }
         );
 
         // Test message
@@ -837,6 +912,50 @@ mod extract_impls {
             parser: MockMessage::parser_directive(false)
         );
 
+        // Test skipping B
+        extract_tests!(
+            message,
+            mod: message_skip_b,
+            item: MockMessage {
+                skip_b: true,
+                ..MockMessage::default()
+            },
+            fill_expected_buf: |buf: &mut BytesMut, val: MockMessage| val.fill_expected_buf(buf),
+            parser: MockMessage::parser_directive(false)
+        );
+        extract_tests!(
+            group,
+            mod: group_skip_b,
+            item: MockMessage {
+                skip_b: true,
+                ..MockMessage::default()
+            },
+            fill_expected_buf: |buf: &mut BytesMut, val: MockMessage| val.fill_expected_buf(buf),
+            parser: MockMessage::parser_directive(false)
+        );
+        extract_tests!(
+            message,
+            mod: message_reverse_skip_b,
+            item: MockMessage {
+                ordered_encoding: false,
+                skip_b: true,
+                ..MockMessage::default()
+            },
+            fill_expected_buf: |buf: &mut BytesMut, val: MockMessage| val.fill_expected_buf(buf),
+            parser: MockMessage::parser_directive(false)
+        );
+        extract_tests!(
+            group,
+            mod: group_reverse_skip_b,
+            item: MockMessage {
+                ordered_encoding: false,
+                skip_b: true,
+                ..MockMessage::default()
+            },
+            fill_expected_buf: |buf: &mut BytesMut, val: MockMessage| val.fill_expected_buf(buf),
+            parser: MockMessage::parser_directive(false)
+        );
+
         // Additional tests
         #[test]
         fn default_key() {
@@ -858,6 +977,37 @@ mod extract_impls {
             assert_eq!(
                 root_extract(input_buf, 1, &KeyStructure::Scalar).unwrap(),
                 Bytes::new()
+            );
+        }
+
+        // {a: "AA", b: "B"} and {a: "A", b: "AB"} are different keys!
+        #[test]
+        fn fields_are_correctly_separated() {
+            fn build_input_buf(str_1: &'static str, str_2: &'static str) -> Bytes {
+                // Prepare the key message
+                let mut key_msg = BytesMut::new();
+                prost::encoding::string::encode(1, &str_1.to_string(), &mut key_msg);
+                prost::encoding::string::encode(2, &str_2.to_string(), &mut key_msg);
+
+                // Prepare the root message (key is a nested message)
+                let mut out_msg = BytesMut::new();
+                encode_key(1, LengthDelimited, &mut out_msg);
+                encode_varint(key_msg.len() as u64, &mut out_msg);
+                out_msg.put(key_msg);
+
+                out_msg.freeze()
+            }
+
+            let root_key_field_number = 1;
+            let key_structure =
+                KeyStructure::Nested([(1, KeyStructure::Scalar), (2, KeyStructure::Scalar)].into());
+
+            let input_buf_a = build_input_buf("AA", "B");
+            let input_buf_b = build_input_buf("A", "AB");
+
+            assert_ne!(
+                root_extract(input_buf_a, root_key_field_number, &key_structure).unwrap(),
+                root_extract(input_buf_b, root_key_field_number, &key_structure).unwrap()
             );
         }
     }
