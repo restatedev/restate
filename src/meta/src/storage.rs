@@ -164,7 +164,7 @@ impl MetaStorage for FileMetaStorage {
         let root_path = self.root_path.clone();
         FutureExt::boxed(async move {
             // Try to create a dir, in case it doesn't exist
-            let _ = tokio::fs::create_dir(&root_path).await;
+            let _ = tokio::fs::create_dir_all(&root_path).await;
 
             // Find all the metadata files in the root path directory, then sort them by modified date
             let mut read_dir = tokio::fs::read_dir(root_path).await?;
