@@ -639,19 +639,10 @@ mod state_machine_coordinator {
                 Some(m) => m,
                 None => {
                     // No endpoint metadata can be resolved, we just fail it.
-                    let error = Box::new(CannotResolveEndpoint(
+                    let err = CannotResolveEndpoint(
                         service_invocation_id.service_id.service_name.to_string(),
-                    ));
-
-                    let _ = self
-                        .output_tx
-                        .send(OutputEffect {
-                            service_invocation_id,
-                            kind: Kind::Failed {
-                                error_code: Code::Internal.into(),
-                                error,
-                            },
-                        })
+                    );
+                    self.send_error(service_invocation_id, Code::Internal, err)
                         .await;
                     return;
                 }
@@ -813,29 +804,25 @@ mod state_machine_coordinator {
                 .invocation_state_machines
                 .remove(&service_invocation_id)
             {
-                let output_effect = if sm.is_ending() {
-                    OutputEffect {
-                        service_invocation_id,
-                        kind: Kind::End,
-                    }
+                if sm.is_ending() {
+                    self.send_end(service_invocation_id).await;
                 } else {
                     // Protocol violation.
                     // We haven't received any output stream entry, but the invocation task was closed
+                    // Because handle_invocation_task_closed is the terminal message coming from the invocation task,
+                    // we need to return a message to the partition processor.
                     warn!(
                         restate.sid = %service_invocation_id,
                         "Protocol violation when executing the invocation. \
                         The invocation task was closed without a SuspensionMessage, nor an OutputStreamEntry"
                     );
-                    OutputEffect {
+                    self.send_error(
                         service_invocation_id,
-                        kind: Kind::Failed {
-                            error_code: Code::Internal.into(),
-                            error: Box::new(UnexpectedEndOfInvocationStream),
-                        },
-                    }
-                };
-
-                let _ = self.output_tx.send(output_effect).await;
+                        Code::Internal,
+                        UnexpectedEndOfInvocationStream,
+                    )
+                    .await;
+                }
             }
             // If no state machine, this might be a result for an aborted invocation.
         }
@@ -856,6 +843,20 @@ mod state_machine_coordinator {
                     "Error when executing the invocation",
                 );
 
+                if sm.is_ending() {
+                    // Soft protocol violation.
+                    // This can happen in case we get an error after receiving an OutputStreamEntry.
+                    // Because handle_invocation_task_failed is the terminal message coming from the invocation task,
+                    // we need to return a message to the partition processor.
+                    warn!(
+                         restate.sid = %service_invocation_id,
+                        "Protocol violation when executing the invocation. \
+                        The invocation task sent an OutputStreamEntry and an error afterwards"
+                    );
+                    self.send_end(service_invocation_id).await;
+                    return;
+                }
+
                 match sm.handle_task_error() {
                     Some(next_retry_timer_duration) if error.is_transient() => {
                         self.invocation_state_machines
@@ -866,15 +867,7 @@ mod state_machine_coordinator {
                         );
                     }
                     _ => {
-                        let _ = self
-                            .output_tx
-                            .send(OutputEffect {
-                                service_invocation_id,
-                                kind: Kind::Failed {
-                                    error_code: Code::Internal.into(),
-                                    error: Box::new(error),
-                                },
-                            })
+                        self.send_error(service_invocation_id, Code::Internal, error)
                             .await;
                     }
                 }
@@ -894,11 +887,15 @@ mod state_machine_coordinator {
                 if sm.is_ending() {
                     // Soft protocol violation.
                     // We got both an output stream entry and the suspension message
+                    // Because handle_invocation_task_suspended is the terminal message coming from the invocation task,
+                    // we need to return a message to the partition processor.
                     warn!(
                         restate.sid = %service_invocation_id,
                         "Protocol violation when executing the invocation. \
                         The invocation task sent an OutputStreamEntry and was closed with a SuspensionMessage"
                     );
+                    self.send_end(service_invocation_id).await;
+                    return;
                 }
                 let _ = self
                     .output_tx
@@ -911,6 +908,34 @@ mod state_machine_coordinator {
                     .await;
             }
             // If no state machine, this might be a result for an aborted invocation.
+        }
+
+        async fn send_end(&self, service_invocation_id: ServiceInvocationId) {
+            let _ = self
+                .output_tx
+                .send(OutputEffect {
+                    service_invocation_id,
+                    kind: Kind::End,
+                })
+                .await;
+        }
+
+        async fn send_error(
+            &self,
+            service_invocation_id: ServiceInvocationId,
+            code: Code,
+            err: impl std::error::Error + Send + Sync + 'static,
+        ) {
+            let _ = self
+                .output_tx
+                .send(OutputEffect {
+                    service_invocation_id,
+                    kind: Kind::Failed {
+                        error_code: code.into(),
+                        error: Box::new(err),
+                    },
+                })
+                .await;
         }
     }
 }
