@@ -9,14 +9,12 @@ use std::time::Duration;
 use std::vec::IntoIter;
 
 use common::types::{
-    CompletionResult, EntryIndex, RawEntry, ServiceInvocationId, ServiceInvocationSpanContext,
-    SpanRelation,
+    CompletionResult, EntryIndex, JournalMetadata, RawEntry, ServiceInvocationId,
+    ServiceInvocationSpanContext, SpanRelation,
 };
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
-use invoker::{
-    InvokeInputJournal, InvokerInputSender, JournalMetadata, JournalReader, Kind, OutputEffect,
-};
+use invoker::{InvokeInputJournal, InvokerInputSender, JournalReader, Kind, OutputEffect};
 use journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use journal::Completion;
 use prost::Message;
@@ -217,7 +215,7 @@ impl InMemoryJournalStorage {
                 JournalMetadata {
                     method,
                     span_context,
-                    journal_size: 0,
+                    length: 0,
                 },
                 vec![],
             ),
@@ -234,7 +232,7 @@ impl InMemoryJournalStorage {
             .get_mut(sid)
             .expect("append_entry can be invoked only when the journal is already available");
 
-        meta.journal_size += 1;
+        meta.length += 1;
 
         journal.push(entry.into());
     }

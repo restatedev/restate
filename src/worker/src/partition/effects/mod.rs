@@ -1,7 +1,8 @@
 use bytes::Bytes;
 use common::types::{
-    EnrichedRawEntry, EntryIndex, InvocationId, MessageIndex, MillisSinceEpoch, OutboxMessage,
-    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
+    EnrichedRawEntry, EntryIndex, InvocationId, JournalMetadata, MessageIndex, MillisSinceEpoch,
+    OutboxMessage, ServiceId, ServiceInvocation, ServiceInvocationId,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use journal::Completion;
 use std::collections::HashSet;
@@ -18,9 +19,15 @@ pub(crate) use interpreter::{
 pub(crate) enum Effect {
     // service status changes
     InvokeService(ServiceInvocation),
-    ResumeService(ServiceInvocationId),
+    ResumeService {
+        service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: ServiceInvocationResponseSink,
+    },
     SuspendService {
         service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: ServiceInvocationResponseSink,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     DropJournalAndFreeService(ServiceId),
@@ -138,18 +145,30 @@ impl Effects {
         self.effects.push(Effect::InvokeService(service_invocation));
     }
 
-    pub(crate) fn resume_service(&mut self, service_invocation_id: ServiceInvocationId) {
-        self.effects
-            .push(Effect::ResumeService(service_invocation_id));
+    pub(crate) fn resume_service(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: ServiceInvocationResponseSink,
+    ) {
+        self.effects.push(Effect::ResumeService {
+            service_invocation_id,
+            journal_metadata,
+            response_sink,
+        });
     }
 
     pub(crate) fn suspend_service(
         &mut self,
         service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: ServiceInvocationResponseSink,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) {
         self.effects.push(Effect::SuspendService {
             service_invocation_id,
+            journal_metadata,
+            response_sink,
             waiting_for_completed_entries,
         })
     }

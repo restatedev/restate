@@ -4,16 +4,16 @@ use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{StateReader, StateReaderError};
 use crate::partition::storage::memory::timer_key::{TimerKey, TimerKeyRef};
 use crate::partition::types::TimerValue;
+use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId, InvocationStatus,
-    JournalEntry, JournalStatus, MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseSink,
-    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext,
+    InvokedStatus, JournalEntry, JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage,
+    ServiceId, ServiceInvocation, ServiceInvocationId,
 };
 use futures::future::{err, ok, BoxFuture};
 use futures::{stream, FutureExt};
-use invoker::{JournalMetadata, JournalReader};
+use invoker::JournalReader;
 use journal::raw::{Header, PlainRawEntry};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -42,17 +42,10 @@ impl InMemoryPartitionStorage {
 #[derive(Debug)]
 struct Journal {
     entries: Vec<JournalEntry>,
-    method_name: String,
     length: usize,
-    response_sink: Option<ResponseSink>,
-    span_context: ServiceInvocationSpanContext,
 }
 
 impl Journal {
-    fn len(&self) -> usize {
-        self.length
-    }
-
     fn get_entry(&self, index: usize) -> Option<EnrichedRawEntry> {
         self.entries
             .get(index)
@@ -97,17 +90,10 @@ impl Journal {
             .cloned()
     }
 
-    fn new(
-        method_name: String,
-        response_sink: Option<ResponseSink>,
-        span_context: ServiceInvocationSpanContext,
-    ) -> Self {
+    fn new() -> Self {
         Self {
-            method_name,
             entries: Vec::new(),
             length: 0,
-            response_sink,
-            span_context,
         }
     }
 }
@@ -147,16 +133,6 @@ impl Storage {
             .and_then(|inbox| inbox.front().cloned())
     }
 
-    fn get_journal_status(&self, service_id: &ServiceId) -> JournalStatus {
-        self.journals
-            .get(service_id)
-            .map(|journal| JournalStatus {
-                length: journal.len() as EntryIndex,
-                span_context: journal.span_context.clone(),
-            })
-            .expect("Journal should be available")
-    }
-
     fn is_entry_completed(&self, service_id: &ServiceId, entry_index: EntryIndex) -> bool {
         self.journals
             .get(service_id)
@@ -181,26 +157,6 @@ impl Storage {
             .insert(service_id.clone(), invocation_status.clone());
     }
 
-    fn create_journal(
-        &mut self,
-        service_invocation_id: &ServiceInvocationId,
-        method_name: impl AsRef<str>,
-        response_sink: &ServiceInvocationResponseSink,
-        span_context: ServiceInvocationSpanContext,
-    ) {
-        self.journals.insert(
-            service_invocation_id.service_id.clone(),
-            Journal::new(
-                method_name.as_ref().to_string(),
-                ResponseSink::from_service_invocation_response_sink(
-                    service_invocation_id,
-                    response_sink,
-                ),
-                span_context,
-            ),
-        );
-    }
-
     fn drop_journal(&mut self, service_id: &ServiceId) {
         self.journals.remove(service_id);
     }
@@ -211,10 +167,21 @@ impl Storage {
         entry_index: EntryIndex,
         journal_entry: &EnrichedRawEntry,
     ) {
-        let journal = self.journals.get_mut(service_id).expect(
-            "Expect that the journal for {service_id} has been created before. This is a bug.",
+        let_assert!(
+            InvocationStatus::Invoked(ref mut invoked) = self
+                .invocation_status
+                .get_mut(service_id)
+                .expect("service must be invoked"),
+            "invocation must be invoked",
         );
+        let journal = self
+            .journals
+            .entry(service_id.clone())
+            .or_insert(Journal::new());
         journal.store_entry(entry_index as usize, journal_entry.clone());
+
+        invoked.journal_metadata.length =
+            EntryIndex::try_from(journal.length).expect("journal length should fit in EntryIndex");
     }
 
     fn store_completion_result(
@@ -223,31 +190,34 @@ impl Storage {
         entry_index: EntryIndex,
         completion_result: &CompletionResult,
     ) {
-        let journal = self.journals.get_mut(service_id).expect(
-            "Expect that the journal for {service_id} has been created before. This is a bug.",
-        );
+        let journal = self
+            .journals
+            .entry(service_id.clone())
+            .or_insert(Journal::new());
         journal.store_completion_result(entry_index as usize, completion_result.clone());
     }
 
     fn load_completion_result(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> Option<CompletionResult> {
-        let journal = self.journals.get(service_id).expect(
-            "Expect that the journal for {service_id} has been created before. This is a bug.",
-        );
+        let journal = self
+            .journals
+            .entry(service_id.clone())
+            .or_insert(Journal::new());
         journal.get_completion_result(entry_index as usize)
     }
 
     fn load_journal_entry(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> Option<EnrichedRawEntry> {
-        let journal = self.journals.get(service_id).expect(
-            "Expect that the journal for {service_id} has been created before. This is a bug.",
-        );
+        let journal = self
+            .journals
+            .entry(service_id.clone())
+            .or_insert(Journal::new());
         journal.get_entry(entry_index as usize)
     }
 
@@ -323,15 +293,6 @@ impl Storage {
         }
     }
 
-    fn get_response_sink(
-        &self,
-        service_invocation_id: &ServiceInvocationId,
-    ) -> Option<ResponseSink> {
-        self.journals
-            .get(&service_invocation_id.service_id)
-            .and_then(|journal| journal.response_sink.clone())
-    }
-
     fn store_timer(
         &mut self,
         service_invocation_id: &ServiceInvocationId,
@@ -374,13 +335,6 @@ impl StateReader for InMemoryPartitionStorage {
         ok(self.inner.lock().unwrap().peek_inbox(service_id)).boxed()
     }
 
-    fn get_journal_status(
-        &self,
-        service_id: &ServiceId,
-    ) -> BoxFuture<Result<JournalStatus, StateReaderError>> {
-        ok(self.inner.lock().unwrap().get_journal_status(service_id)).boxed()
-    }
-
     fn is_entry_completed(
         &self,
         service_id: &ServiceId,
@@ -391,18 +345,6 @@ impl StateReader for InMemoryPartitionStorage {
             .lock()
             .unwrap()
             .is_entry_completed(service_id, entry_index))
-        .boxed()
-    }
-
-    fn get_response_sink(
-        &self,
-        service_invocation_id: &ServiceInvocationId,
-    ) -> BoxFuture<Result<Option<ResponseSink>, StateReaderError>> {
-        ok(self
-            .inner
-            .lock()
-            .unwrap()
-            .get_response_sink(service_invocation_id))
         .boxed()
     }
 }
@@ -421,22 +363,6 @@ impl<'a> StateStorage for Transaction<'a> {
             .lock()
             .unwrap()
             .store_invocation_status(service_id, status);
-        Ok(())
-    }
-
-    fn create_journal(
-        &self,
-        service_invocation_id: &ServiceInvocationId,
-        method_name: impl AsRef<str>,
-        response_sink: &ServiceInvocationResponseSink,
-        span_context: ServiceInvocationSpanContext,
-    ) -> Result<(), StateStorageError> {
-        self.inner.lock().unwrap().create_journal(
-            service_invocation_id,
-            method_name,
-            response_sink,
-            span_context,
-        );
         Ok(())
     }
 
@@ -627,9 +553,9 @@ impl InvocationReader for InMemoryPartitionStorage {
             .invocation_status
             .iter()
             .filter_map(|(service_id, status)| match status {
-                InvocationStatus::Invoked(invocation_id) => Some(ServiceInvocationId {
+                InvocationStatus::Invoked(invoked_status) => Some(ServiceInvocationId {
                     service_id: service_id.clone(),
-                    invocation_id: *invocation_id,
+                    invocation_id: invoked_status.invocation_id,
                 }),
                 _ => None,
             })
@@ -725,13 +651,19 @@ impl JournalReader for InMemoryJournalReader {
         let storages = self.storages.lock().unwrap();
 
         for storage in storages.iter() {
-            if let Some(journal) = storage.inner.lock().unwrap().journals.get(&sid.service_id) {
-                let meta = JournalMetadata {
-                    method: journal.method_name.clone(),
-                    journal_size: journal.length as EntryIndex,
-                    span_context: journal.span_context.clone(),
-                };
+            let storage = storage.inner.lock().unwrap();
 
+            let meta = if let Some(InvocationStatus::Invoked(InvokedStatus {
+                journal_metadata,
+                ..
+            })) = storage.invocation_status.get(&sid.service_id)
+            {
+                journal_metadata.clone()
+            } else {
+                continue;
+            };
+
+            if let Some(journal) = storage.journals.get(&sid.service_id) {
                 let journal: Vec<PlainRawEntry> = journal.entries[0..journal.length]
                     .iter()
                     .map(|entry| match entry {

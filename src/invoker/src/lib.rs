@@ -3,9 +3,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use common::retry_policy::RetryPolicy;
-use common::types::{
-    EntryIndex, PartitionLeaderEpoch, ServiceInvocationId, ServiceInvocationSpanContext,
-};
+use common::types::{EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
 use journal::raw::PlainRawEntry;
 use journal::Completion;
@@ -18,16 +16,6 @@ pub use crate::invoker::*;
 mod invocation_task;
 
 // --- Journal Reader
-
-#[derive(Debug, Clone)]
-pub struct JournalMetadata {
-    pub method: String,
-
-    pub journal_size: EntryIndex,
-
-    /// SpanContext to use to attach spans as child of this span.
-    pub span_context: ServiceInvocationSpanContext,
-}
 
 pub trait JournalReader {
     type JournalStream: Stream<Item = PlainRawEntry>;

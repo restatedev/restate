@@ -1,4 +1,4 @@
-use common::types::{PartitionId, PeerId, ServiceInvocationId};
+use common::types::{JournalMetadata, PartitionId, PeerId, ServiceInvocationId};
 use futures::{stream, StreamExt};
 use std::convert::Infallible;
 use std::fmt::Debug;
@@ -61,9 +61,8 @@ pub(super) struct RocksDBJournalReader;
 impl invoker::JournalReader for RocksDBJournalReader {
     type JournalStream = stream::Empty<journal::raw::PlainRawEntry>;
     type Error = Infallible;
-    type Future = futures::future::Pending<
-        Result<(invoker::JournalMetadata, Self::JournalStream), Self::Error>,
-    >;
+    type Future =
+        futures::future::Pending<Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
 
     fn read_journal(&self, _sid: &ServiceInvocationId) -> Self::Future {
         // TODO implement this

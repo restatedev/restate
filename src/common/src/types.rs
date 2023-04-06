@@ -283,16 +283,57 @@ impl Display for MillisSinceEpoch {
 }
 
 /// Status of a service instance.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub enum InvocationStatus {
-    Invoked(InvocationId),
-    Suspended {
-        invocation_id: InvocationId,
-        /// If journal entries in this list get completed, the invocation can be resumed
-        waiting_for_completed_entries: HashSet<EntryIndex>,
-    },
+    Invoked(InvokedStatus),
+    Suspended(SuspendedStatus),
     /// Service instance is currently not invoked
     Free,
+}
+
+#[derive(Debug, Clone)]
+pub struct InvokedStatus {
+    pub invocation_id: InvocationId,
+    pub journal_metadata: JournalMetadata,
+    pub response_sink: ServiceInvocationResponseSink,
+}
+
+impl InvokedStatus {
+    pub fn new(
+        invocation_id: InvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: ServiceInvocationResponseSink,
+    ) -> Self {
+        Self {
+            invocation_id,
+            journal_metadata,
+            response_sink,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SuspendedStatus {
+    pub invocation_id: InvocationId,
+    pub journal_metadata: JournalMetadata,
+    pub response_sink: ServiceInvocationResponseSink,
+    pub waiting_for_completed_entries: HashSet<EntryIndex>,
+}
+
+impl SuspendedStatus {
+    pub fn new(
+        invocation_id: InvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: ServiceInvocationResponseSink,
+        waiting_for_completed_entries: HashSet<EntryIndex>,
+    ) -> Self {
+        Self {
+            invocation_id,
+            journal_metadata,
+            response_sink,
+            waiting_for_completed_entries,
+        }
+    }
 }
 
 impl Default for InvocationStatus {
@@ -317,31 +358,24 @@ impl InboxEntry {
     }
 }
 
-/// State machine representation of the [`ServiceInvocationResponseSink`]
+/// Metadata associated with a journal
 #[derive(Debug, Clone)]
-pub enum ResponseSink {
-    Ingress(IngressId, ServiceInvocationId),
-    PartitionProcessor(ServiceInvocationId, EntryIndex),
+pub struct JournalMetadata {
+    pub length: EntryIndex,
+    pub method: String,
+    pub span_context: ServiceInvocationSpanContext,
 }
 
-impl ResponseSink {
-    pub fn from_service_invocation_response_sink(
-        service_invocation_id: &ServiceInvocationId,
-        response_sink: &ServiceInvocationResponseSink,
-    ) -> Option<ResponseSink> {
-        match response_sink {
-            ServiceInvocationResponseSink::Ingress(ingress_id) => Some(ResponseSink::Ingress(
-                *ingress_id,
-                service_invocation_id.clone(),
-            )),
-            ServiceInvocationResponseSink::None => None,
-            ServiceInvocationResponseSink::PartitionProcessor {
-                entry_index,
-                caller,
-            } => Some(ResponseSink::PartitionProcessor(
-                caller.clone(),
-                *entry_index,
-            )),
+impl JournalMetadata {
+    pub fn new(
+        method: impl Into<String>,
+        span_context: ServiceInvocationSpanContext,
+        length: EntryIndex,
+    ) -> Self {
+        Self {
+            method: method.into(),
+            span_context,
+            length,
         }
     }
 }

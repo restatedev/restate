@@ -3,12 +3,13 @@ use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId,
-    InvocationStatus, MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId, ServiceInvocation,
-    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    InvocationStatus, InvokedStatus, JournalMetadata, MessageIndex, MillisSinceEpoch,
+    OutboxMessage, ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
+    SuspendedStatus,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
-use invoker::{InvokeInputJournal, JournalMetadata};
+use invoker::InvokeInputJournal;
 use journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
 use journal::Completion;
 use std::marker::PhantomData;
@@ -72,15 +73,6 @@ pub(crate) trait StateStorage {
         &self,
         service_id: &ServiceId,
         status: &InvocationStatus,
-    ) -> Result<(), StateStorageError>;
-
-    // Journal operations
-    fn create_journal(
-        &self,
-        service_invocation_id: &ServiceInvocationId,
-        method_name: impl AsRef<str>,
-        response_sink: &ServiceInvocationResponseSink,
-        span_context: ServiceInvocationSpanContext,
     ) -> Result<(), StateStorageError>;
 
     fn drop_journal(&self, service_id: &ServiceId) -> Result<(), StateStorageError>;
@@ -239,14 +231,15 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             Effect::InvokeService(service_invocation) => {
                 state_storage.store_invocation_status(
                     &service_invocation.id.service_id,
-                    &InvocationStatus::Invoked(service_invocation.id.invocation_id),
-                )?;
-
-                state_storage.create_journal(
-                    &service_invocation.id,
-                    &service_invocation.method_name,
-                    &service_invocation.response_sink,
-                    service_invocation.span_context.clone(),
+                    &InvocationStatus::Invoked(InvokedStatus::new(
+                        service_invocation.id.invocation_id,
+                        JournalMetadata::new(
+                            service_invocation.method_name.clone(),
+                            service_invocation.span_context.clone(),
+                            1, // initial length is 1, because we store the poll input stream entry
+                        ),
+                        service_invocation.response_sink,
+                    )),
                 )?;
 
                 let_assert!(
@@ -272,7 +265,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     invoke_input_journal: InvokeInputJournal::CachedJournal(
                         JournalMetadata {
                             method: service_invocation.method_name.to_string(),
-                            journal_size: 1,
+                            length: 1,
                             span_context: service_invocation.span_context,
                         },
                         vec![PlainRawEntry::new(
@@ -282,13 +275,22 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     ),
                 });
             }
-            Effect::ResumeService(ServiceInvocationId {
-                service_id,
-                invocation_id,
-            }) => {
+            Effect::ResumeService {
+                service_invocation_id:
+                    ServiceInvocationId {
+                        service_id,
+                        invocation_id,
+                    },
+                journal_metadata,
+                response_sink,
+            } => {
                 state_storage.store_invocation_status(
                     &service_id,
-                    &InvocationStatus::Invoked(invocation_id),
+                    &InvocationStatus::Invoked(InvokedStatus::new(
+                        invocation_id,
+                        journal_metadata,
+                        response_sink,
+                    )),
                 )?;
 
                 collector.collect(ActuatorMessage::Invoke {
@@ -305,14 +307,18 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                         service_id,
                         invocation_id,
                     },
+                journal_metadata,
+                response_sink,
                 waiting_for_completed_entries,
             } => {
                 state_storage.store_invocation_status(
                     &service_id,
-                    &InvocationStatus::Suspended {
+                    &InvocationStatus::Suspended(SuspendedStatus::new(
                         invocation_id,
+                        journal_metadata,
+                        response_sink,
                         waiting_for_completed_entries,
-                    },
+                    )),
                 )?;
             }
             Effect::DropJournalAndFreeService(service_id) => {
