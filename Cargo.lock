@@ -2048,9 +2048,9 @@ dependencies = [
 
 [[package]]
 name = "prost-reflect"
-version = "0.10.3"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b2e266efb35952a1297a3b43172f7782d413fcee0bf008f17ec06da993de8c9"
+checksum = "43b562574734e4365321b982c4cd74a6cb84ea598645501d26e303e883d15aec"
 dependencies = [
  "base64 0.21.0",
  "once_cell",

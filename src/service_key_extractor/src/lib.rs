@@ -1047,11 +1047,7 @@ mod expand_impls {
                 let mut b = BytesMut::with_capacity(key_len(root_number) + restate_key.len());
 
                 // Encode the key of the protobuf field
-                encode_key(
-                    root_number,
-                    kind_to_wire_type(&field_descriptor_kind),
-                    &mut b,
-                );
+                encode_key(root_number, field_descriptor_kind.wire_type(), &mut b);
 
                 // Append the restate key buffer
                 b.put(restate_key);
@@ -1061,25 +1057,6 @@ mod expand_impls {
             } else {
                 return Err(Error::UnexpectedServiceInstanceType);
             }
-        }
-    }
-
-    // Function took from https://github.com/andrewhickman/prost-reflect/blob/a3a8e9cc2373b9b090781f277ba9068c064504d5/prost-reflect/src/descriptor/api.rs#L94
-    // Double license Apache-1.0 and MIT
-    // TODO https://github.com/andrewhickman/prost-reflect/issues/33
-    fn kind_to_wire_type(kind: &Kind) -> WireType {
-        match kind {
-            Kind::Double | Kind::Fixed64 | Kind::Sfixed64 => WireType::SixtyFourBit,
-            Kind::Float | Kind::Fixed32 | Kind::Sfixed32 => WireType::ThirtyTwoBit,
-            Kind::Enum(_)
-            | Kind::Int32
-            | Kind::Int64
-            | Kind::Uint32
-            | Kind::Uint64
-            | Kind::Sint32
-            | Kind::Sint64
-            | Kind::Bool => WireType::Varint,
-            Kind::String | Kind::Bytes | Kind::Message(_) => WireType::LengthDelimited,
         }
     }
 
