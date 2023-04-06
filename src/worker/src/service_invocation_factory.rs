@@ -45,7 +45,7 @@ impl ServiceInvocationFactory for DefaultServiceInvocationFactory {
         service_name: &str,
         method_name: &str,
         request_payload: Bytes,
-        response_sink: ServiceInvocationResponseSink,
+        response_sink: Option<ServiceInvocationResponseSink>,
         span_relation: SpanRelation,
     ) -> Result<(ServiceInvocation, Span), ServiceInvocationFactoryError> {
         let key = self.extract_key(service_name, method_name, request_payload.clone())?;

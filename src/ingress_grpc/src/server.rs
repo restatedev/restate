@@ -132,7 +132,7 @@ mod tests {
             service_name: &str,
             method_name: &str,
             request_payload: Bytes,
-            response_sink: ServiceInvocationResponseSink,
+            response_sink: Option<ServiceInvocationResponseSink>,
             related_span: SpanRelation,
         ) -> Result<(ServiceInvocation, Span), ServiceInvocationFactoryError> {
             Ok(ServiceInvocation::new(

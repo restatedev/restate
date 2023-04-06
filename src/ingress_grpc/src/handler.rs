@@ -143,7 +143,7 @@ where
                     &req_headers.service_name,
                     &req_headers.method_name,
                     req_payload,
-                    ServiceInvocationResponseSink::Ingress(ingress_id),
+                    Some(ServiceInvocationResponseSink::Ingress(ingress_id)),
                     SpanRelation::Parent(ingress_span_context)
                 ) {
                     Ok(i) => i,

@@ -22,12 +22,12 @@ pub(crate) enum Effect {
     ResumeService {
         service_invocation_id: ServiceInvocationId,
         journal_metadata: JournalMetadata,
-        response_sink: ServiceInvocationResponseSink,
+        response_sink: Option<ServiceInvocationResponseSink>,
     },
     SuspendService {
         service_invocation_id: ServiceInvocationId,
         journal_metadata: JournalMetadata,
-        response_sink: ServiceInvocationResponseSink,
+        response_sink: Option<ServiceInvocationResponseSink>,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     DropJournalAndFreeService(ServiceId),
@@ -149,7 +149,7 @@ impl Effects {
         &mut self,
         service_invocation_id: ServiceInvocationId,
         journal_metadata: JournalMetadata,
-        response_sink: ServiceInvocationResponseSink,
+        response_sink: Option<ServiceInvocationResponseSink>,
     ) {
         self.effects.push(Effect::ResumeService {
             service_invocation_id,
@@ -162,7 +162,7 @@ impl Effects {
         &mut self,
         service_invocation_id: ServiceInvocationId,
         journal_metadata: JournalMetadata,
-        response_sink: ServiceInvocationResponseSink,
+        response_sink: Option<ServiceInvocationResponseSink>,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) {
         self.effects.push(Effect::SuspendService {
