@@ -9,8 +9,8 @@ use common::types::{
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
-use invoker::InvokeInputJournal;
-use journal::raw::{RawEntryCodec, RawEntryCodecError, RawEntryHeader};
+use invoker::{InvokeInputJournal, JournalMetadata};
+use journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
 use journal::{Completion, CompletionResult};
 use std::marker::PhantomData;
 use tracing::trace;
@@ -247,7 +247,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     &service_invocation.id,
                     &service_invocation.method_name,
                     &service_invocation.response_sink,
-                    service_invocation.span_context,
+                    service_invocation.span_context.clone(),
                 )?;
 
                 let_assert!(
@@ -268,10 +268,19 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     &input_entry,
                 )?;
 
-                // TODO: Send raw PollInputStreamEntry together with Invoke message
                 collector.collect(ActuatorMessage::Invoke {
                     service_invocation_id: service_invocation.id,
-                    invoke_input_journal: InvokeInputJournal::NoCachedJournal,
+                    invoke_input_journal: InvokeInputJournal::CachedJournal(
+                        JournalMetadata {
+                            method: service_invocation.method_name.to_string(),
+                            journal_size: 1,
+                            span_context: service_invocation.span_context,
+                        },
+                        vec![PlainRawEntry::new(
+                            RawEntryHeader::PollInputStream { is_completed },
+                            input_entry.entry,
+                        )],
+                    ),
                 });
             }
             Effect::ResumeService(ServiceInvocationId {
