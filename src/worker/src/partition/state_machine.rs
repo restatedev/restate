@@ -2,7 +2,7 @@ use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     EntryIndex, InboxEntry, InvocationId, InvocationResponse, JournalStatus, MessageIndex,
-    MillisSinceEpoch, ResponseResult, ResponseSink, ServiceId, ServiceInvocation,
+    MillisSinceEpoch, OutboxMessage, ResponseResult, ResponseSink, ServiceId, ServiceInvocation,
     ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
@@ -16,7 +16,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use tracing::{debug, trace, warn};
 
-use crate::partition::effects::{Effects, OutboxMessage};
+use crate::partition::effects::Effects;
 use crate::partition::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, ResolutionResult,
     TimerValue,
