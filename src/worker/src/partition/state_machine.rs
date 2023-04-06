@@ -228,16 +228,12 @@ where
                     .await?;
             }
             InvokerEffectKind::Failed { error, error_code } => {
-                if let Some(outbox_message) = Self::create_response(
-                    &service_invocation_id,
-                    invoked_status.response_sink,
-                    || {
-                        Ok(ResponseResult::Failure(
-                            error_code,
-                            error.to_string().into(),
-                        ))
-                    },
-                )? {
+                if let Some(response_sink) = invoked_status.response_sink {
+                    let outbox_message = Self::create_response(
+                        &service_invocation_id,
+                        response_sink,
+                        ResponseResult::Failure(error_code, error.to_string().into()),
+                    );
                     // TODO: We probably only need to send the response if we haven't send a response before
                     self.send_message(outbox_message, effects);
                 }
@@ -262,7 +258,7 @@ where
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
         journal_metadata: JournalMetadata,
-        response_sink: ServiceInvocationResponseSink,
+        response_sink: Option<ServiceInvocationResponseSink>,
     ) -> Result<(), Error> {
         debug_assert_eq!(
             entry_index, journal_metadata.length,
@@ -278,15 +274,14 @@ where
                 );
             }
             EnrichedEntryHeader::OutputStream => {
-                if let Some(outbox_message) =
-                    Self::create_response(&service_invocation_id, response_sink, || {
-                        let_assert!(
-                            Entry::OutputStream(OutputStreamEntry { result }) =
-                                Codec::deserialize(&journal_entry)?
-                        );
-                        Ok(result.into())
-                    })?
-                {
+                if let Some(response_sink) = response_sink {
+                    let_assert!(
+                        Entry::OutputStream(OutputStreamEntry { result }) =
+                            Codec::deserialize(&journal_entry)?
+                    );
+
+                    let outbox_message =
+                        Self::create_response(&service_invocation_id, response_sink, result.into());
                     self.send_message(outbox_message, effects);
                 }
             }
@@ -551,12 +546,12 @@ where
         } = invoke_request;
 
         let response_sink = if let Some((caller, entry_index)) = response_target {
-            ServiceInvocationResponseSink::PartitionProcessor {
+            Some(ServiceInvocationResponseSink::PartitionProcessor {
                 caller,
                 entry_index,
-            }
+            })
         } else {
-            ServiceInvocationResponseSink::None
+            None
         };
 
         ServiceInvocation {
@@ -588,33 +583,25 @@ where
         })
     }
 
-    fn create_response<F>(
+    fn create_response(
         callee: &ServiceInvocationId,
         response_sink: ServiceInvocationResponseSink,
-        result_creator: F,
-    ) -> Result<Option<OutboxMessage>, Error>
-    where
-        F: FnOnce() -> Result<ResponseResult, Error>,
-    {
-        let result = match response_sink {
+        result: ResponseResult,
+    ) -> OutboxMessage {
+        match response_sink {
             ServiceInvocationResponseSink::PartitionProcessor {
                 entry_index,
                 caller,
-            } => Some(OutboxMessage::ServiceResponse(InvocationResponse {
+            } => OutboxMessage::ServiceResponse(InvocationResponse {
                 id: caller,
                 entry_index,
-                result: result_creator()?,
-            })),
-            ServiceInvocationResponseSink::Ingress(ingress_id) => {
-                Some(OutboxMessage::IngressResponse {
-                    ingress_id,
-                    service_invocation_id: callee.clone(),
-                    response: result_creator()?,
-                })
-            }
-            ServiceInvocationResponseSink::None => None,
-        };
-
-        Ok(result)
+                result,
+            }),
+            ServiceInvocationResponseSink::Ingress(ingress_id) => OutboxMessage::IngressResponse {
+                ingress_id,
+                service_invocation_id: callee.clone(),
+                response: result,
+            },
+        }
     }
 }

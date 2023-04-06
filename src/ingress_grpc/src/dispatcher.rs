@@ -199,7 +199,9 @@ mod tests {
             ServiceInvocationId::new("MySvc", "MyMethod", uuid::Uuid::now_v7()),
             method_name,
             Default::default(),
-            ServiceInvocationResponseSink::Ingress(IngressId("0.0.0.0:0".parse().unwrap())),
+            Some(ServiceInvocationResponseSink::Ingress(IngressId(
+                "0.0.0.0:0".parse().unwrap(),
+            ))),
             SpanRelation::None,
         );
         let (cmd, cmd_rx) = Command::prepare(service_invocation.clone());
