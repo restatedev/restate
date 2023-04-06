@@ -1,5 +1,6 @@
 use crate::partition::effects::{ActuatorMessage, MessageCollector};
-use crate::partition::shuffle::{OutboxReader, Shuffle};
+use crate::partition::shuffle::Shuffle;
+use crate::partition::storage::PartitionStorage;
 use crate::partition::{shuffle, TimerHandle, TimerOutput, TimerValue};
 use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId};
 use common::utils::GenericError;
@@ -11,7 +12,6 @@ use std::ops::DerefMut;
 use std::panic;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use timer::TimerReader;
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio::task::JoinError;
@@ -19,9 +19,13 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info_span, trace};
 
 pub(super) trait InvocationReader {
-    type InvokedInvocationStream: Stream<Item = ServiceInvocationId> + Unpin;
+    type InvokedInvocationStream<'a>: Stream<
+        Item = Result<ServiceInvocationId, storage_api::StorageError>,
+    >
+    where
+        Self: 'a;
 
-    fn scan_invoked_invocations(&self) -> Self::InvokedInvocationStream;
+    fn scan_invoked_invocations(&mut self) -> Self::InvokedInvocationStream<'_>;
 }
 
 pub(super) struct LeaderState {
@@ -211,6 +215,8 @@ pub(crate) enum Error {
     FailedTimerTask(#[from] timer::TimerServiceError),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
     FailedShuffleTask(#[from] anyhow::Error),
+    #[error(transparent)]
+    Storage(#[from] storage_api::StorageError),
 }
 
 pub(super) enum LeadershipState<InvokerInputSender, NetworkHandle> {
@@ -246,43 +252,39 @@ where
         )
     }
 
-    pub(super) async fn become_leader<SR, TR>(
+    pub(super) async fn become_leader<Storage>(
         self,
         leader_epoch: LeaderEpoch,
-        state_reader: SR,
-        timer_reader: TR,
+        partition_storage: PartitionStorage<Storage>,
     ) -> Result<(ActuatorStream, Self), Error>
     where
-        SR: InvocationReader + OutboxReader + Send + Sync + 'static,
-        TR: TimerReader<TimerValue> + Send + Sync + 'static,
+        Storage: storage_api::Storage + Clone + Send + Sync + 'static,
     {
         if let LeadershipState::Follower { .. } = self {
-            self.unchecked_become_leader(leader_epoch, state_reader, timer_reader)
+            self.unchecked_become_leader(leader_epoch, partition_storage)
                 .await
         } else {
             let (_, follower_state) = self.become_follower().await?;
 
             follower_state
-                .unchecked_become_leader(leader_epoch, state_reader, timer_reader)
+                .unchecked_become_leader(leader_epoch, partition_storage)
                 .await
         }
     }
 
-    async fn unchecked_become_leader<SR, TR>(
+    async fn unchecked_become_leader<Storage>(
         self,
         leader_epoch: LeaderEpoch,
-        state_reader: SR,
-        timer_reader: TR,
+        mut partition_storage: PartitionStorage<Storage>,
     ) -> Result<(ActuatorStream, Self), Error>
     where
-        SR: OutboxReader + InvocationReader + Send + Sync + 'static,
-        TR: TimerReader<TimerValue> + Send + Sync + 'static,
+        Storage: storage_api::Storage + Clone + Send + Sync + 'static,
     {
         if let LeadershipState::Follower(mut follower_state) = self {
             let invoker_rx = Self::register_at_invoker(
                 &mut follower_state.invoker_tx,
                 (follower_state.partition_id, leader_epoch),
-                &state_reader,
+                &mut partition_storage,
             )
             .await?;
 
@@ -290,7 +292,7 @@ where
 
             let timer = follower_state.timer_service_options.build(
                 timer_tx,
-                timer_reader,
+                partition_storage.clone(),
                 timer::TokioClock,
             );
             let timer_handle = timer.create_timer_handle();
@@ -299,7 +301,7 @@ where
 
             let shuffle = Shuffle::new(
                 follower_state.peer_id,
-                state_reader,
+                partition_storage,
                 follower_state.network_handle.create_shuffle_sender(),
                 shuffle_tx,
             );
@@ -338,13 +340,13 @@ where
         }
     }
 
-    async fn register_at_invoker<IR>(
+    async fn register_at_invoker<Storage>(
         invoker_handle: &mut InvokerInputSender,
         partition_leader_epoch: PartitionLeaderEpoch,
-        invocation_reader: &IR,
+        partition_storage: &mut PartitionStorage<Storage>,
     ) -> Result<mpsc::Receiver<invoker::OutputEffect>, Error>
     where
-        IR: InvocationReader,
+        Storage: storage_api::Storage,
     {
         let (invoker_tx, invoker_rx) = mpsc::channel(1);
 
@@ -352,17 +354,26 @@ where
             .register_partition(partition_leader_epoch, invoker_tx)
             .await?;
 
-        let mut invoked_invocations = invocation_reader.scan_invoked_invocations();
+        let mut transaction = partition_storage.create_transaction();
 
-        while let Some(service_invocation_id) = invoked_invocations.next().await {
-            invoker_handle
-                .invoke(
-                    partition_leader_epoch,
-                    service_invocation_id,
-                    InvokeInputJournal::NoCachedJournal,
-                )
-                .await?;
+        {
+            let invoked_invocations = transaction.scan_invoked_invocations();
+            tokio::pin!(invoked_invocations);
+
+            while let Some(service_invocation_id) = invoked_invocations.next().await {
+                let service_invocation_id = service_invocation_id?;
+
+                invoker_handle
+                    .invoke(
+                        partition_leader_epoch,
+                        service_invocation_id,
+                        InvokeInputJournal::NoCachedJournal,
+                    )
+                    .await?;
+            }
         }
+
+        transaction.commit().await?;
 
         Ok(invoker_rx)
     }

@@ -6,6 +6,7 @@ use common::types::{CompletionResult, EntryIndex, ResponseResult};
 
 pub mod raw;
 
+mod enriched;
 mod entries;
 pub use entries::*;
 

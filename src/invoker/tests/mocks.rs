@@ -260,9 +260,10 @@ impl InMemoryJournalStorage {
 impl JournalReader for InMemoryJournalStorage {
     type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
     type Error = Infallible;
-    type Future = BoxFuture<'static, Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
+    type Future<'a> =
+        BoxFuture<'static, Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
 
-    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future {
+    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future<'_> {
         let journals_arc = self.journals.clone();
         let sid = sid.clone();
         async move {

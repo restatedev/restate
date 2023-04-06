@@ -1,8 +1,8 @@
-use common::types::{JournalMetadata, PartitionId, PeerId, ServiceInvocationId};
-use futures::{stream, StreamExt};
-use std::convert::Infallible;
+use common::types::{PartitionId, PartitionKey, PeerId};
+use futures::StreamExt;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
@@ -21,19 +21,21 @@ pub(super) use crate::partition::ack::{
 use crate::partition::actuator_output_handler::ActuatorOutputHandler;
 use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::LeadershipState;
-use crate::partition::storage::InMemoryPartitionStorage;
+use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
 pub(crate) use state_machine::Command;
 pub(super) use types::TimerValue;
 
 type TimerOutput = timer::Output<TimerValue>;
 type TimerHandle = timer::TimerHandle<TimerValue>;
+use storage_rocksdb::RocksDBStorage;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
 {
     peer_id: PeerId,
     partition_id: PartitionId,
+    partition_key_range: RangeInclusive<PartitionKey>,
 
     timer_service_options: timer::Options,
 
@@ -50,24 +52,9 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
 
     key_extractor: KeyExtractor,
 
-    in_memory_storage: InMemoryPartitionStorage,
+    rocksdb_storage: RocksDBStorage,
 
     _entry_codec: PhantomData<RawEntryCodec>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct RocksDBJournalReader;
-
-impl invoker::JournalReader for RocksDBJournalReader {
-    type JournalStream = stream::Empty<journal::raw::PlainRawEntry>;
-    type Error = Infallible;
-    type Future =
-        futures::future::Pending<Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
-
-    fn read_journal(&self, _sid: &ServiceInvocationId) -> Self::Future {
-        // TODO implement this
-        unimplemented!("Implement JournalReader")
-    }
 }
 
 impl<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
@@ -82,6 +69,7 @@ where
     pub(super) fn new(
         peer_id: PeerId,
         partition_id: PartitionId,
+        partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: timer::Options,
         command_stream: mpsc::Receiver<consensus::Command<AckableCommand>>,
         proposal_sender: IdentitySender<AckableCommand>,
@@ -89,11 +77,12 @@ where
         network_handle: NetworkHandle,
         ack_tx: network::PartitionProcessorSender<AckResponse>,
         key_extractor: KeyExtractor,
-        in_memory_storage: InMemoryPartitionStorage,
+        rocksdb_storage: RocksDBStorage,
     ) -> Self {
         Self {
             peer_id,
             partition_id,
+            partition_key_range,
             timer_service_options,
             command_rx: command_stream,
             proposal_tx: proposal_sender,
@@ -103,7 +92,7 @@ where
             ack_tx,
             key_extractor,
             _entry_codec: Default::default(),
-            in_memory_storage,
+            rocksdb_storage,
         }
     }
 
@@ -111,6 +100,7 @@ where
         let PartitionProcessor {
             peer_id,
             partition_id,
+            partition_key_range,
             timer_service_options,
             mut command_rx,
             mut state_machine,
@@ -119,7 +109,7 @@ where
             proposal_tx,
             ack_tx,
             key_extractor,
-            in_memory_storage,
+            rocksdb_storage,
             ..
         } = self;
 
@@ -134,7 +124,10 @@ where
             network_handle,
         );
 
-        let mut partition_storage = in_memory_storage;
+        // let mut partition_storage = in_memory_storage;
+        let partition_storage =
+            PartitionStorage::new(partition_id, partition_key_range, rocksdb_storage);
+
         let actuator_output_handler =
             ActuatorOutputHandler::<_, RawEntryCodec>::new(proposal_tx, key_extractor);
 
@@ -147,11 +140,11 @@ where
                                 let (fsm_command, ack_target) = ackable_command.into_inner();
 
                                 effects.clear();
-                                state_machine.on_apply(fsm_command, &mut effects, &partition_storage).await?;
+                                let mut transaction = partition_storage.create_transaction();
+                                state_machine.on_apply(fsm_command, &mut effects, &mut transaction).await?;
 
                                 let message_collector = leadership_state.into_message_collector();
 
-                                let transaction = partition_storage.create_transaction();
                                 let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).await?;
 
                                 let message_collector = result.commit().await?;
@@ -163,9 +156,9 @@ where
                             }
                             consensus::Command::BecomeLeader(leader_epoch) => {
                                 info!(%peer_id, %partition_id, %leader_epoch, "Become leader.");
+
                                 (actuator_stream, leadership_state) = leadership_state.become_leader(
                                     leader_epoch,
-                                    partition_storage.clone(),
                                     partition_storage.clone())
                                 .await?;
                             }

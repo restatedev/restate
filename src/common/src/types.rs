@@ -1,3 +1,4 @@
+use crate::partitioner::HashPartitioner;
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::{SpanContext, TraceContextExt};
@@ -87,6 +88,11 @@ impl ServiceId {
             service_name: service_name.into(),
             key: key.into(),
         }
+    }
+
+    pub fn partition_key(&self) -> PartitionKey {
+        // Todo: Figure out whether to cache this value in ServiceId struct
+        HashPartitioner::compute_partition_key(&self.key)
     }
 }
 

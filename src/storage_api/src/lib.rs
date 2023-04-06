@@ -51,6 +51,7 @@ pub trait Transaction:
     + journal_table::JournalTable
     + fsm_table::FsmTable
     + timer_table::TimerTable
+    + Send
 {
     fn commit(self) -> GetFuture<'static, ()>;
 }

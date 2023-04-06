@@ -2,10 +2,9 @@ extern crate core;
 
 use crate::ingress_integration::ExternalClientIngressRunner;
 use crate::network_integration::FixedPartitionTable;
-use crate::partition::storage::memory::InMemoryJournalReader;
-use crate::partition::storage::InMemoryPartitionStorage;
+use crate::partition::storage::journal_reader::JournalReader;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
-use common::types::{IngressId, PeerId, PeerTarget};
+use common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
 use consensus::Consensus;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -16,6 +15,8 @@ use partition::shuffle;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use service_protocol::codec::ProtobufRawEntryCodec;
+use std::ops::RangeInclusive;
+use storage_rocksdb::RocksDBStorage;
 use tokio::join;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -64,7 +65,11 @@ pub struct Worker {
     consensus: Consensus<PartitionProcessorCommand>,
     processors: Vec<PartitionProcessor>,
     network: network_integration::Network,
-    invoker: Invoker<ProtobufRawEntryCodec, InMemoryJournalReader, InMemoryServiceEndpointRegistry>,
+    invoker: Invoker<
+        ProtobufRawEntryCodec,
+        JournalReader<RocksDBStorage>,
+        InMemoryServiceEndpointRegistry,
+    >,
     external_client_ingress_runner: ExternalClientIngressRunner,
 }
 
@@ -94,7 +99,8 @@ impl Worker {
         let Options {
             channel_size,
             ingress_grpc,
-            timers: timer,
+            timers,
+            storage_rocksdb,
             ..
         } = opts;
 
@@ -130,27 +136,31 @@ impl Worker {
 
         let network_handle = network.create_network_handle();
 
-        let in_memory_journal_reader = InMemoryJournalReader::new();
+        let rocksdb = storage_rocksdb.build();
 
-        let invoker = opts
-            .invoker
-            .build(in_memory_journal_reader.clone(), service_endpoint_registry);
+        let invoker = opts.invoker.build(
+            JournalReader::new(rocksdb.clone()),
+            service_endpoint_registry,
+        );
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
             .map(|idx| {
                 let proposal_sender = consensus.create_proposal_sender();
                 let invoker_sender = invoker.create_sender();
-                let in_memory_storage = InMemoryPartitionStorage::new();
-                in_memory_journal_reader.register(in_memory_storage.clone());
+
+                let start = PartitionKey::MAX / num_partition_processors * idx;
+                let end = PartitionKey::MAX / num_partition_processors * (idx + 1);
+                let partition_key_range = start..=end;
                 Self::create_partition_processor(
                     idx,
-                    timer.clone(),
+                    partition_key_range,
+                    timers.clone(),
                     proposal_sender,
                     invoker_sender,
                     network_handle.clone(),
                     network.create_partition_processor_sender(),
                     key_extractor_registry.clone(),
-                    in_memory_storage,
+                    rocksdb.clone(),
                 )
             })
             .unzip();
@@ -173,18 +183,20 @@ impl Worker {
     #[allow(clippy::too_many_arguments)]
     fn create_partition_processor(
         peer_id: PeerId,
+        partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: timer::Options,
         proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: UnboundedInvokerInputSender,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
         ack_sender: PartitionProcessorSender<partition::AckResponse>,
         key_extractor: KeyExtractorsRegistry,
-        in_memory_storage: InMemoryPartitionStorage,
+        rocksdb_storage: RocksDBStorage,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(1);
         let processor = PartitionProcessor::new(
             peer_id,
             peer_id,
+            partition_key_range,
             timer_service_options,
             command_rx,
             IdentitySender::new(peer_id, proposal_sender),
@@ -192,7 +204,7 @@ impl Worker {
             network_handle,
             ack_sender,
             key_extractor,
-            in_memory_storage,
+            rocksdb_storage,
         );
 
         ((peer_id, command_tx), processor)

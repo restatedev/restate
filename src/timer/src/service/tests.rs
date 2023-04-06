@@ -43,13 +43,13 @@ impl<T> TimerReader<T> for MockTimerReader<T>
 where
     T: Timer + Send + Ord + Clone,
 {
-    type TimerStream = stream::Iter<std::vec::IntoIter<T>>;
+    type TimerStream<'a> = stream::Iter<std::vec::IntoIter<T>> where T: 'a;
 
     fn scan_timers(
         &self,
         num_timers: usize,
         previous_timer_key: Option<T::TimerKey>,
-    ) -> Self::TimerStream {
+    ) -> Self::TimerStream<'_> {
         let result: Vec<_> = if let Some(previous_timer_key) = previous_timer_key {
             self.timers
                 .lock()

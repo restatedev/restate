@@ -1,5 +1,6 @@
+#![allow(dead_code)]
+
 use crate::partition::effects::{CommitError, Committable, StateStorage, StateStorageError};
-use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{StateReader, StateReaderError};
 use crate::partition::storage::memory::timer_key::{TimerKey, TimerKeyRef};
@@ -10,7 +11,7 @@ use common::types::{
     InvokedStatus, JournalEntry, JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage,
     ServiceId, ServiceInvocation, ServiceInvocationId,
 };
-use futures::future::{err, ok, BoxFuture};
+use futures::future::{err, ok, ready, BoxFuture};
 use futures::{stream, FutureExt};
 use invoker::JournalReader;
 use journal::raw::{Header, PlainRawEntry};
@@ -119,11 +120,8 @@ impl Storage {
         }
     }
 
-    fn get_invocation_status(&self, service_id: &ServiceId) -> InvocationStatus {
-        self.invocation_status
-            .get(service_id)
-            .cloned()
-            .unwrap_or(InvocationStatus::Free)
+    fn get_invocation_status(&self, service_id: &ServiceId) -> Option<InvocationStatus> {
+        self.invocation_status.get(service_id).cloned()
     }
 
     fn peek_inbox(&self, service_id: &ServiceId) -> Option<InboxEntry> {
@@ -150,10 +148,10 @@ impl Storage {
     fn store_invocation_status(
         &mut self,
         service_id: &ServiceId,
-        invocation_status: &InvocationStatus,
+        invocation_status: InvocationStatus,
     ) {
         self.invocation_status
-            .insert(service_id.clone(), invocation_status.clone());
+            .insert(service_id.clone(), invocation_status);
     }
 
     fn drop_journal(&mut self, service_id: &ServiceId) {
@@ -164,26 +162,26 @@ impl Storage {
         &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
-        journal_entry: &EnrichedRawEntry,
+        journal_entry: EnrichedRawEntry,
     ) {
         let journal = self
             .journals
             .entry(service_id.clone())
             .or_insert(Journal::new());
-        journal.store_entry(entry_index as usize, journal_entry.clone());
+        journal.store_entry(entry_index as usize, journal_entry);
     }
 
     fn store_completion_result(
         &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
-        completion_result: &CompletionResult,
+        completion_result: CompletionResult,
     ) {
         let journal = self
             .journals
             .entry(service_id.clone())
             .or_insert(Journal::new());
-        journal.store_completion_result(entry_index as usize, completion_result.clone());
+        journal.store_completion_result(entry_index as usize, completion_result);
     }
 
     fn load_completion_result(
@@ -213,16 +211,16 @@ impl Storage {
     fn enqueue_into_inbox(
         &mut self,
         seq_number: MessageIndex,
-        service_invocation: &ServiceInvocation,
+        service_invocation: ServiceInvocation,
     ) {
         self.inboxes
             .entry(service_invocation.id.service_id.clone())
             .or_insert(VecDeque::new())
-            .push_back(InboxEntry::new(seq_number, service_invocation.clone()))
+            .push_back(InboxEntry::new(seq_number, service_invocation))
     }
 
-    fn enqueue_into_outbox(&mut self, seq_number: MessageIndex, message: &OutboxMessage) {
-        self.outbox.push_back((seq_number, message.clone()))
+    fn enqueue_into_outbox(&mut self, seq_number: MessageIndex, message: OutboxMessage) {
+        self.outbox.push_back((seq_number, message))
     }
 
     fn truncate_outbox(&mut self, seq_number_to_truncate: MessageIndex) {
@@ -284,16 +282,12 @@ impl Storage {
 
     fn store_timer(
         &mut self,
-        service_invocation_id: &ServiceInvocationId,
+        service_invocation_id: ServiceInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) {
         self.timers.insert(
-            TimerKey::new(
-                wake_up_time,
-                service_invocation_id.service_id.clone(),
-                entry_index,
-            ),
+            TimerKey::new(wake_up_time, service_invocation_id.service_id, entry_index),
             service_invocation_id.invocation_id,
         );
     }
@@ -311,21 +305,27 @@ impl Storage {
 
 impl StateReader for InMemoryPartitionStorage {
     fn get_invocation_status(
-        &self,
+        &mut self,
         service_id: &ServiceId,
     ) -> BoxFuture<Result<InvocationStatus, StateReaderError>> {
-        ok(self.inner.lock().unwrap().get_invocation_status(service_id)).boxed()
+        ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .get_invocation_status(service_id)
+            .unwrap_or_default())
+        .boxed()
     }
 
     fn peek_inbox(
-        &self,
+        &mut self,
         service_id: &ServiceId,
     ) -> BoxFuture<Result<Option<InboxEntry>, StateReaderError>> {
         ok(self.inner.lock().unwrap().peek_inbox(service_id)).boxed()
     }
 
     fn is_entry_completed(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<bool, StateReaderError>> {
@@ -344,51 +344,56 @@ pub struct Transaction<'a> {
 
 impl<'a> StateStorage for Transaction<'a> {
     fn store_invocation_status(
-        &self,
+        &mut self,
         service_id: &ServiceId,
-        status: &InvocationStatus,
-    ) -> Result<(), StateStorageError> {
+        status: InvocationStatus,
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner
             .lock()
             .unwrap()
             .store_invocation_status(service_id, status);
-        Ok(())
+        ready(Ok(())).boxed()
     }
 
-    fn drop_journal(&self, service_id: &ServiceId) -> Result<(), StateStorageError> {
+    fn drop_journal(
+        &mut self,
+        service_id: &ServiceId,
+        _journal_length: EntryIndex,
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner.lock().unwrap().drop_journal(service_id);
-        Ok(())
+
+        ready(Ok(())).boxed()
     }
 
     fn store_journal_entry(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
-        journal_entry: &EnrichedRawEntry,
-    ) -> Result<(), StateStorageError> {
+        journal_entry: EnrichedRawEntry,
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner
             .lock()
             .unwrap()
             .store_journal_entry(service_id, entry_index, journal_entry);
-        Ok(())
+        ready(Ok(())).boxed()
     }
 
     fn store_completion_result(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
-        completion_result: &CompletionResult,
-    ) -> Result<(), StateStorageError> {
+        completion_result: CompletionResult,
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner.lock().unwrap().store_completion_result(
             service_id,
             entry_index,
             completion_result,
         );
-        Ok(())
+        ready(Ok(())).boxed()
     }
 
     fn load_completion_result(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<Option<CompletionResult>, StateStorageError>> {
@@ -401,7 +406,7 @@ impl<'a> StateStorage for Transaction<'a> {
     }
 
     fn load_journal_entry(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<Option<EnrichedRawEntry>, StateStorageError>> {
@@ -414,114 +419,121 @@ impl<'a> StateStorage for Transaction<'a> {
     }
 
     fn enqueue_into_inbox(
-        &self,
+        &mut self,
         seq_number: MessageIndex,
-        service_invocation: &ServiceInvocation,
-    ) -> Result<(), StateStorageError> {
+        service_invocation: ServiceInvocation,
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner
             .lock()
             .unwrap()
             .enqueue_into_inbox(seq_number, service_invocation);
-        Ok(())
+        ready(Ok(())).boxed()
     }
 
     fn enqueue_into_outbox(
-        &self,
+        &mut self,
         seq_number: MessageIndex,
-        message: &OutboxMessage,
-    ) -> Result<(), StateStorageError> {
+        message: OutboxMessage,
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner
             .lock()
             .unwrap()
             .enqueue_into_outbox(seq_number, message);
-        Ok(())
+        ready(Ok(())).boxed()
     }
 
-    fn store_inbox_seq_number(&self, _seq_number: MessageIndex) -> Result<(), StateStorageError> {
-        Ok(())
+    fn store_inbox_seq_number(
+        &mut self,
+        _seq_number: MessageIndex,
+    ) -> BoxFuture<Result<(), StateStorageError>> {
+        ready(Ok(())).boxed()
     }
 
-    fn store_outbox_seq_number(&self, _seq_number: MessageIndex) -> Result<(), StateStorageError> {
-        Ok(())
+    fn store_outbox_seq_number(
+        &mut self,
+        _seq_number: MessageIndex,
+    ) -> BoxFuture<Result<(), StateStorageError>> {
+        ready(Ok(())).boxed()
     }
 
     fn truncate_outbox(
-        &self,
+        &mut self,
         outbox_sequence_number: MessageIndex,
-    ) -> Result<(), StateStorageError> {
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner
             .lock()
             .unwrap()
             .truncate_outbox(outbox_sequence_number);
-        Ok(())
+        ready(Ok(())).boxed()
     }
 
     fn truncate_inbox(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         inbox_sequence_number: MessageIndex,
-    ) -> Result<(), StateStorageError> {
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner
             .lock()
             .unwrap()
             .truncate_inbox(service_id, inbox_sequence_number);
-        Ok(())
+        ready(Ok(())).boxed()
     }
 
     fn store_state(
-        &self,
+        &mut self,
         service_id: &ServiceId,
-        key: impl AsRef<[u8]>,
-        value: impl AsRef<[u8]>,
-    ) -> Result<(), StateStorageError> {
+        key: Bytes,
+        value: Bytes,
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner
             .lock()
             .unwrap()
             .store_state(service_id, key, value);
-        Ok(())
+        ready(Ok(())).boxed()
     }
 
     fn load_state(
-        &self,
+        &mut self,
         service_id: &ServiceId,
-        key: impl AsRef<[u8]>,
+        key: &Bytes,
     ) -> BoxFuture<Result<Option<Bytes>, StateStorageError>> {
         ok(self.inner.lock().unwrap().load_state(service_id, key)).boxed()
     }
 
     fn clear_state(
-        &self,
+        &mut self,
         service_id: &ServiceId,
-        key: impl AsRef<[u8]>,
-    ) -> Result<(), StateStorageError> {
+        key: &Bytes,
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner.lock().unwrap().clear_state(service_id, key);
-        Ok(())
+        ready(Ok(())).boxed()
     }
 
     fn store_timer(
-        &self,
-        service_invocation_id: &ServiceInvocationId,
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
-    ) -> Result<(), StateStorageError> {
+    ) -> BoxFuture<Result<(), StateStorageError>> {
         self.inner
             .lock()
             .unwrap()
             .store_timer(service_invocation_id, wake_up_time, entry_index);
-        Ok(())
+        ready(Ok(())).boxed()
     }
 
     fn delete_timer(
-        &self,
-        service_id: &ServiceId,
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
-    ) -> Result<(), StateStorageError> {
-        self.inner
-            .lock()
-            .unwrap()
-            .delete_timer(service_id, wake_up_time, entry_index);
-        Ok(())
+    ) -> BoxFuture<Result<(), StateStorageError>> {
+        self.inner.lock().unwrap().delete_timer(
+            &service_invocation_id.service_id,
+            wake_up_time,
+            entry_index,
+        );
+        ready(Ok(())).boxed()
     }
 }
 
@@ -531,28 +543,28 @@ impl<'a> Committable for Transaction<'a> {
     }
 }
 
-impl InvocationReader for InMemoryPartitionStorage {
-    type InvokedInvocationStream = stream::Iter<IntoIter<ServiceInvocationId>>;
-
-    fn scan_invoked_invocations(&self) -> Self::InvokedInvocationStream {
-        let invoked_invocations: Vec<ServiceInvocationId> = self
-            .inner
-            .lock()
-            .unwrap()
-            .invocation_status
-            .iter()
-            .filter_map(|(service_id, status)| match status {
-                InvocationStatus::Invoked(invoked_status) => Some(ServiceInvocationId {
-                    service_id: service_id.clone(),
-                    invocation_id: invoked_status.invocation_id,
-                }),
-                _ => None,
-            })
-            .collect();
-
-        stream::iter(invoked_invocations)
-    }
-}
+// impl InvocationReader for InMemoryPartitionStorage {
+//     type InvokedInvocationStream<'a> = stream::Iter<IntoIter<ServiceInvocationId>>;
+//
+//     fn scan_invoked_invocations(&self) -> Self::InvokedInvocationStream<'_> {
+//         let invoked_invocations: Vec<ServiceInvocationId> = self
+//             .inner
+//             .lock()
+//             .unwrap()
+//             .invocation_status
+//             .iter()
+//             .filter_map(|(service_id, status)| match status {
+//                 InvocationStatus::Invoked(invoked_status) => Some(ServiceInvocationId {
+//                     service_id: service_id.clone(),
+//                     invocation_id: invoked_status.invocation_id,
+//                 }),
+//                 _ => None,
+//             })
+//             .collect();
+//
+//         stream::iter(invoked_invocations)
+//     }
+// }
 
 impl OutboxReader for InMemoryPartitionStorage {
     fn get_next_message(
@@ -569,13 +581,13 @@ impl OutboxReader for InMemoryPartitionStorage {
 }
 
 impl TimerReader<TimerValue> for InMemoryPartitionStorage {
-    type TimerStream = stream::Iter<IntoIter<TimerValue>>;
+    type TimerStream<'a> = stream::Iter<IntoIter<TimerValue>>;
 
     fn scan_timers(
         &self,
         num_timers: usize,
         previous_timer_key: Option<TimerValue>,
-    ) -> Self::TimerStream {
+    ) -> Self::TimerStream<'_> {
         let next_timer_key = previous_timer_key
             .map(|timer_value| {
                 TimerKey::new(
@@ -634,9 +646,10 @@ pub struct InMemoryJournalReaderError(ServiceInvocationId);
 impl JournalReader for InMemoryJournalReader {
     type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
     type Error = InMemoryJournalReaderError;
-    type Future = BoxFuture<'static, Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
+    type Future<'a> =
+        BoxFuture<'static, Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
 
-    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future {
+    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future<'_> {
         let storages = self.storages.lock().unwrap();
 
         for storage in storages.iter() {

@@ -47,7 +47,10 @@ pub(crate) enum Effect {
         journal_information: JournalInformation,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
-    DropJournalAndFreeService(ServiceId),
+    DropJournalAndFreeService {
+        service_id: ServiceId,
+        journal_length: EntryIndex,
+    },
 
     // In-/outbox
     EnqueueIntoInbox {
@@ -62,6 +65,7 @@ pub(crate) enum Effect {
     DropJournalAndPopInbox {
         service_id: ServiceId,
         inbox_sequence_number: MessageIndex,
+        journal_length: EntryIndex,
     },
 
     // State
@@ -92,7 +96,7 @@ pub(crate) enum Effect {
         entry_index: EntryIndex,
     },
     DeleteTimer {
-        service_id: ServiceId,
+        service_invocation_id: ServiceInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     },
@@ -194,9 +198,15 @@ impl Effects {
         })
     }
 
-    pub(crate) fn drop_journal_and_free_service(&mut self, service_id: ServiceId) {
-        self.effects
-            .push(Effect::DropJournalAndFreeService(service_id));
+    pub(crate) fn drop_journal_and_free_service(
+        &mut self,
+        service_id: ServiceId,
+        journal_length: EntryIndex,
+    ) {
+        self.effects.push(Effect::DropJournalAndFreeService {
+            service_id,
+            journal_length,
+        });
     }
 
     pub(crate) fn enqueue_into_inbox(
@@ -299,11 +309,11 @@ impl Effects {
     pub(crate) fn delete_timer(
         &mut self,
         wake_up_time: MillisSinceEpoch,
-        service_id: ServiceId,
+        service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
     ) {
         self.effects.push(Effect::DeleteTimer {
-            service_id,
+            service_invocation_id,
             wake_up_time,
             entry_index,
         });
@@ -419,10 +429,12 @@ impl Effects {
         &mut self,
         service_id: ServiceId,
         inbox_sequence_number: MessageIndex,
+        journal_length: EntryIndex,
     ) {
         self.effects.push(Effect::DropJournalAndPopInbox {
             service_id,
             inbox_sequence_number,
+            journal_length,
         });
     }
 

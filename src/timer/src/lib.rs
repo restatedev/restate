@@ -75,7 +75,9 @@ pub trait TimerReader<T>
 where
     T: Timer,
 {
-    type TimerStream: Stream<Item = T> + Send;
+    type TimerStream<'a>: Stream<Item = T> + Send
+    where
+        Self: 'a;
 
     /// Scan the next `num_timers` starting with the next timer after `previous_timer_key`.
     ///
@@ -86,5 +88,5 @@ where
         &self,
         num_timers: usize,
         previous_timer_key: Option<T::TimerKey>,
-    ) -> Self::TimerStream;
+    ) -> Self::TimerStream<'_>;
 }

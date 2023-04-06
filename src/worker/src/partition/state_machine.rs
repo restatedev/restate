@@ -6,7 +6,6 @@ use common::types::{
     OutboxMessage, ResolutionResult, ResponseResult, ServiceId, ServiceInvocation,
     ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
-use common::utils::GenericError;
 use futures::future::BoxFuture;
 use journal::raw::{RawEntryCodec, RawEntryCodecError};
 use journal::{
@@ -38,28 +37,28 @@ pub(crate) enum Command {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("failed reading state: {source:?}")]
-pub(super) struct StateReaderError {
-    source: Option<GenericError>,
+pub(super) enum StateReaderError {
+    #[error(transparent)]
+    Storage(#[from] storage_api::StorageError),
 }
 
 pub(super) trait StateReader {
     // TODO: Replace with async trait or proper future
-    fn get_invocation_status(
-        &self,
-        service_id: &ServiceId,
-    ) -> BoxFuture<Result<InvocationStatus, StateReaderError>>;
+    fn get_invocation_status<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+    ) -> BoxFuture<'a, Result<InvocationStatus, StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
-    fn peek_inbox(
-        &self,
-        service_id: &ServiceId,
-    ) -> BoxFuture<Result<Option<InboxEntry>, StateReaderError>>;
+    fn peek_inbox<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+    ) -> BoxFuture<'a, Result<Option<InboxEntry>, StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
-    fn is_entry_completed(
-        &self,
-        service_id: &ServiceId,
+    fn is_entry_completed<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<bool, StateReaderError>>;
 }
@@ -85,7 +84,7 @@ where
         &mut self,
         command: Command,
         effects: &mut Effects,
-        state: &State,
+        state: &mut State,
     ) -> Result<(), Error> {
         debug!(?command, "Apply");
 
@@ -135,14 +134,10 @@ where
             entry_index,
             wake_up_time,
         }: TimerValue,
-        state: &State,
+        state: &mut State,
         effects: &mut Effects,
     ) -> Result<(), Error> {
-        effects.delete_timer(
-            wake_up_time,
-            service_invocation_id.service_id.clone(),
-            entry_index,
-        );
+        effects.delete_timer(wake_up_time, service_invocation_id.clone(), entry_index);
 
         let completion = Completion {
             entry_index,
@@ -156,7 +151,7 @@ where
     async fn on_invoker_effect<State: StateReader>(
         &mut self,
         effects: &mut Effects,
-        state: &State,
+        state: &mut State,
         InvokerEffect {
             service_invocation_id,
             kind,
@@ -224,8 +219,13 @@ where
                     invoked_status.journal_metadata.span_context,
                     effects,
                 );
-                self.complete_invocation(service_invocation_id, state, effects)
-                    .await?;
+                self.complete_invocation(
+                    service_invocation_id,
+                    state,
+                    invoked_status.journal_metadata.length,
+                    effects,
+                )
+                .await?;
             }
             InvokerEffectKind::Failed { error, error_code } => {
                 if let Some(response_sink) = invoked_status.response_sink {
@@ -243,8 +243,13 @@ where
                     invoked_status.journal_metadata.span_context,
                     effects,
                 );
-                self.complete_invocation(service_invocation_id, state, effects)
-                    .await?;
+                self.complete_invocation(
+                    service_invocation_id,
+                    state,
+                    invoked_status.journal_metadata.length,
+                    effects,
+                )
+                .await?;
             }
         }
 
@@ -476,7 +481,7 @@ where
     async fn handle_completion<State: StateReader>(
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
-        state: &State,
+        state: &mut State,
         effects: &mut Effects,
     ) -> Result<(), Error> {
         let status = state
@@ -535,7 +540,8 @@ where
     async fn complete_invocation<State: StateReader>(
         &mut self,
         service_invocation_id: ServiceInvocationId,
-        state: &State,
+        state: &mut State,
+        journal_length: EntryIndex,
         effects: &mut Effects,
     ) -> Result<(), Error> {
         if let Some(InboxEntry {
@@ -546,10 +552,11 @@ where
             effects.drop_journal_and_pop_inbox(
                 service_invocation_id.service_id,
                 inbox_sequence_number,
+                journal_length,
             );
             effects.invoke_service(service_invocation);
         } else {
-            effects.drop_journal_and_free_service(service_invocation_id.service_id);
+            effects.drop_journal_and_free_service(service_invocation_id.service_id, journal_length);
         }
 
         Ok(())

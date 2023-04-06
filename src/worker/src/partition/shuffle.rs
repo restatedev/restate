@@ -3,7 +3,6 @@ use common::types::{
     AckKind, IngressId, InvocationResponse, MessageIndex, OutboxMessage, PeerId, ResponseResult,
     ServiceInvocation, ServiceInvocationId,
 };
-use common::utils::GenericError;
 use futures::future::BoxFuture;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -111,9 +110,9 @@ impl From<OutboxMessage> for ShuffleMessageDestination {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("failed to read outbox: {source:?}")]
-pub(super) struct OutboxReaderError {
-    source: Option<GenericError>,
+pub(super) enum OutboxReaderError {
+    #[error(transparent)]
+    Storage(#[from] storage_api::StorageError),
 }
 
 pub(super) trait OutboxReader {

@@ -20,9 +20,12 @@ mod invocation_task;
 pub trait JournalReader {
     type JournalStream: Stream<Item = PlainRawEntry>;
     type Error: std::error::Error + Send + Sync + 'static;
-    type Future: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>> + Send;
+    type Future<'a>: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>>
+        + Send
+    where
+        Self: 'a;
 
-    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future;
+    fn read_journal<'a>(&'a self, sid: &'a ServiceInvocationId) -> Self::Future<'_>;
 }
 
 // --- Invoker input sender
