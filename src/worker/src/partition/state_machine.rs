@@ -2,8 +2,8 @@ use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId,
-    InvocationResponse, InvocationStatus, JournalStatus, MessageIndex, MillisSinceEpoch,
-    OutboxMessage, ResolutionResult, ResponseResult, ResponseSink, ServiceId, ServiceInvocation,
+    InvocationResponse, InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch,
+    OutboxMessage, ResolutionResult, ResponseResult, ServiceId, ServiceInvocation,
     ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
@@ -57,23 +57,11 @@ pub(super) trait StateReader {
     ) -> BoxFuture<Result<Option<InboxEntry>, StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
-    fn get_journal_status(
-        &self,
-        service_id: &ServiceId,
-    ) -> BoxFuture<Result<JournalStatus, StateReaderError>>;
-
-    // TODO: Replace with async trait or proper future
     fn is_entry_completed(
         &self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<bool, StateReaderError>>;
-
-    // TODO: Replace with async trait or proper future
-    fn get_response_sink(
-        &self,
-        service_invocation_id: &ServiceInvocationId,
-    ) -> BoxFuture<Result<Option<ResponseSink>, StateReaderError>>;
 }
 
 #[derive(Debug, Default)]
@@ -107,7 +95,7 @@ where
                     .get_invocation_status(&service_invocation.id.service_id)
                     .await?;
 
-                if status == InvocationStatus::Free {
+                if let InvocationStatus::Free = status {
                     effects.invoke_service(service_invocation);
                 } else {
                     effects.enqueue_into_inbox(self.inbox_seq_number, service_invocation);
@@ -178,22 +166,24 @@ where
             .get_invocation_status(&service_invocation_id.service_id)
             .await?;
 
-        debug_assert!(
-            matches!(
-                status,
-                InvocationStatus::Invoked(invocation_id) if service_invocation_id.invocation_id == invocation_id
-            ),
+        let_assert!(
+            InvocationStatus::Invoked(invoked_status) = status,
             "Expect to only receive invoker messages when being invoked"
+        );
+        debug_assert!(
+            invoked_status.invocation_id == service_invocation_id.invocation_id,
+            "Expect to receive invoker messages for the currently invoked invocation id"
         );
 
         match kind {
             InvokerEffectKind::JournalEntry { entry_index, entry } => {
                 self.handle_journal_entry(
                     effects,
-                    state,
                     service_invocation_id,
                     entry_index,
                     entry,
+                    invoked_status.journal_metadata,
+                    invoked_status.response_sink,
                 )
                 .await?;
             }
@@ -212,33 +202,51 @@ where
                         trace!(
                         ?service_invocation_id,
                         "Resuming instead of suspending service because an awaited entry is completed.");
-                        effects.resume_service(service_invocation_id);
+                        effects.resume_service(
+                            service_invocation_id,
+                            invoked_status.journal_metadata,
+                            invoked_status.response_sink,
+                        );
                         return Ok(());
                     }
                 }
 
-                effects.suspend_service(service_invocation_id, waiting_for_completed_entries);
+                effects.suspend_service(
+                    service_invocation_id,
+                    invoked_status.journal_metadata,
+                    invoked_status.response_sink,
+                    waiting_for_completed_entries,
+                );
             }
             InvokerEffectKind::End => {
-                self.notify_invocation_result(&service_invocation_id, state, effects)
-                    .await?;
+                self.notify_invocation_result(
+                    &service_invocation_id,
+                    invoked_status.journal_metadata.span_context,
+                    effects,
+                );
                 self.complete_invocation(service_invocation_id, state, effects)
                     .await?;
             }
             InvokerEffectKind::Failed { error, error_code } => {
-                if let Some(response_sink) = state.get_response_sink(&service_invocation_id).await?
-                {
-                    let outbox_message = Self::create_response(
-                        response_sink,
-                        ResponseResult::Failure(error_code, error.to_string().into()),
-                    );
-
+                if let Some(outbox_message) = Self::create_response(
+                    &service_invocation_id,
+                    invoked_status.response_sink,
+                    || {
+                        Ok(ResponseResult::Failure(
+                            error_code,
+                            error.to_string().into(),
+                        ))
+                    },
+                )? {
                     // TODO: We probably only need to send the response if we haven't send a response before
                     self.send_message(outbox_message, effects);
                 }
 
-                self.notify_invocation_result(&service_invocation_id, state, effects)
-                    .await?;
+                self.notify_invocation_result(
+                    &service_invocation_id,
+                    invoked_status.journal_metadata.span_context,
+                    effects,
+                );
                 self.complete_invocation(service_invocation_id, state, effects)
                     .await?;
             }
@@ -247,21 +255,17 @@ where
         Ok(())
     }
 
-    async fn handle_journal_entry<State: StateReader>(
+    async fn handle_journal_entry(
         &mut self,
         effects: &mut Effects,
-        state: &State,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
+        journal_metadata: JournalMetadata,
+        response_sink: ServiceInvocationResponseSink,
     ) -> Result<(), Error> {
-        let journal_length = state
-            .get_journal_status(&service_invocation_id.service_id)
-            .await?
-            .length;
-
         debug_assert_eq!(
-            entry_index, journal_length,
+            entry_index, journal_metadata.length,
             "Expect to receive next journal entry"
         );
 
@@ -274,15 +278,15 @@ where
                 );
             }
             EnrichedEntryHeader::OutputStream => {
-                if let Some(response_sink) = state.get_response_sink(&service_invocation_id).await?
+                if let Some(outbox_message) =
+                    Self::create_response(&service_invocation_id, response_sink, || {
+                        let_assert!(
+                            Entry::OutputStream(OutputStreamEntry { result }) =
+                                Codec::deserialize(&journal_entry)?
+                        );
+                        Ok(result.into())
+                    })?
                 {
-                    let_assert!(
-                        Entry::OutputStream(OutputStreamEntry { result }) =
-                            Codec::deserialize(&journal_entry)?
-                    );
-
-                    let outbox_message = Self::create_response(response_sink, result.into());
-
                     self.send_message(outbox_message, effects);
                 }
             }
@@ -457,8 +461,8 @@ where
             .await?;
 
         match status {
-            InvocationStatus::Invoked(invocation_id) => {
-                if invocation_id == service_invocation_id.invocation_id {
+            InvocationStatus::Invoked(invoked_status) => {
+                if invoked_status.invocation_id == service_invocation_id.invocation_id {
                     effects.store_and_forward_completion(service_invocation_id, completion);
                 } else {
                     debug!(
@@ -467,12 +471,12 @@ where
                     );
                 }
             }
-            InvocationStatus::Suspended {
-                invocation_id,
-                waiting_for_completed_entries,
-            } => {
-                if invocation_id == service_invocation_id.invocation_id {
-                    if waiting_for_completed_entries.contains(&completion.entry_index) {
+            InvocationStatus::Suspended(suspended_status) => {
+                if suspended_status.invocation_id == service_invocation_id.invocation_id {
+                    if suspended_status
+                        .waiting_for_completed_entries
+                        .contains(&completion.entry_index)
+                    {
                         effects.store_completion_and_resume(service_invocation_id, completion);
                         return Ok(());
                     }
@@ -496,19 +500,13 @@ where
         Ok(())
     }
 
-    async fn notify_invocation_result<State: StateReader>(
+    fn notify_invocation_result(
         &mut self,
         service_invocation_id: &ServiceInvocationId,
-        state: &State,
+        span_context: ServiceInvocationSpanContext,
         effects: &mut Effects,
-    ) -> Result<(), Error> {
-        let span_context = state
-            .get_journal_status(&service_invocation_id.service_id)
-            .await?
-            .span_context;
+    ) {
         effects.notify_invocation_result(service_invocation_id.invocation_id, span_context, Ok(()));
-
-        Ok(())
     }
 
     async fn complete_invocation<State: StateReader>(
@@ -590,22 +588,33 @@ where
         })
     }
 
-    fn create_response(response_sink: ResponseSink, result: ResponseResult) -> OutboxMessage {
-        match response_sink {
-            ResponseSink::Ingress(ingress_id, service_invocation_id) => {
-                OutboxMessage::IngressResponse {
+    fn create_response<F>(
+        callee: &ServiceInvocationId,
+        response_sink: ServiceInvocationResponseSink,
+        result_creator: F,
+    ) -> Result<Option<OutboxMessage>, Error>
+    where
+        F: FnOnce() -> Result<ResponseResult, Error>,
+    {
+        let result = match response_sink {
+            ServiceInvocationResponseSink::PartitionProcessor {
+                entry_index,
+                caller,
+            } => Some(OutboxMessage::ServiceResponse(InvocationResponse {
+                id: caller,
+                entry_index,
+                result: result_creator()?,
+            })),
+            ServiceInvocationResponseSink::Ingress(ingress_id) => {
+                Some(OutboxMessage::IngressResponse {
                     ingress_id,
-                    service_invocation_id,
-                    response: result,
-                }
-            }
-            ResponseSink::PartitionProcessor(service_invocation_id, entry_index) => {
-                OutboxMessage::ServiceResponse(InvocationResponse {
-                    id: service_invocation_id,
-                    entry_index,
-                    result,
+                    service_invocation_id: callee.clone(),
+                    response: result_creator()?,
                 })
             }
-        }
+            ServiceInvocationResponseSink::None => None,
+        };
+
+        Ok(result)
     }
 }

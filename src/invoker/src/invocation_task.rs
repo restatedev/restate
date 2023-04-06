@@ -274,7 +274,7 @@ where
 
         // Resolve the uri to use for the request
         let uri = self.prepare_uri(&journal_metadata);
-        let journal_size = journal_metadata.journal_size;
+        let journal_size = journal_metadata.length;
 
         // Attach parent and uri to the current span
         let invocation_task_span = Span::current();

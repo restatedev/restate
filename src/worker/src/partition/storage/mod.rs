@@ -4,10 +4,9 @@ use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{StateReader, StateReaderError};
 use bytes::Bytes;
 use common::types::{
-    CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationStatus, JournalStatus,
-    MessageIndex, MillisSinceEpoch, OutboxMessage, PartitionId, ResponseSink, ServiceId,
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext,
+    CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationStatus, MessageIndex,
+    MillisSinceEpoch, OutboxMessage, PartitionId, ServiceId, ServiceInvocation,
+    ServiceInvocationId,
 };
 use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
@@ -52,25 +51,11 @@ impl<Storage> StateReader for PartitionStorage<Storage> {
         todo!()
     }
 
-    fn get_journal_status(
-        &self,
-        _service_id: &ServiceId,
-    ) -> BoxFuture<Result<JournalStatus, StateReaderError>> {
-        todo!()
-    }
-
     fn is_entry_completed(
         &self,
         _service_id: &ServiceId,
         _entry_index: EntryIndex,
     ) -> BoxFuture<Result<bool, StateReaderError>> {
-        todo!()
-    }
-
-    fn get_response_sink(
-        &self,
-        _service_invocation_id: &ServiceInvocationId,
-    ) -> BoxFuture<Result<Option<ResponseSink>, StateReaderError>> {
         todo!()
     }
 }
@@ -101,16 +86,6 @@ impl<'a, Storage> StateStorage for Transaction<'a, Storage> {
         &self,
         _service_id: &ServiceId,
         _status: &InvocationStatus,
-    ) -> Result<(), StateStorageError> {
-        todo!()
-    }
-
-    fn create_journal(
-        &self,
-        _service_invocation_id: &ServiceInvocationId,
-        _method_name: impl AsRef<str>,
-        _response_sink: &ServiceInvocationResponseSink,
-        _span_context: ServiceInvocationSpanContext,
     ) -> Result<(), StateStorageError> {
         todo!()
     }
