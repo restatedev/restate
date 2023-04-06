@@ -1,8 +1,7 @@
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, IngressId, InvocationId, InvocationResponse, MessageIndex, MillisSinceEpoch,
-    ResponseResult, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationSpanContext,
+    EntryIndex, InvocationId, MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
 };
 use journal::Completion;
 use std::collections::HashSet;
@@ -15,20 +14,6 @@ pub(crate) use interpreter::{
     ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
     StateStorageError,
 };
-
-#[derive(Debug, Clone)]
-pub(crate) enum OutboxMessage {
-    // Messages that are sent to another partition processor
-    ServiceInvocation(ServiceInvocation),
-    ServiceResponse(InvocationResponse),
-
-    // Message that is sent to an ingress as a response to an ingress message
-    IngressResponse {
-        ingress_id: IngressId,
-        service_invocation_id: ServiceInvocationId,
-        response: ResponseResult,
-    },
-}
 
 #[derive(Debug)]
 pub(crate) enum Effect {

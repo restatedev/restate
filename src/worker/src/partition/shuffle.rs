@@ -1,7 +1,6 @@
-use crate::partition::effects::OutboxMessage;
 use crate::partition::shuffle::state_machine::StateMachine;
 use common::types::{
-    AckKind, IngressId, InvocationResponse, MessageIndex, PeerId, ResponseResult,
+    AckKind, IngressId, InvocationResponse, MessageIndex, OutboxMessage, PeerId, ResponseResult,
     ServiceInvocation, ServiceInvocationId,
 };
 use common::utils::GenericError;
@@ -236,9 +235,8 @@ where
 }
 
 mod state_machine {
-    use crate::partition::effects::OutboxMessage;
     use crate::partition::shuffle::{NewOutboxMessage, ShuffleInput, ShuffleOutput};
-    use common::types::{AckKind, MessageIndex, PeerId};
+    use common::types::{AckKind, MessageIndex, OutboxMessage, PeerId};
     use pin_project::pin_project;
     use std::future::Future;
     use std::marker::PhantomData;

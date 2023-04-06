@@ -332,3 +332,20 @@ pub struct JournalStatus {
     pub length: EntryIndex,
     pub span_context: ServiceInvocationSpanContext,
 }
+
+/// Types of outbox messages.
+#[derive(Debug, Clone)]
+pub enum OutboxMessage {
+    /// Service invocation that is sent to another partition processor
+    ServiceInvocation(ServiceInvocation),
+
+    /// Service response that is sent to another partition processor
+    ServiceResponse(InvocationResponse),
+
+    /// Service response that is sent to an ingress as a response to an external client request
+    IngressResponse {
+        ingress_id: IngressId,
+        service_invocation_id: ServiceInvocationId,
+        response: ResponseResult,
+    },
+}
