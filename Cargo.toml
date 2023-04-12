@@ -31,7 +31,7 @@ paste = "1.0"
 pin-project = "1.0"
 prost = "0.11"
 prost-types = "0.11"
-prost-reflect = "0.10.3"
+prost-reflect = "0.11.1"
 prost-build = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_with = "2.2"

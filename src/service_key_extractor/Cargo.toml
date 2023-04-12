@@ -12,14 +12,23 @@ publish = false
 [features]
 default = []
 serde = ["dep:serde"]
+expand = ["dep:prost-reflect"]
 
 [dependencies]
 arc-swap = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
+uuid = { workspace = true }
 
 common = { workspace = true }
 
 serde = { workspace = true, optional = true }
+
+prost-reflect = { workspace = true, optional = true }
+
+[dev-dependencies]
+prost-reflect = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
