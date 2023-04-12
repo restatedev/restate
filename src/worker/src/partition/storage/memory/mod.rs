@@ -4,7 +4,6 @@ use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{StateReader, StateReaderError};
 use crate::partition::storage::memory::timer_key::{TimerKey, TimerKeyRef};
 use crate::partition::types::TimerValue;
-use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
     CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId, InvocationStatus,
@@ -167,21 +166,11 @@ impl Storage {
         entry_index: EntryIndex,
         journal_entry: &EnrichedRawEntry,
     ) {
-        let_assert!(
-            InvocationStatus::Invoked(ref mut invoked) = self
-                .invocation_status
-                .get_mut(service_id)
-                .expect("service must be invoked"),
-            "invocation must be invoked",
-        );
         let journal = self
             .journals
             .entry(service_id.clone())
             .or_insert(Journal::new());
         journal.store_entry(entry_index as usize, journal_entry.clone());
-
-        invoked.journal_metadata.length =
-            EntryIndex::try_from(journal.length).expect("journal length should fit in EntryIndex");
     }
 
     fn store_completion_result(

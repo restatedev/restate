@@ -16,18 +16,35 @@ pub(crate) use interpreter::{
 };
 
 #[derive(Debug)]
+pub(crate) struct JournalInformation {
+    pub service_invocation_id: ServiceInvocationId,
+    pub journal_metadata: JournalMetadata,
+    pub response_sink: Option<ServiceInvocationResponseSink>,
+}
+
+impl JournalInformation {
+    pub(crate) fn new(
+        service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: Option<ServiceInvocationResponseSink>,
+    ) -> Self {
+        Self {
+            service_invocation_id,
+            journal_metadata,
+            response_sink,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(crate) enum Effect {
     // service status changes
     InvokeService(ServiceInvocation),
     ResumeService {
-        service_invocation_id: ServiceInvocationId,
-        journal_metadata: JournalMetadata,
-        response_sink: Option<ServiceInvocationResponseSink>,
+        journal_information: JournalInformation,
     },
     SuspendService {
-        service_invocation_id: ServiceInvocationId,
-        journal_metadata: JournalMetadata,
-        response_sink: Option<ServiceInvocationResponseSink>,
+        journal_information: JournalInformation,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     DropJournalAndFreeService(ServiceId),
@@ -49,21 +66,21 @@ pub(crate) enum Effect {
 
     // State
     SetState {
-        service_invocation_id: ServiceInvocationId,
+        journal_information: JournalInformation,
         key: Bytes,
         value: Bytes,
         journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     },
     ClearState {
-        service_invocation_id: ServiceInvocationId,
+        journal_information: JournalInformation,
         key: Bytes,
         journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     },
     GetStateAndAppendCompletedEntry {
+        journal_information: JournalInformation,
         key: Bytes,
-        service_invocation_id: ServiceInvocationId,
         journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     },
@@ -82,17 +99,17 @@ pub(crate) enum Effect {
 
     // Journal operations
     AppendJournalEntry {
-        service_invocation_id: ServiceInvocationId,
+        journal_information: JournalInformation,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     },
     AppendAwakeableEntry {
-        service_invocation_id: ServiceInvocationId,
+        journal_information: JournalInformation,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     },
     AppendJournalEntryAndAck {
-        service_invocation_id: ServiceInvocationId,
+        journal_information: JournalInformation,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     },
@@ -152,9 +169,11 @@ impl Effects {
         response_sink: Option<ServiceInvocationResponseSink>,
     ) {
         self.effects.push(Effect::ResumeService {
-            service_invocation_id,
-            journal_metadata,
-            response_sink,
+            journal_information: JournalInformation::new(
+                service_invocation_id,
+                journal_metadata,
+                response_sink,
+            ),
         });
     }
 
@@ -166,9 +185,11 @@ impl Effects {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) {
         self.effects.push(Effect::SuspendService {
-            service_invocation_id,
-            journal_metadata,
-            response_sink,
+            journal_information: JournalInformation::new(
+                service_invocation_id,
+                journal_metadata,
+                response_sink,
+            ),
             waiting_for_completed_entries,
         })
     }
@@ -196,16 +217,23 @@ impl Effects {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn set_state(
         &mut self,
         service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: Option<ServiceInvocationResponseSink>,
         key: Bytes,
         value: Bytes,
         journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     ) {
         self.effects.push(Effect::SetState {
-            service_invocation_id,
+            journal_information: JournalInformation::new(
+                service_invocation_id,
+                journal_metadata,
+                response_sink,
+            ),
             key,
             value,
             journal_entry,
@@ -216,12 +244,18 @@ impl Effects {
     pub(crate) fn clear_state(
         &mut self,
         service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: Option<ServiceInvocationResponseSink>,
         key: Bytes,
         journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     ) {
         self.effects.push(Effect::ClearState {
-            service_invocation_id,
+            journal_information: JournalInformation::new(
+                service_invocation_id,
+                journal_metadata,
+                response_sink,
+            ),
             key,
             journal_entry,
             entry_index,
@@ -230,14 +264,20 @@ impl Effects {
 
     pub(crate) fn get_state_and_append_completed_entry(
         &mut self,
-        key: Bytes,
         service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: Option<ServiceInvocationResponseSink>,
+        key: Bytes,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) {
         self.effects.push(Effect::GetStateAndAppendCompletedEntry {
             key,
-            service_invocation_id,
+            journal_information: JournalInformation::new(
+                service_invocation_id,
+                journal_metadata,
+                response_sink,
+            ),
             entry_index,
             journal_entry,
         })
@@ -272,11 +312,17 @@ impl Effects {
     pub(crate) fn append_journal_entry(
         &mut self,
         service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: Option<ServiceInvocationResponseSink>,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) {
         self.effects.push(Effect::AppendJournalEntry {
-            service_invocation_id,
+            journal_information: JournalInformation::new(
+                service_invocation_id,
+                journal_metadata,
+                response_sink,
+            ),
             entry_index,
             journal_entry,
         })
@@ -285,11 +331,17 @@ impl Effects {
     pub(crate) fn append_awakeable_entry(
         &mut self,
         service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: Option<ServiceInvocationResponseSink>,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) {
         self.effects.push(Effect::AppendAwakeableEntry {
-            service_invocation_id,
+            journal_information: JournalInformation::new(
+                service_invocation_id,
+                journal_metadata,
+                response_sink,
+            ),
             entry_index,
             journal_entry,
         })
@@ -298,11 +350,17 @@ impl Effects {
     pub(crate) fn append_journal_entry_and_ack_storage(
         &mut self,
         service_invocation_id: ServiceInvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: Option<ServiceInvocationResponseSink>,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) {
         self.effects.push(Effect::AppendJournalEntryAndAck {
-            service_invocation_id,
+            journal_information: JournalInformation::new(
+                service_invocation_id,
+                journal_metadata,
+                response_sink,
+            ),
             entry_index,
             journal_entry,
         })
