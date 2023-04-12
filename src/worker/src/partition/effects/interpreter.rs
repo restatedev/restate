@@ -1,11 +1,10 @@
 use crate::partition::effects::{Effect, Effects};
-use crate::partition::types::{EnrichedEntryHeader, EnrichedRawEntry};
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InvocationId, InvocationStatus, MessageIndex, MillisSinceEpoch, OutboxMessage,
-    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext,
+    EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId, InvocationStatus,
+    MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId, ServiceInvocation,
+    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;

@@ -1,10 +1,10 @@
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InboxEntry, InvocationId, InvocationResponse, InvocationStatus, JournalStatus,
-    MessageIndex, MillisSinceEpoch, OutboxMessage, ResolutionResult, ResponseResult, ResponseSink,
-    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext,
+    EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId,
+    InvocationResponse, InvocationStatus, JournalStatus, MessageIndex, MillisSinceEpoch,
+    OutboxMessage, ResolutionResult, ResponseResult, ResponseSink, ServiceId, ServiceInvocation,
+    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
@@ -18,9 +18,7 @@ use std::marker::PhantomData;
 use tracing::{debug, trace, warn};
 
 use crate::partition::effects::Effects;
-use crate::partition::types::{
-    EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, TimerValue,
-};
+use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum Error {

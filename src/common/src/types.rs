@@ -401,3 +401,39 @@ pub enum ResolutionResult {
         error: ByteString,
     },
 }
+
+/// Enriched variant of the journal headers to store additional runtime specific information
+/// for the journal entries.
+#[derive(Debug, Clone)]
+pub enum EnrichedEntryHeader {
+    PollInputStream {
+        is_completed: bool,
+    },
+    OutputStream,
+    GetState {
+        is_completed: bool,
+    },
+    SetState,
+    ClearState,
+    Sleep {
+        is_completed: bool,
+    },
+    Invoke {
+        is_completed: bool,
+        // None if invoke entry is completed by service endpoint
+        resolution_result: Option<ResolutionResult>,
+    },
+    BackgroundInvoke {
+        resolution_result: ResolutionResult,
+    },
+    Awakeable {
+        is_completed: bool,
+    },
+    CompleteAwakeable,
+    Custom {
+        code: u16,
+        requires_ack: bool,
+    },
+}
+
+pub type EnrichedRawEntry = RawEntry<EnrichedEntryHeader>;

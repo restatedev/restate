@@ -8,13 +8,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec::IntoIter;
 
-use common::types::{EntryIndex, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation};
+use common::types::{
+    EntryIndex, RawEntry, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
+};
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use invoker::{
     InvokeInputJournal, InvokerInputSender, JournalMetadata, JournalReader, Kind, OutputEffect,
 };
-use journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
+use journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use journal::{Completion, CompletionResult};
 use prost::Message;
 use service_protocol::pb::protocol::PollInputStreamEntryMessage;

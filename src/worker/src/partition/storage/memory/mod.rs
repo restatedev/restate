@@ -3,11 +3,11 @@ use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{StateReader, StateReaderError};
 use crate::partition::storage::memory::timer_key::{TimerKey, TimerKeyRef};
-use crate::partition::types::{EnrichedRawEntry, TimerValue};
+use crate::partition::types::TimerValue;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InboxEntry, InvocationId, InvocationStatus, JournalStatus, MessageIndex,
-    MillisSinceEpoch, OutboxMessage, ResponseSink, ServiceId, ServiceInvocation,
+    EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId, InvocationStatus, JournalStatus,
+    MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseSink, ServiceId, ServiceInvocation,
     ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use futures::future::{err, ok, BoxFuture};
