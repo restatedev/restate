@@ -3,6 +3,7 @@ use super::pb::protocol;
 use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use common::types::RawEntry;
 use journal::raw::*;
 use journal::{CompletionResult, Entry, EntryType};
 use prost::Message;

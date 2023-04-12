@@ -251,7 +251,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 )?;
 
                 let_assert!(
-                    journal::raw::RawEntry {
+                    common::types::RawEntry {
                         header: RawEntryHeader::PollInputStream { is_completed },
                         entry
                     } = Codec::serialize_as_unary_input_entry(service_invocation.argument)

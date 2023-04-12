@@ -1,4 +1,5 @@
 use super::*;
+use common::types::RawEntry;
 use common::utils::GenericError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,24 +73,7 @@ impl Header for RawEntryHeader {
     }
 }
 
-/// This struct represents a serialized journal entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawEntry<H> {
-    pub header: H,
-    pub entry: Bytes,
-}
-
 pub type PlainRawEntry = RawEntry<RawEntryHeader>;
-
-impl<H> RawEntry<H> {
-    pub fn new(header: H, entry: Bytes) -> Self {
-        Self { header, entry }
-    }
-
-    pub fn into_inner(self) -> (H, Bytes) {
-        (self.header, self.entry)
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot decode {ty:?}. {kind:?}")]

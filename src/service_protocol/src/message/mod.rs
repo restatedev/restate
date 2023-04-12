@@ -4,7 +4,7 @@
 use super::pb;
 
 use bytes::Bytes;
-use journal::raw::{PlainRawEntry, RawEntry};
+use journal::raw::PlainRawEntry;
 use journal::{Completion, CompletionResult};
 use prost::Message;
 
