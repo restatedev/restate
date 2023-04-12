@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InvocationId, MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId,
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
+    EnrichedRawEntry, EntryIndex, InvocationId, MessageIndex, MillisSinceEpoch, OutboxMessage,
+    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
 };
 use journal::Completion;
 use std::collections::HashSet;
@@ -9,7 +9,6 @@ use std::vec::Drain;
 
 mod interpreter;
 
-use crate::partition::types::EnrichedRawEntry;
 pub(crate) use interpreter::{
     ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
     StateStorageError,

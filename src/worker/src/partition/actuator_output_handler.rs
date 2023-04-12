@@ -1,13 +1,12 @@
 use crate::partition::leadership::ActuatorOutput;
-use crate::partition::types::{
-    EnrichedEntryHeader, EnrichedRawEntry, InvokerEffect, InvokerEffectKind, TimerValue,
-};
+use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
 use crate::partition::{AckableCommand, Command, TimerOutput};
 use crate::util::IdentitySender;
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    InvocationId, RawEntry, ResolutionResult, ServiceInvocationSpanContext, SpanRelation,
+    EnrichedEntryHeader, EnrichedRawEntry, InvocationId, RawEntry, ResolutionResult,
+    ServiceInvocationSpanContext, SpanRelation,
 };
 use journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use journal::InvokeRequest;

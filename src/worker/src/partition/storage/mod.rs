@@ -2,12 +2,11 @@ use crate::partition::effects::{CommitError, Committable, StateStorage, StateSto
 use crate::partition::leadership::InvocationReader;
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{StateReader, StateReaderError};
-use crate::partition::types::EnrichedRawEntry;
 use bytes::Bytes;
 use common::types::{
-    EntryIndex, InboxEntry, InvocationStatus, JournalStatus, MessageIndex, MillisSinceEpoch,
-    OutboxMessage, PartitionId, ResponseSink, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    EnrichedRawEntry, EntryIndex, InboxEntry, InvocationStatus, JournalStatus, MessageIndex,
+    MillisSinceEpoch, OutboxMessage, PartitionId, ResponseSink, ServiceId, ServiceInvocation,
+    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
