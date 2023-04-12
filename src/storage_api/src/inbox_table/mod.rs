@@ -1,14 +1,12 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use common::types::{PartitionKey, ServiceId};
-use storage_proto::storage::v1::InboxEntry;
+use common::types::{InboxEntry, PartitionKey, ServiceId};
 
 pub trait InboxTable {
     fn put_invocation(
         &mut self,
         partition_key: PartitionKey,
         service_id: &ServiceId,
-        sequence_number: u64,
-        entry: InboxEntry,
+        inbox_entry: InboxEntry,
     ) -> PutFuture;
 
     fn delete_invocation(
@@ -22,11 +20,11 @@ pub trait InboxTable {
         &mut self,
         partition_key: PartitionKey,
         service_id: &ServiceId,
-    ) -> GetFuture<Option<(u64, InboxEntry)>>;
+    ) -> GetFuture<Option<InboxEntry>>;
 
     fn inbox(
         &mut self,
         partition_key: PartitionKey,
         service_id: &ServiceId,
-    ) -> GetStream<(u64, InboxEntry)>;
+    ) -> GetStream<InboxEntry>;
 }

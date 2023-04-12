@@ -17,7 +17,7 @@ uuid = { workspace = true }
 futures = {workspace = true}
 futures-util = {workspace = true}
 prost = {workspace = true}
-storage_proto = {workspace = true}
+storage_proto = { workspace = true, features = ["conversion"] }
 storage_api = { workspace = true }
 serde = {workspace = true}
 tokio = { workspace = true }

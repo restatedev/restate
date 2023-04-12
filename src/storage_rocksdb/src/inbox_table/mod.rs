@@ -2,11 +2,11 @@ use crate::composite_keys::write_delimited;
 use crate::TableKind::Inbox;
 use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBTransaction};
 use bytes::{BufMut, BytesMut};
-use common::types::{PartitionKey, ServiceId};
+use common::types::{InboxEntry, PartitionKey, ServiceId, ServiceInvocation};
 use prost::Message;
 use storage_api::inbox_table::InboxTable;
 use storage_api::{ready, GetStream, StorageError};
-use storage_proto::storage::v1::InboxEntry;
+use storage_proto::storage;
 
 #[inline]
 fn write_message_key(
@@ -45,16 +45,21 @@ impl InboxTable for RocksDBTransaction {
         &mut self,
         partition_key: PartitionKey,
         service_id: &ServiceId,
-        sequence_number: u64,
-        entry: InboxEntry,
+        InboxEntry {
+            inbox_sequence_number,
+            service_invocation,
+        }: InboxEntry,
     ) -> PutFuture {
         write_message_key(
             self.key_buffer(),
             partition_key,
             service_id,
-            sequence_number,
+            inbox_sequence_number,
         );
-        write_proto_infallible(self.value_buffer(), entry);
+        write_proto_infallible(
+            self.value_buffer(),
+            storage::v1::InboxEntry::from(service_invocation),
+        );
         self.put_kv_buffer(Inbox);
         ready()
     }
@@ -80,7 +85,7 @@ impl InboxTable for RocksDBTransaction {
         &mut self,
         partition_key: PartitionKey,
         service_id: &ServiceId,
-    ) -> GetFuture<Option<(u64, InboxEntry)>> {
+    ) -> GetFuture<Option<InboxEntry>> {
         write_inbox_key(self.key_buffer(), partition_key, service_id);
         let key = self.clone_key_buffer();
 
@@ -88,10 +93,8 @@ impl InboxTable for RocksDBTransaction {
             let mut iterator = db.prefix_iterator(Inbox, key.clone());
             iterator.seek(&key);
             if let Some((k, v)) = iterator.item() {
-                let sequence_number = message_sequence_number_from_slice(k);
-                let entry =
-                    InboxEntry::decode(v).map_err(|error| StorageError::Generic(error.into()))?;
-                Ok(Some((sequence_number, entry)))
+                let inbox_entry = decode_inbox_key_value(k, v)?;
+                Ok(Some(inbox_entry))
             } else {
                 Ok(None)
             }
@@ -102,7 +105,7 @@ impl InboxTable for RocksDBTransaction {
         &mut self,
         partition_key: PartitionKey,
         service_id: &ServiceId,
-    ) -> GetStream<(u64, InboxEntry)> {
+    ) -> GetStream<InboxEntry> {
         write_inbox_key(self.key_buffer(), partition_key, service_id);
         let key = self.clone_key_buffer();
 
@@ -120,12 +123,14 @@ impl InboxTable for RocksDBTransaction {
     }
 }
 
-fn decode_inbox_key_value(k: &[u8], v: &[u8]) -> crate::Result<(u64, InboxEntry)> {
+fn decode_inbox_key_value(k: &[u8], v: &[u8]) -> crate::Result<InboxEntry> {
     let sequence_number = message_sequence_number_from_slice(k);
 
-    InboxEntry::decode(v)
-        .map_err(|error| StorageError::Generic(error.into()))
-        .map(|entry| (sequence_number, entry))
+    let inbox_entry = ServiceInvocation::try_from(
+        storage::v1::InboxEntry::decode(v).map_err(|error| StorageError::Generic(error.into()))?,
+    )?;
+
+    Ok(InboxEntry::new(sequence_number, inbox_entry))
 }
 
 #[cfg(test)]
