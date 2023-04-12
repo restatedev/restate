@@ -91,7 +91,7 @@ impl ServiceId {
 }
 
 /// Representing a service invocation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ServiceInvocation {
     pub id: ServiceInvocationId,
     pub method_name: ByteString,
@@ -345,7 +345,7 @@ impl Default for InvocationStatus {
 }
 
 /// Entry of the inbox
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InboxEntry {
     pub inbox_sequence_number: MessageIndex,
     pub service_invocation: ServiceInvocation,

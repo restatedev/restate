@@ -1,6 +1,7 @@
 use common::utils::GenericError;
 use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
+use storage_proto::storage::v1::pb_conversion::ConversionError;
 
 //
 // A Generic storage Error
@@ -10,6 +11,8 @@ use futures_util::stream::BoxStream;
 pub enum StorageError {
     #[error("generic storage error: {0}")]
     Generic(#[from] GenericError),
+    #[error("failed to convert Rust objects to/from protobuf: {0}")]
+    Conversion(#[from] ConversionError),
 }
 
 //
