@@ -456,3 +456,10 @@ impl From<ResponseResult> for CompletionResult {
         }
     }
 }
+
+/// Different types of journal entries persisted by the runtime
+#[derive(Debug)]
+pub enum JournalEntry {
+    Entry(EnrichedRawEntry),
+    Completion(CompletionResult),
+}
