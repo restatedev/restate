@@ -232,6 +232,14 @@ where
                     span_context,
                 }
             }
+            Err(service_key_extractor::Error::NotFound) => ResolutionResult::Failure {
+                error_code: 5,
+                error: format!(
+                    "{}/{} not found",
+                    request.service_name, &request.method_name
+                )
+                .into(),
+            },
             Err(err) => ResolutionResult::Failure {
                 error_code: 13,
                 error: err.to_string().into(),
