@@ -1,10 +1,11 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use common::types::{
-    EntryIndex, InvocationId, MillisSinceEpoch, ServiceInvocationId, ServiceInvocationSpanContext,
+    EntryIndex, InvocationId, MillisSinceEpoch, RawEntry, ServiceInvocationId,
+    ServiceInvocationSpanContext,
 };
 use invoker::InvokerError;
-use journal::raw::{Header, RawEntry, RawEntryHeader};
+use journal::raw::{Header, RawEntryHeader};
 use journal::EntryType;
 use std::cmp::Ordering;
 use std::collections::HashSet;

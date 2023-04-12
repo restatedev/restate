@@ -5,6 +5,7 @@ use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
+use common::types::RawEntry;
 use journal::raw::RawEntryHeader;
 
 #[derive(Debug, thiserror::Error)]
