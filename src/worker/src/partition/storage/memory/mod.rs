@@ -7,8 +7,8 @@ use crate::partition::types::TimerValue;
 use bytes::Bytes;
 use common::types::{
     CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId, InvocationStatus,
-    JournalStatus, MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseSink, ServiceId,
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    JournalEntry, JournalStatus, MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseSink,
+    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
     ServiceInvocationSpanContext,
 };
 use futures::future::{err, ok, BoxFuture};
@@ -39,15 +39,9 @@ impl InMemoryPartitionStorage {
     }
 }
 
-#[derive(Debug, Clone)]
-enum EntryType {
-    Entry(EnrichedRawEntry),
-    CompletionResult(CompletionResult),
-}
-
 #[derive(Debug)]
 struct Journal {
-    entries: Vec<EntryType>,
+    entries: Vec<JournalEntry>,
     method_name: String,
     length: usize,
     response_sink: Option<ResponseSink>,
@@ -63,7 +57,7 @@ impl Journal {
         self.entries
             .get(index)
             .and_then(|entry| {
-                if let EntryType::Entry(raw_entry) = entry {
+                if let JournalEntry::Entry(raw_entry) = entry {
                     Some(raw_entry)
                 } else {
                     None
@@ -74,7 +68,7 @@ impl Journal {
 
     fn store_entry(&mut self, index: usize, journal_entry: EnrichedRawEntry) {
         debug_assert!(index <= self.length);
-        let entry_type = EntryType::Entry(journal_entry);
+        let entry_type = JournalEntry::Entry(journal_entry);
 
         if index == self.length {
             self.entries.push(entry_type);
@@ -87,14 +81,14 @@ impl Journal {
     fn store_completion_result(&mut self, index: usize, completion_result: CompletionResult) {
         debug_assert!(index >= self.length);
         self.entries
-            .insert(index, EntryType::CompletionResult(completion_result));
+            .insert(index, JournalEntry::Completion(completion_result));
     }
 
     fn get_completion_result(&self, index: usize) -> Option<CompletionResult> {
         self.entries
             .get(index)
             .and_then(|entry| {
-                if let EntryType::CompletionResult(completion_result) = entry {
+                if let JournalEntry::Completion(completion_result) = entry {
                     Some(completion_result)
                 } else {
                     None
@@ -741,10 +735,10 @@ impl JournalReader for InMemoryJournalReader {
                 let journal: Vec<PlainRawEntry> = journal.entries[0..journal.length]
                     .iter()
                     .map(|entry| match entry {
-                        EntryType::Entry(EnrichedRawEntry { header, entry }) => {
+                        JournalEntry::Entry(EnrichedRawEntry { header, entry }) => {
                             PlainRawEntry::new(header.clone().into(), entry.clone())
                         }
-                        EntryType::CompletionResult(_) => panic!("Should not happen."),
+                        JournalEntry::Completion(_) => panic!("Should not happen."),
                     })
                     .collect();
 
