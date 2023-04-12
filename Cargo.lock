@@ -2847,6 +2847,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "common",
+ "criterion",
  "drain",
  "futures-util",
  "pin-project",

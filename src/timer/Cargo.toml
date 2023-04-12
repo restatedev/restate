@@ -25,3 +25,8 @@ serde = { workspace = true }
 futures-util = { workspace = true }
 test_utils = { workspace = true }
 tracing-subscriber = {workspace = true }
+criterion = { version = "0.4.0", features = ["async_tokio"] }
+
+[[bench]]
+name = "timer_benchmark"
+harness = false
