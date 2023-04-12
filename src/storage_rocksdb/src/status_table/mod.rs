@@ -1,4 +1,5 @@
 use crate::composite_keys::{end_key_successor, read_delimited, write_delimited};
+use crate::Result;
 use crate::TableKind::Status;
 use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -11,6 +12,44 @@ use restate_storage_proto::storage;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
+
+pub struct StatusKeyComponents {
+    pub partition_key: Option<PartitionKey>,
+    pub service_name: Option<ByteString>,
+    pub service_key: Option<Bytes>,
+}
+
+impl StatusKeyComponents {
+    pub(crate) fn to_bytes(&self, bytes: &mut BytesMut) -> Option<()> {
+        self.partition_key
+            .map(|partition_key| bytes.put_u64(partition_key))?;
+        self.service_name
+            .as_ref()
+            .map(|s| write_delimited(s, bytes))?;
+        self.service_key.as_ref().map(|s| write_delimited(s, bytes))
+    }
+
+    pub(crate) fn from_bytes(bytes: &mut Bytes) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(Self {
+            partition_key: bytes.has_remaining().then(|| bytes.get_u64()),
+            service_name: bytes
+                .has_remaining()
+                .then(|| {
+                    read_delimited(bytes)
+                        // SAFETY: this is safe since the service name was constructed from a ByteString.
+                        .map(|bytes| unsafe { ByteString::from_bytes_unchecked(bytes) })
+                })
+                .transpose()?,
+            service_key: bytes
+                .has_remaining()
+                .then(|| read_delimited(bytes))
+                .transpose()?,
+        })
+    }
+}
 
 fn write_status_key(key: &mut BytesMut, partition_key: PartitionKey, service_id: &ServiceId) {
     key.put_u64(partition_key);

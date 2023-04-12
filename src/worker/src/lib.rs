@@ -17,6 +17,7 @@ use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use restate_service_key_extractor::KeyExtractorsRegistry;
 use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_storage_grpc::StorageService;
 use restate_storage_rocksdb::RocksDBStorage;
 use std::ops::RangeInclusive;
 use tokio::join;
@@ -55,6 +56,8 @@ pub struct Options {
     #[cfg_attr(feature = "options_schema", schemars(default))]
     timers: restate_timer::Options,
     #[cfg_attr(feature = "options_schema", schemars(default))]
+    storage_grpc: restate_storage_grpc::Options,
+    #[cfg_attr(feature = "options_schema", schemars(default))]
     storage_rocksdb: restate_storage_rocksdb::Options,
     #[cfg_attr(feature = "options_schema", schemars(default))]
     ingress_grpc: restate_ingress_grpc::Options,
@@ -67,6 +70,7 @@ impl Default for Options {
         Self {
             channel_size: Options::default_channel_size(),
             timers: Default::default(),
+            storage_grpc: Default::default(),
             storage_rocksdb: Default::default(),
             ingress_grpc: Default::default(),
             invoker: Default::default(),
@@ -100,6 +104,7 @@ pub struct Worker {
     consensus: Consensus<PartitionProcessorCommand>,
     processors: Vec<PartitionProcessor>,
     network: network_integration::Network,
+    storage_grpc: StorageService,
     invoker: Invoker<
         ProtobufRawEntryCodec,
         JournalReader<RocksDBStorage>,
@@ -120,6 +125,7 @@ impl Worker {
             channel_size,
             ingress_grpc,
             timers,
+            storage_grpc,
             storage_rocksdb,
             ..
         } = opts;
@@ -159,6 +165,8 @@ impl Worker {
 
         let rocksdb = storage_rocksdb.build();
 
+        let storage_grpc = storage_grpc.build(rocksdb.clone());
+
         let invoker = opts.invoker.build(
             JournalReader::new(rocksdb.clone()),
             service_endpoint_registry,
@@ -191,6 +199,7 @@ impl Worker {
             consensus,
             processors,
             network,
+            storage_grpc,
             invoker,
             external_client_ingress_runner: ExternalClientIngressRunner::new(
                 external_client_ingress,
@@ -238,7 +247,8 @@ impl Worker {
                 .run(shutdown_watch.clone()),
         );
         let mut invoker_handle = tokio::spawn(self.invoker.run(shutdown_watch.clone()));
-        let mut network_handle = tokio::spawn(self.network.run(shutdown_watch));
+        let mut network_handle = tokio::spawn(self.network.run(shutdown_watch.clone()));
+        let mut storage_grpc_handle = tokio::spawn(self.storage_grpc.run(shutdown_watch));
         let mut consensus_handle = tokio::spawn(self.consensus.run());
         let mut processors_handles: FuturesUnordered<_> = self
             .processors
@@ -259,6 +269,7 @@ impl Worker {
                 // ignored because we are shutting down
                 let _ = join!(
                     network_handle,
+                    storage_grpc_handle,
                     consensus_handle,
                     processors_handles.collect::<Vec<_>>(),
                     invoker_handle,
@@ -271,6 +282,9 @@ impl Worker {
             },
             network_result = &mut network_handle => {
                 panic!("Network stopped running: {network_result:?}");
+            },
+            storage_grpc_result = &mut storage_grpc_handle => {
+                panic!("Storage GRPC stopped running: {storage_grpc_result:?}");
             },
             consensus_result = &mut consensus_handle => {
                 panic!("Consensus stopped running: {consensus_result:?}");

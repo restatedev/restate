@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars", "restate_timer/options_schema", "restate_storage_rocksdb/options_schema", "restate_ingress_grpc/options_schema", "restate_invoker/options_schema"]
+options_schema = ["dep:schemars", "restate_timer/options_schema", "restate_storage_rocksdb/options_schema", "restate_storage_grpc/options_schema", "restate_ingress_grpc/options_schema", "restate_invoker/options_schema"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -37,6 +37,7 @@ restate_service_key_extractor = { workspace = true }
 restate_service_metadata = { workspace = true }
 restate_service_protocol = { workspace = true, features = ["codec"] }
 restate_storage_api = { workspace = true}
+restate_storage_grpc = { workspace = true}
 restate_storage_rocksdb = { workspace = true}
 
 [dev-dependencies]

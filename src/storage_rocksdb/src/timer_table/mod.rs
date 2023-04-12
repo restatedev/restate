@@ -1,4 +1,5 @@
 use crate::composite_keys::{read_delimited, write_delimited};
+use crate::Result;
 use crate::TableKind::Timers;
 use crate::{write_proto_infallible, PutFuture, RocksDBTransaction};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -9,6 +10,61 @@ use restate_storage_api::timer_table::TimerTable;
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 use uuid::Uuid;
+
+pub struct TimersKeyComponents {
+    pub partition_id: Option<PartitionId>,
+    pub timestamp: Option<u64>,
+    pub service_name: Option<ByteString>,
+    pub service_key: Option<Bytes>,
+    pub invocation_id: Option<Bytes>,
+    pub journal_index: Option<u32>,
+}
+
+impl TimersKeyComponents {
+    pub(crate) fn to_bytes(&self, bytes: &mut BytesMut) -> Option<()> {
+        self.partition_id
+            .map(|partition_id| bytes.put_u64(partition_id))?;
+        self.timestamp.map(|timestamp| bytes.put_u64(timestamp))?;
+        self.service_name
+            .as_ref()
+            .map(|s| write_delimited(s, bytes))?;
+        self.service_key
+            .as_ref()
+            .map(|s| write_delimited(s, bytes))?;
+        self.invocation_id
+            .as_ref()
+            .map(|s| write_delimited(s, bytes))?;
+        self.journal_index
+            .map(|journal_index| bytes.put_u32(journal_index))
+    }
+
+    pub(crate) fn from_bytes(bytes: &mut Bytes) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(Self {
+            partition_id: bytes.has_remaining().then(|| bytes.get_u64()),
+            timestamp: bytes.has_remaining().then(|| bytes.get_u64()),
+            service_name: bytes
+                .has_remaining()
+                .then(|| {
+                    read_delimited(bytes)
+                        // SAFETY: this is safe since the service name was constructed from a ByteString.
+                        .map(|bytes| unsafe { ByteString::from_bytes_unchecked(bytes) })
+                })
+                .transpose()?,
+            service_key: bytes
+                .has_remaining()
+                .then(|| read_delimited(bytes))
+                .transpose()?,
+            invocation_id: bytes
+                .has_remaining()
+                .then(|| read_delimited(bytes))
+                .transpose()?,
+            journal_index: bytes.has_remaining().then(|| bytes.get_u32()),
+        })
+    }
+}
 
 #[inline]
 fn write_timer_key(key: &mut BytesMut, partition_id: PartitionId, timer_key: &TimerKey) {

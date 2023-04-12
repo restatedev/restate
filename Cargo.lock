@@ -2414,6 +2414,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate_storage_grpc"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "drain",
+ "futures",
+ "prost",
+ "prost-build",
+ "restate_common",
+ "restate_storage_api",
+ "restate_storage_rocksdb",
+ "rocksdb",
+ "schemars",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tracing",
+]
+
+[[package]]
 name = "restate_storage_proto"
 version = "0.1.0"
 dependencies = [
@@ -2526,6 +2549,7 @@ dependencies = [
  "restate_service_metadata",
  "restate_service_protocol",
  "restate_storage_api",
+ "restate_storage_grpc",
  "restate_storage_rocksdb",
  "restate_test_utils",
  "restate_timer",
