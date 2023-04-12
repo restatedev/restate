@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use common::types::{EntryIndex, ResponseResult};
+use common::types::{CompletionResult, EntryIndex, ResponseResult};
 
 pub mod raw;
 
@@ -30,14 +30,6 @@ pub enum Entry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CompletionResult {
-    Ack,
-    Empty,
-    Success(Bytes),
-    Failure(i32, ByteString),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Completion {
     pub entry_index: EntryIndex,
     pub result: CompletionResult,
@@ -48,17 +40,6 @@ impl Completion {
         Self {
             entry_index,
             result,
-        }
-    }
-}
-
-impl From<ResponseResult> for CompletionResult {
-    fn from(value: ResponseResult) -> Self {
-        match value {
-            ResponseResult::Success(bytes) => CompletionResult::Success(bytes),
-            ResponseResult::Failure(error_code, error_msg) => {
-                CompletionResult::Failure(error_code, error_msg)
-            }
         }
     }
 }

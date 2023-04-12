@@ -2,15 +2,15 @@ use crate::partition::effects::{Effect, Effects};
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId, InvocationStatus,
-    MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId, ServiceInvocation,
+    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId,
+    InvocationStatus, MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId, ServiceInvocation,
     ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use common::utils::GenericError;
 use futures::future::BoxFuture;
 use invoker::{InvokeInputJournal, JournalMetadata};
 use journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
-use journal::{Completion, CompletionResult};
+use journal::Completion;
 use std::marker::PhantomData;
 use tracing::trace;
 

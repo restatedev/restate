@@ -4,13 +4,13 @@ use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{StateReader, StateReaderError};
 use bytes::Bytes;
 use common::types::{
-    EnrichedRawEntry, EntryIndex, InboxEntry, InvocationStatus, JournalStatus, MessageIndex,
-    MillisSinceEpoch, OutboxMessage, PartitionId, ResponseSink, ServiceId, ServiceInvocation,
-    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationStatus, JournalStatus,
+    MessageIndex, MillisSinceEpoch, OutboxMessage, PartitionId, ResponseSink, ServiceId,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext,
 };
 use futures::future::BoxFuture;
 use futures::{future, stream, FutureExt};
-use journal::CompletionResult;
 
 pub mod memory;
 

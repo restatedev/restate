@@ -6,15 +6,15 @@ use crate::partition::storage::memory::timer_key::{TimerKey, TimerKeyRef};
 use crate::partition::types::TimerValue;
 use bytes::Bytes;
 use common::types::{
-    EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId, InvocationStatus, JournalStatus,
-    MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseSink, ServiceId, ServiceInvocation,
-    ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId, InvocationStatus,
+    JournalStatus, MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseSink, ServiceId,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext,
 };
 use futures::future::{err, ok, BoxFuture};
 use futures::{stream, FutureExt};
 use invoker::{JournalMetadata, JournalReader};
 use journal::raw::{Header, PlainRawEntry};
-use journal::CompletionResult;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::vec::IntoIter;

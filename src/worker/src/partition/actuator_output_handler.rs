@@ -5,12 +5,12 @@ use crate::util::IdentitySender;
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EnrichedEntryHeader, EnrichedRawEntry, InvocationId, RawEntry, ResolutionResult,
-    ServiceInvocationSpanContext, SpanRelation,
+    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, InvocationId, RawEntry,
+    ResolutionResult, ServiceInvocationSpanContext, SpanRelation,
 };
 use journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use journal::InvokeRequest;
-use journal::{BackgroundInvokeEntry, CompletionResult, Entry, InvokeEntry};
+use journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
 use opentelemetry_api::trace::SpanContext;
 use std::marker::PhantomData;
 use std::sync::Arc;

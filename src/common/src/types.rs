@@ -437,3 +437,22 @@ pub enum EnrichedEntryHeader {
 }
 
 pub type EnrichedRawEntry = RawEntry<EnrichedEntryHeader>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionResult {
+    Ack,
+    Empty,
+    Success(Bytes),
+    Failure(i32, ByteString),
+}
+
+impl From<ResponseResult> for CompletionResult {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(bytes) => CompletionResult::Success(bytes),
+            ResponseResult::Failure(error_code, error_msg) => {
+                CompletionResult::Failure(error_code, error_msg)
+            }
+        }
+    }
+}

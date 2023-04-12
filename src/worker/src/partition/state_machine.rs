@@ -1,7 +1,7 @@
 use assert2::let_assert;
 use bytes::Bytes;
 use common::types::{
-    EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId,
+    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId,
     InvocationResponse, InvocationStatus, JournalStatus, MessageIndex, MillisSinceEpoch,
     OutboxMessage, ResolutionResult, ResponseResult, ResponseSink, ServiceId, ServiceInvocation,
     ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
@@ -10,8 +10,8 @@ use common::utils::GenericError;
 use futures::future::BoxFuture;
 use journal::raw::{RawEntryCodec, RawEntryCodecError};
 use journal::{
-    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
-    Entry, GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
+    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, Entry,
+    GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
 };
 use std::fmt::Debug;
 use std::marker::PhantomData;
