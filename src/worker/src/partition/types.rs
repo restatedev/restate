@@ -1,8 +1,5 @@
-use bytes::Bytes;
-use bytestring::ByteString;
 use common::types::{
-    EntryIndex, InvocationId, MillisSinceEpoch, RawEntry, ServiceInvocationId,
-    ServiceInvocationSpanContext,
+    EntryIndex, MillisSinceEpoch, RawEntry, ResolutionResult, ServiceInvocationId,
 };
 use invoker::InvokerError;
 use journal::raw::{Header, RawEntryHeader};
@@ -74,21 +71,6 @@ pub(crate) enum EnrichedEntryHeader {
     Custom {
         code: u16,
         requires_ack: bool,
-    },
-}
-
-/// Result of the target service resolution
-#[derive(Debug, Clone)]
-pub(crate) enum ResolutionResult {
-    Success {
-        invocation_id: InvocationId,
-        service_key: Bytes,
-        // When resolving the service and generating its id, we also generate the associated span
-        span_context: ServiceInvocationSpanContext,
-    },
-    Failure {
-        error_code: i32,
-        error: ByteString,
     },
 }
 
