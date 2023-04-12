@@ -4,14 +4,11 @@
 mod mocks;
 
 use bytes::Bytes;
-use common::types::ServiceInvocationId;
+use common::types::{CompletionResult, ServiceInvocationId};
 use hyper::Uri;
 use invoker::{Invoker, Kind, OutputEffect, UnboundedInvokerInputSender};
 use journal::raw::{RawEntryCodec, RawEntryHeader};
-use journal::{
-    Completion, CompletionResult, Entry, EntryResult, GetStateEntry, GetStateValue,
-    OutputStreamEntry,
-};
+use journal::{Completion, Entry, EntryResult, GetStateEntry, GetStateValue, OutputStreamEntry};
 use mocks::{InMemoryJournalStorage, SimulatorAction};
 use prost::Message;
 use service_metadata::{

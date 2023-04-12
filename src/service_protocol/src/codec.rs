@@ -3,9 +3,9 @@ use super::pb::protocol;
 use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use common::types::RawEntry;
+use common::types::{CompletionResult, RawEntry};
 use journal::raw::*;
-use journal::{CompletionResult, Entry, EntryType};
+use journal::{Entry, EntryType};
 use prost::Message;
 
 /// This macro generates the pattern matching with arms per entry.

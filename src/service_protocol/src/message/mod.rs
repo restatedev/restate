@@ -4,8 +4,9 @@
 use super::pb;
 
 use bytes::Bytes;
+use common::types::CompletionResult;
 use journal::raw::PlainRawEntry;
-use journal::{Completion, CompletionResult};
+use journal::Completion;
 use prost::Message;
 
 mod encoding;
