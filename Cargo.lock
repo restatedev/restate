@@ -2725,7 +2725,9 @@ name = "storage_proto"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "bytes-utils",
+ "bytestring",
+ "common",
+ "opentelemetry_api",
  "prost",
  "prost-build",
  "prost-types",

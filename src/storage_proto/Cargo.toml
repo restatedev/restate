@@ -7,9 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+conversion = ["dep:common", "dep:bytes", "dep:bytestring", "dep:opentelemetry_api", "dep:thiserror"]
+
 [dependencies]
-bytes = { workspace = true }
-bytes-utils = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+bytestring = { workspace = true, optional = true }
+common = { workspace = true, optional = true }
+opentelemetry_api = { workspace = true, optional = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 thiserror = { workspace = true, optional = true }
