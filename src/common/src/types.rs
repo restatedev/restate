@@ -170,6 +170,10 @@ pub enum ServiceInvocationResponseSink {
 pub struct ServiceInvocationSpanContext(SpanContext);
 
 impl ServiceInvocationSpanContext {
+    pub fn new(span_context: SpanContext) -> Self {
+        ServiceInvocationSpanContext(span_context)
+    }
+
     /// See [`ServiceInvocation::new`] for more details.
     pub fn start(
         service_name: &str,
