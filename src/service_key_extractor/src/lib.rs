@@ -324,8 +324,6 @@ mod extract_impls {
                     message_fields.iter().map(|(_, buf)| buf.len()).sum();
                 encode_varint(inner_message_length as u64, &mut result_buf);
 
-                println!("{}: {:?}", inner_message_length, message_fields);
-
                 // Write the fields
                 for (_, b) in message_fields {
                     result_buf.put(b)
@@ -1018,8 +1016,8 @@ mod expand_impls {
     use super::*;
     use bytes::{BufMut, BytesMut};
 
-    use prost::encoding::{encode_key, key_len, WireType};
-    use prost_reflect::{DynamicMessage, Kind, MessageDescriptor};
+    use prost::encoding::{encode_key, key_len};
+    use prost_reflect::{DynamicMessage, MessageDescriptor};
 
     impl KeyExpander for ServiceInstanceType {
         fn expand(
@@ -1047,6 +1045,8 @@ mod expand_impls {
                 let mut b = BytesMut::with_capacity(key_len(root_number) + restate_key.len());
 
                 // Encode the key of the protobuf field
+                // Note: this assumes the root wire type is never a group, per extract algorithm above
+                //  which converts groups to nested messages.
                 encode_key(root_number, field_descriptor_kind.wire_type(), &mut b);
 
                 // Append the restate key buffer
