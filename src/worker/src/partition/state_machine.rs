@@ -274,14 +274,17 @@ where
                 );
             }
             EnrichedEntryHeader::OutputStream => {
-                if let Some(response_sink) = response_sink {
+                if let Some(ref response_sink) = response_sink {
                     let_assert!(
                         Entry::OutputStream(OutputStreamEntry { result }) =
                             Codec::deserialize(&journal_entry)?
                     );
 
-                    let outbox_message =
-                        Self::create_response(&service_invocation_id, response_sink, result.into());
+                    let outbox_message = Self::create_response(
+                        &service_invocation_id,
+                        response_sink.clone(),
+                        result.into(),
+                    );
                     self.send_message(outbox_message, effects);
                 }
             }
@@ -293,8 +296,10 @@ where
                     );
 
                     effects.get_state_and_append_completed_entry(
-                        key,
                         service_invocation_id,
+                        journal_metadata,
+                        response_sink,
+                        key,
                         entry_index,
                         journal_entry,
                     );
@@ -309,6 +314,8 @@ where
 
                 effects.set_state(
                     service_invocation_id,
+                    journal_metadata,
+                    response_sink,
                     key,
                     value,
                     journal_entry,
@@ -323,7 +330,14 @@ where
                     Entry::ClearState(ClearStateEntry { key }) =
                         Codec::deserialize(&journal_entry)?
                 );
-                effects.clear_state(service_invocation_id, key, journal_entry, entry_index);
+                effects.clear_state(
+                    service_invocation_id,
+                    journal_metadata,
+                    response_sink,
+                    key,
+                    journal_entry,
+                    entry_index,
+                );
                 // clear_state includes append journal entry in order to avoid unnecessary clones.
                 // That's why we must return here.
                 return Ok(());
@@ -416,7 +430,13 @@ where
             // special handling because we can have a completion present
             EnrichedEntryHeader::Awakeable { is_completed } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
-                effects.append_awakeable_entry(service_invocation_id, entry_index, journal_entry);
+                effects.append_awakeable_entry(
+                    service_invocation_id,
+                    journal_metadata,
+                    response_sink,
+                    entry_index,
+                    journal_entry,
+                );
                 return Ok(());
             }
             EnrichedEntryHeader::CompleteAwakeable => {
@@ -432,6 +452,8 @@ where
                 if requires_ack {
                     effects.append_journal_entry_and_ack_storage(
                         service_invocation_id,
+                        journal_metadata,
+                        response_sink,
                         entry_index,
                         journal_entry,
                     );
@@ -440,7 +462,13 @@ where
             }
         }
 
-        effects.append_journal_entry(service_invocation_id, entry_index, journal_entry);
+        effects.append_journal_entry(
+            service_invocation_id,
+            journal_metadata,
+            response_sink,
+            entry_index,
+            journal_entry,
+        );
 
         Ok(())
     }
