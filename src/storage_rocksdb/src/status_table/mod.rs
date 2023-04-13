@@ -56,7 +56,7 @@ impl StatusTable for RocksDBTransaction {
         let key = self.clone_key_buffer();
 
         self.spawn_blocking(move |db| {
-            let proto = db.get_proto::<storage::v1::InvocationStatus, _>(Status, key)?;
+            let proto = db.get_proto::<storage::v1::InvocationStatus>(Status, key)?;
             proto
                 .map(InvocationStatus::try_from)
                 .transpose()
