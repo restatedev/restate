@@ -7,7 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = []
+options_schema = ["dep:schemars"]
 
 [dependencies]
 restate_common = {workspace = true}
@@ -17,6 +19,7 @@ uuid = { workspace = true }
 futures = {workspace = true}
 futures-util = {workspace = true}
 prost = {workspace = true}
+schemars = { workspace = true, optional = true }
 restate_storage_proto = { workspace = true, features = ["conversion"] }
 restate_storage_api = { workspace = true }
 serde = {workspace = true}

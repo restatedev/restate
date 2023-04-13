@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+options_schema = ["dep:schemars", "restate_common/options_schema"]
+
 [dependencies]
 bytes = { workspace = true }
 bytes-utils = { workspace = true }
@@ -15,10 +19,13 @@ drain = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
 hyper-rustls = { workspace = true }
+humantime = { workspace = true }
 h2 = { version = "0.3.15", features = ["unstable"] }
 paste = { workspace = true }
 prost = { workspace = true }
+schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

@@ -7,7 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = []
+options_schema = ["dep:schemars", "restate_timer/options_schema", "restate_storage_rocksdb/options_schema", "restate_ingress_grpc/options_schema", "restate_invoker/options_schema"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -29,6 +31,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 opentelemetry_api = { workspace = true }
 tracing = { workspace = true }
+schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 restate_service_key_extractor = { workspace = true }
 restate_service_metadata = { workspace = true }

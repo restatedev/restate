@@ -1,6 +1,6 @@
 use app::Application;
 use clap::Parser;
-use config::Configuration;
+use restate::Configuration;
 use std::path::PathBuf;
 use tracing::{info, warn};
 

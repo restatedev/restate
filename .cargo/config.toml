@@ -1,3 +1,6 @@
+[alias]
+xtask = "run --package xtask --"
+
 [build]
 rustflags = [
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic

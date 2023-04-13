@@ -69,35 +69,72 @@ pub enum TableKind {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 pub enum CompressionType {
+    /// No compression
     None,
+    /// Compression using lz4
     Lz4,
+    /// Compression using zlib
     Zstd,
 }
 
+/// # Storage options
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "options_schema", schemars(rename = "StorageOptions"))]
 pub struct Options {
-    /// Storage path
+    /// # Storage path
+    ///
+    /// The root path to use for the Rocksdb storage
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_path")
+    )]
     pub path: String,
 
-    /// threads for rocksdb background tasks
+    /// # Threads
+    ///
+    /// The number of threads to reserve to Rocksdb background tasks
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_threads")
+    )]
     pub threads: usize,
 
-    /// compression type
+    /// # Compression type
+    ///
+    /// The type of compression to use
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_compression")
+    )]
     pub compression: CompressionType,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            path: "target/db/".to_string(),
-            threads: 4,
-            compression: CompressionType::Zstd,
+            path: Options::default_path(),
+            threads: Options::default_threads(),
+            compression: Options::default_compression(),
         }
     }
 }
 
 impl Options {
+    fn default_path() -> String {
+        "target/db/".to_string()
+    }
+
+    fn default_threads() -> usize {
+        4
+    }
+
+    fn default_compression() -> CompressionType {
+        CompressionType::Zstd
+    }
+
     pub fn build(self) -> RocksDBStorage {
         RocksDBStorage::new(self)
     }

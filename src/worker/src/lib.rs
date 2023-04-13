@@ -41,21 +41,31 @@ type PartitionProcessor = partition::PartitionProcessor<
     KeyExtractorsRegistry,
 >;
 
+/// # Worker options
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "options_schema", schemars(rename = "WorkerOptions"))]
 pub struct Options {
-    /// Bounded channel size
+    /// # Bounded channel size
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_channel_size")
+    )]
     channel_size: usize,
-    /// Timers configuration
+    #[cfg_attr(feature = "options_schema", schemars(default))]
     timers: restate_timer::Options,
+    #[cfg_attr(feature = "options_schema", schemars(default))]
     storage_rocksdb: restate_storage_rocksdb::Options,
+    #[cfg_attr(feature = "options_schema", schemars(default))]
     ingress_grpc: restate_ingress_grpc::Options,
+    #[cfg_attr(feature = "options_schema", schemars(default))]
     invoker: restate_invoker::Options,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            channel_size: 64,
+            channel_size: Options::default_channel_size(),
             timers: Default::default(),
             storage_rocksdb: Default::default(),
             ingress_grpc: Default::default(),
@@ -64,19 +74,11 @@ impl Default for Options {
     }
 }
 
-pub struct Worker {
-    consensus: Consensus<PartitionProcessorCommand>,
-    processors: Vec<PartitionProcessor>,
-    network: network_integration::Network,
-    invoker: Invoker<
-        ProtobufRawEntryCodec,
-        JournalReader<RocksDBStorage>,
-        InMemoryServiceEndpointRegistry,
-    >,
-    external_client_ingress_runner: ExternalClientIngressRunner,
-}
-
 impl Options {
+    fn default_channel_size() -> usize {
+        64
+    }
+
     pub fn build(
         self,
         method_descriptor_registry: InMemoryMethodDescriptorRegistry,
@@ -92,6 +94,18 @@ impl Options {
             service_endpoint_registry,
         )
     }
+}
+
+pub struct Worker {
+    consensus: Consensus<PartitionProcessorCommand>,
+    processors: Vec<PartitionProcessor>,
+    network: network_integration::Network,
+    invoker: Invoker<
+        ProtobufRawEntryCodec,
+        JournalReader<RocksDBStorage>,
+        InMemoryServiceEndpointRegistry,
+    >,
+    external_client_ingress_runner: ExternalClientIngressRunner,
 }
 
 impl Worker {

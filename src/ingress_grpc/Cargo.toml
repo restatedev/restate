@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+options_schema = ["dep:schemars"]
+
 [dependencies]
 # Restate
 restate_common = { workspace = true }
@@ -45,6 +49,7 @@ tracing-opentelemetry = { workspace = true }
 drain = { workspace = true }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
+schemars = { workspace = true, optional = true }
 
 [dev-dependencies]
 hyper = { workspace = true, features = ["client"] }

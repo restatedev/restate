@@ -108,3 +108,23 @@ Next you can install Knative via:
 ```shell
 KNATIVE_VERSION=1.8.0 curl -sL https://raw.githubusercontent.com/csantanapr/knative-minikube/master/install.sh | bash
 ```
+
+### Build the configuration documentation
+
+Requirements:
+
+* [`generate-schema-doc`](https://github.com/coveooss/json-schema-for-humans#installation)
+
+To generate the JSON schema:
+
+```shell
+$ cargo xtask generate-config-schema > restate_config_schema.json 
+```
+
+To generate the HTML documentation:
+
+```shell
+$ generate-schema-doc --minify restate_config_schema.json restate_config_doc.html 
+```
+
+The schema can be associated to `restate.yaml` in Jetbrains IDEs to enable autocompletion: https://www.jetbrains.com/help/idea/json.html#ws_json_using_schemas

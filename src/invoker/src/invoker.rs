@@ -11,6 +11,7 @@ use restate_common::types::PartitionLeaderEpoch;
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;
+use serde_with::serde_as;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
@@ -170,45 +171,77 @@ enum OtherInputCommand {
 type HttpsClient =
     hyper::Client<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>, hyper::Body>;
 
+/// # Invoker options
+#[serde_as]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "options_schema", schemars(rename = "InvokerOptions"))]
 pub struct Options {
+    /// # Retry policy
+    ///
+    /// Retry policy to use for all the invocations handled by this invoker.
+    #[cfg_attr(feature = "options_schema", schemars(default))]
     retry_policy: RetryPolicy,
 
+    /// # Suspension timeout
+    ///
     /// This timer is used to gracefully shutdown a bidirectional stream
     /// after inactivity on both request and response streams.
     ///
     /// When this timer is fired, the invocation will be closed gracefully
     /// by closing the request stream, triggering a suspension on the sdk,
     /// in case the sdk is waiting on a completion. This won't affect the response stream.
-    suspension_timeout: Duration,
+    ///
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(with = "String", default = "Options::default_suspension_timeout")
+    )]
+    suspension_timeout: humantime::Duration,
 
+    /// # Response abort timeout
+    ///
     /// This timer is used to forcefully shutdown an invocation when only the response stream is open.
     ///
-    /// In other words:
-    ///
-    /// * When protocol mode is [`restate_service_metadata::ProtocolType::RequestResponse`],
-    ///   this timer will start as soon as the replay of the journal is completed.
-    /// * When protocol mode is [`restate_service_metadata::ProtocolType::BidiStream`],
-    ///   this timer will start after the request stream has been closed.
-    ///   Check [`bidi_stream_inactivity_graceful_close_timer`] to configure a timer on the request stream.
+    /// When protocol mode is `restate_service_metadata::ProtocolType::RequestResponse`,
+    /// this timer will start as soon as the replay of the journal is completed.
+    /// When protocol mode is `restate_service_metadata::ProtocolType::BidiStream`,
+    /// this timer will start after the request stream has been closed.
+    /// Check `suspension_timeout` to configure a timer on the request stream.
     ///
     /// When this timer is fired, the response stream will be aborted,
     /// potentially **interrupting** user code! If the user code needs longer to complete,
     /// then this value needs to be set accordingly.
-    response_abort_timeout: Duration,
+    ///
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(with = "String", default = "Options::default_response_abort_timeout")
+    )]
+    response_abort_timeout: humantime::Duration,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            retry_policy: RetryPolicy::None,
-            suspension_timeout: Duration::from_secs(60),
-            response_abort_timeout: Duration::from_secs(60) * 60,
+            retry_policy: Default::default(),
+            suspension_timeout: Options::default_suspension_timeout(),
+            response_abort_timeout: Options::default_response_abort_timeout(),
         }
     }
 }
 
 impl Options {
+    fn default_suspension_timeout() -> humantime::Duration {
+        Duration::from_secs(60).into()
+    }
+
+    fn default_response_abort_timeout() -> humantime::Duration {
+        (Duration::from_secs(60) * 60).into()
+    }
+
     pub fn build<C, JR, JS, SER>(
         self,
         journal_reader: JR,
@@ -240,8 +273,8 @@ impl Options {
             invocation_tasks: Default::default(),
             retry_timers: Default::default(),
             retry_policy: self.retry_policy,
-            suspension_timeout: self.suspension_timeout,
-            response_abort_timeout: self.response_abort_timeout,
+            suspension_timeout: self.suspension_timeout.into(),
+            response_abort_timeout: self.response_abort_timeout.into(),
             journal_reader,
             _codec: PhantomData::<C>::default(),
         }
