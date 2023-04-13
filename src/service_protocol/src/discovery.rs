@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
+use codederror::CodedError;
 use common::retry_policy::RetryPolicy;
+use errors::{META0001, META0002, META0003};
 use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, Client, Method, Request, Uri};
@@ -29,22 +31,6 @@ const KEYED_SERVICE_EXT: i32 = 1;
 const SINGLETON_SERVICE_EXT: i32 = 2;
 
 const DISCOVER_PATH: &str = "/discover";
-
-const KEY_FIELD_ERROR_MESSAGE: &str = r"
-        When a service is keyed, it must have for each method a field annotated with `dev.restate.ext.field`, for example:
-
-        service HelloWorld {{
-          option (dev.restate.ext.service_type) = KEYED;
-
-          rpc greet (GreetingRequest) returns (GreetingResponse);
-        }}
-
-        message GreetingRequest {{
-          Person person = 1 [(dev.restate.ext.field) = KEY];
-        }}
-
-        The key field can be either a primitive or a custom message.
-        The key field must have the same type for every method.";
 
 mod pb {
     use super::*;
@@ -102,56 +88,70 @@ pub struct DiscoveredEndpointMetadata {
     pub protocol_type: ProtocolType,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, CodedError)]
 pub enum ServiceDiscoveryError {
     // User errors
-    #[error("cannot find service {0} in descriptor set. Make sure the descriptor set used by service discovery in your SDK contains all the exposed services.")]
-    ServiceNotFoundInDescriptor(String),
-    #[error("cannot find the dev.restate.ext.service_type extension in the descriptor of service {0}. You must annotate a service using the dev.restate.ext.service_type extension to specify whether your service is KEYED, UNKEYED or SINGLETON.")]
-    MissingServiceTypeAnnotation(String),
-    #[error("the service {0} is keyed but has no methods. You must specify at least one method.")]
+    #[error("cannot find the dev.restate.ext.service_type extension in the descriptor of service {0}. You must annotate a service using the dev.restate.ext.service_type extension to specify whether your service is KEYED, UNKEYED or SINGLETON")]
+    #[code(META0001)]
+    MissingServiceTypeExtension(String),
+    #[error("the service {0} is keyed but has no methods. You must specify at least one method")]
+    #[code(META0001)]
     KeyedServiceWithoutMethods(String),
-    #[error("the service {0} is reserved. Service name should must not start with 'dev.restate' or 'grpc'.")]
+    #[error("the service name {0} is reserved. Service name should must not start with 'dev.restate' or 'grpc'")]
+    #[code(META0001)]
     ServiceNameReserved(String),
     #[error(
-        "error when trying to parse the key of service method {} with input type {}. No key field found.{KEY_FIELD_ERROR_MESSAGE}",
+        "error when trying to parse the key of service method {} with input type {}. No key field found",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
+    #[code(META0002)]
     MissingKeyField(MethodDescriptor),
     #[error(
-        "error when trying to parse the key of service method {} with input type {}. More than one key field found.{KEY_FIELD_ERROR_MESSAGE}",
+        "error when trying to parse the key of service method {} with input type {}. More than one key field found",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
+    #[code(META0002)]
     MoreThanOneKeyField(MethodDescriptor),
     #[error(
-        "error when trying to parse the key of service method {} with input type {}. Bad key field type.{KEY_FIELD_ERROR_MESSAGE}",
+        "error when trying to parse the key of service method {} with input type {}. Bad key field type",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
+    #[code(META0002)]
     BadKeyFieldType(MethodDescriptor),
     #[error(
-        "error when trying to parse the key of service method {} with input type {}. The key type is different from other methods key types.{KEY_FIELD_ERROR_MESSAGE}",
+        "error when trying to parse the key of service method {} with input type {}. The key type is different from other methods key types",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
+    #[code(META0002)]
     DifferentKeyTypes(MethodDescriptor),
 
     // Errors most likely related to SDK bugs
+    #[error("cannot find service {0} in descriptor set. This might be a symptom of an SDK bug, or of the build tool/pipeline used to generate the descriptor")]
+    #[code(unknown)]
+    ServiceNotFoundInDescriptor(String),
     #[error("received a bad response from the SDK: {0}. This might be a symptom of an SDK bug")]
+    #[code(unknown)]
     BadResponse(&'static str),
     #[error("received a bad response from the SDK that cannot be decoded: {0}. This might be a symptom of an SDK bug")]
+    #[code(unknown)]
     Decode(#[from] DecodeError),
     #[error("received a bad response from the SDK with a descriptor set that cannot be reconstructed: {0}. This might be a symptom of an SDK bug")]
+    #[code(unknown)]
     Descriptor(#[from] DescriptorError),
     #[error("bad or missing Restate dependency in the descriptor pool. This might be a symptom of an SDK bug")]
+    #[code(unknown)]
     BadOrMissingRestateDependencyInDescriptor,
 
     // Network related retryable errors
     #[error("retry limit exhausted. Last bad status code: {0}")]
+    #[code(META0003)]
     BadStatusCode(u16),
     #[error("retry limit exhausted. Last hyper error: {0}")]
+    #[code(META0003)]
     Hyper(#[from] hyper::Error),
 }
 
@@ -159,8 +159,7 @@ impl ServiceDiscoveryError {
     pub fn is_user_error(&self) -> bool {
         matches!(
             self,
-            ServiceDiscoveryError::ServiceNotFoundInDescriptor(_)
-                | ServiceDiscoveryError::MissingServiceTypeAnnotation(_)
+            ServiceDiscoveryError::MissingServiceTypeExtension(_)
                 | ServiceDiscoveryError::KeyedServiceWithoutMethods(_)
                 | ServiceDiscoveryError::MissingKeyField(_)
                 | ServiceDiscoveryError::MoreThanOneKeyField(_)
@@ -297,7 +296,7 @@ pub fn infer_service_type(
     restate_key_extension: &ExtensionDescriptor,
 ) -> Result<ServiceInstanceType, ServiceDiscoveryError> {
     if !desc.options().has_extension(restate_service_type_extension) {
-        return Err(ServiceDiscoveryError::MissingServiceTypeAnnotation(
+        return Err(ServiceDiscoveryError::MissingServiceTypeExtension(
             desc.full_name().to_string(),
         ));
     }
@@ -343,7 +342,7 @@ pub fn infer_keyed_service_type(
 
     // Now parse the next methods
     for method_desc in desc.methods().skip(1) {
-        let key_field_descriptor = resolve_key_field(&first_method, restate_key_extension)?;
+        let key_field_descriptor = resolve_key_field(&method_desc, restate_key_extension)?;
 
         // Validate every method has the same key field type
         if key_field_descriptor.kind() != first_key_field_descriptor.kind() {

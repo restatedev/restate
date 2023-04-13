@@ -21,4 +21,7 @@ pub mod fmt;
 #[macro_use]
 mod helper;
 
-declare_restate_error_codes!(RT0001);
+// RT are runtime related errors and can be used for both execution errors, or runtime configuration errors.
+// META are meta related errors.
+
+declare_restate_error_codes!(RT0001, META0001, META0002, META0003);
