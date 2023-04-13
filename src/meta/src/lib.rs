@@ -13,29 +13,62 @@ use storage::FileMetaStorage;
 use tokio::join;
 use tracing::{debug, error};
 
+/// # Meta options
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "options_schema", schemars(rename = "MetaOptions"))]
 pub struct Options {
-    /// Address of the REST endpoint
+    /// # Rest endpoint address
+    ///
+    /// Address to bind for the Meta Operational REST APIs.
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_rest_address")
+    )]
     rest_address: SocketAddr,
 
-    /// Concurrency limit for the Meta Operational REST APIs
+    /// # Rest concurrency limit
+    ///
+    /// Concurrency limit for the Meta Operational REST APIs.
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_rest_concurrency_limit")
+    )]
     rest_concurrency_limit: usize,
 
-    /// Root path for Meta storage
+    /// # Storage path
+    ///
+    /// Root path for Meta storage.
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_storage_path")
+    )]
     storage_path: String,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            rest_address: "0.0.0.0:8081".parse().unwrap(),
-            rest_concurrency_limit: 1000,
-            storage_path: "target/meta/".to_string(),
+            rest_address: Options::default_rest_address(),
+            rest_concurrency_limit: Options::default_rest_concurrency_limit(),
+            storage_path: Options::default_storage_path(),
         }
     }
 }
 
 impl Options {
+    fn default_rest_address() -> SocketAddr {
+        "0.0.0.0:8081".parse().unwrap()
+    }
+
+    fn default_rest_concurrency_limit() -> usize {
+        1000
+    }
+
+    fn default_storage_path() -> String {
+        "target/meta/".to_string()
+    }
+
     pub fn build(self) -> Meta {
         let key_extractors_registry = KeyExtractorsRegistry::default();
         let method_descriptors_registry = InMemoryMethodDescriptorRegistry::default();

@@ -38,14 +38,34 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
+#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "options_schema",
+    schemars(title = "Retry policy", description = "Definition of a retry policy")
+)]
 pub enum RetryPolicy {
+    /// # None
+    ///
+    /// No retries strategy.
     None,
+    /// # Fixed delay
+    ///
+    /// Retry with a fixed delay strategy.
     FixedDelay {
+        /// # Interval
+        ///
+        /// Interval between retries.
+        ///
+        /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
         #[cfg_attr(
             feature = "serde",
             serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
         )]
+        #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
         interval: humantime::Duration,
+        /// # Max attempts
+        ///
+        /// Number of maximum attempts before giving up.
         max_attempts: usize,
     },
 }

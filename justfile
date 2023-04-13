@@ -78,6 +78,9 @@ docker:
 notice-file:
     cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2023 Restate GmbH <stephan@restate.dev>\n" && cat) > NOTICE
 
+generate-config-schema:
+    cargo xtask generate-config-schema > restate_config_schema.json
+
 check-deny:
     cargo deny check
 
