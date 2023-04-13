@@ -45,10 +45,6 @@ async fn test_read_write() {
     timer_table_test::run_tests(rocksdb).await;
 }
 
-pub(crate) fn uuid_bytes(uuid: &str) -> Bytes {
-    Bytes::copy_from_slice(Uuid::from_str(uuid).expect("").as_ref())
-}
-
 pub(crate) fn uuid_str(uuid: &str) -> Uuid {
     Uuid::from_str(uuid).expect("")
 }

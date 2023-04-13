@@ -1,7 +1,6 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use common::types::{PartitionKey, ServiceId, ServiceInvocationId};
+use common::types::{InvocationStatus, PartitionKey, ServiceId, ServiceInvocationId};
 use std::ops::RangeInclusive;
-use storage_proto::storage::v1::InvocationStatus;
 
 pub trait StatusTable {
     fn put_invocation_status(

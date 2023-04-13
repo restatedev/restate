@@ -174,6 +174,10 @@ impl ServiceInvocationSpanContext {
         ServiceInvocationSpanContext(span_context)
     }
 
+    pub fn empty() -> Self {
+        ServiceInvocationSpanContext(SpanContext::empty_context())
+    }
+
     /// See [`ServiceInvocation::new`] for more details.
     pub fn start(
         service_name: &str,
@@ -285,7 +289,7 @@ impl Display for MillisSinceEpoch {
 }
 
 /// Status of a service instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InvocationStatus {
     Invoked(InvokedStatus),
     Suspended(SuspendedStatus),
@@ -293,7 +297,7 @@ pub enum InvocationStatus {
     Free,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InvokedStatus {
     pub invocation_id: InvocationId,
     pub journal_metadata: JournalMetadata,
@@ -314,7 +318,7 @@ impl InvokedStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SuspendedStatus {
     pub invocation_id: InvocationId,
     pub journal_metadata: JournalMetadata,
@@ -361,7 +365,7 @@ impl InboxEntry {
 }
 
 /// Metadata associated with a journal
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct JournalMetadata {
     pub length: EntryIndex,
     pub method: String,
