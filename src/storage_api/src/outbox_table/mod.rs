@@ -1,7 +1,6 @@
 use crate::{GetFuture, PutFuture};
-use common::types::PartitionId;
+use common::types::{OutboxMessage, PartitionId};
 use std::ops::Range;
-use storage_proto::storage::v1::OutboxMessage;
 
 pub trait OutboxTable {
     fn add_message(

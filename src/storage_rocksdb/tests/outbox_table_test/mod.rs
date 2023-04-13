@@ -1,13 +1,18 @@
+use crate::mock_service_invocation;
+use common::types::OutboxMessage;
 use storage_api::outbox_table::OutboxTable;
 use storage_api::{Storage, Transaction};
-use storage_proto::storage::v1::OutboxMessage;
 use storage_rocksdb::RocksDBStorage;
 
+fn mock_outbox_message() -> OutboxMessage {
+    OutboxMessage::ServiceInvocation(mock_service_invocation())
+}
+
 pub(crate) async fn populate_data<T: OutboxTable>(txn: &mut T) {
-    txn.add_message(1337, 0, OutboxMessage::default()).await;
-    txn.add_message(1337, 1, OutboxMessage::default()).await;
-    txn.add_message(1337, 2, OutboxMessage::default()).await;
-    txn.add_message(1337, 3, OutboxMessage::default()).await;
+    txn.add_message(1337, 0, mock_outbox_message()).await;
+    txn.add_message(1337, 1, mock_outbox_message()).await;
+    txn.add_message(1337, 2, mock_outbox_message()).await;
+    txn.add_message(1337, 3, mock_outbox_message()).await;
 }
 
 pub(crate) async fn consume_message_and_truncate<T: OutboxTable>(txn: &mut T) {
