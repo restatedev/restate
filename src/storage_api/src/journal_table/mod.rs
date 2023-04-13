@@ -1,6 +1,5 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use common::types::{EntryIndex, PartitionKey, ServiceId};
-use storage_proto::storage::v1::JournalEntry;
+use common::types::{EntryIndex, JournalEntry, PartitionKey, ServiceId};
 
 pub trait JournalTable {
     fn put_journal_entry(

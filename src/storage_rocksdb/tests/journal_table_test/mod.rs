@@ -1,37 +1,44 @@
-use common::types::ServiceId;
+use bytes::Bytes;
+use common::types::{EnrichedEntryHeader, EnrichedRawEntry, JournalEntry, ServiceId};
 use futures_util::StreamExt;
 use storage_api::journal_table::JournalTable;
 use storage_api::{Storage, Transaction};
-use storage_proto::storage::v1::JournalEntry;
 use storage_rocksdb::RocksDBStorage;
+
+// false positive because of Bytes
+#[allow(clippy::declare_interior_mutable_const)]
+const MOCK_JOURNAL_ENTRY: JournalEntry = JournalEntry::Entry(EnrichedRawEntry::new(
+    EnrichedEntryHeader::ClearState,
+    Bytes::new(),
+));
 
 async fn populate_data<T: JournalTable>(txn: &mut T) {
     txn.put_journal_entry(
         1337,
         &ServiceId::new("svc-1", "key-1"),
         0,
-        JournalEntry::default(),
+        MOCK_JOURNAL_ENTRY,
     )
     .await;
     txn.put_journal_entry(
         1337,
         &ServiceId::new("svc-1", "key-1"),
         1,
-        JournalEntry::default(),
+        MOCK_JOURNAL_ENTRY,
     )
     .await;
     txn.put_journal_entry(
         1337,
         &ServiceId::new("svc-1", "key-1"),
         2,
-        JournalEntry::default(),
+        MOCK_JOURNAL_ENTRY,
     )
     .await;
     txn.put_journal_entry(
         1337,
         &ServiceId::new("svc-1", "key-1"),
         3,
-        JournalEntry::default(),
+        MOCK_JOURNAL_ENTRY,
     )
     .await;
 }

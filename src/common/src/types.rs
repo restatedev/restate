@@ -414,7 +414,7 @@ pub struct RawEntry<H> {
 }
 
 impl<H> RawEntry<H> {
-    pub fn new(header: H, entry: Bytes) -> Self {
+    pub const fn new(header: H, entry: Bytes) -> Self {
         Self { header, entry }
     }
 
