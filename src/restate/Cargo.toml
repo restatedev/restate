@@ -17,7 +17,7 @@ figment = { version = "0.10.8", features = ["env", "yaml"] }
 serde = { workspace = true }
 serde_with = "2.2"
 futures-util = { workspace = true }
-humantime = "2.1.0"
+humantime = { workspace = true }
 meta = { workspace = true }
 pin-project = { workspace = true }
 tokio = { workspace = true }

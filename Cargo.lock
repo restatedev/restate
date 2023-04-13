@@ -520,8 +520,10 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "bytestring",
+ "humantime",
  "opentelemetry_api",
  "serde",
+ "serde_with",
  "tokio",
  "tracing",
  "tracing-opentelemetry",

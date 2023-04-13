@@ -1,5 +1,8 @@
+use figment::providers::{Env, Format, Serialized, Yaml};
+use figment::Figment;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::path::Path;
 use std::time::Duration;
 
 /// This is the entrypoint struct for configuring the Restate single-binary deployment.
@@ -21,5 +24,15 @@ impl Default for Configuration {
             meta: Default::default(),
             worker: Default::default(),
         }
+    }
+}
+
+impl Configuration {
+    pub fn load<P: AsRef<Path>>(config_file: P) -> Configuration {
+        Figment::from(Serialized::defaults(Configuration::default()))
+            .merge(Yaml::file(config_file))
+            .merge(Env::prefixed("RESTATE_").split("__"))
+            .extract()
+            .expect("Error when loading configuration")
     }
 }

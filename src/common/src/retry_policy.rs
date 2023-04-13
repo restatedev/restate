@@ -12,10 +12,7 @@ use std::time::Duration;
 /// use common::retry_policy::RetryPolicy;
 ///
 /// // Define the retry policy
-/// let retry_policy = RetryPolicy::FixedDelay {
-///     interval: Duration::from_millis(100),
-///     max_attempts: 10
-/// };
+/// let retry_policy = RetryPolicy::fixed_delay(Duration::from_millis(100), 10);
 ///
 /// // Transform it in an iterator
 /// let mut retry_iter = retry_policy.into_iter();
@@ -40,10 +37,15 @@ use std::time::Duration;
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "type"))]
 pub enum RetryPolicy {
     None,
     FixedDelay {
-        interval: Duration,
+        #[cfg_attr(
+            feature = "serde",
+            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
+        )]
+        interval: humantime::Duration,
         max_attempts: usize,
     },
 }
@@ -55,6 +57,13 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
+    pub fn fixed_delay(interval: Duration, max_attempts: usize) -> Self {
+        Self::FixedDelay {
+            interval: interval.into(),
+            max_attempts,
+        }
+    }
+
     /// Retry the provided closure respecting this retry policy.
     pub async fn retry_operation<T, E, Fn, Fut>(self, mut operation: Fn) -> Result<T, E>
     where
@@ -106,7 +115,7 @@ impl Iterator for Iter {
                 if self.attempts > max_attempts {
                     None
                 } else {
-                    Some(interval)
+                    Some(interval.into())
                 }
             }
         }
@@ -141,12 +150,9 @@ mod tests {
     fn fixed_delay_retry_policy() {
         assert_eq!(
             vec![Duration::from_millis(100); 10],
-            RetryPolicy::FixedDelay {
-                interval: Duration::from_millis(100),
-                max_attempts: 10
-            }
-            .into_iter()
-            .collect::<Vec<_>>()
+            RetryPolicy::fixed_delay(Duration::from_millis(100), 10)
+                .into_iter()
+                .collect::<Vec<_>>()
         )
     }
 }

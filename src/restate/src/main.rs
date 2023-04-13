@@ -1,8 +1,6 @@
 use app::Application;
 use clap::Parser;
 use config::Configuration;
-use figment::providers::{Env, Format, Serialized, Yaml};
-use figment::Figment;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
@@ -30,11 +28,7 @@ struct RestateArguments {
 fn main() {
     let cli_args = RestateArguments::parse();
 
-    let config: Configuration = Figment::from(Serialized::defaults(Configuration::default()))
-        .merge(Yaml::file(&cli_args.config_file))
-        .merge(Env::prefixed("RESTATE_").split("__"))
-        .extract()
-        .expect("Error when loading configuration");
+    let config = Configuration::load(&cli_args.config_file);
 
     let runtime = rt::build_runtime().expect("failed to build Tokio runtime!");
 

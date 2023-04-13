@@ -45,19 +45,13 @@ async fn verification() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = &hyper::Client::new();
 
-    let policy = RetryPolicy::FixedDelay {
-        interval: std::time::Duration::from_millis(1000),
-        max_attempts: 5,
-    };
+    let policy = RetryPolicy::fixed_delay(std::time::Duration::from_millis(1000), 5);
 
     policy
         .retry_operation(|| discover(client, "http://127.0.0.1:8000"))
         .await?;
 
-    let policy = RetryPolicy::FixedDelay {
-        interval: std::time::Duration::from_millis(3000),
-        max_attempts: 5,
-    };
+    let policy = RetryPolicy::fixed_delay(std::time::Duration::from_millis(3000), 5);
 
     let verification_result = call(client, Execute, seed, width, depth)
         .and_then(|_| policy.retry_operation(|| call(client, Verify, seed, width, depth)))
