@@ -166,10 +166,10 @@ impl RocksDBStorage {
         Ok(bytes)
     }
 
-    fn get_proto<M: prost::Message + Default, K: AsRef<[u8]>>(
+    fn get_proto<M: prost::Message + Default>(
         &self,
         table: TableKind,
-        key: K,
+        key: impl AsRef<[u8]>,
     ) -> Result<Option<M>> {
         let maybe_slice = self.get(table, key)?;
         if maybe_slice.is_none() {

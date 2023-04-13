@@ -56,7 +56,7 @@ impl JournalTable for RocksDBTransaction {
         write_journal_entry_key(self.key_buffer(), partition_key, service_id, journal_index);
         let key = self.clone_key_buffer();
         self.spawn_blocking(move |db| {
-            let proto = db.get_proto::<storage::v1::JournalEntry, _>(Journal, key)?;
+            let proto = db.get_proto::<storage::v1::JournalEntry>(Journal, key)?;
             proto
                 .map(JournalEntry::try_from)
                 .transpose()
