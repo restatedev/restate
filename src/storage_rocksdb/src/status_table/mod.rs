@@ -3,13 +3,12 @@ use crate::TableKind::Status;
 use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
-use common::types::{PartitionKey, ServiceId, ServiceInvocationId};
+use common::types::{InvocationStatus, PartitionKey, ServiceId, ServiceInvocationId};
 use prost::Message;
 use std::ops::RangeInclusive;
 use storage_api::status_table::StatusTable;
 use storage_api::{ready, GetStream, StorageError};
-use storage_proto::storage::v1::invocation_status::Invoked;
-use storage_proto::storage::v1::{invocation_status, InvocationStatus};
+use storage_proto::storage;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
@@ -38,7 +37,10 @@ impl StatusTable for RocksDBTransaction {
         status: InvocationStatus,
     ) -> PutFuture {
         write_status_key(self.key_buffer(), partition_key, service_id);
-        write_proto_infallible(self.value_buffer(), status);
+        write_proto_infallible(
+            self.value_buffer(),
+            storage::v1::InvocationStatus::from(status),
+        );
 
         self.put_kv_buffer(Status);
 
@@ -53,7 +55,13 @@ impl StatusTable for RocksDBTransaction {
         write_status_key(self.key_buffer(), partition_key, service_id);
         let key = self.clone_key_buffer();
 
-        self.spawn_blocking(move |db| db.get_proto(Status, key))
+        self.spawn_blocking(move |db| {
+            let proto = db.get_proto::<storage::v1::InvocationStatus, _>(Status, key)?;
+            proto
+                .map(InvocationStatus::try_from)
+                .transpose()
+                .map_err(StorageError::from)
+        })
     }
 
     fn delete_invocation_status(
@@ -110,9 +118,12 @@ fn find_all_invocation_with_invoked_status(
 }
 
 fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<ServiceInvocationId>> {
-    let status =
-        InvocationStatus::decode(v).map_err(|error| StorageError::Generic(error.into()))?;
-    if let Some(invocation_status::Status::Invoked(Invoked { invocation_id, .. })) = status.status {
+    let status = storage::v1::InvocationStatus::decode(v)
+        .map_err(|error| StorageError::Generic(error.into()))?;
+    if let Some(storage::v1::invocation_status::Status::Invoked(
+        storage::v1::invocation_status::Invoked { invocation_id, .. },
+    )) = status.status
+    {
         let (_, service_id) = status_key_from_bytes(Bytes::copy_from_slice(k))?;
         let uuid = Uuid::from_slice(&invocation_id)
             .map_err(|error| StorageError::Generic(error.into()))?;
