@@ -503,3 +503,13 @@ pub enum JournalEntry {
     Entry(EnrichedRawEntry),
     Completion(CompletionResult),
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimerKey {
+    pub service_invocation_id: ServiceInvocationId,
+    pub journal_index: u32,
+    pub timestamp: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Timer;

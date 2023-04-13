@@ -30,7 +30,7 @@ pub mod storage {
                 BackgroundCallResolutionResult, EnrichedEntryHeader, InboxEntry,
                 InvocationResolutionResult, InvocationStatus, JournalEntry, JournalMeta,
                 OutboxMessage, ResponseResult, ServiceInvocation, ServiceInvocationId,
-                ServiceInvocationResponseSink, SpanContext,
+                ServiceInvocationResponseSink, SpanContext, Timer,
             };
             use bytes::{Buf, Bytes};
             use bytestring::ByteString;
@@ -1057,6 +1057,20 @@ pub mod storage {
                     ResponseResult {
                         response_result: Some(response_result),
                     }
+                }
+            }
+
+            impl TryFrom<Timer> for common::types::Timer {
+                type Error = ConversionError;
+
+                fn try_from(_value: Timer) -> Result<Self, Self::Error> {
+                    Ok(common::types::Timer)
+                }
+            }
+
+            impl From<common::types::Timer> for Timer {
+                fn from(_value: common::types::Timer) -> Self {
+                    Timer::default()
                 }
             }
         }
