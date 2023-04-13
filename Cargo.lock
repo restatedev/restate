@@ -3680,11 +3680,13 @@ dependencies = [
  "service_protocol",
  "storage_api",
  "storage_rocksdb",
+ "test_utils",
  "thiserror",
  "timer",
  "tokio",
  "tokio-stream",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

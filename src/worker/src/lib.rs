@@ -3,6 +3,7 @@ extern crate core;
 use crate::ingress_integration::ExternalClientIngressRunner;
 use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::journal_reader::JournalReader;
+use crate::range_partitioner::RangePartitioner;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
 use consensus::Consensus;
@@ -25,6 +26,7 @@ use util::IdentitySender;
 mod ingress_integration;
 mod network_integration;
 mod partition;
+mod range_partitioner;
 mod service_invocation_factory;
 mod util;
 
@@ -143,17 +145,16 @@ impl Worker {
             service_endpoint_registry,
         );
 
-        let (command_senders, processors): (Vec<_>, Vec<_>) = (0..num_partition_processors)
-            .map(|idx| {
+        let range_partitioner = RangePartitioner::new(num_partition_processors);
+
+        let (command_senders, processors): (Vec<_>, Vec<_>) = range_partitioner
+            .map(|(idx, partition_range)| {
                 let proposal_sender = consensus.create_proposal_sender();
                 let invoker_sender = invoker.create_sender();
 
-                let start = PartitionKey::MAX / num_partition_processors * idx;
-                let end = PartitionKey::MAX / num_partition_processors * (idx + 1);
-                let partition_key_range = start..=end;
                 Self::create_partition_processor(
                     idx,
-                    partition_key_range,
+                    partition_range,
                     timers.clone(),
                     proposal_sender,
                     invoker_sender,

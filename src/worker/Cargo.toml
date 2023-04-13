@@ -35,3 +35,7 @@ service_metadata = { workspace = true }
 service_protocol = { workspace = true, features = ["codec"] }
 storage_api = { workspace = true}
 storage_rocksdb = { workspace = true}
+
+[dev-dependencies]
+test_utils = { workspace = true }
+tracing-subscriber = { workspace = true }
