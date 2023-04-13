@@ -26,18 +26,21 @@ fn write_timer_key(key: &mut BytesMut, partition_id: PartitionId, timer_key: &Ti
 #[inline]
 fn exclusive_start_key_range(
     partition_id: PartitionId,
-    timer_key: &TimerKey,
+    timer_key: Option<&TimerKey>,
 ) -> (Vec<u8>, Vec<u8>) {
     let mut key = BytesMut::new();
     key.put_u64(partition_id);
-    key.put_u64(timer_key.timestamp);
-    write_delimited(
-        &timer_key.service_invocation_id.service_id.service_name,
-        &mut key,
-    );
-    write_delimited(&timer_key.service_invocation_id.service_id.key, &mut key);
-    write_delimited(timer_key.service_invocation_id.invocation_id, &mut key);
-    key.put_u32(timer_key.journal_index + 1);
+
+    if let Some(timer_key) = timer_key {
+        key.put_u64(timer_key.timestamp);
+        write_delimited(
+            &timer_key.service_invocation_id.service_id.service_name,
+            &mut key,
+        );
+        write_delimited(&timer_key.service_invocation_id.service_id.key, &mut key);
+        write_delimited(timer_key.service_invocation_id.invocation_id, &mut key);
+        key.put_u32(timer_key.journal_index + 1);
+    }
 
     let lower_bound = key.to_vec();
     let upper_bound = (partition_id + 1).to_be_bytes().to_vec();
@@ -93,7 +96,7 @@ impl TimerTable for RocksDBTransaction {
     fn next_timers_greater_than(
         &mut self,
         partition_id: PartitionId,
-        exclusive_start: &TimerKey,
+        exclusive_start: Option<&TimerKey>,
         limit: usize,
     ) -> GetStream<(TimerKey, Timer)> {
         let (lower_bound, upper_bound) = exclusive_start_key_range(partition_id, exclusive_start);
@@ -316,7 +319,7 @@ mod tests {
 
         assert!(less_than(&key_a_bytes, &key_b_bytes));
 
-        let (low, high) = exclusive_start_key_range(1, &key_a);
+        let (low, high) = exclusive_start_key_range(1, Some(&key_a));
 
         assert!(less_than(key_a_bytes, &low));
         assert!(less_than_or_equal(&low, &key_b_bytes));

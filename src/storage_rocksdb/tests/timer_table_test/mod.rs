@@ -49,20 +49,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
 }
 
 async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T) {
-    // a key that sorts before every other legal key
-    let zero = TimerKey {
-        service_invocation_id: ServiceInvocationId {
-            service_id: ServiceId {
-                service_name: Default::default(),
-                key: Default::default(),
-            },
-            invocation_id: Default::default(),
-        },
-        journal_index: 0,
-        timestamp: 0,
-    };
-
-    let mut stream = txn.next_timers_greater_than(1337, &zero, usize::MAX);
+    let mut stream = txn.next_timers_greater_than(1337, None, usize::MAX);
 
     let mut count = 0;
     while (stream.next().await).is_some() {
@@ -75,14 +62,14 @@ async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T
 async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
     let mut stream = txn.next_timers_greater_than(
         1337,
-        &TimerKey {
+        Some(&TimerKey {
             service_invocation_id: ServiceInvocationId {
                 service_id: ServiceId::new("svc-1", "key-1"),
                 invocation_id: Default::default(),
             },
             journal_index: 0,
             timestamp: 0,
-        },
+        }),
         usize::MAX,
     );
 
@@ -119,14 +106,14 @@ async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
 async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
     let mut stream = txn.next_timers_greater_than(
         1337,
-        &TimerKey {
+        Some(&TimerKey {
             service_invocation_id: ServiceInvocationId {
                 service_id: ServiceId::new("", ""),
                 invocation_id: Default::default(),
             },
             journal_index: 0,
             timestamp: 0,
-        },
+        }),
         usize::MAX,
     );
 
