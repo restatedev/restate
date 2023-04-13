@@ -2316,6 +2316,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_with",
+ "serde_yaml",
  "tempfile",
  "test_utils",
  "thiserror",

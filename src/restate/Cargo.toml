@@ -16,6 +16,7 @@ drain = { workspace = true }
 figment = { version = "0.10.8", features = ["env", "yaml"] }
 serde = { workspace = true }
 serde_with = "2.2"
+serde_yaml = "0.9"
 futures-util = { workspace = true }
 humantime = { workspace = true }
 meta = { workspace = true }

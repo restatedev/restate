@@ -33,12 +33,22 @@ fn main() {
     let runtime = rt::build_runtime().expect("failed to build Tokio runtime!");
 
     runtime.block_on(async move {
+        // Apply tracing config globally
+        // We need to apply this first to log correctly
         config
             .tracing
             .init("Restate binary", std::process::id())
             .expect("failed to instrument logging and tracing!");
 
-        info!(?cli_args, ?config, "Running Restate.");
+        info!("Starting Restate");
+        info!(
+            "Loading configuration file from {}",
+            cli_args.config_file.display()
+        );
+        info!(
+            "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
+            serde_yaml::to_string(&config).unwrap()
+        );
 
         let app = Application::new(config.meta, config.worker);
 
