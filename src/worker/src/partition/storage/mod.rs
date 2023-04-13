@@ -14,10 +14,8 @@ use journal::raw::Header;
 use std::ops::RangeInclusive;
 
 pub mod journal_reader;
-pub mod memory;
 
 use crate::partition::TimerValue;
-pub use memory::InMemoryPartitionStorage;
 use storage_api::outbox_table::OutboxTable;
 use storage_api::Transaction as OtherTransaction;
 use timer::TimerReader;
