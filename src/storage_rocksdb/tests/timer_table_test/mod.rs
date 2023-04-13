@@ -1,8 +1,7 @@
-use common::types::{ServiceId, ServiceInvocationId};
+use common::types::{ServiceId, ServiceInvocationId, Timer, TimerKey};
 use futures_util::StreamExt;
-use storage_api::timer_table::{TimerKey, TimerTable};
+use storage_api::timer_table::TimerTable;
 use storage_api::{Storage, Transaction};
-use storage_proto::storage::v1::Timer;
 use storage_rocksdb::RocksDBStorage;
 
 async fn populate_data<T: TimerTable>(txn: &mut T) {
@@ -16,7 +15,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 0,
             timestamp: 0,
         },
-        Timer::default(),
+        Timer,
     )
     .await;
 
@@ -30,7 +29,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 1,
             timestamp: 0,
         },
-        Timer::default(),
+        Timer,
     )
     .await;
 
@@ -44,7 +43,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 2,
             timestamp: 1,
         },
-        Timer::default(),
+        Timer,
     )
     .await;
 }

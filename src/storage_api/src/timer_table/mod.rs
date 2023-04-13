@@ -1,13 +1,5 @@
 use crate::{GetStream, PutFuture};
-use common::types::{PartitionId, ServiceInvocationId};
-use storage_proto::storage::v1::Timer;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TimerKey {
-    pub service_invocation_id: ServiceInvocationId,
-    pub journal_index: u32,
-    pub timestamp: u64,
-}
+use common::types::{PartitionId, Timer, TimerKey};
 
 pub trait TimerTable {
     fn add_timer(

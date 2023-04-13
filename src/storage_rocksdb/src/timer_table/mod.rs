@@ -3,11 +3,11 @@ use crate::TableKind::Timers;
 use crate::{write_proto_infallible, PutFuture, RocksDBTransaction};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
-use common::types::PartitionId;
+use common::types::{PartitionId, Timer, TimerKey};
 use prost::Message;
-use storage_api::timer_table::{TimerKey, TimerTable};
+use storage_api::timer_table::TimerTable;
 use storage_api::{ready, GetStream, StorageError};
-use storage_proto::storage::v1::Timer;
+use storage_proto::storage;
 use uuid::Uuid;
 
 #[inline]
@@ -75,7 +75,7 @@ fn timer_key_from_key_slice(slice: &[u8]) -> crate::Result<TimerKey> {
 impl TimerTable for RocksDBTransaction {
     fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) -> PutFuture {
         write_timer_key(self.key_buffer(), partition_id, key);
-        write_proto_infallible(self.value_buffer(), timer);
+        write_proto_infallible(self.value_buffer(), storage::v1::Timer::from(timer));
 
         self.put_kv_buffer(Timers);
 
@@ -121,9 +121,11 @@ impl TimerTable for RocksDBTransaction {
 fn decode_timer_key_value(k: &[u8], v: &[u8]) -> crate::Result<(TimerKey, Timer)> {
     let timer_key = timer_key_from_key_slice(k)?;
 
-    Timer::decode(v)
-        .map_err(|error| StorageError::Generic(error.into()))
-        .map(move |timer| (timer_key, timer))
+    let timer = Timer::try_from(
+        storage::v1::Timer::decode(v).map_err(|error| StorageError::Generic(error.into()))?,
+    )?;
+
+    Ok((timer_key, timer))
 }
 
 #[cfg(test)]
@@ -132,8 +134,7 @@ mod tests {
         exclusive_start_key_range, timer_key_from_key_slice, write_timer_key,
     };
     use bytes::BytesMut;
-    use common::types::ServiceInvocationId;
-    use storage_api::timer_table::TimerKey;
+    use common::types::{ServiceInvocationId, TimerKey};
     use uuid::Uuid;
 
     #[test]
