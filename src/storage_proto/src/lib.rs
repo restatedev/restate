@@ -518,6 +518,17 @@ pub mod storage {
                 }
             }
 
+            impl From<common::types::JournalEntry> for JournalEntry {
+                fn from(value: common::types::JournalEntry) -> Self {
+                    match value {
+                        common::types::JournalEntry::Entry(entry) => JournalEntry::from(entry),
+                        common::types::JournalEntry::Completion(completion) => {
+                            JournalEntry::from(completion)
+                        }
+                    }
+                }
+            }
+
             impl From<common::types::EnrichedRawEntry> for JournalEntry {
                 fn from(value: common::types::EnrichedRawEntry) -> Self {
                     let entry = Entry::from(value);

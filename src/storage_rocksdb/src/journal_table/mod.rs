@@ -2,11 +2,11 @@ use crate::composite_keys::write_delimited;
 use crate::TableKind::Journal;
 use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBTransaction};
 use bytes::{BufMut, BytesMut};
-use common::types::{EntryIndex, PartitionKey, ServiceId};
+use common::types::{EntryIndex, JournalEntry, PartitionKey, ServiceId};
 use prost::Message;
 use storage_api::journal_table::JournalTable;
 use storage_api::{ready, GetStream, StorageError};
-use storage_proto::storage::v1::JournalEntry;
+use storage_proto::storage;
 
 #[inline]
 fn write_journal_entry_key(
@@ -37,7 +37,10 @@ impl JournalTable for RocksDBTransaction {
         journal_entry: JournalEntry,
     ) -> PutFuture {
         write_journal_entry_key(self.key_buffer(), partition_key, service_id, journal_index);
-        write_proto_infallible(self.value_buffer(), journal_entry);
+        write_proto_infallible(
+            self.value_buffer(),
+            storage::v1::JournalEntry::from(journal_entry),
+        );
 
         self.put_kv_buffer(Journal);
 
@@ -52,7 +55,13 @@ impl JournalTable for RocksDBTransaction {
     ) -> GetFuture<Option<JournalEntry>> {
         write_journal_entry_key(self.key_buffer(), partition_key, service_id, journal_index);
         let key = self.clone_key_buffer();
-        self.spawn_blocking(move |db| db.get_proto(Journal, key))
+        self.spawn_blocking(move |db| {
+            let proto = db.get_proto::<storage::v1::JournalEntry, _>(Journal, key)?;
+            proto
+                .map(JournalEntry::try_from)
+                .transpose()
+                .map_err(StorageError::from)
+        })
     }
 
     fn get_journal(
@@ -71,8 +80,9 @@ impl JournalTable for RocksDBTransaction {
             for _ in 0..journal_length {
                 match iterator.item() {
                     Some((_, v)) => {
-                        let entry = JournalEntry::decode(v)
-                            .map_err(|error| StorageError::Generic(error.into()));
+                        let entry = storage::v1::JournalEntry::decode(v)
+                            .map_err(|error| StorageError::Generic(error.into()))
+                            .and_then(|entry| JournalEntry::try_from(entry).map_err(Into::into));
                         if tx.blocking_send(entry).is_err() {
                             break;
                         }
