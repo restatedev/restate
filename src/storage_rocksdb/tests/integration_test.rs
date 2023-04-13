@@ -1,4 +1,6 @@
 use bytes::Bytes;
+use bytestring::ByteString;
+use common::types::{ServiceInvocation, ServiceInvocationId, SpanRelation};
 use std::fmt::Debug;
 use std::str::FromStr;
 use storage_api::GetStream;
@@ -49,6 +51,22 @@ pub(crate) fn uuid_bytes(uuid: &str) -> Bytes {
 
 pub(crate) fn uuid_str(uuid: &str) -> Uuid {
     Uuid::from_str(uuid).expect("")
+}
+
+pub(crate) fn mock_service_invocation() -> ServiceInvocation {
+    let (service_invocation, _) = ServiceInvocation::new(
+        ServiceInvocationId::new(
+            ByteString::from_static("service"),
+            Bytes::new(),
+            uuid_str("018756fa-3f7f-7854-a76b-42c59a3d7f2d"),
+        ),
+        ByteString::from_static("service"),
+        Bytes::new(),
+        None,
+        SpanRelation::None,
+    );
+
+    service_invocation
 }
 
 pub(crate) async fn assert_stream_eq<T: Send + Debug + PartialEq + 'static>(

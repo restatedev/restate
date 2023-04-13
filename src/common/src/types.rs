@@ -135,14 +135,14 @@ impl ServiceInvocation {
 }
 
 /// Representing a response for a caller
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InvocationResponse {
     pub id: ServiceInvocationId,
     pub entry_index: EntryIndex,
     pub result: ResponseResult,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResponseResult {
     Success(Bytes),
     Failure(i32, ByteString),
@@ -390,7 +390,7 @@ pub struct JournalStatus {
 }
 
 /// Types of outbox messages.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum OutboxMessage {
     /// Service invocation to send to another partition processor
     ServiceInvocation(ServiceInvocation),
