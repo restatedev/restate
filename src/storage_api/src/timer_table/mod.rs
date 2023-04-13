@@ -14,7 +14,7 @@ pub trait TimerTable {
     fn next_timers_greater_than(
         &mut self,
         partition_id: PartitionId,
-        exclusive_start: &TimerKey,
+        exclusive_start: Option<&TimerKey>,
         limit: usize,
     ) -> GetStream<(TimerKey, Timer)>;
 }
