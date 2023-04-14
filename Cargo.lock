@@ -1613,8 +1613,10 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.21.0",
+ "codederror",
  "common",
  "drain",
+ "errors",
  "futures",
  "futures_util",
  "hyper",
@@ -2614,7 +2616,9 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "bytes-utils",
+ "codederror",
  "common",
+ "errors",
  "hyper",
  "hyper-rustls",
  "journal",

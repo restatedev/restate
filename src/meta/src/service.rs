@@ -4,6 +4,7 @@ use futures::StreamExt;
 use std::collections::HashMap;
 
 use common::retry_policy::RetryPolicy;
+use errors::{error_it, warn_it};
 use futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
@@ -17,13 +18,19 @@ use service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum MetaError {
     #[error(transparent)]
-    Discovery(#[from] ServiceDiscoveryError),
+    Discovery(
+        #[from]
+        #[code]
+        ServiceDiscoveryError,
+    ),
     #[error(transparent)]
+    #[code(unknown)]
     Storage(#[from] MetaStorageError),
     #[error("meta closed")]
+    #[code(unknown)]
     MetaClosed,
 }
 
@@ -109,7 +116,10 @@ where
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
 
-        self.reload().await?;
+        self.reload().await.map_err(|e| {
+            error_it!(e);
+            e
+        })?;
 
         loop {
             tokio::select! {
@@ -120,6 +130,9 @@ where
                     let _ = replier.send(match req {
                         MetaHandleRequest::DiscoverEndpoint { uri, additional_headers } => MetaHandleResponse::DiscoverEndpoint(
                             self.discover_endpoint(uri, additional_headers).await
+                                .map_err(|e| {
+                                    warn_it!(e); e
+                                })
                         )
                     });
                 },

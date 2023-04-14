@@ -1,6 +1,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use codederror::CodedError;
 use serde::Serialize;
 
 use crate::service::MetaError;
@@ -45,7 +46,10 @@ impl IntoResponse for MetaApiError {
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = Json(ErrorDescriptionResponse {
-            message: self.to_string(),
+            message: match &self {
+                MetaApiError::Meta(m) => m.decorate().to_string(),
+                e => e.to_string(),
+            },
         });
 
         (status_code, body).into_response()

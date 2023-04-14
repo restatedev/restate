@@ -37,3 +37,5 @@ base64 = "0.21.0"
 # Others
 tracing = { workspace = true }
 thiserror = { workspace = true }
+codederror = { workspace = true }
+errors = { workspace = true, features = ["include_doc"] }
