@@ -34,28 +34,11 @@ pub mod storage {
             };
             use bytes::{Buf, Bytes};
             use bytestring::ByteString;
+            use common::errors::ConversionError;
             use opentelemetry_api::trace::TraceState;
             use std::collections::VecDeque;
             use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
             use std::str::FromStr;
-
-            #[derive(Debug, thiserror::Error)]
-            pub enum ConversionError {
-                #[error("missing field '{0}'")]
-                MissingField(&'static str),
-                #[error("invalid data: {0}")]
-                InvalidData(common::utils::GenericError),
-            }
-
-            impl ConversionError {
-                fn invalid_data(source: impl Into<common::utils::GenericError>) -> Self {
-                    ConversionError::InvalidData(source.into())
-                }
-
-                fn missing_field(field: &'static str) -> Self {
-                    ConversionError::MissingField(field)
-                }
-            }
 
             impl TryFrom<InvocationStatus> for common::types::InvocationStatus {
                 type Error = ConversionError;

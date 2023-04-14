@@ -524,6 +524,7 @@ dependencies = [
  "opentelemetry_api",
  "serde",
  "serde_with",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
@@ -2723,7 +2724,6 @@ dependencies = [
  "bytes",
  "common",
  "futures-util",
- "storage_proto",
  "thiserror",
 ]
 
@@ -2738,7 +2738,6 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
- "thiserror",
 ]
 
 [[package]]

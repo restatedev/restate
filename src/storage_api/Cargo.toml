@@ -10,6 +10,5 @@ publish = false
 [dependencies]
 common = { workspace = true}
 bytes = { workspace = true }
-storage_proto = { workspace = true}
 futures-util = {workspace = true}
 thiserror = { workspace = true }

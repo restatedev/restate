@@ -21,7 +21,8 @@ serde_with = { workspace = true, optional = true }
 humantime = { workspace = true }
 uuid = { workspace = true }
 opentelemetry_api = { workspace = true }
-tracing-opentelemetry = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, default-features = false, features = ["time"]}
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
