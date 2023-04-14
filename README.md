@@ -38,10 +38,16 @@ This assumes that the runtime is running on `localhost:8081`.
 
 ### Invoking a Restate service
 
-After registering a service you can invoke a service via gRPC:
+After registering a service you can invoke a service via [grpcurl](https://github.com/fullstorydev/grpcurl):
 
 ```shell
-grpcurl -protoset <DESCRIPTOR_SET_OF_SERVICE> -plaintext -d '{"counter_name": "foobar", "value": 10}' localhost:9090 counter.Counter/GetAndAdd
+grpcurl -plaintext -d '{"counter_name": "foobar", "value": 10}' localhost:9090 counter.Counter/GetAndAdd
+```
+
+or using [grpcui](https://github.com/fullstorydev/grpcui):
+
+```shell
+grpcui -plaintext localhost:9090
 ```
 
 or via HTTP/JSON that gets transcoded to gRPC:
