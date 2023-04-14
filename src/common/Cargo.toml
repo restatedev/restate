@@ -11,12 +11,14 @@ publish = false
 
 [features]
 default = []
-serde = ["dep:serde"]
+serde = ["dep:serde", "dep:serde_with"]
 
 [dependencies]
 bytes = { workspace = true }
 bytestring = { workspace = true }
 serde = { workspace = true, optional = true }
+serde_with = { workspace = true, optional = true }
+humantime = { workspace = true }
 uuid = { workspace = true }
 opentelemetry_api = { workspace = true }
 tracing-opentelemetry = { workspace = true }
