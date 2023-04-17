@@ -31,6 +31,7 @@ pub enum MetaError {
     #[code(unknown)]
     Storage(#[from] MetaStorageError),
     #[error(transparent)]
+    #[code(unknown)]
     SchemaRegistry(#[from] RegistrationError),
     #[error("meta closed")]
     #[code(unknown)]
