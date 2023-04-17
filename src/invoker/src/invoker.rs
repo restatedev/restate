@@ -167,6 +167,9 @@ enum OtherInputCommand {
     RegisterPartition(mpsc::Sender<OutputEffect>),
 }
 
+type HttpsClient =
+    hyper::Client<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>, hyper::Body>;
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Options {
     retry_policy: RetryPolicy,
@@ -337,6 +340,9 @@ where
                 PollNext::Right
             });
 
+        // Create the shared HTTP Client to use
+        let client = Self::get_client();
+
         loop {
             tokio::select! {
                 Some(input_message) = input_stream.next() => {
@@ -347,6 +353,7 @@ where
                                 .handle_invoke(
                                     invoke_input_command,
                                     StartInvocationTaskArguments::new(
+                                        &client,
                                         &journal_reader,
                                         &service_endpoint_registry,
                                         &retry_policy,
@@ -378,6 +385,7 @@ where
                                 .handle_stored_entry_ack(
                                     service_invocation_id,
                                     StartInvocationTaskArguments::new(
+                                        &client,
                                         &journal_reader,
                                         &service_endpoint_registry,
                                         &retry_policy,
@@ -437,6 +445,7 @@ where
                         partition_state_machine.handle_retry_timer_fired(
                             sid,
                             StartInvocationTaskArguments::new(
+                                &client,
                                 &journal_reader,
                                 &service_endpoint_registry,
                                 &retry_policy,
@@ -470,6 +479,20 @@ where
         // Wait for all the tasks to shutdown
         invocation_tasks.shutdown().await;
     }
+
+    // TODO a single client uses the pooling provided by hyper, but this is not enough.
+    //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
+    fn get_client() -> HttpsClient {
+        hyper::Client::builder()
+            .http2_only(true)
+            .build::<_, hyper::Body>(
+                hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_native_roots()
+                    .https_or_http()
+                    .enable_http2()
+                    .build(),
+            )
+    }
 }
 
 mod state_machine_coordinator {
@@ -498,6 +521,7 @@ mod state_machine_coordinator {
     /// the InvocationTask (e.g. if the request cannot be retried now),
     /// we pass only borrows so we create clones only if we need them.
     pub(super) struct StartInvocationTaskArguments<'a, JR, SER> {
+        client: &'a HttpsClient,
         journal_reader: &'a JR,
         service_endpoint_registry: &'a SER,
         default_retry_policy: &'a RetryPolicy,
@@ -508,7 +532,9 @@ mod state_machine_coordinator {
     }
 
     impl<'a, JR, SER> StartInvocationTaskArguments<'a, JR, SER> {
+        #[allow(clippy::too_many_arguments)]
         pub(super) fn new(
+            client: &'a HttpsClient,
             journal_reader: &'a JR,
             service_endpoint_registry: &'a SER,
             default_retry_policy: &'a RetryPolicy,
@@ -518,6 +544,7 @@ mod state_machine_coordinator {
             invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
         ) -> Self {
             Self {
+                client,
                 journal_reader,
                 service_endpoint_registry,
                 default_retry_policy,
@@ -665,6 +692,7 @@ mod state_machine_coordinator {
             };
             let abort_handle = start_arguments.invocation_tasks.spawn(
                 InvocationTask::new(
+                    start_arguments.client.clone(),
                     self.partition,
                     service_invocation_id.clone(),
                     0,
