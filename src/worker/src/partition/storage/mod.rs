@@ -515,12 +515,11 @@ where
             let timer_stream = transaction
                 .next_timers_greater_than(self.partition_id, exclusive_start.as_ref(), num_timers)
                 .map(|result| {
-                    result.map(|(timer_key, _)| {
-                        TimerValue::new(
-                            timer_key.service_invocation_id,
-                            timer_key.journal_index,
-                            MillisSinceEpoch::new(timer_key.timestamp),
-                        )
+                    result.map(|(timer_key, value)| TimerValue {
+                        service_invocation_id: timer_key.service_invocation_id,
+                        wake_up_time: MillisSinceEpoch::new(timer_key.timestamp),
+                        entry_index: timer_key.journal_index,
+                        value,
                     })
                 })
                 // TODO: Update timer service to maintain transaction while reading the timer stream: See https://github.com/restatedev/restate/issues/273

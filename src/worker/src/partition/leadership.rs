@@ -1,7 +1,7 @@
 use crate::partition::effects::{ActuatorMessage, MessageCollector};
 use crate::partition::shuffle::Shuffle;
 use crate::partition::storage::PartitionStorage;
-use crate::partition::{shuffle, TimerHandle, TimerOutput, TimerValue};
+use crate::partition::{shuffle, TimerHandle, TimerOutput};
 use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId};
 use common::utils::GenericError;
 use futures::{future, Stream, StreamExt};
@@ -124,18 +124,8 @@ where
                     let _ = shuffle_hint_tx
                         .try_send(shuffle::NewOutboxMessage::new(seq_number, message));
                 }
-                ActuatorMessage::RegisterTimer {
-                    service_invocation_id,
-                    wake_up_time,
-                    entry_index,
-                } => {
-                    timer_handle
-                        .add_timer(TimerValue::new(
-                            service_invocation_id,
-                            entry_index,
-                            wake_up_time,
-                        ))
-                        .await?;
+                ActuatorMessage::RegisterTimer(timer_value) => {
+                    timer_handle.add_timer(timer_value).await?;
                 }
                 ActuatorMessage::AckStoredEntry {
                     service_invocation_id,
