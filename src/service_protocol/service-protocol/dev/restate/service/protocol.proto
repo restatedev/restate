@@ -126,6 +126,12 @@ message BackgroundInvokeEntryMessage {
   string method_name = 2;
 
   bytes parameter = 3;
+
+  // Time when this BackgroundInvoke should be executed.
+  // The time is set as duration since UNIX Epoch.
+  // If this value is not set, equal to 0, or past in time,
+  // the runtime will execute this BackgroundInvoke as soon as possible.
+  int64 invoke_time = 4;
 }
 
 // Kind: Completable JournalEntry
