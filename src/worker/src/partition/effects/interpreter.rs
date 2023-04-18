@@ -369,7 +369,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 state_storage
                     .enqueue_into_inbox(seq_number, service_invocation)
                     .await?;
-                state_storage.store_inbox_seq_number(seq_number).await?;
+                // need to store the next inbox sequence number
+                state_storage.store_inbox_seq_number(seq_number + 1).await?;
             }
             Effect::EnqueueIntoOutbox {
                 seq_number,
@@ -378,7 +379,10 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 state_storage
                     .enqueue_into_outbox(seq_number, message.clone())
                     .await?;
-                state_storage.store_outbox_seq_number(seq_number).await?;
+                // need to store the next outbox sequence number
+                state_storage
+                    .store_outbox_seq_number(seq_number + 1)
+                    .await?;
 
                 collector.collect(ActuatorMessage::NewOutboxMessage {
                     seq_number,

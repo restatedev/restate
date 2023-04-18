@@ -21,6 +21,7 @@ pub(super) use crate::partition::ack::{
 use crate::partition::actuator_output_handler::ActuatorOutputHandler;
 use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::LeadershipState;
+use crate::partition::state_machine::StateMachine;
 use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -43,8 +44,6 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
     proposal_tx: IdentitySender<AckableCommand>,
 
     invoker_tx: InvokerInputSender,
-
-    state_machine: state_machine::StateMachine<RawEntryCodec>,
 
     network_handle: NetworkHandle,
 
@@ -87,7 +86,6 @@ where
             command_rx: command_stream,
             proposal_tx: proposal_sender,
             invoker_tx,
-            state_machine: Default::default(),
             network_handle,
             ack_tx,
             key_extractor,
@@ -103,7 +101,6 @@ where
             partition_key_range,
             timer_service_options,
             mut command_rx,
-            mut state_machine,
             invoker_tx,
             network_handle,
             proposal_tx,
@@ -126,6 +123,11 @@ where
 
         let partition_storage =
             PartitionStorage::new(partition_id, partition_key_range, rocksdb_storage);
+
+        let mut state_machine =
+            Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?;
+
+        debug!(%peer_id, %partition_id, ?state_machine, "Created state machine");
 
         let actuator_output_handler =
             ActuatorOutputHandler::<_, RawEntryCodec>::new(proposal_tx, key_extractor);
@@ -190,5 +192,22 @@ where
         let _ = leadership_state.become_follower().await;
 
         Ok(())
+    }
+
+    async fn create_state_machine<Codec, Storage>(
+        partition_storage: &PartitionStorage<Storage>,
+    ) -> Result<StateMachine<Codec>, restate_storage_api::StorageError>
+    where
+        Codec: restate_journal::raw::RawEntryCodec + Default + Debug,
+        Storage: restate_storage_api::Storage,
+    {
+        let mut transaction = partition_storage.create_transaction();
+        let inbox_seq_number = transaction.load_inbox_seq_number().await?;
+        let outbox_seq_number = transaction.load_outbox_seq_number().await?;
+        transaction.commit().await?;
+
+        let state_machine = StateMachine::new(inbox_seq_number, outbox_seq_number);
+
+        Ok(state_machine)
     }
 }

@@ -1,7 +1,7 @@
 use crate::partition::effects::{CommitError, Committable, StateStorage, StateStorageError};
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{StateReader, StateReaderError};
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
@@ -95,6 +95,50 @@ where
     ) -> BoxStream<'_, Result<(TimerKey, Timer), restate_storage_api::StorageError>> {
         self.inner
             .next_timers_greater_than(partition_id, exclusive_start, limit)
+    }
+
+    pub(super) fn load_outbox_seq_number(
+        &mut self,
+    ) -> BoxFuture<'_, Result<MessageIndex, restate_storage_api::StorageError>> {
+        self.load_seq_number(fsm_variable::OUTBOX_SEQ_NUMBER)
+    }
+
+    pub(super) fn load_inbox_seq_number(
+        &mut self,
+    ) -> BoxFuture<'_, Result<MessageIndex, restate_storage_api::StorageError>> {
+        self.load_seq_number(fsm_variable::INBOX_SEQ_NUMBER)
+    }
+
+    fn store_seq_number(
+        &mut self,
+        seq_number: MessageIndex,
+        state_id: u64,
+    ) -> BoxFuture<'_, Result<(), StateStorageError>> {
+        async move {
+            let bytes = Bytes::copy_from_slice(&seq_number.to_be_bytes());
+            self.inner.put(self.partition_id, state_id, &bytes).await;
+
+            Ok(())
+        }
+        .boxed()
+    }
+
+    fn load_seq_number(
+        &mut self,
+        state_id: u64,
+    ) -> BoxFuture<'_, Result<MessageIndex, restate_storage_api::StorageError>> {
+        async move {
+            let seq_number = self.inner.get(self.partition_id, state_id).await?;
+
+            if let Some(mut seq_number) = seq_number {
+                let mut buffer = [0; 8];
+                seq_number.copy_to_slice(&mut buffer);
+                Ok(MessageIndex::from_be_bytes(buffer))
+            } else {
+                Ok(0)
+            }
+        }
+        .boxed()
     }
 }
 
@@ -303,30 +347,14 @@ where
         &mut self,
         seq_number: MessageIndex,
     ) -> BoxFuture<Result<(), StateStorageError>> {
-        async move {
-            let bytes = Bytes::copy_from_slice(&seq_number.to_be_bytes());
-            self.inner
-                .put(self.partition_id, fsm_variable::INBOX_SEQ_NUMBER, &bytes)
-                .await;
-
-            Ok(())
-        }
-        .boxed()
+        self.store_seq_number(seq_number, fsm_variable::INBOX_SEQ_NUMBER)
     }
 
     fn store_outbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
     ) -> BoxFuture<Result<(), StateStorageError>> {
-        async move {
-            let bytes = Bytes::copy_from_slice(&seq_number.to_be_bytes());
-            self.inner
-                .put(self.partition_id, fsm_variable::OUTBOX_SEQ_NUMBER, &bytes)
-                .await;
-
-            Ok(())
-        }
-        .boxed()
+        self.store_seq_number(seq_number, fsm_variable::OUTBOX_SEQ_NUMBER)
     }
 
     fn truncate_outbox(

@@ -12,7 +12,7 @@ use restate_journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, Entry,
     GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
 };
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use tracing::{debug, trace, warn};
 
@@ -63,13 +63,31 @@ pub(super) trait StateReader {
     ) -> BoxFuture<Result<bool, StateReaderError>>;
 }
 
-#[derive(Debug, Default)]
 pub(super) struct StateMachine<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
     outbox_seq_number: MessageIndex,
 
     _codec: PhantomData<Codec>,
+}
+
+impl<Codec> Debug for StateMachine<Codec> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateMachine")
+            .field("inbox_seq_number", &self.inbox_seq_number)
+            .field("outbox_seq_number", &self.outbox_seq_number)
+            .finish()
+    }
+}
+
+impl<Codec> StateMachine<Codec> {
+    pub(crate) fn new(inbox_seq_number: MessageIndex, outbox_seq_number: MessageIndex) -> Self {
+        Self {
+            inbox_seq_number,
+            outbox_seq_number,
+            _codec: PhantomData::default(),
+        }
+    }
 }
 
 impl<Codec> StateMachine<Codec>
