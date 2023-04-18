@@ -1,10 +1,10 @@
 use bytes::Bytes;
-use common::types::{
+use restate_common::types::{
     EnrichedRawEntry, EntryIndex, InvocationId, JournalMetadata, MessageIndex, MillisSinceEpoch,
     OutboxMessage, ServiceId, ServiceInvocation, ServiceInvocationId,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
-use journal::Completion;
+use restate_journal::Completion;
 use std::collections::HashSet;
 use std::vec::Drain;
 

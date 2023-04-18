@@ -1,5 +1,5 @@
 [package]
-name = "storage_api"
+name = "restate_storage_api"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-common = { workspace = true}
+restate_common = { workspace = true}
 bytes = { workspace = true }
 futures-util = {workspace = true}
 thiserror = { workspace = true }

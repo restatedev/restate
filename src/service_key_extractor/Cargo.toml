@@ -1,5 +1,5 @@
 [package]
-name = "service_key_extractor"
+name = "restate_service_key_extractor"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -21,7 +21,7 @@ prost = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 
-common = { workspace = true }
+restate_common = { workspace = true }
 
 serde = { workspace = true, optional = true }
 

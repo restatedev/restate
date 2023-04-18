@@ -1,5 +1,5 @@
 [package]
-name = "meta"
+name = "restate_meta"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -13,7 +13,7 @@ publish = false
 # Async
 drain = { workspace = true }
 futures = { workspace = true }
-futures_util = { workspace = true }
+restate_futures_util = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
 # Rest API
@@ -27,10 +27,10 @@ serde_with = { workspace = true }
 serde_json = "1.0"
 
 # Service discovery and metadata
-common = { workspace = true, features = ["serde"] }
-service_key_extractor = { workspace = true }
-service_metadata = { workspace = true, features = ["serde"] }
-service_protocol = { workspace = true, features = ["discovery"] }
+restate_common = { workspace = true, features = ["serde"] }
+restate_service_key_extractor = { workspace = true }
+restate_service_metadata = { workspace = true, features = ["serde"] }
+restate_service_protocol = { workspace = true, features = ["discovery"] }
 prost-reflect = { workspace = true }
 base64 = "0.21.0"
 
@@ -38,9 +38,9 @@ base64 = "0.21.0"
 tracing = { workspace = true }
 thiserror = { workspace = true }
 codederror = { workspace = true }
-errors = { workspace = true, features = ["include_doc"] }
+restate_errors = { workspace = true, features = ["include_doc"] }
 
 # TODO remove this once we have meta-registry
 #  used for reflections registry
 #  see https://github.com/restatedev/restate/issues/43
-ingress_grpc = { workspace = true }
+restate_ingress_grpc = { workspace = true }

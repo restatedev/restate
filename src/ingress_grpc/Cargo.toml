@@ -1,5 +1,5 @@
 [package]
-name = "ingress_grpc"
+name = "restate_ingress_grpc"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -9,8 +9,8 @@ publish = false
 
 [dependencies]
 # Restate
-common = { workspace = true }
-service_metadata = { workspace = true }
+restate_common = { workspace = true }
+restate_service_metadata = { workspace = true }
 
 # Encoding/Decoding
 bytes = { workspace = true }
@@ -23,7 +23,7 @@ prost-reflect = { workspace = true, features = ["serde"] }
 # Futures
 pin-project = { workspace = true }
 futures = { workspace = true }
-futures_util = { workspace = true }
+restate_futures_util = { workspace = true }
 
 # Tower + Hyper + Tonic + Tokio
 tower = { workspace = true, features = ["util"] }
@@ -48,7 +48,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 hyper = { workspace = true, features = ["client"] }
-test_utils = { workspace = true }
+restate_test_utils = { workspace = true }
 tonic = { workspace = true, features = ["default"] }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

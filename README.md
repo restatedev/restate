@@ -26,6 +26,12 @@ RUST_LOG=info just run --release
 
 In order to change the log level, configure the [`RUST_LOG` env variable](https://rust-lang-nursery.github.io/rust-cookbook/development_tools/debugging/config_log.html#enable-log-levels-per-module) respectively.
 
+For example, to enable debug mode for Restate crates:
+
+```shell
+RUST_LOG=info,restate=debug just run --release
+```
+
 ### Registering Restate services
 
 After the runtime is running, you can register a service running on `localhost:8080` via `curl`:

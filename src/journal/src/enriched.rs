@@ -1,6 +1,6 @@
 use crate::raw::{Header, RawEntryHeader};
 use crate::EntryType;
-use common::types::EnrichedEntryHeader;
+use restate_common::types::EnrichedEntryHeader;
 
 impl Header for EnrichedEntryHeader {
     fn is_completed(&self) -> Option<bool> {

@@ -21,10 +21,10 @@ use rocksdb::{
 };
 use std::pin::Pin;
 
+use restate_storage_api::{GetFuture, GetStream, PutFuture, Storage, StorageError, Transaction};
 use rocksdb::DBCompressionType::Lz4;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use storage_api::{GetFuture, GetStream, PutFuture, Storage, StorageError, Transaction};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 

@@ -1,5 +1,5 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use common::types::{InboxEntry, PartitionKey, ServiceId};
+use restate_common::types::{InboxEntry, PartitionKey, ServiceId};
 
 pub trait InboxTable {
     fn put_invocation(

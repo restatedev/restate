@@ -2,14 +2,14 @@ extern crate core;
 
 use crate::Method::{Clear, Execute, Verify};
 use assert_cmd::prelude::*;
-use common::retry_policy::RetryPolicy;
 use core::fmt;
 use futures_util::TryFutureExt;
 use hyper::{http, StatusCode};
 use rand::distributions::{Alphanumeric, DistString};
+use restate_common::retry_policy::RetryPolicy;
+use restate_test_utils::test;
 use std::process::Command;
 use tempfile::Builder;
-use test_utils::test;
 use tracing::{info, warn};
 
 struct SafeChild(std::process::Child);

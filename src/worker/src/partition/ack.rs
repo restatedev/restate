@@ -1,5 +1,5 @@
 use crate::partition;
-use common::types::{AckKind, IngressId, MessageIndex, PeerId};
+use restate_common::types::{AckKind, IngressId, MessageIndex, PeerId};
 
 /// Envelope for [`partition::Command`] that might require an explicit acknowledge.
 #[derive(Debug)]

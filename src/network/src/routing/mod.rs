@@ -6,10 +6,10 @@ use crate::{
     NetworkCommand, PartitionTable, PartitionTableError, TargetConsensusOrIngress,
     TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress, UnboundedNetworkHandle,
 };
-use common::partitioner::HashPartitioner;
-use common::traits::KeyedMessage;
-use common::types::{PeerId, PeerTarget};
-use common::utils::GenericError;
+use restate_common::partitioner::HashPartitioner;
+use restate_common::traits::KeyedMessage;
+use restate_common::types::{PeerId, PeerTarget};
+use restate_common::utils::GenericError;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;

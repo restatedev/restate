@@ -52,7 +52,7 @@ pub type CommandResponseReceiver<T> = oneshot::Receiver<T>;
 /// use tokio::sync::mpsc;
 /// use tokio::task::JoinHandle;
 ///
-/// use futures_util::command::*;
+/// use restate_futures_util::command::*;
 ///
 /// let (commands_tx, mut commands_rx) = mpsc::unbounded_channel();
 ///
@@ -153,7 +153,7 @@ impl<T: Send, R: Send> From<Command<T, R>> for (T, CommandResponseSender<R>) {
 mod tests {
     use super::*;
 
-    use test_utils::{assert_eq, test};
+    use restate_test_utils::{assert_eq, test};
     use tokio::sync::mpsc;
 
     #[test(tokio::test)]

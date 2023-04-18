@@ -1,5 +1,5 @@
 [package]
-name = "storage_rocksdb"
+name = "restate_storage_rocksdb"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -10,15 +10,15 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-common = {workspace = true}
+restate_common = {workspace = true}
 bytes = {workspace = true}
 bytestring = { workspace = true }
 uuid = { workspace = true }
 futures = {workspace = true}
 futures-util = {workspace = true}
 prost = {workspace = true}
-storage_proto = { workspace = true, features = ["conversion"] }
-storage_api = { workspace = true }
+restate_storage_proto = { workspace = true, features = ["conversion"] }
+restate_storage_api = { workspace = true }
 serde = {workspace = true}
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

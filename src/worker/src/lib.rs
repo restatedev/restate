@@ -5,20 +5,20 @@ use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::journal_reader::JournalReader;
 use crate::range_partitioner::RangePartitioner;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
-use common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
-use consensus::Consensus;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use ingress_grpc::ReflectionRegistry;
-use invoker::{Invoker, UnboundedInvokerInputSender};
-use network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use partition::ack::AckableCommand;
 use partition::shuffle;
-use service_key_extractor::KeyExtractorsRegistry;
-use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
-use service_protocol::codec::ProtobufRawEntryCodec;
+use restate_common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
+use restate_consensus::Consensus;
+use restate_ingress_grpc::ReflectionRegistry;
+use restate_invoker::{Invoker, UnboundedInvokerInputSender};
+use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
+use restate_service_key_extractor::KeyExtractorsRegistry;
+use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_storage_rocksdb::RocksDBStorage;
 use std::ops::RangeInclusive;
-use storage_rocksdb::RocksDBStorage;
 use tokio::join;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -32,7 +32,7 @@ mod service_invocation_factory;
 mod util;
 
 type PartitionProcessorCommand = AckableCommand;
-type ConsensusCommand = consensus::Command<PartitionProcessorCommand>;
+type ConsensusCommand = restate_consensus::Command<PartitionProcessorCommand>;
 type ConsensusMsg = PeerTarget<PartitionProcessorCommand>;
 type PartitionProcessor = partition::PartitionProcessor<
     ProtobufRawEntryCodec,
@@ -46,10 +46,10 @@ pub struct Options {
     /// Bounded channel size
     channel_size: usize,
     /// Timers configuration
-    timers: timer::Options,
-    storage_rocksdb: storage_rocksdb::Options,
-    ingress_grpc: ingress_grpc::Options,
-    invoker: invoker::Options,
+    timers: restate_timer::Options,
+    storage_rocksdb: restate_storage_rocksdb::Options,
+    ingress_grpc: restate_ingress_grpc::Options,
+    invoker: restate_invoker::Options,
 }
 
 impl Default for Options {
@@ -190,7 +190,7 @@ impl Worker {
     fn create_partition_processor(
         peer_id: PeerId,
         partition_key_range: RangeInclusive<PartitionKey>,
-        timer_service_options: timer::Options,
+        timer_service_options: restate_timer::Options,
         proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: UnboundedInvokerInputSender,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,

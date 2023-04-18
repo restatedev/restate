@@ -16,7 +16,7 @@ use prost::Message;
 use prost_reflect::prost_types::{DescriptorProto, EnumDescriptorProto, FileDescriptorProto};
 use prost_reflect::{DescriptorPool, FileDescriptor, ServiceDescriptor};
 use tonic::{Request, Response, Status, Streaming};
-use tracing::debug;
+use tracing::{debug, trace};
 
 mod pb {
     #![allow(warnings)]
@@ -172,7 +172,7 @@ impl ReflectionRegistry {
                     .collect::<Vec<_>>(),
             );
 
-            debug!(
+            trace!(
                 "Symbols associated to service '{}': {:?}",
                 service_name,
                 service_symbols.keys()

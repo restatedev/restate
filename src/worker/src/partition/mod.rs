@@ -1,5 +1,5 @@
-use common::types::{PartitionId, PartitionKey, PeerId};
 use futures::StreamExt;
+use restate_common::types::{PartitionId, PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
@@ -23,12 +23,12 @@ use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::LeadershipState;
 use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
+use restate_storage_rocksdb::RocksDBStorage;
 pub(crate) use state_machine::Command;
 pub(super) use types::TimerValue;
 
-type TimerOutput = timer::Output<TimerValue>;
-type TimerHandle = timer::TimerHandle<TimerValue>;
-use storage_rocksdb::RocksDBStorage;
+type TimerOutput = restate_timer::Output<TimerValue>;
+type TimerHandle = restate_timer::TimerHandle<TimerValue>;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
@@ -37,9 +37,9 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
 
-    timer_service_options: timer::Options,
+    timer_service_options: restate_timer::Options,
 
-    command_rx: mpsc::Receiver<consensus::Command<AckableCommand>>,
+    command_rx: mpsc::Receiver<restate_consensus::Command<AckableCommand>>,
     proposal_tx: IdentitySender<AckableCommand>,
 
     invoker_tx: InvokerInputSender,
@@ -48,7 +48,7 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
 
     network_handle: NetworkHandle,
 
-    ack_tx: network::PartitionProcessorSender<AckResponse>,
+    ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
 
     key_extractor: KeyExtractor,
 
@@ -60,22 +60,22 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
 impl<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
     PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
 where
-    RawEntryCodec: journal::raw::RawEntryCodec + Default + Debug,
-    InvokerInputSender: invoker::InvokerInputSender + Clone,
-    NetworkHandle: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-    KeyExtractor: service_key_extractor::KeyExtractor,
+    RawEntryCodec: restate_journal::raw::RawEntryCodec + Default + Debug,
+    InvokerInputSender: restate_invoker::InvokerInputSender + Clone,
+    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    KeyExtractor: restate_service_key_extractor::KeyExtractor,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         peer_id: PeerId,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
-        timer_service_options: timer::Options,
-        command_stream: mpsc::Receiver<consensus::Command<AckableCommand>>,
+        timer_service_options: restate_timer::Options,
+        command_stream: mpsc::Receiver<restate_consensus::Command<AckableCommand>>,
         proposal_sender: IdentitySender<AckableCommand>,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
-        ack_tx: network::PartitionProcessorSender<AckResponse>,
+        ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
         key_extractor: KeyExtractor,
         rocksdb_storage: RocksDBStorage,
     ) -> Self {
@@ -136,7 +136,7 @@ where
                 command = command_rx.recv() => {
                     if let Some(command) = command {
                         match command {
-                            consensus::Command::Apply(ackable_command) => {
+                            restate_consensus::Command::Apply(ackable_command) => {
                                 let (fsm_command, ack_target) = ackable_command.into_inner();
 
                                 effects.clear();
@@ -154,7 +154,7 @@ where
                                     ack_tx.send(ack_target.acknowledge()).await?;
                                 }
                             }
-                            consensus::Command::BecomeLeader(leader_epoch) => {
+                            restate_consensus::Command::BecomeLeader(leader_epoch) => {
                                 info!(%peer_id, %partition_id, %leader_epoch, "Become leader.");
 
                                 (actuator_stream, leadership_state) = leadership_state.become_leader(
@@ -162,14 +162,14 @@ where
                                     partition_storage.clone())
                                 .await?;
                             }
-                            consensus::Command::BecomeFollower => {
+                            restate_consensus::Command::BecomeFollower => {
                                 info!(%peer_id, %partition_id, "Become follower.");
                                 (actuator_stream, leadership_state) = leadership_state.become_follower().await?;
                             },
-                            consensus::Command::ApplySnapshot => {
+                            restate_consensus::Command::ApplySnapshot => {
                                 unimplemented!("Not supported yet.");
                             }
-                            consensus::Command::CreateSnapshot => {
+                            restate_consensus::Command::CreateSnapshot => {
                                 unimplemented!("Not supported yet.");
                             }
                         }

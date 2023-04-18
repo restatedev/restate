@@ -13,13 +13,13 @@ pub use server::StartSignal;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use common::types::{
+use opentelemetry::Context;
+use restate_common::types::{
     AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation, ServiceInvocationId,
     ServiceInvocationResponseSink, SpanRelation,
 };
-use common::utils::GenericError;
-use futures_util::command::*;
-use opentelemetry::Context;
+use restate_common::utils::GenericError;
+use restate_futures_util::command::*;
 use tokio::sync::mpsc;
 use tonic::Status;
 use tracing::Span;
@@ -213,7 +213,7 @@ mod mocks {
     }
 
     use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
-    use service_metadata::InMemoryMethodDescriptorRegistry;
+    use restate_service_metadata::InMemoryMethodDescriptorRegistry;
 
     static DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin"));
 

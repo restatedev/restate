@@ -1,5 +1,5 @@
 [package]
-name = "common"
+name = "restate_common"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

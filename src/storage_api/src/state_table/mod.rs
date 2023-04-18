@@ -1,6 +1,6 @@
 use crate::{GetFuture, GetStream, PutFuture};
 use bytes::Bytes;
-use common::types::{PartitionKey, ServiceId};
+use restate_common::types::{PartitionKey, ServiceId};
 
 pub trait StateTable {
     fn put_user_state(

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use common::retry_policy::RetryPolicy;
 use http::header::{HeaderName, HeaderValue};
 use http::Uri;
-use service_key_extractor::ServiceInstanceType;
+use restate_common::retry_policy::RetryPolicy;
+use restate_service_key_extractor::ServiceInstanceType;
 
 mod descriptors_registry;
 mod endpoint_registry;
@@ -35,8 +35,8 @@ pub struct DeliveryOptions {
 mod header_map_serde {
     use super::*;
 
-    use common::utils::GenericError;
     use http::header::ToStrError;
+    use restate_common::utils::GenericError;
 
     // Proxy type to implement HashMap<HeaderName, HeaderValue> ser/de
     #[derive(serde::Serialize, serde::Deserialize)]

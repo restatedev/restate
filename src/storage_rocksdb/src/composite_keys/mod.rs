@@ -1,8 +1,8 @@
 use bytes::Buf;
 use bytes::BufMut;
 use bytes::Bytes;
-use common::types::PartitionKey;
-use storage_api::StorageError;
+use restate_common::types::PartitionKey;
+use restate_storage_api::StorageError;
 
 pub(crate) fn write_delimited<B: BufMut>(source: impl AsRef<[u8]>, target: &mut B) {
     let source = source.as_ref();

@@ -1,10 +1,10 @@
 use bytes::Bytes;
-use common::types::{
+use restate_common::types::{
     InvocationId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
     SpanRelation,
 };
-use ingress_grpc::{ServiceInvocationFactory, ServiceInvocationFactoryError};
-use service_key_extractor::{KeyExtractor, KeyExtractorsRegistry};
+use restate_ingress_grpc::{ServiceInvocationFactory, ServiceInvocationFactoryError};
+use restate_service_key_extractor::{KeyExtractor, KeyExtractorsRegistry};
 use tracing::Span;
 
 #[derive(Debug, Clone)]
@@ -28,7 +28,7 @@ impl DefaultServiceInvocationFactory {
         self.key_extractor_registry
             .extract(service_name.as_ref(), method_name.as_ref(), request_payload)
             .map_err(|err| match err {
-                service_key_extractor::Error::NotFound => {
+                restate_service_key_extractor::Error::NotFound => {
                     ServiceInvocationFactoryError::unknown_service_method(
                         service_name.as_ref(),
                         method_name.as_ref(),

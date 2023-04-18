@@ -2,11 +2,11 @@ use crate::composite_keys::write_delimited;
 use crate::TableKind::Journal;
 use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBTransaction};
 use bytes::{BufMut, BytesMut};
-use common::types::{EntryIndex, JournalEntry, PartitionKey, ServiceId};
 use prost::Message;
-use storage_api::journal_table::JournalTable;
-use storage_api::{ready, GetStream, StorageError};
-use storage_proto::storage;
+use restate_common::types::{EntryIndex, JournalEntry, PartitionKey, ServiceId};
+use restate_storage_api::journal_table::JournalTable;
+use restate_storage_api::{ready, GetStream, StorageError};
+use restate_storage_proto::storage;
 
 #[inline]
 fn write_journal_entry_key(
@@ -147,7 +147,7 @@ impl RocksDBTransaction {
 mod tests {
     use crate::journal_table::{write_journal_entry_key, write_journal_key};
     use bytes::{Bytes, BytesMut};
-    use common::types::{PartitionKey, ServiceId};
+    use restate_common::types::{PartitionKey, ServiceId};
 
     fn journal_entry_key(
         partition_key: PartitionKey,

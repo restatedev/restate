@@ -1,4 +1,4 @@
-use common::types::{PartitionKey, PeerId};
+use restate_common::types::{PartitionKey, PeerId};
 use std::ops::RangeInclusive;
 
 pub(crate) struct RangePartitioner {
@@ -59,8 +59,8 @@ impl Iterator for RangePartitioner {
 #[cfg(test)]
 mod tests {
     use crate::range_partitioner::RangePartitioner;
-    use common::types::PartitionKey;
-    use test_utils::test;
+    use restate_common::types::PartitionKey;
+    use restate_test_utils::test;
 
     #[test]
     fn range_partitioner_produces_consecutive_ranges() {

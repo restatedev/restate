@@ -1,5 +1,5 @@
 [package]
-name = "service_protocol"
+name = "restate_service_protocol"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -11,8 +11,8 @@ publish = false
 default = []
 protocol = []
 message = ["protocol", "dep:bytes-utils"]
-codec = ["protocol", "dep:thiserror", "dep:journal", "dep:paste"]
-discovery = ["dep:thiserror", "dep:codederror", "dep:errors", "dep:service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:common", "dep:service_metadata"]
+codec = ["protocol", "dep:thiserror", "dep:restate_journal", "dep:paste"]
+discovery = ["dep:thiserror", "dep:codederror", "dep:restate_errors", "dep:restate_service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:restate_common", "dep:restate_service_metadata"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -23,19 +23,19 @@ prost-types = { workspace = true }
 thiserror = { workspace = true, optional = true }
 
 paste = { workspace = true, optional = true }
-journal = { workspace = true, optional = true }
+restate_journal = { workspace = true, optional = true }
 
-service_key_extractor = { workspace = true, optional = true }
+restate_service_key_extractor = { workspace = true, optional = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "runtime"], optional = true }
 hyper-rustls = { workspace = true, optional = true }
-common = { workspace = true, optional = true }
+restate_common = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }
-service_metadata = { workspace = true, optional = true }
+restate_service_metadata = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
-errors = { workspace = true, optional = true }
+restate_errors = { workspace = true, optional = true }
 
 [dev-dependencies]
-test_utils = { workspace = true }
+restate_test_utils = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }

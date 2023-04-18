@@ -1,8 +1,8 @@
 use crate::mock_service_invocation;
-use common::types::OutboxMessage;
-use storage_api::outbox_table::OutboxTable;
-use storage_api::{Storage, Transaction};
-use storage_rocksdb::RocksDBStorage;
+use restate_common::types::OutboxMessage;
+use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::{Storage, Transaction};
+use restate_storage_rocksdb::RocksDBStorage;
 
 fn mock_outbox_message() -> OutboxMessage {
     OutboxMessage::ServiceInvocation(mock_service_invocation())

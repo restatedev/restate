@@ -1,5 +1,5 @@
 use super::*;
-use common::types::EntryIndex;
+use restate_common::types::EntryIndex;
 
 pub trait CompletableEntry: private::Sealed {
     fn is_completed(&self) -> bool;

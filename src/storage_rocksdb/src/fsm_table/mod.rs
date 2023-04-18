@@ -2,9 +2,9 @@ use crate::composite_keys::{u64_pair, u64_pair_from_slice};
 use crate::TableKind::PartitionStateMachine;
 use crate::{GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
 use bytes::Bytes;
-use common::types::PartitionId;
-use storage_api::fsm_table::FsmTable;
-use storage_api::{ready, GetStream};
+use restate_common::types::PartitionId;
+use restate_storage_api::fsm_table::FsmTable;
+use restate_storage_api::{ready, GetStream};
 use tokio::sync::mpsc::Sender;
 
 impl FsmTable for RocksDBTransaction {

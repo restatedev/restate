@@ -3,12 +3,12 @@ use crate::TableKind::Status;
 use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
-use common::types::{InvocationStatus, PartitionKey, ServiceId, ServiceInvocationId};
 use prost::Message;
+use restate_common::types::{InvocationStatus, PartitionKey, ServiceId, ServiceInvocationId};
+use restate_storage_api::status_table::StatusTable;
+use restate_storage_api::{ready, GetStream, StorageError};
+use restate_storage_proto::storage;
 use std::ops::RangeInclusive;
-use storage_api::status_table::StatusTable;
-use storage_api::{ready, GetStream, StorageError};
-use storage_proto::storage;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
@@ -141,7 +141,7 @@ fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<ServiceIn
 mod tests {
     use crate::status_table::{status_key_from_bytes, write_status_key};
     use bytes::BytesMut;
-    use common::types::ServiceId;
+    use restate_common::types::ServiceId;
 
     #[test]
     fn round_trip() {

@@ -1,5 +1,5 @@
 [package]
-name = "invoker"
+name = "restate_invoker"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -7,12 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 bytes = { workspace = true }
 bytes-utils = { workspace = true }
-common = { workspace = true, features = ["serde"] }
+restate_common = { workspace = true, features = ["serde"] }
 drain = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
@@ -30,15 +28,15 @@ opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
 
 codederror = { workspace = true }
-errors = { workspace = true }
-journal = { workspace = true }
-service_metadata = { workspace = true }
-service_protocol = { workspace = true, features = ["message"] }
-timer_queue = { workspace = true }
+restate_errors = { workspace = true }
+restate_journal = { workspace = true }
+restate_service_metadata = { workspace = true }
+restate_service_protocol = { workspace = true, features = ["message"] }
+restate_timer_queue = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }
-test_utils = { workspace = true }
+restate_test_utils = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-service_protocol = { workspace = true, features = ["codec"] }
+restate_service_protocol = { workspace = true, features = ["codec"] }

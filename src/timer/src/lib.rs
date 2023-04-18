@@ -1,6 +1,6 @@
 extern crate core;
 
-use common::types::MillisSinceEpoch;
+use restate_common::types::MillisSinceEpoch;
 use std::fmt::Debug;
 use std::hash::Hash;
 use tokio::sync::mpsc;

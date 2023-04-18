@@ -2,14 +2,14 @@ mod rest_api;
 mod service;
 mod storage;
 
-use crate::storage::FileMetaStorage;
-use ingress_grpc::ReflectionRegistry;
 use rest_api::MetaRestEndpoint;
+use restate_ingress_grpc::ReflectionRegistry;
+use restate_service_key_extractor::KeyExtractorsRegistry;
+use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use serde::{Deserialize, Serialize};
 use service::MetaService;
-use service_key_extractor::KeyExtractorsRegistry;
-use service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use std::net::SocketAddr;
+use storage::FileMetaStorage;
 use tokio::join;
 use tracing::{debug, error};
 

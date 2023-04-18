@@ -8,17 +8,17 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec::IntoIter;
 
-use common::types::{
+use futures::future::BoxFuture;
+use futures::{stream, FutureExt};
+use prost::Message;
+use restate_common::types::{
     CompletionResult, EntryIndex, JournalMetadata, RawEntry, ServiceInvocationId,
     ServiceInvocationSpanContext, SpanRelation,
 };
-use futures::future::BoxFuture;
-use futures::{stream, FutureExt};
-use invoker::{InvokeInputJournal, InvokerInputSender, JournalReader, Kind, OutputEffect};
-use journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
-use journal::Completion;
-use prost::Message;
-use service_protocol::pb::protocol::PollInputStreamEntryMessage;
+use restate_invoker::{InvokeInputJournal, InvokerInputSender, JournalReader, Kind, OutputEffect};
+use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
+use restate_journal::Completion;
+use restate_service_protocol::pb::protocol::PollInputStreamEntryMessage;
 use tokio::sync::{mpsc, Mutex};
 use tracing::debug;
 

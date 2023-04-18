@@ -1,5 +1,5 @@
 [package]
-name = "worker"
+name = "restate_worker"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -14,28 +14,28 @@ anyhow = { workspace = true }
 assert2 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-common = { workspace = true }
-consensus = { workspace = true }
+restate_common = { workspace = true }
+restate_consensus = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
-ingress_grpc = { workspace = true }
-invoker = { workspace = true }
-journal = { workspace = true }
-network = { workspace = true }
+restate_ingress_grpc = { workspace = true }
+restate_invoker = { workspace = true }
+restate_journal = { workspace = true }
+restate_network = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
-timer = { workspace = true }
+restate_timer = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 opentelemetry_api = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
-service_key_extractor = { workspace = true }
-service_metadata = { workspace = true }
-service_protocol = { workspace = true, features = ["codec"] }
-storage_api = { workspace = true}
-storage_rocksdb = { workspace = true}
+restate_service_key_extractor = { workspace = true }
+restate_service_metadata = { workspace = true }
+restate_service_protocol = { workspace = true, features = ["codec"] }
+restate_storage_api = { workspace = true}
+restate_storage_rocksdb = { workspace = true}
 
 [dev-dependencies]
-test_utils = { workspace = true }
+restate_test_utils = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -1,7 +1,7 @@
 //! Useful test utilities for Restate crates. Import them with:
 //!
 //! ```rust
-//! use test_utils::{assert, test, assert_vec, assert_eq, assert_ne};
+//! use restate_test_utils::{assert, test, assert_vec, assert_eq, assert_ne};
 //! ```
 //!
 //! Note: You cannot import them with a glob import, as the compiler won't be able to distinguish our imports and the stdlib imports.
@@ -9,14 +9,14 @@
 /// Macro for assert Vec properties. Examples:
 ///
 /// ```rust
-/// use test_utils::assert_vec;
+/// use restate_test_utils::assert_vec;
 ///
 /// let v: Vec<String> = vec![];
 /// assert_vec!(v => is_empty);
 /// ```
 ///
 /// ```rust
-/// use test_utils::assert_vec;
+/// use restate_test_utils::assert_vec;
 ///
 /// let mut v = vec![];
 /// v.push(1_u16);

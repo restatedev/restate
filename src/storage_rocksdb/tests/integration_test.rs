@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use bytestring::ByteString;
-use common::types::{ServiceInvocation, ServiceInvocationId, SpanRelation};
+use restate_common::types::{ServiceInvocation, ServiceInvocationId, SpanRelation};
+use restate_storage_api::GetStream;
 use std::fmt::Debug;
 use std::str::FromStr;
-use storage_api::GetStream;
 use tempfile::tempdir;
 use tokio_stream::StreamExt;
 use uuid::Uuid;
@@ -27,7 +27,7 @@ async fn test_read_write() {
         .expect("can not convert a path to string")
         .to_string();
 
-    let opts = storage_rocksdb::Options {
+    let opts = restate_storage_rocksdb::Options {
         path,
         ..Default::default()
     };

@@ -1,5 +1,5 @@
 use crate::{GetStream, PutFuture};
-use common::types::{PartitionId, Timer, TimerKey};
+use restate_common::types::{PartitionId, Timer, TimerKey};
 
 pub trait TimerTable {
     fn add_timer(

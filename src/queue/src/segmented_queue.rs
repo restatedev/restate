@@ -19,7 +19,7 @@ use crate::segmented_queue::Segment::{
 ///
 /// ```
 /// use std::collections::VecDeque;
-/// use queue::SegmentQueue;
+/// use restate_queue::SegmentQueue;
 ///
 /// async fn demo() {
 ///     let mut queue = SegmentQueue::new("./", 1024);

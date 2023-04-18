@@ -7,7 +7,6 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
-use common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::stream::FusedStream;
 use futures::{future, stream, Stream, StreamExt};
 use hyper::body::Sender;
@@ -16,14 +15,15 @@ use hyper::http::response::Parts;
 use hyper::http::HeaderValue;
 use hyper::{http, Body, Request, Uri};
 use hyper_rustls::HttpsConnector;
-use journal::raw::PlainRawEntry;
-use journal::Completion;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry::trace::SpanContext;
 use opentelemetry_http::HeaderInjector;
-use service_metadata::{EndpointMetadata, ProtocolType};
-use service_protocol::message::{
+use restate_common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
+use restate_journal::raw::PlainRawEntry;
+use restate_journal::Completion;
+use restate_service_metadata::{EndpointMetadata, ProtocolType};
+use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
 use tokio::sync::mpsc;
@@ -63,7 +63,7 @@ pub(crate) enum InvocationTaskError {
     #[code(unknown)]
     UnexpectedJoinError(#[from] JoinError),
     #[error("response timeout")]
-    #[code(errors::RT0001)]
+    #[code(restate_errors::RT0001)]
     ResponseTimeout,
     #[error(transparent)]
     #[code(unknown)]

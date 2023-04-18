@@ -1,7 +1,7 @@
-use common::types::{
+use restate_common::types::{
     EnrichedRawEntry, EntryIndex, MillisSinceEpoch, ServiceInvocation, ServiceInvocationId, Timer,
 };
-use invoker::InvokerError;
+use restate_invoker::InvokerError;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -117,7 +117,7 @@ impl Ord for TimerValue {
     }
 }
 
-impl timer::Timer for TimerValue {
+impl restate_timer::Timer for TimerValue {
     type TimerKey = TimerValue;
 
     fn timer_key(&self) -> Self::TimerKey {
@@ -125,7 +125,7 @@ impl timer::Timer for TimerValue {
     }
 }
 
-impl timer::TimerKey for TimerValue {
+impl restate_timer::TimerKey for TimerValue {
     fn wake_up_time(&self) -> MillisSinceEpoch {
         self.wake_up_time
     }

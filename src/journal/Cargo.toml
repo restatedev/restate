@@ -1,5 +1,5 @@
 [package]
-name = "journal"
+name = "restate_journal"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -12,5 +12,5 @@ publish = false
 [dependencies]
 bytes = { workspace = true }
 bytestring = { workspace = true }
-common = { workspace = true }
+restate_common = { workspace = true }
 thiserror = { workspace = true }

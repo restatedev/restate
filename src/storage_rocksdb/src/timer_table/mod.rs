@@ -3,11 +3,11 @@ use crate::TableKind::Timers;
 use crate::{write_proto_infallible, PutFuture, RocksDBTransaction};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
-use common::types::{PartitionId, Timer, TimerKey};
 use prost::Message;
-use storage_api::timer_table::TimerTable;
-use storage_api::{ready, GetStream, StorageError};
-use storage_proto::storage;
+use restate_common::types::{PartitionId, Timer, TimerKey};
+use restate_storage_api::timer_table::TimerTable;
+use restate_storage_api::{ready, GetStream, StorageError};
+use restate_storage_proto::storage;
 use uuid::Uuid;
 
 #[inline]
@@ -63,7 +63,7 @@ fn timer_key_from_key_slice(slice: &[u8]) -> crate::Result<TimerKey> {
         Uuid::from_slice(&invocation_id).map_err(|error| StorageError::Generic(error.into()))?;
     let journal_index = key.get_u32();
     let timer_key = TimerKey {
-        service_invocation_id: common::types::ServiceInvocationId::new(
+        service_invocation_id: restate_common::types::ServiceInvocationId::new(
             unsafe { ByteString::from_bytes_unchecked(service_name) },
             service_key,
             invocation_uuid,
@@ -137,7 +137,7 @@ mod tests {
         exclusive_start_key_range, timer_key_from_key_slice, write_timer_key,
     };
     use bytes::BytesMut;
-    use common::types::{ServiceInvocationId, TimerKey};
+    use restate_common::types::{ServiceInvocationId, TimerKey};
     use uuid::Uuid;
 
     #[test]

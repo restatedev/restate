@@ -5,8 +5,8 @@ use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
-use common::types::RawEntry;
-use journal::raw::RawEntryHeader;
+use restate_common::types::RawEntry;
+use restate_journal::raw::RawEntryHeader;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EncodingError {
@@ -265,7 +265,7 @@ mod tests {
     use super::*;
 
     use crate::pb;
-    use journal::raw::RawEntryHeader;
+    use restate_journal::raw::RawEntryHeader;
 
     #[test]
     fn fill_decoder_with_several_messages() {

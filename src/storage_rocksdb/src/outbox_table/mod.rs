@@ -2,12 +2,12 @@ use crate::composite_keys::u64_pair;
 use crate::TableKind::Outbox;
 use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBTransaction};
 use bytes::BufMut;
-use common::types::{OutboxMessage, PartitionId};
 use prost::Message;
+use restate_common::types::{OutboxMessage, PartitionId};
+use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::{ready, StorageError};
+use restate_storage_proto::storage;
 use std::ops::Range;
-use storage_api::outbox_table::OutboxTable;
-use storage_api::{ready, StorageError};
-use storage_proto::storage;
 
 impl OutboxTable for RocksDBTransaction {
     fn add_message(

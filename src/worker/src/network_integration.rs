@@ -3,20 +3,20 @@
 
 use crate::partition;
 use crate::partition::shuffle;
-use common::types::PartitionKey;
 use futures::future::{ok, Ready};
-use network::{PartitionTable, PartitionTableError};
+use restate_common::types::PartitionKey;
+use restate_network::{PartitionTable, PartitionTableError};
 
-pub(super) type Network = network::Network<
+pub(super) type Network = restate_network::Network<
     partition::AckableCommand,
     shuffle::ShuffleInput,
     shuffle::ShuffleOutput,
     shuffle_integration::ShuffleToConsensus,
     shuffle_integration::ShuffleToIngress,
-    ingress_grpc::IngressOutput,
+    restate_ingress_grpc::IngressOutput,
     ingress_integration::IngressToConsensus,
     ingress_integration::IngressToShuffle,
-    ingress_grpc::IngressInput,
+    restate_ingress_grpc::IngressInput,
     partition::AckResponse,
     partition::ShuffleAckResponse,
     partition::IngressAckResponse,
@@ -47,16 +47,16 @@ mod ingress_integration {
     use crate::partition;
     use crate::partition::shuffle;
     use bytes::Bytes;
-    use common::traits::KeyedMessage;
-    use common::types::{AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation};
-    use network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
+    use restate_common::traits::KeyedMessage;
+    use restate_common::types::{AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation};
+    use restate_network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
-        for ingress_grpc::IngressOutput
+        for restate_ingress_grpc::IngressOutput
     {
         fn target(self) -> ConsensusOrShuffleTarget<IngressToConsensus, IngressToShuffle> {
             match self {
-                ingress_grpc::IngressOutput::Invocation {
+                restate_ingress_grpc::IngressOutput::Invocation {
                     service_invocation,
                     ingress_id,
                     msg_index,
@@ -65,7 +65,7 @@ mod ingress_integration {
                     ingress_id,
                     msg_index,
                 }),
-                ingress_grpc::IngressOutput::Ack(ingress_grpc::AckResponse {
+                restate_ingress_grpc::IngressOutput::Ack(restate_ingress_grpc::AckResponse {
                     kind,
                     shuffle_target,
                 }) => ConsensusOrShuffleTarget::Shuffle(IngressToShuffle {
@@ -129,10 +129,10 @@ mod shuffle_integration {
     use crate::partition;
     use crate::partition::shuffle;
     use bytes::Bytes;
-    use common::traits::KeyedMessage;
-    use common::types::{MessageIndex, PeerId, ResponseResult};
-    use ingress_grpc::{IngressError, IngressResponseMessage};
-    use network::{ConsensusOrIngressTarget, TargetConsensusOrIngress};
+    use restate_common::traits::KeyedMessage;
+    use restate_common::types::{MessageIndex, PeerId, ResponseResult};
+    use restate_ingress_grpc::{IngressError, IngressResponseMessage};
+    use restate_network::{ConsensusOrIngressTarget, TargetConsensusOrIngress};
 
     #[derive(Debug)]
     pub(crate) struct ShuffleToConsensus {
@@ -211,7 +211,7 @@ mod shuffle_integration {
         }
     }
 
-    impl From<ShuffleToIngress> for ingress_grpc::IngressInput {
+    impl From<ShuffleToIngress> for restate_ingress_grpc::IngressInput {
         fn from(value: ShuffleToIngress) -> Self {
             let ShuffleToIngress {
                 msg:
@@ -229,10 +229,10 @@ mod shuffle_integration {
                 ResponseResult::Failure(i32, error_msg) => Err(IngressError::new(i32, error_msg)),
             };
 
-            ingress_grpc::IngressInput::response(IngressResponseMessage {
+            restate_ingress_grpc::IngressInput::response(IngressResponseMessage {
                 service_invocation_id,
                 result,
-                ack_target: ingress_grpc::AckTarget::new(shuffle_id, msg_index),
+                ack_target: restate_ingress_grpc::AckTarget::new(shuffle_id, msg_index),
             })
         }
     }
@@ -241,8 +241,8 @@ mod shuffle_integration {
 mod partition_integration {
     use crate::partition;
     use crate::partition::shuffle;
-    use common::types::PeerId;
-    use network::{ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress};
+    use restate_common::types::PeerId;
+    use restate_network::{ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress};
 
     impl TargetShuffleOrIngress<partition::ShuffleAckResponse, partition::IngressAckResponse>
         for partition::AckResponse
@@ -270,9 +270,9 @@ mod partition_integration {
         }
     }
 
-    impl From<partition::IngressAckResponse> for ingress_grpc::IngressInput {
+    impl From<partition::IngressAckResponse> for restate_ingress_grpc::IngressInput {
         fn from(value: partition::IngressAckResponse) -> Self {
-            ingress_grpc::IngressInput::message_ack(value.kind)
+            restate_ingress_grpc::IngressInput::message_ack(value.kind)
         }
     }
 }
