@@ -14,7 +14,7 @@ use restate_journal::{
 };
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use tracing::{debug, trace, warn};
+use tracing::{debug, instrument, trace, warn};
 
 use crate::partition::effects::Effects;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
@@ -80,14 +80,13 @@ where
     ///
     /// We pass in the effects message as a mutable borrow to be able to reuse it across
     /// invocations of this methods which lies on the hot path.
+    #[instrument(level = "trace", skip_all, fields(command = %command), err)]
     pub(super) async fn on_apply<State: StateReader>(
         &mut self,
         command: Command,
         effects: &mut Effects,
         state: &mut State,
     ) -> Result<(), Error> {
-        debug!(?command, "Apply");
-
         match command {
             Command::Invocation(service_invocation) => {
                 let status = state
