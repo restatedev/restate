@@ -124,7 +124,6 @@ where
             network_handle,
         );
 
-        // let mut partition_storage = in_memory_storage;
         let partition_storage =
             PartitionStorage::new(partition_id, partition_key_range, rocksdb_storage);
 
