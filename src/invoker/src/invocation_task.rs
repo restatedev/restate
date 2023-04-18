@@ -15,7 +15,7 @@ use hyper::client::HttpConnector;
 use hyper::http::response::Parts;
 use hyper::http::HeaderValue;
 use hyper::{http, Body, Request, Uri};
-use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
+use hyper_rustls::HttpsConnector;
 use journal::raw::PlainRawEntry;
 use journal::Completion;
 use opentelemetry::propagation::TextMapPropagator;
@@ -134,6 +134,9 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 
 /// Represents an open invocation stream
 pub(crate) struct InvocationTask<JR> {
+    // Shared client
+    client: hyper::Client<HttpsConnector<HttpConnector>, Body>,
+
     // Connection params
     partition: PartitionLeaderEpoch,
     service_invocation_id: ServiceInvocationId,
@@ -199,6 +202,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        client: hyper::Client<HttpsConnector<HttpConnector>, Body>,
         partition: PartitionLeaderEpoch,
         sid: ServiceInvocationId,
         protocol_version: u16,
@@ -210,6 +214,7 @@ where
         invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
     ) -> Self {
         Self {
+            client,
             partition,
             service_invocation_id: sid,
             endpoint_metadata,
@@ -288,22 +293,14 @@ where
         // We send this with every journal entry to correctly link new spans generated from journal entries.
         let service_invocation_span_context = Arc::new(journal_metadata.span_context.into());
 
-        // Acquire an HTTP client
-        let client = Self::get_client();
-
         // Prepare the request and send start message
         let (mut http_stream_tx, http_request) = self.prepare_request(uri);
         shortcircuit!(self.write_start(&mut http_stream_tx, journal_size).await);
 
         // Start the request
         let (mut http_stream_tx, mut http_stream_rx) = shortcircuit!(
-            self.wait_response_and_replay_end_loop(
-                http_stream_tx,
-                client,
-                http_request,
-                journal_stream,
-            )
-            .await
+            self.wait_response_and_replay_end_loop(http_stream_tx, http_request, journal_stream,)
+                .await
         );
 
         // Check all the entries have been replayed
@@ -336,7 +333,6 @@ where
     async fn wait_response_and_replay_end_loop<JournalStream>(
         &mut self,
         http_stream_tx: Sender,
-        client: hyper::Client<HttpsConnector<HttpConnector>>,
         req: Request<Body>,
         journal_stream: JournalStream,
     ) -> TerminalLoopState<(Option<Sender>, Body)>
@@ -349,7 +345,7 @@ where
         // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
-        let mut req_fut = AbortOnDrop(tokio::task::spawn(client.request(req)));
+        let mut req_fut = AbortOnDrop(tokio::task::spawn(self.client.request(req)));
         let mut journal_stream = journal_stream.fuse();
 
         let mut http_stream_rx_res = None;
@@ -631,17 +627,6 @@ where
             .path_and_query(p)
             .build()
             .unwrap()
-    }
-
-    // TODO pooling https://github.com/restatedev/restate/issues/76
-    fn get_client() -> hyper::Client<HttpsConnector<HttpConnector>, Body> {
-        hyper::Client::builder().http2_only(true).build::<_, Body>(
-            HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .https_or_http()
-                .enable_http2()
-                .build(),
-        )
     }
 
     fn validate_response(mut parts: Parts) -> Result<(), InvocationTaskError> {
