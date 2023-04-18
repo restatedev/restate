@@ -4,6 +4,7 @@ use restate_common::types::{
 use restate_invoker::InvokerError;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug)]
@@ -72,6 +73,10 @@ impl TimerValue {
             value: Timer::Invoke(service_invocation),
         }
     }
+
+    pub(crate) fn display_key(&self) -> TimerKeyDisplay {
+        return TimerKeyDisplay(&self.service_invocation_id, &self.entry_index);
+    }
 }
 
 impl Hash for TimerValue {
@@ -128,5 +133,22 @@ impl restate_timer::Timer for TimerValue {
 impl restate_timer::TimerKey for TimerValue {
     fn wake_up_time(&self) -> MillisSinceEpoch {
         self.wake_up_time
+    }
+}
+
+// Helper to display timer key
+#[derive(Debug)]
+pub(crate) struct TimerKeyDisplay<'a>(
+    pub(crate) &'a ServiceInvocationId,
+    pub(crate) &'a EntryIndex,
+);
+
+impl<'a> fmt::Display for TimerKeyDisplay<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}[{:?}][{}]({})",
+            self.0.service_id.service_name, self.0.service_id.key, self.0.invocation_id, self.1
+        )
     }
 }

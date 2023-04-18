@@ -244,6 +244,10 @@ where
         )
     }
 
+    pub(super) fn i_am_leader(&self) -> bool {
+        matches!(self, LeadershipState::Leader { .. })
+    }
+
     pub(super) async fn become_leader<Storage>(
         self,
         leader_epoch: LeaderEpoch,

@@ -136,16 +136,28 @@ where
                     if let Some(command) = command {
                         match command {
                             restate_consensus::Command::Apply(ackable_command) => {
-                                let (fsm_command, ack_target) = ackable_command.into_inner();
-
+                                // Clear the effects to reuse the vector
                                 effects.clear();
-                                let mut transaction = partition_storage.create_transaction();
-                                state_machine.on_apply(fsm_command, &mut effects, &mut transaction).await?;
 
+                                // Prepare command and transaction
+                                let (fsm_command, ack_target) = ackable_command.into_inner();
+                                let mut transaction = partition_storage.create_transaction();
+
+                                // Handle the command, returns the span_relation to use to log effects
+                                let span_relation = state_machine.on_apply(fsm_command, &mut effects, &mut transaction).await?;
+
+                                let i_am_leader = leadership_state.i_am_leader();
+
+                                // Prepare message collector
                                 let message_collector = leadership_state.into_message_collector();
 
+                                // Log the effects
+                                effects.log(i_am_leader, span_relation);
+
+                                // Interpret effects
                                 let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).await?;
 
+                                // Commit actuator messages
                                 let message_collector = result.commit().await?;
                                 leadership_state = message_collector.send().await?;
 

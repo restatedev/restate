@@ -14,7 +14,6 @@ use restate_invoker::InvokeInputJournal;
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
 use restate_journal::Completion;
 use std::marker::PhantomData;
-use tracing::trace;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -243,8 +242,6 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         state_storage: &mut S,
         collector: &mut C,
     ) -> Result<(), Error> {
-        trace!(?effect, "Interpreting effect");
-
         match effect {
             Effect::InvokeService(service_invocation) => {
                 state_storage
