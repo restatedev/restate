@@ -1052,9 +1052,9 @@ pub mod storage {
                             timer::Value::CompleteSleepEntry(_) => {
                                 common::types::Timer::CompleteSleepEntry
                             }
-                            timer::Value::Invoke(si) => {
-                                common::types::Timer::Invoke(si.try_into()?)
-                            }
+                            timer::Value::Invoke(si) => common::types::Timer::Invoke(
+                                common::types::ServiceInvocation::try_from(si)?,
+                            ),
                         },
                     )
                 }
@@ -1067,7 +1067,7 @@ pub mod storage {
                             value: Some(timer::Value::CompleteSleepEntry(Default::default())),
                         },
                         common::types::Timer::Invoke(si) => Timer {
-                            value: Some(timer::Value::Invoke(si.into())),
+                            value: Some(timer::Value::Invoke(ServiceInvocation::from(si))),
                         },
                     }
                 }
