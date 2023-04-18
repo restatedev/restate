@@ -1,7 +1,7 @@
 use crate::partition::effects::{ActuatorMessage, MessageCollector};
 use crate::partition::shuffle::Shuffle;
 use crate::partition::storage::PartitionStorage;
-use crate::partition::{shuffle, TimerHandle, TimerOutput};
+use crate::partition::{shuffle, AckResponse, TimerHandle, TimerOutput};
 use futures::{future, Stream, StreamExt};
 use restate_common::types::{
     LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId,
@@ -46,6 +46,7 @@ pub(super) struct FollowerState<I, N> {
     timer_service_options: restate_timer::Options,
     invoker_tx: I,
     network_handle: N,
+    ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
 }
 
 pub(super) enum ActuatorMessageCollector<I, N> {
@@ -245,6 +246,7 @@ where
         timer_service_options: restate_timer::Options,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
+        ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
     ) -> (ActuatorStream, Self) {
         (
             ActuatorStream::Follower,
@@ -254,6 +256,7 @@ where
                 partition_id,
                 invoker_tx,
                 network_handle,
+                ack_tx,
             }),
         )
     }
@@ -397,6 +400,7 @@ where
                     timer_service_options: num_in_memory_timers,
                     mut invoker_tx,
                     network_handle,
+                    ack_tx,
                 },
             leader_state:
                 LeaderState {
@@ -430,6 +434,7 @@ where
                 num_in_memory_timers,
                 invoker_tx,
                 network_handle,
+                ack_tx,
             ))
         } else {
             Ok((ActuatorStream::Follower, self))
@@ -513,6 +518,20 @@ where
                 })
                 .unwrap_or(TaskResult::TerminatedTask(name))
         }
+    }
+
+    pub(crate) async fn send_ack_response(
+        &self,
+        ack_response: AckResponse,
+    ) -> Result<(), mpsc::error::SendError<AckResponse>> {
+        match self {
+            LeadershipState::Follower(_) => {}
+            LeadershipState::Leader { follower_state, .. } => {
+                follower_state.ack_tx.send(ack_response).await?
+            }
+        }
+
+        Ok(())
     }
 }
 

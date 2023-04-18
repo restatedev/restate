@@ -119,6 +119,7 @@ where
             timer_service_options,
             invoker_tx,
             network_handle,
+            ack_tx,
         );
 
         let partition_storage =
@@ -164,7 +165,7 @@ where
                                 leadership_state = message_collector.send().await?;
 
                                 if let Some(ack_target) = ack_target {
-                                    ack_tx.send(ack_target.acknowledge()).await?;
+                                    leadership_state.send_ack_response(ack_target.acknowledge()).await?;
                                 }
                             }
                             restate_consensus::Command::BecomeLeader(leader_epoch) => {
