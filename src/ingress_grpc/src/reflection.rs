@@ -51,12 +51,9 @@ impl ReflectionServiceState {
         symbols_index: HashMap<String, Vec<String>>,
         maybe_files_to_add: &HashMap<String, Bytes>,
     ) {
-        let service_response = pb::ServiceResponse {
-            name: service_name.clone(),
-        };
         match self
             .service_names
-            .binary_search_by(|s| service_response.name.cmp(&s.name))
+            .binary_search_by(|s| service_name.cmp(&s.name))
         {
             Ok(_) => {
                 // No need to reinsert
@@ -64,7 +61,12 @@ impl ReflectionServiceState {
             }
             Err(insert_index) => {
                 // This insert retains the order
-                self.service_names.insert(insert_index, service_response);
+                self.service_names.insert(
+                    insert_index,
+                    pb::ServiceResponse {
+                        name: service_name.clone(),
+                    },
+                );
             }
         }
 
