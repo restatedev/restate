@@ -1,4 +1,5 @@
 use super::protocol::{BoxBody, Protocol};
+use super::reflection::{ServerReflection, ServerReflectionServer};
 use super::*;
 
 use std::sync::Arc;
@@ -6,30 +7,60 @@ use std::task::Poll;
 
 use common::types::{IngressId, ServiceInvocationResponseSink, SpanRelation};
 use futures::future::{ok, BoxFuture};
-use futures::FutureExt;
+use futures::{FutureExt, TryFutureExt};
 use http::{Request, Response};
+use http_body::Body;
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use service_metadata::MethodDescriptorRegistry;
 use tokio::sync::Semaphore;
-use tower::{BoxError, Service};
+use tonic::server::NamedService;
+use tonic_web::{GrpcWebLayer, GrpcWebService};
+use tower::{BoxError, Layer, Service};
 use tracing::{debug, info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-#[derive(Clone)]
-pub struct Handler<InvocationFactory, MethodRegistry> {
+pub struct Handler<InvocationFactory, MethodRegistry, ReflectionService>
+where
+    ReflectionService: ServerReflection,
+{
     ingress_id: IngressId,
     invocation_factory: InvocationFactory,
     method_registry: MethodRegistry,
+    reflection_server: GrpcWebService<ServerReflectionServer<ReflectionService>>,
     dispatcher_command_sender: DispatcherCommandSender,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
 
-impl<InvocationFactory, MethodRegistry> Handler<InvocationFactory, MethodRegistry> {
+impl<InvocationFactory, MethodRegistry, ReflectionService> Clone
+    for Handler<InvocationFactory, MethodRegistry, ReflectionService>
+where
+    InvocationFactory: Clone,
+    MethodRegistry: Clone,
+    ReflectionService: ServerReflection,
+{
+    fn clone(&self) -> Self {
+        Self {
+            ingress_id: self.ingress_id,
+            invocation_factory: self.invocation_factory.clone(),
+            method_registry: self.method_registry.clone(),
+            reflection_server: self.reflection_server.clone(),
+            dispatcher_command_sender: self.dispatcher_command_sender.clone(),
+            global_concurrency_semaphore: self.global_concurrency_semaphore.clone(),
+        }
+    }
+}
+
+impl<InvocationFactory, MethodRegistry, ReflectionService>
+    Handler<InvocationFactory, MethodRegistry, ReflectionService>
+where
+    ReflectionService: ServerReflection,
+{
     pub fn new(
         ingress_id: IngressId,
         invocation_factory: InvocationFactory,
         method_registry: MethodRegistry,
+        reflection_service: ReflectionService,
         dispatcher_command_sender: DispatcherCommandSender,
         global_concurrency_semaphore: Arc<Semaphore>,
     ) -> Self {
@@ -37,6 +68,8 @@ impl<InvocationFactory, MethodRegistry> Handler<InvocationFactory, MethodRegistr
             ingress_id,
             invocation_factory,
             method_registry,
+            reflection_server: GrpcWebLayer::new()
+                .layer(ServerReflectionServer::new(reflection_service)),
             dispatcher_command_sender,
             global_concurrency_semaphore,
         }
@@ -45,11 +78,12 @@ impl<InvocationFactory, MethodRegistry> Handler<InvocationFactory, MethodRegistr
 
 // TODO When porting to hyper 1.0 https://github.com/restatedev/restate/issues/96
 //  replace this impl with hyper::Service impl
-impl<InvocationFactory, MethodRegistry> Service<Request<HyperBody>>
-    for Handler<InvocationFactory, MethodRegistry>
+impl<InvocationFactory, MethodRegistry, ReflectionService> Service<Request<HyperBody>>
+    for Handler<InvocationFactory, MethodRegistry, ReflectionService>
 where
     InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
     MethodRegistry: MethodDescriptorRegistry,
+    ReflectionService: ServerReflection,
 {
     type Response = Response<BoxBody>;
     type Error = BoxError;
@@ -96,6 +130,17 @@ where
         }
         let method_name = path_parts.remove(2).to_string();
         let service_name = path_parts.remove(1).to_string();
+
+        if ServerReflectionServer::<ReflectionService>::NAME == service_name {
+            return self
+                .reflection_server
+                .call(req)
+                .map(|result| {
+                    result.map(|response| response.map(|b| b.map_err(Into::into).boxed_unsync()))
+                })
+                .map_err(BoxError::from)
+                .boxed();
+        }
 
         // Find the service method descriptor
         let descriptor = if let Some(desc) = self

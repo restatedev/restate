@@ -12,6 +12,7 @@ impl Application {
         let worker = worker.build(
             meta.method_descriptor_registry(),
             meta.key_extractors_registry(),
+            meta.reflections_registry(),
             meta.service_endpoint_registry(),
         );
 

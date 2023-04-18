@@ -2,10 +2,12 @@ mod dispatcher;
 mod handler;
 mod options;
 mod protocol;
+mod reflection;
 mod server;
 
 pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
 pub use options::Options;
+pub use reflection::{ReflectionRegistry, RegistrationError};
 pub use server::HyperServerIngress;
 pub use server::StartSignal;
 

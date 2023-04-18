@@ -3,6 +3,7 @@ mod service;
 mod storage;
 
 use crate::storage::FileMetaStorage;
+use ingress_grpc::ReflectionRegistry;
 use rest_api::MetaRestEndpoint;
 use serde::{Deserialize, Serialize};
 use service::MetaService;
@@ -38,11 +39,13 @@ impl Options {
     pub fn build(self) -> Meta {
         let key_extractors_registry = KeyExtractorsRegistry::default();
         let method_descriptors_registry = InMemoryMethodDescriptorRegistry::default();
+        let reflections_registry = ReflectionRegistry::default();
         let service_endpoint_registry = InMemoryServiceEndpointRegistry::default();
         let service = MetaService::new(
             key_extractors_registry.clone(),
             method_descriptors_registry.clone(),
             service_endpoint_registry.clone(),
+            reflections_registry.clone(),
             FileMetaStorage::new(self.storage_path.into()),
             Default::default(),
         );
@@ -50,6 +53,7 @@ impl Options {
         Meta {
             key_extractors_registry,
             method_descriptors_registry,
+            reflections_registry,
             service_endpoint_registry,
             rest_endpoint: MetaRestEndpoint::new(self.rest_address, self.rest_concurrency_limit),
             service,
@@ -60,6 +64,7 @@ impl Options {
 pub struct Meta {
     key_extractors_registry: KeyExtractorsRegistry,
     method_descriptors_registry: InMemoryMethodDescriptorRegistry,
+    reflections_registry: ReflectionRegistry,
     service_endpoint_registry: InMemoryServiceEndpointRegistry,
 
     rest_endpoint: MetaRestEndpoint,
@@ -73,6 +78,10 @@ impl Meta {
 
     pub fn method_descriptor_registry(&self) -> InMemoryMethodDescriptorRegistry {
         self.method_descriptors_registry.clone()
+    }
+
+    pub fn reflections_registry(&self) -> ReflectionRegistry {
+        self.reflections_registry.clone()
     }
 
     pub fn service_endpoint_registry(&self) -> InMemoryServiceEndpointRegistry {

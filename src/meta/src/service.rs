@@ -8,6 +8,7 @@ use errors::{error_it, warn_it};
 use futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
+use ingress_grpc::{ReflectionRegistry, RegistrationError};
 use prost_reflect::DescriptorPool;
 use service_key_extractor::KeyExtractorsRegistry;
 use service_metadata::{
@@ -29,6 +30,9 @@ pub enum MetaError {
     #[error(transparent)]
     #[code(unknown)]
     Storage(#[from] MetaStorageError),
+    #[error(transparent)]
+    #[code(unknown)]
+    SchemaRegistry(#[from] RegistrationError),
     #[error("meta closed")]
     #[code(unknown)]
     MetaClosed,
@@ -76,6 +80,7 @@ pub struct MetaService<Storage> {
     key_extractors_registry: KeyExtractorsRegistry,
     method_descriptors_registry: InMemoryMethodDescriptorRegistry,
     service_endpoint_registry: InMemoryServiceEndpointRegistry,
+    reflections_registry: ReflectionRegistry,
     service_discovery: ServiceDiscovery,
 
     storage: Storage,
@@ -92,6 +97,7 @@ where
         key_extractors_registry: KeyExtractorsRegistry,
         method_descriptors_registry: InMemoryMethodDescriptorRegistry,
         service_endpoint_registry: InMemoryServiceEndpointRegistry,
+        reflections_registry: ReflectionRegistry,
         storage: Storage,
         service_discovery_retry_policy: RetryPolicy,
     ) -> Self {
@@ -101,6 +107,7 @@ where
             key_extractors_registry,
             method_descriptors_registry,
             service_endpoint_registry,
+            reflections_registry,
             service_discovery: ServiceDiscovery::new(service_discovery_retry_policy),
             storage,
             handle: MetaHandle(api_cmd_tx),
@@ -149,6 +156,10 @@ where
 
         while let Some(res) = endpoints_stream.next().await {
             let (endpoint_metadata, services, descriptor_pool) = res?;
+            self.reflections_registry.register_new_services(
+                services.iter().map(|s| s.name().to_string()).collect(),
+                descriptor_pool.clone(),
+            )?;
             for service_meta in services {
                 info!(
                     "Reloading service '{}' running at '{}'.",
@@ -212,6 +223,10 @@ where
                 &discovered_metadata.descriptor_pool,
             );
         }
+        self.reflections_registry.register_new_services(
+            registered_services.clone(),
+            discovered_metadata.descriptor_pool,
+        )?;
 
         Ok(registered_services)
     }
