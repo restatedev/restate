@@ -3,7 +3,7 @@
 //!
 //! Example usage (same applies to all the macros in this module):
 //! ```rust
-//! use errors::error_it;
+//! use restate_errors::error_it;
 //!
 //! # fn print(error: impl codederror::CodedError) {
 //! // Just print the error without additional info
@@ -88,7 +88,7 @@ mod tests {
     use super::*;
 
     use crate::RT0001;
-    use test_utils::test;
+    use restate_test_utils::test;
 
     #[derive(thiserror::Error, CodedError, Debug)]
     #[code(RT0001)]

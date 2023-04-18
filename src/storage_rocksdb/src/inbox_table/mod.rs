@@ -2,11 +2,11 @@ use crate::composite_keys::write_delimited;
 use crate::TableKind::Inbox;
 use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBTransaction};
 use bytes::{BufMut, BytesMut};
-use common::types::{InboxEntry, PartitionKey, ServiceId, ServiceInvocation};
 use prost::Message;
-use storage_api::inbox_table::InboxTable;
-use storage_api::{ready, GetStream, StorageError};
-use storage_proto::storage;
+use restate_common::types::{InboxEntry, PartitionKey, ServiceId, ServiceInvocation};
+use restate_storage_api::inbox_table::InboxTable;
+use restate_storage_api::{ready, GetStream, StorageError};
+use restate_storage_proto::storage;
 
 #[inline]
 fn write_message_key(
@@ -139,7 +139,7 @@ mod tests {
         message_sequence_number_from_slice, write_inbox_key, write_message_key,
     };
     use bytes::{Bytes, BytesMut};
-    use common::types::{PartitionKey, ServiceId};
+    use restate_common::types::{PartitionKey, ServiceId};
 
     fn message_key(
         partition_key: PartitionKey,

@@ -2,17 +2,17 @@ use crate::partition::effects::{Effect, Effects, JournalInformation};
 use crate::partition::TimerValue;
 use assert2::let_assert;
 use bytes::Bytes;
-use common::types::{
+use futures::future::BoxFuture;
+use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId,
     InvocationStatus, InvokedStatus, JournalMetadata, MessageIndex, MillisSinceEpoch,
     OutboxMessage, ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
     SuspendedStatus, Timer,
 };
-use common::utils::GenericError;
-use futures::future::BoxFuture;
-use invoker::InvokeInputJournal;
-use journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
-use journal::Completion;
+use restate_common::utils::GenericError;
+use restate_invoker::InvokeInputJournal;
+use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
+use restate_journal::Completion;
 use std::marker::PhantomData;
 use tracing::trace;
 
@@ -63,7 +63,7 @@ pub(crate) enum StateStorageError {
     #[allow(dead_code)]
     ReadFailed { source: Option<GenericError> },
     #[error(transparent)]
-    Storage(#[from] storage_api::StorageError),
+    Storage(#[from] restate_storage_api::StorageError),
 }
 
 pub(crate) trait StateStorage {
@@ -263,7 +263,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .await?;
 
                 let_assert!(
-                    common::types::RawEntry {
+                    restate_common::types::RawEntry {
                         header: RawEntryHeader::PollInputStream { is_completed },
                         entry
                     } = Codec::serialize_as_unary_input_entry(service_invocation.argument)

@@ -1,4 +1,4 @@
-use common::types::{PeerId, PeerTarget};
+use restate_common::types::{PeerId, PeerTarget};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 

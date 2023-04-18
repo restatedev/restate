@@ -2,12 +2,14 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
-use common::retry_policy::RetryPolicy;
-use common::types::{EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceInvocationId};
 use futures::Stream;
-use journal::raw::PlainRawEntry;
-use journal::Completion;
 use opentelemetry::trace::SpanContext;
+use restate_common::retry_policy::RetryPolicy;
+use restate_common::types::{
+    EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceInvocationId,
+};
+use restate_journal::raw::PlainRawEntry;
+use restate_journal::Completion;
 use tokio::sync::mpsc;
 
 mod invoker;

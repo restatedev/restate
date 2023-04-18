@@ -2,23 +2,23 @@ use crate::partition::effects::{CommitError, Committable, StateStorage, StateSto
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::state_machine::{StateReader, StateReaderError};
 use bytes::Bytes;
-use common::types::{
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
+use futures::{stream, FutureExt, StreamExt, TryStreamExt};
+use restate_common::types::{
     CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationStatus, JournalEntry,
     MessageIndex, MillisSinceEpoch, OutboxMessage, PartitionId, PartitionKey, ServiceId,
     ServiceInvocation, ServiceInvocationId, Timer, TimerKey,
 };
-use futures::future::BoxFuture;
-use futures::stream::BoxStream;
-use futures::{stream, FutureExt, StreamExt, TryStreamExt};
-use journal::raw::Header;
+use restate_journal::raw::Header;
 use std::ops::RangeInclusive;
 
 pub mod journal_reader;
 
 use crate::partition::TimerValue;
-use storage_api::outbox_table::OutboxTable;
-use storage_api::Transaction as OtherTransaction;
-use timer::TimerReader;
+use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::Transaction as OtherTransaction;
+use restate_timer::TimerReader;
 
 #[derive(Debug, Clone)]
 pub(super) struct PartitionStorage<Storage> {
@@ -29,7 +29,7 @@ pub(super) struct PartitionStorage<Storage> {
 
 impl<Storage> PartitionStorage<Storage>
 where
-    Storage: storage_api::Storage,
+    Storage: restate_storage_api::Storage,
 {
     pub(super) fn new(
         partition_id: PartitionId,
@@ -60,7 +60,7 @@ pub(super) struct Transaction<TransactionType> {
 
 impl<TransactionType> Transaction<TransactionType>
 where
-    TransactionType: storage_api::Transaction,
+    TransactionType: restate_storage_api::Transaction,
 {
     pub(super) fn new(
         partition_id: PartitionId,
@@ -74,13 +74,15 @@ where
         }
     }
 
-    pub(super) fn commit(self) -> BoxFuture<'static, Result<(), storage_api::StorageError>> {
+    pub(super) fn commit(
+        self,
+    ) -> BoxFuture<'static, Result<(), restate_storage_api::StorageError>> {
         self.inner.commit()
     }
 
     pub(super) fn scan_invoked_invocations(
         &mut self,
-    ) -> BoxStream<'_, Result<ServiceInvocationId, storage_api::StorageError>> {
+    ) -> BoxStream<'_, Result<ServiceInvocationId, restate_storage_api::StorageError>> {
         self.inner
             .invoked_invocations(self.partition_key_range.clone())
     }
@@ -90,7 +92,7 @@ where
         partition_id: PartitionId,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
-    ) -> BoxStream<'_, Result<(TimerKey, Timer), storage_api::StorageError>> {
+    ) -> BoxStream<'_, Result<(TimerKey, Timer), restate_storage_api::StorageError>> {
         self.inner
             .next_timers_greater_than(partition_id, exclusive_start, limit)
     }
@@ -98,7 +100,7 @@ where
 
 impl<TransactionType> StateReader for Transaction<TransactionType>
 where
-    TransactionType: storage_api::Transaction + Send,
+    TransactionType: restate_storage_api::Transaction + Send,
 {
     fn get_invocation_status<'a>(
         &'a mut self,
@@ -151,7 +153,7 @@ where
 
 impl<TransactionType> StateStorage for Transaction<TransactionType>
 where
-    TransactionType: storage_api::Transaction + Send,
+    TransactionType: restate_storage_api::Transaction + Send,
 {
     fn store_invocation_status<'a>(
         &'a mut self,
@@ -455,7 +457,7 @@ mod fsm_variable {
 
 impl<TransactionType> Committable for Transaction<TransactionType>
 where
-    TransactionType: storage_api::Transaction + 'static,
+    TransactionType: restate_storage_api::Transaction + 'static,
 {
     fn commit(self) -> BoxFuture<'static, Result<(), CommitError>> {
         async { self.inner.commit().await.map_err(CommitError::with_source) }.boxed()
@@ -464,7 +466,7 @@ where
 
 impl<Storage> OutboxReader for PartitionStorage<Storage>
 where
-    Storage: storage_api::Storage + 'static,
+    Storage: restate_storage_api::Storage + 'static,
 {
     fn get_next_message(
         &self,
@@ -494,7 +496,7 @@ where
 
 impl<Storage> TimerReader<TimerValue> for PartitionStorage<Storage>
 where
-    Storage: storage_api::Storage + Send + Sync,
+    Storage: restate_storage_api::Storage + Send + Sync,
 {
     type TimerStream<'a> = BoxStream<'a, TimerValue> where Self: 'a;
 

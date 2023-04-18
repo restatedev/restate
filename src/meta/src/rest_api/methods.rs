@@ -2,8 +2,8 @@ use super::error::*;
 use super::state::*;
 use axum::extract::{Path, State};
 use axum::Json;
+use restate_service_metadata::MethodDescriptorRegistry;
 use serde::Serialize;
-use service_metadata::MethodDescriptorRegistry;
 use std::sync::Arc;
 
 #[derive(Debug, Serialize)]

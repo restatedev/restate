@@ -2,8 +2,6 @@ use std::collections::HashMap;
 
 use bytes::Bytes;
 use codederror::CodedError;
-use common::retry_policy::RetryPolicy;
-use errors::{META0001, META0002, META0003};
 use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, Client, Method, Request, Uri};
@@ -13,8 +11,10 @@ use prost_reflect::{
     DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind, MethodDescriptor,
     ServiceDescriptor,
 };
-use service_key_extractor::{KeyStructure, ServiceInstanceType};
-use service_metadata::ProtocolType;
+use restate_common::retry_policy::RetryPolicy;
+use restate_errors::{META0001, META0002, META0003};
+use restate_service_key_extractor::{KeyStructure, ServiceInstanceType};
+use restate_service_metadata::ProtocolType;
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256

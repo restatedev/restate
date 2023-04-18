@@ -2,9 +2,9 @@ use crate::composite_keys::{read_delimited, skip_delimited, write_delimited};
 use crate::TableKind::State;
 use crate::{GetFuture, PutFuture, RocksDBTransaction};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use common::types::{PartitionKey, ServiceId};
-use storage_api::state_table::StateTable;
-use storage_api::{ready, GetStream};
+use restate_common::types::{PartitionKey, ServiceId};
+use restate_storage_api::state_table::StateTable;
+use restate_storage_api::{ready, GetStream};
 
 #[inline]
 fn write_state_entry_key(
@@ -106,7 +106,7 @@ fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> crate::Result<(Bytes, Byte
 mod tests {
     use crate::state_table::{user_state_key_from_slice, write_state_entry_key, write_states_key};
     use bytes::{Bytes, BytesMut};
-    use common::types::{PartitionKey, ServiceId};
+    use restate_common::types::{PartitionKey, ServiceId};
 
     static EMPTY: Bytes = Bytes::from_static(b"");
 

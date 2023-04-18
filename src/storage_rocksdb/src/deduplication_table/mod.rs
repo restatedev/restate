@@ -1,9 +1,9 @@
 use crate::composite_keys::{u64_pair, u64_pair_from_slice};
 use crate::TableKind::Deduplication;
 use crate::{GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
-use common::types::PartitionId;
-use storage_api::deduplication_table::DeduplicationTable;
-use storage_api::{ready, GetStream};
+use restate_common::types::PartitionId;
+use restate_storage_api::deduplication_table::DeduplicationTable;
+use restate_storage_api::{ready, GetStream};
 use tokio::sync::mpsc::Sender;
 
 impl DeduplicationTable for RocksDBTransaction {

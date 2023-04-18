@@ -4,9 +4,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::reflection::ServerReflection;
-use common::types::IngressId;
 use futures::FutureExt;
-use service_metadata::MethodDescriptorRegistry;
+use restate_common::types::IngressId;
+use restate_service_metadata::MethodDescriptorRegistry;
 use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
 use tower::make::Shared;
@@ -115,22 +115,22 @@ mod tests {
     use std::net::SocketAddr;
 
     use bytes::Bytes;
-    use common::types::{ServiceInvocationId, ServiceInvocationResponseSink};
     use drain::Signal;
     use http::header::CONTENT_TYPE;
     use http::StatusCode;
     use hyper::Body;
     use prost::Message;
+    use restate_common::types::{ServiceInvocationId, ServiceInvocationResponseSink};
     use serde_json::json;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
-    use test_utils::{assert_eq, test};
+    use restate_test_utils::{assert_eq, test};
 
     use crate::mocks::*;
     use crate::reflection::ReflectionRegistry;
 
-    // Could be shipped by the common crate with feature "mocks" enabled
+    // Could be shipped by the restate_common crate with feature "mocks" enabled
     #[derive(Clone)]
     struct MockServiceInvocationFactory;
 

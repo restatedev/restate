@@ -2,11 +2,13 @@ use crate::partition::effects::{ActuatorMessage, MessageCollector};
 use crate::partition::shuffle::Shuffle;
 use crate::partition::storage::PartitionStorage;
 use crate::partition::{shuffle, TimerHandle, TimerOutput};
-use common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId};
-use common::utils::GenericError;
 use futures::{future, Stream, StreamExt};
-use invoker::{InvokeInputJournal, InvokerInputSender, InvokerNotRunning};
-use network::NetworkNotRunning;
+use restate_common::types::{
+    LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId,
+};
+use restate_common::utils::GenericError;
+use restate_invoker::{InvokeInputJournal, InvokerInputSender, InvokerNotRunning};
+use restate_network::NetworkNotRunning;
 use std::fmt::Debug;
 use std::ops::DerefMut;
 use std::panic;
@@ -20,7 +22,7 @@ use tracing::{info_span, trace};
 
 pub(super) trait InvocationReader {
     type InvokedInvocationStream<'a>: Stream<
-        Item = Result<ServiceInvocationId, storage_api::StorageError>,
+        Item = Result<ServiceInvocationId, restate_storage_api::StorageError>,
     >
     where
         Self: 'a;
@@ -34,14 +36,14 @@ pub(super) struct LeaderState {
     shuffle_hint_tx: mpsc::Sender<shuffle::NewOutboxMessage>,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
     timer_handle: TimerHandle,
-    timer_join_handle: task::JoinHandle<Result<(), timer::TimerServiceError>>,
+    timer_join_handle: task::JoinHandle<Result<(), restate_timer::TimerServiceError>>,
     message_buffer: Vec<ActuatorMessage>,
 }
 
 pub(super) struct FollowerState<I, N> {
     peer_id: PeerId,
     partition_id: PartitionId,
-    timer_service_options: timer::Options,
+    timer_service_options: restate_timer::Options,
     invoker_tx: I,
     network_handle: N,
 }
@@ -59,13 +61,13 @@ pub(crate) enum ActuatorMessageCollectorError {
     #[error(transparent)]
     Invoker(#[from] InvokerNotRunning),
     #[error(transparent)]
-    Timer(#[from] timer::Error),
+    Timer(#[from] restate_timer::Error),
 }
 
 impl<I, N> ActuatorMessageCollector<I, N>
 where
     I: InvokerInputSender,
-    N: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    N: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
     pub(super) async fn send(self) -> Result<LeadershipState<I, N>, ActuatorMessageCollectorError> {
         match self {
@@ -202,11 +204,11 @@ pub(crate) enum Error {
     #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Network(#[from] NetworkNotRunning),
     #[error(transparent)]
-    FailedTimerTask(#[from] timer::TimerServiceError),
+    FailedTimerTask(#[from] restate_timer::TimerServiceError),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
     FailedShuffleTask(#[from] anyhow::Error),
     #[error(transparent)]
-    Storage(#[from] storage_api::StorageError),
+    Storage(#[from] restate_storage_api::StorageError),
 }
 
 pub(super) enum LeadershipState<InvokerInputSender, NetworkHandle> {
@@ -220,13 +222,13 @@ pub(super) enum LeadershipState<InvokerInputSender, NetworkHandle> {
 
 impl<InvokerInputSender, NetworkHandle> LeadershipState<InvokerInputSender, NetworkHandle>
 where
-    InvokerInputSender: invoker::InvokerInputSender,
-    NetworkHandle: network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    InvokerInputSender: restate_invoker::InvokerInputSender,
+    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
     pub(super) fn follower(
         peer_id: PeerId,
         partition_id: PartitionId,
-        timer_service_options: timer::Options,
+        timer_service_options: restate_timer::Options,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
     ) -> (ActuatorStream, Self) {
@@ -248,7 +250,7 @@ where
         partition_storage: PartitionStorage<Storage>,
     ) -> Result<(ActuatorStream, Self), Error>
     where
-        Storage: storage_api::Storage + Clone + Send + Sync + 'static,
+        Storage: restate_storage_api::Storage + Clone + Send + Sync + 'static,
     {
         if let LeadershipState::Follower { .. } = self {
             self.unchecked_become_leader(leader_epoch, partition_storage)
@@ -268,7 +270,7 @@ where
         mut partition_storage: PartitionStorage<Storage>,
     ) -> Result<(ActuatorStream, Self), Error>
     where
-        Storage: storage_api::Storage + Clone + Send + Sync + 'static,
+        Storage: restate_storage_api::Storage + Clone + Send + Sync + 'static,
     {
         if let LeadershipState::Follower(mut follower_state) = self {
             let invoker_rx = Self::register_at_invoker(
@@ -283,7 +285,7 @@ where
             let timer = follower_state.timer_service_options.build(
                 timer_tx,
                 partition_storage.clone(),
-                timer::TokioClock,
+                restate_timer::TokioClock,
             );
             let timer_handle = timer.create_timer_handle();
 
@@ -334,9 +336,9 @@ where
         invoker_handle: &mut InvokerInputSender,
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_storage: &mut PartitionStorage<Storage>,
-    ) -> Result<mpsc::Receiver<invoker::OutputEffect>, Error>
+    ) -> Result<mpsc::Receiver<restate_invoker::OutputEffect>, Error>
     where
-        Storage: storage_api::Storage,
+        Storage: restate_storage_api::Storage,
     {
         let (invoker_tx, invoker_rx) = mpsc::channel(1);
 
@@ -510,7 +512,7 @@ pub(super) enum TaskResult {
 pub(super) enum ActuatorStream {
     Follower,
     Leader {
-        invoker_stream: ReceiverStream<invoker::OutputEffect>,
+        invoker_stream: ReceiverStream<restate_invoker::OutputEffect>,
         shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
         timer_stream: ReceiverStream<TimerOutput>,
     },
@@ -518,7 +520,7 @@ pub(super) enum ActuatorStream {
 
 impl ActuatorStream {
     fn leader(
-        invoker_rx: mpsc::Receiver<invoker::OutputEffect>,
+        invoker_rx: mpsc::Receiver<restate_invoker::OutputEffect>,
         shuffle_rx: mpsc::Receiver<shuffle::OutboxTruncation>,
         timer_rx: mpsc::Receiver<TimerOutput>,
     ) -> Self {
@@ -540,7 +542,7 @@ pub(super) enum TaskError {
 
 #[derive(Debug)]
 pub(super) enum ActuatorOutput {
-    Invoker(invoker::OutputEffect),
+    Invoker(restate_invoker::OutputEffect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerOutput),
 }

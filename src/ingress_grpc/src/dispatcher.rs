@@ -3,8 +3,8 @@ use super::*;
 use std::collections::HashMap;
 use std::future::poll_fn;
 
-use common::types::{IngressId, ServiceInvocationId};
-use futures_util::pipe::{
+use restate_common::types::{IngressId, ServiceInvocationId};
+use restate_futures_util::pipe::{
     new_sender_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
     UnboundedReceiverPipeInput,
 };
@@ -177,8 +177,8 @@ impl DispatcherLoopHandler {
 mod tests {
     use super::*;
 
-    use common::types::IngressId;
-    use test_utils::test;
+    use restate_common::types::IngressId;
+    use restate_test_utils::test;
 
     #[test(tokio::test)]
     async fn test_closed_handler() {

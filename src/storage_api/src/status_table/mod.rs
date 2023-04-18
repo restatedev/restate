@@ -1,5 +1,5 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use common::types::{InvocationStatus, PartitionKey, ServiceId, ServiceInvocationId};
+use restate_common::types::{InvocationStatus, PartitionKey, ServiceId, ServiceInvocationId};
 use std::ops::RangeInclusive;
 
 pub trait StatusTable {

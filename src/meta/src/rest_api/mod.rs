@@ -11,7 +11,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use futures::FutureExt;
 use hyper::Server;
-use service_metadata::{MethodDescriptorRegistry, ServiceEndpointRegistry};
+use restate_service_metadata::{MethodDescriptorRegistry, ServiceEndpointRegistry};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceBuilder;

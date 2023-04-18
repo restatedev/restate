@@ -4,9 +4,9 @@ use axum::extract::{Path, State};
 use axum::http::Uri;
 use axum::Json;
 use hyper::http::{HeaderName, HeaderValue};
+use restate_service_metadata::{EndpointMetadata, ServiceEndpointRegistry};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use service_metadata::{EndpointMetadata, ServiceEndpointRegistry};
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -1,5 +1,5 @@
 [package]
-name = "timer_queue"
+name = "restate_timer_queue"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

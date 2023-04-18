@@ -5,12 +5,12 @@ use std::marker::PhantomData;
 use std::time::Duration;
 use std::{cmp, panic};
 
-use common::types::PartitionLeaderEpoch;
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
-use journal::raw::{PlainRawEntry, RawEntryCodec};
-use service_metadata::ServiceEndpointRegistry;
-use timer_queue::TimerQueue;
+use restate_common::types::PartitionLeaderEpoch;
+use restate_journal::raw::{PlainRawEntry, RawEntryCodec};
+use restate_service_metadata::ServiceEndpointRegistry;
+use restate_timer_queue::TimerQueue;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
@@ -186,9 +186,9 @@ pub struct Options {
     ///
     /// In other words:
     ///
-    /// * When protocol mode is [`service_metadata::ProtocolType::RequestResponse`],
+    /// * When protocol mode is [`restate_service_metadata::ProtocolType::RequestResponse`],
     ///   this timer will start as soon as the replay of the journal is completed.
-    /// * When protocol mode is [`service_metadata::ProtocolType::BidiStream`],
+    /// * When protocol mode is [`restate_service_metadata::ProtocolType::BidiStream`],
     ///   this timer will start after the request stream has been closed.
     ///   Check [`bidi_stream_inactivity_graceful_close_timer`] to configure a timer on the request stream.
     ///
@@ -502,8 +502,8 @@ mod state_machine_coordinator {
 
     use crate::invocation_task::{InvocationTask, InvocationTaskError};
 
-    use errors::warn_it;
-    use service_metadata::{ProtocolType, ServiceEndpointRegistry};
+    use restate_errors::warn_it;
+    use restate_service_metadata::{ProtocolType, ServiceEndpointRegistry};
     use tonic::Code;
     use tracing::warn;
 
@@ -973,9 +973,9 @@ mod invocation_state_machine {
     use std::mem;
     use std::time::Duration;
 
-    use common::retry_policy;
-    use journal::raw::RawEntryHeader;
-    use journal::Completion;
+    use restate_common::retry_policy;
+    use restate_journal::raw::RawEntryHeader;
+    use restate_journal::Completion;
     use tokio::sync::mpsc;
     use tokio::task::AbortHandle;
 

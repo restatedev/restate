@@ -19,22 +19,22 @@ serde_with = "2.2"
 serde_yaml = "0.9"
 futures-util = { workspace = true }
 humantime = { workspace = true }
-meta = { workspace = true }
+restate_meta = { workspace = true }
 pin-project = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing_instrumentation = { workspace = true }
-worker = { workspace = true }
+restate_tracing_instrumentation = { workspace = true }
+restate_worker = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2.0.10"
-common = { workspace = true }
+restate_common = { workspace = true }
 hyper = { workspace = true }
 rand = "0.8.5"
 tempfile = "3.4.0"
-test_utils = { workspace = true }
+restate_test_utils = { workspace = true }
 thiserror = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [features]
-console = ["tokio/full", "tokio/tracing", "tracing_instrumentation/console-subscriber"]
+console = ["tokio/full", "tokio/tracing", "restate_tracing_instrumentation/console-subscriber"]

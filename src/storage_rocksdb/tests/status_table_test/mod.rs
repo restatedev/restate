@@ -1,12 +1,12 @@
 use crate::{assert_stream_eq, uuid_str};
-use common::types::{
+use restate_common::types::{
     InvocationId, InvocationStatus, InvokedStatus, JournalMetadata, ServiceId, ServiceInvocationId,
     ServiceInvocationSpanContext, SuspendedStatus,
 };
+use restate_storage_api::status_table::StatusTable;
+use restate_storage_api::{Storage, Transaction};
+use restate_storage_rocksdb::RocksDBStorage;
 use std::collections::HashSet;
-use storage_api::status_table::StatusTable;
-use storage_api::{Storage, Transaction};
-use storage_rocksdb::RocksDBStorage;
 
 fn invoked_status(invocation_id: InvocationId) -> InvocationStatus {
     InvocationStatus::Invoked(InvokedStatus::new(

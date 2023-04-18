@@ -1,8 +1,8 @@
 use crate::{assert_stream_eq, mock_service_invocation};
-use common::types::{InboxEntry, ServiceId};
-use storage_api::inbox_table::InboxTable;
-use storage_api::{Storage, Transaction};
-use storage_rocksdb::RocksDBStorage;
+use restate_common::types::{InboxEntry, ServiceId};
+use restate_storage_api::inbox_table::InboxTable;
+use restate_storage_api::{Storage, Transaction};
+use restate_storage_rocksdb::RocksDBStorage;
 
 async fn populate_data<T: InboxTable>(table: &mut T) {
     table

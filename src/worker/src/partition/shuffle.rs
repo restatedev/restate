@@ -1,9 +1,9 @@
 use crate::partition::shuffle::state_machine::StateMachine;
-use common::types::{
+use futures::future::BoxFuture;
+use restate_common::types::{
     AckKind, IngressId, InvocationResponse, MessageIndex, OutboxMessage, PeerId, ResponseResult,
     ServiceInvocation, ServiceInvocationId,
 };
-use futures::future::BoxFuture;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -112,7 +112,7 @@ impl From<OutboxMessage> for ShuffleMessageDestination {
 #[derive(Debug, thiserror::Error)]
 pub(super) enum OutboxReaderError {
     #[error(transparent)]
-    Storage(#[from] storage_api::StorageError),
+    Storage(#[from] restate_storage_api::StorageError),
 }
 
 pub(super) trait OutboxReader {
@@ -235,8 +235,8 @@ where
 
 mod state_machine {
     use crate::partition::shuffle::{NewOutboxMessage, ShuffleInput, ShuffleOutput};
-    use common::types::{AckKind, MessageIndex, OutboxMessage, PeerId};
     use pin_project::pin_project;
+    use restate_common::types::{AckKind, MessageIndex, OutboxMessage, PeerId};
     use std::future::Future;
     use std::marker::PhantomData;
     use std::pin::Pin;

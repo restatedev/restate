@@ -1,14 +1,14 @@
 use assert2::let_assert;
 use bytes::Bytes;
-use common::types::{
+use futures::future::BoxFuture;
+use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId,
     InvocationResponse, InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch,
     OutboxMessage, ResolutionResult, ResponseResult, ServiceId, ServiceInvocation,
     ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Timer,
 };
-use futures::future::BoxFuture;
-use journal::raw::{RawEntryCodec, RawEntryCodecError};
-use journal::{
+use restate_journal::raw::{RawEntryCodec, RawEntryCodecError};
+use restate_journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, Entry,
     GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
 };
@@ -39,7 +39,7 @@ pub(crate) enum Command {
 #[derive(Debug, thiserror::Error)]
 pub(super) enum StateReaderError {
     #[error(transparent)]
-    Storage(#[from] storage_api::StorageError),
+    Storage(#[from] restate_storage_api::StorageError),
 }
 
 pub(super) trait StateReader {

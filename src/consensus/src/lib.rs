@@ -1,8 +1,8 @@
 use crate::log::CommandLog;
 use crate::sender::StateMachineSender;
-use common::types::{LeaderEpoch, PeerId, PeerTarget};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use restate_common::types::{LeaderEpoch, PeerId, PeerTarget};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::sync::mpsc;
@@ -162,7 +162,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::{Command, Consensus};
-    use test_utils::test;
+    use restate_test_utils::test;
     use tokio::sync::mpsc;
 
     #[test(tokio::test)]

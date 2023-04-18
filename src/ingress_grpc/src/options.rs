@@ -2,9 +2,9 @@ use super::reflection::ServerReflection;
 use super::HyperServerIngress;
 use super::*;
 
-use common::types::IngressId;
+use restate_common::types::IngressId;
+use restate_service_metadata::MethodDescriptorRegistry;
 use serde::{Deserialize, Serialize};
-use service_metadata::MethodDescriptorRegistry;
 use std::net::SocketAddr;
 
 #[derive(Debug, Serialize, Deserialize)]

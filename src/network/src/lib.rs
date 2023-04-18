@@ -1,4 +1,4 @@
-use common::types::{PartitionKey, PeerId};
+use restate_common::types::{PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::future::Future;
 use tokio::sync::mpsc;

@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use common::types::{CompletionResult, EntryIndex, ResponseResult};
+use restate_common::types::{CompletionResult, EntryIndex, ResponseResult};
 
 pub mod raw;
 

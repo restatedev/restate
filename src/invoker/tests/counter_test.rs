@@ -4,18 +4,20 @@
 mod mocks;
 
 use bytes::Bytes;
-use common::types::{CompletionResult, ServiceInvocationId};
 use hyper::Uri;
-use invoker::{Invoker, Kind, OutputEffect, UnboundedInvokerInputSender};
-use journal::raw::{RawEntryCodec, RawEntryHeader};
-use journal::{Completion, Entry, EntryResult, GetStateEntry, GetStateValue, OutputStreamEntry};
 use mocks::{InMemoryJournalStorage, SimulatorAction};
 use prost::Message;
-use service_metadata::{
+use restate_common::types::{CompletionResult, ServiceInvocationId};
+use restate_invoker::{Invoker, Kind, OutputEffect, UnboundedInvokerInputSender};
+use restate_journal::raw::{RawEntryCodec, RawEntryHeader};
+use restate_journal::{
+    Completion, Entry, EntryResult, GetStateEntry, GetStateValue, OutputStreamEntry,
+};
+use restate_service_metadata::{
     DeliveryOptions, EndpointMetadata, InMemoryServiceEndpointRegistry, ProtocolType,
 };
-use service_protocol::codec::ProtobufRawEntryCodec;
-use test_utils::{assert, assert_eq, let_assert, test};
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_test_utils::{assert, assert_eq, let_assert, test};
 use uuid::Uuid;
 
 type PartitionProcessorSimulator =
@@ -134,7 +136,7 @@ async fn bidi_stream() {
     );
 
     // Start invoker
-    let options = invoker::Options::default();
+    let options = restate_invoker::Options::default();
     let remote_invoker: Invoker<
         ProtobufRawEntryCodec,
         InMemoryJournalStorage,

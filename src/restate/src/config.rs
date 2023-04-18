@@ -11,9 +11,9 @@ use std::time::Duration;
 pub struct Configuration {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub shutdown_grace_period: humantime::Duration,
-    pub tracing: tracing_instrumentation::Options,
-    pub meta: meta::Options,
-    pub worker: worker::Options,
+    pub tracing: restate_tracing_instrumentation::Options,
+    pub meta: restate_meta::Options,
+    pub worker: restate_worker::Options,
 }
 
 impl Default for Configuration {

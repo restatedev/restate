@@ -515,24 +515,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "common"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "bytestring",
- "humantime",
- "opentelemetry_api",
- "serde",
- "serde_with",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "uuid",
- "xxhash-rust",
-]
-
-[[package]]
 name = "concolor-override"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -545,24 +527,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88d11d52c3d7ca2e6d0040212be9e4dbbcd78b6447f535b6b561f449427944cf"
 dependencies = [
  "windows-sys 0.45.0",
-]
-
-[[package]]
-name = "consensus"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "common",
- "drain",
- "futures",
- "futures-sink",
- "network",
- "pin-project",
- "test_utils",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -922,19 +886,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "errors"
-version = "0.1.0"
-dependencies = [
- "codederror",
- "paste",
- "termimad",
- "test_utils",
- "thiserror",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "fastrand"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1075,19 +1026,6 @@ dependencies = [
  "pin-project-lite",
  "pin-utils",
  "slab",
-]
-
-[[package]]
-name = "futures_util"
-version = "0.1.0"
-dependencies = [
- "futures",
- "pin-project",
- "test_utils",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1326,43 +1264,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ingress_grpc"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "bytes",
- "bytestring",
- "common",
- "drain",
- "futures",
- "futures_util",
- "http",
- "http-body",
- "hyper",
- "opentelemetry",
- "opentelemetry-http",
- "pin-project",
- "prost",
- "prost-build",
- "prost-reflect",
- "serde",
- "serde_json",
- "service_metadata",
- "test_utils",
- "thiserror",
- "tokio",
- "tonic",
- "tonic-build",
- "tonic-web",
- "tower",
- "tower-http",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "inlinable_string"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1382,39 +1283,6 @@ name = "integer-encoding"
 version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02"
-
-[[package]]
-name = "invoker"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "bytes-utils",
- "codederror",
- "common",
- "drain",
- "errors",
- "futures",
- "h2",
- "hyper",
- "hyper-rustls",
- "journal",
- "opentelemetry",
- "opentelemetry-http",
- "paste",
- "prost",
- "serde",
- "service_metadata",
- "service_protocol",
- "test_utils",
- "thiserror",
- "timer_queue",
- "tokio",
- "tonic",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "io-lifetimes"
@@ -1461,16 +1329,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "936cfd212a0155903bcbc060e316fb6cc7cbf2e1907329391ebadc1fe0ce77c2"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "journal"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "bytestring",
- "common",
- "thiserror",
 ]
 
 [[package]]
@@ -1612,33 +1470,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "meta"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64 0.21.0",
- "codederror",
- "common",
- "drain",
- "errors",
- "futures",
- "futures_util",
- "hyper",
- "ingress_grpc",
- "prost-reflect",
- "serde",
- "serde_json",
- "serde_with",
- "service_key_extractor",
- "service_metadata",
- "service_protocol",
- "thiserror",
- "tokio",
- "tower",
- "tracing",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1685,22 +1516,6 @@ name = "multimap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
-
-[[package]]
-name = "network"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "common",
- "drain",
- "futures",
- "pin-project",
- "test_utils",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "nom"
@@ -2191,17 +2006,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "queue"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "criterion",
- "serde",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2310,26 +2114,406 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap 4.2.1",
- "common",
  "drain",
  "figment",
  "futures-util",
  "humantime",
  "hyper",
- "meta",
  "pin-project",
  "rand",
+ "restate_common",
+ "restate_meta",
+ "restate_test_utils",
+ "restate_tracing_instrumentation",
+ "restate_worker",
  "serde",
  "serde_with",
  "serde_yaml",
  "tempfile",
- "test_utils",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "tracing_instrumentation",
- "worker",
+]
+
+[[package]]
+name = "restate_common"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "bytestring",
+ "humantime",
+ "opentelemetry_api",
+ "serde",
+ "serde_with",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "uuid",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "restate_consensus"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "drain",
+ "futures",
+ "futures-sink",
+ "pin-project",
+ "restate_common",
+ "restate_network",
+ "restate_test_utils",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "restate_errors"
+version = "0.1.0"
+dependencies = [
+ "codederror",
+ "paste",
+ "restate_test_utils",
+ "termimad",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "restate_futures_util"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "pin-project",
+ "restate_test_utils",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "restate_ingress_grpc"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "bytestring",
+ "drain",
+ "futures",
+ "http",
+ "http-body",
+ "hyper",
+ "opentelemetry",
+ "opentelemetry-http",
+ "pin-project",
+ "prost",
+ "prost-build",
+ "prost-reflect",
+ "restate_common",
+ "restate_futures_util",
+ "restate_service_metadata",
+ "restate_test_utils",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tonic-web",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "restate_invoker"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "bytes-utils",
+ "codederror",
+ "drain",
+ "futures",
+ "h2",
+ "hyper",
+ "hyper-rustls",
+ "opentelemetry",
+ "opentelemetry-http",
+ "paste",
+ "prost",
+ "restate_common",
+ "restate_errors",
+ "restate_journal",
+ "restate_service_metadata",
+ "restate_service_protocol",
+ "restate_test_utils",
+ "restate_timer_queue",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "restate_journal"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "bytestring",
+ "restate_common",
+ "thiserror",
+]
+
+[[package]]
+name = "restate_meta"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.21.0",
+ "codederror",
+ "drain",
+ "futures",
+ "hyper",
+ "prost-reflect",
+ "restate_common",
+ "restate_errors",
+ "restate_futures_util",
+ "restate_ingress_grpc",
+ "restate_service_key_extractor",
+ "restate_service_metadata",
+ "restate_service_protocol",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "restate_network"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "drain",
+ "futures",
+ "pin-project",
+ "restate_common",
+ "restate_test_utils",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "restate_queue"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "criterion",
+ "serde",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "restate_service_key_extractor"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "prost",
+ "prost-build",
+ "prost-reflect",
+ "restate_common",
+ "serde",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "restate_service_metadata"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "http",
+ "prost-reflect",
+ "restate_common",
+ "restate_service_key_extractor",
+ "serde",
+ "serde_with",
+]
+
+[[package]]
+name = "restate_service_protocol"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "bytes-utils",
+ "codederror",
+ "hyper",
+ "hyper-rustls",
+ "paste",
+ "prost",
+ "prost-build",
+ "prost-reflect",
+ "prost-types",
+ "restate_common",
+ "restate_errors",
+ "restate_journal",
+ "restate_service_key_extractor",
+ "restate_service_metadata",
+ "restate_test_utils",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "restate_storage_api"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "restate_common",
+ "thiserror",
+]
+
+[[package]]
+name = "restate_storage_proto"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "bytestring",
+ "opentelemetry_api",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "restate_common",
+]
+
+[[package]]
+name = "restate_storage_rocksdb"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "bytestring",
+ "criterion",
+ "futures",
+ "futures-util",
+ "prost",
+ "restate_common",
+ "restate_storage_api",
+ "restate_storage_proto",
+ "rocksdb",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "uuid",
+]
+
+[[package]]
+name = "restate_test_utils"
+version = "0.1.0"
+dependencies = [
+ "assert2",
+ "pretty_assertions",
+ "test-log",
+]
+
+[[package]]
+name = "restate_timer"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "drain",
+ "futures-util",
+ "pin-project",
+ "priority-queue",
+ "restate_common",
+ "restate_test_utils",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "restate_timer_queue"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
+]
+
+[[package]]
+name = "restate_tracing_instrumentation"
+version = "0.1.0"
+dependencies = [
+ "console-subscriber",
+ "opentelemetry",
+ "opentelemetry-jaeger",
+ "opentelemetry-semantic-conventions",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "restate_worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert2",
+ "bytes",
+ "bytestring",
+ "drain",
+ "futures",
+ "opentelemetry_api",
+ "pin-project",
+ "restate_common",
+ "restate_consensus",
+ "restate_ingress_grpc",
+ "restate_invoker",
+ "restate_journal",
+ "restate_network",
+ "restate_service_key_extractor",
+ "restate_service_metadata",
+ "restate_service_protocol",
+ "restate_storage_api",
+ "restate_storage_rocksdb",
+ "restate_test_utils",
+ "restate_timer",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2589,61 +2773,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "service_key_extractor"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "bytes",
- "common",
- "prost",
- "prost-build",
- "prost-reflect",
- "serde",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "service_metadata"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "common",
- "http",
- "prost-reflect",
- "serde",
- "serde_with",
- "service_key_extractor",
-]
-
-[[package]]
-name = "service_protocol"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "bytes-utils",
- "codederror",
- "common",
- "errors",
- "hyper",
- "hyper-rustls",
- "journal",
- "paste",
- "prost",
- "prost-build",
- "prost-reflect",
- "prost-types",
- "service_key_extractor",
- "service_metadata",
- "test_utils",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "sharded-slab"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2718,50 +2847,6 @@ name = "spin"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
-
-[[package]]
-name = "storage_api"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "common",
- "futures-util",
- "thiserror",
-]
-
-[[package]]
-name = "storage_proto"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "bytestring",
- "common",
- "opentelemetry_api",
- "prost",
- "prost-build",
- "prost-types",
-]
-
-[[package]]
-name = "storage_rocksdb"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "bytestring",
- "common",
- "criterion",
- "futures",
- "futures-util",
- "prost",
- "rocksdb",
- "serde",
- "storage_api",
- "storage_proto",
- "tempfile",
- "tokio",
- "tokio-stream",
- "uuid",
-]
 
 [[package]]
 name = "strsim"
@@ -2851,15 +2936,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "test_utils"
-version = "0.1.0"
-dependencies = [
- "assert2",
- "pretty_assertions",
- "test-log",
-]
-
-[[package]]
 name = "textwrap"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2942,33 +3018,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd80a657e71da814b8e5d60d3374fc6d35045062245d80224748ae522dd76f36"
 dependencies = [
  "time-core",
-]
-
-[[package]]
-name = "timer"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "common",
- "drain",
- "futures-util",
- "pin-project",
- "priority-queue",
- "serde",
- "test_utils",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "timer_queue"
-version = "0.1.0"
-dependencies = [
- "futures",
- "tokio",
 ]
 
 [[package]]
@@ -3258,22 +3307,6 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
-]
-
-[[package]]
-name = "tracing_instrumentation"
-version = "0.1.0"
-dependencies = [
- "console-subscriber",
- "opentelemetry",
- "opentelemetry-jaeger",
- "opentelemetry-semantic-conventions",
- "serde",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3656,39 +3689,6 @@ name = "windows_x86_64_msvc"
 version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a515f5799fe4961cb532f983ce2b23082366b898e52ffbce459c86f67c8378a"
-
-[[package]]
-name = "worker"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert2",
- "bytes",
- "bytestring",
- "common",
- "consensus",
- "drain",
- "futures",
- "ingress_grpc",
- "invoker",
- "journal",
- "network",
- "opentelemetry_api",
- "pin-project",
- "serde",
- "service_key_extractor",
- "service_metadata",
- "service_protocol",
- "storage_api",
- "storage_rocksdb",
- "test_utils",
- "thiserror",
- "timer",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "xxhash-rust"

@@ -1,5 +1,5 @@
 use crate::{GetFuture, PutFuture};
-use common::types::{OutboxMessage, PartitionId};
+use restate_common::types::{OutboxMessage, PartitionId};
 use std::ops::Range;
 
 pub trait OutboxTable {

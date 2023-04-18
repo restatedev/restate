@@ -1,5 +1,5 @@
-use meta::Meta;
-use worker::Worker;
+use restate_meta::Meta;
+use restate_worker::Worker;
 
 pub struct Application {
     meta: Meta,
@@ -7,7 +7,7 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn new(meta: meta::Options, worker: worker::Options) -> Self {
+    pub fn new(meta: restate_meta::Options, worker: restate_worker::Options) -> Self {
         let meta = meta.build();
         let worker = worker.build(
             meta.method_descriptor_registry(),

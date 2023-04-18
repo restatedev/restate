@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
+use restate_storage_api::deduplication_table::DeduplicationTable;
+use restate_storage_api::{Storage, Transaction};
 use std::path;
-use storage_api::deduplication_table::DeduplicationTable;
-use storage_api::{Storage, Transaction};
 use tempfile::tempdir;
 use tokio::runtime::Builder;
 
@@ -9,7 +9,7 @@ async fn writing_to_rocksdb(base_path: &path::Path) {
     //
     // setup
     //
-    let opts = storage_rocksdb::Options {
+    let opts = restate_storage_rocksdb::Options {
         path: base_path.to_str().unwrap().into(),
         ..Default::default()
     };

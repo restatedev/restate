@@ -3,8 +3,8 @@ use crate::{
     ConsensusOrShuffleTarget, PartitionTable, PartitionTableError, TargetConsensusOrShuffle,
     TargetShuffle,
 };
-use common::traits::KeyedMessage;
-use common::types::{PeerId, PeerTarget};
+use restate_common::traits::KeyedMessage;
+use restate_common::types::{PeerId, PeerTarget};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;

@@ -1,13 +1,13 @@
 use crate::service::clock::tests::ManualClock;
 use crate::service::clock::TokioClock;
 use crate::{Output, Timer, TimerKey, TimerReader, TimerService};
-use common::types::MillisSinceEpoch;
 use futures_util::stream;
+use restate_common::types::MillisSinceEpoch;
+use restate_test_utils::{let_assert, test};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use test_utils::{let_assert, test};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]

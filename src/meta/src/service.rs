@@ -3,19 +3,19 @@ use super::storage::{MetaStorage, MetaStorageError};
 use futures::StreamExt;
 use std::collections::HashMap;
 
-use common::retry_policy::RetryPolicy;
-use errors::{error_it, warn_it};
-use futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
-use ingress_grpc::{ReflectionRegistry, RegistrationError};
 use prost_reflect::DescriptorPool;
-use service_key_extractor::KeyExtractorsRegistry;
-use service_metadata::{
+use restate_common::retry_policy::RetryPolicy;
+use restate_errors::{error_it, warn_it};
+use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
+use restate_ingress_grpc::{ReflectionRegistry, RegistrationError};
+use restate_service_key_extractor::KeyExtractorsRegistry;
+use restate_service_metadata::{
     DeliveryOptions, EndpointMetadata, InMemoryMethodDescriptorRegistry,
     InMemoryServiceEndpointRegistry, ServiceMetadata,
 };
-use service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
+use restate_service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 

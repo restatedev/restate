@@ -1,9 +1,9 @@
 use crate::assert_stream_eq;
 use bytes::Bytes;
-use common::types::ServiceId;
-use storage_api::state_table::StateTable;
-use storage_api::{Storage, Transaction};
-use storage_rocksdb::RocksDBStorage;
+use restate_common::types::ServiceId;
+use restate_storage_api::state_table::StateTable;
+use restate_storage_api::{Storage, Transaction};
+use restate_storage_rocksdb::RocksDBStorage;
 
 async fn populate_data<T: StateTable>(table: &mut T) {
     table

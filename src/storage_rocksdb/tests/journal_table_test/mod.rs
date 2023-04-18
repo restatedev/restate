@@ -1,9 +1,9 @@
 use bytes::Bytes;
-use common::types::{EnrichedEntryHeader, EnrichedRawEntry, JournalEntry, ServiceId};
 use futures_util::StreamExt;
-use storage_api::journal_table::JournalTable;
-use storage_api::{Storage, Transaction};
-use storage_rocksdb::RocksDBStorage;
+use restate_common::types::{EnrichedEntryHeader, EnrichedRawEntry, JournalEntry, ServiceId};
+use restate_storage_api::journal_table::JournalTable;
+use restate_storage_api::{Storage, Transaction};
+use restate_storage_rocksdb::RocksDBStorage;
 
 // false positive because of Bytes
 #[allow(clippy::declare_interior_mutable_const)]

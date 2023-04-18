@@ -4,10 +4,10 @@
 use super::pb;
 
 use bytes::Bytes;
-use common::types::CompletionResult;
-use journal::raw::PlainRawEntry;
-use journal::Completion;
 use prost::Message;
+use restate_common::types::CompletionResult;
+use restate_journal::raw::PlainRawEntry;
+use restate_journal::Completion;
 
 mod encoding;
 mod header;

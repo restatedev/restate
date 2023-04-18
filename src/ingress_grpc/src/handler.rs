@@ -5,14 +5,14 @@ use super::*;
 use std::sync::Arc;
 use std::task::Poll;
 
-use common::types::{IngressId, ServiceInvocationResponseSink, SpanRelation};
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
 use http::{Request, Response};
 use http_body::Body;
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
-use service_metadata::MethodDescriptorRegistry;
+use restate_common::types::{IngressId, ServiceInvocationResponseSink, SpanRelation};
+use restate_service_metadata::MethodDescriptorRegistry;
 use tokio::sync::Semaphore;
 use tonic::server::NamedService;
 use tonic_web::{GrpcWebLayer, GrpcWebService};

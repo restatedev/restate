@@ -1,6 +1,6 @@
 use super::*;
-use common::types::RawEntry;
-use common::utils::GenericError;
+use restate_common::types::RawEntry;
+use restate_common::utils::GenericError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawEntryHeader {

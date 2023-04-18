@@ -4,14 +4,14 @@ use crate::partition::{AckableCommand, Command, TimerOutput};
 use crate::util::IdentitySender;
 use assert2::let_assert;
 use bytes::Bytes;
-use common::types::{
+use opentelemetry_api::trace::SpanContext;
+use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, InvocationId, RawEntry,
     ResolutionResult, ServiceInvocationSpanContext, SpanRelation,
 };
-use journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
-use journal::InvokeRequest;
-use journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
-use opentelemetry_api::trace::SpanContext;
+use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
+use restate_journal::InvokeRequest;
+use restate_journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ pub(super) struct ActuatorOutputHandler<KeyExtractor, Codec> {
 
 impl<KeyExtractor, Codec> ActuatorOutputHandler<KeyExtractor, Codec>
 where
-    KeyExtractor: service_key_extractor::KeyExtractor,
+    KeyExtractor: restate_service_key_extractor::KeyExtractor,
     Codec: RawEntryCodec,
 {
     pub(super) fn new(
@@ -73,9 +73,9 @@ where
 
     fn map_invoker_output_into_effect(
         &self,
-        invoker_output: invoker::OutputEffect,
+        invoker_output: restate_invoker::OutputEffect,
     ) -> InvokerEffect {
-        let invoker::OutputEffect {
+        let restate_invoker::OutputEffect {
             service_invocation_id,
             kind,
         } = invoker_output;
@@ -83,9 +83,9 @@ where
         InvokerEffect::new(service_invocation_id, self.map_kind_into_effect_kind(kind))
     }
 
-    fn map_kind_into_effect_kind(&self, kind: invoker::Kind) -> InvokerEffectKind {
+    fn map_kind_into_effect_kind(&self, kind: restate_invoker::Kind) -> InvokerEffectKind {
         match kind {
-            invoker::Kind::JournalEntry {
+            restate_invoker::Kind::JournalEntry {
                 entry_index,
                 entry,
                 parent_span_context,
@@ -93,13 +93,13 @@ where
                 entry_index,
                 entry: self.enrich_journal_entry(entry, parent_span_context),
             },
-            invoker::Kind::Suspended {
+            restate_invoker::Kind::Suspended {
                 waiting_for_completed_entries,
             } => InvokerEffectKind::Suspended {
                 waiting_for_completed_entries,
             },
-            invoker::Kind::End => InvokerEffectKind::End,
-            invoker::Kind::Failed { error_code, error } => {
+            restate_invoker::Kind::End => InvokerEffectKind::End,
+            restate_invoker::Kind::Failed { error_code, error } => {
                 InvokerEffectKind::Failed { error_code, error }
             }
         }
@@ -232,7 +232,7 @@ where
                     span_context,
                 }
             }
-            Err(service_key_extractor::Error::NotFound) => ResolutionResult::Failure {
+            Err(restate_service_key_extractor::Error::NotFound) => ResolutionResult::Failure {
                 error_code: 5,
                 error: format!(
                     "{}/{} not found",
@@ -252,7 +252,7 @@ where
         service_name: impl AsRef<str>,
         service_method: impl AsRef<str>,
         payload: Bytes,
-    ) -> Result<Bytes, service_key_extractor::Error> {
+    ) -> Result<Bytes, restate_service_key_extractor::Error> {
         self.key_extractor
             .extract(service_name, service_method, payload)
     }

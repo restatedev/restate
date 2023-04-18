@@ -1,20 +1,20 @@
-use common::types::{
-    EnrichedRawEntry, InvocationStatus, JournalEntry, JournalMetadata, ServiceInvocationId,
-};
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
-use journal::raw::PlainRawEntry;
+use restate_common::types::{
+    EnrichedRawEntry, InvocationStatus, JournalEntry, JournalMetadata, ServiceInvocationId,
+};
+use restate_journal::raw::PlainRawEntry;
+use restate_storage_api::journal_table::JournalTable;
+use restate_storage_api::status_table::StatusTable;
+use restate_storage_api::Transaction;
 use std::vec::IntoIter;
-use storage_api::journal_table::JournalTable;
-use storage_api::status_table::StatusTable;
-use storage_api::Transaction;
 
 #[derive(Debug, thiserror::Error)]
 pub enum JournalReaderError {
     #[error("Not invoked")]
     NotInvoked,
     #[error(transparent)]
-    Storage(#[from] storage_api::StorageError),
+    Storage(#[from] restate_storage_api::StorageError),
 }
 
 #[derive(Debug, Clone)]
@@ -26,9 +26,9 @@ impl<Storage> JournalReader<Storage> {
     }
 }
 
-impl<Storage> invoker::JournalReader for JournalReader<Storage>
+impl<Storage> restate_invoker::JournalReader for JournalReader<Storage>
 where
-    Storage: storage_api::Storage,
+    Storage: restate_storage_api::Storage,
 {
     type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
     type Error = JournalReaderError;

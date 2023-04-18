@@ -1,5 +1,5 @@
 [package]
-name = "network"
+name = "restate_network"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -11,7 +11,7 @@ publish = false
 
 [dependencies]
 bytes = { workspace = true }
-common = { workspace = true }
+restate_common = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 pin-project = { workspace = true }
@@ -20,5 +20,5 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-test_utils = { workspace = true }
+restate_test_utils = { workspace = true }
 tracing-subscriber = { workspace = true }

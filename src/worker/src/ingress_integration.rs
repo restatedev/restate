@@ -1,9 +1,9 @@
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
-use ingress_grpc::{
+use restate_ingress_grpc::{
     HyperServerIngress, IngressDispatcherLoop, IngressDispatcherLoopError, IngressOutput,
     ReflectionRegistry,
 };
-use service_metadata::InMemoryMethodDescriptorRegistry;
+use restate_service_metadata::InMemoryMethodDescriptorRegistry;
 use tokio::select;
 use tokio::sync::mpsc;
 

@@ -1,5 +1,5 @@
 [package]
-name = "consensus"
+name = "restate_consensus"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -11,16 +11,16 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
-common = { workspace = true }
+restate_common = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 futures-sink = { workspace = true }
-network = { workspace = true }
+restate_network = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-test_utils = { workspace = true }
+restate_test_utils = { workspace = true }
 tracing-subscriber = { workspace = true }

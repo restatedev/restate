@@ -1,7 +1,7 @@
-use common::errors::ConversionError;
-pub use common::utils::GenericError;
 use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
+use restate_common::errors::ConversionError;
+pub use restate_common::utils::GenericError;
 
 //
 // A Generic storage Error
