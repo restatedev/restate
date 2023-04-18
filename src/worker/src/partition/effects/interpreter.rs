@@ -56,12 +56,6 @@ pub(crate) trait MessageCollector {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StateStorageError {
-    #[error("write failed: {source:?}")]
-    #[allow(dead_code)]
-    WriteFailed { source: Option<GenericError> },
-    #[error("read failed: {source:?}")]
-    #[allow(dead_code)]
-    ReadFailed { source: Option<GenericError> },
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
 }
