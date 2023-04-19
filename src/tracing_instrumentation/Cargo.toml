@@ -24,6 +24,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+nu-ansi-term = "0.46.0"
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -1,6 +1,11 @@
+mod pretty;
+
+use crate::pretty::PrettyFields;
 use opentelemetry::trace::TraceError;
+use pretty::Pretty;
 use std::fmt::Display;
 use tracing::Level;
+use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -45,6 +50,8 @@ impl Options {
             .with(EnvFilter::from_default_env())
             .with(
                 tracing_subscriber::fmt::layer()
+                    .event_format::<Pretty<SystemTime>>(Pretty::default())
+                    .fmt_fields(PrettyFields::default())
                     .with_writer(
                         // Write WARN and ERR to stderr, everything else to stdout
                         std::io::stderr

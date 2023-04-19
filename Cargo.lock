@@ -2487,6 +2487,7 @@ name = "restate_tracing_instrumentation"
 version = "0.1.0"
 dependencies = [
  "console-subscriber",
+ "nu-ansi-term",
  "opentelemetry",
  "opentelemetry-jaeger",
  "opentelemetry-semantic-conventions",
