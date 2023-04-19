@@ -287,7 +287,7 @@ where
             .span_context
             .as_parent()
             .attach_to_span(&invocation_task_span);
-        info!(http.url = %uri, "Executing request to service endpoint");
+        info!(http.url = %uri, "Executing invocation at service endpoint");
 
         // Create an arc of the parent SpanContext.
         // We send this with every journal entry to correctly link new spans generated from journal entries.

@@ -81,18 +81,22 @@ where
     ///
     /// We pass in the effects message as a mutable borrow to be able to reuse it across
     /// invocations of this methods which lies on the hot path.
+    ///
+    /// We use the returned service invocation id and span relation to log the effects (see [`Effects#log`]).
     #[instrument(level = "trace", skip_all, fields(command = ?command), err)]
     pub(super) async fn on_apply<State: StateReader>(
         &mut self,
         command: Command,
         effects: &mut Effects,
         state: &mut State,
-    ) -> Result<SpanRelation, Error> {
+    ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
         return match command {
             Command::Invocation(service_invocation) => {
                 let status = state
                     .get_invocation_status(&service_invocation.id.service_id)
                     .await?;
+
+                let sid = service_invocation.id.clone();
 
                 if let InvocationStatus::Free = status {
                     effects.invoke_service(service_invocation);
@@ -100,7 +104,7 @@ where
                     effects.enqueue_into_inbox(self.inbox_seq_number, service_invocation);
                     self.inbox_seq_number += 1;
                 }
-                Ok(extract_span_relation(&status))
+                Ok((Some(sid), extract_span_relation(&status)))
             }
             Command::Response(InvocationResponse {
                 id,
@@ -114,10 +118,14 @@ where
 
                 Self::handle_completion(id, completion, state, effects).await
             }
-            Command::Invoker(effect) => self.on_invoker_effect(effects, state, effect).await,
+            Command::Invoker(effect) => {
+                let (related_sid, span_relation) =
+                    self.on_invoker_effect(effects, state, effect).await?;
+                Ok((Some(related_sid), span_relation))
+            }
             Command::OutboxTruncation(index) => {
                 effects.truncate_outbox(index);
-                Ok(SpanRelation::None)
+                Ok((None, SpanRelation::None))
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
         };
@@ -133,7 +141,7 @@ where
         }: TimerValue,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<SpanRelation, Error> {
+    ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
         effects.delete_timer(wake_up_time, service_invocation_id.clone(), entry_index);
 
         return match value {
@@ -154,7 +162,7 @@ where
                     OutboxMessage::ServiceInvocation(service_invocation),
                     effects,
                 );
-                Ok(SpanRelation::None)
+                Ok((Some(service_invocation_id), SpanRelation::None))
             }
         };
     }
@@ -167,10 +175,11 @@ where
             service_invocation_id,
             kind,
         }: InvokerEffect,
-    ) -> Result<SpanRelation, Error> {
+    ) -> Result<(ServiceInvocationId, SpanRelation), Error> {
         let status = state
             .get_invocation_status(&service_invocation_id.service_id)
             .await?;
+        let related_sid = service_invocation_id.clone();
         let span_relation = extract_span_relation(&status);
 
         let_assert!(
@@ -270,7 +279,7 @@ where
             }
         }
 
-        Ok(span_relation)
+        Ok((related_sid, span_relation))
     }
 
     async fn handle_journal_entry(
@@ -513,16 +522,19 @@ where
         completion: Completion,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<SpanRelation, Error> {
+    ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
         let status = state
             .get_invocation_status(&service_invocation_id.service_id)
             .await?;
-        let span_relation = extract_span_relation(&status);
+        let mut related_sid = None;
+        let mut span_relation = SpanRelation::None;
 
         match status {
             InvocationStatus::Invoked(invoked_status) => {
                 if invoked_status.invocation_id == service_invocation_id.invocation_id {
-                    effects.store_and_forward_completion(service_invocation_id, completion);
+                    effects.store_and_forward_completion(service_invocation_id.clone(), completion);
+                    related_sid = Some(service_invocation_id);
+                    span_relation = invoked_status.journal_metadata.span_context.as_parent();
                 } else {
                     debug!(
                         rpc.service = %service_invocation_id.service_id.service_name,
@@ -539,10 +551,13 @@ where
                         .waiting_for_completed_entries
                         .contains(&completion.entry_index)
                     {
-                        effects.store_completion_and_resume(service_invocation_id, completion);
+                        effects
+                            .store_completion_and_resume(service_invocation_id.clone(), completion);
                     } else {
-                        effects.store_completion(service_invocation_id, completion);
+                        effects.store_completion(service_invocation_id.clone(), completion);
                     }
+                    related_sid = Some(service_invocation_id);
+                    span_relation = suspended_status.journal_metadata.span_context.as_parent();
                 } else {
                     debug!(
                         rpc.service = %service_invocation_id.service_id.service_name,
@@ -564,7 +579,7 @@ where
             }
         }
 
-        Ok(span_relation)
+        Ok((related_sid, span_relation))
     }
 
     fn notify_invocation_result(

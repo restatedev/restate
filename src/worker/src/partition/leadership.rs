@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use tokio::task;
 use tokio::task::JoinError;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{info_span, trace};
+use tracing::{info, info_span, trace, warn, warn_span};
 
 pub(super) trait InvocationReader {
     type InvokedInvocationStream<'a>: Stream<
@@ -160,17 +160,25 @@ where
                 } => {
                     let span = match result {
                         Ok(_) => {
-                            info_span!(
+                            let span = info_span!(
                                 "end_invocation",
                                 restate.invocation.id = %invocation_id,
-                                restate.invocation.result = "success")
+                                restate.invocation.result = "Success"
+                            );
+                            info!(parent: &span, "Invocation succeeded");
+                            span
                         }
                         Err((status_code, status_message)) => {
-                            info_span!("end_invocation",
+                            let span = warn_span!(
+                                "end_invocation",
                                 restate.invocation.id = %invocation_id,
-                                restate.invocation.result = "failure",
-                                restate.result.failure.status_code = status_code,
-                                restate.result.failure.status_message = status_message)
+                                restate.invocation.result = "Failure"
+                            );
+                            warn!(
+                                parent: &span,
+                                "Invocation failed ({}): {}", status_code, status_message
+                            );
+                            span
                         }
                     };
                     span_context.as_parent().attach_to_span(&span);
@@ -244,7 +252,7 @@ where
         )
     }
 
-    pub(super) fn i_am_leader(&self) -> bool {
+    pub(super) fn is_leader(&self) -> bool {
         matches!(self, LeadershipState::Leader { .. })
     }
 

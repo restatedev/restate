@@ -159,12 +159,12 @@ macro_rules! debug_if_leader {
 }
 
 impl Effect {
-    fn log(&self, i_am_leader: bool) {
+    fn log(&self, is_leader: bool) {
         match self {
             Effect::InvokeService(ServiceInvocation {
                 id, method_name, ..
             }) => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %id.service_id.service_name,
                 rpc.method = %method_name,
                 restate.invocation.key = ?id.service_id.key,
@@ -179,7 +179,7 @@ impl Effect {
                         ..
                     },
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 rpc.method = %method,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
@@ -196,7 +196,7 @@ impl Effect {
                     },
                 waiting_for_completed_entries,
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 rpc.method = %method,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
@@ -209,17 +209,17 @@ impl Effect {
                 service_id,
                 journal_length,
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_id.service_name,
                 restate.invocation.key = ?service_id.key,
                 restate.journal.length = journal_length,
-                "Effect: Free service"
+                "Effect: Release service instance lock"
             ),
             Effect::EnqueueIntoInbox {
                 service_invocation,
                 seq_number,
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation.id.service_id.service_name,
                 restate.invocation.key = ?service_invocation.id.service_id.key,
                 restate.invocation.id = %service_invocation.id.invocation_id,
@@ -230,7 +230,7 @@ impl Effect {
                 seq_number,
                 message: OutboxMessage::ServiceInvocation(service_invocation),
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation.id.service_id.service_name,
                 rpc.method = %service_invocation.method_name,
                 restate.invocation.key = ?service_invocation.id.service_id.key,
@@ -247,7 +247,7 @@ impl Effect {
                         id,
                     }),
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %id.service_id.service_name,
                 restate.invocation.key = ?id.service_id.key,
                 restate.invocation.id = %id.invocation_id,
@@ -264,7 +264,7 @@ impl Effect {
                         id,
                     }),
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %id.service_id.service_name,
                 restate.invocation.key = ?id.service_id.key,
                 restate.invocation.id = %id.invocation_id,
@@ -283,7 +283,7 @@ impl Effect {
                         ..
                     },
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
                 restate.invocation.id = %service_invocation_id.invocation_id,
@@ -299,7 +299,7 @@ impl Effect {
                         ..
                     },
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
                 restate.invocation.id = %service_invocation_id.invocation_id,
@@ -316,7 +316,7 @@ impl Effect {
                 journal_length,
                 inbox_sequence_number,
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_id.service_name,
                 restate.invocation.key = ?service_id.key,
                 restate.journal.length = journal_length,
@@ -326,7 +326,7 @@ impl Effect {
             Effect::SetState {
                 key, entry_index, ..
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 restate.journal.index = entry_index,
                 restate.state.key = ?key,
                 "Effect: Set state"
@@ -334,7 +334,7 @@ impl Effect {
             Effect::ClearState {
                 key, entry_index, ..
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 restate.journal.index = entry_index,
                 restate.state.key = ?key,
                 "Effect: Clear state"
@@ -342,20 +342,20 @@ impl Effect {
             Effect::GetStateAndAppendCompletedEntry {
                 key, entry_index, ..
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 restate.journal.index = entry_index,
                 restate.state.key = ?key,
                 "Effect: Get state"
             ),
             Effect::RegisterTimer { timer_value } => match &timer_value.value {
                 Timer::CompleteSleepEntry => debug_if_leader!(
-                i_am_leader,
+                    is_leader,
                     restate.timer.key = %timer_value.display_key(),
                     restate.timer.wake_up_time = %timer_value.wake_up_time,
                     "Effect: Register Sleep timer"
                 ),
                 Timer::Invoke(service_invocation) => debug_if_leader!(
-                i_am_leader,
+                    is_leader,
                     rpc.service = %service_invocation.id.service_id.service_name,
                     restate.invocation.key = ?service_invocation.id.service_id.key,
                     restate.invocation.id = %service_invocation.id.invocation_id,
@@ -369,7 +369,7 @@ impl Effect {
                 entry_index,
                 wake_up_time,
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 restate.timer.key = %TimerKeyDisplay(service_invocation_id, entry_index),
                 restate.timer.wake_up_time = %wake_up_time,
                 "Effect: Delete timer"
@@ -384,7 +384,7 @@ impl Effect {
                 entry_index,
                 ..
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
                 restate.invocation.id = %service_invocation_id.invocation_id,
@@ -402,7 +402,7 @@ impl Effect {
                 entry_index,
                 ..
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
                 restate.invocation.id = %service_invocation_id.invocation_id,
@@ -420,7 +420,7 @@ impl Effect {
                 entry_index,
                 ..
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
                 restate.invocation.id = %service_invocation_id.invocation_id,
@@ -436,7 +436,7 @@ impl Effect {
                         result,
                     },
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
                 restate.invocation.id = %service_invocation_id.invocation_id,
@@ -452,12 +452,12 @@ impl Effect {
                         result,
                     },
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
                 restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.index = entry_index,
-                "Effect: Store completion {} and forward",
+                "Effect: Store completion {} and forward to service endpoint",
                 CompletionResultFmt(result)
             ),
             Effect::StoreCompletionAndResume {
@@ -468,12 +468,12 @@ impl Effect {
                         result,
                     },
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
                 restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.index = entry_index,
-                "Effect: Store completion {} and resume",
+                "Effect: Store completion {} and resume invocation",
                 CompletionResultFmt(result)
             ),
             Effect::ForwardCompletion {
@@ -484,12 +484,12 @@ impl Effect {
                         result,
                     },
             } => debug_if_leader!(
-                i_am_leader,
+                is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
                 restate.invocation.key = ?service_invocation_id.service_id.key,
                 restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.index = entry_index,
-                "Effect: Forward completion {} and resume",
+                "Effect: Forward completion {} to service endpoint",
                 CompletionResultFmt(result)
             ),
             Effect::NotifyInvocationResult { .. } => {
@@ -813,16 +813,33 @@ impl Effects {
         })
     }
 
-    pub(crate) fn log(&self, i_am_leader: bool, related_span: SpanRelation) {
+    /// We log only if the level is TRACE, or if the level is DEBUG and we're the leader.
+    pub(crate) fn log(
+        &self,
+        is_leader: bool,
+        service_invocation_id: Option<ServiceInvocationId>,
+        related_span: SpanRelation,
+    ) {
         // Skip this method altogether if logging is disabled
-        if !((event_enabled!(Level::DEBUG) && i_am_leader) || event_enabled!(Level::TRACE)) {
+        if !((event_enabled!(Level::DEBUG) && is_leader) || event_enabled!(Level::TRACE)) {
             return;
         }
 
-        let span = if i_am_leader {
-            debug_span!("state_machine_effects")
-        } else {
-            trace_span!("state_machine_effects")
+        let span = match (is_leader, service_invocation_id) {
+            (true, Some(service_invocation_id)) => debug_span!(
+                "state_machine_effects",
+                rpc.service = %service_invocation_id.service_id.service_name,
+                restate.invocation.key = ?service_invocation_id.service_id.key,
+                restate.invocation.id = %service_invocation_id.invocation_id
+            ),
+            (false, Some(service_invocation_id)) => trace_span!(
+                "state_machine_effects",
+                rpc.service = %service_invocation_id.service_id.service_name,
+                restate.invocation.key = ?service_invocation_id.service_id.key,
+                restate.invocation.id = %service_invocation_id.invocation_id
+            ),
+            (true, None) => debug_span!("state_machine_effects"),
+            (false, None) => trace_span!("state_machine_effects"),
         };
 
         // Create span and enter it
@@ -831,7 +848,7 @@ impl Effects {
 
         // Log all the effects
         for effect in self.effects.iter() {
-            effect.log(i_am_leader);
+            effect.log(is_leader);
         }
     }
 }

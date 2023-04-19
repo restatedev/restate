@@ -144,15 +144,15 @@ where
                                 let mut transaction = partition_storage.create_transaction();
 
                                 // Handle the command, returns the span_relation to use to log effects
-                                let span_relation = state_machine.on_apply(fsm_command, &mut effects, &mut transaction).await?;
+                                let (sid, span_relation) = state_machine.on_apply(fsm_command, &mut effects, &mut transaction).await?;
 
-                                let i_am_leader = leadership_state.i_am_leader();
+                                let is_leader = leadership_state.is_leader();
+
+                                // Log the effects
+                                effects.log(is_leader, sid, span_relation);
 
                                 // Prepare message collector
                                 let message_collector = leadership_state.into_message_collector();
-
-                                // Log the effects
-                                effects.log(i_am_leader, span_relation);
 
                                 // Interpret effects
                                 let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).await?;

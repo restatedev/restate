@@ -83,7 +83,11 @@ impl MetaRestEndpoint {
 
         // Start the server
         let server = Server::bind(&self.rest_addr).serve(meta_api.into_make_service());
-        info!(http.url = ?server.local_addr(), "Meta Operational REST API listening");
+        info!(
+            net.host.addr = %server.local_addr().ip(),
+            net.host.port = %server.local_addr().port(),
+            "Meta Operational REST API listening"
+        );
 
         // Wait server graceful shutdown
         if let Err(e) = server
