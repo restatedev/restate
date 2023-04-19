@@ -1,3 +1,4 @@
+use std::cmp;
 use std::future::Future;
 use std::time::Duration;
 
@@ -68,6 +69,42 @@ pub enum RetryPolicy {
         /// Number of maximum attempts before giving up.
         max_attempts: usize,
     },
+    /// # Exponential
+    ///
+    /// Retry with an exponential strategy. The next retry is computed as `min(last_retry_interval * factor, max_interval)`.
+    Exponential {
+        /// # Initial Interval
+        ///
+        /// Initial interval for the first retry attempt.
+        ///
+        /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+        #[cfg_attr(
+            feature = "serde",
+            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
+        )]
+        #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
+        initial_interval: humantime::Duration,
+
+        /// # Factor
+        ///
+        /// The factor to use to compute the next retry attempt.
+        factor: f32,
+
+        /// # Max attempts
+        ///
+        /// Number of maximum attempts before giving up.
+        max_attempts: usize,
+
+        /// # Max interval
+        ///
+        /// Maximum interval between retries.
+        #[cfg_attr(
+            feature = "serde",
+            serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")
+        )]
+        #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
+        max_interval: Option<humantime::Duration>,
+    },
 }
 
 impl Default for RetryPolicy {
@@ -81,6 +118,20 @@ impl RetryPolicy {
         Self::FixedDelay {
             interval: interval.into(),
             max_attempts,
+        }
+    }
+
+    pub fn exponential(
+        initial_interval: Duration,
+        factor: f32,
+        max_attempts: usize,
+        max_interval: Option<Duration>,
+    ) -> Self {
+        Self::Exponential {
+            initial_interval: initial_interval.into(),
+            factor,
+            max_attempts,
+            max_interval: max_interval.map(Into::into),
         }
     }
 
@@ -111,6 +162,7 @@ impl IntoIterator for RetryPolicy {
         Iter {
             policy: self,
             attempts: 0,
+            last_retry: None,
         }
     }
 }
@@ -119,6 +171,7 @@ impl IntoIterator for RetryPolicy {
 pub struct Iter {
     policy: RetryPolicy,
     attempts: usize,
+    last_retry: Option<Duration>,
 }
 
 impl Iterator for Iter {
@@ -138,17 +191,39 @@ impl Iterator for Iter {
                     Some(interval.into())
                 }
             }
+            RetryPolicy::Exponential {
+                initial_interval,
+                factor,
+                max_attempts,
+                max_interval,
+            } => {
+                if self.attempts > max_attempts {
+                    None
+                } else if self.last_retry.is_some() {
+                    let new_retry = cmp::min(
+                        self.last_retry.unwrap().mul_f32(factor),
+                        max_interval.map(Into::into).unwrap_or(Duration::MAX),
+                    );
+                    self.last_retry = Some(new_retry);
+                    return Some(new_retry);
+                } else {
+                    self.last_retry = Some(*initial_interval);
+                    return Some(*initial_interval);
+                }
+            }
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        match self.policy {
-            RetryPolicy::None => (0, Some(0)),
-            RetryPolicy::FixedDelay { max_attempts, .. } => (
-                max_attempts - self.attempts,
-                Some(max_attempts - self.attempts),
-            ),
-        }
+        let max_attempts = match self.policy {
+            RetryPolicy::None => return (0, Some(0)),
+            RetryPolicy::FixedDelay { max_attempts, .. } => max_attempts,
+            RetryPolicy::Exponential { max_attempts, .. } => max_attempts,
+        };
+        (
+            max_attempts - self.attempts,
+            Some(max_attempts - self.attempts),
+        )
     }
 }
 
@@ -173,6 +248,55 @@ mod tests {
             RetryPolicy::fixed_delay(Duration::from_millis(100), 10)
                 .into_iter()
                 .collect::<Vec<_>>()
+        )
+    }
+
+    #[test]
+    fn exponential_retry_policy() {
+        assert_eq!(
+            vec![
+                // Manually building this powers to avoid rounding issues :)
+                Duration::from_millis(100),
+                Duration::from_millis(100).mul_f32(2.0),
+                Duration::from_millis(100).mul_f32(2.0).mul_f32(2.0),
+                Duration::from_millis(100)
+                    .mul_f32(2.0)
+                    .mul_f32(2.0)
+                    .mul_f32(2.0),
+                Duration::from_millis(100)
+                    .mul_f32(2.0)
+                    .mul_f32(2.0)
+                    .mul_f32(2.0)
+                    .mul_f32(2.0)
+            ],
+            RetryPolicy::exponential(Duration::from_millis(100), 2.0, 5, None)
+                .into_iter()
+                .collect::<Vec<_>>()
+        )
+    }
+
+    #[test]
+    fn exponential_retry_policy_with_max_interval() {
+        assert_eq!(
+            vec![
+                // Manually building this powers to avoid rounding issues :)
+                Duration::from_millis(100),
+                Duration::from_millis(100).mul_f32(2.0),
+                Duration::from_millis(100).mul_f32(2.0).mul_f32(2.0),
+                Duration::from_millis(100)
+                    .mul_f32(2.0)
+                    .mul_f32(2.0)
+                    .mul_f32(2.0),
+                Duration::from_secs(1)
+            ],
+            RetryPolicy::exponential(
+                Duration::from_millis(100),
+                2.0,
+                5,
+                Some(Duration::from_secs(1))
+            )
+            .into_iter()
+            .collect::<Vec<_>>()
         )
     }
 }
