@@ -5,11 +5,12 @@ use opentelemetry::trace::TraceError;
 use pretty::Pretty;
 use std::fmt::Display;
 use tracing::Level;
+use tracing_subscriber::fmt::format;
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, Layer};
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
@@ -20,6 +21,25 @@ pub struct Error {
 
 pub type TracingResult<T> = Result<T, Error>;
 
+/// # Log format
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+pub enum LogFormat {
+    /// # Pretty
+    ///
+    /// Enables verbose logging. Not recommended in production.
+    #[default]
+    Pretty,
+    /// # Compact
+    ///
+    /// Enables compact logging.
+    Compact,
+    /// # Json
+    ///
+    /// Enables json logging. You can use a json log collector to ingest these logs and further process them.
+    Json,
+}
+
 /// # Tracing options
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
@@ -29,6 +49,12 @@ pub struct Options {
     ///
     /// Specify the Jaeger endpoint to use to send traces. Traces will be exported using the [Jaeger Agent UDP protocol](https://www.jaegertracing.io/docs/1.6/deployment/#agent) through [opentelemetry_jaeger](https://docs.rs/opentelemetry-jaeger/latest/opentelemetry_jaeger/config/agent/struct.AgentPipeline.html).
     jaeger_endpoint: Option<String>,
+
+    /// # Log format
+    ///
+    /// Format to use when logging.
+    #[cfg_attr(feature = "options_schema", schemars(default))]
+    log_format: LogFormat,
 
     /// # Disable ANSI log
     ///
@@ -46,20 +72,31 @@ impl Options {
     /// This method will panic if there is already a global subscriber configured. Moreover, it will
     /// panic if it is executed outside of a Tokio runtime.
     pub fn init(&self, service_name: impl Display, instance_id: impl Display) -> TracingResult<()> {
+        let fmt_layer = match self.log_format {
+            LogFormat::Pretty => tracing_subscriber::fmt::layer()
+                .event_format::<Pretty<SystemTime>>(Pretty::default())
+                .fmt_fields(PrettyFields::default())
+                .with_writer(
+                    // Write WARN and ERR to stderr, everything else to stdout
+                    std::io::stderr
+                        .with_max_level(Level::WARN)
+                        .or_else(std::io::stdout),
+                )
+                .with_ansi(!self.disable_ansi_log)
+                .boxed(),
+            LogFormat::Compact => tracing_subscriber::fmt::layer()
+                .event_format(format().compact())
+                .with_ansi(!self.disable_ansi_log)
+                .boxed(),
+            LogFormat::Json => tracing_subscriber::fmt::layer()
+                .event_format(format().json())
+                .with_ansi(!self.disable_ansi_log)
+                .boxed(),
+        };
+
         let layers = tracing_subscriber::registry()
             .with(EnvFilter::from_default_env())
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .event_format::<Pretty<SystemTime>>(Pretty::default())
-                    .fmt_fields(PrettyFields::default())
-                    .with_writer(
-                        // Write WARN and ERR to stderr, everything else to stdout
-                        std::io::stderr
-                            .with_max_level(Level::WARN)
-                            .or_else(std::io::stdout),
-                    )
-                    .with_ansi(!self.disable_ansi_log),
-            );
+            .with(fmt_layer);
         #[cfg(feature = "console-subscriber")]
         let layers = layers.with(console_subscriber::spawn());
 
