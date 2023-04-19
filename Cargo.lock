@@ -2120,6 +2120,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap 4.2.1",
+ "codederror",
  "drain",
  "figment",
  "futures-util",
@@ -2128,6 +2129,7 @@ dependencies = [
  "pin-project",
  "rand",
  "restate_common",
+ "restate_errors",
  "restate_meta",
  "restate_test_utils",
  "restate_tracing_instrumentation",

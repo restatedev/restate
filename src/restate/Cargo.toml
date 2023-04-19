@@ -16,7 +16,9 @@ options_schema = ["dep:schemars", "restate_tracing_instrumentation/options_schem
 
 [dependencies]
 clap = { version = "4.1", features = ["derive", "env"] }
+codederror = { workspace = true }
 drain = { workspace = true }
+restate_errors = { workspace = true, features = ["include_doc"] }
 figment = { version = "0.10.8", features = ["env", "yaml"] }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -26,6 +28,7 @@ futures-util = { workspace = true }
 humantime = { workspace = true }
 restate_meta = { workspace = true }
 pin-project = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 restate_tracing_instrumentation = { workspace = true }
