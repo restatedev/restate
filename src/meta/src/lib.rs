@@ -3,12 +3,14 @@ mod service;
 mod storage;
 
 use rest_api::MetaRestEndpoint;
+use restate_common::retry_policy::RetryPolicy;
 use restate_ingress_grpc::ReflectionRegistry;
 use restate_service_key_extractor::KeyExtractorsRegistry;
 use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use serde::{Deserialize, Serialize};
 use service::MetaService;
 use std::net::SocketAddr;
+use std::time::Duration;
 use storage::FileMetaStorage;
 use tokio::join;
 use tracing::{debug, error};
@@ -80,7 +82,8 @@ impl Options {
             service_endpoint_registry.clone(),
             reflections_registry.clone(),
             FileMetaStorage::new(self.storage_path.into()),
-            Default::default(),
+            // Total duration roughly 102 seconds
+            RetryPolicy::exponential(Duration::from_millis(100), 2.0, 9, None),
         );
 
         Meta {
