@@ -94,7 +94,7 @@ where
 
         let server = server_builder.serve(make_svc);
 
-        info!(address = %server.local_addr(), "Starting external client ingress.");
+        info!(http.url = %server.local_addr(), "Ingress gRPC/gRPC-web/Connect listening");
 
         // future completion does not affect endpoint
         let _ = start_signal_tx.send(server.local_addr());

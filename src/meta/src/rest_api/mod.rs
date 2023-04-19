@@ -15,7 +15,7 @@ use restate_service_metadata::{MethodDescriptorRegistry, ServiceEndpointRegistry
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceBuilder;
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 use crate::service::MetaHandle;
 
@@ -83,7 +83,7 @@ impl MetaRestEndpoint {
 
         // Start the server
         let server = Server::bind(&self.rest_addr).serve(meta_api.into_make_service());
-        debug!(rest_addr = ?server.local_addr(), "Starting the meta component.");
+        info!(http.url = ?server.local_addr(), "Meta Operational REST API listening");
 
         // Wait server graceful shutdown
         if let Err(e) = server

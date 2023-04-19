@@ -166,7 +166,7 @@ where
                                 }
                             }
                             restate_consensus::Command::BecomeLeader(leader_epoch) => {
-                                info!(%peer_id, %partition_id, %leader_epoch, "Become leader.");
+                                info!(restate.partition.peer = %peer_id, restate.partition.id = %partition_id, restate.partition.leader_epoch = %leader_epoch, "Become leader");
 
                                 (actuator_stream, leadership_state) = leadership_state.become_leader(
                                     leader_epoch,
@@ -174,7 +174,7 @@ where
                                 .await?;
                             }
                             restate_consensus::Command::BecomeFollower => {
-                                info!(%peer_id, %partition_id, "Become follower.");
+                                info!(restate.partition.peer = %peer_id, restate.partition.id = %partition_id, "Become follower");
                                 (actuator_stream, leadership_state) = leadership_state.become_follower().await?;
                             },
                             restate_consensus::Command::ApplySnapshot => {

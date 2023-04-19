@@ -287,7 +287,7 @@ where
             .span_context
             .as_parent()
             .attach_to_span(&invocation_task_span);
-        info!(http.url = %uri);
+        info!(http.url = %uri, "Executing request to service endpoint");
 
         // Create an arc of the parent SpanContext.
         // We send this with every journal entry to correctly link new spans generated from journal entries.
@@ -597,8 +597,6 @@ where
             .body(req_body)
             // This fails only in case the URI is malformed, which should never happen
             .expect("The request builder shouldn't fail");
-
-        trace!("Request URI: {}", http_request.uri());
 
         (http_stream_tx, http_request)
     }
