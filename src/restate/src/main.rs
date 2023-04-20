@@ -1,6 +1,8 @@
 use app::Application;
 use clap::Parser;
+use codederror::CodedError;
 use restate::Configuration;
+use restate_errors::fmt::CodedErrorExt;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
@@ -28,7 +30,15 @@ struct RestateArguments {
 fn main() {
     let cli_args = RestateArguments::parse();
 
-    let config = Configuration::load(&cli_args.config_file);
+    let config = match Configuration::load(&cli_args.config_file) {
+        Ok(c) => c,
+        Err(e) => {
+            // We cannot use tracing here as it's not configured yet
+            println!("{}", e.decorate());
+            e.print_description_as_markdown();
+            std::process::exit(1);
+        }
+    };
 
     let runtime = rt::build_runtime().expect("failed to build Tokio runtime!");
 

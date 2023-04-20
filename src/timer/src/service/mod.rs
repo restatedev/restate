@@ -60,7 +60,7 @@ where
     }
 
     pub async fn run(self, drain: drain::Watch) -> Result<(), TimerServiceError> {
-        debug!("Running timer service.");
+        debug!("Running timer service");
 
         let Self {
             mut input_rx,

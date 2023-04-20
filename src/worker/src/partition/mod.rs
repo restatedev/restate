@@ -138,16 +138,28 @@ where
                     if let Some(command) = command {
                         match command {
                             restate_consensus::Command::Apply(ackable_command) => {
-                                let (fsm_command, ack_target) = ackable_command.into_inner();
-
+                                // Clear the effects to reuse the vector
                                 effects.clear();
-                                let mut transaction = partition_storage.create_transaction();
-                                state_machine.on_apply(fsm_command, &mut effects, &mut transaction).await?;
 
+                                // Prepare command and transaction
+                                let (fsm_command, ack_target) = ackable_command.into_inner();
+                                let mut transaction = partition_storage.create_transaction();
+
+                                // Handle the command, returns the span_relation to use to log effects
+                                let (sid, span_relation) = state_machine.on_apply(fsm_command, &mut effects, &mut transaction).await?;
+
+                                let is_leader = leadership_state.is_leader();
+
+                                // Log the effects
+                                effects.log(is_leader, sid, span_relation);
+
+                                // Prepare message collector
                                 let message_collector = leadership_state.into_message_collector();
 
+                                // Interpret effects
                                 let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).await?;
 
+                                // Commit actuator messages
                                 let message_collector = result.commit().await?;
                                 leadership_state = message_collector.send().await?;
 
@@ -156,7 +168,7 @@ where
                                 }
                             }
                             restate_consensus::Command::BecomeLeader(leader_epoch) => {
-                                info!(%peer_id, %partition_id, %leader_epoch, "Become leader.");
+                                info!(restate.partition.peer = %peer_id, restate.partition.id = %partition_id, restate.partition.leader_epoch = %leader_epoch, "Become leader");
 
                                 (actuator_stream, leadership_state) = leadership_state.become_leader(
                                     leader_epoch,
@@ -164,7 +176,7 @@ where
                                 .await?;
                             }
                             restate_consensus::Command::BecomeFollower => {
-                                info!(%peer_id, %partition_id, "Become follower.");
+                                info!(restate.partition.peer = %peer_id, restate.partition.id = %partition_id, "Become follower");
                                 (actuator_stream, leadership_state) = leadership_state.become_follower().await?;
                             },
                             restate_consensus::Command::ApplySnapshot => {

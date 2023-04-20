@@ -52,6 +52,11 @@ impl Default for Configuration {
     }
 }
 
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+#[code(restate_errors::RT0002)]
+#[error("configuration error: {0}")]
+pub struct Error(#[from] figment::Error);
+
 impl Configuration {
     fn default_shutdown_grace_period() -> humantime::Duration {
         Duration::from_secs(60).into()
@@ -59,11 +64,12 @@ impl Configuration {
 
     /// Load [`Configuration`] from yaml with overrides from environment variables.
     #[allow(dead_code)]
-    pub fn load<P: AsRef<Path>>(config_file: P) -> Self {
-        Figment::from(Serialized::defaults(Configuration::default()))
-            .merge(Yaml::file(config_file))
-            .merge(Env::prefixed("RESTATE_").split("__"))
-            .extract()
-            .expect("Error when loading configuration")
+    pub fn load<P: AsRef<Path>>(config_file: P) -> Result<Self, Error> {
+        Ok(
+            Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Yaml::file(config_file))
+                .merge(Env::prefixed("RESTATE_").split("__"))
+                .extract()?,
+        )
     }
 }

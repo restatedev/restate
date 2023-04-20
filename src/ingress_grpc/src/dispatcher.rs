@@ -56,7 +56,7 @@ impl IngressDispatcherLoop {
         output_tx: mpsc::Sender<IngressOutput>,
         drain: drain::Watch,
     ) -> Result<(), IngressDispatcherLoopError> {
-        debug!("Running the ResponseDispatcher.");
+        debug!("Running the ResponseDispatcher");
 
         let IngressDispatcherLoop {
             ingress_id,

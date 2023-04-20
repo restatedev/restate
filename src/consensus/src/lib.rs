@@ -6,7 +6,7 @@ use restate_common::types::{LeaderEpoch, PeerId, PeerTarget};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, trace};
 
 mod log;
 mod sender;
@@ -89,7 +89,7 @@ where
             ..
         } = self;
 
-        info!("Running the consensus driver.");
+        debug!("Running the consensus driver");
 
         let mut waiting_for_send_capacity = FuturesUnordered::new();
 
@@ -104,7 +104,7 @@ where
             tokio::select! {
                 proposal = proposal_rx.recv() => {
                     let fmt = format!("{proposal:?}");
-                    debug!(proposal = fmt, "Received proposal");
+                    trace!(proposal = fmt, "Received proposal");
 
                     let (target_peer_id, proposal) = proposal.expect("Consensus owns the proposal sender, that's why the receiver should never be closed");
 
@@ -114,12 +114,12 @@ where
                         waiting_for_send_capacity.push(sender.reserve_owned())
                     }
 
-                    debug!(proposal = fmt, "Processed proposal")
+                    trace!(proposal = fmt, "Processed proposal")
                 },
                 raft_msg = raft_rx.recv() => {
                     if let Some((target_peer_id, raft_msg)) = raft_msg {
                         let fmt = format!("{raft_msg:?}");
-                        debug!(raft_msg = fmt, "Received raft message");
+                        trace!(raft_msg = fmt, "Received raft message");
 
                         let cmd_log = cmd_logs.get_mut(&target_peer_id).expect("Peer id '{target}' is not known. This is a bug.");
 
@@ -127,7 +127,7 @@ where
                             waiting_for_send_capacity.push(sender.reserve_owned())
                         }
 
-                        debug!(raft_msg = fmt, "Processed raft message");
+                        trace!(raft_msg = fmt, "Processed raft message");
                     } else {
                         debug!("Shutting consensus down.");
                         break;

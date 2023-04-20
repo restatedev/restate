@@ -2,6 +2,7 @@ use crate::partition::effects::{Effect, Effects, JournalInformation};
 use crate::partition::TimerValue;
 use assert2::let_assert;
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::future::BoxFuture;
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId,
@@ -14,7 +15,6 @@ use restate_invoker::InvokeInputJournal;
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
 use restate_journal::Completion;
 use std::marker::PhantomData;
-use tracing::trace;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -44,6 +44,8 @@ pub(crate) enum ActuatorMessage {
         completion: Completion,
     },
     CommitEndSpan {
+        service_name: ByteString,
+        service_method: String,
         invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (i32, String)>,
@@ -237,8 +239,6 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         state_storage: &mut S,
         collector: &mut C,
     ) -> Result<(), Error> {
-        trace!(?effect, "Interpreting effect");
-
         match effect {
             Effect::InvokeService(service_invocation) => {
                 state_storage
@@ -638,10 +638,14 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .await?;
             }
             Effect::NotifyInvocationResult {
+                service_name,
+                service_method,
                 invocation_id,
                 span_context,
                 result,
             } => collector.collect(ActuatorMessage::CommitEndSpan {
+                service_name,
+                service_method,
                 invocation_id,
                 span_context,
                 result,

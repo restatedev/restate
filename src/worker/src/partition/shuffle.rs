@@ -194,7 +194,7 @@ where
             ..
         } = self;
 
-        debug!(%peer_id, "Running shuffle");
+        debug!(restate.partition.peer = %peer_id, "Running shuffle");
 
         let shutdown = shutdown_watch.signaled();
         tokio::pin!(shutdown);

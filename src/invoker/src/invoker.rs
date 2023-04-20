@@ -873,7 +873,9 @@ mod state_machine_coordinator {
                     // Because handle_invocation_task_closed is the terminal message coming from the invocation task,
                     // we need to return a message to the partition processor.
                     warn!(
-                        restate.sid = %service_invocation_id,
+                        rpc.service = %service_invocation_id.service_id.service_name,
+                        restate.invocation.key = ?service_invocation_id.service_id.key,
+                        restate.invocation.id = %service_invocation_id.invocation_id,
                         "Protocol violation when executing the invocation. \
                         The invocation task was closed without a SuspensionMessage, nor an OutputStreamEntry"
                     );
@@ -900,7 +902,9 @@ mod state_machine_coordinator {
             {
                 warn_it!(
                     error,
-                    restate.sid = %service_invocation_id,
+                    rpc.service = %service_invocation_id.service_id.service_name,
+                    restate.invocation.key = ?service_invocation_id.service_id.key,
+                    restate.invocation.id = %service_invocation_id.invocation_id,
                     "Error when executing the invocation",
                 );
 
@@ -910,7 +914,9 @@ mod state_machine_coordinator {
                     // Because handle_invocation_task_failed is the terminal message coming from the invocation task,
                     // we need to return a message to the partition processor.
                     warn!(
-                         restate.sid = %service_invocation_id,
+                        rpc.service = %service_invocation_id.service_id.service_name,
+                        restate.invocation.key = ?service_invocation_id.service_id.key,
+                        restate.invocation.id = %service_invocation_id.invocation_id,
                         "Protocol violation when executing the invocation. \
                         The invocation task sent an OutputStreamEntry and an error afterwards"
                     );
@@ -951,7 +957,9 @@ mod state_machine_coordinator {
                     // Because handle_invocation_task_suspended is the terminal message coming from the invocation task,
                     // we need to return a message to the partition processor.
                     warn!(
-                        restate.sid = %service_invocation_id,
+                        rpc.service = %service_invocation_id.service_id.service_name,
+                        restate.invocation.key = ?service_invocation_id.service_id.key,
+                        restate.invocation.id = %service_invocation_id.invocation_id,
                         "Protocol violation when executing the invocation. \
                         The invocation task sent an OutputStreamEntry and was closed with a SuspensionMessage"
                     );

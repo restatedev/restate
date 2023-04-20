@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio::io;
 use tokio::io::AsyncWriteExt;
-use tracing::{info, trace, warn};
+use tracing::{trace, warn};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetaStorageError {
@@ -94,8 +94,6 @@ pub struct FileMetaStorage {
 
 impl FileMetaStorage {
     pub fn new(root_path: PathBuf) -> Self {
-        info!("MetaStorage root path: {}", root_path.display());
-
         Self { root_path }
     }
 }
@@ -192,9 +190,9 @@ impl MetaStorage for FileMetaStorage {
                     let mut descriptor_pool_file = metadata_file_path.clone();
                     descriptor_pool_file.set_extension(DESC_EXTENSION);
                     trace!(
-                        "Reloading descriptor file {} for endpoint {}",
-                        descriptor_pool_file.display(),
-                        metadata_file.endpoint_metadata.address()
+                        restate.service_endpoint.url = %metadata_file.endpoint_metadata.address(),
+                        "Reloading descriptor file {}",
+                        descriptor_pool_file.display()
                     );
                     let mut descriptor_pool = DescriptorPool::new();
                     descriptor_pool.decode_file_descriptor_set(

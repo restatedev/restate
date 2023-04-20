@@ -213,7 +213,7 @@ where
             ..
         } = self;
 
-        debug!("Run network.");
+        debug!("Run network");
 
         let shutdown = drain.signaled();
         let shuffles: Arc<Mutex<HashMap<PeerId, mpsc::Sender<ShuffleIn>>>> =

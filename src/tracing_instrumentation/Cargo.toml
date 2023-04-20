@@ -22,8 +22,9 @@ opentelemetry-jaeger = { version = "0.17", features = ["rt-tokio-current-thread"
 opentelemetry-semantic-conventions = "0.10"
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["json"] }
 tracing-opentelemetry = { workspace = true }
+nu-ansi-term = "0.46.0"
 
 [dev-dependencies]
 tokio = { workspace = true }

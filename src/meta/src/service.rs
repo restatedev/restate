@@ -162,9 +162,9 @@ where
             )?;
             for service_meta in services {
                 info!(
-                    "Reloading service '{}' running at '{}'.",
-                    service_meta.name(),
-                    endpoint_metadata.address()
+                    rpc.service = service_meta.name(),
+                    restate.service_endpoint.url = %endpoint_metadata.address(),
+                    "Reloading service"
                 );
                 self.propagate_service_registration(
                     service_meta,
@@ -182,7 +182,7 @@ where
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<Vec<String>, MetaError> {
-        debug!("Starting discovery of Restate services at service endpoint '{uri}'.");
+        debug!(http.url = %uri, "Discovering Service endpoint");
 
         let discovered_metadata = self
             .service_discovery
@@ -213,8 +213,9 @@ where
         for service_meta in services {
             registered_services.push(service_meta.name().to_string());
             info!(
-                "Discovered service '{}' running at '{uri}'.",
-                service_meta.name()
+                rpc.service = service_meta.name(),
+                restate.service_endpoint.url = %uri,
+                "Discovered service"
             );
 
             self.propagate_service_registration(
@@ -244,9 +245,9 @@ where
         if tracing::enabled!(tracing::Level::DEBUG) {
             service_descriptor.methods().for_each(|method| {
                 debug!(
-                    "Registering method '{}/{}'",
-                    service_meta.name(),
-                    method.name()
+                    rpc.service = service_meta.name(),
+                    rpc.method = method.name(),
+                    "Registering method"
                 )
             });
         }

@@ -177,6 +177,7 @@ where
             // Attach this ingress_span to the parent parsed from the headers, if any.
             span_relation(req_headers.tracing_context.span().span_context())
                 .attach_to_span(&ingress_span);
+            info!(parent: &ingress_span, "Processing ingress request");
             trace!(parent: &ingress_span, rpc.request = ?req_payload);
 
             // We need the context to link it to the service invocation span
