@@ -22,6 +22,7 @@ allow = [
     "BSL-1.0",
     "OpenSSL",
     "MPL-2.0",
+    "CC0-1.0",
 ]
 deny = []
 # Lint level for licenses considered copyleft
@@ -90,6 +91,7 @@ skip = [
     # Clash between criterion clap dependency and our own
     { name = "clap" },
     { name = "clap_lex" },
+    { name = "clap_derive" },
 
     # Clash between tonic clap dependency (outdated) and hyper-rustls and prost-reflect
     { name = "base64" },
@@ -102,6 +104,22 @@ skip = [
 
     # Clash between okapi-operation and figment.
     { name = "serde_yaml"},
+
+    # Clash between criterion dependency and datafusion dependency
+    { name = "half" },
+
+    # Clash between datafusion async-compression dependency and datafusion zstd dependency
+    { name = "zstd-safe"},
+    { name = "zstd"},
+
+    # Clash between datafusion and arrow
+    { name = "hashbrown"},
+
+    # Clash between datafusion and opentelemetry
+    { name = "thrift"},
+
+    # Clash between datafusion and invoker
+    { name = "tokio-rustls"},
 ]
 deny = [
     # Each entry the name of a crate and a version range. If version is
