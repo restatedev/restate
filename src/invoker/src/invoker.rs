@@ -14,7 +14,7 @@ use restate_timer_queue::TimerQueue;
 use serde_with::serde_as;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use crate::invoker::state_machine_coordinator::StartInvocationTaskArguments;
@@ -536,9 +536,10 @@ mod state_machine_coordinator {
     use crate::invocation_task::{InvocationTask, InvocationTaskError};
 
     use restate_errors::warn_it;
+    use restate_journal::raw::Header;
     use restate_service_metadata::{ProtocolType, ServiceEndpointRegistry};
     use tonic::Code;
-    use tracing::warn;
+    use tracing::{instrument, warn};
 
     #[derive(Debug, thiserror::Error)]
     #[error("Cannot find service {0} in the service endpoint registry")]
@@ -657,6 +658,18 @@ mod state_machine_coordinator {
             }
         }
 
+        // --- Event handlers
+
+        #[instrument(
+            level = "trace",
+            skip_all,
+            fields(
+                rpc.service = %invoke_input_cmd.service_invocation_id.service_id.service_name,
+                restate.invocation.key = ?invoke_input_cmd.service_invocation_id.service_id.key,
+                restate.invocation.id = %invoke_input_cmd.service_invocation_id.invocation_id,
+                restate.invoker.partition_leader_epoch = ?self.partition,
+            )
+        )]
         pub(super) async fn handle_invoke<JR, JS, SER>(
             &mut self,
             invoke_input_cmd: InvokeInputCommand,
@@ -680,7 +693,306 @@ mod state_machine_coordinator {
             .await
         }
 
-        pub(super) async fn start_invocation_task<JR, JS, SER>(
+        #[instrument(
+            level = "trace",
+            skip_all,
+            fields(
+                restate.invoker.partition_leader_epoch = ?self.partition,
+            )
+        )]
+        pub(super) fn abort(&mut self) {
+            for (service_invocation_id, sm) in self.invocation_state_machines.iter_mut() {
+                trace!(
+                    rpc.service = %service_invocation_id.service_id.service_name,
+                    restate.invocation.key = ?service_invocation_id.service_id.key,
+                    restate.invocation.id = %service_invocation_id.invocation_id,
+                    "Aborting invocation"
+                );
+                sm.abort()
+            }
+        }
+
+        #[instrument(
+            level = "trace",
+            skip_all,
+            fields(
+                rpc.service = %service_invocation_id.service_id.service_name,
+                restate.invocation.key = ?service_invocation_id.service_id.key,
+                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invoker.partition_leader_epoch = ?self.partition,
+            )
+        )]
+        pub(super) fn handle_completion(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            completion: Completion,
+        ) {
+            if let Some(sm) = self
+                .invocation_state_machines
+                .get_mut(&service_invocation_id)
+            {
+                trace!(
+                    restate.journal.index = completion.entry_index,
+                    "Notifying completion"
+                );
+                sm.notify_completion(completion);
+            }
+            // If no state machine is registered, the PP will send a new invoke
+            trace!("No state machine found for given completion");
+        }
+
+        #[instrument(
+            level = "trace",
+            skip_all,
+            fields(
+                rpc.service = %service_invocation_id.service_id.service_name,
+                restate.invocation.key = ?service_invocation_id.service_id.key,
+                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invoker.partition_leader_epoch = ?self.partition,
+            )
+        )]
+        pub(super) async fn handle_retry_timer_fired<JR, JS, SER>(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
+        ) where
+            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+            SER: ServiceEndpointRegistry,
+        {
+            trace!("Retry timeout fired");
+            self.handle_retry_event(service_invocation_id, start_arguments, |sm| {
+                sm.notify_retry_timer_fired()
+            })
+            .await;
+        }
+
+        #[instrument(
+            level = "trace",
+            skip_all,
+            fields(
+                rpc.service = %service_invocation_id.service_id.service_name,
+                restate.invocation.key = ?service_invocation_id.service_id.key,
+                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invoker.partition_leader_epoch = ?self.partition,
+                restate.journal.index = entry_index,
+            )
+        )]
+        pub(super) async fn handle_stored_entry_ack<JR, JS, SER>(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
+            entry_index: EntryIndex,
+        ) where
+            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+            SER: ServiceEndpointRegistry,
+        {
+            trace!("Received a new stored journal entry acknowledgement");
+            self.handle_retry_event(service_invocation_id, start_arguments, |sm| {
+                sm.notify_stored_ack(entry_index)
+            })
+            .await;
+        }
+
+        #[instrument(
+            level = "trace",
+            skip_all,
+            fields(
+                rpc.service = %service_invocation_id.service_id.service_name,
+                restate.invocation.key = ?service_invocation_id.service_id.key,
+                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invoker.partition_leader_epoch = ?self.partition,
+                restate.journal.index = entry_index,
+                restate.journal.entry_type = ?entry.header.to_entry_type(),
+            )
+        )]
+        pub(super) async fn handle_new_entry(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            entry_index: EntryIndex,
+            entry: PlainRawEntry,
+            parent_span_context: Arc<SpanContext>,
+        ) {
+            if let Some(sm) = self
+                .invocation_state_machines
+                .get_mut(&service_invocation_id)
+            {
+                sm.notify_new_entry(entry_index, &entry);
+                trace!(
+                    "Received a new entry. Invocation state: {:?}",
+                    sm.invocation_state_debug()
+                );
+                let _ = self
+                    .output_tx
+                    .send(OutputEffect {
+                        service_invocation_id,
+                        kind: Kind::JournalEntry {
+                            entry_index,
+                            entry,
+                            parent_span_context,
+                        },
+                    })
+                    .await;
+            }
+            // If no state machine, this might be an entry for an aborted invocation.
+            trace!("No state machine found for given entry");
+        }
+
+        #[instrument(
+            level = "warn",
+            skip_all,
+            fields(
+                rpc.service = %service_invocation_id.service_id.service_name,
+                restate.invocation.key = ?service_invocation_id.service_id.key,
+                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invoker.partition_leader_epoch = ?self.partition,
+            )
+        )]
+        pub(super) async fn handle_invocation_task_closed(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+        ) {
+            if let Some(sm) = self
+                .invocation_state_machines
+                .remove(&service_invocation_id)
+            {
+                if sm.is_ending() {
+                    trace!("Invocation task closed correctly");
+                    self.send_end(service_invocation_id).await;
+                } else {
+                    // Protocol violation.
+                    // We haven't received any output stream entry, but the invocation task was closed
+                    // Because handle_invocation_task_closed is the terminal message coming from the invocation task,
+                    // we need to return a message to the partition processor.
+                    warn!(
+                        "Protocol violation when executing the invocation. \
+                        The invocation task was closed without a SuspensionMessage, nor an OutputStreamEntry"
+                    );
+                    self.send_error(
+                        service_invocation_id,
+                        Code::Internal,
+                        UnexpectedEndOfInvocationStream,
+                    )
+                    .await;
+                }
+            }
+            // If no state machine, this might be a result for an aborted invocation.
+            trace!("No state machine found for invocation task closed signal");
+        }
+
+        #[instrument(
+            level = "warn",
+            skip_all,
+            fields(
+                rpc.service = %service_invocation_id.service_id.service_name,
+                restate.invocation.key = ?service_invocation_id.service_id.key,
+                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invoker.partition_leader_epoch = ?self.partition,
+            )
+        )]
+        pub(super) async fn handle_invocation_task_failed(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            error: InvocationTaskError,
+            retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
+        ) {
+            if let Some(mut sm) = self
+                .invocation_state_machines
+                .remove(&service_invocation_id)
+            {
+                warn_it!(error, "Error when executing the invocation",);
+
+                if sm.is_ending() {
+                    // Soft protocol violation.
+                    // This can happen in case we get an error after receiving an OutputStreamEntry.
+                    // Because handle_invocation_task_failed is the terminal message coming from the invocation task,
+                    // we need to return a message to the partition processor.
+                    warn!(
+                        "Protocol violation when executing the invocation. \
+                        The invocation task sent an OutputStreamEntry and an error afterwards"
+                    );
+                    self.send_end(service_invocation_id).await;
+                    return;
+                }
+
+                match sm.handle_task_error() {
+                    Some(next_retry_timer_duration) if error.is_transient() => {
+                        trace!(
+                            "Starting the retry timer {}. Invocation state: {:?}",
+                            humantime::format_duration(next_retry_timer_duration),
+                            sm.invocation_state_debug()
+                        );
+                        self.invocation_state_machines
+                            .insert(service_invocation_id.clone(), sm);
+                        retry_timers.sleep_until(
+                            SystemTime::now() + next_retry_timer_duration,
+                            (self.partition, service_invocation_id),
+                        );
+                    }
+                    _ => {
+                        trace!("Not going to retry the error");
+                        self.send_error(service_invocation_id, Code::Internal, error)
+                            .await;
+                    }
+                }
+            }
+            // If no state machine, this might be a result for an aborted invocation.
+            trace!("No state machine found for invocation task error signal");
+        }
+
+        #[instrument(
+            level = "trace",
+            skip_all,
+            fields(
+                rpc.service = %service_invocation_id.service_id.service_name,
+                restate.invocation.key = ?service_invocation_id.service_id.key,
+                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invoker.partition_leader_epoch = ?self.partition,
+            )
+        )]
+        pub(super) async fn handle_invocation_task_suspended(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            entry_indexes: HashSet<EntryIndex>,
+        ) {
+            if let Some(sm) = self
+                .invocation_state_machines
+                .remove(&service_invocation_id)
+            {
+                if sm.is_ending() {
+                    // Soft protocol violation.
+                    // We got both an output stream entry and the suspension message
+                    // Because handle_invocation_task_suspended is the terminal message coming from the invocation task,
+                    // we need to return a message to the partition processor.
+                    warn!(
+                        rpc.service = %service_invocation_id.service_id.service_name,
+                        restate.invocation.key = ?service_invocation_id.service_id.key,
+                        restate.invocation.id = %service_invocation_id.invocation_id,
+                        "Protocol violation when executing the invocation. \
+                        The invocation task sent an OutputStreamEntry and was closed with a SuspensionMessage"
+                    );
+                    self.send_end(service_invocation_id).await;
+                    return;
+                }
+                trace!("Suspending invocation");
+                let _ = self
+                    .output_tx
+                    .send(OutputEffect {
+                        service_invocation_id,
+                        kind: Kind::Suspended {
+                            waiting_for_completed_entries: entry_indexes,
+                        },
+                    })
+                    .await;
+            }
+            // If no state machine, this might be a result for an aborted invocation.
+            trace!("No state machine found for invocation task suspended signal");
+        }
+
+        // --- Helpers
+
+        async fn start_invocation_task<JR, JS, SER>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
             journal: InvokeInputJournal,
@@ -741,59 +1053,12 @@ mod state_machine_coordinator {
 
             // Transition the state machine, and store it
             invocation_state_machine.start(abort_handle, completions_tx);
+            trace!(
+                "Invocation task started, state: {:?}",
+                invocation_state_machine.invocation_state_debug()
+            );
             self.invocation_state_machines
                 .insert(service_invocation_id, invocation_state_machine);
-        }
-
-        pub(super) fn abort(&mut self) {
-            for sm in self.invocation_state_machines.values_mut() {
-                sm.abort()
-            }
-        }
-
-        pub(super) fn handle_completion(
-            &mut self,
-            service_invocation_id: ServiceInvocationId,
-            completion: Completion,
-        ) {
-            if let Some(sm) = self
-                .invocation_state_machines
-                .get_mut(&service_invocation_id)
-            {
-                sm.notify_completion(completion);
-            }
-            // If no state machine is registered, the PP will send a new invoke
-        }
-
-        pub(super) async fn handle_retry_timer_fired<JR, JS, SER>(
-            &mut self,
-            service_invocation_id: ServiceInvocationId,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
-        ) where
-            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
-            SER: ServiceEndpointRegistry,
-        {
-            self.handle_retry_event(service_invocation_id, start_arguments, |sm| {
-                sm.notify_retry_timer_fired()
-            })
-            .await;
-        }
-
-        pub(super) async fn handle_stored_entry_ack<JR, JS, SER>(
-            &mut self,
-            service_invocation_id: ServiceInvocationId,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
-            entry_index: EntryIndex,
-        ) where
-            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
-            SER: ServiceEndpointRegistry,
-        {
-            self.handle_retry_event(service_invocation_id, start_arguments, |sm| {
-                sm.notify_stored_ack(entry_index)
-            })
-            .await;
         }
 
         async fn handle_retry_event<JR, JS, SER, FN>(
@@ -813,6 +1078,7 @@ mod state_machine_coordinator {
             {
                 f(&mut sm);
                 if sm.is_ready_to_retry() {
+                    trace!("Going to retry now");
                     self.start_invocation_task(
                         service_invocation_id,
                         InvokeInputJournal::NoCachedJournal,
@@ -822,161 +1088,17 @@ mod state_machine_coordinator {
                     )
                     .await;
                 } else {
+                    trace!(
+                        "Not going to retry. Invocation state: {:?}",
+                        sm.invocation_state_debug()
+                    );
                     // Not ready for retrying yet
                     self.invocation_state_machines
                         .insert(service_invocation_id, sm);
                 }
             }
             // If no state machine is registered, the PP will send a new invoke
-        }
-
-        pub(super) async fn handle_new_entry(
-            &mut self,
-            service_invocation_id: ServiceInvocationId,
-            entry_index: EntryIndex,
-            entry: PlainRawEntry,
-            parent_span_context: Arc<SpanContext>,
-        ) {
-            if let Some(sm) = self
-                .invocation_state_machines
-                .get_mut(&service_invocation_id)
-            {
-                sm.notify_new_entry(entry_index, &entry);
-                let _ = self
-                    .output_tx
-                    .send(OutputEffect {
-                        service_invocation_id,
-                        kind: Kind::JournalEntry {
-                            entry_index,
-                            entry,
-                            parent_span_context,
-                        },
-                    })
-                    .await;
-            }
-            // If no state machine, this might be an entry for an aborted invocation.
-        }
-
-        pub(super) async fn handle_invocation_task_closed(
-            &mut self,
-            service_invocation_id: ServiceInvocationId,
-        ) {
-            if let Some(sm) = self
-                .invocation_state_machines
-                .remove(&service_invocation_id)
-            {
-                if sm.is_ending() {
-                    self.send_end(service_invocation_id).await;
-                } else {
-                    // Protocol violation.
-                    // We haven't received any output stream entry, but the invocation task was closed
-                    // Because handle_invocation_task_closed is the terminal message coming from the invocation task,
-                    // we need to return a message to the partition processor.
-                    warn!(
-                        rpc.service = %service_invocation_id.service_id.service_name,
-                        restate.invocation.key = ?service_invocation_id.service_id.key,
-                        restate.invocation.id = %service_invocation_id.invocation_id,
-                        "Protocol violation when executing the invocation. \
-                        The invocation task was closed without a SuspensionMessage, nor an OutputStreamEntry"
-                    );
-                    self.send_error(
-                        service_invocation_id,
-                        Code::Internal,
-                        UnexpectedEndOfInvocationStream,
-                    )
-                    .await;
-                }
-            }
-            // If no state machine, this might be a result for an aborted invocation.
-        }
-
-        pub(super) async fn handle_invocation_task_failed(
-            &mut self,
-            service_invocation_id: ServiceInvocationId,
-            error: InvocationTaskError,
-            retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
-        ) {
-            if let Some(mut sm) = self
-                .invocation_state_machines
-                .remove(&service_invocation_id)
-            {
-                warn_it!(
-                    error,
-                    rpc.service = %service_invocation_id.service_id.service_name,
-                    restate.invocation.key = ?service_invocation_id.service_id.key,
-                    restate.invocation.id = %service_invocation_id.invocation_id,
-                    "Error when executing the invocation",
-                );
-
-                if sm.is_ending() {
-                    // Soft protocol violation.
-                    // This can happen in case we get an error after receiving an OutputStreamEntry.
-                    // Because handle_invocation_task_failed is the terminal message coming from the invocation task,
-                    // we need to return a message to the partition processor.
-                    warn!(
-                        rpc.service = %service_invocation_id.service_id.service_name,
-                        restate.invocation.key = ?service_invocation_id.service_id.key,
-                        restate.invocation.id = %service_invocation_id.invocation_id,
-                        "Protocol violation when executing the invocation. \
-                        The invocation task sent an OutputStreamEntry and an error afterwards"
-                    );
-                    self.send_end(service_invocation_id).await;
-                    return;
-                }
-
-                match sm.handle_task_error() {
-                    Some(next_retry_timer_duration) if error.is_transient() => {
-                        self.invocation_state_machines
-                            .insert(service_invocation_id.clone(), sm);
-                        retry_timers.sleep_until(
-                            SystemTime::now() + next_retry_timer_duration,
-                            (self.partition, service_invocation_id),
-                        );
-                    }
-                    _ => {
-                        self.send_error(service_invocation_id, Code::Internal, error)
-                            .await;
-                    }
-                }
-            }
-            // If no state machine, this might be a result for an aborted invocation.
-        }
-
-        pub(super) async fn handle_invocation_task_suspended(
-            &mut self,
-            service_invocation_id: ServiceInvocationId,
-            entry_indexes: HashSet<EntryIndex>,
-        ) {
-            if let Some(sm) = self
-                .invocation_state_machines
-                .remove(&service_invocation_id)
-            {
-                if sm.is_ending() {
-                    // Soft protocol violation.
-                    // We got both an output stream entry and the suspension message
-                    // Because handle_invocation_task_suspended is the terminal message coming from the invocation task,
-                    // we need to return a message to the partition processor.
-                    warn!(
-                        rpc.service = %service_invocation_id.service_id.service_name,
-                        restate.invocation.key = ?service_invocation_id.service_id.key,
-                        restate.invocation.id = %service_invocation_id.invocation_id,
-                        "Protocol violation when executing the invocation. \
-                        The invocation task sent an OutputStreamEntry and was closed with a SuspensionMessage"
-                    );
-                    self.send_end(service_invocation_id).await;
-                    return;
-                }
-                let _ = self
-                    .output_tx
-                    .send(OutputEffect {
-                        service_invocation_id,
-                        kind: Kind::Suspended {
-                            waiting_for_completed_entries: entry_indexes,
-                        },
-                    })
-                    .await;
-            }
-            // If no state machine, this might be a result for an aborted invocation.
+            trace!("No state machine found for given retry event");
         }
 
         async fn send_end(&self, service_invocation_id: ServiceInvocationId) {
@@ -1011,8 +1133,8 @@ mod state_machine_coordinator {
 
 mod invocation_state_machine {
     use super::*;
-    use std::mem;
     use std::time::Duration;
+    use std::{fmt, mem};
 
     use restate_common::retry_policy;
     use restate_journal::raw::RawEntryHeader;
@@ -1073,7 +1195,6 @@ mod invocation_state_machine {
         }
     }
 
-    #[derive(Debug)]
     enum InvocationState {
         New,
 
@@ -1093,6 +1214,39 @@ mod invocation_state_machine {
             timer_fired: bool,
             journal_tracker: JournalTracker,
         },
+    }
+
+    impl fmt::Debug for InvocationState {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                InvocationState::New => f.write_str("New"),
+                InvocationState::InFlight {
+                    journal_tracker,
+                    abort_handle,
+                    completions_tx,
+                } => f
+                    .debug_struct("InFlight")
+                    .field("journal_tracker", journal_tracker)
+                    .field("abort_handle", abort_handle)
+                    .field(
+                        "completions_tx_open",
+                        &completions_tx
+                            .as_ref()
+                            .map(|s| !s.is_closed())
+                            .unwrap_or(false),
+                    )
+                    .finish(),
+                InvocationState::WaitingClose => f.write_str("WaitingClose"),
+                InvocationState::WaitingRetry {
+                    journal_tracker,
+                    timer_fired,
+                } => f
+                    .debug_struct("WaitingRetry")
+                    .field("journal_tracker", journal_tracker)
+                    .field("timer_fired", timer_fired)
+                    .finish(),
+            }
+        }
     }
 
     impl InvocationStateMachine {
@@ -1221,6 +1375,11 @@ mod invocation_state_machine {
                 } => timer_fired && journal_tracker.can_retry(),
                 _ => false,
             }
+        }
+
+        #[inline]
+        pub(super) fn invocation_state_debug(&self) -> impl fmt::Debug + '_ {
+            &self.invocation_state
         }
     }
 }
