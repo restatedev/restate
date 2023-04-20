@@ -319,6 +319,7 @@ where
 
             let shuffle = Shuffle::new(
                 follower_state.peer_id,
+                follower_state.partition_id,
                 partition_storage,
                 follower_state.network_handle.create_shuffle_sender(),
                 shuffle_tx,

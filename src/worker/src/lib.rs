@@ -7,7 +7,7 @@ use crate::range_partitioner::RangePartitioner;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use partition::ack::AckableCommand;
+use partition::ack::AckCommand;
 use partition::shuffle;
 use restate_common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
 use restate_consensus::Consensus;
@@ -31,7 +31,7 @@ mod range_partitioner;
 mod service_invocation_factory;
 mod util;
 
-type PartitionProcessorCommand = AckableCommand;
+type PartitionProcessorCommand = AckCommand;
 type ConsensusCommand = restate_consensus::Command<PartitionProcessorCommand>;
 type ConsensusMsg = PeerTarget<PartitionProcessorCommand>;
 type PartitionProcessor = partition::PartitionProcessor<

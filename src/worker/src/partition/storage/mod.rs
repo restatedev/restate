@@ -17,7 +17,7 @@ pub mod journal_reader;
 
 use crate::partition::TimerValue;
 use restate_storage_api::outbox_table::OutboxTable;
-use restate_storage_api::Transaction as OtherTransaction;
+use restate_storage_api::{PutFuture, Transaction as OtherTransaction};
 use restate_timer::TimerReader;
 
 #[derive(Debug, Clone)]
@@ -52,7 +52,7 @@ where
     }
 }
 
-pub(super) struct Transaction<TransactionType> {
+pub(crate) struct Transaction<TransactionType> {
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
     inner: TransactionType,
@@ -139,6 +139,23 @@ where
             }
         }
         .boxed()
+    }
+
+    pub(super) fn load_dedup_seq_number(
+        &mut self,
+        producer_id: PartitionId,
+    ) -> BoxFuture<'_, Result<Option<MessageIndex>, restate_storage_api::StorageError>> {
+        self.inner
+            .get_sequence_number(self.partition_id, producer_id)
+    }
+
+    pub(super) fn store_dedup_seq_number(
+        &mut self,
+        producer_id: PartitionId,
+        dedup_seq_number: MessageIndex,
+    ) -> PutFuture {
+        self.inner
+            .put_sequence_number(self.partition_id, producer_id, dedup_seq_number)
     }
 }
 

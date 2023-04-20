@@ -1,6 +1,6 @@
 use crate::partition::leadership::ActuatorOutput;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
-use crate::partition::{AckableCommand, Command, TimerOutput};
+use crate::partition::{AckCommand, Command, TimerOutput};
 use crate::util::IdentitySender;
 use assert2::let_assert;
 use bytes::Bytes;
@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 /// Responsible for enriching and then proposing [`ActuatorOutput`].
 pub(super) struct ActuatorOutputHandler<KeyExtractor, Codec> {
-    proposal_tx: IdentitySender<AckableCommand>,
+    proposal_tx: IdentitySender<AckCommand>,
     key_extractor: KeyExtractor,
 
     _codec: PhantomData<Codec>,
@@ -29,7 +29,7 @@ where
     Codec: RawEntryCodec,
 {
     pub(super) fn new(
-        proposal_tx: IdentitySender<AckableCommand>,
+        proposal_tx: IdentitySender<AckCommand>,
         key_extractor: KeyExtractor,
     ) -> Self {
         Self {
@@ -47,14 +47,14 @@ where
                 // Err only if the consensus module is shutting down
                 let _ = self
                     .proposal_tx
-                    .send(AckableCommand::no_ack(Command::Invoker(invoker_effect)))
+                    .send(AckCommand::no_ack(Command::Invoker(invoker_effect)))
                     .await;
             }
             ActuatorOutput::Shuffle(outbox_truncation) => {
                 // Err only if the consensus module is shutting down
                 let _ = self
                     .proposal_tx
-                    .send(AckableCommand::no_ack(Command::OutboxTruncation(
+                    .send(AckCommand::no_ack(Command::OutboxTruncation(
                         outbox_truncation.index(),
                     )))
                     .await;
@@ -65,7 +65,7 @@ where
                 // Err only if the consensus module is shutting down
                 let _ = self
                     .proposal_tx
-                    .send(AckableCommand::no_ack(Command::Timer(timer_effect)))
+                    .send(AckCommand::no_ack(Command::Timer(timer_effect)))
                     .await;
             }
         };

@@ -20,12 +20,18 @@ use tracing::{debug, instrument, trace, warn};
 use crate::partition::effects::{Effects, JournalInformation};
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
 
+mod dedup;
+
+pub(crate) use dedup::DeduplicatingStateMachine;
+
 #[derive(Debug, thiserror::Error)]
-pub(super) enum Error {
+pub(crate) enum Error {
     #[error("failed to read from state reader: {0}")]
     State(#[from] StateReaderError),
     #[error("failed to deserialize entry: {0}")]
     Codec(#[from] RawEntryCodecError),
+    #[error(transparent)]
+    Storage(#[from] restate_storage_api::StorageError),
 }
 
 #[derive(Debug)]
@@ -38,12 +44,12 @@ pub(crate) enum Command {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum StateReaderError {
+pub(crate) enum StateReaderError {
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
 }
 
-pub(super) trait StateReader {
+pub(crate) trait StateReader {
     // TODO: Replace with async trait or proper future
     fn get_invocation_status<'a>(
         &'a mut self,
@@ -64,7 +70,14 @@ pub(super) trait StateReader {
     ) -> BoxFuture<Result<bool, StateReaderError>>;
 }
 
-pub(super) struct StateMachine<Codec> {
+pub(crate) fn create_deduplicating_state_machine<Codec>(
+    inbox_seq_number: MessageIndex,
+    outbox_seq_number: MessageIndex,
+) -> DeduplicatingStateMachine<Codec> {
+    DeduplicatingStateMachine::new(StateMachine::new(inbox_seq_number, outbox_seq_number))
+}
+
+pub(crate) struct StateMachine<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
     outbox_seq_number: MessageIndex,
@@ -102,7 +115,7 @@ where
     ///
     /// We use the returned service invocation id and span relation to log the effects (see [`Effects#log`]).
     #[instrument(level = "trace", skip_all, fields(command = ?command), err)]
-    pub(super) async fn on_apply<State: StateReader>(
+    pub(crate) async fn on_apply<State: StateReader>(
         &mut self,
         command: Command,
         effects: &mut Effects,

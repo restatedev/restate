@@ -8,7 +8,7 @@ use restate_common::types::PartitionKey;
 use restate_network::{PartitionTable, PartitionTableError};
 
 pub(super) type Network = restate_network::Network<
-    partition::AckableCommand,
+    partition::AckCommand,
     shuffle::ShuffleInput,
     shuffle::ShuffleOutput,
     shuffle_integration::ShuffleToConsensus,
@@ -91,7 +91,7 @@ mod ingress_integration {
         }
     }
 
-    impl From<IngressToConsensus> for partition::AckableCommand {
+    impl From<IngressToConsensus> for partition::AckCommand {
         fn from(ingress_to_consensus: IngressToConsensus) -> Self {
             let IngressToConsensus {
                 service_invocation,
@@ -99,7 +99,7 @@ mod ingress_integration {
                 msg_index,
             } = ingress_to_consensus;
 
-            partition::AckableCommand::require_ack(
+            partition::AckCommand::ack(
                 partition::Command::Invocation(service_invocation),
                 partition::AckTarget::ingress(ingress_id, msg_index),
             )
@@ -130,7 +130,7 @@ mod shuffle_integration {
     use crate::partition::shuffle;
     use bytes::Bytes;
     use restate_common::traits::KeyedMessage;
-    use restate_common::types::{MessageIndex, PeerId, ResponseResult};
+    use restate_common::types::{MessageIndex, PartitionId, PeerId, ResponseResult};
     use restate_ingress_grpc::{IngressError, IngressResponseMessage};
     use restate_network::{ConsensusOrIngressTarget, TargetConsensusOrIngress};
 
@@ -138,6 +138,7 @@ mod shuffle_integration {
     pub(crate) struct ShuffleToConsensus {
         msg: shuffle::InvocationOrResponse,
         shuffle_id: PeerId,
+        partition_id: PartitionId,
         msg_index: MessageIndex,
     }
 
@@ -154,11 +155,12 @@ mod shuffle_integration {
         }
     }
 
-    impl From<ShuffleToConsensus> for partition::AckableCommand {
+    impl From<ShuffleToConsensus> for partition::AckCommand {
         fn from(value: ShuffleToConsensus) -> Self {
             let ShuffleToConsensus {
                 msg,
                 shuffle_id,
+                partition_id,
                 msg_index,
             } = value;
 
@@ -166,17 +168,17 @@ mod shuffle_integration {
 
             match msg {
                 shuffle::InvocationOrResponse::Invocation(invocation) => {
-                    partition::AckableCommand::require_ack(
+                    partition::AckCommand::dedup(
                         partition::Command::Invocation(invocation),
+                        partition_id,
                         ack_target,
                     )
                 }
-                shuffle::InvocationOrResponse::Response(response) => {
-                    partition::AckableCommand::require_ack(
-                        partition::Command::Response(response),
-                        ack_target,
-                    )
-                }
+                shuffle::InvocationOrResponse::Response(response) => partition::AckCommand::dedup(
+                    partition::Command::Response(response),
+                    partition_id,
+                    ack_target,
+                ),
             }
         }
     }
@@ -190,12 +192,13 @@ mod shuffle_integration {
 
     impl TargetConsensusOrIngress<ShuffleToConsensus, ShuffleToIngress> for shuffle::ShuffleOutput {
         fn target(self) -> ConsensusOrIngressTarget<ShuffleToConsensus, ShuffleToIngress> {
-            let (shuffle_id, msg_index, target) = self.into_inner();
+            let (shuffle_id, partition_id, msg_index, target) = self.into_inner();
 
             match target {
                 shuffle::ShuffleMessageDestination::PartitionProcessor(outbox_message) => {
                     ConsensusOrIngressTarget::Consensus(ShuffleToConsensus {
                         msg: outbox_message,
+                        partition_id,
                         shuffle_id,
                         msg_index,
                     })

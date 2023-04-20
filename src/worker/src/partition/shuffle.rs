@@ -1,8 +1,8 @@
 use crate::partition::shuffle::state_machine::StateMachine;
 use futures::future::BoxFuture;
 use restate_common::types::{
-    AckKind, IngressId, InvocationResponse, MessageIndex, OutboxMessage, PeerId, ResponseResult,
-    ServiceInvocation, ServiceInvocationId,
+    AckKind, IngressId, InvocationResponse, MessageIndex, OutboxMessage, PartitionId, PeerId,
+    ResponseResult, ServiceInvocation, ServiceInvocationId,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -55,6 +55,7 @@ pub(crate) struct IngressResponse {
 #[derive(Debug, Clone)]
 pub(crate) struct ShuffleOutput {
     shuffle_id: PeerId,
+    partition_id: PartitionId,
     msg_index: MessageIndex,
     message: ShuffleMessageDestination,
 }
@@ -62,18 +63,27 @@ pub(crate) struct ShuffleOutput {
 impl ShuffleOutput {
     pub(crate) fn new(
         shuffle_id: PeerId,
+        partition_id: PartitionId,
         msg_index: MessageIndex,
         message: ShuffleMessageDestination,
     ) -> Self {
         Self {
             shuffle_id,
+            partition_id,
             msg_index,
             message,
         }
     }
 
-    pub(crate) fn into_inner(self) -> (PeerId, MessageIndex, ShuffleMessageDestination) {
-        (self.shuffle_id, self.msg_index, self.message)
+    pub(crate) fn into_inner(
+        self,
+    ) -> (PeerId, PartitionId, MessageIndex, ShuffleMessageDestination) {
+        (
+            self.shuffle_id,
+            self.partition_id,
+            self.msg_index,
+            self.message,
+        )
     }
 }
 
@@ -128,6 +138,7 @@ pub(super) type HintSender = mpsc::Sender<NewOutboxMessage>;
 
 pub(super) struct Shuffle<OR> {
     peer_id: PeerId,
+    partition_id: PartitionId,
 
     outbox_reader: OR,
 
@@ -152,6 +163,7 @@ where
 {
     pub(super) fn new(
         peer_id: PeerId,
+        partition_id: PartitionId,
         outbox_reader: OR,
         network_tx: mpsc::Sender<ShuffleOutput>,
         truncation_tx: mpsc::Sender<OutboxTruncation>,
@@ -161,6 +173,7 @@ where
 
         Self {
             peer_id,
+            partition_id,
             outbox_reader,
             network_tx,
             network_in_rx,
@@ -186,6 +199,7 @@ where
     pub(super) async fn run(self, shutdown_watch: drain::Watch) -> anyhow::Result<()> {
         let Self {
             peer_id,
+            partition_id,
             mut hint_rx,
             mut network_in_rx,
             outbox_reader,
@@ -194,13 +208,14 @@ where
             ..
         } = self;
 
-        debug!(restate.partition.peer = %peer_id, "Running shuffle");
+        debug!(restate.partition.peer = %peer_id, restate.partition.id = %partition_id, "Running shuffle");
 
         let shutdown = shutdown_watch.signaled();
         tokio::pin!(shutdown);
 
         let state_machine = StateMachine::new(
             peer_id,
+            partition_id,
             |next_seq_number| outbox_reader.get_next_message(next_seq_number),
             |msg| network_tx.send(msg),
             &mut hint_rx,
@@ -236,7 +251,7 @@ where
 mod state_machine {
     use crate::partition::shuffle::{NewOutboxMessage, ShuffleInput, ShuffleOutput};
     use pin_project::pin_project;
-    use restate_common::types::{AckKind, MessageIndex, OutboxMessage, PeerId};
+    use restate_common::types::{AckKind, MessageIndex, OutboxMessage, PartitionId, PeerId};
     use std::future::Future;
     use std::marker::PhantomData;
     use std::pin::Pin;
@@ -256,6 +271,7 @@ mod state_machine {
     #[pin_project]
     pub(super) struct StateMachine<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError> {
         shuffle_id: PeerId,
+        partition_id: PartitionId,
         current_sequence_number: MessageIndex,
         read_operation: ReadOp,
         send_operation: SendOp,
@@ -278,6 +294,7 @@ mod state_machine {
     {
         pub(super) fn new(
             shuffle_id: PeerId,
+            partition_id: PartitionId,
             read_operation: ReadOp,
             send_operation: SendOp,
             hint_rx: &'a mut mpsc::Receiver<NewOutboxMessage>,
@@ -288,6 +305,7 @@ mod state_machine {
 
             Self {
                 shuffle_id,
+                partition_id,
                 current_sequence_number,
                 read_operation,
                 send_operation,
@@ -317,6 +335,7 @@ mod state_machine {
 
                             let send_future = (this.send_operation)(ShuffleOutput::new(
                                 *this.shuffle_id,
+                                *this.partition_id,
                                 seq_number,
                                 message.into(),
                             ));
@@ -335,6 +354,7 @@ mod state_machine {
 
                             let send_future = (this.send_operation)(ShuffleOutput::new(
                                 *this.shuffle_id,
+                                *this.partition_id,
                                 seq_number,
                                 message.into(),
                             ));
@@ -381,7 +401,7 @@ mod state_machine {
                         None
                     }
                 }
-                AckKind::Duplicate(seq_number) => {
+                AckKind::Duplicate { seq_number, .. } => {
                     if seq_number >= self.current_sequence_number {
                         trace!("Message with sequence number {seq_number} is a duplicate.");
                         self.read_next_message(seq_number + 1);

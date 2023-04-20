@@ -8,7 +8,6 @@ use tracing::{debug, info};
 
 pub mod ack;
 mod actuator_output_handler;
-mod dedup;
 mod effects;
 mod leadership;
 pub mod shuffle;
@@ -17,17 +16,16 @@ pub mod storage;
 mod types;
 
 pub(super) use crate::partition::ack::{
-    AckResponse, AckTarget, AckableCommand, IngressAckResponse, ShuffleAckResponse,
+    AckCommand, AckResponse, AckTarget, IngressAckResponse, ShuffleAckResponse,
 };
 use crate::partition::actuator_output_handler::ActuatorOutputHandler;
-use crate::partition::dedup::DedupLayer;
 use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::LeadershipState;
-use crate::partition::state_machine::StateMachine;
 use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
 use restate_storage_rocksdb::RocksDBStorage;
 pub(crate) use state_machine::Command;
+use state_machine::DeduplicatingStateMachine;
 pub(super) use types::TimerValue;
 
 type TimerOutput = restate_timer::Output<TimerValue>;
@@ -42,8 +40,8 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
 
     timer_service_options: restate_timer::Options,
 
-    command_rx: mpsc::Receiver<restate_consensus::Command<AckableCommand>>,
-    proposal_tx: IdentitySender<AckableCommand>,
+    command_rx: mpsc::Receiver<restate_consensus::Command<AckCommand>>,
+    proposal_tx: IdentitySender<AckCommand>,
 
     invoker_tx: InvokerInputSender,
 
@@ -72,8 +70,8 @@ where
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
-        command_stream: mpsc::Receiver<restate_consensus::Command<AckableCommand>>,
-        proposal_sender: IdentitySender<AckableCommand>,
+        command_stream: mpsc::Receiver<restate_consensus::Command<AckCommand>>,
+        proposal_sender: IdentitySender<AckCommand>,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
         ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
@@ -127,9 +125,8 @@ where
         let partition_storage =
             PartitionStorage::new(partition_id, partition_key_range, rocksdb_storage);
 
-        let mut state_machine = DedupLayer::new(
-            Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?,
-        );
+        let mut state_machine =
+            Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?;
 
         debug!(%peer_id, %partition_id, ?state_machine, "Created state machine");
 
@@ -207,7 +204,7 @@ where
 
     async fn create_state_machine<Codec, Storage>(
         partition_storage: &PartitionStorage<Storage>,
-    ) -> Result<StateMachine<Codec>, restate_storage_api::StorageError>
+    ) -> Result<DeduplicatingStateMachine<Codec>, restate_storage_api::StorageError>
     where
         Codec: restate_journal::raw::RawEntryCodec + Default + Debug,
         Storage: restate_storage_api::Storage,
@@ -217,7 +214,8 @@ where
         let outbox_seq_number = transaction.load_outbox_seq_number().await?;
         transaction.commit().await?;
 
-        let state_machine = StateMachine::new(inbox_seq_number, outbox_seq_number);
+        let state_machine =
+            state_machine::create_deduplicating_state_machine(inbox_seq_number, outbox_seq_number);
 
         Ok(state_machine)
     }
