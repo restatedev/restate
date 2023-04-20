@@ -244,6 +244,7 @@ where
                     &service_invocation_id,
                     invoked_status.journal_metadata.span_context,
                     effects,
+                    Ok(())
                 );
                 self.complete_invocation(
                     service_invocation_id,
@@ -268,6 +269,7 @@ where
                     &service_invocation_id,
                     invoked_status.journal_metadata.span_context,
                     effects,
+                    Err((error_code, error.to_string()))
                 );
                 self.complete_invocation(
                     service_invocation_id,
@@ -587,8 +589,9 @@ where
         service_invocation_id: &ServiceInvocationId,
         span_context: ServiceInvocationSpanContext,
         effects: &mut Effects,
+        result: Result<(), (i32, String)>,
     ) {
-        effects.notify_invocation_result(service_invocation_id.invocation_id, span_context, Ok(()));
+        effects.notify_invocation_result(service_invocation_id.invocation_id, span_context, result);
     }
 
     async fn complete_invocation<State: StateReader>(
