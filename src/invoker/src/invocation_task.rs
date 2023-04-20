@@ -51,8 +51,11 @@ pub(crate) enum InvocationTaskError {
     #[code(unknown)]
     UnexpectedMessage(MessageType),
     #[error("encoding/decoding error: {0}")]
-    #[code(unknown)]
-    Encoding(#[from] EncodingError),
+    Encoding(
+        #[from]
+        #[code]
+        EncodingError,
+    ),
     #[error("error when trying to read the journal: {0}")]
     #[code(unknown)]
     JournalReader(Box<dyn Error + Send + Sync + 'static>),
@@ -209,6 +212,8 @@ where
         endpoint_metadata: EndpointMetadata,
         suspension_timeout: Duration,
         response_abort_timeout: Duration,
+        message_size_warning: usize,
+        message_size_limit: Option<usize>,
         journal_reader: JR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
@@ -225,7 +230,7 @@ where
             invoker_tx,
             invoker_rx,
             encoder: Encoder::new(protocol_version),
-            decoder: Default::default(),
+            decoder: Decoder::new(message_size_warning, message_size_limit),
         }
     }
 

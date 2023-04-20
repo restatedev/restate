@@ -221,6 +221,20 @@ pub struct Options {
         schemars(with = "String", default = "Options::default_response_abort_timeout")
     )]
     response_abort_timeout: humantime::Duration,
+
+    /// # Message size warning
+    ///
+    /// Threshold to log a warning in case protocol messages coming from service endpoint are larger than the specified amount.
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(with = "String", default = "Options::default_message_size_warning")
+    )]
+    message_size_warning: usize,
+
+    /// # Message size limit
+    ///
+    /// Threshold to fail the invocation in case protocol messages coming from service endpoint are larger than the specified amount.
+    message_size_limit: Option<usize>,
 }
 
 impl Default for Options {
@@ -229,6 +243,8 @@ impl Default for Options {
             retry_policy: Default::default(),
             suspension_timeout: Options::default_suspension_timeout(),
             response_abort_timeout: Options::default_response_abort_timeout(),
+            message_size_warning: Options::default_message_size_warning(),
+            message_size_limit: None,
         }
     }
 }
@@ -240,6 +256,10 @@ impl Options {
 
     fn default_response_abort_timeout() -> humantime::Duration {
         (Duration::from_secs(60) * 60).into()
+    }
+
+    fn default_message_size_warning() -> usize {
+        1024 * 1024 * 10 // 10mb
     }
 
     pub fn build<C, JR, JS, SER>(
@@ -275,6 +295,8 @@ impl Options {
             retry_policy: self.retry_policy,
             suspension_timeout: self.suspension_timeout.into(),
             response_abort_timeout: self.response_abort_timeout.into(),
+            message_size_warning: self.message_size_warning,
+            message_size_limit: self.message_size_limit,
             journal_reader,
             _codec: PhantomData::<C>::default(),
         }
@@ -307,9 +329,13 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     // Retry timers
     retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
 
+    // Connection/protocol options
     retry_policy: RetryPolicy,
     suspension_timeout: Duration,
     response_abort_timeout: Duration,
+    message_size_warning: usize,
+    message_size_limit: Option<usize>,
+
     journal_reader: JournalReader,
 
     _codec: PhantomData<Codec>,
@@ -344,6 +370,8 @@ where
             retry_policy,
             suspension_timeout,
             response_abort_timeout,
+            message_size_warning,
+            message_size_limit,
             ..
         } = self;
 
@@ -392,6 +420,8 @@ where
                                         &retry_policy,
                                         suspension_timeout,
                                         response_abort_timeout,
+                                        message_size_warning,
+                                        message_size_limit,
                                         &mut invocation_tasks,
                                         &invocation_tasks_tx
                                     )
@@ -424,6 +454,8 @@ where
                                         &retry_policy,
                                         suspension_timeout,
                                         response_abort_timeout,
+                                        message_size_warning,
+                                        message_size_limit,
                                         &mut invocation_tasks,
                                         &invocation_tasks_tx
                                     ),
@@ -484,6 +516,8 @@ where
                                 &retry_policy,
                                 suspension_timeout,
                                 response_abort_timeout,
+                                message_size_warning,
+                                message_size_limit,
                                 &mut invocation_tasks,
                                 &invocation_tasks_tx
                             )
@@ -560,6 +594,8 @@ mod state_machine_coordinator {
         default_retry_policy: &'a RetryPolicy,
         suspension_timeout: Duration,
         response_abort_timeout: Duration,
+        message_size_warning: usize,
+        message_size_limit: Option<usize>,
         invocation_tasks: &'a mut JoinSet<()>,
         invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
     }
@@ -573,6 +609,8 @@ mod state_machine_coordinator {
             default_retry_policy: &'a RetryPolicy,
             suspension_timeout: Duration,
             response_abort_timeout: Duration,
+            message_size_warning: usize,
+            message_size_limit: Option<usize>,
             invocation_tasks: &'a mut JoinSet<()>,
             invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
         ) -> Self {
@@ -583,6 +621,8 @@ mod state_machine_coordinator {
                 default_retry_policy,
                 suspension_timeout,
                 response_abort_timeout,
+                message_size_warning,
+                message_size_limit,
                 invocation_tasks,
                 invocation_tasks_tx,
             }
@@ -732,6 +772,8 @@ mod state_machine_coordinator {
                     metadata,
                     start_arguments.suspension_timeout,
                     start_arguments.response_abort_timeout,
+                    start_arguments.message_size_warning,
+                    start_arguments.message_size_limit,
                     start_arguments.journal_reader.clone(),
                     start_arguments.invocation_tasks_tx.clone(),
                     completions_rx,

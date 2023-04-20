@@ -2395,6 +2395,7 @@ dependencies = [
  "restate_service_key_extractor",
  "restate_service_metadata",
  "restate_test_utils",
+ "size",
  "thiserror",
  "tokio",
  "tracing",
@@ -2872,6 +2873,12 @@ checksum = "d8229b473baa5980ac72ef434c4415e70c4b5e71b423043adb4ba059f89c99a1"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "size"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fed904c7fb2856d868b92464fc8fa597fce366edea1a9cbfaa8cb5fe080bd6d"
 
 [[package]]
 name = "slab"
