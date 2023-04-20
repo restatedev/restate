@@ -36,7 +36,7 @@ fn main() {
             // We cannot use tracing here as it's not configured yet
             println!("{}", e.decorate());
             e.print_description_as_markdown();
-            panic!("{}", e)
+            std::process::exit(1);
         }
     };
 

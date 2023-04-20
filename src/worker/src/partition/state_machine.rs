@@ -222,6 +222,7 @@ where
                             restate.invocation.id = %service_invocation_id.invocation_id,
                             "Resuming instead of suspending service because an awaited entry is completed.");
                         any_completed = true;
+                        break;
                     }
                 }
                 if any_completed {
