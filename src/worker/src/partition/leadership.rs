@@ -63,6 +63,8 @@ pub(crate) enum ActuatorMessageCollectorError {
     Invoker(#[from] InvokerNotRunning),
     #[error(transparent)]
     Timer(#[from] restate_timer::Error),
+    #[error("failed to send ack response: {0}")]
+    Ack(#[from] mpsc::error::SendError<AckResponse>),
 }
 
 impl<I, N> ActuatorMessageCollector<I, N>
@@ -81,6 +83,7 @@ where
                     &mut follower_state.invoker_tx,
                     &leader_state.timer_handle,
                     &mut leader_state.shuffle_hint_tx,
+                    &follower_state.ack_tx,
                     leader_state.message_buffer.drain(..),
                 )
                 .await?;
@@ -101,6 +104,7 @@ where
         invoker_tx: &mut I,
         timer_handle: &TimerHandle,
         shuffle_hint_tx: &mut mpsc::Sender<shuffle::NewOutboxMessage>,
+        ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
         messages: impl IntoIterator<Item = ActuatorMessage>,
     ) -> Result<(), ActuatorMessageCollectorError> {
         for message in messages.into_iter() {
@@ -191,6 +195,7 @@ where
                     span_context.as_parent().attach_to_span(&span);
                     let _ = span.enter();
                 }
+                ActuatorMessage::SendAckResponse(ack_response) => ack_tx.send(ack_response).await?,
             }
         }
 
@@ -518,20 +523,6 @@ where
                 })
                 .unwrap_or(TaskResult::TerminatedTask(name))
         }
-    }
-
-    pub(crate) async fn send_ack_response(
-        &self,
-        ack_response: AckResponse,
-    ) -> Result<(), mpsc::error::SendError<AckResponse>> {
-        match self {
-            LeadershipState::Follower(_) => {}
-            LeadershipState::Leader { follower_state, .. } => {
-                follower_state.ack_tx.send(ack_response).await?
-            }
-        }
-
-        Ok(())
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::partition::effects::{Effect, Effects, JournalInformation};
-use crate::partition::TimerValue;
+use crate::partition::{AckResponse, TimerValue};
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -50,6 +50,7 @@ pub(crate) enum ActuatorMessage {
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (i32, String)>,
     },
+    SendAckResponse(AckResponse),
 }
 
 pub(crate) trait MessageCollector {
@@ -668,6 +669,9 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 span_context,
                 result,
             }),
+            Effect::SendAckResponse(ack_response) => {
+                collector.collect(ActuatorMessage::SendAckResponse(ack_response))
+            }
         }
 
         Ok(())

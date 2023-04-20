@@ -8,6 +8,7 @@ use tracing::{debug, info};
 
 pub mod ack;
 mod actuator_output_handler;
+mod dedup;
 mod effects;
 mod leadership;
 pub mod shuffle;
@@ -19,6 +20,7 @@ pub(super) use crate::partition::ack::{
     AckResponse, AckTarget, AckableCommand, IngressAckResponse, ShuffleAckResponse,
 };
 use crate::partition::actuator_output_handler::ActuatorOutputHandler;
+use crate::partition::dedup::DedupLayer;
 use crate::partition::effects::{Effects, Interpreter};
 use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::StateMachine;
@@ -125,8 +127,9 @@ where
         let partition_storage =
             PartitionStorage::new(partition_id, partition_key_range, rocksdb_storage);
 
-        let mut state_machine =
-            Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?;
+        let mut state_machine = DedupLayer::new(
+            Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?,
+        );
 
         debug!(%peer_id, %partition_id, ?state_machine, "Created state machine");
 
@@ -142,12 +145,11 @@ where
                                 // Clear the effects to reuse the vector
                                 effects.clear();
 
-                                // Prepare command and transaction
-                                let (fsm_command, ack_target) = ackable_command.into_inner();
+                                // Prepare transaction
                                 let mut transaction = partition_storage.create_transaction();
 
                                 // Handle the command, returns the span_relation to use to log effects
-                                let (sid, span_relation) = state_machine.on_apply(fsm_command, &mut effects, &mut transaction).await?;
+                                let (sid, span_relation) = state_machine.on_apply(ackable_command, &mut effects, &mut transaction).await?;
 
                                 let is_leader = leadership_state.is_leader();
 
@@ -163,10 +165,6 @@ where
                                 // Commit actuator messages
                                 let message_collector = result.commit().await?;
                                 leadership_state = message_collector.send().await?;
-
-                                if let Some(ack_target) = ack_target {
-                                    leadership_state.send_ack_response(ack_target.acknowledge()).await?;
-                                }
                             }
                             restate_consensus::Command::BecomeLeader(leader_epoch) => {
                                 info!(restate.partition.peer = %peer_id, restate.partition.id = %partition_id, restate.partition.leader_epoch = %leader_epoch, "Become leader");

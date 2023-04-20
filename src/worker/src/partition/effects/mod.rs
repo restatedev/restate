@@ -16,7 +16,7 @@ use types::TimerKeyDisplay;
 
 mod interpreter;
 
-use crate::partition::{types, TimerValue};
+use crate::partition::{types, AckResponse, TimerValue};
 pub(crate) use interpreter::{
     ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
     StateStorageError,
@@ -147,6 +147,9 @@ pub(crate) enum Effect {
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (i32, String)>,
     },
+
+    // Acks
+    SendAckResponse(AckResponse),
 }
 
 macro_rules! debug_if_leader {
@@ -502,6 +505,11 @@ impl Effect {
             Effect::NotifyInvocationResult { .. } => {
                 // No need to log this
             }
+            Effect::SendAckResponse(ack_response) => {
+                if is_leader {
+                    trace!("Effect: Sending ack response: {ack_response:?}");
+                }
+            }
         }
     }
 }
@@ -822,6 +830,10 @@ impl Effects {
             span_context,
             result,
         })
+    }
+
+    pub(crate) fn send_ack_response(&mut self, ack_response: AckResponse) {
+        self.effects.push(Effect::SendAckResponse(ack_response));
     }
 
     /// We log only if the level is TRACE, or if the level is DEBUG and we're the leader.
