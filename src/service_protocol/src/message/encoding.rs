@@ -7,13 +7,20 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
 use restate_common::types::RawEntry;
 use restate_journal::raw::RawEntryHeader;
+use size::Size;
+use tracing::warn;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, codederror::CodedError, thiserror::Error)]
 pub enum EncodingError {
+    #[code(unknown)]
     #[error("cannot decode message type {0:?}. This looks like a bug of the SDK. Reason: {1:?}")]
     DecodeMessage(MessageType, #[source] prost::DecodeError),
     #[error(transparent)]
-    UnknownFrameType(#[from] UnknownMessageType),
+    #[code(unknown)]
+    UnknownMessageType(#[from] UnknownMessageType),
+    #[error("hit message size limit: {0} >= {1}")]
+    #[code(restate_errors::RT0003)]
+    MessageSizeLimit(usize, usize),
 }
 
 // --- Input message encoder
@@ -100,18 +107,26 @@ fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost:
 pub struct Decoder {
     buf: SegmentedBuf<Bytes>,
     state: DecoderState,
+    message_size_warning: usize,
+    message_size_limit: usize,
 }
 
 impl Default for Decoder {
     fn default() -> Self {
-        Self {
-            buf: SegmentedBuf::new(),
-            state: DecoderState::WaitingHeader,
-        }
+        Decoder::new(usize::MAX, None)
     }
 }
 
 impl Decoder {
+    pub fn new(message_size_warning: usize, message_size_limit: Option<usize>) -> Self {
+        Self {
+            buf: SegmentedBuf::new(),
+            state: DecoderState::WaitingHeader,
+            message_size_warning,
+            message_size_limit: message_size_limit.unwrap_or(usize::MAX),
+        }
+    }
+
     /// Concatenate a new chunk in the internal buffer.
     pub fn push(&mut self, buf: Bytes) {
         self.buf.push(buf)
@@ -123,6 +138,22 @@ impl Decoder {
     ) -> Result<Option<(MessageHeader, ProtocolMessage)>, EncodingError> {
         loop {
             let remaining = self.buf.remaining();
+
+            if remaining >= self.message_size_warning {
+                warn!(
+                    "Message size warning: {} >= {}. \
+                    Generating very large messages can make the system unstable if configured with too little memory. \
+                    You can increase the threshold to avoid this warning by changing the worker.invoker.message_size_warning config option",
+                    Size::from_bytes(remaining),
+                    Size::from_bytes(self.message_size_warning)
+                );
+            }
+            if remaining >= self.message_size_limit {
+                return Err(EncodingError::MessageSizeLimit(
+                    remaining,
+                    self.message_size_limit,
+                ));
+            }
 
             if remaining < self.state.needs_bytes() {
                 return Ok(None);
@@ -267,6 +298,8 @@ mod tests {
     use crate::pb;
     use restate_journal::raw::RawEntryHeader;
 
+    use restate_test_utils::{assert, assert_eq, let_assert};
+
     #[test]
     fn fill_decoder_with_several_messages() {
         let protocol_version = 1;
@@ -359,5 +392,30 @@ mod tests {
         assert_eq!(actual_msg, expected_msg);
 
         assert!(decoder.consume_next().unwrap().is_none());
+    }
+
+    #[test]
+    fn hit_message_size_limit() {
+        let mut decoder = Decoder::new((u8::MAX / 2) as usize, Some(u8::MAX as usize));
+
+        let encoder = Encoder::new(0);
+        let msg = encoder.encode(
+            RawEntry::new(
+                RawEntryHeader::PollInputStream { is_completed: true },
+                pb::protocol::PollInputStreamEntryMessage {
+                    value: (0..=u8::MAX).collect::<Vec<_>>().into(),
+                }
+                .encode_to_vec()
+                .into(),
+            )
+            .into(),
+        );
+
+        decoder.push(msg.clone());
+        let_assert!(
+            EncodingError::MessageSizeLimit(msg_size, limit) = decoder.consume_next().unwrap_err()
+        );
+        assert_eq!(msg_size, msg.len());
+        assert_eq!(limit, u8::MAX as usize)
     }
 }

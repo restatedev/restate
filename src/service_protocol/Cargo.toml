@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 protocol = []
-message = ["protocol", "dep:bytes-utils"]
+message = ["protocol", "dep:bytes-utils", "dep:codederror", "dep:restate_errors", "dep:size", "dep:tracing"]
 codec = ["protocol", "dep:thiserror", "dep:restate_journal", "dep:paste"]
 discovery = ["dep:thiserror", "dep:codederror", "dep:restate_errors", "dep:restate_service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:restate_common", "dep:restate_service_metadata"]
 
@@ -24,6 +24,7 @@ thiserror = { workspace = true, optional = true }
 
 paste = { workspace = true, optional = true }
 restate_journal = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 restate_service_key_extractor = { workspace = true, optional = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "runtime"], optional = true }
@@ -34,9 +35,10 @@ restate_service_metadata = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
 restate_errors = { workspace = true, optional = true }
 
+size = { version = "0.4.1", optional = true }
+
 [dev-dependencies]
 restate_test_utils = { workspace = true }
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
