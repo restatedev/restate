@@ -5,7 +5,6 @@ use opentelemetry::trace::TraceError;
 use pretty::Pretty;
 use std::fmt::Display;
 use tracing::Level;
-use tracing_subscriber::fmt::format;
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
@@ -85,11 +84,11 @@ impl Options {
                 .with_ansi(!self.disable_ansi_log)
                 .boxed(),
             LogFormat::Compact => tracing_subscriber::fmt::layer()
-                .event_format(format().compact())
+                .compact()
                 .with_ansi(!self.disable_ansi_log)
                 .boxed(),
             LogFormat::Json => tracing_subscriber::fmt::layer()
-                .event_format(format().json())
+                .json()
                 .with_ansi(!self.disable_ansi_log)
                 .boxed(),
         };
