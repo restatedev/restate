@@ -1,4 +1,4 @@
-use crate::partition::ack::AckMode;
+use crate::partition::ack::{AckMode, DeduplicationSource};
 use crate::partition::effects::Effects;
 use crate::partition::state_machine::{Error, StateMachine};
 use crate::partition::storage::Transaction;
@@ -33,23 +33,31 @@ where
             AckMode::Ack(ack_target) => {
                 effects.send_ack_response(ack_target.acknowledge());
             }
-            AckMode::Dedup {
-                producer_id,
-                ack_target,
-            } => {
-                if let Some(dedup_seq_number) =
-                    transaction.load_dedup_seq_number(producer_id).await?
+            AckMode::Dedup(deduplication_source) => {
+                let (producing_partition_id, seq_number) = match deduplication_source {
+                    DeduplicationSource::Shuffle {
+                        seq_number,
+                        producing_partition_id,
+                        ..
+                    } => (producing_partition_id, seq_number),
+                };
+
+                if let Some(last_known_seq_number) = transaction
+                    .load_dedup_seq_number(producing_partition_id)
+                    .await?
                 {
-                    if ack_target.dedup_seq_number() <= dedup_seq_number {
-                        effects.send_ack_response(ack_target.duplicate(dedup_seq_number));
+                    if seq_number <= last_known_seq_number {
+                        effects.send_ack_response(
+                            deduplication_source.duplicate(last_known_seq_number),
+                        );
                         return Ok((None, SpanRelation::None));
                     }
                 }
 
                 transaction
-                    .store_dedup_seq_number(producer_id, ack_target.dedup_seq_number())
+                    .store_dedup_seq_number(producing_partition_id, seq_number)
                     .await;
-                effects.send_ack_response(ack_target.acknowledge());
+                effects.send_ack_response(deduplication_source.acknowledge());
             }
             AckMode::None => {}
         }

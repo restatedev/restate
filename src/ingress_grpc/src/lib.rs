@@ -103,12 +103,12 @@ impl AckTarget {
 #[derive(Debug)]
 pub enum IngressInput {
     Response(IngressResponseMessage),
-    MessageAck(AckKind),
+    MessageAck(MessageIndex),
 }
 
 impl IngressInput {
-    pub fn message_ack(ack_kind: AckKind) -> Self {
-        IngressInput::MessageAck(ack_kind)
+    pub fn message_ack(seq_number: MessageIndex) -> Self {
+        IngressInput::MessageAck(seq_number)
     }
 
     pub fn response(response: IngressResponseMessage) -> Self {

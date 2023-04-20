@@ -11,10 +11,7 @@ pub(crate) struct AckCommand {
 #[derive(Debug)]
 pub(crate) enum AckMode {
     Ack(AckTarget),
-    Dedup {
-        producer_id: PartitionId,
-        ack_target: AckTarget,
-    },
+    Dedup(DeduplicationSource),
     None,
 }
 
@@ -28,18 +25,14 @@ impl AckCommand {
     }
 
     /// Create a command that should be de-duplicated with respect to the `producer_id` and the
-    /// de-duplication sequence number of the [`AckTarget`].
+    /// `seq_number` by the receiver.
     pub(crate) fn dedup(
         cmd: partition::Command,
-        producer_id: PartitionId,
-        ack_target: AckTarget,
+        deduplication_source: DeduplicationSource,
     ) -> Self {
         Self {
             cmd,
-            ack_mode: AckMode::Dedup {
-                producer_id,
-                ack_target,
-            },
+            ack_mode: AckMode::Dedup(deduplication_source),
         }
     }
 
@@ -57,92 +50,94 @@ impl AckCommand {
 }
 
 #[derive(Debug)]
-pub(crate) enum AckTarget {
+pub(crate) enum DeduplicationSource {
     Shuffle {
-        shuffle_target: PeerId,
-        msg_index: MessageIndex,
+        producing_partition_id: PartitionId,
+        shuffle_id: PeerId,
+        seq_number: MessageIndex,
     },
+}
+
+impl DeduplicationSource {
+    pub(crate) fn shuffle(
+        shuffle_id: PeerId,
+        producing_partition_id: PartitionId,
+        seq_number: MessageIndex,
+    ) -> Self {
+        DeduplicationSource::Shuffle {
+            shuffle_id,
+            producing_partition_id,
+            seq_number,
+        }
+    }
+
+    pub(crate) fn acknowledge(self) -> AckResponse {
+        match self {
+            DeduplicationSource::Shuffle {
+                shuffle_id,
+                seq_number,
+                ..
+            } => AckResponse::Shuffle(ShuffleDeduplicationResponse {
+                shuffle_target: shuffle_id,
+                kind: AckKind::Acknowledge(seq_number),
+            }),
+        }
+    }
+
+    pub(crate) fn duplicate(self, last_known_seq_number: MessageIndex) -> AckResponse {
+        match self {
+            DeduplicationSource::Shuffle {
+                shuffle_id,
+                seq_number,
+                ..
+            } => AckResponse::Shuffle(ShuffleDeduplicationResponse {
+                shuffle_target: shuffle_id,
+                kind: AckKind::Duplicate {
+                    seq_number,
+                    last_known_seq_number,
+                },
+            }),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum AckTarget {
     Ingress {
         ingress_id: IngressId,
-        msg_index: MessageIndex,
+        seq_number: MessageIndex,
     },
 }
 
 impl AckTarget {
-    pub(crate) fn shuffle(shuffle_target: PeerId, msg_index: MessageIndex) -> Self {
-        AckTarget::Shuffle {
-            shuffle_target,
-            msg_index,
-        }
-    }
-
-    pub(crate) fn ingress(ingress_id: IngressId, msg_index: MessageIndex) -> Self {
+    pub(crate) fn ingress(ingress_id: IngressId, seq_number: MessageIndex) -> Self {
         AckTarget::Ingress {
             ingress_id,
-            msg_index,
+            seq_number,
         }
     }
 
     pub(super) fn acknowledge(self) -> AckResponse {
         match self {
-            AckTarget::Shuffle {
-                shuffle_target,
-                msg_index,
-            } => AckResponse::Shuffle(ShuffleAckResponse {
-                shuffle_target,
-                kind: AckKind::Acknowledge(msg_index),
-            }),
             AckTarget::Ingress {
                 ingress_id,
-                msg_index,
+                seq_number,
             } => AckResponse::Ingress(IngressAckResponse {
                 _ingress_id: ingress_id,
-                kind: AckKind::Acknowledge(msg_index),
+                seq_number,
             }),
-        }
-    }
-
-    pub(super) fn duplicate(self, last_known_seq_number: MessageIndex) -> AckResponse {
-        match self {
-            AckTarget::Shuffle {
-                shuffle_target,
-                msg_index,
-            } => AckResponse::Shuffle(ShuffleAckResponse {
-                shuffle_target,
-                kind: AckKind::Duplicate {
-                    seq_number: msg_index,
-                    last_known_seq_number,
-                },
-            }),
-            AckTarget::Ingress {
-                ingress_id,
-                msg_index,
-            } => AckResponse::Ingress(IngressAckResponse {
-                _ingress_id: ingress_id,
-                kind: AckKind::Duplicate {
-                    seq_number: msg_index,
-                    last_known_seq_number,
-                },
-            }),
-        }
-    }
-
-    pub(super) fn dedup_seq_number(&self) -> MessageIndex {
-        match self {
-            AckTarget::Shuffle { msg_index, .. } => *msg_index,
-            AckTarget::Ingress { msg_index, .. } => *msg_index,
         }
     }
 }
 
 #[derive(Debug)]
 pub(crate) enum AckResponse {
-    Shuffle(ShuffleAckResponse),
+    Shuffle(ShuffleDeduplicationResponse),
     Ingress(IngressAckResponse),
 }
 
 #[derive(Debug)]
-pub(crate) struct ShuffleAckResponse {
+pub(crate) struct ShuffleDeduplicationResponse {
     pub(crate) shuffle_target: PeerId,
     pub(crate) kind: AckKind,
 }
@@ -150,5 +145,5 @@ pub(crate) struct ShuffleAckResponse {
 #[derive(Debug)]
 pub(crate) struct IngressAckResponse {
     pub(crate) _ingress_id: IngressId,
-    pub(crate) kind: AckKind,
+    pub(crate) seq_number: MessageIndex,
 }

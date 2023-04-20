@@ -16,7 +16,8 @@ pub mod storage;
 mod types;
 
 pub(super) use crate::partition::ack::{
-    AckCommand, AckResponse, AckTarget, IngressAckResponse, ShuffleAckResponse,
+    AckCommand, AckResponse, AckTarget, DeduplicationSource, IngressAckResponse,
+    ShuffleDeduplicationResponse,
 };
 use crate::partition::actuator_output_handler::ActuatorOutputHandler;
 use crate::partition::effects::{Effects, Interpreter};

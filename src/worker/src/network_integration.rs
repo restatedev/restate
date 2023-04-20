@@ -18,7 +18,7 @@ pub(super) type Network = restate_network::Network<
     ingress_integration::IngressToShuffle,
     restate_ingress_grpc::IngressInput,
     partition::AckResponse,
-    partition::ShuffleAckResponse,
+    partition::ShuffleDeduplicationResponse,
     partition::IngressAckResponse,
     FixedPartitionTable,
 >;
@@ -164,20 +164,19 @@ mod shuffle_integration {
                 msg_index,
             } = value;
 
-            let ack_target = partition::AckTarget::shuffle(shuffle_id, msg_index);
+            let deduplication_source =
+                partition::DeduplicationSource::shuffle(shuffle_id, partition_id, msg_index);
 
             match msg {
                 shuffle::InvocationOrResponse::Invocation(invocation) => {
                     partition::AckCommand::dedup(
                         partition::Command::Invocation(invocation),
-                        partition_id,
-                        ack_target,
+                        deduplication_source,
                     )
                 }
                 shuffle::InvocationOrResponse::Response(response) => partition::AckCommand::dedup(
                     partition::Command::Response(response),
-                    partition_id,
-                    ack_target,
+                    deduplication_source,
                 ),
             }
         }
@@ -247,13 +246,18 @@ mod partition_integration {
     use restate_common::types::PeerId;
     use restate_network::{ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress};
 
-    impl TargetShuffleOrIngress<partition::ShuffleAckResponse, partition::IngressAckResponse>
-        for partition::AckResponse
+    impl
+        TargetShuffleOrIngress<
+            partition::ShuffleDeduplicationResponse,
+            partition::IngressAckResponse,
+        > for partition::AckResponse
     {
         fn target(
             self,
-        ) -> ShuffleOrIngressTarget<partition::ShuffleAckResponse, partition::IngressAckResponse>
-        {
+        ) -> ShuffleOrIngressTarget<
+            partition::ShuffleDeduplicationResponse,
+            partition::IngressAckResponse,
+        > {
             match self {
                 partition::AckResponse::Shuffle(ack) => ShuffleOrIngressTarget::Shuffle(ack),
                 partition::AckResponse::Ingress(ack) => ShuffleOrIngressTarget::Ingress(ack),
@@ -261,13 +265,13 @@ mod partition_integration {
         }
     }
 
-    impl From<partition::ShuffleAckResponse> for shuffle::ShuffleInput {
-        fn from(value: partition::ShuffleAckResponse) -> Self {
+    impl From<partition::ShuffleDeduplicationResponse> for shuffle::ShuffleInput {
+        fn from(value: partition::ShuffleDeduplicationResponse) -> Self {
             shuffle::ShuffleInput(value.kind)
         }
     }
 
-    impl TargetShuffle for partition::ShuffleAckResponse {
+    impl TargetShuffle for partition::ShuffleDeduplicationResponse {
         fn shuffle_target(&self) -> PeerId {
             self.shuffle_target
         }
@@ -275,7 +279,7 @@ mod partition_integration {
 
     impl From<partition::IngressAckResponse> for restate_ingress_grpc::IngressInput {
         fn from(value: partition::IngressAckResponse) -> Self {
-            restate_ingress_grpc::IngressInput::message_ack(value.kind)
+            restate_ingress_grpc::IngressInput::message_ack(value.seq_number)
         }
     }
 }
