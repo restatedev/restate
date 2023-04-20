@@ -1,0 +1,38 @@
+[package]
+name = "cli"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+async-trait = { version = "0.1.68" }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+clap = { version = "4.1", features = ["derive"] }
+datafusion = { version = "22.0.0" }
+datafusion-cli = { version = "22.0.0" }
+futures = { workspace = true }
+hex = "0.4.3"
+once_cell = "1.13.0"
+pin-project = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+prost-reflect = { workspace = true, features = ["derive", "serde"] }
+restate_common = { workspace = true }
+restate_tracing_instrumentation = { workspace = true }
+rustyline = "10.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"
+thiserror = { workspace = true }
+tonic = { workspace = true, features = ["default"] }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+prost-build = { workspace = true }
