@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use bytestring::ByteString;
 use restate_common::types::{
     CompletionResult, EnrichedRawEntry, EntryIndex, InvocationId, InvocationResponse,
     JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseResult, ServiceId,
@@ -140,6 +141,8 @@ pub(crate) enum Effect {
 
     // Tracing
     NotifyInvocationResult {
+        service_name: ByteString,
+        service_method: String,
         invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (i32, String)>,
@@ -802,11 +805,15 @@ impl Effects {
 
     pub(crate) fn notify_invocation_result(
         &mut self,
+        service_name: ByteString,
+        service_method: String,
         invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (i32, String)>,
     ) {
         self.effects.push(Effect::NotifyInvocationResult {
+            service_name,
+            service_method,
             invocation_id,
             span_context,
             result,

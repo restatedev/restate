@@ -154,6 +154,8 @@ where
                         .await?
                 }
                 ActuatorMessage::CommitEndSpan {
+                    service_name,
+                    service_method,
                     invocation_id,
                     span_context,
                     result,
@@ -162,6 +164,8 @@ where
                         Ok(_) => {
                             let span = info_span!(
                                 "end_invocation",
+                                rpc.service = %service_name,
+                                rpc.method = %service_method,
                                 restate.invocation.id = %invocation_id,
                                 restate.invocation.result = "Success"
                             );
@@ -171,6 +175,8 @@ where
                         Err((status_code, status_message)) => {
                             let span = warn_span!(
                                 "end_invocation",
+                                rpc.service = %service_name,
+                                rpc.method = %service_method,
                                 restate.invocation.id = %invocation_id,
                                 restate.invocation.result = "Failure"
                             );

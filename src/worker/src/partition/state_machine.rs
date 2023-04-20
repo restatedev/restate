@@ -242,9 +242,10 @@ where
             InvokerEffectKind::End => {
                 self.notify_invocation_result(
                     &service_invocation_id,
+                    invoked_status.journal_metadata.method,
                     invoked_status.journal_metadata.span_context,
                     effects,
-                    Ok(())
+                    Ok(()),
                 );
                 self.complete_invocation(
                     service_invocation_id,
@@ -267,9 +268,10 @@ where
 
                 self.notify_invocation_result(
                     &service_invocation_id,
+                    invoked_status.journal_metadata.method,
                     invoked_status.journal_metadata.span_context,
                     effects,
-                    Err((error_code, error.to_string()))
+                    Err((error_code, error.to_string())),
                 );
                 self.complete_invocation(
                     service_invocation_id,
@@ -587,11 +589,18 @@ where
     fn notify_invocation_result(
         &mut self,
         service_invocation_id: &ServiceInvocationId,
+        service_method: String,
         span_context: ServiceInvocationSpanContext,
         effects: &mut Effects,
         result: Result<(), (i32, String)>,
     ) {
-        effects.notify_invocation_result(service_invocation_id.invocation_id, span_context, result);
+        effects.notify_invocation_result(
+            service_invocation_id.service_id.service_name.clone(),
+            service_method,
+            service_invocation_id.invocation_id,
+            span_context,
+            result,
+        );
     }
 
     async fn complete_invocation<State: StateReader>(

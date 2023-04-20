@@ -2,6 +2,7 @@ use crate::partition::effects::{Effect, Effects, JournalInformation};
 use crate::partition::TimerValue;
 use assert2::let_assert;
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::future::BoxFuture;
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId,
@@ -43,6 +44,8 @@ pub(crate) enum ActuatorMessage {
         completion: Completion,
     },
     CommitEndSpan {
+        service_name: ByteString,
+        service_method: String,
         invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (i32, String)>,
@@ -637,10 +640,14 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .await?;
             }
             Effect::NotifyInvocationResult {
+                service_name,
+                service_method,
                 invocation_id,
                 span_context,
                 result,
             } => collector.collect(ActuatorMessage::CommitEndSpan {
+                service_name,
+                service_method,
                 invocation_id,
                 span_context,
                 result,
