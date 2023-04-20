@@ -736,9 +736,10 @@ mod state_machine_coordinator {
                     "Notifying completion"
                 );
                 sm.notify_completion(completion);
+            } else {
+                // If no state machine is registered, the PP will send a new invoke
+                trace!("No state machine found for given completion");
             }
-            // If no state machine is registered, the PP will send a new invoke
-            trace!("No state machine found for given completion");
         }
 
         #[instrument(
@@ -834,9 +835,10 @@ mod state_machine_coordinator {
                         },
                     })
                     .await;
+            } else {
+                // If no state machine, this might be an entry for an aborted invocation.
+                trace!("No state machine found for given entry");
             }
-            // If no state machine, this might be an entry for an aborted invocation.
-            trace!("No state machine found for given entry");
         }
 
         #[instrument(
@@ -876,9 +878,10 @@ mod state_machine_coordinator {
                     )
                     .await;
                 }
+            } else {
+                // If no state machine, this might be a result for an aborted invocation.
+                trace!("No state machine found for invocation task closed signal");
             }
-            // If no state machine, this might be a result for an aborted invocation.
-            trace!("No state machine found for invocation task closed signal");
         }
 
         #[instrument(
@@ -936,9 +939,10 @@ mod state_machine_coordinator {
                             .await;
                     }
                 }
+            } else {
+                // If no state machine, this might be a result for an aborted invocation.
+                trace!("No state machine found for invocation task error signal");
             }
-            // If no state machine, this might be a result for an aborted invocation.
-            trace!("No state machine found for invocation task error signal");
         }
 
         #[instrument(
@@ -985,9 +989,10 @@ mod state_machine_coordinator {
                         },
                     })
                     .await;
+            } else {
+                // If no state machine, this might be a result for an aborted invocation.
+                trace!("No state machine found for invocation task suspended signal");
             }
-            // If no state machine, this might be a result for an aborted invocation.
-            trace!("No state machine found for invocation task suspended signal");
         }
 
         // --- Helpers
@@ -1096,9 +1101,10 @@ mod state_machine_coordinator {
                     self.invocation_state_machines
                         .insert(service_invocation_id, sm);
                 }
+            } else {
+                // If no state machine is registered, the PP will send a new invoke
+                trace!("No state machine found for given retry event");
             }
-            // If no state machine is registered, the PP will send a new invoke
-            trace!("No state machine found for given retry event");
         }
 
         async fn send_end(&self, service_invocation_id: ServiceInvocationId) {
