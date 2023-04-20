@@ -1036,7 +1036,7 @@ mod invocation_state_machine {
 
     impl JournalTracker {
         fn notify_acked_entry_from_partition_processor(&mut self, idx: EntryIndex) {
-            self.last_entry_sent_to_partition_processor =
+            self.last_acked_entry_from_partition_processor =
                 cmp::max(Some(idx), self.last_acked_entry_from_partition_processor)
         }
 
