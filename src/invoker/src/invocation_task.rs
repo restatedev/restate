@@ -489,6 +489,7 @@ where
         http_stream_tx: &mut Sender,
         msg: ProtocolMessage,
     ) -> Result<(), InvocationTaskError> {
+        trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
         if let Err(hyper_err) = http_stream_tx.send_data(buf).await {
