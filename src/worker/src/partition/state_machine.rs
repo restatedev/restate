@@ -17,7 +17,7 @@ use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use tracing::{debug, instrument, trace, warn};
 
-use crate::partition::effects::Effects;
+use crate::partition::effects::{Effects, JournalInformation};
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
 
 #[derive(Debug, thiserror::Error)]
@@ -570,17 +570,24 @@ where
             }
             InvocationStatus::Suspended(suspended_status) => {
                 if suspended_status.invocation_id == service_invocation_id.invocation_id {
+                    span_relation = suspended_status.journal_metadata.span_context.as_parent();
+
                     if suspended_status
                         .waiting_for_completed_entries
                         .contains(&completion.entry_index)
                     {
-                        effects
-                            .store_completion_and_resume(service_invocation_id.clone(), completion);
+                        effects.store_completion_and_resume(
+                            JournalInformation::new(
+                                service_invocation_id.clone(),
+                                suspended_status.journal_metadata,
+                                suspended_status.response_sink,
+                            ),
+                            completion,
+                        );
                     } else {
                         effects.store_completion(service_invocation_id.clone(), completion);
                     }
                     related_sid = Some(service_invocation_id);
-                    span_relation = suspended_status.journal_metadata.span_context.as_parent();
                 } else {
                     debug!(
                         rpc.service = %service_invocation_id.service_id.service_name,

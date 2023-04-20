@@ -600,7 +600,12 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 }
             }
             Effect::StoreCompletionAndResume {
-                service_invocation_id,
+                journal_information:
+                    JournalInformation {
+                        journal_metadata,
+                        response_sink,
+                        service_invocation_id,
+                    },
                 completion:
                     Completion {
                         entry_index,
@@ -618,10 +623,23 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 )
                 .await?
                 {
+                    state_storage
+                        .store_invocation_status(
+                            &service_invocation_id.service_id,
+                            InvocationStatus::Invoked(InvokedStatus::new(
+                                service_invocation_id.invocation_id,
+                                journal_metadata,
+                                response_sink,
+                            )),
+                        )
+                        .await?;
+
                     collector.collect(ActuatorMessage::Invoke {
                         service_invocation_id,
                         invoke_input_journal: InvokeInputJournal::NoCachedJournal,
                     });
+                } else {
+                    unreachable!("There must be an entry that is completed if we want to resume");
                 }
             }
             Effect::DropJournalAndPopInbox {

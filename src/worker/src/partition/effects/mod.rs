@@ -131,7 +131,7 @@ pub(crate) enum Effect {
         completion: Completion,
     },
     StoreCompletionAndResume {
-        service_invocation_id: ServiceInvocationId,
+        journal_information: JournalInformation,
         completion: Completion,
     },
     ForwardCompletion {
@@ -464,7 +464,11 @@ impl Effect {
                 CompletionResultFmt(result)
             ),
             Effect::StoreCompletionAndResume {
-                service_invocation_id,
+                journal_information:
+                    JournalInformation {
+                        service_invocation_id,
+                        ..
+                    },
                 completion:
                     Completion {
                         entry_index,
@@ -781,11 +785,11 @@ impl Effects {
 
     pub(crate) fn store_completion_and_resume(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        journal_information: JournalInformation,
         completion: Completion,
     ) {
         self.effects.push(Effect::StoreCompletionAndResume {
-            service_invocation_id,
+            journal_information,
             completion,
         });
     }
