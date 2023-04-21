@@ -91,38 +91,38 @@ pub struct DiscoveredEndpointMetadata {
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum ServiceDiscoveryError {
     // User errors
-    #[error("cannot find the dev.restate.ext.service_type extension in the descriptor of service {0}. You must annotate a service using the dev.restate.ext.service_type extension to specify whether your service is KEYED, UNKEYED or SINGLETON")]
+    #[error("cannot find the dev.restate.ext.service_type extension in the descriptor of service '{0}'. You must annotate a service using the dev.restate.ext.service_type extension to specify whether your service is KEYED, UNKEYED or SINGLETON")]
     #[code(META0001)]
     MissingServiceTypeExtension(String),
-    #[error("the service {0} is keyed but has no methods. You must specify at least one method")]
+    #[error("the service '{0}' is keyed but has no methods. You must specify at least one method")]
     #[code(META0001)]
     KeyedServiceWithoutMethods(String),
-    #[error("the service name {0} is reserved. Service name should must not start with 'dev.restate' or 'grpc'")]
+    #[error("the service name '{0}' is reserved. Service name should must not start with 'dev.restate' or 'grpc'")]
     #[code(META0001)]
     ServiceNameReserved(String),
     #[error(
-        "error when trying to parse the key of service method {} with input type {}. No key field found",
+        "error when trying to parse the key of service method '{}' with input type '{}'. No key field found",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
     #[code(META0002)]
     MissingKeyField(MethodDescriptor),
     #[error(
-        "error when trying to parse the key of service method {} with input type {}. More than one key field found",
+        "error when trying to parse the key of service method '{}' with input type '{}'. More than one key field found",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
     #[code(META0002)]
     MoreThanOneKeyField(MethodDescriptor),
     #[error(
-        "error when trying to parse the key of service method {} with input type {}. Bad key field type",
+        "error when trying to parse the key of service method '{}' with input type '{}'. Bad key field type",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
     #[code(META0002)]
     BadKeyFieldType(MethodDescriptor),
     #[error(
-        "error when trying to parse the key of service method {} with input type {}. The key type is different from other methods key types",
+        "error when trying to parse the key of service method '{}' with input type '{}'. The key type is different from other methods key types",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
@@ -130,7 +130,7 @@ pub enum ServiceDiscoveryError {
     DifferentKeyTypes(MethodDescriptor),
 
     // Errors most likely related to SDK bugs
-    #[error("cannot find service {0} in descriptor set. This might be a symptom of an SDK bug, or of the build tool/pipeline used to generate the descriptor")]
+    #[error("cannot find service '{0}' in descriptor set. This might be a symptom of an SDK bug, or of the build tool/pipeline used to generate the descriptor")]
     #[code(unknown)]
     ServiceNotFoundInDescriptor(String),
     #[error("received a bad response from the SDK: {0}. This might be a symptom of an SDK bug")]
