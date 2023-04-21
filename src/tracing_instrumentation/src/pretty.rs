@@ -6,6 +6,7 @@ use super::*;
 
 use nu_ansi_term::{Color, Style};
 use std::fmt;
+use std::fmt::Debug;
 use tracing::{
     field::{self, Field},
     span, Event, Level, Subscriber,
@@ -163,7 +164,11 @@ where
             writer.write_char('\n')?;
         }
 
-        writer.write_char('\n')
+        writer.write_char('\n')?;
+
+        let mut restate_error_code_visitor = RestateErrorCodeWriter::new(writer.by_ref());
+        event.record(&mut restate_error_code_visitor);
+        restate_error_code_visitor.finish()
     }
 }
 
@@ -313,6 +318,37 @@ impl<'a> Display for ErrorSourceList<'a> {
             curr = curr_err.source();
         }
         list.finish()
+    }
+}
+
+// --- Visitor to record as alternate the restate.error.code field
+
+#[derive(Debug)]
+pub struct RestateErrorCodeWriter<'a> {
+    writer: Writer<'a>,
+    result: fmt::Result,
+}
+
+impl<'a> RestateErrorCodeWriter<'a> {
+    fn new(writer: Writer<'a>) -> Self {
+        Self {
+            writer,
+            result: Ok(()),
+        }
+    }
+}
+
+impl<'a> field::Visit for RestateErrorCodeWriter<'a> {
+    fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
+        if field.name() == "restate.error.code" {
+            self.result = write!(self.writer, "{:#?}\n", value)
+        }
+    }
+}
+
+impl<'a> VisitOutput<fmt::Result> for RestateErrorCodeWriter<'a> {
+    fn finish(self) -> fmt::Result {
+        self.result
     }
 }
 

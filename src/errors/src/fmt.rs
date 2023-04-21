@@ -17,18 +17,17 @@
 //! # }
 //! ```
 
-use codederror::CodedError;
+use codederror::{Code, CodedError};
+use std::fmt;
 
 /// Check module documentation for more details.
 #[macro_export]
 macro_rules! info_it {
     ($err:expr) => {
-        tracing::info!(error = tracing::field::display(codederror::CodedError::decorate(&$err)));
-        $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
+        tracing::info!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err));
     };
     ($err:expr, $($field:tt)*) => {
-        tracing::info!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), $($field)*);
-        $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
+        tracing::info!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err), $($field)*);
     };
 }
 
@@ -36,12 +35,10 @@ macro_rules! info_it {
 #[macro_export]
 macro_rules! warn_it {
     ($err:expr) => {
-        tracing::warn!(error = tracing::field::display(codederror::CodedError::decorate(&$err)));
-        $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
+        tracing::warn!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err));
     };
     ($err:expr, $($field:tt)*) => {
-        tracing::warn!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), $($field)*);
-        $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
+        tracing::warn!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err), $($field)*);
     };
 }
 
@@ -49,38 +46,66 @@ macro_rules! warn_it {
 #[macro_export]
 macro_rules! error_it {
     ($err:expr) => {
-        tracing::error!(error = tracing::field::display(codederror::CodedError::decorate(&$err)));
-        $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
+        tracing::error!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err));
     };
     ($err:expr, $($field:tt)*) => {
-        tracing::error!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), $($field)*);
-        $crate::fmt::CodedErrorExt::print_description_as_markdown(&$err);
+        tracing::error!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err), $($field)*);
     };
 }
 
-#[doc(hidden)]
-pub trait CodedErrorExt {
-    fn print_description_as_markdown(&self);
+pub struct RestateCode(Option<Code>);
+
+impl<T> From<&T> for RestateCode
+where
+    T: CodedError,
+{
+    fn from(value: &T) -> Self {
+        RestateCode(value.code().cloned())
+    }
 }
 
 #[cfg(feature = "include_doc")]
-impl<CE> CodedErrorExt for CE
-where
-    CE: CodedError,
-{
-    fn print_description_as_markdown(&self) {
-        if let Some(description) = self.code().and_then(codederror::Code::description) {
-            println!("{}", termimad::term_text(description))
+impl RestateCode {
+    fn fmt_alternate(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            None => {
+                write!(f, "{}", termimad::term_text("## No error description"))
+            }
+            Some(code) => match code.description() {
+                None => {
+                    // We should never end up here,
+                    // as we enforce all restate error codes to have a description thanks to the macro in helper.rs
+                    write!(f, "{}", termimad::term_text(&format!("## {}", code.code())))
+                }
+                Some(description) => {
+                    write!(f, "{}", termimad::term_text(description))
+                }
+            },
         }
     }
 }
 
 #[cfg(not(feature = "include_doc"))]
-impl<CE> CodedErrorExt for CE
-where
-    CE: CodedError,
-{
-    fn print_description_as_markdown(&self) {}
+impl RestateCode {
+    fn fmt_alternate(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            None => write!(f, "No error description"),
+            Some(code) => write!(f, "{}", code.code()),
+        }
+    }
+}
+
+impl fmt::Debug for RestateCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            self.fmt_alternate(f)
+        } else {
+            match self.0 {
+                None => write!(f, "None"),
+                Some(code) => write!(f, "{}", code.code()),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
