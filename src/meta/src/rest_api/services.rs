@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 #[serde_as]
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RegisterServiceEndpointRequest {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub uri: Uri,
@@ -19,6 +20,7 @@ pub struct RegisterServiceEndpointRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RegisterServiceEndpointResponse {
     services: Vec<String>,
 }
@@ -48,6 +50,7 @@ pub async fn discover_service_endpoint<S: ServiceEndpointRegistry, M>(
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListServicesResponse {
     endpoints: Vec<GetServiceResponse>,
 }
@@ -71,6 +74,7 @@ pub async fn list_services<S: ServiceEndpointRegistry, M>(
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetServiceResponse {
     service_name: String,
     endpoint_metadata: EndpointMetadata,

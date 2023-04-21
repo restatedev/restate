@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::sync::Arc;
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListServiceMethodsResponse {
     methods: Vec<GetServiceMethodResponse>,
 }
@@ -35,6 +36,7 @@ pub async fn list_service_methods<S, M: MethodDescriptorRegistry>(
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetServiceMethodResponse {
     service_name: String,
     method_name: String,
