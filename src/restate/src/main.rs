@@ -27,6 +27,8 @@ struct RestateArguments {
     config_file: PathBuf,
 }
 
+const EXIT_CODE_FAILURE: i32 = 1;
+
 fn main() {
     let cli_args = RestateArguments::parse();
 
@@ -36,7 +38,7 @@ fn main() {
             // We cannot use tracing here as it's not configured yet
             println!("{}", e.decorate());
             e.print_description_as_markdown();
-            std::process::exit(1);
+            std::process::exit(EXIT_CODE_FAILURE);
         }
     };
 
@@ -62,21 +64,37 @@ fn main() {
 
         let app = Application::new(config.meta, config.worker);
 
-        let drain_signal = app.run();
+        let (shutdown_signal, shutdown_watch) = drain::channel();
+
+        let application = app.run(shutdown_watch);
+        tokio::pin!(application);
 
         tokio::select! {
-            () = signal::shutdown() => {
-                info!("Received shutdown signal.")
-            }
-        }
+            _ = signal::shutdown() => {
+                info!("Received shutdown signal.");
 
-        if tokio::time::timeout(config.shutdown_grace_period.into(), drain_signal.drain())
-            .await
-            .is_err()
-        {
-            warn!("Could not gracefully shut down Restate, terminating now.");
-        } else {
-            info!("Restate has been gracefully shut down.");
+                let shutdown_with_timeout = tokio::time::timeout(config.shutdown_grace_period.into(), shutdown_signal.drain());
+
+                // ignore the result because we are shutting down
+                let (shutdown_result, _) = tokio::join!(shutdown_with_timeout, application);
+
+                if  shutdown_result.is_err() {
+                    warn!("Could not gracefully shut down Restate, terminating now.");
+                } else {
+                    info!("Restate has been gracefully shut down.");
+                }
+            },
+            result = &mut application => {
+                if let Err(err) = result {
+                    restate_errors::error_it!(err, "Restate application failed");
+                    // We terminate the main here in order to avoid the destruction of the Tokio
+                    // runtime. If we did this, potentially running Tokio tasks might otherwise cause panics
+                    // which adds noise.
+                    std::process::exit(EXIT_CODE_FAILURE);
+                } else {
+                    panic!("Unexpected termination of restate application. Please contact the Restate developers.");
+                }
+            }
         }
     });
 }

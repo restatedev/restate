@@ -9,15 +9,30 @@ use axum::error_handling::HandleErrorLayer;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::Router;
+use codederror::CodedError;
 use futures::FutureExt;
 use hyper::Server;
 use restate_service_metadata::{MethodDescriptorRegistry, ServiceEndpointRegistry};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceBuilder;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::service::MetaHandle;
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum MetaRestServerError {
+    #[error("error trying to bind meta's rest server to {address}: {source}")]
+    #[code(restate_errors::META0004)]
+    Binding {
+        address: SocketAddr,
+        #[source]
+        source: hyper::Error,
+    },
+    #[error("error while running meta's rest server: {0}")]
+    #[code(unknown)]
+    Running(hyper::Error),
+}
 
 pub struct MetaRestEndpoint {
     rest_addr: SocketAddr,
@@ -41,7 +56,7 @@ impl MetaRestEndpoint {
         service_endpoint_registry: S,
         method_descriptor_registry: M,
         drain: drain::Watch,
-    ) {
+    ) -> Result<(), MetaRestServerError> {
         let shared_state = Arc::new(state::RestEndpointState::new(
             meta_handle,
             service_endpoint_registry,
@@ -82,7 +97,13 @@ impl MetaRestEndpoint {
             );
 
         // Start the server
-        let server = Server::bind(&self.rest_addr).serve(meta_api.into_make_service());
+        let server = Server::try_bind(&self.rest_addr)
+            .map_err(|err| MetaRestServerError::Binding {
+                address: self.rest_addr,
+                source: err,
+            })?
+            .serve(meta_api.into_make_service());
+
         info!(
             net.host.addr = %server.local_addr().ip(),
             net.host.port = %server.local_addr().port(),
@@ -90,11 +111,9 @@ impl MetaRestEndpoint {
         );
 
         // Wait server graceful shutdown
-        if let Err(e) = server
+        server
             .with_graceful_shutdown(drain.signaled().map(|_| ()))
             .await
-        {
-            warn!("Server is shutting down with error: {:?}", e);
-        }
+            .map_err(MetaRestServerError::Running)
     }
 }

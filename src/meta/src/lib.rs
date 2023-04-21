@@ -2,6 +2,7 @@ mod rest_api;
 mod service;
 mod storage;
 
+use codederror::CodedError;
 use rest_api::MetaRestEndpoint;
 use restate_common::retry_policy::RetryPolicy;
 use restate_ingress_grpc::ReflectionRegistry;
@@ -97,6 +98,19 @@ impl Options {
     }
 }
 
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum Error {
+    #[error(transparent)]
+    RestServer(
+        #[from]
+        #[code]
+        rest_api::MetaRestServerError,
+    ),
+    #[error(transparent)]
+    #[code(unknown)]
+    MetaService(#[from] service::MetaError),
+}
+
 pub struct Meta {
     key_extractors_registry: KeyExtractorsRegistry,
     method_descriptors_registry: InMemoryMethodDescriptorRegistry,
@@ -124,7 +138,7 @@ impl Meta {
         self.service_endpoint_registry.clone()
     }
 
-    pub async fn run(self, drain: drain::Watch) {
+    pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         let meta_handle = self.service.meta_handle();
@@ -151,15 +165,16 @@ impl Meta {
 
                 debug!("Completed shutdown of meta");
             },
-            _ = &mut rest_endpoint_fut => {
-                panic!("Rest endpoint stopped running");
+            result = &mut rest_endpoint_fut => {
+                result?;
+                panic!("Unexpected termination of the meta rest server. Please contact the Restate developers.");
             },
-            res = &mut service_fut => {
-                if let Err(e) = res {
-                     error!("Cannot start meta: {e}");
-                }
-                panic!("Service stopped running");
+            result = &mut service_fut => {
+                result?;
+                panic!("Unexpected termination of the meta service. Please contact the Restate developers.");
             },
         }
+
+        Ok(())
     }
 }

@@ -1,5 +1,19 @@
+use codederror::CodedError;
 use restate_meta::Meta;
 use restate_worker::Worker;
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum ApplicationError {
+    #[error("meta failed: {0}")]
+    Meta(
+        #[from]
+        #[code]
+        restate_meta::Error,
+    ),
+    #[error("meta panicked: {0}")]
+    #[code(unknown)]
+    MetaPanic(#[from] tokio::task::JoinError),
+}
 
 pub struct Application {
     meta: Meta,
@@ -19,13 +33,28 @@ impl Application {
         Self { meta, worker }
     }
 
-    pub fn run(self) -> drain::Signal {
-        let (signal, watch) = drain::channel();
+    pub async fn run(self, drain: drain::Watch) -> Result<(), ApplicationError> {
+        let (shutdown_signal, shutdown_watch) = drain::channel();
 
-        tokio::spawn(self.meta.run(watch.clone()));
+        let mut meta_handle = tokio::spawn(self.meta.run(shutdown_watch.clone()));
+        let mut worker_handle = tokio::spawn(self.worker.run(shutdown_watch));
 
-        tokio::spawn(self.worker.run(watch));
+        let shutdown = drain.signaled();
+        tokio::pin!(shutdown);
 
-        signal
+        tokio::select! {
+            _ = shutdown => {
+                let _ = tokio::join!(shutdown_signal.drain(), meta_handle, worker_handle);
+            },
+            result = &mut meta_handle => {
+                result??;
+                panic!("Unexpected termination of meta.");
+            },
+            _ = &mut worker_handle => {
+                panic!("Unexpected termination of worker.");
+            }
+        }
+
+        Ok(())
     }
 }
