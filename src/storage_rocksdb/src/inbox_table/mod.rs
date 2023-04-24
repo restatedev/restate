@@ -10,6 +10,7 @@ use restate_storage_api::inbox_table::InboxTable;
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 
+#[derive(Debug, PartialEq)]
 pub struct InboxKeyComponents {
     pub partition_key: Option<PartitionKey>,
     pub service_name: Option<ByteString>,
@@ -52,6 +53,26 @@ impl InboxKeyComponents {
             sequence_number: bytes.has_remaining().then(|| bytes.get_u64()),
         })
     }
+}
+
+#[test]
+fn key_round_trip() {
+    let key = InboxKeyComponents {
+        partition_key: Some(1),
+        service_name: Some(ByteString::from("name")),
+        service_key: Some(Bytes::from("key")),
+        sequence_number: Some(1),
+    };
+    let mut bytes = BytesMut::new();
+    key.to_bytes(&mut bytes);
+    assert_eq!(
+        bytes,
+        BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key\0\0\0\0\0\0\0\x01".as_slice())
+    );
+    assert_eq!(
+        InboxKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+        key
+    );
 }
 
 #[inline]

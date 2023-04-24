@@ -7,6 +7,7 @@ use restate_storage_api::deduplication_table::DeduplicationTable;
 use restate_storage_api::ready;
 use tokio::sync::mpsc::Sender;
 
+#[derive(Debug, PartialEq)]
 pub struct DeduplicationKeyComponents {
     pub partition_id: Option<PartitionId>,
     pub producing_partition_id: Option<PartitionId>,
@@ -26,6 +27,24 @@ impl DeduplicationKeyComponents {
             producing_partition_id: bytes.has_remaining().then(|| bytes.get_u64()),
         }
     }
+}
+
+#[test]
+fn key_round_trip() {
+    let key = DeduplicationKeyComponents {
+        partition_id: Some(1),
+        producing_partition_id: Some(1),
+    };
+    let mut bytes = BytesMut::new();
+    key.to_bytes(&mut bytes);
+    assert_eq!(
+        bytes,
+        BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
+    );
+    assert_eq!(
+        DeduplicationKeyComponents::from_bytes(&mut bytes.freeze()),
+        key
+    );
 }
 
 impl DeduplicationTable for RocksDBTransaction {

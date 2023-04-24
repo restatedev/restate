@@ -8,6 +8,7 @@ use restate_common::types::{PartitionKey, ServiceId};
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::{ready, GetStream};
 
+#[derive(Debug, PartialEq)]
 pub struct StateKeyComponents {
     pub partition_key: Option<PartitionKey>,
     pub service_name: Option<ByteString>,
@@ -52,6 +53,26 @@ impl StateKeyComponents {
                 .transpose()?,
         })
     }
+}
+
+#[test]
+fn key_round_trip() {
+    let key = StateKeyComponents {
+        partition_key: Some(1),
+        service_name: Some(ByteString::from("name")),
+        service_key: Some(Bytes::from("key")),
+        state_key: Some(Bytes::from("key")),
+    };
+    let mut bytes = BytesMut::new();
+    key.to_bytes(&mut bytes);
+    assert_eq!(
+        bytes,
+        BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key\x03key".as_slice())
+    );
+    assert_eq!(
+        StateKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+        key
+    );
 }
 
 #[inline]

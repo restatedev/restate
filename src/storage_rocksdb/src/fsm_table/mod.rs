@@ -7,6 +7,7 @@ use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::ready;
 use tokio::sync::mpsc::Sender;
 
+#[derive(Debug, PartialEq)]
 pub struct PartitionStateMachineKeyComponents {
     pub partition_id: Option<PartitionId>,
     pub state_id: Option<u64>,
@@ -25,6 +26,24 @@ impl PartitionStateMachineKeyComponents {
             state_id: bytes.has_remaining().then(|| bytes.get_u64()),
         }
     }
+}
+
+#[test]
+fn key_round_trip() {
+    let key = PartitionStateMachineKeyComponents {
+        partition_id: Some(1),
+        state_id: Some(1),
+    };
+    let mut bytes = BytesMut::new();
+    key.to_bytes(&mut bytes);
+    assert_eq!(
+        bytes,
+        BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
+    );
+    assert_eq!(
+        PartitionStateMachineKeyComponents::from_bytes(&mut bytes.freeze()),
+        key
+    );
 }
 
 impl FsmTable for RocksDBTransaction {

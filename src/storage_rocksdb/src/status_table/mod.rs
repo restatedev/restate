@@ -13,6 +13,7 @@ use std::ops::RangeInclusive;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
+#[derive(Debug, PartialEq)]
 pub struct StatusKeyComponents {
     pub partition_key: Option<PartitionKey>,
     pub service_name: Option<ByteString>,
@@ -49,6 +50,25 @@ impl StatusKeyComponents {
                 .transpose()?,
         })
     }
+}
+
+#[test]
+fn key_round_trip() {
+    let key = StatusKeyComponents {
+        partition_key: Some(1),
+        service_name: Some(ByteString::from("name")),
+        service_key: Some(Bytes::from("key")),
+    };
+    let mut bytes = BytesMut::new();
+    key.to_bytes(&mut bytes);
+    assert_eq!(
+        bytes,
+        BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key".as_slice())
+    );
+    assert_eq!(
+        StatusKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+        key
+    );
 }
 
 fn write_status_key(key: &mut BytesMut, partition_key: PartitionKey, service_id: &ServiceId) {

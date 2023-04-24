@@ -11,6 +11,7 @@ use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 use uuid::Uuid;
 
+#[derive(Debug, PartialEq)]
 pub struct TimersKeyComponents {
     pub partition_id: Option<PartitionId>,
     pub timestamp: Option<u64>,
@@ -64,6 +65,30 @@ impl TimersKeyComponents {
             journal_index: bytes.has_remaining().then(|| bytes.get_u32()),
         })
     }
+}
+
+#[test]
+fn key_round_trip() {
+    let key = TimersKeyComponents {
+        partition_id: Some(1),
+        timestamp: Some(1),
+        service_name: Some(ByteString::from("name")),
+        service_key: Some(Bytes::from("key")),
+        invocation_id: Some(Bytes::from("id")),
+        journal_index: Some(1),
+    };
+    let mut bytes = BytesMut::new();
+    key.to_bytes(&mut bytes);
+    assert_eq!(
+        bytes,
+        BytesMut::from(
+            b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01\x04name\x03key\x02id\0\0\0\x01".as_slice()
+        )
+    );
+    assert_eq!(
+        TimersKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+        key
+    );
 }
 
 #[inline]
