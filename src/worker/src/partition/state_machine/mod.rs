@@ -63,7 +63,7 @@ pub(crate) trait StateReader {
     ) -> BoxFuture<'a, Result<Option<InboxEntry>, StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
-    fn is_entry_completed<'a>(
+    fn is_entry_resumable<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
@@ -244,14 +244,14 @@ where
                 let mut any_completed = false;
                 for entry_index in &waiting_for_completed_entries {
                     if state
-                        .is_entry_completed(&service_invocation_id.service_id, *entry_index)
+                        .is_entry_resumable(&service_invocation_id.service_id, *entry_index)
                         .await?
                     {
                         trace!(
                             rpc.service = %service_invocation_id.service_id.service_name,
                             restate.invocation.key = ?service_invocation_id.service_id.key,
                             restate.invocation.id = %service_invocation_id.invocation_id,
-                            "Resuming instead of suspending service because an awaited entry is completed.");
+                            "Resuming instead of suspending service because an awaited entry is completed/acked.");
                         any_completed = true;
                         break;
                     }

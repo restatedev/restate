@@ -190,23 +190,26 @@ where
         .boxed()
     }
 
-    fn is_entry_completed<'a>(
+    // Returns true if the entry is a completable journal entry and is completed,
+    // or if the entry is a non-completable journal entry. In the latter case,
+    // the entry must be a Custom entry with requires_ack flag.
+    fn is_entry_resumable<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<bool, StateReaderError>> {
         async move {
-            let entry_completed = self
+            Ok(self
                 .inner
                 .get_journal_entry(service_id.partition_key(), service_id, entry_index)
                 .await?
-                .and_then(|journal_entry| match journal_entry {
-                    JournalEntry::Entry(EnrichedRawEntry { header, .. }) => header.is_completed(),
-                    JournalEntry::Completion(_) => None,
+                .map(|journal_entry| match journal_entry {
+                    JournalEntry::Entry(EnrichedRawEntry { header, .. }) => {
+                        header.is_completed().unwrap_or(true)
+                    }
+                    JournalEntry::Completion(_) => false,
                 })
-                .unwrap_or_default();
-
-            Ok(entry_completed)
+                .unwrap_or(false))
         }
         .boxed()
     }
