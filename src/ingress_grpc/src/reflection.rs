@@ -76,10 +76,22 @@ impl ReflectionServiceState {
                 let maybe_file = self.files.get_mut(related_file);
                 if let Some((count, _)) = maybe_file {
                     *count += 1;
-                    // TODO should this be warn?
-                    debug!("Found a type collision when registering service {} symbol {}. \
-                    This might indicate two services are sharing the same type definitions, \
-                    which is fine as long as the type definitions are equal/compatible with each other.", service_name, symbol_name);
+                    if symbol_name.starts_with("dev.restate")
+                        || symbol_name.starts_with("google.protobuf")
+                    {
+                        trace!(
+                            "Found a type collision when registering service '{}' symbol '{}'. \
+                            For dev.restate types and google.protobuf types, \
+                            this should be fine as the definition of these types don't change.",
+                            service_name,
+                            symbol_name
+                        );
+                    } else {
+                        debug!(
+                            "Found a type collision when registering service '{}' symbol '{}'. \
+                            This might indicate two services are sharing the same type definitions, \
+                            which is fine as long as the type definitions are equal/compatible with each other.", service_name, symbol_name);
+                    }
                 } else {
                     let file_to_insert = maybe_files_to_add.get(related_file).unwrap().clone();
                     files_to_insert.insert(related_file.clone(), (1, file_to_insert));
