@@ -45,6 +45,7 @@ enum MetaHandleRequest {
     DiscoverEndpoint {
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
+        retry_policy: Option<RetryPolicy>,
     },
 }
 
@@ -57,10 +58,12 @@ impl MetaHandle {
         &self,
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
+        retry_policy: Option<RetryPolicy>,
     ) -> Result<Vec<String>, MetaError> {
         let (cmd, response_tx) = Command::prepare(MetaHandleRequest::DiscoverEndpoint {
             uri,
             additional_headers,
+            retry_policy,
         });
         self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
         response_tx
@@ -135,8 +138,8 @@ where
 
                     // If error, the client went away, so it's fine to ignore it
                     let _ = replier.send(match req {
-                        MetaHandleRequest::DiscoverEndpoint { uri, additional_headers } => MetaHandleResponse::DiscoverEndpoint(
-                            self.discover_endpoint(uri, additional_headers).await
+                        MetaHandleRequest::DiscoverEndpoint { uri, additional_headers, retry_policy } => MetaHandleResponse::DiscoverEndpoint(
+                            self.discover_endpoint(uri, additional_headers, retry_policy).await
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
@@ -181,6 +184,7 @@ where
         &mut self,
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
+        retry_policy: Option<RetryPolicy>,
     ) -> Result<Vec<String>, MetaError> {
         debug!(http.url = %uri, "Discovering Service endpoint");
 
@@ -193,7 +197,7 @@ where
         let endpoint_metadata = EndpointMetadata::new(
             uri.clone(),
             discovered_metadata.protocol_type,
-            DeliveryOptions::new(additional_headers, None), // TODO needs to support retry policies as well: https://github.com/restatedev/restate/issues/184
+            DeliveryOptions::new(additional_headers, retry_policy),
         );
         let services = discovered_metadata
             .services

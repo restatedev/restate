@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars"]
+options_schema = []
 
 [dependencies]
 # Async
@@ -22,17 +22,18 @@ tokio = { workspace = true, features = ["full"] }
 hyper = { workspace = true, features = ["full"] }
 axum = "0.6.2"
 tower = { workspace = true, features = ["load-shed", "limit"] }
+okapi-operation = { git = "https://github.com/Flowneee/okapi-operation.git", features = ["axum-integration"], rev = "e16e9d6aa9ee9473fa8cb214f89bac2459907ebe" }
 
 # Serde
 serde = { workspace = true }
 serde_with = { workspace = true }
 serde_json = "1.0"
-schemars = { workspace = true, optional = true }
+schemars = { workspace = true }
 
 # Service discovery and metadata
 restate_common = { workspace = true, features = ["serde"] }
 restate_service_key_extractor = { workspace = true }
-restate_service_metadata = { workspace = true, features = ["serde"] }
+restate_service_metadata = { workspace = true, features = ["serde", "serde_schema"] }
 restate_service_protocol = { workspace = true, features = ["discovery"] }
 prost-reflect = { workspace = true }
 base64 = "0.21.0"

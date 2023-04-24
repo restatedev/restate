@@ -909,7 +909,7 @@ dependencies = [
  "atomic",
  "pear",
  "serde",
- "serde_yaml",
+ "serde_yaml 0.9.21",
  "uncased",
  "version_check",
 ]
@@ -1411,6 +1411,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "linked-hash-map"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0717cef1bc8b636c6e1c1bbdefc09e6322da8a9321966e8928ef80d20f7f770f"
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1570,6 +1576,48 @@ checksum = "0fac9e2da13b5eb447a6ce3d392f23a29d8694bff781bf03a16cd9ac8697593b"
 dependencies = [
  "hermit-abi 0.2.6",
  "libc",
+]
+
+[[package]]
+name = "okapi"
+version = "0.7.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce66b6366e049880a35c378123fddb630b1a1a3c37fa1ca70caaf4a09f6e2893"
+dependencies = [
+ "log",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "okapi-operation"
+version = "0.1.3"
+source = "git+https://github.com/Flowneee/okapi-operation.git?rev=e16e9d6aa9ee9473fa8cb214f89bac2459907ebe#e16e9d6aa9ee9473fa8cb214f89bac2459907ebe"
+dependencies = [
+ "anyhow",
+ "axum",
+ "http",
+ "okapi",
+ "okapi-operation-macro",
+ "paste",
+ "serde",
+ "serde_json",
+ "serde_yaml 0.8.26",
+ "tower",
+]
+
+[[package]]
+name = "okapi-operation-macro"
+version = "0.1.2"
+source = "git+https://github.com/Flowneee/okapi-operation.git?rev=e16e9d6aa9ee9473fa8cb214f89bac2459907ebe#e16e9d6aa9ee9473fa8cb214f89bac2459907ebe"
+dependencies = [
+ "darling",
+ "lazy_static",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+ "thiserror",
 ]
 
 [[package]]
@@ -2137,7 +2185,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_with",
- "serde_yaml",
+ "serde_yaml 0.9.21",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2302,6 +2350,7 @@ dependencies = [
  "drain",
  "futures",
  "hyper",
+ "okapi-operation",
  "prost-reflect",
  "restate_common",
  "restate_errors",
@@ -2371,6 +2420,7 @@ dependencies = [
  "prost-reflect",
  "restate_common",
  "restate_service_key_extractor",
+ "schemars",
  "serde",
  "serde_with",
 ]
@@ -2654,6 +2704,7 @@ checksum = "02c613288622e5f0c3fdc5dbd4db1c5fbe752746b1d1a56a0630b78fd00de44f"
 dependencies = [
  "bytes",
  "dyn-clone",
+ "indexmap",
  "schemars_derive",
  "serde",
  "serde_json",
@@ -2815,6 +2866,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "serde_yaml"
+version = "0.8.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "578a7433b776b56a35785ed5ce9a7e777ac0598aac5a6dd1b4b18a307c7fc71b"
+dependencies = [
+ "indexmap",
+ "ryu",
+ "serde",
+ "yaml-rust",
 ]
 
 [[package]]
@@ -3782,6 +3845,15 @@ name = "xxhash-rust"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "735a71d46c4d68d71d4b24d03fdc2b98e38cea81730595801db779c04fe80d70"
+
+[[package]]
+name = "yaml-rust"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56c1936c4cc7a1c9ab21a1ebb602eb942ba868cbd44a99cb7cdc5892335e1c85"
+dependencies = [
+ "linked-hash-map",
+]
 
 [[package]]
 name = "yansi"

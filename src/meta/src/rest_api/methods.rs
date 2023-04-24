@@ -2,17 +2,25 @@ use super::error::*;
 use super::state::*;
 use axum::extract::{Path, State};
 use axum::Json;
+use okapi_operation::*;
 use restate_service_metadata::MethodDescriptorRegistry;
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::sync::Arc;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListServiceMethodsResponse {
     methods: Vec<GetServiceMethodResponse>,
 }
 
 /// List discovered methods for service
+#[openapi(
+    summary = "List service methods",
+    operation_id = "list_service_methods",
+    tags = "service_method",
+    parameters(path(name = "service", schema = "std::string::String"))
+)]
 pub async fn list_service_methods<S, M: MethodDescriptorRegistry>(
     State(state): State<Arc<RestEndpointState<S, M>>>,
     Path(service_name): Path<String>,
@@ -35,7 +43,7 @@ pub async fn list_service_methods<S, M: MethodDescriptorRegistry>(
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GetServiceMethodResponse {
     service_name: String,
@@ -43,6 +51,15 @@ pub struct GetServiceMethodResponse {
 }
 
 /// Get an method of a service
+#[openapi(
+    summary = "Get service method",
+    operation_id = "get_service_method",
+    tags = "service_method",
+    parameters(
+        path(name = "service", schema = "std::string::String"),
+        path(name = "method", schema = "std::string::String")
+    )
+)]
 pub async fn get_service_method<S, M: MethodDescriptorRegistry>(
     State(state): State<Arc<RestEndpointState<S, M>>>,
     Path((service_name, method_name)): Path<(String, String)>,
