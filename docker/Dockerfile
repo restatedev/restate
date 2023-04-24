@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM rust:1.66-bullseye AS tools
+FROM --platform=$BUILDPLATFORM rust:1.67.1-bullseye AS tools
 # prepopulate cargo index
 RUN cargo search --limit=0
 RUN apt update && apt upgrade -y
