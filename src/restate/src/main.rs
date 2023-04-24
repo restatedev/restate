@@ -2,7 +2,7 @@ use app::Application;
 use clap::Parser;
 use codederror::CodedError;
 use restate::Configuration;
-use restate_errors::fmt::CodedErrorExt;
+use restate_errors::fmt::RestateCode;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
@@ -37,7 +37,7 @@ fn main() {
         Err(e) => {
             // We cannot use tracing here as it's not configured yet
             println!("{}", e.decorate());
-            e.print_description_as_markdown();
+            println!("{:#?}", RestateCode::from(&e));
             std::process::exit(EXIT_CODE_FAILURE);
         }
     };

@@ -2489,6 +2489,7 @@ dependencies = [
 name = "restate_tracing_instrumentation"
 version = "0.1.0"
 dependencies = [
+ "codederror",
  "console-subscriber",
  "nu-ansi-term",
  "opentelemetry",
