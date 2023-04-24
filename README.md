@@ -21,7 +21,7 @@ Restate supports the following SDKs:
 You can start the runtime via:
 
 ```shell
-RUST_LOG=info just run --release
+just run --release
 ```
 
 In order to change the log level, configure the [`RUST_LOG` env variable](https://rust-lang-nursery.github.io/rust-cookbook/development_tools/debugging/config_log.html#enable-log-levels-per-module) respectively.
