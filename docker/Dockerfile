@@ -37,6 +37,6 @@ COPY --from=builder /restate/target/release/restate /usr/local/bin
 COPY --from=builder /restate/NOTICE /NOTICE
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
-ENV RUST_LOG="warn,runtime=info"
+ENV RUST_LOG="warn,restate=info"
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/restate"]
