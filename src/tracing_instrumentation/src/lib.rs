@@ -5,6 +5,7 @@ use opentelemetry::trace::TraceError;
 use pretty::Pretty;
 use std::fmt::Display;
 use tracing::Level;
+use tracing_subscriber::filter::ParseError;
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
@@ -13,9 +14,14 @@ use tracing_subscriber::{EnvFilter, Layer};
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
-pub struct Error {
-    #[from]
-    trace_error: TraceError,
+pub enum Error {
+    #[error("could not initialize tracing: {0}")]
+    Tracing(#[from] TraceError),
+    #[error(
+        "cannot parse log configuration {} environment variable: {0}",
+        EnvFilter::DEFAULT_ENV
+    )]
+    LogDirectiveParseError(#[from] ParseError),
 }
 
 pub type TracingResult<T> = Result<T, Error>;
@@ -93,8 +99,17 @@ impl Options {
                 .boxed(),
         };
 
+        // Check if we have env variable
+        let env_filter = if let Ok(var) = std::env::var(EnvFilter::DEFAULT_ENV) {
+            EnvFilter::builder().parse(var)?
+        } else {
+            EnvFilter::new("warn,restate=info")
+        };
+
+        println!("LOG: {}", env_filter);
+
         let layers = tracing_subscriber::registry()
-            .with(EnvFilter::from_default_env())
+            .with(env_filter)
             .with(fmt_layer);
         #[cfg(feature = "console-subscriber")]
         let layers = layers.with(console_subscriber::spawn());
