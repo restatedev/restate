@@ -341,7 +341,7 @@ impl<'a> RestateErrorCodeWriter<'a> {
 impl<'a> field::Visit for RestateErrorCodeWriter<'a> {
     fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
         if field.name() == "restate.error.code" {
-            self.result = write!(self.writer, "{:#?}\n", value)
+            self.result = writeln!(self.writer, "{:#?}", value)
         }
     }
 }
