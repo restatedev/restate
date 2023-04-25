@@ -7,7 +7,7 @@ use datafusion::arrow::datatypes::{DataType, Field, UInt64Type};
 use prost_reflect::DynamicMessage;
 use serde::Serialize;
 
-use crate::storage::v1::Batch;
+use crate::storage::v1::Pair;
 use crate::table::DESCRIPTOR_POOL;
 
 pub(crate) fn is_value_field(field: &Field) -> bool {
@@ -48,17 +48,17 @@ pub(crate) fn value_field(table_name: &str) -> Field {
     }
 }
 
-pub(crate) fn value_to_typed(field: &Field, batch: Batch) -> ArrayRef {
+pub(crate) fn value_to_typed(field: &Field, batch: Vec<Pair>) -> ArrayRef {
     match field.data_type() {
         DataType::Binary => Arc::new(BinaryArray::from_iter_values(
-            batch.items.iter().map(|item| item.value.clone()),
+            batch.iter().map(|item| item.value.clone()),
         )),
         DataType::Utf8 => {
             if let Some(message) = field.metadata().get("proto_message") {
                 let desc = DESCRIPTOR_POOL
                     .get_message_by_name(message)
                     .unwrap_or_else(|| panic!("must have message {message} in descriptor pool"));
-                Arc::new(StringArray::from_iter_values(batch.items.iter().map(|item| {
+                Arc::new(StringArray::from_iter_values(batch.iter().map(|item| {
                     let dynamic = DynamicMessage::decode(desc.clone(), item.value.clone())
                         .unwrap_or_else(|err| panic!("failed to parse value bytes from field {field} with error {err}. perhaps you need to update your cli?"));
 
@@ -74,7 +74,7 @@ pub(crate) fn value_to_typed(field: &Field, batch: Batch) -> ArrayRef {
             }
         }
         DataType::UInt64 => Arc::new(PrimitiveArray::<UInt64Type>::from_iter_values(
-            batch.items.iter().map(|item| item.value.clone().get_u64()),
+            batch.iter().map(|item| item.value.clone().get_u64()),
         )),
         _ => panic!(
             "received a value field {} with a type we don't know how to parse",

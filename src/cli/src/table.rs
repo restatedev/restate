@@ -19,7 +19,7 @@ use datafusion::physical_plan::{
     DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream,
 };
 use datafusion::prelude::SessionContext;
-use futures::{stream, FutureExt, StreamExt};
+use futures::{stream, FutureExt, StreamExt, TryStreamExt};
 use once_cell::sync::Lazy;
 use prost::Message;
 use prost_reflect::{
@@ -28,7 +28,7 @@ use prost_reflect::{
 use tracing::info;
 
 use crate::storage::v1::storage_client::StorageClient;
-use crate::storage::v1::Batch;
+use crate::storage::v1::Pair;
 use crate::value::{is_value_field, value_field, value_to_typed};
 
 pub(crate) static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
@@ -339,7 +339,7 @@ impl ExecutionPlan for GrpcExec {
     fn execute(
         &self,
         _partition: usize,
-        _context: Arc<TaskContext>,
+        ctx: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
         info!("executing {:?}", self.request);
 
@@ -367,6 +367,7 @@ impl ExecutionPlan for GrpcExec {
                     let name = name.clone();
                     let schema = schema.clone();
                     resp.into_inner()
+                        .try_chunks(ctx.session_config().batch_size())
                         .map(move |batch| {
                             batch
                                 .map_err(|err| DataFusionError::External(Box::new(err)))
@@ -405,30 +406,32 @@ impl ExecutionPlan for GrpcExec {
     }
 }
 
-fn batch_to_record_batch(table_name: &str, schema: SchemaRef, batch: Batch) -> RecordBatch {
-    info!("received batch with {} items", batch.items.len());
-    if batch.items.len() == 0 {
+fn batch_to_record_batch(table_name: &str, schema: SchemaRef, batch: Vec<Pair>) -> RecordBatch {
+    info!("received batch with {} items", batch.len());
+    if batch.len() == 0 {
         return RecordBatch::new_empty(schema.clone());
     }
-    let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields.len());
-    let mut keys = Vec::with_capacity(batch.items.len());
-    for item in &batch.items {
-        let mut dynamic = DynamicMessage::new(KEY_DESC.clone());
-        dynamic
-            .transcode_from(item.key.as_ref().expect("key must be provided"))
-            .expect("problem trancoding key");
-        if let Value::Message(item) = dynamic
-            .get_field_by_name(table_name)
-            .expect(format!("{table_name} must be present in key oneof").as_str())
-            .as_ref()
-        {
-            keys.push(item.clone())
-        } else {
-            panic!("{table_name} must be a message")
-        }
-    }
+    let keys: Vec<_> = batch
+        .iter()
+        .map(|pair| {
+            let mut key = DynamicMessage::new(KEY_DESC.clone());
+            key.transcode_from(pair.key.as_ref().expect("key must be provided"))
+                .expect("problem trancoding key");
+            if let Value::Message(key) = key
+                .get_field_by_name(table_name)
+                .expect(format!("{table_name} must be present in key oneof").as_str())
+                .as_ref()
+            {
+                key.clone()
+            } else {
+                panic!("{table_name} must be a message")
+            }
+        })
+        .collect();
 
     let mut value_field: Option<String> = None;
+
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields.len());
 
     for field in &schema.fields {
         if is_value_field(field) {
