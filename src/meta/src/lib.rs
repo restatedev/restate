@@ -76,6 +76,10 @@ impl Options {
         self.rest_address
     }
 
+    pub fn storage_path(&self) -> &str {
+        &self.storage_path
+    }
+
     pub fn build(self) -> Meta {
         let key_extractors_registry = KeyExtractorsRegistry::default();
         let method_descriptors_registry = InMemoryMethodDescriptorRegistry::default();
