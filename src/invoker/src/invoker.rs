@@ -176,6 +176,7 @@ type HttpsClient =
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "InvokerOptions"))]
+#[serde(rename_all = "camelCase")]
 pub struct Options {
     /// # Retry policy
     ///
@@ -208,7 +209,7 @@ pub struct Options {
     /// this timer will start as soon as the replay of the journal is completed.
     /// When protocol mode is `restate_service_metadata::ProtocolType::BidiStream`,
     /// this timer will start after the request stream has been closed.
-    /// Check `suspension_timeout` to configure a timer on the request stream.
+    /// Check `suspensionTimeout` to configure a timer on the request stream.
     ///
     /// When this timer is fired, the response stream will be aborted,
     /// potentially **interrupting** user code! If the user code needs longer to complete,

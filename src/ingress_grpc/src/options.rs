@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "IngressOptions"))]
+#[serde(rename_all = "camelCase")]
 pub struct Options {
     /// # Bind address
     ///

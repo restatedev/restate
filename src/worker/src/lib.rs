@@ -45,6 +45,7 @@ type PartitionProcessor = partition::PartitionProcessor<
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "WorkerOptions"))]
+#[serde(rename_all = "camelCase")]
 pub struct Options {
     /// # Bounded channel size
     #[cfg_attr(

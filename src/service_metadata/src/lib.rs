@@ -20,6 +20,7 @@ pub enum ProtocolType {
 
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct DeliveryOptions {
     #[cfg_attr(
         feature = "serde",
@@ -84,6 +85,7 @@ impl DeliveryOptions {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", serde_with::serde_as)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct EndpointMetadata {
     #[cfg_attr(
         feature = "serde",
@@ -126,6 +128,7 @@ impl EndpointMetadata {
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ServiceMetadata {
     name: String,
     instance_type: ServiceInstanceType,

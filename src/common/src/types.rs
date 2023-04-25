@@ -36,6 +36,7 @@ pub type InvocationId = Uuid;
 /// that makes the id unique.
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ServiceInvocationId {
     /// Identifies the invoked service
     pub service_id: ServiceId,
@@ -75,6 +76,7 @@ impl ServiceInvocationId {
 /// invocations for the same service instance (service name, key).
 #[derive(Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ServiceId {
     /// Identifies the grpc service
     pub service_name: ByteString,

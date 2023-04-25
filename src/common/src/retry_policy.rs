@@ -52,6 +52,7 @@ pub enum RetryPolicy {
     /// # Fixed delay
     ///
     /// Retry with a fixed delay strategy.
+    #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
     FixedDelay {
         /// # Interval
         ///
@@ -72,6 +73,7 @@ pub enum RetryPolicy {
     /// # Exponential
     ///
     /// Retry with an exponential strategy. The next retry is computed as `min(last_retry_interval * factor, max_interval)`.
+    #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
     Exponential {
         /// # Initial Interval
         ///

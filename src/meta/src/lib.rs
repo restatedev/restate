@@ -20,6 +20,7 @@ use tracing::{debug, error};
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "MetaOptions"))]
+#[serde(rename_all = "camelCase")]
 pub struct Options {
     /// # Rest endpoint address
     ///

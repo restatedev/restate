@@ -83,6 +83,7 @@ pub enum CompressionType {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "StorageOptions"))]
+#[serde(rename_all = "camelCase")]
 pub struct Options {
     /// # Storage path
     ///

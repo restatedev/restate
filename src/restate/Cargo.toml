@@ -17,6 +17,7 @@ options_schema = ["dep:schemars", "restate_tracing_instrumentation/options_schem
 [dependencies]
 clap = { version = "4.1", features = ["derive", "env"] }
 codederror = { workspace = true }
+convert_case = "0.6.0"
 drain = { workspace = true }
 figment = { version = "0.10.8", features = ["env", "yaml"] }
 schemars = { workspace = true, optional = true }
@@ -37,6 +38,7 @@ restate_worker = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2.0.10"
+figment = { version = "*", features = ["test"] }
 hyper = { workspace = true }
 rand = "0.8.5"
 tempfile = "3.4.0"

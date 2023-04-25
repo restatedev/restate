@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "TimerOptions"))]
+#[serde(rename_all = "camelCase")]
 pub struct Options {
     /// # Num timers in memory limit
     ///
