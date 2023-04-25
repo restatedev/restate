@@ -25,7 +25,7 @@ restate_storage_api = { workspace = true }
 serde = {workspace = true}
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-rocksdb = "0.20.1"
+rocksdb = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.4.0"

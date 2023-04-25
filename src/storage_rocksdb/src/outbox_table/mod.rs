@@ -1,13 +1,49 @@
 use crate::composite_keys::u64_pair;
 use crate::TableKind::Outbox;
 use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBTransaction};
-use bytes::BufMut;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
 use restate_common::types::{OutboxMessage, PartitionId};
 use restate_storage_api::outbox_table::OutboxTable;
 use restate_storage_api::{ready, StorageError};
 use restate_storage_proto::storage;
 use std::ops::Range;
+
+#[derive(Debug, PartialEq)]
+pub struct OutboxKeyComponents {
+    pub partition_id: Option<PartitionId>,
+    pub message_index: Option<u64>,
+}
+
+impl OutboxKeyComponents {
+    pub(crate) fn to_bytes(&self, bytes: &mut BytesMut) -> Option<()> {
+        self.partition_id
+            .map(|partition_id| bytes.put_u64(partition_id))?;
+        self.message_index.map(|state_id| bytes.put_u64(state_id))
+    }
+
+    pub(crate) fn from_bytes(bytes: &mut Bytes) -> Self {
+        Self {
+            partition_id: bytes.has_remaining().then(|| bytes.get_u64()),
+            message_index: bytes.has_remaining().then(|| bytes.get_u64()),
+        }
+    }
+}
+
+#[test]
+fn key_round_trip() {
+    let key = OutboxKeyComponents {
+        partition_id: Some(1),
+        message_index: Some(1),
+    };
+    let mut bytes = BytesMut::new();
+    key.to_bytes(&mut bytes);
+    assert_eq!(
+        bytes,
+        BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
+    );
+    assert_eq!(OutboxKeyComponents::from_bytes(&mut bytes.freeze()), key);
+}
 
 impl OutboxTable for RocksDBTransaction {
     fn add_message(

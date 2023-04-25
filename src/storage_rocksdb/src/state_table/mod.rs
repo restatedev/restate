@@ -1,10 +1,79 @@
 use crate::composite_keys::{read_delimited, skip_delimited, write_delimited};
+use crate::Result;
 use crate::TableKind::State;
 use crate::{GetFuture, PutFuture, RocksDBTransaction};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytestring::ByteString;
 use restate_common::types::{PartitionKey, ServiceId};
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::{ready, GetStream};
+
+#[derive(Debug, PartialEq)]
+pub struct StateKeyComponents {
+    pub partition_key: Option<PartitionKey>,
+    pub service_name: Option<ByteString>,
+    pub service_key: Option<Bytes>,
+    pub state_key: Option<Bytes>,
+}
+
+impl StateKeyComponents {
+    pub(crate) fn to_bytes(&self, bytes: &mut BytesMut) -> Option<()> {
+        self.partition_key
+            .map(|partition_key| bytes.put_u64(partition_key))?;
+        self.service_name
+            .as_ref()
+            .map(|s| write_delimited(s, bytes))?;
+        self.service_key
+            .as_ref()
+            .map(|s| write_delimited(s, bytes))?;
+        self.state_key.as_ref().map(|s| write_delimited(s, bytes))
+    }
+
+    pub(crate) fn from_bytes(bytes: &mut Bytes) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(Self {
+            partition_key: bytes.has_remaining().then(|| bytes.get_u64()),
+            service_name: bytes
+                .has_remaining()
+                .then(|| {
+                    read_delimited(bytes)
+                        // SAFETY: this is safe since the service name was constructed from a ByteString.
+                        .map(|name| unsafe { ByteString::from_bytes_unchecked(name) })
+                })
+                .transpose()?,
+            service_key: bytes
+                .has_remaining()
+                .then(|| read_delimited(bytes))
+                .transpose()?,
+            state_key: bytes
+                .has_remaining()
+                .then(|| read_delimited(bytes))
+                .transpose()?,
+        })
+    }
+}
+
+#[test]
+fn key_round_trip() {
+    let key = StateKeyComponents {
+        partition_key: Some(1),
+        service_name: Some(ByteString::from("name")),
+        service_key: Some(Bytes::from("key")),
+        state_key: Some(Bytes::from("key")),
+    };
+    let mut bytes = BytesMut::new();
+    key.to_bytes(&mut bytes);
+    assert_eq!(
+        bytes,
+        BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key\x03key".as_slice())
+    );
+    assert_eq!(
+        StateKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+        key
+    );
+}
 
 #[inline]
 fn write_state_entry_key(

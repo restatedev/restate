@@ -2,7 +2,7 @@ syntax = "proto3";
 
 import "google/protobuf/empty.proto";
 
-package dev.restate.storage.v1;
+package dev.restate.storage.domain.v1;
 
 // ---------------------------------------------------------------------
 // Common

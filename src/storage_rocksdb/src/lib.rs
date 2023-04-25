@@ -8,6 +8,14 @@ pub mod state_table;
 pub mod status_table;
 pub mod timer_table;
 
+use crate::deduplication_table::DeduplicationKeyComponents;
+use crate::fsm_table::PartitionStateMachineKeyComponents;
+use crate::inbox_table::InboxKeyComponents;
+use crate::journal_table::JournalKeyComponents;
+use crate::outbox_table::OutboxKeyComponents;
+use crate::state_table::StateKeyComponents;
+use crate::status_table::StatusKeyComponents;
+use crate::timer_table::TimersKeyComponents;
 use crate::TableKind::{
     Deduplication, Inbox, Journal, Outbox, PartitionStateMachine, State, Status, Timers,
 };
@@ -15,21 +23,20 @@ use bytes::{BufMut, Bytes, BytesMut};
 use futures::{ready, FutureExt, Stream};
 use futures_util::future::ok;
 use futures_util::StreamExt;
+use restate_storage_api::{GetFuture, GetStream, PutFuture, Storage, StorageError, Transaction};
+use rocksdb::DBCompressionType::Lz4;
 use rocksdb::{
     ColumnFamily, DBCompressionType, DBPinnableSlice, DBRawIteratorWithThreadMode, PrefixRange,
     ReadOptions, SingleThreaded, WriteBatch,
 };
 use std::pin::Pin;
-
-use restate_storage_api::{GetFuture, GetStream, PutFuture, Storage, StorageError, Transaction};
-use rocksdb::DBCompressionType::Lz4;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
 type DB = rocksdb::DBWithThreadMode<SingleThreaded>;
-type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
+pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
 
 const STATE_TABLE_NAME: &str = "state";
 const STATUS_TABLE_NAME: &str = "status";
@@ -56,7 +63,77 @@ fn cf_name(kind: TableKind) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Clone)]
+pub enum RocksDBKey {
+    Full(TableKind, Vec<u8>),
+    Partial(TableKind, Vec<u8>),
+}
+
+impl RocksDBKey {
+    pub fn table(&self) -> TableKind {
+        match self {
+            RocksDBKey::Full(table, _) | RocksDBKey::Partial(table, _) => *table,
+        }
+    }
+    pub fn key(self) -> Vec<u8> {
+        match self {
+            RocksDBKey::Full(_, key) | RocksDBKey::Partial(_, key) => key,
+        }
+    }
+}
+
+pub enum Key {
+    State(StateKeyComponents),
+    Status(StatusKeyComponents),
+    Inbox(InboxKeyComponents),
+    Outbox(OutboxKeyComponents),
+    Deduplication(DeduplicationKeyComponents),
+    PartitionStateMachine(PartitionStateMachineKeyComponents),
+    Timers(TimersKeyComponents),
+    Journal(JournalKeyComponents),
+}
+
+impl Key {
+    pub fn to_bytes(&self) -> RocksDBKey {
+        let mut bytes = BytesMut::new();
+        let result = |table: TableKind, opt: Option<()>, bytes: BytesMut| match opt {
+            Some(()) => RocksDBKey::Full(table, bytes.to_vec()),
+            None => RocksDBKey::Partial(table, bytes.to_vec()),
+        };
+        match self {
+            Key::State(state) => result(State, state.to_bytes(&mut bytes), bytes),
+            Key::Status(status) => result(Status, status.to_bytes(&mut bytes), bytes),
+            Key::Inbox(inbox) => result(Inbox, inbox.to_bytes(&mut bytes), bytes),
+            Key::Outbox(outbox) => result(Outbox, outbox.to_bytes(&mut bytes), bytes),
+            Key::Deduplication(deduplication) => {
+                result(Deduplication, deduplication.to_bytes(&mut bytes), bytes)
+            }
+            Key::PartitionStateMachine(psm) => {
+                result(PartitionStateMachine, psm.to_bytes(&mut bytes), bytes)
+            }
+            Key::Timers(timers) => result(Timers, timers.to_bytes(&mut bytes), bytes),
+            Key::Journal(journal) => result(Journal, journal.to_bytes(&mut bytes), bytes),
+        }
+    }
+
+    pub fn from_bytes(table: TableKind, bytes: &[u8]) -> Result<Self> {
+        let mut bytes = Bytes::copy_from_slice(bytes);
+        Ok(match table {
+            State => Key::State(StateKeyComponents::from_bytes(&mut bytes)?),
+            Status => Key::Status(StatusKeyComponents::from_bytes(&mut bytes)?),
+            Inbox => Key::Inbox(InboxKeyComponents::from_bytes(&mut bytes)?),
+            Outbox => Key::Outbox(OutboxKeyComponents::from_bytes(&mut bytes)),
+            Deduplication => Key::Deduplication(DeduplicationKeyComponents::from_bytes(&mut bytes)),
+            PartitionStateMachine => Key::PartitionStateMachine(
+                PartitionStateMachineKeyComponents::from_bytes(&mut bytes),
+            ),
+            Timers => Key::Timers(TimersKeyComponents::from_bytes(&mut bytes)?),
+            Journal => Key::Journal(JournalKeyComponents::from_bytes(&mut bytes)?),
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TableKind {
     State,
     Status,
@@ -195,7 +272,7 @@ impl RocksDBStorage {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
-    fn get_owned<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<Bytes>> {
+    pub fn get_owned<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<Bytes>> {
         let bytes = self
             .get(table, key)?
             .map(|slice| Bytes::copy_from_slice(slice.as_ref()));
@@ -218,7 +295,7 @@ impl RocksDBStorage {
         Ok(Some(decoded_message))
     }
 
-    fn prefix_iterator<K: Into<Vec<u8>>>(&self, table: TableKind, prefix: K) -> DBIterator {
+    pub fn prefix_iterator<K: Into<Vec<u8>>>(&self, table: TableKind, prefix: K) -> DBIterator {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
 
@@ -227,7 +304,11 @@ impl RocksDBStorage {
         self.db.raw_iterator_cf_opt(&table, opts)
     }
 
-    fn range_iterator(&self, table: TableKind, range: impl rocksdb::IterateBounds) -> DBIterator {
+    pub fn range_iterator(
+        &self,
+        table: TableKind,
+        range: impl rocksdb::IterateBounds,
+    ) -> DBIterator {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
         opts.set_iterate_range(range);
@@ -310,7 +391,7 @@ impl RocksDBTransaction {
     }
 
     #[inline]
-    fn spawn_background_scan<F, R>(&self, f: F) -> GetStream<'static, R>
+    pub fn spawn_background_scan<F, R>(&self, f: F) -> GetStream<'static, R>
     where
         F: FnOnce(RocksDBStorage, Sender<Result<R>>) + Send + 'static,
         R: Send + 'static,

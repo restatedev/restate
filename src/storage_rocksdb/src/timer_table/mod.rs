@@ -1,4 +1,5 @@
 use crate::composite_keys::{read_delimited, write_delimited};
+use crate::Result;
 use crate::TableKind::Timers;
 use crate::{write_proto_infallible, PutFuture, RocksDBTransaction};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -9,6 +10,86 @@ use restate_storage_api::timer_table::TimerTable;
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 use uuid::Uuid;
+
+#[derive(Debug, PartialEq)]
+pub struct TimersKeyComponents {
+    pub partition_id: Option<PartitionId>,
+    pub timestamp: Option<u64>,
+    pub service_name: Option<ByteString>,
+    pub service_key: Option<Bytes>,
+    pub invocation_id: Option<Bytes>,
+    pub journal_index: Option<u32>,
+}
+
+impl TimersKeyComponents {
+    pub(crate) fn to_bytes(&self, bytes: &mut BytesMut) -> Option<()> {
+        self.partition_id
+            .map(|partition_id| bytes.put_u64(partition_id))?;
+        self.timestamp.map(|timestamp| bytes.put_u64(timestamp))?;
+        self.service_name
+            .as_ref()
+            .map(|s| write_delimited(s, bytes))?;
+        self.service_key
+            .as_ref()
+            .map(|s| write_delimited(s, bytes))?;
+        self.invocation_id
+            .as_ref()
+            .map(|s| write_delimited(s, bytes))?;
+        self.journal_index
+            .map(|journal_index| bytes.put_u32(journal_index))
+    }
+
+    pub(crate) fn from_bytes(bytes: &mut Bytes) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(Self {
+            partition_id: bytes.has_remaining().then(|| bytes.get_u64()),
+            timestamp: bytes.has_remaining().then(|| bytes.get_u64()),
+            service_name: bytes
+                .has_remaining()
+                .then(|| {
+                    read_delimited(bytes)
+                        // SAFETY: this is safe since the service name was constructed from a ByteString.
+                        .map(|name| unsafe { ByteString::from_bytes_unchecked(name) })
+                })
+                .transpose()?,
+            service_key: bytes
+                .has_remaining()
+                .then(|| read_delimited(bytes))
+                .transpose()?,
+            invocation_id: bytes
+                .has_remaining()
+                .then(|| read_delimited(bytes))
+                .transpose()?,
+            journal_index: bytes.has_remaining().then(|| bytes.get_u32()),
+        })
+    }
+}
+
+#[test]
+fn key_round_trip() {
+    let key = TimersKeyComponents {
+        partition_id: Some(1),
+        timestamp: Some(1),
+        service_name: Some(ByteString::from("name")),
+        service_key: Some(Bytes::from("key")),
+        invocation_id: Some(Bytes::from("id")),
+        journal_index: Some(1),
+    };
+    let mut bytes = BytesMut::new();
+    key.to_bytes(&mut bytes);
+    assert_eq!(
+        bytes,
+        BytesMut::from(
+            b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01\x04name\x03key\x02id\0\0\0\x01".as_slice()
+        )
+    );
+    assert_eq!(
+        TimersKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+        key
+    );
+}
 
 #[inline]
 fn write_timer_key(key: &mut BytesMut, partition_id: PartitionId, timer_key: &TimerKey) {

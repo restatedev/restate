@@ -3,7 +3,10 @@ pub mod storage {
         #![allow(warnings)]
         #![allow(clippy::all)]
         #![allow(unknown_lints)]
-        include!(concat!(env!("OUT_DIR"), "/dev.restate.storage.v1.rs"));
+        include!(concat!(
+            env!("OUT_DIR"),
+            "/dev.restate.storage.domain.v1.rs"
+        ));
 
         #[cfg(feature = "conversion")]
         pub mod pb_conversion {

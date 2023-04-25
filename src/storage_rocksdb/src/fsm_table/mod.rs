@@ -1,11 +1,50 @@
 use crate::composite_keys::{u64_pair, u64_pair_from_slice};
 use crate::TableKind::PartitionStateMachine;
-use crate::{GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
-use bytes::Bytes;
+use crate::{GetFuture, GetStream, PutFuture, RocksDBStorage, RocksDBTransaction};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use restate_common::types::PartitionId;
 use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::{ready, GetStream};
+use restate_storage_api::ready;
 use tokio::sync::mpsc::Sender;
+
+#[derive(Debug, PartialEq)]
+pub struct PartitionStateMachineKeyComponents {
+    pub partition_id: Option<PartitionId>,
+    pub state_id: Option<u64>,
+}
+
+impl PartitionStateMachineKeyComponents {
+    pub(crate) fn to_bytes(&self, bytes: &mut BytesMut) -> Option<()> {
+        self.partition_id
+            .map(|partition_id| bytes.put_u64(partition_id))?;
+        self.state_id.map(|state_id| bytes.put_u64(state_id))
+    }
+
+    pub(crate) fn from_bytes(bytes: &mut Bytes) -> Self {
+        Self {
+            partition_id: bytes.has_remaining().then(|| bytes.get_u64()),
+            state_id: bytes.has_remaining().then(|| bytes.get_u64()),
+        }
+    }
+}
+
+#[test]
+fn key_round_trip() {
+    let key = PartitionStateMachineKeyComponents {
+        partition_id: Some(1),
+        state_id: Some(1),
+    };
+    let mut bytes = BytesMut::new();
+    key.to_bytes(&mut bytes);
+    assert_eq!(
+        bytes,
+        BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
+    );
+    assert_eq!(
+        PartitionStateMachineKeyComponents::from_bytes(&mut bytes.freeze()),
+        key
+    );
+}
 
 impl FsmTable for RocksDBTransaction {
     fn get(&mut self, partition_id: PartitionId, state_id: u64) -> GetFuture<Option<Bytes>> {

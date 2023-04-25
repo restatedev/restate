@@ -35,6 +35,7 @@ prost = "0.11"
 prost-types = "0.11"
 prost-reflect = "0.11.1"
 prost-build = "0.11"
+rocksdb = "0.20.1"
 schemars = { version = "0.8", features = ["bytes"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_with = "2.2"
@@ -69,6 +70,7 @@ restate_service_key_extractor = { path = "src/service_key_extractor" }
 restate_service_metadata = { path = "src/service_metadata" }
 restate_service_protocol = { path = "src/service_protocol" }
 restate_storage_api = {path = "src/storage_api"}
+restate_storage_grpc = {path = "src/storage_grpc"}
 restate_storage_proto = {path = "src/storage_proto"}
 restate_storage_rocksdb = { path = "src/storage_rocksdb" }
 restate_test_utils = { path = "src/test_utils" }
