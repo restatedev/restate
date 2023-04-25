@@ -89,7 +89,7 @@ message Key {
 
 message Range {
   // the first key that should be returned, or the first matching key if this is partial
-  optional Key start = 1;
+  Key start = 1;
   // the last key that should be returned, or the last matching key if this is partial
-  optional Key end = 2;
+  Key end = 2;
 }

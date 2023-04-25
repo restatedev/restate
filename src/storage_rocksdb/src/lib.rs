@@ -75,7 +75,7 @@ impl RocksDBKey {
             RocksDBKey::Full(table, _) | RocksDBKey::Partial(table, _) => *table,
         }
     }
-    pub fn key(&self) -> &Vec<u8> {
+    pub fn key(self) -> Vec<u8> {
         match self {
             RocksDBKey::Full(_, key) | RocksDBKey::Partial(_, key) => key,
         }

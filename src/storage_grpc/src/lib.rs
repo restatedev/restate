@@ -49,9 +49,9 @@ enum ScanError {
     #[error("a full or partial key must be provided for prefix scans; for full scan provide a key struct with None fields")]
     PartialOrFullKeyMustBeProvided,
     #[error(
-        "either a start or end key is needed to infer the table; for full scan use an empty prefix"
+        "structured start and end keys must be provided; set all fields to None to represent no bound"
     )]
-    StartOrEndMustBeProvided,
+    StartAndEndMustBeProvided,
     #[error("a filter must be provided")]
     FilterMustBeProvided,
 }
@@ -97,13 +97,22 @@ fn filter_stream(
     match filter {
         Filter::Key(Key { key: None }) => Err(ScanError::FullKeyMustBeProvided),
         Filter::Prefix(Key { key: None }) => Err(ScanError::PartialOrFullKeyMustBeProvided),
-        Filter::Range(Range {
-            start: None,
-            end: None,
-        }) => Err(ScanError::StartOrEndMustBeProvided),
+        Filter::Range(
+            Range {
+                start: None | Some(Key { key: None }),
+                end: _,
+            }
+            | Range {
+                start: _,
+                end: None | Some(Key { key: None }),
+            },
+        ) => Err(ScanError::StartAndEndMustBeProvided),
         Filter::Key(Key { key: Some(key) }) => handle_key(db, key),
         Filter::Prefix(Key { key: Some(prefix) }) => Ok(handle_prefix(db, prefix)),
-        Filter::Range(range) => handle_range(db, range),
+        Filter::Range(Range {
+            start: Some(Key { key: Some(start) }),
+            end: Some(Key { key: Some(end) }),
+        }) => handle_range(db, start, end),
     }
 }
 
@@ -150,15 +159,12 @@ fn handle_prefix(db: RocksDBTransaction, prefix: key::Key) -> GetStream<'static,
 
 fn handle_range(
     db: RocksDBTransaction,
-    Range { start, end }: Range,
+    start: key::Key,
+    end: key::Key,
 ) -> Result<GetStream<'static, Pair>, ScanError> {
-    let (start, end) = (
-        start
-            .and_then(|k| k.key)
-            .map(|k| restate_storage_rocksdb::Key::from(k).to_bytes()),
-        end.and_then(|k| k.key)
-            .map(|k| restate_storage_rocksdb::Key::from(k).to_bytes()),
-    );
+    let start = restate_storage_rocksdb::Key::from(start).to_bytes();
+    let end = restate_storage_rocksdb::Key::from(end).to_bytes();
+
     let range = RocksDBRange {
         start: start.clone(),
         end,
@@ -169,11 +175,7 @@ fn handle_range(
         .spawn_background_scan(move |db, tx| {
             let mut iter = db.range_iterator(table, range);
 
-            if let Some(RocksDBKey::Partial(_, start) | RocksDBKey::Full(_, start)) = start {
-                iter.seek(start);
-            } else {
-                iter.seek_to_first();
-            }
+            iter.seek(start.key());
             DBIterator::new(table, iter)
                 .try_for_each(|b| tx.blocking_send(b))
                 .unwrap_or_else(|err| {

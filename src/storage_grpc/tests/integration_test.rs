@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use futures::{stream, StreamExt};
+use futures::StreamExt;
 use restate_common::types::ServiceId;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::{Storage, Transaction};
@@ -176,7 +176,9 @@ async fn test_state() {
         (
             "Range filter with no start should return rows up to the end, inclusive",
             Filter::Range(Range {
-                start: None,
+                start: Some(Key {
+                    key: Some(key::Key::State(Default::default())),
+                }),
                 end: Some(Key {
                     key: Some(key::Key::State(State {
                         partition_key,
@@ -203,62 +205,22 @@ async fn test_state() {
                     })),
                 }),
                 // will also range over key-10, so this will cover 95-100
-                end: None,
+                end: Some(Key {
+                    key: Some(key::Key::State(Default::default())),
+                }),
             }),
             6,
             95,
         ),
         (
-            "Range filter with no start or end (both typed) should return all rows",
+            "Range filter with no start or end should return all rows",
             Filter::Range(Range {
                 start: Some(Key {
-                    key: Some(key::Key::State(State {
-                        partition_key: None,
-                        service_name: None,
-                        service_key: None,
-                        state_key: None,
-                    })),
+                    key: Some(key::Key::State(Default::default())),
                 }),
                 end: Some(Key {
-                    key: Some(key::Key::State(State {
-                        partition_key: None,
-                        service_name: None,
-                        service_key: None,
-                        state_key: None,
-                    })),
+                    key: Some(key::Key::State(Default::default())),
                 }),
-            }),
-            101,
-            0,
-        ),
-        (
-            "Range filter with no start or end (start typed) should return all rows",
-            Filter::Range(Range {
-                start: Some(Key {
-                    key: Some(key::Key::State(State {
-                        partition_key: None,
-                        service_name: None,
-                        service_key: None,
-                        state_key: None,
-                    })),
-                }),
-                end: None,
-            }),
-            101,
-            0,
-        ),
-        (
-            "Range filter with no start or end (end typed) should return all rows",
-            Filter::Range(Range {
-                start: None,
-                end: Some(Key {
-                key: Some(key::Key::State(State {
-                    partition_key: None,
-                    service_name: None,
-                    service_key: None,
-                    state_key: None,
-                })),
-            }),
             }),
             101,
             0,
