@@ -1,7 +1,12 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use codederror::CodedError;
+use codederror::{Code, CodedError};
+use okapi_operation::anyhow::Error;
+use okapi_operation::okapi::map;
+use okapi_operation::okapi::openapi3::Responses;
+use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::service::MetaError;
@@ -25,11 +30,17 @@ pub enum MetaApiError {
 
 impl MetaApiError {}
 
-/// To format the error response body.
-#[derive(Debug, Serialize)]
+/// # Error description response
+///
+/// Error details of the response
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct ErrorDescriptionResponse {
     message: String,
+    /// # Restate code
+    ///
+    /// Restate error code describing this error
+    restate_code: Option<&'static str>,
 }
 
 impl IntoResponse for MetaApiError {
@@ -46,13 +57,38 @@ impl IntoResponse for MetaApiError {
             }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        let body = Json(ErrorDescriptionResponse {
-            message: match &self {
-                MetaApiError::Meta(m) => m.decorate().to_string(),
-                e => e.to_string(),
+        let body = Json(match &self {
+            MetaApiError::Meta(m) => ErrorDescriptionResponse {
+                message: m.decorate().to_string(),
+                restate_code: m.code().map(Code::code),
+            },
+            e => ErrorDescriptionResponse {
+                message: e.to_string(),
+                restate_code: None,
             },
         });
 
         (status_code, body).into_response()
+    }
+}
+
+impl ToResponses for MetaApiError {
+    fn generate(components: &mut Components) -> Result<Responses, Error> {
+        let error_media_type =
+            <Json<ErrorDescriptionResponse> as ToMediaTypes>::generate(components)?;
+        Ok(Responses {
+            responses: map! {
+                "400".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
+                ),
+                "404".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
+                ),
+                "500".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type, ..Default::default() }
+                )
+            },
+            ..Default::default()
+        })
     }
 }

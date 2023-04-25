@@ -72,6 +72,10 @@ impl Options {
         "target/meta/".to_string()
     }
 
+    pub fn rest_address(&self) -> SocketAddr {
+        self.rest_address
+    }
+
     pub fn build(self) -> Meta {
         let key_extractors_registry = KeyExtractorsRegistry::default();
         let method_descriptors_registry = InMemoryMethodDescriptorRegistry::default();

@@ -7,11 +7,11 @@ mod state;
 
 use axum::error_handling::HandleErrorLayer;
 use axum::http::StatusCode;
-use axum::routing::{get, post};
-use axum::Router;
 use codederror::CodedError;
 use futures::FutureExt;
 use hyper::Server;
+use okapi_operation::axum_integration::{get, post};
+use okapi_operation::*;
 use restate_service_metadata::{MethodDescriptorRegistry, ServiceEndpointRegistry};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -64,26 +64,34 @@ impl MetaRestEndpoint {
         ));
 
         // Setup the router
-        let meta_api = Router::new()
+        let meta_api = axum_integration::Router::new()
             // deprecated url
             .route(
                 "/endpoint/discover",
-                post(services::discover_service_endpoint),
+                post(openapi_handler!(services::discover_service_endpoint)),
             )
             .route(
                 "/services/discover",
-                post(services::discover_service_endpoint),
+                post(openapi_handler!(services::discover_service_endpoint)),
             )
-            .route("/services/", get(services::list_services))
-            .route("/services/:service", get(services::get_service))
+            .route("/services/", get(openapi_handler!(services::list_services)))
+            .route(
+                "/services/:service",
+                get(openapi_handler!(services::get_service)),
+            )
             .route(
                 "/services/:service/methods/",
-                get(methods::list_service_methods),
+                get(openapi_handler!(methods::list_service_methods)),
             )
             .route(
                 "/services/:service/methods/:method",
-                get(methods::get_service_method),
+                get(openapi_handler!(methods::get_service_method)),
             )
+            .route_openapi_specification(
+                "/openapi",
+                OpenApiBuilder::new("Meta REST Operational API", env!("CARGO_PKG_VERSION")),
+            )
+            .expect("Error when building the OpenAPI specification")
             .with_state(shared_state)
             .layer(
                 ServiceBuilder::new()

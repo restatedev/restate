@@ -128,3 +128,21 @@ $ generate-schema-doc --minify restate_config_schema.json restate_config_doc.htm
 ```
 
 The schema can be associated to `restate.yaml` in Jetbrains IDEs to enable autocompletion: https://www.jetbrains.com/help/idea/json.html#ws_json_using_schemas
+
+### Build the REST API documentation
+
+Requirements:
+
+* [`npx`](https://www.npmjs.com/package/npx)
+
+To generate the OpenAPI file:
+
+```shell
+$ cargo xtask generate-rest-api-doc > openapi.json
+```
+
+To generate the HTML documentation:
+
+```shell
+$ npx @redocly/cli build-docs openapi.json
+```

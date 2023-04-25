@@ -42,6 +42,12 @@ curl -X POST localhost:8081/services/discover -H 'content-type: application/json
 
 This assumes that the runtime is running on `localhost:8081`.
 
+To check the OpenAPI documentation of the available operational APIs:
+
+```shell
+curl localhost:8081/openapi
+```
+
 ### Invoking a Restate service
 
 After registering a service you can invoke a service via [grpcurl](https://github.com/fullstorydev/grpcurl):

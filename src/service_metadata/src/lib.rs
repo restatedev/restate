@@ -13,6 +13,7 @@ pub use endpoint_registry::{InMemoryServiceEndpointRegistry, ServiceEndpointRegi
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
 pub enum ProtocolType {
     RequestResponse,
     BidiStream,
@@ -20,6 +21,7 @@ pub enum ProtocolType {
 
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
 pub struct DeliveryOptions {
     #[cfg_attr(
         feature = "serde",
@@ -27,6 +29,7 @@ pub struct DeliveryOptions {
             with = "serde_with::As::<serde_with::TryFromInto<header_map_serde::HeaderMapSerde>>"
         )
     )]
+    #[cfg_attr(feature = "serde_schema", schemars(with = "HashMap<String, String>"))]
     additional_headers: HashMap<HeaderName, HeaderValue>,
     retry_policy: Option<RetryPolicy>,
 }
@@ -84,11 +87,13 @@ impl DeliveryOptions {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", serde_with::serde_as)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
 pub struct EndpointMetadata {
     #[cfg_attr(
         feature = "serde",
         serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
     )]
+    #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
     address: Uri,
     protocol_type: ProtocolType,
     delivery_options: DeliveryOptions,
