@@ -52,25 +52,6 @@ impl StatusKeyComponents {
     }
 }
 
-#[test]
-fn key_round_trip() {
-    let key = StatusKeyComponents {
-        partition_key: Some(1),
-        service_name: Some(ByteString::from("name")),
-        service_key: Some(Bytes::from("key")),
-    };
-    let mut bytes = BytesMut::new();
-    key.to_bytes(&mut bytes);
-    assert_eq!(
-        bytes,
-        BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key".as_slice())
-    );
-    assert_eq!(
-        StatusKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
-        key
-    );
-}
-
 fn write_status_key(key: &mut BytesMut, partition_key: PartitionKey, service_id: &ServiceId) {
     key.put_u64(partition_key);
     write_delimited(&service_id.service_name, key);
@@ -198,8 +179,9 @@ fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<ServiceIn
 
 #[cfg(test)]
 mod tests {
-    use crate::status_table::{status_key_from_bytes, write_status_key};
-    use bytes::BytesMut;
+    use crate::status_table::{status_key_from_bytes, write_status_key, StatusKeyComponents};
+    use bytes::{Bytes, BytesMut};
+    use bytestring::ByteString;
     use restate_common::types::ServiceId;
 
     #[test]
@@ -212,5 +194,24 @@ mod tests {
         assert_eq!(partition_key, 1337);
         assert_eq!(service_id.service_name, "svc-1");
         assert_eq!(service_id.key, "key-1");
+    }
+
+    #[test]
+    fn structured_round_trip() {
+        let key = StatusKeyComponents {
+            partition_key: Some(1),
+            service_name: Some(ByteString::from("name")),
+            service_key: Some(Bytes::from("key")),
+        };
+        let mut bytes = BytesMut::new();
+        key.to_bytes(&mut bytes);
+        assert_eq!(
+            bytes,
+            BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key".as_slice())
+        );
+        assert_eq!(
+            StatusKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+            key
+        );
     }
 }

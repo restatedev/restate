@@ -55,26 +55,6 @@ impl JournalKeyComponents {
     }
 }
 
-#[test]
-fn key_round_trip() {
-    let key = JournalKeyComponents {
-        partition_key: Some(1),
-        service_name: Some(ByteString::from("name")),
-        service_key: Some(Bytes::from("key")),
-        journal_index: Some(1),
-    };
-    let mut bytes = BytesMut::new();
-    key.to_bytes(&mut bytes);
-    assert_eq!(
-        bytes,
-        BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key\0\0\0\x01".as_slice())
-    );
-    assert_eq!(
-        JournalKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
-        key
-    );
-}
-
 #[inline]
 fn write_journal_entry_key(
     key: &mut BytesMut,
@@ -212,8 +192,9 @@ impl RocksDBTransaction {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal_table::{write_journal_entry_key, write_journal_key};
+    use crate::journal_table::{write_journal_entry_key, write_journal_key, JournalKeyComponents};
     use bytes::{Bytes, BytesMut};
+    use bytestring::ByteString;
     use restate_common::types::{PartitionKey, ServiceId};
 
     fn journal_entry_key(
@@ -230,6 +211,26 @@ mod tests {
         let mut key = BytesMut::new();
         write_journal_key(&mut key, partition_key, service_id);
         key.split().freeze()
+    }
+
+    #[test]
+    fn key_round_trip() {
+        let key = JournalKeyComponents {
+            partition_key: Some(1),
+            service_name: Some(ByteString::from("name")),
+            service_key: Some(Bytes::from("key")),
+            journal_index: Some(1),
+        };
+        let mut bytes = BytesMut::new();
+        key.to_bytes(&mut bytes);
+        assert_eq!(
+            bytes,
+            BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key\0\0\0\x01".as_slice())
+        );
+        assert_eq!(
+            JournalKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+            key
+        );
     }
 
     #[test]

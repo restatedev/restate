@@ -30,21 +30,6 @@ impl OutboxKeyComponents {
     }
 }
 
-#[test]
-fn key_round_trip() {
-    let key = OutboxKeyComponents {
-        partition_id: Some(1),
-        message_index: Some(1),
-    };
-    let mut bytes = BytesMut::new();
-    key.to_bytes(&mut bytes);
-    assert_eq!(
-        bytes,
-        BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
-    );
-    assert_eq!(OutboxKeyComponents::from_bytes(&mut bytes.freeze()), key);
-}
-
 impl OutboxTable for RocksDBTransaction {
     fn add_message(
         &mut self,
@@ -110,5 +95,26 @@ impl OutboxTable for RocksDBTransaction {
         }
 
         ready()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::outbox_table::OutboxKeyComponents;
+    use bytes::BytesMut;
+
+    #[test]
+    fn key_round_trip() {
+        let key = OutboxKeyComponents {
+            partition_id: Some(1),
+            message_index: Some(1),
+        };
+        let mut bytes = BytesMut::new();
+        key.to_bytes(&mut bytes);
+        assert_eq!(
+            bytes,
+            BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
+        );
+        assert_eq!(OutboxKeyComponents::from_bytes(&mut bytes.freeze()), key);
     }
 }

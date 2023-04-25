@@ -55,26 +55,6 @@ impl InboxKeyComponents {
     }
 }
 
-#[test]
-fn key_round_trip() {
-    let key = InboxKeyComponents {
-        partition_key: Some(1),
-        service_name: Some(ByteString::from("name")),
-        service_key: Some(Bytes::from("key")),
-        sequence_number: Some(1),
-    };
-    let mut bytes = BytesMut::new();
-    key.to_bytes(&mut bytes);
-    assert_eq!(
-        bytes,
-        BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key\0\0\0\0\0\0\0\x01".as_slice())
-    );
-    assert_eq!(
-        InboxKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
-        key
-    );
-}
-
 #[inline]
 fn write_message_key(
     key: &mut BytesMut,
@@ -203,9 +183,10 @@ fn decode_inbox_key_value(k: &[u8], v: &[u8]) -> crate::Result<InboxEntry> {
 #[cfg(test)]
 mod tests {
     use crate::inbox_table::{
-        message_sequence_number_from_slice, write_inbox_key, write_message_key,
+        message_sequence_number_from_slice, write_inbox_key, write_message_key, InboxKeyComponents,
     };
     use bytes::{Bytes, BytesMut};
+    use bytestring::ByteString;
     use restate_common::types::{PartitionKey, ServiceId};
 
     fn message_key(
@@ -222,6 +203,26 @@ mod tests {
         let mut message_key = BytesMut::new();
         write_inbox_key(&mut message_key, partition_key, service_id);
         message_key.split().freeze()
+    }
+
+    #[test]
+    fn key_round_trip() {
+        let key = InboxKeyComponents {
+            partition_key: Some(1),
+            service_name: Some(ByteString::from("name")),
+            service_key: Some(Bytes::from("key")),
+            sequence_number: Some(1),
+        };
+        let mut bytes = BytesMut::new();
+        key.to_bytes(&mut bytes);
+        assert_eq!(
+            bytes,
+            BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key\0\0\0\0\0\0\0\x01".as_slice())
+        );
+        assert_eq!(
+            InboxKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+            key
+        );
     }
 
     #[test]

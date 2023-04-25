@@ -55,26 +55,6 @@ impl StateKeyComponents {
     }
 }
 
-#[test]
-fn key_round_trip() {
-    let key = StateKeyComponents {
-        partition_key: Some(1),
-        service_name: Some(ByteString::from("name")),
-        service_key: Some(Bytes::from("key")),
-        state_key: Some(Bytes::from("key")),
-    };
-    let mut bytes = BytesMut::new();
-    key.to_bytes(&mut bytes);
-    assert_eq!(
-        bytes,
-        BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key\x03key".as_slice())
-    );
-    assert_eq!(
-        StateKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
-        key
-    );
-}
-
 #[inline]
 fn write_state_entry_key(
     key: &mut BytesMut,
@@ -173,11 +153,34 @@ fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> crate::Result<(Bytes, Byte
 
 #[cfg(test)]
 mod tests {
-    use crate::state_table::{user_state_key_from_slice, write_state_entry_key, write_states_key};
+    use crate::state_table::{
+        user_state_key_from_slice, write_state_entry_key, write_states_key, StateKeyComponents,
+    };
     use bytes::{Bytes, BytesMut};
+    use bytestring::ByteString;
     use restate_common::types::{PartitionKey, ServiceId};
 
     static EMPTY: Bytes = Bytes::from_static(b"");
+
+    #[test]
+    fn key_round_trip() {
+        let key = StateKeyComponents {
+            partition_key: Some(1),
+            service_name: Some(ByteString::from("name")),
+            service_key: Some(Bytes::from("key")),
+            state_key: Some(Bytes::from("key")),
+        };
+        let mut bytes = BytesMut::new();
+        key.to_bytes(&mut bytes);
+        assert_eq!(
+            bytes,
+            BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key\x03key".as_slice())
+        );
+        assert_eq!(
+            StateKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+            key
+        );
+    }
 
     #[inline]
     fn state_entry_key(

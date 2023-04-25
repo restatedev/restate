@@ -67,30 +67,6 @@ impl TimersKeyComponents {
     }
 }
 
-#[test]
-fn key_round_trip() {
-    let key = TimersKeyComponents {
-        partition_id: Some(1),
-        timestamp: Some(1),
-        service_name: Some(ByteString::from("name")),
-        service_key: Some(Bytes::from("key")),
-        invocation_id: Some(Bytes::from("id")),
-        journal_index: Some(1),
-    };
-    let mut bytes = BytesMut::new();
-    key.to_bytes(&mut bytes);
-    assert_eq!(
-        bytes,
-        BytesMut::from(
-            b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01\x04name\x03key\x02id\0\0\0\x01".as_slice()
-        )
-    );
-    assert_eq!(
-        TimersKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
-        key
-    );
-}
-
 #[inline]
 fn write_timer_key(key: &mut BytesMut, partition_id: PartitionId, timer_key: &TimerKey) {
     key.put_u64(partition_id);
@@ -215,9 +191,10 @@ fn decode_timer_key_value(k: &[u8], v: &[u8]) -> crate::Result<(TimerKey, Timer)
 #[cfg(test)]
 mod tests {
     use crate::timer_table::{
-        exclusive_start_key_range, timer_key_from_key_slice, write_timer_key,
+        exclusive_start_key_range, timer_key_from_key_slice, write_timer_key, TimersKeyComponents,
     };
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
+    use bytestring::ByteString;
     use restate_common::types::{ServiceInvocationId, TimerKey};
     use uuid::Uuid;
 
@@ -235,6 +212,30 @@ mod tests {
         let got = timer_key_from_key_slice(&key_bytes).expect("should not fail");
 
         assert_eq!(got, key);
+    }
+
+    #[test]
+    fn structured_round_trip() {
+        let key = TimersKeyComponents {
+            partition_id: Some(1),
+            timestamp: Some(1),
+            service_name: Some(ByteString::from("name")),
+            service_key: Some(Bytes::from("key")),
+            invocation_id: Some(Bytes::from("id")),
+            journal_index: Some(1),
+        };
+        let mut bytes = BytesMut::new();
+        key.to_bytes(&mut bytes);
+        assert_eq!(
+            bytes,
+            BytesMut::from(
+                b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01\x04name\x03key\x02id\0\0\0\x01".as_slice()
+            )
+        );
+        assert_eq!(
+            TimersKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
+            key
+        );
     }
 
     #[test]

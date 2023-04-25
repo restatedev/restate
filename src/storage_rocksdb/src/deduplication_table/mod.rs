@@ -29,24 +29,6 @@ impl DeduplicationKeyComponents {
     }
 }
 
-#[test]
-fn key_round_trip() {
-    let key = DeduplicationKeyComponents {
-        partition_id: Some(1),
-        producing_partition_id: Some(1),
-    };
-    let mut bytes = BytesMut::new();
-    key.to_bytes(&mut bytes);
-    assert_eq!(
-        bytes,
-        BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
-    );
-    assert_eq!(
-        DeduplicationKeyComponents::from_bytes(&mut bytes.freeze()),
-        key
-    );
-}
-
 impl DeduplicationTable for RocksDBTransaction {
     fn get_sequence_number(
         &mut self,
@@ -111,5 +93,29 @@ fn find_all_producing_sequences_for_partition(
             break;
         }
         iterator.next();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::deduplication_table::DeduplicationKeyComponents;
+    use bytes::BytesMut;
+
+    #[test]
+    fn key_round_trip() {
+        let key = DeduplicationKeyComponents {
+            partition_id: Some(1),
+            producing_partition_id: Some(1),
+        };
+        let mut bytes = BytesMut::new();
+        key.to_bytes(&mut bytes);
+        assert_eq!(
+            bytes,
+            BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
+        );
+        assert_eq!(
+            DeduplicationKeyComponents::from_bytes(&mut bytes.freeze()),
+            key
+        );
     }
 }

@@ -28,24 +28,6 @@ impl PartitionStateMachineKeyComponents {
     }
 }
 
-#[test]
-fn key_round_trip() {
-    let key = PartitionStateMachineKeyComponents {
-        partition_id: Some(1),
-        state_id: Some(1),
-    };
-    let mut bytes = BytesMut::new();
-    key.to_bytes(&mut bytes);
-    assert_eq!(
-        bytes,
-        BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
-    );
-    assert_eq!(
-        PartitionStateMachineKeyComponents::from_bytes(&mut bytes.freeze()),
-        key
-    );
-}
-
 impl FsmTable for RocksDBTransaction {
     fn get(&mut self, partition_id: PartitionId, state_id: u64) -> GetFuture<Option<Bytes>> {
         let key = u64_pair(partition_id, state_id);
@@ -91,5 +73,29 @@ fn find_all_fsm_vars(
             break;
         }
         iterator.next();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fsm_table::PartitionStateMachineKeyComponents;
+    use bytes::BytesMut;
+
+    #[test]
+    fn key_round_trip() {
+        let key = PartitionStateMachineKeyComponents {
+            partition_id: Some(1),
+            state_id: Some(1),
+        };
+        let mut bytes = BytesMut::new();
+        key.to_bytes(&mut bytes);
+        assert_eq!(
+            bytes,
+            BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
+        );
+        assert_eq!(
+            PartitionStateMachineKeyComponents::from_bytes(&mut bytes.freeze()),
+            key
+        );
     }
 }
