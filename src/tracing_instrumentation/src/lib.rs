@@ -46,7 +46,7 @@ pub enum LogFormat {
 }
 
 /// # Tracing options
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "TracingOptions"))]
 pub struct Options {
@@ -54,6 +54,13 @@ pub struct Options {
     ///
     /// Specify the Jaeger endpoint to use to send traces. Traces will be exported using the [Jaeger Agent UDP protocol](https://www.jaegertracing.io/docs/1.6/deployment/#agent) through [opentelemetry_jaeger](https://docs.rs/opentelemetry-jaeger/latest/opentelemetry_jaeger/config/agent/struct.AgentPipeline.html).
     jaeger_endpoint: Option<String>,
+
+    /// # Log
+    ///
+    /// Log configuration. Can be overridden by the `RUST_LOG` environment variable.
+    /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
+    #[cfg_attr(feature = "options_schema", schemars(default = "Options::default_log"))]
+    log: String,
 
     /// # Log format
     ///
@@ -68,7 +75,22 @@ pub struct Options {
     disable_ansi_log: bool,
 }
 
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            jaeger_endpoint: None,
+            log: Options::default_log(),
+            log_format: Default::default(),
+            disable_ansi_log: false,
+        }
+    }
+}
+
 impl Options {
+    fn default_log() -> String {
+        "warn,restate=info".to_string()
+    }
+
     /// Instruments the process with logging and tracing.
     ///
     /// The opentelemetry tracer provider is automatically shut down when this struct is being dropped.
@@ -99,17 +121,8 @@ impl Options {
                 .boxed(),
         };
 
-        // Check if we have env variable
-        let env_filter = if let Ok(var) = std::env::var(EnvFilter::DEFAULT_ENV) {
-            EnvFilter::builder().parse(var)?
-        } else {
-            EnvFilter::new("warn,restate=info")
-        };
-
-        println!("LOG: {}", env_filter);
-
         let layers = tracing_subscriber::registry()
-            .with(env_filter)
+            .with(EnvFilter::try_new(&self.log)?)
             .with(fmt_layer);
         #[cfg(feature = "console-subscriber")]
         let layers = layers.with(console_subscriber::spawn());
