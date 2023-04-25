@@ -70,6 +70,8 @@ impl Configuration {
         Figment::from(Serialized::defaults(Configuration::default()))
             .merge(Yaml::file(config_file))
             .merge(RestateEnv::parse())
+            // Override tracing.log with RUST_LOG, if present
+            .merge(Env::raw().only(&["RUST_LOG"]).map(|_| "tracing.log".into()))
     }
 
     /// Load [`Configuration`] from yaml with overrides from environment variables.
