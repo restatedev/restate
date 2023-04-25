@@ -83,6 +83,10 @@ impl Options {
         64
     }
 
+    pub fn storage_path(&self) -> &str {
+        &self.storage_rocksdb.path
+    }
+
     pub fn build(
         self,
         method_descriptor_registry: InMemoryMethodDescriptorRegistry,
