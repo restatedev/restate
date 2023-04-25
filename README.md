@@ -42,7 +42,7 @@ curl -X POST localhost:8081/services/discover -H 'content-type: application/json
 
 This assumes that the runtime is running on `localhost:8081`.
 
-TO check the OpenAPI documentation of the available operational APIs:
+To check the OpenAPI documentation of the available operational APIs:
 
 ```shell
 curl localhost:8081/openapi
