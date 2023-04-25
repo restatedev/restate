@@ -855,38 +855,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a2dd5a6fe8c6e3502f568a6353e5273bbb15193ad9a89e457b9970798efbea1"
 
 [[package]]
-name = "cli"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "bytestring",
- "clap 4.2.1",
- "datafusion",
- "datafusion-cli",
- "futures",
- "hex",
- "once_cell",
- "pin-project",
- "prost",
- "prost-build",
- "prost-reflect",
- "prost-types",
- "restate_common",
- "restate_tracing_instrumentation",
- "rustyline",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-build",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "clipboard-win"
 version = "4.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3453,6 +3421,33 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "restate_cli"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "bytestring",
+ "clap 4.2.1",
+ "datafusion",
+ "datafusion-cli",
+ "futures",
+ "hex",
+ "prost",
+ "prost-build",
+ "prost-reflect",
+ "prost-types",
+ "restate_tracing_instrumentation",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -180,13 +180,12 @@ async fn exec_and_print(
             // otherwise, just use escaped ascii to represent any byte sequence
             (
                 schema.field(i).name(),
-                Arc::new(StringArray::from_iter(column.into_iter().map(|bytes| {
+                Arc::new(StringArray::from_iter(column.iter().map(|bytes| {
                     Some(unsafe {
                         String::from_utf8_unchecked(
                             bytes?
                                 .iter()
-                                .map(|byte| ascii::escape_default(*byte))
-                                .flatten()
+                                .flat_map(|byte| ascii::escape_default(*byte))
                                 .collect(),
                         )
                     })

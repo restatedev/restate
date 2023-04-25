@@ -1,9 +1,7 @@
-use std::any::Any;
-use std::convert::AsRef;
-use std::fmt::Debug;
-use std::future;
-use std::sync::Arc;
-
+use crate::storage::v1::scan_request::Filter;
+use crate::storage::v1::storage_client::StorageClient;
+use crate::storage::v1::{Pair, Range, ScanRequest};
+use crate::value::{is_value_field, value_field, value_to_typed};
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::array::{ArrayRef, BinaryArray, PrimitiveArray, StringArray};
@@ -20,76 +18,63 @@ use datafusion::physical_plan::{
 };
 use datafusion::prelude::SessionContext;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
-use once_cell::sync::Lazy;
-use prost::Message;
-use prost_reflect::{
-    DescriptorPool, DynamicMessage, Kind, MessageDescriptor, ReflectMessage, Value,
-};
-use tracing::info;
-
-use crate::storage::v1::storage_client::StorageClient;
-use crate::storage::v1::Pair;
-use crate::value::{is_value_field, value_field, value_to_typed};
-
-pub(crate) static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
-    DescriptorPool::decode(
-        include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin")).as_slice(),
-    )
-    .unwrap()
-});
-
-#[derive(Message, ReflectMessage)]
-#[prost_reflect(
-    descriptor_pool = "DESCRIPTOR_POOL",
-    message_name = "dev.restate.storage.scan.v1.Key"
-)]
-pub struct Key {}
-
-#[derive(Clone, Message, ReflectMessage)]
-#[prost_reflect(
-    descriptor_pool = "DESCRIPTOR_POOL",
-    message_name = "dev.restate.storage.scan.v1.ScanRequest"
-)]
-pub struct ScanRequest {}
-
-static SCAN_REQUEST_DESC: Lazy<MessageDescriptor> = Lazy::new(|| ScanRequest {}.descriptor());
-static KEY_DESC: Lazy<MessageDescriptor> = Lazy::new(|| Key {}.descriptor());
+use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MessageDescriptor, Value};
+use std::any::Any;
+use std::convert::AsRef;
+use std::fmt::Debug;
+use std::future;
+use std::sync::Arc;
+use tracing::debug;
 
 pub(crate) fn register(
     ctx: &SessionContext,
     client: StorageClient<tonic::transport::Channel>,
 ) -> Result<(), DataFusionError> {
-    KEY_DESC
+    let descriptor_pool = DescriptorPool::decode(
+        include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin")).as_slice(),
+    )
+    .expect("failed to decode file descriptor set");
+    let key_desc = descriptor_pool
+        .get_message_by_name("dev.restate.storage.scan.v1.Key")
+        .expect("Key message must be present in descriptor pool");
+    key_desc
+        .clone()
         .fields()
         .filter(|f| f.containing_oneof().is_some())
         .filter_map(|field| match field.kind() {
-            Kind::Message(descriptor) => Some(GrpcTableProvider::new(
+            Kind::Message(table_descriptor) => Some(GrpcTableProvider::new(
                 field.name().to_string(),
-                descriptor.clone(),
+                descriptor_pool.clone(),
+                table_descriptor,
+                key_desc.clone(),
                 client.clone(),
             )),
             _ => None,
         })
         .try_for_each(|provider| {
-            ctx.register_table(provider.name().as_str(), Arc::new(provider))
+            ctx.register_table(provider.table_name().as_str(), Arc::new(provider))
                 .map(|_| ())
         })
 }
 
 #[derive(Debug)]
-pub struct GrpcTableProvider {
-    name: String,
+struct GrpcTableProvider {
+    table_name: String,
+    descriptor_pool: DescriptorPool,
+    key_desc: MessageDescriptor,
     client: StorageClient<tonic::transport::Channel>,
     schema: SchemaRef,
 }
 
 impl GrpcTableProvider {
-    pub fn new(
-        name: String,
-        desc: MessageDescriptor,
+    fn new(
+        table_name: String,
+        descriptor_pool: DescriptorPool,
+        table_desc: MessageDescriptor,
+        key_desc: MessageDescriptor,
         client: StorageClient<tonic::transport::Channel>,
     ) -> Self {
-        let mut fields: Vec<_> = desc
+        let mut fields: Vec<_> = table_desc
             .fields()
             .map(|f| {
                 Field::new(
@@ -105,17 +90,19 @@ impl GrpcTableProvider {
                 )
             })
             .collect();
-        fields.push(value_field(name.as_str()));
+        fields.push(value_field(table_name.as_str()));
 
         Self {
-            name,
+            table_name,
+            descriptor_pool,
+            key_desc,
             client,
             schema: Arc::new(Schema::new(fields)),
         }
     }
 
-    pub fn name(&self) -> String {
-        return self.name.clone();
+    fn table_name(&self) -> String {
+        self.table_name.clone()
     }
 }
 
@@ -141,25 +128,16 @@ impl TableProvider for GrpcTableProvider {
         limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let projected_schema = match projection {
-            Some(p) => Arc::new(self.schema.project(&p)?),
+            Some(p) => Arc::new(self.schema.project(p)?),
             None => self.schema.clone(),
         };
 
-        let mut request_message = DynamicMessage::new(SCAN_REQUEST_DESC.clone());
-        let range_message = request_message
-            .get_field_by_name_mut("range")
-            .and_then(|f| f.as_message_mut())
-            .unwrap();
-        let set_field =
-            |key_name: &str, field_name: &str, value: Value, range_message: &mut DynamicMessage| {
-                range_message
-                    .get_field_by_name_mut(key_name)
-                    .and_then(|f| f.as_message_mut())
-                    .and_then(|m| m.get_field_by_name_mut(self.name.as_str()))
-                    .and_then(|f| f.as_message_mut())
-                    .unwrap()
-                    .set_field_by_name(field_name, value)
-            };
+        let mut start = DynamicMessage::new(self.key_desc.clone());
+        let mut end = DynamicMessage::new(self.key_desc.clone());
+
+        // get_field_by_name_mut sets the structured key to default (ie all None fields) == no bounds
+        start.get_field_by_name_mut(self.table_name.as_str());
+        end.get_field_by_name_mut(self.table_name.as_str());
 
         for expr in filters {
             match expr {
@@ -168,8 +146,8 @@ impl TableProvider for GrpcTableProvider {
                         (Expr::Column(column), Expr::Literal(literal))
                         | (Expr::Literal(literal), Expr::Column(column)) => {
                             let literal = match literal {
-                                ScalarValue::UInt32(Some(i)) => Value::U32(i.clone()),
-                                ScalarValue::UInt64(Some(i)) => Value::U64(i.clone()),
+                                ScalarValue::UInt32(Some(i)) => Value::U32(*i),
+                                ScalarValue::UInt64(Some(i)) => Value::U64(*i),
                                 ScalarValue::Utf8(Some(s)) => Value::String(s.clone()),
                                 ScalarValue::Binary(Some(b)) => {
                                     Value::Bytes(Bytes::from(b.clone()))
@@ -181,34 +159,34 @@ impl TableProvider for GrpcTableProvider {
                                     // if its Lt, we can still provide the closed bound and just let
                                     // datafusion cut off the last key if its present
                                     set_field(
-                                        "end",
+                                        &mut end,
+                                        self.table_name.as_str(),
                                         column.name.as_str(),
                                         literal.clone(),
-                                        range_message,
                                     );
                                 }
                                 Operator::Gt | Operator::GtEq => {
                                     // if its Gt, we can still provide the closed bound and just let
                                     // datafusion cut off the first key if its present
                                     set_field(
-                                        "start",
+                                        &mut start,
+                                        self.table_name.as_str(),
                                         column.name.as_str(),
                                         literal.clone(),
-                                        range_message,
-                                    );
+                                    )
                                 }
                                 Operator::Eq => {
                                     set_field(
-                                        "start",
+                                        &mut start,
+                                        self.table_name.as_str(),
                                         column.name.as_str(),
                                         literal.clone(),
-                                        range_message,
                                     );
                                     set_field(
-                                        "end",
+                                        &mut end,
+                                        self.table_name.as_str(),
                                         column.name.as_str(),
                                         literal.clone(),
-                                        range_message,
                                     );
                                 }
                                 other => {
@@ -233,21 +211,28 @@ impl TableProvider for GrpcTableProvider {
             }
         }
 
-        if !range_message.has_field_by_name("start") && !range_message.has_field_by_name("end") {
-            // no filters; we still need to provide a zero valued start message to communicate which table we are querying
-            // fortunately get_field_by_name_mut automatically inserts the default for us
-            range_message
-                .get_field_by_name_mut("start")
-                .and_then(|field| field.as_message_mut())
-                .and_then(|m| m.get_field_by_name_mut(self.name.as_str()));
-        }
+        let start = start
+            .transcode_to()
+            .expect("failed to build a start key message");
+        let end = end
+            .transcode_to()
+            .expect("failed to build an end key message");
+
+        let request = ScanRequest {
+            filter: Some(Filter::Range(Range {
+                start: Some(start),
+                end: Some(end),
+            })),
+        };
 
         Ok(Arc::new(GrpcExec::new(
-            self.name.clone(),
+            self.table_name.clone(),
             projected_schema,
+            self.descriptor_pool.clone(),
+            self.key_desc.clone(),
             limit,
             self.client.clone(),
-            request_message.transcode_to().unwrap(),
+            request,
         )))
     }
 
@@ -255,7 +240,6 @@ impl TableProvider for GrpcTableProvider {
         &self,
         filters: &[&Expr],
     ) -> Result<Vec<TableProviderFilterPushDown>, DataFusionError> {
-        info!("filters: {filters:?}");
         Ok(filters
             .iter()
             .map(|expr| match expr {
@@ -277,12 +261,22 @@ impl TableProvider for GrpcTableProvider {
     }
 }
 
+fn set_field(message: &mut DynamicMessage, table_name: &str, field_name: &str, value: Value) {
+    message
+        .get_field_by_name_mut(table_name)
+        .and_then(|f| f.as_message_mut())
+        .unwrap()
+        .set_field_by_name(field_name, value)
+}
+
 #[derive(Debug)]
 struct GrpcExec {
     name: String,
     schema: SchemaRef,
+    descriptor_pool: DescriptorPool,
+    key_desc: MessageDescriptor,
     limit: Option<usize>,
-    request: crate::storage::v1::ScanRequest,
+    request: ScanRequest,
     client: StorageClient<tonic::transport::Channel>,
 }
 
@@ -290,13 +284,17 @@ impl GrpcExec {
     fn new(
         name: String,
         schema: SchemaRef,
+        descriptor_pool: DescriptorPool,
+        key_desc: MessageDescriptor,
         limit: Option<usize>,
-        client: crate::storage::v1::storage_client::StorageClient<tonic::transport::Channel>,
-        request: crate::storage::v1::ScanRequest,
+        client: StorageClient<tonic::transport::Channel>,
+        request: ScanRequest,
     ) -> Self {
         Self {
             name,
             schema,
+            descriptor_pool,
+            key_desc,
             limit,
             client,
             request,
@@ -318,7 +316,6 @@ impl ExecutionPlan for GrpcExec {
     }
 
     fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        // TODO maybe
         None
     }
 
@@ -341,13 +338,15 @@ impl ExecutionPlan for GrpcExec {
         _partition: usize,
         ctx: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream, DataFusionError> {
-        info!("executing {:?}", self.request);
+        debug!("executing {:?}", self.request);
 
         let mut client = self.client.clone();
         let request = self.request.clone();
         let resp = tokio::task::spawn(async move { client.scan(request).await });
 
         let name = self.name.clone();
+        let descriptor_pool = self.descriptor_pool.clone();
+        let key_desc = self.key_desc.clone();
         let schema = self.schema();
         let stream = resp
             .into_stream()
@@ -365,6 +364,8 @@ impl ExecutionPlan for GrpcExec {
                 Ok(Ok(resp)) => {
                     // each result of the stream is a result from the grpc stream
                     let name = name.clone();
+                    let descriptor_pool = descriptor_pool.clone();
+                    let key_desc = key_desc.clone();
                     let schema = schema.clone();
                     resp.into_inner()
                         .try_chunks(ctx.session_config().batch_size())
@@ -372,7 +373,13 @@ impl ExecutionPlan for GrpcExec {
                             batch
                                 .map_err(|err| DataFusionError::External(Box::new(err)))
                                 .map(|batch| {
-                                    batch_to_record_batch(name.as_str(), schema.clone(), batch)
+                                    batch_to_record_batch(
+                                        name.as_str(),
+                                        descriptor_pool.clone(),
+                                        key_desc.clone(),
+                                        schema.clone(),
+                                        batch,
+                                    )
                                 })
                         })
                         .boxed()
@@ -406,43 +413,45 @@ impl ExecutionPlan for GrpcExec {
     }
 }
 
-fn batch_to_record_batch(table_name: &str, schema: SchemaRef, batch: Vec<Pair>) -> RecordBatch {
-    info!("received batch with {} items", batch.len());
-    if batch.len() == 0 {
-        return RecordBatch::new_empty(schema.clone());
+fn batch_to_record_batch(
+    table_name: &str,
+    descriptor_pool: DescriptorPool,
+    key_desc: MessageDescriptor,
+    schema: SchemaRef,
+    batch: Vec<Pair>,
+) -> RecordBatch {
+    debug!("received batch with {} items", batch.len());
+    if batch.is_empty() {
+        return RecordBatch::new_empty(schema);
     }
-    let keys: Vec<_> = batch
-        .iter()
+    let (keys, values): (Vec<_>, Vec<_>) = batch
+        .into_iter()
         .map(|pair| {
-            let mut key = DynamicMessage::new(KEY_DESC.clone());
+            let mut key = DynamicMessage::new(key_desc.clone());
             key.transcode_from(pair.key.as_ref().expect("key must be provided"))
                 .expect("problem trancoding key");
             if let Value::Message(key) = key
                 .get_field_by_name(table_name)
-                .expect(format!("{table_name} must be present in key oneof").as_str())
+                .unwrap_or_else(|| panic!("{table_name} must be present in key oneof"))
                 .as_ref()
             {
-                key.clone()
+                (key.clone(), pair.value)
             } else {
                 panic!("{table_name} must be a message")
             }
         })
-        .collect();
+        .unzip();
 
-    let mut value_field: Option<String> = None;
-
-    let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields.len());
-
-    for field in &schema.fields {
+    let columns = schema.fields.iter().map(|field| {
         if is_value_field(field) {
-            value_field = Some(field.name().clone());
-            continue;
+            return value_to_typed(descriptor_pool.clone(), field, values.iter());
         }
+
         let items = keys
             .iter()
             .map(|item| item.get_field_by_name(field.name().as_str()).expect(""));
 
-        columns.push(match field.data_type() {
+        match field.data_type() {
             DataType::UInt64 => Arc::new(PrimitiveArray::<UInt64Type>::from_iter_values(items.map(
                 |field| {
                     field
@@ -470,14 +479,8 @@ fn batch_to_record_batch(table_name: &str, schema: SchemaRef, batch: Vec<Pair>) 
                     .to_owned()
             }))) as ArrayRef,
             _ => todo!("unsupported field type"),
-        });
-    }
+        }
+    });
 
-    value_field
-        .and_then(|name| schema.column_with_name(name.as_str()))
-        .map(|(i, field)| {
-            columns.insert(i, value_to_typed(field, batch));
-        });
-
-    RecordBatch::try_new(schema.clone(), columns).expect("failed to create batch")
+    RecordBatch::try_new(schema.clone(), columns.collect()).expect("failed to create batch")
 }

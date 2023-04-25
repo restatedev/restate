@@ -1,18 +1,16 @@
 use std::collections::HashMap;
+use std::slice::Iter;
 use std::sync::Arc;
 
-use bytes::Buf;
+use bytes::{Buf, Bytes};
 use datafusion::arrow::array::{ArrayRef, BinaryArray, PrimitiveArray, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, UInt64Type};
-use prost_reflect::DynamicMessage;
+use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde::Serialize;
-
-use crate::storage::v1::Pair;
-use crate::table::DESCRIPTOR_POOL;
 
 pub(crate) fn is_value_field(field: &Field) -> bool {
     match field.metadata().get("value") {
-        Some(flag) => *flag == "true".to_string(),
+        Some(flag) => flag.as_str() == "true",
         None => false,
     }
 }
@@ -48,18 +46,20 @@ pub(crate) fn value_field(table_name: &str) -> Field {
     }
 }
 
-pub(crate) fn value_to_typed(field: &Field, batch: Vec<Pair>) -> ArrayRef {
+pub(crate) fn value_to_typed(
+    descriptor_pool: DescriptorPool,
+    field: &Field,
+    values: Iter<Bytes>,
+) -> ArrayRef {
     match field.data_type() {
-        DataType::Binary => Arc::new(BinaryArray::from_iter_values(
-            batch.iter().map(|item| item.value.clone()),
-        )),
+        DataType::Binary => Arc::new(BinaryArray::from_iter_values(values)),
         DataType::Utf8 => {
             if let Some(message) = field.metadata().get("proto_message") {
-                let desc = DESCRIPTOR_POOL
+                let desc = descriptor_pool
                     .get_message_by_name(message)
                     .unwrap_or_else(|| panic!("must have message {message} in descriptor pool"));
-                Arc::new(StringArray::from_iter_values(batch.iter().map(|item| {
-                    let dynamic = DynamicMessage::decode(desc.clone(), item.value.clone())
+                Arc::new(StringArray::from_iter_values(values.map(|value| {
+                    let dynamic = DynamicMessage::decode(desc.clone(), value.clone())
                         .unwrap_or_else(|err| panic!("failed to parse value bytes from field {field} with error {err}. perhaps you need to update your cli?"));
 
                     let mut serializer = serde_json::Serializer::new(vec![]);
@@ -74,7 +74,7 @@ pub(crate) fn value_to_typed(field: &Field, batch: Vec<Pair>) -> ArrayRef {
             }
         }
         DataType::UInt64 => Arc::new(PrimitiveArray::<UInt64Type>::from_iter_values(
-            batch.iter().map(|item| item.value.clone().get_u64()),
+            values.map(|value| value.clone().get_u64()),
         )),
         _ => panic!(
             "received a value field {} with a type we don't know how to parse",
