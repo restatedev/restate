@@ -7,10 +7,12 @@ use restate_storage_grpc::storage::v1::{
     key, scan_request::Filter, storage_client::StorageClient, Key, Pair, Range, ScanRequest, State,
 };
 use restate_storage_grpc::Options;
+use restate_test_utils::assert_eq;
+use restate_test_utils::test;
 use tempfile::tempdir;
 use tonic::transport::Channel;
 
-#[tokio::test]
+#[test(tokio::test)]
 async fn test_state() {
     //
     // create a rocksdb storage from options
@@ -31,7 +33,7 @@ async fn test_state() {
     let svc = opts.build(rocksdb.clone());
 
     let (drain, watch) = drain::channel();
-    tokio::spawn(svc.run(watch));
+    let handle = tokio::spawn(svc.run(watch));
 
     let mut txn = rocksdb.transaction();
     for i in 0..101 {
@@ -207,6 +209,61 @@ async fn test_state() {
             95,
         ),
         (
+            "Range filter with no start or end (both typed) should return all rows",
+            Filter::Range(Range {
+                start: Some(Key {
+                    key: Some(key::Key::State(State {
+                        partition_key: None,
+                        service_name: None,
+                        service_key: None,
+                        state_key: None,
+                    })),
+                }),
+                end: Some(Key {
+                    key: Some(key::Key::State(State {
+                        partition_key: None,
+                        service_name: None,
+                        service_key: None,
+                        state_key: None,
+                    })),
+                }),
+            }),
+            101,
+            0,
+        ),
+        (
+            "Range filter with no start or end (start typed) should return all rows",
+            Filter::Range(Range {
+                start: Some(Key {
+                    key: Some(key::Key::State(State {
+                        partition_key: None,
+                        service_name: None,
+                        service_key: None,
+                        state_key: None,
+                    })),
+                }),
+                end: None,
+            }),
+            101,
+            0,
+        ),
+        (
+            "Range filter with no start or end (end typed) should return all rows",
+            Filter::Range(Range {
+                start: None,
+                end: Some(Key {
+                key: Some(key::Key::State(State {
+                    partition_key: None,
+                    service_name: None,
+                    service_key: None,
+                    state_key: None,
+                })),
+            }),
+            }),
+            101,
+            0,
+        ),
+        (
             "Range filter with end beyond the last row should return rows from the start, inclusive",
             Filter::Range(Range {
                 start: Some(Key {
@@ -261,38 +318,39 @@ async fn test_state() {
         ),
     ];
 
-    for test in tests {
+    for (name, filter, count, offset) in tests {
         let pairs = request(
             client.clone(),
             ScanRequest {
-                filter: Some(test.1),
+                filter: Some(filter),
             },
         )
         .await;
-        assert_eq!(pairs.len(), test.2, "{}", test.0);
+        assert_eq!(pairs.len(), count, "{}", name);
         pairs.iter().enumerate().for_each(|(i, pair)| {
             if let Some(Key {
                 key: Some(key::Key::State(key)),
             }) = pair.key.clone()
             {
-                assert_eq!(key.partition_key, Some(1337), "{}", test.0);
-                assert_eq!(key.service_name, Some("svc-1".into()), "{}", test.0);
+                assert_eq!(key.partition_key, Some(1337), "{}", name);
+                assert_eq!(key.service_name, Some("svc-1".into()), "{}", name);
                 assert_eq!(
                     pair.value,
-                    Bytes::from(format!("{}", i + test.3)),
+                    Bytes::from(format!("{}", i + offset)),
                     "{}",
-                    test.0
+                    name
                 );
             } else {
-                panic!(
-                    "a state key was not found in returned pair {pair:?} during test '{}'",
-                    test.0
-                )
+                panic!("a state key was not found in returned pair {pair:?} during test '{name}'",)
             }
         });
     }
 
     drain.drain().await;
+    handle
+        .await
+        .expect("join failed")
+        .expect("gRPC server failed")
 }
 
 async fn request(mut client: StorageClient<Channel>, request: ScanRequest) -> Vec<Pair> {
@@ -301,8 +359,7 @@ async fn request(mut client: StorageClient<Channel>, request: ScanRequest) -> Ve
         .await
         .expect("scan request failed")
         .into_inner()
-        .map(|b| stream::iter(b.expect("batch result was not Ok").items))
-        .flatten()
+        .map(|b| b.expect("pair result was not Ok"))
         .collect()
         .await
 }

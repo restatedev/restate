@@ -51,7 +51,7 @@ impl TimersKeyComponents {
                 .then(|| {
                     read_delimited(bytes)
                         // SAFETY: this is safe since the service name was constructed from a ByteString.
-                        .map(|bytes| unsafe { ByteString::from_bytes_unchecked(bytes) })
+                        .map(|name| unsafe { ByteString::from_bytes_unchecked(name) })
                 })
                 .transpose()?,
             service_key: bytes

@@ -27,8 +27,10 @@ tracing = { workspace = true }
 tonic = { workspace = true, features = ["default"] }
 
 [dev-dependencies]
+restate_test_utils = { workspace = true }
 tempfile = "*"
 tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

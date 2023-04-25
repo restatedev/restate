@@ -69,6 +69,19 @@ pub enum RocksDBKey {
     Partial(TableKind, Vec<u8>),
 }
 
+impl RocksDBKey {
+    pub fn table(&self) -> TableKind {
+        match self {
+            RocksDBKey::Full(table, _) | RocksDBKey::Partial(table, _) => *table,
+        }
+    }
+    pub fn key(&self) -> &Vec<u8> {
+        match self {
+            RocksDBKey::Full(_, key) | RocksDBKey::Partial(_, key) => key,
+        }
+    }
+}
+
 pub enum Key {
     State(StateKeyComponents),
     Status(StatusKeyComponents),

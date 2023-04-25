@@ -1,19 +1,22 @@
-use crate::batch_iterator::BatchIterator;
-use crate::storage::v1::{
-    key, scan_request::Filter, storage_server, Batch, Key, Pair, Range, ScanRequest,
-};
-use crate::util::RocksDBRange;
+use std::net::SocketAddr;
+
 use futures::stream::BoxStream;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-pub use options::Options;
-use restate_storage_api::Storage;
-use restate_storage_rocksdb::{RocksDBKey, RocksDBStorage, RocksDBTransaction, TableKind};
-pub use scanner_proto::storage;
-use std::net::SocketAddr;
 use tonic::transport::Server;
 use tonic::{Request, Response};
 
-mod batch_iterator;
+pub use options::Options;
+use restate_storage_api::{GetStream, Storage, StorageError};
+use restate_storage_rocksdb::{RocksDBKey, RocksDBStorage, RocksDBTransaction, TableKind};
+pub use scanner_proto::storage;
+
+use crate::iterator::DBIterator;
+use crate::storage::v1::{
+    key, scan_request::Filter, storage_server, Key, Pair, Range, ScanRequest,
+};
+use crate::util::RocksDBRange;
+
+mod iterator;
 mod options;
 mod scanner_proto;
 mod util;
@@ -41,7 +44,7 @@ impl StorageService {
 enum ScanError {
     #[error("start and end keys must refer to the same table. start: {0:?} end: {1:?}")]
     StartAndEndMustBeSameTable(TableKind, TableKind),
-    #[error("a full key must be provided the key filter")]
+    #[error("a full key must be provided for the key filter")]
     FullKeyMustBeProvided,
     #[error("a full or partial key must be provided for prefix scans; for full scan provide a key struct with None fields")]
     PartialOrFullKeyMustBeProvided,
@@ -53,9 +56,15 @@ enum ScanError {
     FilterMustBeProvided,
 }
 
+impl From<ScanError> for tonic::Status {
+    fn from(value: ScanError) -> Self {
+        tonic::Status::invalid_argument(value.to_string())
+    }
+}
+
 #[tonic::async_trait]
 impl storage_server::Storage for StorageService {
-    type ScanStream = BoxStream<'static, Result<Batch, tonic::Status>>;
+    type ScanStream = BoxStream<'static, Result<Pair, tonic::Status>>;
 
     async fn scan(
         &self,
@@ -65,107 +74,98 @@ impl storage_server::Storage for StorageService {
 
         let filter = match request.filter {
             None => {
-                return Err(tonic::Status::internal(format!(
-                    "{}",
-                    ScanError::FilterMustBeProvided
-                )));
+                return Err(tonic::Status::invalid_argument(
+                    ScanError::FilterMustBeProvided.to_string(),
+                ));
             }
             Some(filter) => filter,
         };
 
-        let tx = self.db.transaction();
-        let stream = filter_stream(tx, filter)
+        let db = self.db.transaction();
+        let stream = filter_stream(db, filter)
             .map_err(|err| tonic::Status::invalid_argument(err.to_string()))?;
+        let stream = stream.map_err(|err| tonic::Status::internal(err.to_string()));
 
         Ok(Response::new(stream.boxed() as Self::ScanStream))
     }
 }
 
 fn filter_stream(
-    tx: RocksDBTransaction,
+    db: RocksDBTransaction,
     filter: Filter,
-) -> Result<BoxStream<'static, Result<Batch, tonic::Status>>, ScanError> {
+) -> Result<BoxStream<'static, Result<Pair, StorageError>>, ScanError> {
     match filter {
-        Filter::Key(Key { key: None }) => Err(ScanError::FullKeyMustBeProvided.into()),
-        Filter::Prefix(Key { key: None }) => Err(ScanError::PartialOrFullKeyMustBeProvided.into()),
+        Filter::Key(Key { key: None }) => Err(ScanError::FullKeyMustBeProvided),
+        Filter::Prefix(Key { key: None }) => Err(ScanError::PartialOrFullKeyMustBeProvided),
         Filter::Range(Range {
             start: None,
             end: None,
-        }) => Err(ScanError::StartOrEndMustBeProvided.into()),
-        Filter::Key(Key { key: Some(key) }) => handle_key(tx, key),
-        Filter::Prefix(Key { key: Some(prefix) }) => handle_prefix(tx, prefix),
-        Filter::Range(range) => handle_range(tx, range),
+        }) => Err(ScanError::StartOrEndMustBeProvided),
+        Filter::Key(Key { key: Some(key) }) => handle_key(db, key),
+        Filter::Prefix(Key { key: Some(prefix) }) => Ok(handle_prefix(db, prefix)),
+        Filter::Range(range) => handle_range(db, range),
     }
 }
 
 fn handle_key(
-    tx: RocksDBTransaction,
+    db: RocksDBTransaction,
     key: key::Key,
-) -> Result<BoxStream<'static, Result<Batch, tonic::Status>>, ScanError> {
-    let (table, key_bytes) =
-        match Into::<restate_storage_rocksdb::Key>::into(key.clone()).to_bytes() {
-            RocksDBKey::Partial(_, _) => return Err(ScanError::FullKeyMustBeProvided.into()),
-            RocksDBKey::Full(table, key_bytes) => (table, key_bytes),
-        };
-    Ok(tx
+) -> Result<GetStream<'static, Pair>, ScanError> {
+    let (table, key_bytes) = match restate_storage_rocksdb::Key::from(key.clone()).to_bytes() {
+        RocksDBKey::Partial(_, _) => return Err(ScanError::FullKeyMustBeProvided),
+        RocksDBKey::Full(table, key_bytes) => (table, key_bytes),
+    };
+    Ok(db
         .spawn_background_scan(
             move |db, tx| match db.get_owned(table, key_bytes).transpose() {
                 None => (),
                 Some(result) => tx
-                    .blocking_send(match result {
-                        Ok(bytes) => Ok(Batch {
-                            items: vec![Pair {
-                                key: Some(Key { key: Some(key) }),
-                                value: bytes,
-                            }],
-                        }),
-                        Err(err) => Err(err),
-                    })
+                    .blocking_send(result.map(|bytes| Pair {
+                        key: Some(Key { key: Some(key) }),
+                        value: bytes,
+                    }))
                     .unwrap_or_else(|err| {
-                        tracing::error!("unable to send batch during key query: {err}")
+                        tracing::debug!("unable to send pair during key query: {err}")
                     }),
             },
         )
-        .map_err(|err| tonic::Status::internal(err.to_string()))
         .boxed())
 }
 
-fn handle_prefix(
-    tx: RocksDBTransaction,
-    prefix: key::Key,
-) -> Result<BoxStream<'static, Result<Batch, tonic::Status>>, ScanError> {
-    let (table, prefix) = match Into::<restate_storage_rocksdb::Key>::into(prefix).to_bytes() {
+fn handle_prefix(db: RocksDBTransaction, prefix: key::Key) -> GetStream<'static, Pair> {
+    let (table, prefix) = match restate_storage_rocksdb::Key::from(prefix).to_bytes() {
         RocksDBKey::Partial(table, prefix) | RocksDBKey::Full(table, prefix) => (table, prefix),
     };
-    Ok(tx
-        .spawn_background_scan(move |db, tx| {
-            let mut iter = db.prefix_iterator(table, prefix.clone());
-            iter.seek(prefix);
-            BatchIterator::new(table, iter, 50)
-                .try_for_each(|b| tx.blocking_send(b))
-                .unwrap_or_else(|err| {
-                    tracing::error!("unable to send result during prefix query: {err}")
-                })
-        })
-        .map_err(|err| tonic::Status::internal(err.to_string()))
-        .boxed())
+    db.spawn_background_scan(move |db, tx| {
+        let mut iter = db.prefix_iterator(table, prefix.clone());
+        iter.seek(prefix);
+        DBIterator::new(table, iter)
+            .try_for_each(|b| tx.blocking_send(b))
+            .unwrap_or_else(|err| {
+                tracing::debug!("unable to send result during prefix query: {err}")
+            })
+    })
+    .boxed()
 }
 
 fn handle_range(
-    tx: RocksDBTransaction,
+    db: RocksDBTransaction,
     Range { start, end }: Range,
-) -> Result<BoxStream<'static, Result<Batch, tonic::Status>>, ScanError> {
+) -> Result<GetStream<'static, Pair>, ScanError> {
     let (start, end) = (
         start
             .and_then(|k| k.key)
-            .map(|k| Into::<restate_storage_rocksdb::Key>::into(k).to_bytes()),
+            .map(|k| restate_storage_rocksdb::Key::from(k).to_bytes()),
         end.and_then(|k| k.key)
-            .map(|k| Into::<restate_storage_rocksdb::Key>::into(k).to_bytes()),
+            .map(|k| restate_storage_rocksdb::Key::from(k).to_bytes()),
     );
-    let range = RocksDBRange(start.clone(), end);
+    let range = RocksDBRange {
+        start: start.clone(),
+        end,
+    };
     let table = range.table_kind()?;
 
-    Ok(tx
+    Ok(db
         .spawn_background_scan(move |db, tx| {
             let mut iter = db.range_iterator(table, range);
 
@@ -174,12 +174,11 @@ fn handle_range(
             } else {
                 iter.seek_to_first();
             }
-            BatchIterator::new(table, iter, 50)
+            DBIterator::new(table, iter)
                 .try_for_each(|b| tx.blocking_send(b))
                 .unwrap_or_else(|err| {
-                    tracing::error!("unable to send result during range query: {err}")
+                    tracing::debug!("unable to send result during range query: {err}")
                 })
         })
-        .map_err(|err| tonic::Status::internal(err.to_string()))
         .boxed())
 }

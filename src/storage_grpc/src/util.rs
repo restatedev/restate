@@ -2,18 +2,15 @@ use crate::ScanError;
 use restate_storage_rocksdb::{RocksDBKey, TableKind};
 
 #[derive(Clone)]
-pub(crate) struct RocksDBRange(pub Option<RocksDBKey>, pub Option<RocksDBKey>);
+pub(crate) struct RocksDBRange {
+    pub start: Option<RocksDBKey>,
+    pub end: Option<RocksDBKey>,
+}
 
 impl RocksDBRange {
     pub fn table_kind(&self) -> Result<TableKind, ScanError> {
-        let start = match self.0 {
-            Some(RocksDBKey::Full(table, _) | RocksDBKey::Partial(table, _)) => Some(table),
-            None => None,
-        };
-        let end = match self.1 {
-            Some(RocksDBKey::Full(table, _) | RocksDBKey::Partial(table, _)) => Some(table),
-            None => None,
-        };
+        let start = self.start.as_ref().map(|start| start.table());
+        let end = self.end.as_ref().map(|end| end.table());
 
         match (start, end) {
             (Some(start), Some(end)) => {
@@ -32,29 +29,20 @@ impl RocksDBRange {
 impl rocksdb::IterateBounds for RocksDBRange {
     fn into_bounds(self) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
         (
-            self.0.map(|key| match key {
-                RocksDBKey::Full(_, key) | RocksDBKey::Partial(_, key) => key,
-            }),
-            self.1.map(|key| match key {
-                // rocksDB upper bounds are exclusive; lexicographically increment our inclusive upper bound
-                RocksDBKey::Full(_, key) | RocksDBKey::Partial(_, key) => increment(key),
-            }),
+            self.start.map(|key| key.key().clone()),
+            self.end.and_then(|key| increment(key.key().clone())),
         )
     }
 }
 
-// increment turns a byte slice into the lexicographically successive byte slice
+// increment turns a byte slice into the lexicographically successive non-matching byte slice
 // this is used because we would prefer a closed range api ie [1,3] but RocksDB requires half-open ranges ie [1,3)
-fn increment(mut bytes: Vec<u8>) -> Vec<u8> {
+fn increment(mut bytes: Vec<u8>) -> Option<Vec<u8>> {
     for byte in bytes.iter_mut().rev() {
-        match byte.checked_add(1) {
-            Some(incremented) => {
-                *byte = incremented;
-                return bytes;
-            }
-            None => continue,
+        if let Some(incremented) = byte.checked_add(1) {
+            *byte = incremented;
+            return Some(bytes);
         }
     }
-    bytes.push(0);
-    bytes
+    None
 }

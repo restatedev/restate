@@ -3,7 +3,24 @@ syntax = "proto3";
 package dev.restate.storage.scan.v1;
 
 service Storage {
-  rpc Scan(ScanRequest) returns (stream Batch) {}
+  rpc Scan(ScanRequest) returns (stream Pair) {}
+}
+
+message ScanRequest {
+  oneof filter {
+    // provide a single key that should be returned as one item
+    Key key = 2;
+    // provide a prefix key that may match multiple keys
+    Key prefix = 3;
+    // provide an inclusive range of a start and end (potentially prefix) key
+    Range range = 4;
+  }
+}
+
+message Pair {
+  Key key = 1;
+  // the opaque stored protobuf data for this row
+  bytes value = 2;
 }
 
 message Deduplication {
@@ -75,25 +92,4 @@ message Range {
   optional Key start = 1;
   // the last key that should be returned, or the last matching key if this is partial
   optional Key end = 2;
-}
-
-message ScanRequest {
-  oneof filter {
-    // provide a single key that should be returned as one item
-    Key key = 2;
-    // provide a prefix key that may match multiple keys
-    Key prefix = 3;
-    // provide an inclusive range of a start and end (potentially prefix) key
-    Range range = 4;
-  }
-}
-
-message Pair {
-  Key key = 1;
-  // the opaque stored protobuf data for this row
-  bytes value = 2;
-}
-
-message Batch {
-  repeated Pair items = 1;
 }

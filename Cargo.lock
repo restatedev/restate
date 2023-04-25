@@ -2425,6 +2425,7 @@ dependencies = [
  "restate_common",
  "restate_storage_api",
  "restate_storage_rocksdb",
+ "restate_test_utils",
  "rocksdb",
  "schemars",
  "serde",
@@ -2434,6 +2435,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
