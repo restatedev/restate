@@ -112,7 +112,7 @@ async fn call(
             method
         ),
         format!(
-            "{{\"seed\": \"{}\", \"width\": {}, \"depth\": {}}}",
+            "{{\"params\": {{\"seed\": \"{}\", \"width\": {}, \"depth\": {}}}}}",
             seed, width, depth
         ),
     )
