@@ -3,7 +3,11 @@ export DOCKER_PROGRESS := env_var_or_default('DOCKER_PROGRESS', 'auto')
 
 # Docker image name & tag.
 docker_repo := "localhost/restatedev/restate"
-docker_tag := `git rev-parse --abbrev-ref HEAD | sed 's|/|.|'` + "." + `git rev-parse --short HEAD`
+docker_tag := if path_exists(justfile_directory() / ".git") == "true" {
+        `git rev-parse --abbrev-ref HEAD | sed 's|/|.|'` + "." + `git rev-parse --short HEAD`
+    } else {
+        "unknown"
+    }
 docker_image := docker_repo + ":" + docker_tag
 
 features := ""
@@ -56,6 +60,14 @@ clippy: (_target-installed _target)
 
 # Runs all lints (fmt, clippy, deny)
 lint: check-fmt clippy check-deny
+
+# Extract dependencies
+chef-prepare:
+    cargo chef prepare --recipe-path recipe.json
+
+# Compile dependencies
+chef-cook *flags: (_target-installed _target)
+    cargo chef cook --recipe-path recipe.json {{ _target-option }} {{ _features }} {{ flags }}
 
 build *flags: (_target-installed _target)
     cargo build {{ _target-option }} {{ _features }} {{ flags }}
