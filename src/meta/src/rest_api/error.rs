@@ -34,7 +34,6 @@ impl MetaApiError {}
 ///
 /// Error details of the response
 #[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
 struct ErrorDescriptionResponse {
     message: String,
     /// # Restate code
