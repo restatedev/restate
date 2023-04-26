@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM rust:1.67.1-bullseye AS tools
+FROM --platform=$BUILDPLATFORM rust:1.67.1-bookworm AS tools
 # prepopulate cargo index
 RUN cargo search --limit=0
 RUN apt update && apt upgrade -y
@@ -32,7 +32,7 @@ RUN just arch=$TARGETARCH build --release && \
     mv target/$(just --evaluate arch=$TARGETARCH _arch)-unknown-linux-gnu/release/restate target/release/restate
 
 # We do not need the Rust toolchain to run the binary!
-FROM debian:bullseye-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 COPY --from=builder /restate/target/release/restate /usr/local/bin
 COPY --from=builder /restate/NOTICE /NOTICE
 # copy OS roots
