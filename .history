@@ -1,0 +1,42 @@
+#V2
+\\d state
+select * from state where  partition_key = 1\n;
+select * from state where  partition_key = '1';
+select * from state;
+select * from state where  partition_key = '17269929639312740105';
+select * from state where  partition_key = 17269929639312740105;
+select * from state where  partition_key = 1;
+select * from state where  partition_key = 2;
+select * from state where  partition_key = 17269929639312740105;
+select * from state where  partition_key = 17269929639;
+select * from state where  partition_key = 1726992963911;
+select * from state where  partition_key = 17269929639111;
+select * from state where  partition_key = 172699296391111;
+select * from state where  partition_key = 1726992963911111;
+select * from state where  partition_key = 17269929639111111;
+select * from state where  partition_key = 172699296391111111;
+select * from state where  partition_key = 1726992963911111111;
+select * from state where  partition_key = 17269929639111111111;
+\\d state
+\\q
+select * from state where  partition_key = 17269929639312740105;
+\\q
+select * from state where  partition_key = 17269929639312740105;
+select * from state where  arrow_cast('aaa', "Binary") = 17269929639312740105;
+select * from state where  arrow_cast('aaa', 'Binary') = 17269929639312740105;
+select * from state where  partition_key = 17269929639312740105;
+select * from state where  17269929639312740105 = partition_key;
+\\q
+select * from state;
+\\q
+select * from state where  17269929639312740105 = partition_key;
+\\q
+\\h
+EXPLAIN select * from state where  17269929639312740105 = partition_key;
+\\q
+EXPLAIN select * from state where  17269929639312740105 = partition_key;
+ select * from state where  17269929639312740105 = partition_key;
+\\q
+ select * from state where partition_key between 1 and 2 ;
+explain  select * from state where partition_key between 1 and 2 ;
+\\q

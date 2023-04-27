@@ -1,17 +1,20 @@
-use crate::storage::v1::scan_request::Filter;
-use crate::storage::v1::storage_client::StorageClient;
-use crate::storage::v1::{Pair, Range, ScanRequest};
-use crate::value::{is_value_field, value_field, value_to_typed};
+use std::any::Any;
+use std::convert::AsRef;
+use std::fmt::Debug;
+use std::future;
+use std::sync::Arc;
+
+use arrow_array::{ArrayRef, BinaryArray};
 use async_trait::async_trait;
-use bytes::Bytes;
-use datafusion::arrow::array::{ArrayRef, BinaryArray, PrimitiveArray, StringArray};
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, UInt32Type, UInt64Type};
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::{DataFusionError, ScalarValue, Statistics};
+use datafusion::common::{DataFusionError, ScalarValue, Statistics, ToDFSchema};
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, TableProviderFilterPushDown};
-use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::optimizer::utils::conjunction;
+use datafusion::physical_expr::{create_physical_expr, PhysicalSortExpr};
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream,
@@ -19,12 +22,13 @@ use datafusion::physical_plan::{
 use datafusion::prelude::SessionContext;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
 use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MessageDescriptor, Value};
-use std::any::Any;
-use std::convert::AsRef;
-use std::fmt::Debug;
-use std::future;
-use std::sync::Arc;
 use tracing::debug;
+
+use crate::encoder::EncoderExec;
+use crate::field::ExtendedField;
+use crate::storage::v1::scan_request::Filter;
+use crate::storage::v1::storage_client::StorageClient;
+use crate::storage::v1::{Pair, Range, ScanRequest};
 
 pub(crate) fn register(
     ctx: &SessionContext,
@@ -63,7 +67,8 @@ struct GrpcTableProvider {
     descriptor_pool: DescriptorPool,
     key_desc: MessageDescriptor,
     client: StorageClient<tonic::transport::Channel>,
-    schema: SchemaRef,
+    encoded_schema: SchemaRef,
+    wire_schema: SchemaRef,
 }
 
 impl GrpcTableProvider {
@@ -74,30 +79,24 @@ impl GrpcTableProvider {
         key_desc: MessageDescriptor,
         client: StorageClient<tonic::transport::Channel>,
     ) -> Self {
-        let mut fields: Vec<_> = table_desc
+        let (mut wire_fields, mut encoded_fields): (Vec<_>, Vec<_>) = table_desc
             .fields()
             .map(|f| {
-                Field::new(
-                    f.name(),
-                    match f.kind() {
-                        Kind::Uint32 => DataType::UInt32,
-                        Kind::Uint64 => DataType::UInt64,
-                        Kind::Bytes => DataType::Binary,
-                        Kind::String => DataType::Utf8,
-                        typ => panic!("unimplemented datatype {typ:?} in field {}", f.name()),
-                    },
-                    false,
-                )
+                let field = ExtendedField::new_for_key_column(f.name(), f.kind());
+                (field.wire_field(), field.encoded_field())
             })
-            .collect();
-        fields.push(value_field(table_name.as_str()));
+            .unzip();
+        let field = ExtendedField::new_value_for_table(table_name.as_str());
+        wire_fields.push(field.wire_field());
+        encoded_fields.push(field.encoded_field());
 
         Self {
             table_name,
             descriptor_pool,
             key_desc,
             client,
-            schema: Arc::new(Schema::new(fields)),
+            encoded_schema: Arc::new(Schema::new(encoded_fields)),
+            wire_schema: Arc::new(Schema::new(wire_fields)),
         }
     }
 
@@ -113,7 +112,7 @@ impl TableProvider for GrpcTableProvider {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.encoded_schema.clone()
     }
 
     fn table_type(&self) -> TableType {
@@ -122,14 +121,14 @@ impl TableProvider for GrpcTableProvider {
 
     async fn scan(
         &self,
-        _state: &SessionState,
+        state: &SessionState,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let projected_schema = match projection {
-            Some(p) => Arc::new(self.schema.project(p)?),
-            None => self.schema.clone(),
+            Some(p) => Arc::new(self.wire_schema.project(p)?),
+            None => self.wire_schema.clone(),
         };
 
         let mut start = DynamicMessage::new(self.key_desc.clone());
@@ -139,20 +138,29 @@ impl TableProvider for GrpcTableProvider {
         start.get_field_by_name_mut(self.table_name.as_str());
         end.get_field_by_name_mut(self.table_name.as_str());
 
-        for expr in filters {
+        let mut filters = filters.to_vec();
+
+        for expr in &mut filters {
             match expr {
                 Expr::BinaryExpr(BinaryExpr { left, op, right }) => {
-                    match (left.as_ref(), right.as_ref()) {
+                    match (left.as_mut(), right.as_mut()) {
                         (Expr::Column(column), Expr::Literal(literal))
                         | (Expr::Literal(literal), Expr::Column(column)) => {
-                            let literal = match literal {
+                            let (_, field) = self
+                                .encoded_schema
+                                .column_with_name(column.name.as_str())
+                                .unwrap();
+                            let field: ExtendedField = field.clone().into();
+                            // rewrite the literal in the filter to be of the 'true' comparable format, eg bytes instead of json string
+                            *literal = field.decode(literal.clone())?;
+
+                            // find the right proto value for this format
+                            let value = match literal {
                                 ScalarValue::UInt32(Some(i)) => Value::U32(*i),
                                 ScalarValue::UInt64(Some(i)) => Value::U64(*i),
                                 ScalarValue::Utf8(Some(s)) => Value::String(s.clone()),
-                                ScalarValue::Binary(Some(b)) => {
-                                    Value::Bytes(Bytes::from(b.clone()))
-                                }
-                                _ => todo!("unsupported field type: {}", literal),
+                                ScalarValue::Binary(Some(b)) => Value::Bytes(b.clone().into()),
+                                _ => panic!("unsupported field type: {}", literal),
                             };
                             match op {
                                 Operator::Lt | Operator::LtEq => {
@@ -162,7 +170,7 @@ impl TableProvider for GrpcTableProvider {
                                         &mut end,
                                         self.table_name.as_str(),
                                         column.name.as_str(),
-                                        literal.clone(),
+                                        value,
                                     );
                                 }
                                 Operator::Gt | Operator::GtEq => {
@@ -172,7 +180,7 @@ impl TableProvider for GrpcTableProvider {
                                         &mut start,
                                         self.table_name.as_str(),
                                         column.name.as_str(),
-                                        literal.clone(),
+                                        value,
                                     )
                                 }
                                 Operator::Eq => {
@@ -180,13 +188,13 @@ impl TableProvider for GrpcTableProvider {
                                         &mut start,
                                         self.table_name.as_str(),
                                         column.name.as_str(),
-                                        literal.clone(),
+                                        value.clone(),
                                     );
                                     set_field(
                                         &mut end,
                                         self.table_name.as_str(),
                                         column.name.as_str(),
-                                        literal.clone(),
+                                        value,
                                     );
                                 }
                                 other => {
@@ -225,14 +233,37 @@ impl TableProvider for GrpcTableProvider {
             })),
         };
 
-        Ok(Arc::new(GrpcExec::new(
+        let node = Arc::new(GrpcExec::new(
             self.table_name.clone(),
             projected_schema,
-            self.descriptor_pool.clone(),
             self.key_desc.clone(),
             limit,
             self.client.clone(),
             request,
+        ));
+
+        // ensure that all filters are applied client side as well as server side
+        // this ensures that comparisons are always done on the wire field (eg Binary),
+        // instead of the encoded field (eg ascii escape), which means encodings don't have to preserve order
+        let node: Arc<dyn ExecutionPlan> = match conjunction(filters) {
+            Some(filters) => {
+                let exec_schema = self.wire_schema.as_ref().clone().to_dfschema()?;
+                let filters = create_physical_expr(
+                    &filters,
+                    &exec_schema,
+                    self.wire_schema.as_ref(),
+                    state.execution_props(),
+                )?;
+
+                Arc::new(FilterExec::try_new(filters, node)?)
+            }
+            None => node,
+        };
+
+        Ok(Arc::new(EncoderExec::new(
+            self.descriptor_pool.clone(),
+            self.encoded_schema.clone(),
+            node,
         )))
     }
 
@@ -248,10 +279,17 @@ impl TableProvider for GrpcTableProvider {
                                      op: Operator::Eq | Operator::Gt | Operator::GtEq | Operator::Lt | Operator::LtEq,
                                      right,
                                  }) => match (left.as_ref(), right.as_ref()) {
-                    (Expr::Column(_) | Expr::Literal(_), Expr::Column(_) | Expr::Literal(_)) => {
-                        // without knowing the key structure we can't guarantee exact results
-                        // so we ask that datafusion always filters client side
-                        TableProviderFilterPushDown::Inexact
+                    (Expr::Column(column), Expr::Literal(_))
+                    | (Expr::Literal(_), Expr::Column(column)) => {
+                        let (_, field) = self.encoded_schema.column_with_name(column.name.as_str()).unwrap();
+                        let field: ExtendedField = field.clone().into();
+
+                        if field.is_value() {
+                            // we don't have any way to filter the value field
+                            TableProviderFilterPushDown::Unsupported
+                        } else {
+                            TableProviderFilterPushDown::Exact
+                        }
                     }
                     _ => TableProviderFilterPushDown::Unsupported,
                 },
@@ -273,7 +311,6 @@ fn set_field(message: &mut DynamicMessage, table_name: &str, field_name: &str, v
 struct GrpcExec {
     name: String,
     schema: SchemaRef,
-    descriptor_pool: DescriptorPool,
     key_desc: MessageDescriptor,
     limit: Option<usize>,
     request: ScanRequest,
@@ -284,7 +321,6 @@ impl GrpcExec {
     fn new(
         name: String,
         schema: SchemaRef,
-        descriptor_pool: DescriptorPool,
         key_desc: MessageDescriptor,
         limit: Option<usize>,
         client: StorageClient<tonic::transport::Channel>,
@@ -293,7 +329,6 @@ impl GrpcExec {
         Self {
             name,
             schema,
-            descriptor_pool,
             key_desc,
             limit,
             client,
@@ -345,7 +380,6 @@ impl ExecutionPlan for GrpcExec {
         let resp = tokio::task::spawn(async move { client.scan(request).await });
 
         let name = self.name.clone();
-        let descriptor_pool = self.descriptor_pool.clone();
         let key_desc = self.key_desc.clone();
         let schema = self.schema();
         let stream = resp
@@ -364,7 +398,6 @@ impl ExecutionPlan for GrpcExec {
                 Ok(Ok(resp)) => {
                     // each result of the stream is a result from the grpc stream
                     let name = name.clone();
-                    let descriptor_pool = descriptor_pool.clone();
                     let key_desc = key_desc.clone();
                     let schema = schema.clone();
                     resp.into_inner()
@@ -375,7 +408,6 @@ impl ExecutionPlan for GrpcExec {
                                 .map(|batch| {
                                     batch_to_record_batch(
                                         name.as_str(),
-                                        descriptor_pool.clone(),
                                         key_desc.clone(),
                                         schema.clone(),
                                         batch,
@@ -415,7 +447,6 @@ impl ExecutionPlan for GrpcExec {
 
 fn batch_to_record_batch(
     table_name: &str,
-    descriptor_pool: DescriptorPool,
     key_desc: MessageDescriptor,
     schema: SchemaRef,
     batch: Vec<Pair>,
@@ -442,44 +473,18 @@ fn batch_to_record_batch(
         })
         .unzip();
 
-    let columns = schema.fields.iter().map(|field| {
-        if is_value_field(field) {
-            return value_to_typed(descriptor_pool.clone(), field, values.iter());
+    let columns = schema.fields.iter().map(|field| -> ArrayRef {
+        let name = field.name();
+        let field: ExtendedField = field.clone().into();
+
+        if field.is_value() {
+            return Arc::new(BinaryArray::from_iter_values(values.iter()));
         }
 
-        let items = keys
-            .iter()
-            .map(|item| item.get_field_by_name(field.name().as_str()).expect(""));
-
-        match field.data_type() {
-            DataType::UInt64 => Arc::new(PrimitiveArray::<UInt64Type>::from_iter_values(items.map(
-                |field| {
-                    field
-                        .as_u64()
-                        .unwrap_or_else(|| panic!("field {} type must match schema type", field))
-                },
-            ))) as ArrayRef,
-            DataType::UInt32 => Arc::new(PrimitiveArray::<UInt32Type>::from_iter_values(items.map(
-                |field| {
-                    field
-                        .as_u32()
-                        .unwrap_or_else(|| panic!("field {} type must match schema type", field))
-                },
-            ))) as ArrayRef,
-            DataType::Utf8 => Arc::new(StringArray::from_iter_values(items.map(|field| {
-                field
-                    .as_str()
-                    .unwrap_or_else(|| panic!("field {} type must match schema type", field))
-                    .to_owned()
-            }))) as ArrayRef,
-            DataType::Binary => Arc::new(BinaryArray::from_iter_values(items.map(|field| {
-                field
-                    .as_bytes()
-                    .unwrap_or_else(|| panic!("field {} type must match schema type", field))
-                    .to_owned()
-            }))) as ArrayRef,
-            _ => todo!("unsupported field type"),
-        }
+        field.proto_to_wire(keys.iter().map(|item| {
+            item.get_field_by_name(name)
+                .unwrap_or_else(|| panic!("{} must be present in returned key object", name))
+        }))
     });
 
     RecordBatch::try_new(schema.clone(), columns.collect()).expect("failed to create batch")

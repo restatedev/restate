@@ -1,6 +1,6 @@
-mod exec;
+mod encoder;
+mod field;
 mod table;
-mod value;
 
 use clap::Parser;
 use datafusion::arrow::array::{Array, AsArray, BinaryArray};
@@ -13,7 +13,7 @@ use datafusion::physical_expr::functions::make_scalar_function;
 use datafusion::prelude::SessionContext;
 use datafusion_cli::catalog::DynamicFileCatalog;
 use datafusion_cli::{
-    print_format::PrintFormat, print_options::PrintOptions, DATAFUSION_CLI_VERSION,
+    exec, print_format::PrintFormat, print_options::PrintOptions, DATAFUSION_CLI_VERSION,
 };
 use std::sync::Arc;
 use tokio::runtime;
