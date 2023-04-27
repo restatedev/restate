@@ -1,0 +1,52 @@
+name: Build CLI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  build-cli:
+    name: Build cli
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        #os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
+        arch: [arm64, amd64]
+
+    steps:
+      - name: Empty workflow
+        run: echo Let me do something, pleasssssse!
+# Placeholder if we build CLI binaries
+#      - uses: actions/checkout@v3
+#
+#      - name: Install Rust toolchain
+#        uses: actions-rs/toolchain@v1
+#        with:
+#          # need to provide a toolchain version because this action cannot read rust-toolchain.toml. See https://github.com/actions-rs/toolchain/issues/126
+#          toolchain: stable
+#
+#      - name: Install protoc
+#        uses: ./.github/actions/install-protoc
+#
+#      - name: Setup just
+#        uses: extractions/setup-just@v1
+#        env:
+#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#
+#      - name: Run sccache-cache
+#        uses: mozilla-actions/sccache-action@v0.0.3
+#
+#      - name: Cache Rust
+#        uses: Swatinem/rust-cache@v2
+#
+#      - name: Build cli (${{ matrix.arch }}-${{ matrix.os }})
+#        run: just arch=${{ matrix.arch }} libc=musl build --release --bin restate-cli
+#
+#      - name: Upload binary (${{ matrix.arch }}-${{ matrix.os }})
+#        uses: actions/upload-artifact@v3
+#        with:
+#          name: restate-cli-${{ matrix.arch }}-${{ matrix.os }}
+#          path: target/release/restate-cli
+
+
