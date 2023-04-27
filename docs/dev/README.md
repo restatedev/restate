@@ -11,3 +11,5 @@ This directory contains documentation relevant for Restate developers.
 [rust-guidelines.md](rust-guidelines.md) contains guidelines for coding Rust.
 
 [debug.md](debug.md) contains some tips for debugging the runtime.
+
+[release.md](release.md) contains explanation for how to release the runtime.
