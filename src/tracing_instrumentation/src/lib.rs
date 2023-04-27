@@ -2,6 +2,7 @@ mod pretty;
 
 use crate::pretty::PrettyFields;
 use opentelemetry::trace::TraceError;
+use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
 use pretty::Pretty;
 use std::fmt::Display;
 use tracing::Level;
@@ -55,6 +56,11 @@ pub struct Options {
     /// Specify the Jaeger endpoint to use to send traces. Traces will be exported using the [Jaeger Agent UDP protocol](https://www.jaegertracing.io/docs/1.6/deployment/#agent) through [opentelemetry_jaeger](https://docs.rs/opentelemetry-jaeger/latest/opentelemetry_jaeger/config/agent/struct.AgentPipeline.html).
     jaeger_endpoint: Option<String>,
 
+    /// # Jaeger File Exporter Path
+    ///
+    /// Specify the path where to export spans as JSON in the Jaeger format. This option allows you to export traces as JSON files and load them later in Jaeger for inspection.
+    jaeger_file_exporter_path: Option<String>,
+
     /// # Log
     ///
     /// Log configuration. Can be overridden by the `RUST_LOG` environment variable.
@@ -79,6 +85,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             jaeger_endpoint: None,
+            jaeger_file_exporter_path: None,
             log: Options::default_log(),
             log_format: Default::default(),
             disable_ansi_log: false,
@@ -99,6 +106,8 @@ impl Options {
     /// This method will panic if there is already a global subscriber configured. Moreover, it will
     /// panic if it is executed outside of a Tokio runtime.
     pub fn init(&self, service_name: impl Display, instance_id: impl Display) -> TracingResult<()> {
+        let restate_service_name = format!("Restate service: {service_name}");
+
         let fmt_layer = match self.log_format {
             LogFormat::Pretty => tracing_subscriber::fmt::layer()
                 .event_format::<Pretty<SystemTime>>(Pretty::default())
@@ -127,13 +136,34 @@ impl Options {
         #[cfg(feature = "console-subscriber")]
         let layers = layers.with(console_subscriber::spawn());
 
-        if let Some(jaeger_endpoint) = &self.jaeger_endpoint {
-            layers
-                .with(self.try_init_jaeger_tracing(jaeger_endpoint, service_name, instance_id)?)
-                .init();
-        } else {
-            layers.init();
-        }
+        let layers = layers.with(
+            self.jaeger_endpoint
+                .as_ref()
+                .map(|jaeger_endpoint| {
+                    self.try_init_jaeger_tracing(
+                        jaeger_endpoint,
+                        restate_service_name.clone(),
+                        instance_id,
+                    )
+                })
+                .transpose()?,
+        );
+
+        let layers = layers.with(self.jaeger_file_exporter_path.as_ref().map(
+            |jaeger_file_exporter_path| {
+                tracing_opentelemetry::layer().with_tracer(
+                    JaegerJsonExporter::new(
+                        jaeger_file_exporter_path.into(),
+                        "span".to_string(),
+                        restate_service_name,
+                        opentelemetry::runtime::Tokio,
+                    )
+                    .install_batch(),
+                )
+            },
+        ));
+
+        layers.init();
 
         Ok(())
     }
@@ -141,7 +171,7 @@ impl Options {
     fn try_init_jaeger_tracing<S>(
         &self,
         jaeger_endpoint: impl AsRef<str>,
-        service_name: impl Display,
+        service_name: String,
         instance_id: impl Display,
     ) -> TracingResult<
         tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry::sdk::trace::Tracer>,
@@ -151,8 +181,7 @@ impl Options {
     {
         let resource = opentelemetry::sdk::Resource::new(
             vec![
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME
-                    .string(format!("Restate service: {service_name}")),
+                opentelemetry_semantic_conventions::resource::SERVICE_NAME.string(service_name),
                 opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE.string("Restate"),
                 opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID
                     .string(instance_id.to_string()),

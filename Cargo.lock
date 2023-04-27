@@ -1674,6 +1674,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry-contrib"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6171a92e47498eb95845189db332ab85721a51ba924349243192b28141d3fd8"
+dependencies = [
+ "async-trait",
+ "futures",
+ "opentelemetry",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "opentelemetry-http"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2627,6 +2640,7 @@ dependencies = [
  "console-subscriber",
  "nu-ansi-term",
  "opentelemetry",
+ "opentelemetry-contrib",
  "opentelemetry-jaeger",
  "opentelemetry-semantic-conventions",
  "schemars",
