@@ -32,7 +32,11 @@ jobs:
       - name: Package cli binaries
         id: package-cli-binaries
         run: |
-          for cli in restate-cli-*; do zip -j ${cli}.zip ${cli}/restate-cli; done
+          for cli in restate-cli-*; 
+          do
+            [ -e "$cli" ] || continue
+            zip -j ${cli}.zip ${cli}/restate-cli; 
+          done
           echo "PACKAGES<<EOF" >> $GITHUB_OUTPUT
           ls -1 restate-cli-*.zip >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
