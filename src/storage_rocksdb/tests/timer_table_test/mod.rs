@@ -58,6 +58,37 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
         Timer::Invoke(service_invocation),
     )
     .await;
+
+    //
+    // add a successor and a predecessor partitions
+    //
+    txn.add_timer(
+        1336,
+        &TimerKey {
+            service_invocation_id: ServiceInvocationId {
+                service_id: ServiceId::new("", ""),
+                invocation_id: Default::default(),
+            },
+            journal_index: 0,
+            timestamp: 0,
+        },
+        Timer::CompleteSleepEntry,
+    )
+    .await;
+
+    txn.add_timer(
+        1338,
+        &TimerKey {
+            service_invocation_id: ServiceInvocationId {
+                service_id: ServiceId::new("", ""),
+                invocation_id: Default::default(),
+            },
+            journal_index: 0,
+            timestamp: 0,
+        },
+        Timer::CompleteSleepEntry,
+    )
+    .await;
 }
 
 async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T) {

@@ -13,6 +13,8 @@ pub enum StorageError {
     Generic(#[from] GenericError),
     #[error("failed to convert Rust objects to/from protobuf: {0}")]
     Conversion(#[from] ConversionError),
+    #[error("Integrity constrained is violated")]
+    DataIntegrityError,
 }
 
 //

@@ -1,8 +1,10 @@
-use crate::composite_keys::{read_delimited, write_delimited};
-use crate::Result;
+use crate::codec::ProtoValue;
+use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Timers;
-use crate::{write_proto_infallible, PutFuture, RocksDBTransaction};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use crate::TableScanIterationDecision::Emit;
+use crate::{PutFuture, RocksDBTransaction};
+use crate::{Result, TableScan, TableScanIterationDecision};
+use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
 use restate_common::types::{PartitionId, Timer, TimerKey};
@@ -11,122 +13,81 @@ use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 use uuid::Uuid;
 
-#[derive(Debug, PartialEq)]
-pub struct TimersKeyComponents {
-    pub partition_id: Option<PartitionId>,
-    pub timestamp: Option<u64>,
-    pub service_name: Option<ByteString>,
-    pub service_key: Option<Bytes>,
-    pub invocation_id: Option<Bytes>,
-    pub journal_index: Option<u32>,
-}
-
-impl TimersKeyComponents {
-    pub(crate) fn to_bytes(&self, bytes: &mut BytesMut) -> Option<()> {
-        self.partition_id
-            .map(|partition_id| bytes.put_u64(partition_id))?;
-        self.timestamp.map(|timestamp| bytes.put_u64(timestamp))?;
-        self.service_name
-            .as_ref()
-            .map(|s| write_delimited(s, bytes))?;
-        self.service_key
-            .as_ref()
-            .map(|s| write_delimited(s, bytes))?;
-        self.invocation_id
-            .as_ref()
-            .map(|s| write_delimited(s, bytes))?;
-        self.journal_index
-            .map(|journal_index| bytes.put_u32(journal_index))
-    }
-
-    pub(crate) fn from_bytes(bytes: &mut Bytes) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self {
-            partition_id: bytes.has_remaining().then(|| bytes.get_u64()),
-            timestamp: bytes.has_remaining().then(|| bytes.get_u64()),
-            service_name: bytes
-                .has_remaining()
-                .then(|| {
-                    read_delimited(bytes)
-                        // SAFETY: this is safe since the service name was constructed from a ByteString.
-                        .map(|name| unsafe { ByteString::from_bytes_unchecked(name) })
-                })
-                .transpose()?,
-            service_key: bytes
-                .has_remaining()
-                .then(|| read_delimited(bytes))
-                .transpose()?,
-            invocation_id: bytes
-                .has_remaining()
-                .then(|| read_delimited(bytes))
-                .transpose()?,
-            journal_index: bytes.has_remaining().then(|| bytes.get_u32()),
-        })
-    }
-}
+define_table_key!(
+    Timers,
+    TimersKey(
+        partition_id: PartitionId,
+        timestamp: u64,
+        service_name: ByteString,
+        service_key: Bytes,
+        invocation_id: Bytes,
+        journal_index: u32
+    )
+);
 
 #[inline]
-fn write_timer_key(key: &mut BytesMut, partition_id: PartitionId, timer_key: &TimerKey) {
-    key.put_u64(partition_id);
-    key.put_u64(timer_key.timestamp);
-    write_delimited(
-        &timer_key.service_invocation_id.service_id.service_name,
-        key,
-    );
-    write_delimited(&timer_key.service_invocation_id.service_id.key, key);
-    write_delimited(timer_key.service_invocation_id.invocation_id, key);
-    key.put_u32(timer_key.journal_index);
+fn write_timer_key(partition_id: PartitionId, timer_key: &TimerKey) -> TimersKey {
+    TimersKey::default()
+        .partition_id(partition_id)
+        .timestamp(timer_key.timestamp)
+        .service_name(
+            timer_key
+                .service_invocation_id
+                .service_id
+                .service_name
+                .clone(),
+        )
+        .service_key(timer_key.service_invocation_id.service_id.key.clone())
+        .invocation_id(
+            timer_key // TODO: fix this
+                .service_invocation_id
+                .invocation_id
+                .as_ref()
+                .to_vec()
+                .into(),
+        )
+        .journal_index(timer_key.journal_index)
 }
 
 #[inline]
 fn exclusive_start_key_range(
     partition_id: PartitionId,
     timer_key: Option<&TimerKey>,
-) -> (Vec<u8>, Vec<u8>) {
-    let mut key = BytesMut::new();
-    key.put_u64(partition_id);
-
+) -> TableScan<TimersKey> {
     if let Some(timer_key) = timer_key {
-        key.put_u64(timer_key.timestamp);
-        write_delimited(
-            &timer_key.service_invocation_id.service_id.service_name,
-            &mut key,
-        );
-        write_delimited(&timer_key.service_invocation_id.service_id.key, &mut key);
-        write_delimited(timer_key.service_invocation_id.invocation_id, &mut key);
-        key.put_u32(timer_key.journal_index + 1);
+        let mut lower_bound = write_timer_key(partition_id, timer_key);
+
+        let next_index = lower_bound.journal_index.map(|i| i + 1).unwrap_or(1);
+
+        lower_bound.journal_index = Some(next_index);
+
+        let upper_bound = TimersKey::default()
+            .partition_id(partition_id)
+            .timestamp(u64::MAX);
+
+        TableScan::KeyRangeInclusive(lower_bound, upper_bound)
+    } else {
+        TableScan::Partition(partition_id)
     }
-
-    let lower_bound = key.to_vec();
-    let upper_bound = (partition_id + 1).to_be_bytes().to_vec();
-
-    (lower_bound, upper_bound)
 }
 
 #[inline]
-fn timer_key_from_key_slice(slice: &[u8]) -> crate::Result<TimerKey> {
-    // we must copy the slice to own it, since we need to return an owned TimerKey.
-    // but, we peal off various values using the same owned copy and these
-    // values share the same underlying memory via reference counting (see Bytes for more details)
+fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
     let mut key = Bytes::copy_from_slice(slice);
-    let _partition_id = key.get_u64();
-    let timestamp = key.get_u64();
-    let service_name = read_delimited(&mut key)?;
-    let service_key = read_delimited(&mut key)?;
-    let invocation_id = read_delimited(&mut key)?;
-    let invocation_uuid =
-        Uuid::from_slice(&invocation_id).map_err(|error| StorageError::Generic(error.into()))?;
-    let journal_index = key.get_u32();
+    let key = TimersKey::deserialize_from(&mut key)?;
+    if !key.is_complete() {
+        return Err(StorageError::DataIntegrityError);
+    }
+    let invocation_uuid = Uuid::from_slice(key.invocation_id_ok_or()?.as_ref())
+        .map_err(|error| StorageError::Generic(error.into()))?;
     let timer_key = TimerKey {
         service_invocation_id: restate_common::types::ServiceInvocationId::new(
-            unsafe { ByteString::from_bytes_unchecked(service_name) },
-            service_key,
+            key.service_name.unwrap(),
+            key.service_key.unwrap(),
             invocation_uuid,
         ),
-        journal_index,
-        timestamp,
+        journal_index: key.journal_index.unwrap(),
+        timestamp: key.timestamp.unwrap(),
     };
 
     Ok(timer_key)
@@ -134,18 +95,18 @@ fn timer_key_from_key_slice(slice: &[u8]) -> crate::Result<TimerKey> {
 
 impl TimerTable for RocksDBTransaction {
     fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) -> PutFuture {
-        write_timer_key(self.key_buffer(), partition_id, key);
-        write_proto_infallible(self.value_buffer(), storage::v1::Timer::from(timer));
+        let key = write_timer_key(partition_id, key);
+        let value = ProtoValue(storage::v1::Timer::from(timer));
 
-        self.put_kv_buffer(Timers);
+        self.put_kv(key, value);
 
         ready()
     }
 
     fn delete_timer(&mut self, partition_id: PartitionId, key: &TimerKey) -> PutFuture {
-        write_timer_key(self.key_buffer(), partition_id, key);
+        let key = write_timer_key(partition_id, key);
 
-        self.delete_key_buffer(Timers);
+        self.delete_key(&key);
 
         ready()
     }
@@ -156,29 +117,20 @@ impl TimerTable for RocksDBTransaction {
         exclusive_start: Option<&TimerKey>,
         limit: usize,
     ) -> GetStream<(TimerKey, Timer)> {
-        let (lower_bound, upper_bound) = exclusive_start_key_range(partition_id, exclusive_start);
-        self.spawn_background_scan(move |db, tx| {
-            let mut iterator = db.range_iterator(Timers, (lower_bound.clone())..upper_bound);
-            iterator.seek(lower_bound);
-
-            let mut produced = 0;
-            while let Some((k, v)) = iterator.item() {
-                let res = decode_timer_key_value(k, v);
-
-                if tx.blocking_send(res).is_err() {
-                    break;
-                }
-                produced += 1;
-                if produced == limit {
-                    break;
-                }
-                iterator.next();
+        let scan = exclusive_start_key_range(partition_id, exclusive_start);
+        let mut produced = 0;
+        self.for_each_key_value(scan, move |k, v| {
+            if produced >= limit {
+                return TableScanIterationDecision::Break;
             }
+            produced += 1;
+            let res = decode_timer_key_value(k, v);
+            Emit(res)
         })
     }
 }
 
-fn decode_timer_key_value(k: &[u8], v: &[u8]) -> crate::Result<(TimerKey, Timer)> {
+fn decode_timer_key_value(k: &[u8], v: &[u8]) -> Result<(TimerKey, Timer)> {
     let timer_key = timer_key_from_key_slice(k)?;
 
     let timer = Timer::try_from(
@@ -191,10 +143,11 @@ fn decode_timer_key_value(k: &[u8], v: &[u8]) -> crate::Result<(TimerKey, Timer)
 #[cfg(test)]
 mod tests {
     use crate::timer_table::{
-        exclusive_start_key_range, timer_key_from_key_slice, write_timer_key, TimersKeyComponents,
+        exclusive_start_key_range, timer_key_from_key_slice, write_timer_key,
     };
-    use bytes::{Bytes, BytesMut};
-    use bytestring::ByteString;
+    use crate::TableScan;
+
+    use crate::keys::TableKey;
     use restate_common::types::{ServiceInvocationId, TimerKey};
     use uuid::Uuid;
 
@@ -207,35 +160,10 @@ mod tests {
             timestamp: 87654321,
         };
 
-        let mut key_bytes = BytesMut::new();
-        write_timer_key(&mut key_bytes, 1337, &key);
+        let key_bytes = write_timer_key(1337, &key).serialize();
         let got = timer_key_from_key_slice(&key_bytes).expect("should not fail");
 
         assert_eq!(got, key);
-    }
-
-    #[test]
-    fn structured_round_trip() {
-        let key = TimersKeyComponents {
-            partition_id: Some(1),
-            timestamp: Some(1),
-            service_name: Some(ByteString::from("name")),
-            service_key: Some(Bytes::from("key")),
-            invocation_id: Some(Bytes::from("id")),
-            journal_index: Some(1),
-        };
-        let mut bytes = BytesMut::new();
-        key.to_bytes(&mut bytes);
-        assert_eq!(
-            bytes,
-            BytesMut::from(
-                b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01\x04name\x03key\x02id\0\0\0\x01".as_slice()
-            )
-        );
-        assert_eq!(
-            TimersKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
-            key
-        );
     }
 
     #[test]
@@ -393,15 +321,17 @@ mod tests {
     }
 
     fn assert_in_range(key_a: TimerKey, key_b: TimerKey) {
-        let mut key_a_bytes = BytesMut::new();
-        let mut key_b_bytes = BytesMut::new();
-
-        write_timer_key(&mut key_a_bytes, 1, &key_a);
-        write_timer_key(&mut key_b_bytes, 1, &key_b);
+        let key_a_bytes = write_timer_key(1, &key_a).serialize();
+        let key_b_bytes = write_timer_key(1, &key_b).serialize();
 
         assert!(less_than(&key_a_bytes, &key_b_bytes));
 
-        let (low, high) = exclusive_start_key_range(1, Some(&key_a));
+        let (low, high) = match exclusive_start_key_range(1, Some(&key_a)) {
+            TableScan::KeyRangeInclusive(low, high) => (low, high),
+            _ => panic!(""),
+        };
+        let low = low.serialize();
+        let high = high.serialize();
 
         assert!(less_than(key_a_bytes, &low));
         assert!(less_than_or_equal(&low, &key_b_bytes));

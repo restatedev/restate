@@ -1,34 +1,20 @@
-use crate::composite_keys::u64_pair;
+use crate::codec::ProtoValue;
+use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Outbox;
-use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBTransaction};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use crate::{GetFuture, PutFuture, RocksDBTransaction, TableScan, TableScanIterationDecision};
+use futures_util::StreamExt;
 use prost::Message;
 use restate_common::types::{OutboxMessage, PartitionId};
 use restate_storage_api::outbox_table::OutboxTable;
 use restate_storage_api::{ready, StorageError};
 use restate_storage_proto::storage;
+use std::io::Cursor;
 use std::ops::Range;
 
-#[derive(Debug, PartialEq)]
-pub struct OutboxKeyComponents {
-    pub partition_id: Option<PartitionId>,
-    pub message_index: Option<u64>,
-}
-
-impl OutboxKeyComponents {
-    pub(crate) fn to_bytes(&self, bytes: &mut BytesMut) -> Option<()> {
-        self.partition_id
-            .map(|partition_id| bytes.put_u64(partition_id))?;
-        self.message_index.map(|state_id| bytes.put_u64(state_id))
-    }
-
-    pub(crate) fn from_bytes(bytes: &mut Bytes) -> Self {
-        Self {
-            partition_id: bytes.has_remaining().then(|| bytes.get_u64()),
-            message_index: bytes.has_remaining().then(|| bytes.get_u64()),
-        }
-    }
-}
+define_table_key!(
+    Outbox,
+    OutboxKey(partition_id: PartitionId, message_index: u64)
+);
 
 impl OutboxTable for RocksDBTransaction {
     fn add_message(
@@ -37,15 +23,12 @@ impl OutboxTable for RocksDBTransaction {
         message_index: u64,
         outbox_message: OutboxMessage,
     ) -> PutFuture {
-        let key = self.key_buffer();
-        key.put_u64(partition_id);
-        key.put_u64(message_index);
+        let key = OutboxKey::default()
+            .partition_id(partition_id)
+            .message_index(message_index);
 
-        write_proto_infallible(
-            self.value_buffer(),
-            storage::v1::OutboxMessage::from(outbox_message),
-        );
-        self.put_kv_buffer(Outbox);
+        let value = ProtoValue(storage::v1::OutboxMessage::from(outbox_message));
+        self.put_kv(key, value);
 
         ready()
     }
@@ -55,31 +38,20 @@ impl OutboxTable for RocksDBTransaction {
         partition_id: PartitionId,
         next_sequence_number: u64,
     ) -> GetFuture<Option<(u64, OutboxMessage)>> {
-        self.spawn_blocking(move |db| {
-            let lo = u64_pair(partition_id, next_sequence_number);
-            let hi = u64_pair(partition_id + 1, 0);
+        let start = OutboxKey::default()
+            .partition_id(partition_id)
+            .message_index(next_sequence_number);
 
-            let mut iterator = db.range_iterator(Outbox, lo..hi);
-            iterator.seek(lo);
+        let end = OutboxKey::default()
+            .partition_id(partition_id)
+            .message_index(u64::MAX);
 
-            if let Some((k, v)) = iterator.item() {
-                // sequence number is the second component of the key
-                // it starts at the 8th byte.
-                assert_eq!(k.len(), 16);
-                let mut buf = [0u8; 8];
-                buf.copy_from_slice(&k[8..]);
-                let sequence_number = u64::from_be_bytes(buf);
+        let mut stream = self
+            .for_each_key_value(TableScan::KeyRangeInclusive(start, end), |k, v| {
+                TableScanIterationDecision::Emit(decode_key_value(k, v))
+            });
 
-                // the value is the protobuf message OutboxMessage.
-                let outbox = OutboxMessage::try_from(
-                    storage::v1::OutboxMessage::decode(v)
-                        .map_err(|error| StorageError::Generic(error.into()))?,
-                )?;
-                Ok(Some((sequence_number, outbox)))
-            } else {
-                Ok(None)
-            }
-        })
+        Box::pin(async move { stream.next().await.transpose() })
     }
 
     fn truncate_outbox(
@@ -87,34 +59,27 @@ impl OutboxTable for RocksDBTransaction {
         partition_id: PartitionId,
         seq_to_truncate: Range<u64>,
     ) -> PutFuture {
-        let mut key = u64_pair(partition_id, 0);
+        let mut key = OutboxKey::default().partition_id(partition_id);
+        let mut k = &mut key;
 
         for seq in seq_to_truncate {
-            key[8..].copy_from_slice(&seq.to_be_bytes());
-            self.delete_key(Outbox, key);
+            k.message_index = Some(seq);
+            self.delete_key(k);
         }
 
         ready()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::outbox_table::OutboxKeyComponents;
-    use bytes::BytesMut;
+fn decode_key_value(k: &[u8], v: &[u8]) -> crate::Result<(u64, OutboxMessage)> {
+    // decode key
+    let key = OutboxKey::deserialize_from(&mut Cursor::new(k))?;
+    let sequence_number = *key.message_index_ok_or()?;
 
-    #[test]
-    fn key_round_trip() {
-        let key = OutboxKeyComponents {
-            partition_id: Some(1),
-            message_index: Some(1),
-        };
-        let mut bytes = BytesMut::new();
-        key.to_bytes(&mut bytes);
-        assert_eq!(
-            bytes,
-            BytesMut::from(b"\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\x01".as_slice())
-        );
-        assert_eq!(OutboxKeyComponents::from_bytes(&mut bytes.freeze()), key);
-    }
+    // decode value
+    let decoded = storage::v1::OutboxMessage::decode(v)
+        .map_err(|error| StorageError::Generic(error.into()))?;
+    let outbox_message = OutboxMessage::try_from(decoded).map_err(StorageError::Conversion)?;
+
+    Ok((sequence_number, outbox_message))
 }

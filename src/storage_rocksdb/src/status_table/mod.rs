@@ -1,8 +1,10 @@
-use crate::composite_keys::{end_key_successor, read_delimited, write_delimited};
-use crate::Result;
+use crate::codec::ProtoValue;
+use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Status;
-use crate::{write_proto_infallible, GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use crate::TableScan::PartitionKeyRange;
+use crate::TableScanIterationDecision;
+use crate::{GetFuture, PutFuture, RocksDBTransaction};
+use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
 use restate_common::types::{InvocationStatus, PartitionKey, ServiceId, ServiceInvocationId};
@@ -10,63 +12,34 @@ use restate_storage_api::status_table::StatusTable;
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 use std::ops::RangeInclusive;
-use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
-#[derive(Debug, PartialEq)]
-pub struct StatusKeyComponents {
-    pub partition_key: Option<PartitionKey>,
-    pub service_name: Option<ByteString>,
-    pub service_key: Option<Bytes>,
-}
+define_table_key!(
+    Status,
+    StatusKey(
+        partition_key: PartitionKey,
+        service_name: ByteString,
+        service_key: Bytes
+    )
+);
 
-impl StatusKeyComponents {
-    pub(crate) fn to_bytes(&self, bytes: &mut BytesMut) -> Option<()> {
-        self.partition_key
-            .map(|partition_key| bytes.put_u64(partition_key))?;
-        self.service_name
-            .as_ref()
-            .map(|s| write_delimited(s, bytes))?;
-        self.service_key.as_ref().map(|s| write_delimited(s, bytes))
-    }
-
-    pub(crate) fn from_bytes(bytes: &mut Bytes) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self {
-            partition_key: bytes.has_remaining().then(|| bytes.get_u64()),
-            service_name: bytes
-                .has_remaining()
-                .then(|| {
-                    read_delimited(bytes)
-                        // SAFETY: this is safe since the service name was constructed from a ByteString.
-                        .map(|name| unsafe { ByteString::from_bytes_unchecked(name) })
-                })
-                .transpose()?,
-            service_key: bytes
-                .has_remaining()
-                .then(|| read_delimited(bytes))
-                .transpose()?,
-        })
-    }
-}
-
-fn write_status_key(key: &mut BytesMut, partition_key: PartitionKey, service_id: &ServiceId) {
-    key.put_u64(partition_key);
-    write_delimited(&service_id.service_name, key);
-    write_delimited(&service_id.key, key);
+fn write_status_key(partition_key: PartitionKey, service_id: &ServiceId) -> StatusKey {
+    StatusKey::default()
+        .partition_key(partition_key)
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone())
 }
 
 fn status_key_from_bytes(mut bytes: Bytes) -> crate::Result<(PartitionKey, ServiceId)> {
-    let partition_key = bytes.get_u64();
-    let service_name = read_delimited(&mut bytes)?;
-    let service_key = read_delimited(&mut bytes)?;
-
-    // SAFETY: this is safe since the service name was constructed from a ByteString.
-    let service_name_bs = unsafe { ByteString::from_bytes_unchecked(service_name) };
-
-    Ok((partition_key, ServiceId::new(service_name_bs, service_key)))
+    let key = StatusKey::deserialize_from(&mut bytes)?;
+    let partition_key = key.partition_key_ok_or().cloned()?;
+    Ok((
+        partition_key,
+        ServiceId::new(
+            key.service_name_ok_or().cloned()?,
+            key.service_key_ok_or().cloned()?,
+        ),
+    ))
 }
 
 impl StatusTable for RocksDBTransaction {
@@ -76,13 +49,14 @@ impl StatusTable for RocksDBTransaction {
         service_id: &ServiceId,
         status: InvocationStatus,
     ) -> PutFuture {
-        write_status_key(self.key_buffer(), partition_key, service_id);
-        write_proto_infallible(
-            self.value_buffer(),
-            storage::v1::InvocationStatus::from(status),
-        );
+        let key = StatusKey::default()
+            .partition_key(partition_key)
+            .service_name(service_id.service_name.clone())
+            .service_key(service_id.key.clone());
 
-        self.put_kv_buffer(Status);
+        let value = ProtoValue(storage::v1::InvocationStatus::from(status));
+
+        self.put_kv(key, value);
 
         ready()
     }
@@ -92,15 +66,21 @@ impl StatusTable for RocksDBTransaction {
         partition_key: PartitionKey,
         service_id: &ServiceId,
     ) -> GetFuture<Option<InvocationStatus>> {
-        write_status_key(self.key_buffer(), partition_key, service_id);
-        let key = self.clone_key_buffer();
+        let key = StatusKey::default()
+            .partition_key(partition_key)
+            .service_name(service_id.service_name.clone())
+            .service_key(service_id.key.clone());
 
-        self.spawn_blocking(move |db| {
-            let proto = db.get_proto::<storage::v1::InvocationStatus>(Status, key)?;
-            proto
-                .map(InvocationStatus::try_from)
-                .transpose()
+        self.get_blocking(key, move |_, v| {
+            if v.is_none() {
+                return Ok(None);
+            }
+            let v = v.unwrap();
+            let proto = storage::v1::InvocationStatus::decode(v)
+                .map_err(|err| StorageError::Generic(err.into()))?;
+            InvocationStatus::try_from(proto)
                 .map_err(StorageError::from)
+                .map(Some)
         })
     }
 
@@ -109,9 +89,9 @@ impl StatusTable for RocksDBTransaction {
         partition_key: PartitionKey,
         service_id: &ServiceId,
     ) -> PutFuture {
-        write_status_key(self.key_buffer(), partition_key, service_id);
+        let key = write_status_key(partition_key, service_id);
 
-        self.delete_key_buffer(Status);
+        self.delete_key(&key);
 
         ready()
     }
@@ -120,40 +100,17 @@ impl StatusTable for RocksDBTransaction {
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> GetStream<ServiceInvocationId> {
-        self.spawn_background_scan(move |db, tx| {
-            find_all_invocation_with_invoked_status(db, tx, partition_key_range)
-        })
-    }
-}
-
-fn find_all_invocation_with_invoked_status(
-    db: RocksDBStorage,
-    tx: Sender<crate::Result<ServiceInvocationId>>,
-    partition_key_range: RangeInclusive<PartitionKey>,
-) {
-    let start_key = partition_key_range.start().to_be_bytes();
-    // compute the end key. Since we are dealing here with partition keys, they can
-    // cover the entire keyspace from 0..2^64.
-    // in particular the last partition will have its end key equal to that.
-    let mut iterator = match end_key_successor(*partition_key_range.end()) {
-        None => db.range_iterator(Status, start_key..),
-        Some(end_key) => db.range_iterator(Status, start_key..end_key),
-    };
-    iterator.seek(start_key);
-    while let Some((k, v)) = iterator.item() {
-        let out = match decode_status_key_value(k, v) {
-            Ok(None) => {
-                iterator.next();
-                continue;
-            }
-            Ok(Some(sid)) => Ok(sid),
-            Err(err) => Err(err),
-        };
-
-        if tx.blocking_send(out).is_err() {
-            break;
-        }
-        iterator.next();
+        self.for_each_key_value(
+            PartitionKeyRange::<StatusKey>(partition_key_range),
+            |k, v| {
+                let result = decode_status_key_value(k, v).transpose();
+                if let Some(res) = result {
+                    TableScanIterationDecision::Emit(res)
+                } else {
+                    TableScanIterationDecision::Continue
+                }
+            },
+        )
     }
 }
 
@@ -179,39 +136,18 @@ fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<ServiceIn
 
 #[cfg(test)]
 mod tests {
-    use crate::status_table::{status_key_from_bytes, write_status_key, StatusKeyComponents};
-    use bytes::{Bytes, BytesMut};
-    use bytestring::ByteString;
+    use crate::keys::TableKey;
+    use crate::status_table::{status_key_from_bytes, write_status_key};
     use restate_common::types::ServiceId;
 
     #[test]
     fn round_trip() {
-        let mut key = BytesMut::new();
-        write_status_key(&mut key, 1337, &ServiceId::new("svc-1", "key-1"));
+        let key = write_status_key(1337, &ServiceId::new("svc-1", "key-1")).serialize();
 
         let (partition_key, service_id) = status_key_from_bytes(key.freeze()).unwrap();
 
         assert_eq!(partition_key, 1337);
         assert_eq!(service_id.service_name, "svc-1");
         assert_eq!(service_id.key, "key-1");
-    }
-
-    #[test]
-    fn structured_round_trip() {
-        let key = StatusKeyComponents {
-            partition_key: Some(1),
-            service_name: Some(ByteString::from("name")),
-            service_key: Some(Bytes::from("key")),
-        };
-        let mut bytes = BytesMut::new();
-        key.to_bytes(&mut bytes);
-        assert_eq!(
-            bytes,
-            BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key".as_slice())
-        );
-        assert_eq!(
-            StatusKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
-            key
-        );
     }
 }

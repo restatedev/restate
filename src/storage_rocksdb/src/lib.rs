@@ -1,25 +1,22 @@
-mod composite_keys;
+pub mod codec;
 pub mod deduplication_table;
 pub mod fsm_table;
 pub mod inbox_table;
 pub mod journal_table;
+pub mod keys;
 pub mod outbox_table;
+pub mod scan;
 pub mod state_table;
 pub mod status_table;
 pub mod timer_table;
 
-use crate::deduplication_table::DeduplicationKeyComponents;
-use crate::fsm_table::PartitionStateMachineKeyComponents;
-use crate::inbox_table::InboxKeyComponents;
-use crate::journal_table::JournalKeyComponents;
-use crate::outbox_table::OutboxKeyComponents;
-use crate::state_table::StateKeyComponents;
-use crate::status_table::StatusKeyComponents;
-use crate::timer_table::TimersKeyComponents;
+use crate::codec::Codec;
+use crate::keys::TableKey;
+use crate::scan::{PhysicalScan, TableScan};
 use crate::TableKind::{
     Deduplication, Inbox, Journal, Outbox, PartitionStateMachine, State, Status, Timers,
 };
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::BytesMut;
 use futures::{ready, FutureExt, Stream};
 use futures_util::future::ok;
 use futures_util::StreamExt;
@@ -32,7 +29,7 @@ use rocksdb::{
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
 
 type DB = rocksdb::DBWithThreadMode<SingleThreaded>;
@@ -49,6 +46,12 @@ const JOURNAL_TABLE_NAME: &str = "journal";
 
 pub(crate) type Result<T> = std::result::Result<T, StorageError>;
 
+pub enum TableScanIterationDecision<R> {
+    Emit(Result<R>),
+    Continue,
+    Break,
+}
+
 #[inline]
 fn cf_name(kind: TableKind) -> &'static str {
     match kind {
@@ -60,76 +63,6 @@ fn cf_name(kind: TableKind) -> &'static str {
         PartitionStateMachine => FSM_TABLE_NAME,
         Timers => TIMERS_TABLE_NAME,
         Journal => JOURNAL_TABLE_NAME,
-    }
-}
-
-#[derive(Clone)]
-pub enum RocksDBKey {
-    Full(TableKind, Vec<u8>),
-    Partial(TableKind, Vec<u8>),
-}
-
-impl RocksDBKey {
-    pub fn table(&self) -> TableKind {
-        match self {
-            RocksDBKey::Full(table, _) | RocksDBKey::Partial(table, _) => *table,
-        }
-    }
-    pub fn key(self) -> Vec<u8> {
-        match self {
-            RocksDBKey::Full(_, key) | RocksDBKey::Partial(_, key) => key,
-        }
-    }
-}
-
-pub enum Key {
-    State(StateKeyComponents),
-    Status(StatusKeyComponents),
-    Inbox(InboxKeyComponents),
-    Outbox(OutboxKeyComponents),
-    Deduplication(DeduplicationKeyComponents),
-    PartitionStateMachine(PartitionStateMachineKeyComponents),
-    Timers(TimersKeyComponents),
-    Journal(JournalKeyComponents),
-}
-
-impl Key {
-    pub fn to_bytes(&self) -> RocksDBKey {
-        let mut bytes = BytesMut::new();
-        let result = |table: TableKind, opt: Option<()>, bytes: BytesMut| match opt {
-            Some(()) => RocksDBKey::Full(table, bytes.to_vec()),
-            None => RocksDBKey::Partial(table, bytes.to_vec()),
-        };
-        match self {
-            Key::State(state) => result(State, state.to_bytes(&mut bytes), bytes),
-            Key::Status(status) => result(Status, status.to_bytes(&mut bytes), bytes),
-            Key::Inbox(inbox) => result(Inbox, inbox.to_bytes(&mut bytes), bytes),
-            Key::Outbox(outbox) => result(Outbox, outbox.to_bytes(&mut bytes), bytes),
-            Key::Deduplication(deduplication) => {
-                result(Deduplication, deduplication.to_bytes(&mut bytes), bytes)
-            }
-            Key::PartitionStateMachine(psm) => {
-                result(PartitionStateMachine, psm.to_bytes(&mut bytes), bytes)
-            }
-            Key::Timers(timers) => result(Timers, timers.to_bytes(&mut bytes), bytes),
-            Key::Journal(journal) => result(Journal, journal.to_bytes(&mut bytes), bytes),
-        }
-    }
-
-    pub fn from_bytes(table: TableKind, bytes: &[u8]) -> Result<Self> {
-        let mut bytes = Bytes::copy_from_slice(bytes);
-        Ok(match table {
-            State => Key::State(StateKeyComponents::from_bytes(&mut bytes)?),
-            Status => Key::Status(StatusKeyComponents::from_bytes(&mut bytes)?),
-            Inbox => Key::Inbox(InboxKeyComponents::from_bytes(&mut bytes)?),
-            Outbox => Key::Outbox(OutboxKeyComponents::from_bytes(&mut bytes)),
-            Deduplication => Key::Deduplication(DeduplicationKeyComponents::from_bytes(&mut bytes)),
-            PartitionStateMachine => Key::PartitionStateMachine(
-                PartitionStateMachineKeyComponents::from_bytes(&mut bytes),
-            ),
-            Timers => Key::Timers(TimersKeyComponents::from_bytes(&mut bytes)?),
-            Journal => Key::Journal(JournalKeyComponents::from_bytes(&mut bytes)?),
-        })
     }
 }
 
@@ -272,29 +205,6 @@ impl RocksDBStorage {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
-    pub fn get_owned<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<Bytes>> {
-        let bytes = self
-            .get(table, key)?
-            .map(|slice| Bytes::copy_from_slice(slice.as_ref()));
-
-        Ok(bytes)
-    }
-
-    fn get_proto<M: prost::Message + Default>(
-        &self,
-        table: TableKind,
-        key: impl AsRef<[u8]>,
-    ) -> Result<Option<M>> {
-        let maybe_slice = self.get(table, key)?;
-        if maybe_slice.is_none() {
-            return Ok(None);
-        }
-        let slice = maybe_slice.unwrap();
-        let decoded_message =
-            M::decode(slice.as_ref()).map_err(|error| StorageError::Generic(error.into()))?;
-        Ok(Some(decoded_message))
-    }
-
     pub fn prefix_iterator<K: Into<Vec<u8>>>(&self, table: TableKind, prefix: K) -> DBIterator {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
@@ -313,6 +223,27 @@ impl RocksDBStorage {
         let mut opts = ReadOptions::default();
         opts.set_iterate_range(range);
         self.db.raw_iterator_cf_opt(&table, opts)
+    }
+
+    fn iterator_from<K: TableKey>(&self, scan: TableScan<K>) -> DBIterator {
+        let scan: PhysicalScan = scan.into();
+        match scan {
+            PhysicalScan::Prefix(table, prefix) => {
+                let mut it = self.prefix_iterator(table, prefix.clone());
+                it.seek(prefix);
+                it
+            }
+            PhysicalScan::RangeExclusive(table, start, end) => {
+                let mut it = self.range_iterator(table, start.clone()..end);
+                it.seek(start);
+                it
+            }
+            PhysicalScan::RangeOpen(table, start) => {
+                let mut it = self.range_iterator(table, start.clone()..);
+                it.seek(start);
+                it
+            }
+        }
     }
 }
 
@@ -374,98 +305,110 @@ impl<T: Send + 'static> Stream for BackgroundScanStream<T> {
 }
 
 impl RocksDBTransaction {
-    #[inline]
-    fn spawn_blocking<F, R>(&self, f: F) -> GetFuture<'static, R>
+    pub fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> GetFuture<'static, R>
     where
-        F: FnOnce(RocksDBStorage) -> Result<R> + Send + 'static,
+        K: TableKey + Send + 'static,
+        F: FnOnce(&[u8], Option<&[u8]>) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let db = Clone::clone(&self.storage);
+        let mut buf = self.key_buffer();
+        key.serialize_to(&mut buf);
+        let buf = buf.split();
 
-        tokio::task::spawn_blocking(move || f(db))
-            .map(|result| match result {
-                Ok(internal_error) => internal_error,
-                Err(join_error) => Err(StorageError::Generic(join_error.into())),
-            })
-            .boxed()
+        let db = Clone::clone(&self.storage);
+        tokio::task::spawn_blocking(move || match db.get(K::table(), &buf) {
+            Ok(value) => {
+                let slice = value.as_ref().map(|v| v.as_ref());
+                f(&buf, slice)
+            }
+            Err(err) => Err(err),
+        })
+        .map(|result| match result {
+            Ok(internal_result) => internal_result,
+            Err(join_error) => Err(StorageError::Generic(join_error.into())),
+        })
+        .boxed()
     }
 
     #[inline]
-    pub fn spawn_background_scan<F, R>(&self, f: F) -> GetStream<'static, R>
+    pub fn for_each_key_value<K, F, R>(
+        &self,
+        scan: TableScan<K>,
+        mut op: F,
+    ) -> GetStream<'static, R>
     where
-        F: FnOnce(RocksDBStorage, Sender<Result<R>>) + Send + 'static,
+        K: TableKey + Send + 'static,
+        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R> + Send + 'static,
         R: Send + 'static,
     {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<R>>(256);
         let db = Clone::clone(&self.storage);
-        let join_handle = tokio::task::spawn_blocking(move || f(db, tx));
 
+        let background_task = move || {
+            let mut iterator = db.iterator_from(scan);
+            while let Some((k, v)) = iterator.item() {
+                match op(k, v) {
+                    TableScanIterationDecision::Emit(result) => {
+                        if tx.blocking_send(result).is_err() {
+                            return;
+                        }
+                        iterator.next();
+                    }
+                    TableScanIterationDecision::Continue => {
+                        iterator.next();
+                        continue;
+                    }
+                    TableScanIterationDecision::Break => {
+                        break;
+                    }
+                };
+            }
+        };
+
+        let join_handle = tokio::task::spawn_blocking(background_task);
         BackgroundScanStream::new(rx, join_handle).boxed()
     }
 
+    #[inline]
     fn key_buffer(&mut self) -> &mut BytesMut {
         self.key_buffer.clear();
         &mut self.key_buffer
     }
 
-    fn clone_key_buffer(&mut self) -> BytesMut {
-        self.key_buffer.split()
-    }
-
+    #[inline]
     fn value_buffer(&mut self) -> &mut BytesMut {
         self.value_buffer.clear();
         &mut self.value_buffer
     }
 
-    fn put_kv_buffer(&mut self, table: TableKind) {
+    fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V) {
         self.ensure_write_batch();
-        let table = self.storage.table_handle(table);
+        {
+            let buffer = self.key_buffer();
+            key.serialize_to(buffer);
+        }
+        {
+            let buffer = self.value_buffer();
+            value.encode(buffer);
+        }
+        let table = self.storage.table_handle(K::table());
         self.write_batch
             .as_mut()
             .unwrap()
             .put_cf(&table, &self.key_buffer, &self.value_buffer);
     }
 
-    fn put_value_using_key_buffer<V: AsRef<[u8]>>(&mut self, table: TableKind, value: V) {
+    fn delete_key<K: TableKey>(&mut self, key: &K) {
         self.ensure_write_batch();
-        let table = self.storage.table_handle(table);
-        self.write_batch
-            .as_mut()
-            .unwrap()
-            .put_cf(&table, &self.key_buffer, value);
-    }
-
-    fn delete_key_buffer(&mut self, table: TableKind) {
-        self.ensure_write_batch();
-        let table = self.storage.table_handle(table);
+        {
+            let buffer = self.key_buffer();
+            key.serialize_to(buffer);
+        }
+        let table = self.storage.table_handle(K::table());
         self.write_batch
             .as_mut()
             .unwrap()
             .delete_cf(&table, &self.key_buffer);
-    }
-
-    fn put_kv<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, table: TableKind, key: K, value: V) {
-        self.ensure_write_batch();
-        let table = self.storage.table_handle(table);
-        self.write_batch
-            .as_mut()
-            .unwrap()
-            .put_cf(&table, key, value);
-    }
-
-    fn delete_key(&mut self, table: TableKind, key: impl AsRef<[u8]>) {
-        self.ensure_write_batch();
-        let table = self.storage.table_handle(table);
-        self.write_batch.as_mut().unwrap().delete_cf(&table, key);
-    }
-
-    fn delete_range<K: AsRef<[u8]>>(&mut self, table: TableKind, low: K, high: K) {
-        self.ensure_write_batch();
-        let table = self.storage.table_handle(table);
-        self.write_batch
-            .as_mut()
-            .unwrap()
-            .delete_range_cf(&table, low, high);
     }
 
     #[inline]
@@ -498,10 +441,4 @@ impl Transaction for RocksDBTransaction {
             })
             .boxed()
     }
-}
-
-pub(crate) fn write_proto_infallible<M: prost::Message, T: BufMut>(target: &mut T, message: M) {
-    message
-        .encode(target)
-        .expect("Unable to serialize a protobuf message");
 }

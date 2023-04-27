@@ -13,6 +13,10 @@ pub(crate) async fn populate_data<T: OutboxTable>(txn: &mut T) {
     txn.add_message(1337, 1, mock_outbox_message()).await;
     txn.add_message(1337, 2, mock_outbox_message()).await;
     txn.add_message(1337, 3, mock_outbox_message()).await;
+
+    // add a successor and a predecessor partitions
+    txn.add_message(1336, 0, mock_outbox_message()).await;
+    txn.add_message(1338, 0, mock_outbox_message()).await;
 }
 
 pub(crate) async fn consume_message_and_truncate<T: OutboxTable>(txn: &mut T) {

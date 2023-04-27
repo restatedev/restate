@@ -1,89 +1,44 @@
-use crate::composite_keys::{read_delimited, skip_delimited, write_delimited};
-use crate::Result;
+use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::State;
 use crate::{GetFuture, PutFuture, RocksDBTransaction};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use crate::{Result, TableScan, TableScanIterationDecision};
+use bytes::Bytes;
 use bytestring::ByteString;
 use restate_common::types::{PartitionKey, ServiceId};
 use restate_storage_api::state_table::StateTable;
-use restate_storage_api::{ready, GetStream};
+use restate_storage_api::{ready, GetStream, StorageError};
 
-#[derive(Debug, PartialEq)]
-pub struct StateKeyComponents {
-    pub partition_key: Option<PartitionKey>,
-    pub service_name: Option<ByteString>,
-    pub service_key: Option<Bytes>,
-    pub state_key: Option<Bytes>,
-}
-
-impl StateKeyComponents {
-    pub(crate) fn to_bytes(&self, bytes: &mut BytesMut) -> Option<()> {
-        self.partition_key
-            .map(|partition_key| bytes.put_u64(partition_key))?;
-        self.service_name
-            .as_ref()
-            .map(|s| write_delimited(s, bytes))?;
-        self.service_key
-            .as_ref()
-            .map(|s| write_delimited(s, bytes))?;
-        self.state_key.as_ref().map(|s| write_delimited(s, bytes))
-    }
-
-    pub(crate) fn from_bytes(bytes: &mut Bytes) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self {
-            partition_key: bytes.has_remaining().then(|| bytes.get_u64()),
-            service_name: bytes
-                .has_remaining()
-                .then(|| {
-                    read_delimited(bytes)
-                        // SAFETY: this is safe since the service name was constructed from a ByteString.
-                        .map(|name| unsafe { ByteString::from_bytes_unchecked(name) })
-                })
-                .transpose()?,
-            service_key: bytes
-                .has_remaining()
-                .then(|| read_delimited(bytes))
-                .transpose()?,
-            state_key: bytes
-                .has_remaining()
-                .then(|| read_delimited(bytes))
-                .transpose()?,
-        })
-    }
-}
+define_table_key!(
+    State,
+    StateKey(
+        partition_key: PartitionKey,
+        service_name: ByteString,
+        service_key: Bytes,
+        state_key: Bytes
+    )
+);
 
 #[inline]
 fn write_state_entry_key(
-    key: &mut BytesMut,
     partition_key: PartitionKey,
     service_id: &ServiceId,
     state_key: impl AsRef<[u8]>,
-) {
-    key.put_u64(partition_key);
-    write_delimited(&service_id.service_name, key);
-    write_delimited(&service_id.key, key);
-    write_delimited(state_key, key);
+) -> StateKey {
+    StateKey::default()
+        .partition_key(partition_key)
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone())
+        .state_key(state_key.as_ref().to_vec().into())
 }
 
-#[inline]
-fn write_states_key(key: &mut BytesMut, partition_key: PartitionKey, service_id: &ServiceId) {
-    key.put_u64(partition_key);
-    write_delimited(&service_id.service_name, key);
-    write_delimited(&service_id.key, key);
-}
-
-#[inline]
-fn user_state_key_from_slice(key: &[u8]) -> crate::Result<Bytes> {
+fn user_state_key_from_slice(key: &[u8]) -> Result<Bytes> {
     let mut key = Bytes::copy_from_slice(key);
-    _ = key.get_u64(); // partition_key
-    skip_delimited(&mut key)?; // service_name
-    skip_delimited(&mut key)?; // key
-    let user_key = read_delimited(&mut key)?;
+    let key = StateKey::deserialize_from(&mut key)?;
+    let key = key
+        .state_key
+        .ok_or_else(|| StorageError::DataIntegrityError)?;
 
-    Ok(user_key)
+    Ok(key)
 }
 
 impl StateTable for RocksDBTransaction {
@@ -94,8 +49,8 @@ impl StateTable for RocksDBTransaction {
         state_key: impl AsRef<[u8]>,
         state_value: impl AsRef<[u8]>,
     ) -> PutFuture {
-        write_state_entry_key(self.key_buffer(), partition_key, service_id, state_key);
-        self.put_value_using_key_buffer(State, state_value);
+        let key = write_state_entry_key(partition_key, service_id, state_key);
+        self.put_kv(key, state_value.as_ref());
         ready()
     }
 
@@ -105,8 +60,8 @@ impl StateTable for RocksDBTransaction {
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> PutFuture {
-        write_state_entry_key(self.key_buffer(), partition_key, service_id, state_key);
-        self.delete_key_buffer(State);
+        let key = write_state_entry_key(partition_key, service_id, state_key);
+        self.delete_key(&key);
         ready()
     }
 
@@ -116,10 +71,8 @@ impl StateTable for RocksDBTransaction {
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> GetFuture<Option<Bytes>> {
-        write_state_entry_key(self.key_buffer(), partition_key, service_id, state_key);
-        let key = self.clone_key_buffer();
-
-        self.spawn_blocking(move |db| db.get_owned(State, key))
+        let key = write_state_entry_key(partition_key, service_id, state_key);
+        self.get_blocking(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
     }
 
     fn get_all_user_states(
@@ -127,88 +80,38 @@ impl StateTable for RocksDBTransaction {
         partition_key: PartitionKey,
         service_id: &ServiceId,
     ) -> GetStream<(Bytes, Bytes)> {
-        write_states_key(self.key_buffer(), partition_key, service_id);
-        let key = self.clone_key_buffer();
+        let key = StateKey::default()
+            .partition_key(partition_key)
+            .service_name(service_id.service_name.clone())
+            .service_key(service_id.key.clone());
 
-        self.spawn_background_scan(move |db, tx| {
-            let mut iterator = db.prefix_iterator(State, key.clone());
-            iterator.seek(&key);
-            while let Some((k, v)) = iterator.item() {
-                let res = decode_user_state_key_value(k, v);
-                if tx.blocking_send(res).is_err() {
-                    break;
-                }
-                iterator.next();
-            }
+        self.for_each_key_value(TableScan::KeyPrefix(key), |k, v| {
+            TableScanIterationDecision::Emit(decode_user_state_key_value(k, v))
         })
     }
 }
 
-fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> crate::Result<(Bytes, Bytes)> {
+fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {
     let user_key = user_state_key_from_slice(k)?;
     let user_value = Bytes::copy_from_slice(v);
-
     Ok((user_key, user_value))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::state_table::{
-        user_state_key_from_slice, write_state_entry_key, write_states_key, StateKeyComponents,
-    };
+    use crate::keys::TableKey;
+    use crate::state_table::{user_state_key_from_slice, write_state_entry_key};
     use bytes::{Bytes, BytesMut};
-    use bytestring::ByteString;
     use restate_common::types::{PartitionKey, ServiceId};
 
     static EMPTY: Bytes = Bytes::from_static(b"");
 
-    #[test]
-    fn key_round_trip() {
-        let key = StateKeyComponents {
-            partition_key: Some(1),
-            service_name: Some(ByteString::from("name")),
-            service_key: Some(Bytes::from("key")),
-            state_key: Some(Bytes::from("key")),
-        };
-        let mut bytes = BytesMut::new();
-        key.to_bytes(&mut bytes);
-        assert_eq!(
-            bytes,
-            BytesMut::from(b"\0\0\0\0\0\0\0\x01\x04name\x03key\x03key".as_slice())
-        );
-        assert_eq!(
-            StateKeyComponents::from_bytes(&mut bytes.freeze()).expect("key parsing failed"),
-            key
-        );
-    }
-
-    #[inline]
     fn state_entry_key(
         partition_key: PartitionKey,
         service_id: &ServiceId,
         state_key: &Bytes,
     ) -> BytesMut {
-        let mut key = BytesMut::new();
-        write_state_entry_key(&mut key, partition_key, service_id, state_key);
-        key
-    }
-
-    #[inline]
-    fn states_key(partition_key: PartitionKey, service_id: &ServiceId) -> BytesMut {
-        let mut key = BytesMut::new();
-        write_states_key(&mut key, partition_key, service_id);
-        key
-    }
-
-    #[test]
-    fn key_covers_all_entries_of_a_service() {
-        let prefix_key = states_key(1337, &ServiceId::new("svc-1", "key-a"));
-
-        let low_key = state_entry_key(1337, &ServiceId::new("svc-1", "key-a"), &EMPTY);
-        assert!(low_key.starts_with(&prefix_key));
-
-        let high_key = state_entry_key(1337, &ServiceId::new("svc-1", "key-a"), &EMPTY);
-        assert!(high_key.starts_with(&prefix_key));
+        write_state_entry_key(partition_key, service_id, state_key).serialize()
     }
 
     #[test]
