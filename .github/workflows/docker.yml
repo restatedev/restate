@@ -9,7 +9,6 @@ env:
   REPOSITORY: ${{ github.repository_owner }}
   REGISTRY_USERNAME: ${{ github.actor }}
   REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  IMAGE_NAME: 'restate'
 
 jobs:
   build-and-push-image:
@@ -41,6 +40,11 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ env.REGISTRY_TOKEN }}
+
+      - name: Extract image name
+        # Set repository name as image name
+        run: |
+          echo "IMAGE_NAME=${GITHUB_REPOSITORY#$GITHUB_REPOSITORY_OWNER/}" >> $GITHUB_ENV
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
