@@ -6,8 +6,38 @@ on:
       - v**
 
 jobs:
+  verify-version:
+    name: Verify version
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install dasel
+        run: |
+          curl -s https://api.github.com/repos/tomwright/dasel/releases/latest | \
+          grep browser_download_url | \
+          grep linux_amd64 | \
+          cut -d '"' -f 4 | \
+          wget -qi - && \
+          mv dasel_linux_amd64 dasel && \
+          chmod +x dasel && \
+          ./dasel --version
+
+      - name: Verify version
+        run: |
+          version=$(./dasel -f Cargo.toml -r toml 'workspace.package.version')
+          tag_version=${{ github.ref_name }}
+          tag_version=${tag_version#v}
+          if [ ${tag_version} != ${version} ]; then
+            echo "::error file=release.yml,line=28::Cargo.toml version '${version}' is not equal to tag version '${tag_version}'. Please align them."
+            exit 1;
+          fi
+
   run-tests:
     name: Test release
+    needs: [verify-version]
     uses: ./.github/workflows/ci.yml
 
   build-docker-image:
