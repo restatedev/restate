@@ -8,8 +8,7 @@ mod server;
 pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
 pub use options::Options;
 pub use reflection::{ReflectionRegistry, RegistrationError};
-pub use server::HyperServerIngress;
-pub use server::StartSignal;
+pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
 use bytestring::ByteString;

@@ -24,4 +24,6 @@ mod helper;
 // RT are runtime related errors and can be used for both execution errors, or runtime configuration errors.
 // META are meta related errors.
 
-declare_restate_error_codes!(RT0001, RT0002, RT0003, RT0004, META0001, META0002, META0003, META0004);
+declare_restate_error_codes!(
+    RT0001, RT0002, RT0003, RT0004, RT0005, META0001, META0002, META0003, META0004
+);

@@ -1,20 +1,34 @@
 use super::*;
 
-use std::net::SocketAddr;
-use std::sync::Arc;
-
 use crate::reflection::ServerReflection;
+use codederror::CodedError;
 use futures::FutureExt;
 use restate_common::types::IngressId;
 use restate_service_metadata::MethodDescriptorRegistry;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
 use tower::make::Shared;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
-use tracing::{info, warn};
+use tracing::info;
 
 pub type StartSignal = oneshot::Receiver<SocketAddr>;
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum IngressServerError {
+    #[error("error trying to bind ingress grpc server to {address}: {source}")]
+    #[code(restate_errors::RT0005)]
+    Binding {
+        address: SocketAddr,
+        #[source]
+        source: hyper::Error,
+    },
+    #[error("error while running ingress grpc server: {0}")]
+    #[code(unknown)]
+    Running(#[from] hyper::Error),
+}
 
 pub struct HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionService> {
     listening_addr: SocketAddr,
@@ -63,7 +77,7 @@ where
         (ingress, start_signal_rx)
     }
 
-    pub async fn run(self, drain: drain::Watch) {
+    pub async fn run(self, drain: drain::Watch) -> Result<(), IngressServerError> {
         let HyperServerIngress {
             listening_addr,
             concurrency_limit,
@@ -75,7 +89,12 @@ where
             start_signal_tx,
         } = self;
 
-        let server_builder = hyper::Server::bind(&listening_addr);
+        let server_builder = hyper::Server::try_bind(&listening_addr).map_err(|err| {
+            IngressServerError::Binding {
+                address: listening_addr,
+                source: err,
+            }
+        })?;
 
         let global_concurrency_limit_semaphore = Arc::new(Semaphore::new(concurrency_limit));
 
@@ -103,12 +122,10 @@ where
         // future completion does not affect endpoint
         let _ = start_signal_tx.send(server.local_addr());
 
-        if let Err(e) = server
+        server
             .with_graceful_shutdown(drain.signaled().map(|_| ()))
             .await
-        {
-            warn!("Server is shutting down with error: {:?}", e);
-        }
+            .map_err(IngressServerError::Running)
     }
 }
 
@@ -210,7 +227,7 @@ mod tests {
         );
 
         drain.drain().await;
-        ingress_handle.await.unwrap();
+        ingress_handle.await.unwrap().unwrap();
     }
 
     #[test(tokio::test)]
@@ -252,14 +269,14 @@ mod tests {
         assert_eq!(greeting_res, expected_greeting_response);
 
         drain.drain().await;
-        ingress_handle.await.unwrap();
+        ingress_handle.await.unwrap().unwrap();
     }
 
     async fn bootstrap_test() -> (
         Signal,
         SocketAddr,
         JoinHandle<Option<Command<ServiceInvocation, IngressResult>>>,
-        JoinHandle<()>,
+        JoinHandle<Result<(), IngressServerError>>,
     ) {
         let (drain, watch) = drain::channel();
         let (dispatcher_command_tx, mut dispatcher_command_rx) = mpsc::unbounded_channel();

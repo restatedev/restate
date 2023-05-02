@@ -14,6 +14,7 @@ options_schema = ["dep:schemars"]
 [dependencies]
 # Restate
 restate_common = { workspace = true }
+restate_errors = { workspace = true }
 restate_service_metadata = { workspace = true }
 
 # Encoding/Decoding
@@ -46,6 +47,7 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
 # Other
+codederror = { workspace = true }
 drain = { workspace = true }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }

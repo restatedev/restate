@@ -1,6 +1,6 @@
 extern crate core;
 
-use crate::ingress_integration::ExternalClientIngressRunner;
+use crate::ingress_integration::{ExternalClientIngressRunner, IngressIntegrationError};
 use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::journal_reader::JournalReader;
 use crate::range_partitioner::RangePartitioner;
@@ -12,7 +12,7 @@ use partition::ack::AckCommand;
 use partition::shuffle;
 use restate_common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
 use restate_consensus::Consensus;
-use restate_ingress_grpc::{IngressDispatcherLoopError, ReflectionRegistry};
+use restate_ingress_grpc::ReflectionRegistry;
 use restate_invoker::{Invoker, UnboundedInvokerInputSender};
 use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use restate_service_key_extractor::KeyExtractorsRegistry;
@@ -117,13 +117,20 @@ pub enum Error {
     #[code(unknown)]
     Network(#[from] restate_network::RoutingError),
     #[error("storage grpc failed: {0}")]
-    StorageGrpc(#[from] #[code] restate_storage_grpc::Error),
+    StorageGrpc(
+        #[from]
+        #[code]
+        restate_storage_grpc::Error,
+    ),
     #[error("consensus failed: {0}")]
     #[code(unknown)]
     Consensus(#[from] anyhow::Error),
     #[error("external client ingress failed: {0}")]
-    #[code(unknown)]
-    ExternalClientIngress(#[from] IngressDispatcherLoopError),
+    ExternalClientIngress(
+        #[from]
+        #[code]
+        IngressIntegrationError,
+    ),
     #[error("no partition processor is running")]
     #[code(unknown)]
     NoPartitionProcessorRunning,

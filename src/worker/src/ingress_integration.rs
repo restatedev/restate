@@ -1,4 +1,5 @@
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
+use codederror::CodedError;
 use restate_ingress_grpc::{
     HyperServerIngress, IngressDispatcherLoop, IngressDispatcherLoopError, IngressOutput,
     ReflectionRegistry,
@@ -12,6 +13,19 @@ type ExternalClientIngress = HyperServerIngress<
     DefaultServiceInvocationFactory,
     ReflectionRegistry,
 >;
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum IngressIntegrationError {
+    #[error(transparent)]
+    #[code(unknown)]
+    DispatcherLoop(#[from] IngressDispatcherLoopError),
+    #[error(transparent)]
+    Ingress(
+        #[from]
+        #[code]
+        restate_ingress_grpc::IngressServerError,
+    ),
+}
 
 pub(super) struct ExternalClientIngressRunner {
     ingress_dispatcher_loop: IngressDispatcherLoop,
@@ -35,7 +49,7 @@ impl ExternalClientIngressRunner {
     pub(super) async fn run(
         self,
         shutdown_watch: drain::Watch,
-    ) -> Result<(), IngressDispatcherLoopError> {
+    ) -> Result<(), IngressIntegrationError> {
         let ExternalClientIngressRunner {
             ingress_dispatcher_loop,
             external_client_ingress,
@@ -44,7 +58,7 @@ impl ExternalClientIngressRunner {
 
         select! {
             result = ingress_dispatcher_loop.run(sender, shutdown_watch.clone()) => result?,
-            _ = external_client_ingress.run(shutdown_watch) => {},
+            result = external_client_ingress.run(shutdown_watch) => result?,
         }
 
         Ok(())
