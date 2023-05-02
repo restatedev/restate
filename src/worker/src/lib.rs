@@ -117,8 +117,7 @@ pub enum Error {
     #[code(unknown)]
     Network(#[from] restate_network::RoutingError),
     #[error("storage grpc failed: {0}")]
-    #[code(unknown)]
-    StorageGrpc(#[from] restate_storage_grpc::Error),
+    StorageGrpc(#[from] #[code] restate_storage_grpc::Error),
     #[error("consensus failed: {0}")]
     #[code(unknown)]
     Consensus(#[from] anyhow::Error),

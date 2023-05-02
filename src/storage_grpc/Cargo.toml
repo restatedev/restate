@@ -13,10 +13,12 @@ options_schema = ["dep:schemars"]
 
 [dependencies]
 bytes = { workspace = true }
+codederror = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 prost = { workspace = true }
 restate_common = { workspace = true }
+restate_errors = { workspace = true }
 restate_storage_api = { workspace = true }
 restate_storage_rocksdb = { workspace = true }
 rocksdb = { workspace = true }

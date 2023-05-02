@@ -140,6 +140,7 @@ fn main() {
             },
             result = &mut application => {
                 if let Err(err) = result {
+                    info!("{err:?}");
                     restate_errors::error_it!(err, "Restate application failed");
                     // We terminate the main here in order to avoid the destruction of the Tokio
                     // runtime. If we did this, potentially running Tokio tasks might otherwise cause panics

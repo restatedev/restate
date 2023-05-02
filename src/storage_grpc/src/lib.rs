@@ -1,30 +1,34 @@
-use std::net::SocketAddr;
-
-use futures::stream::BoxStream;
-use futures::TryFutureExt;
-use futures::{FutureExt, StreamExt, TryStreamExt};
-use tonic::transport::Server;
-use tonic::{Request, Response};
-
-pub use options::Options;
-use restate_storage_api::{GetStream, Storage, StorageError};
-use restate_storage_rocksdb::{RocksDBKey, RocksDBStorage, RocksDBTransaction, TableKind};
-pub use scanner_proto::storage;
-
 use crate::iterator::DBIterator;
 use crate::storage::v1::{
     key, scan_request::Filter, storage_server, Key, Pair, Range, ScanRequest,
 };
 use crate::util::RocksDBRange;
+use codederror::CodedError;
+use futures::stream::BoxStream;
+use futures::TryFutureExt;
+use futures::{FutureExt, StreamExt, TryStreamExt};
+pub use options::Options;
+use restate_storage_api::{GetStream, Storage, StorageError};
+use restate_storage_rocksdb::{RocksDBKey, RocksDBStorage, RocksDBTransaction, TableKind};
+pub use scanner_proto::storage;
+use std::net::SocketAddr;
+use tonic::transport::Server;
+use tonic::{Request, Response};
 
 mod iterator;
 mod options;
 mod scanner_proto;
 mod util;
 
-#[derive(Debug, thiserror::Error)]
-#[error(transparent)]
-pub struct Error(#[from] tonic::transport::Error);
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum Error {
+    #[error("bind address '{0}' already in use")]
+    #[code(restate_errors::RT0004)]
+    AddrInUse(SocketAddr),
+    #[error("tonic error: {0:?}")]
+    #[code(unknown)]
+    Other(#[from] tonic::transport::Error),
+}
 
 pub struct StorageService {
     db: RocksDBStorage,
@@ -41,9 +45,20 @@ impl StorageService {
         Server::builder()
             .add_service(storage_server::StorageServer::new(self))
             .serve_with_shutdown(addr, drain.signaled().map(|_| ()))
-            .map_err(Error)
+            .map_err(|err| {
+                if is_addr_in_use_err(&err) {
+                    Error::AddrInUse(addr)
+                } else {
+                    Error::Other(err)
+                }
+            })
             .await
     }
+}
+
+fn is_addr_in_use_err(err: &tonic::transport::Error) -> bool {
+    let err_msg = format!("{err:?}");
+    err_msg.contains("kind: AddrInUse")
 }
 
 #[derive(Debug, thiserror::Error)]
