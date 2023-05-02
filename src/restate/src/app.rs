@@ -10,9 +10,18 @@ pub enum ApplicationError {
         #[code]
         restate_meta::Error,
     ),
+    #[error("worker failed: {0}")]
+    Worker(
+        #[from]
+        #[code]
+        restate_worker::Error,
+    ),
     #[error("meta panicked: {0}")]
     #[code(unknown)]
-    MetaPanic(#[from] tokio::task::JoinError),
+    MetaPanic(tokio::task::JoinError),
+    #[error("worker panicked: {0}")]
+    #[code(unknown)]
+    WorkerPanic(tokio::task::JoinError),
 }
 
 pub struct Application {
@@ -47,10 +56,11 @@ impl Application {
                 let _ = tokio::join!(shutdown_signal.drain(), meta_handle, worker_handle);
             },
             result = &mut meta_handle => {
-                result??;
+                result.map_err(ApplicationError::MetaPanic)??;
                 panic!("Unexpected termination of meta.");
             },
-            _ = &mut worker_handle => {
+            result = &mut worker_handle => {
+                result.map_err(ApplicationError::WorkerPanic)??;
                 panic!("Unexpected termination of worker.");
             }
         }

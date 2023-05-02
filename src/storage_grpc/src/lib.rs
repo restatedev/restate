@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
 use futures::stream::BoxStream;
+use futures::TryFutureExt;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use tonic::transport::Server;
 use tonic::{Request, Response};
@@ -21,6 +22,10 @@ mod options;
 mod scanner_proto;
 mod util;
 
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct Error(#[from] tonic::transport::Error);
+
 pub struct StorageService {
     db: RocksDBStorage,
     addr: SocketAddr,
@@ -31,11 +36,12 @@ impl StorageService {
         Self { db, addr }
     }
 
-    pub async fn run(self, drain: drain::Watch) -> Result<(), tonic::transport::Error> {
+    pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
         let addr = self.addr;
         Server::builder()
             .add_service(storage_server::StorageServer::new(self))
             .serve_with_shutdown(addr, drain.signaled().map(|_| ()))
+            .map_err(Error)
             .await
     }
 }

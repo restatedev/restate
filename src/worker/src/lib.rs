@@ -5,13 +5,14 @@ use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::journal_reader::JournalReader;
 use crate::range_partitioner::RangePartitioner;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
+use codederror::CodedError;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use partition::ack::AckCommand;
 use partition::shuffle;
 use restate_common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
 use restate_consensus::Consensus;
-use restate_ingress_grpc::ReflectionRegistry;
+use restate_ingress_grpc::{IngressDispatcherLoopError, ReflectionRegistry};
 use restate_invoker::{Invoker, UnboundedInvokerInputSender};
 use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use restate_service_key_extractor::KeyExtractorsRegistry;
@@ -101,6 +102,37 @@ impl Options {
             reflections_registry,
             service_endpoint_registry,
         )
+    }
+}
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum Error {
+    #[error("component '{component}' panicked: {cause}")]
+    #[code(unknown)]
+    ComponentPanic {
+        component: &'static str,
+        cause: tokio::task::JoinError,
+    },
+    #[error("network failed: {0}")]
+    #[code(unknown)]
+    Network(#[from] restate_network::RoutingError),
+    #[error("storage grpc failed: {0}")]
+    #[code(unknown)]
+    StorageGrpc(#[from] restate_storage_grpc::Error),
+    #[error("consensus failed: {0}")]
+    #[code(unknown)]
+    Consensus(#[from] anyhow::Error),
+    #[error("external client ingress failed: {0}")]
+    #[code(unknown)]
+    ExternalClientIngress(#[from] IngressDispatcherLoopError),
+    #[error("no partition processor is running")]
+    #[code(unknown)]
+    NoPartitionProcessorRunning,
+}
+
+impl Error {
+    fn component_panic(component: &'static str, cause: tokio::task::JoinError) -> Self {
+        Error::ComponentPanic { component, cause }
     }
 }
 
@@ -243,7 +275,7 @@ impl Worker {
         ((peer_id, command_tx), processor)
     }
 
-    pub async fn run(self, drain: drain::Watch) {
+    pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         let mut external_client_ingress_handle = tokio::spawn(
@@ -282,23 +314,33 @@ impl Worker {
                 debug!("Completed shutdown of worker");
             },
             invoker_result = &mut invoker_handle => {
-                panic!("Invoker stopped running: {invoker_result:?}");
+                invoker_result.map_err(|err| Error::component_panic("invoker", err))?;
+                panic!("Unexpected termination of invoker.");
             },
             network_result = &mut network_handle => {
-                panic!("Network stopped running: {network_result:?}");
+                network_result.map_err(|err| Error::component_panic("network", err))??;
+                panic!("Unexpected termination of network.");
             },
             storage_grpc_result = &mut storage_grpc_handle => {
-                panic!("Storage GRPC stopped running: {storage_grpc_result:?}");
+                storage_grpc_result.map_err(|err| Error::component_panic("storage grpc", err))??;
+                panic!("Unexpected termination of storage grpc.");
             },
             consensus_result = &mut consensus_handle => {
-                panic!("Consensus stopped running: {consensus_result:?}");
+                consensus_result.map_err(|err| Error::component_panic("consensus", err))??;
+                panic!("Unexpected termination of consensus.");
             },
             processor_result = processors_handles.next() => {
-                panic!("One partition processor stopped running: {processor_result:?}");
+                processor_result
+                .ok_or(Error::NoPartitionProcessorRunning)?
+                .map_err(|err| Error::component_panic("partition processor", err))??;
+                panic!("Unexpected termination of one of the partition processors.");
             },
             external_client_ingress_result = &mut external_client_ingress_handle => {
-                panic!("External client ingress stopped running: {external_client_ingress_result:?}");
+                external_client_ingress_result.map_err(|err| Error::component_panic("external client ingress", err))??;
+                panic!("Unexpected termination of external client ingress.");
             },
         }
+
+        Ok(())
     }
 }

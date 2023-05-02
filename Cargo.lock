@@ -2661,6 +2661,7 @@ dependencies = [
  "assert2",
  "bytes",
  "bytestring",
+ "codederror",
  "drain",
  "futures",
  "opentelemetry_api",

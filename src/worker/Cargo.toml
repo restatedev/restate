@@ -16,6 +16,7 @@ anyhow = { workspace = true }
 assert2 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+codederror = { workspace = true }
 restate_common = { workspace = true }
 restate_consensus = { workspace = true }
 drain = { workspace = true }
