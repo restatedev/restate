@@ -24,7 +24,7 @@ jobs:
       RUSTC_WRAPPER: "sccache"
     services:
       verifier:
-        image: ghcr.io/restatedev/restate-verification:latest
+        image: ghcr.io/restatedev/restate-verification@sha256:2a52a07247c88836600b5fcc0efe21754aa8a4fdf53b05a42608da968a4c957b
         ports:
           - "8000:8000"
         options: >-
