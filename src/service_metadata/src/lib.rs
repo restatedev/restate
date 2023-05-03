@@ -127,6 +127,19 @@ impl EndpointMetadata {
     pub fn additional_headers(&self) -> &HashMap<HeaderName, HeaderValue> {
         &self.delivery_options.additional_headers
     }
+
+    pub fn id(&self) -> String {
+        use base64::Engine;
+
+        // For the time being we generate this from the URI
+        // We use only authority and path, as those uniquely identify the endpoint.
+        let authority_and_path = format!(
+            "{}{}",
+            self.address.authority().expect("Must have authority"),
+            self.address.path()
+        );
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(authority_and_path.as_bytes())
+    }
 }
 
 #[derive(Debug, Clone)]
