@@ -1,6 +1,7 @@
 use super::*;
 
-use prost_reflect::{DynamicMessage, SerializeOptions, ServiceDescriptor};
+use prost_reflect::{DynamicMessage, ServiceDescriptor};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 trait RestateKeyConverter {
@@ -20,8 +21,23 @@ impl RestateKeyConverter for KeyExtractorsRegistry {
 impl RestateKeyConverter for ServiceInstanceType {
     fn to_json(&self, service_descriptor: ServiceDescriptor, key: Bytes) -> Result<Value, Error> {
         Ok(match self {
-            keyed @ ServiceInstanceType::Keyed { .. } => {
+            keyed @ ServiceInstanceType::Keyed {
+                service_methods_key_field_root_number,
+                ..
+            } => {
+                // TODO I'm not completely certain that all these expect("...") are correct.
+                //  There might be some synchronization issues between the provided
+                //  `service_descriptor` and what is stored in `self`.
+                //  This problem goes away with a unique https://github.com/restatedev/restate/issues/43.
                 let method_desc = service_descriptor.methods().next().expect("Must have at least one method. This should have been checked in service discovery. This is a bug, please contact the developers");
+                let key_field = method_desc
+                    .input()
+                    .get_field(
+                        *service_methods_key_field_root_number
+                            .get(method_desc.name())
+                            .expect("Method must exist in the descriptor"),
+                    )
+                    .expect("Method must exist in the descriptor");
                 let extracted_key = keyed.expand(
                     service_descriptor.full_name(),
                     method_desc.name(),
@@ -29,15 +45,12 @@ impl RestateKeyConverter for ServiceInstanceType {
                     key,
                 )?;
 
-                let json_message = extracted_key.serialize_with_options(serde_json::value::Serializer, &SerializeOptions::default().skip_default_fields(true))
+                let json_message = extracted_key.serialize(serde_json::value::Serializer)
                     .expect("Protobuf -> JSON should never fail! This is a bug, please contact the developers");
 
                 match json_message {
                     Value::Object(mut m) => {
-                        // This assumption is not correct because there won't be a key if the key is the type's default value,
-                        // Perhaps simply look for the key field in this map and don't skip default fields when serializing
-                        let first_key = m.keys().next().expect("This key must have a field with a value").clone();
-                        m.remove(&first_key).unwrap()
+                        m.remove(key_field.json_name()).expect("The json serialized message must contain the key field")
                     },
                     _ => panic!("This must be a map because the input schema of the protobuf conversion is always a message! This is a bug, please contact the developers")
                 }
