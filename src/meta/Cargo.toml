@@ -37,7 +37,6 @@ restate_service_key_extractor = { workspace = true }
 restate_service_metadata = { workspace = true, features = ["serde", "serde_schema"] }
 restate_service_protocol = { workspace = true, features = ["discovery"] }
 prost-reflect = { workspace = true }
-base64 = "0.21.0"
 
 # Others
 tracing = { workspace = true }

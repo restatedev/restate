@@ -139,6 +139,7 @@ pub enum RegistrationError {
 impl ReflectionRegistry {
     pub fn register_new_services(
         &mut self,
+        endpoint_id: String,
         services: Vec<String>,
         descriptor_pool: DescriptorPool,
     ) -> Result<(), RegistrationError> {
@@ -160,8 +161,12 @@ impl ReflectionRegistry {
 
             // Process files
             for file in &files {
+                // We rename files prepending them with the endpoint id
+                // to avoid collision between file names of unrelated endpoints
+                // TODO this should probably go in https://github.com/restatedev/restate/issues/43
+                let file_name = normalize_file_name(&endpoint_id, file.name());
                 let file_arc = discovered_files
-                    .entry(file.name().to_string())
+                    .entry(file_name.clone())
                     .or_insert_with(|| Arc::new(file.clone()));
 
                 // Discover all symbols in this file
@@ -170,7 +175,7 @@ impl ReflectionRegistry {
 
                 // Copy the file_symbols in service_symbols
                 for symbol in file_symbols {
-                    service_symbols.insert(symbol, vec![file.name().to_string()]);
+                    service_symbols.insert(symbol, vec![file_name.clone()]);
                 }
             }
 
@@ -180,7 +185,7 @@ impl ReflectionRegistry {
                 service_name.clone(),
                 files
                     .iter()
-                    .map(|fd| fd.name().to_string())
+                    .map(|fd| normalize_file_name(&endpoint_id, fd.name()))
                     .collect::<Vec<_>>(),
             );
 
@@ -198,7 +203,13 @@ impl ReflectionRegistry {
             .map(|(file_name, file)| {
                 (
                     file_name,
-                    Bytes::from(file.as_ref().file_descriptor_proto().encode_to_vec()),
+                    Bytes::from(
+                        normalize_self_and_dependencies_file_names(
+                            &endpoint_id,
+                            file.file_descriptor_proto().clone(),
+                        )
+                        .encode_to_vec(),
+                    ),
                 )
             })
             .collect::<HashMap<_, _>>();
@@ -214,6 +225,25 @@ impl ReflectionRegistry {
 
         Ok(())
     }
+}
+
+fn normalize_file_name(endpoint_id: &str, file_name: &str) -> String {
+    // Because file_name is a path (either relative or absolute),
+    // prepending endpoint_id/ should always be fine
+    format!("{endpoint_id}/{file_name}")
+}
+
+fn normalize_self_and_dependencies_file_names(
+    endpoint_id: &str,
+    mut file_desc_proto: FileDescriptorProto,
+) -> FileDescriptorProto {
+    file_desc_proto.name = file_desc_proto
+        .name
+        .map(|name| normalize_file_name(endpoint_id, &name));
+    for dep in file_desc_proto.dependency.iter_mut() {
+        *dep = normalize_file_name(endpoint_id, dep)
+    }
+    file_desc_proto
 }
 
 fn collect_service_related_file_descriptors(svc_desc: ServiceDescriptor) -> Vec<FileDescriptor> {

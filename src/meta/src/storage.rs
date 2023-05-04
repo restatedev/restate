@@ -1,11 +1,9 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use base64::Engine;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt};
-use hyper::Uri;
 use prost_reflect::DescriptorPool;
 use restate_service_metadata::{EndpointMetadata, ServiceMetadata};
 use serde::{Deserialize, Serialize};
@@ -111,7 +109,7 @@ impl MetaStorage for FileMetaStorage {
         exposed_services: &[ServiceMetadata],
         descriptor_pool: DescriptorPool,
     ) -> BoxFuture<Result<(), MetaStorageError>> {
-        let endpoint_id = endpoint_id(endpoint_metadata.address());
+        let endpoint_id = endpoint_metadata.id();
         let metadata_file_path = self
             .root_path
             .join(format!("{}.{}", endpoint_id, JSON_EXTENSION));
@@ -209,16 +207,6 @@ impl MetaStorage for FileMetaStorage {
             Ok(StreamExt::boxed(result_stream))
         })
     }
-}
-
-fn endpoint_id(uri: &Uri) -> String {
-    // We use only authority and path, as those uniquely identify the endpoint.
-    let authority_and_path = format!(
-        "{}{}",
-        uri.authority().expect("Must have authority"),
-        uri.path()
-    );
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(authority_and_path.as_bytes())
 }
 
 async fn remove_if_exists(path: &PathBuf) -> io::Result<()> {

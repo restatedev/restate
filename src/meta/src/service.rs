@@ -160,6 +160,7 @@ where
         while let Some(res) = endpoints_stream.next().await {
             let (endpoint_metadata, services, descriptor_pool) = res?;
             self.reflections_registry.register_new_services(
+                endpoint_metadata.id(),
                 services.iter().map(|s| s.name().to_string()).collect(),
                 descriptor_pool.clone(),
             )?;
@@ -229,6 +230,7 @@ where
             );
         }
         self.reflections_registry.register_new_services(
+            endpoint_metadata.id(),
             registered_services.clone(),
             discovered_metadata.descriptor_pool,
         )?;

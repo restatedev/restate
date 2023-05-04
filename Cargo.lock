@@ -2417,7 +2417,6 @@ name = "restate_meta"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.21.0",
  "codederror",
  "drain",
  "futures",
@@ -2488,6 +2487,7 @@ name = "restate_service_metadata"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "base64 0.21.0",
  "http",
  "prost-reflect",
  "restate_common",
