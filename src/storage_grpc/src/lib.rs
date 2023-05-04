@@ -22,7 +22,7 @@ mod util;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
-    #[error("bind address '{0}' already in use")]
+    #[error("failed binding to address '{0}' specified in 'worker.storage_grpc.bind_address'")]
     #[code(restate_errors::RT0004)]
     AddrInUse(SocketAddr),
     #[error("tonic error: {0:?}")]

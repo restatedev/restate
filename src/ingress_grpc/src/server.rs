@@ -18,8 +18,10 @@ pub type StartSignal = oneshot::Receiver<SocketAddr>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum IngressServerError {
-    #[error("error trying to bind ingress grpc server to {address}: {source}")]
-    #[code(restate_errors::RT0005)]
+    #[error(
+        "failed binding to address '{address}' specified in 'worker.ingress_grpc.bind_address'"
+    )]
+    #[code(restate_errors::RT0004)]
     Binding {
         address: SocketAddr,
         #[source]

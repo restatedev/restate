@@ -22,8 +22,8 @@ use crate::service::MetaHandle;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum MetaRestServerError {
-    #[error("error trying to bind meta's rest server to {address}: {source}")]
-    #[code(restate_errors::META0004)]
+    #[error("failed binding to address '{address}' specified in 'meta.rest_address'")]
+    #[code(restate_errors::RT0004)]
     Binding {
         address: SocketAddr,
         #[source]
