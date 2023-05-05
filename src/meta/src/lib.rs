@@ -146,6 +146,11 @@ impl Meta {
         self.service_endpoint_registry.clone()
     }
 
+    pub async fn init(&mut self) -> Result<(), Error> {
+        self.service.init().await?;
+        Ok(())
+    }
+
     pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 

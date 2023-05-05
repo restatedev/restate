@@ -42,8 +42,13 @@ impl Application {
         Self { meta, worker }
     }
 
-    pub async fn run(self, drain: drain::Watch) -> Result<(), ApplicationError> {
+    pub async fn run(mut self, drain: drain::Watch) -> Result<(), ApplicationError> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
+
+        // TODO This is a super terrible hack to enforce meta reloads from disk before
+        //  a partition processor starts processing enqueued requests.
+        //  Will be replaced with https://github.com/restatedev/restate/issues/91
+        self.meta.init().await?;
 
         let mut meta_handle = tokio::spawn(self.meta.run(shutdown_watch.clone()));
         let mut worker_handle = tokio::spawn(self.worker.run(shutdown_watch));

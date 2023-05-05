@@ -90,6 +90,8 @@ pub struct MetaService<Storage> {
 
     handle: MetaHandle,
     api_cmd_rx: UnboundedCommandReceiver<MetaHandleRequest, MetaHandleResponse>,
+
+    reloaded: bool,
 }
 
 impl<Storage> MetaService<Storage>
@@ -115,6 +117,7 @@ where
             storage,
             handle: MetaHandle(api_cmd_tx),
             api_cmd_rx,
+            reloaded: false,
         }
     }
 
@@ -122,14 +125,21 @@ where
         self.handle.clone()
     }
 
-    pub async fn run(mut self, drain: drain::Watch) -> Result<(), MetaError> {
-        let shutdown = drain.signaled();
-        tokio::pin!(shutdown);
-
+    pub async fn init(&mut self) -> Result<(), MetaError> {
         self.reload().await.map_err(|e| {
             error_it!(e);
             e
-        })?;
+        })
+    }
+
+    pub async fn run(mut self, drain: drain::Watch) -> Result<(), MetaError> {
+        debug_assert!(
+            self.reloaded,
+            "The Meta service was not init-ed before running it"
+        );
+
+        let shutdown = drain.signaled();
+        tokio::pin!(shutdown);
 
         loop {
             tokio::select! {
@@ -178,6 +188,7 @@ where
             }
         }
 
+        self.reloaded = true;
         Ok(())
     }
 
