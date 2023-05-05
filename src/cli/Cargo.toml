@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[[bin]]
+name = "restate-cli"
+path = "src/main.rs"
+
 [dependencies]
 arrow-array = { version = "36.0.0" }
 async-trait = { version = "0.1.68" }
