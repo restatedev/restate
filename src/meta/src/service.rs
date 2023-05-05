@@ -122,14 +122,16 @@ where
         self.handle.clone()
     }
 
-    pub async fn run(mut self, drain: drain::Watch) -> Result<(), MetaError> {
-        let shutdown = drain.signaled();
-        tokio::pin!(shutdown);
-
+    pub async fn init(&mut self) -> Result<(), MetaError> {
         self.reload().await.map_err(|e| {
             error_it!(e);
             e
-        })?;
+        })
+    }
+
+    pub async fn run(mut self, drain: drain::Watch) -> Result<(), MetaError> {
+        let shutdown = drain.signaled();
+        tokio::pin!(shutdown);
 
         loop {
             tokio::select! {
