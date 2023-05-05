@@ -13,6 +13,7 @@ docker_image := docker_repo + ":" + docker_tag
 features := ""
 libc := "gnu"
 arch := "" # use the default architecture
+os := "" # use the default os
 
 _features := if features == "all" {
         "--all-features"
@@ -34,7 +35,12 @@ _arch := if arch == "" {
         error("unsupported arch=" + arch)
     }
 
-_os := os()
+_os := if os == "" {
+        os()
+    } else {
+        os
+    }
+
 _os_target := if _os == "macos" {
         "apple-darwin"
     } else if _os == "linux" {
@@ -43,8 +49,9 @@ _os_target := if _os == "macos" {
         error("unsupported os=" + _os)
     }
 
+_default_target := `rustc -vV | sed -n 's|host: ||p'`
 _target := _arch + "-" + _os_target + if _os == "linux" { "-" + libc } else { "" }
-_target-option := if arch != "" { "--target " + _target } else { "" }
+_target-option := if _target != _default_target { "--target " + _target } else { "" }
 
 clean:
     cargo clean
