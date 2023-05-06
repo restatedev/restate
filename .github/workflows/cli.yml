@@ -7,12 +7,29 @@ on:
 jobs:
   build-cli:
     name: Build cli
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.target.runs-on }}
     strategy:
       matrix:
-        #os: [ubuntu-latest, macos-latest]
-        os: [ubuntu-latest]
-        arch: [arm64, amd64]
+        target:
+          - name: amd64-linux-musl
+            runs-on: ubuntu-latest
+            os: linux
+            arch: amd64
+
+          - name: arm64-linux-musl
+            runs-on: ubuntu-latest
+            os: linux
+            arch: arm64
+
+          - name: amd64-macos
+            runs-on: macos-latest
+            os: macos
+            arch: amd64
+
+          - name: arm64-macos
+            runs-on: macos-latest
+            os: macos
+            arch: arm64
 
     steps:
       - uses: actions/checkout@v3
@@ -37,11 +54,21 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Build cli (${{ matrix.arch }}-${{ matrix.os }})
-        run: just arch=${{ matrix.arch }} libc=musl build --release --bin restate-cli
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload binary (${{ matrix.arch }}-${{ matrix.os }})
+      - name: Build cli (${{ matrix.target.name }})
+        id: build-cli
+        run: |
+          just arch=${{ matrix.target.arch }} os=${{ matrix.target.os }} libc=musl cross-build --release --bin restate-cli
+          echo "target=`just arch=${{ matrix.target.arch }} os=${{ matrix.target.os }} libc=musl print-target`" >> $GITHUB_OUTPUT
+
+      - name: Upload binary (${{ matrix.target.name }})
         uses: actions/upload-artifact@v3
         with:
-          name: restate-cli-${{ matrix.arch }}-${{ matrix.os }}
-          path: target/release/restate-cli
+          name: restate-cli-${{ matrix.target.name }}
+          path: target/${{ steps.build-cli.outputs.target }}/release/restate-cli

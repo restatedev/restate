@@ -1,6 +1,8 @@
 export RUST_BACKTRACE := env_var_or_default("RUST_BACKTRACE", "short")
 export DOCKER_PROGRESS := env_var_or_default('DOCKER_PROGRESS', 'auto')
 
+dev_tools_image := "ghcr.io/restatedev/dev-tools:latest"
+
 # Docker image name & tag.
 docker_repo := "localhost/restatedev/restate"
 docker_tag := if path_exists(justfile_directory() / ".git") == "true" {
@@ -50,8 +52,8 @@ _os_target := if _os == "macos" {
     }
 
 _default_target := `rustc -vV | sed -n 's|host: ||p'`
-_target := _arch + "-" + _os_target + if _os == "linux" { "-" + libc } else { "" }
-_target-option := if _target != _default_target { "--target " + _target } else { "" }
+target := _arch + "-" + _os_target + if _os == "linux" { "-" + libc } else { "" }
+_target-option := if target != _default_target { "--target " + target } else { "" }
 
 clean:
     cargo clean
@@ -62,7 +64,7 @@ fmt:
 check-fmt:
     cargo fmt --all -- --check
 
-clippy: (_target-installed _target)
+clippy: (_target-installed target)
     cargo clippy {{ _target-option }} --all-targets -- -D warnings
 
 # Runs all lints (fmt, clippy, deny)
@@ -73,19 +75,38 @@ chef-prepare:
     cargo chef prepare --recipe-path recipe.json
 
 # Compile dependencies
-chef-cook *flags: (_target-installed _target)
+chef-cook *flags: (_target-installed target)
     cargo chef cook --recipe-path recipe.json {{ _target-option }} {{ _features }} {{ flags }}
 
-build *flags: (_target-installed _target)
+build *flags: (_target-installed target)
     cargo build {{ _target-option }} {{ _features }} {{ flags }}
 
-run *flags: (_target-installed _target)
+# Might be able to use cross-rs at some point but for now it could not handle a container image that
+# has a rust toolchain installed. Alternatively, we can create a separate cross-rs builder image.
+cross-build *flags:
+    #!/usr/bin/env bash
+    if [[ {{ target }} =~ "linux" ]]; then
+      docker run --rm -v `pwd`:/restate:Z -w /restate {{ dev_tools_image }} just _target-option="--target {{ target }}" features={{ features }} build {{ flags }}
+    elif [[ {{ target }} =~ "darwin" ]]; then
+      if [[ {{ os() }} != "macos" ]]; then
+        echo "Cannot built macos target on non-macos host";
+      else
+        just _target-option="--target {{ target }}" features={{ features }} build {{ flags }};
+      fi
+    else
+      echo "Unsupported target: {{ target }}";
+    fi
+
+print-target:
+    @echo {{ target }}
+
+run *flags: (_target-installed target)
     cargo run {{ _target-option }} {{ flags }}
 
-test: (_target-installed _target)
+test: (_target-installed target)
     cargo test {{ _target-option }} --workspace --all-features
 
-verification-test: (_target-installed _target)
+verification-test: (_target-installed target)
     cargo test {{ _target-option }} --package restate verification --all-features -- --ignored --exact --nocapture
 
 # Runs lints and tests
