@@ -7,7 +7,7 @@ use std::task::Poll;
 
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
-use http::{Request, Response};
+use http::{Request, Response, StatusCode};
 use http_body::Body;
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
@@ -98,7 +98,15 @@ where
         // Don't depend on &mut self, as hyper::Service will replace this with an immutable borrow!
 
         // Discover the protocol
-        let protocol = Protocol::pick_protocol(req.headers());
+        let protocol = if let Some(p) = Protocol::pick_protocol(req.headers()) {
+            p
+        } else {
+            return ok(Response::builder()
+                .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
+                .body(http_body::Empty::new().map_err(Into::into).boxed_unsync())
+                .unwrap())
+            .boxed();
+        };
 
         // Acquire the semaphore permit to check if we have available quota
         let permit = if let Ok(p) = self
