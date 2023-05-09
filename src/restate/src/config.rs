@@ -39,6 +39,8 @@ pub struct Configuration {
     pub meta: restate_meta::Options,
     #[cfg_attr(feature = "options_schema", schemars(default))]
     pub worker: restate_worker::Options,
+    #[cfg_attr(feature = "options_schema", schemars(default))]
+    pub tokio_runtime: crate::rt::Options,
 }
 
 impl Default for Configuration {
@@ -48,6 +50,7 @@ impl Default for Configuration {
             tracing: Default::default(),
             meta: Default::default(),
             worker: Default::default(),
+            tokio_runtime: Default::default(),
         }
     }
 }

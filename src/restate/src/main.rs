@@ -90,7 +90,11 @@ fn main() {
         }
     };
 
-    let runtime = rt::build_runtime().expect("failed to build Tokio runtime!");
+    let runtime = config
+        .tokio_runtime
+        .clone()
+        .build()
+        .expect("failed to build Tokio runtime!");
 
     runtime.block_on(async move {
         // Apply tracing config globally
