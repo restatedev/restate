@@ -1,12 +1,22 @@
 use anyhow::bail;
 use restate_common::retry_policy::RetryPolicy;
-use schemars::schema_for;
+use schemars::gen::SchemaSettings;
 use std::env;
 use std::time::Duration;
 
 fn generate_config_schema() -> anyhow::Result<()> {
-    let schema = schema_for!(restate::Configuration);
+    let schema = SchemaSettings::draft2019_09()
+        .into_generator()
+        .into_root_schema_for::<restate::Configuration>();
     println!("{}", serde_json::to_string_pretty(&schema)?);
+    Ok(())
+}
+
+fn generate_default_config() -> anyhow::Result<()> {
+    println!(
+        "{}",
+        serde_yaml::to_string(&restate::Configuration::default())?
+    );
     Ok(())
 }
 
@@ -40,6 +50,7 @@ fn print_help() {
 Usage: Run with `cargo xtask <task>`, eg. `cargo xtask generate-config-schema`.
 Tasks:
     generate-config-schema: Generate config schema for restate configuration.
+    generate-default-config: Generate default configuration.
     generate-rest-api-doc: Generate Rest API documentation. Make sure to have the port 8081 open.
 "
     );
@@ -52,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
         None => print_help(),
         Some(t) => match t.as_str() {
             "generate-config-schema" => generate_config_schema()?,
+            "generate-default-config" => generate_default_config()?,
             "generate-rest-api-doc" => generate_rest_api_doc().await?,
             invalid => {
                 print_help();
