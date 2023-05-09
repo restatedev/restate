@@ -14,10 +14,12 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let meta_options = restate_meta::Options::default();
     let rest_address = meta_options.rest_address();
     let openapi_address = format!("http://localhost:{}/openapi", rest_address.port());
+    let mut meta_service = meta_options.build();
+    meta_service.init().await.unwrap();
 
     // We start the Meta component, then download the openapi schema generated
     let (shutdown_signal, shutdown_watch) = drain::channel();
-    let join_handle = tokio::spawn(meta_options.build().run(shutdown_watch));
+    let join_handle = tokio::spawn(meta_service.run(shutdown_watch));
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)
         .retry_operation(|| async { reqwest::get(openapi_address.clone()).await?.text().await })
