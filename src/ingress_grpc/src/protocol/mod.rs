@@ -27,15 +27,18 @@ pub(crate) enum Protocol {
 }
 
 impl Protocol {
-    pub(crate) fn pick_protocol(headers: &HeaderMap<HeaderValue>) -> Self {
+    pub(crate) fn pick_protocol(headers: &HeaderMap<HeaderValue>) -> Option<Self> {
         let content_type = headers.get(http::header::CONTENT_TYPE);
-        if matches!(
-            content_type,
-            Some(ct) if ct.as_bytes().starts_with(b"application/json") || ct.as_bytes().starts_with(b"application/proto") || ct.as_bytes().starts_with(b"application/protobuf")
-        ) {
-            Protocol::Connect
-        } else {
-            Protocol::Tonic
+        match content_type {
+            Some(ct)
+                if ct.as_bytes().starts_with(b"application/json")
+                    || ct.as_bytes().starts_with(b"application/proto")
+                    || ct.as_bytes().starts_with(b"application/protobuf") =>
+            {
+                Some(Protocol::Connect)
+            }
+            Some(ct) if ct.as_bytes().starts_with(b"application/grpc") => Some(Protocol::Tonic),
+            _ => None,
         }
     }
 
