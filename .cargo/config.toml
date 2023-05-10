@@ -4,6 +4,7 @@ xtask = "run --package xtask --"
 [build]
 rustflags = [
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
+    "-C" , "debug-assertions", # Enable debug assertions in release builds to have more safeguards in place
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
 ]
