@@ -97,7 +97,7 @@ impl Options {
     }
 
     fn default_partitions() -> usize {
-        10
+        1024
     }
 
     pub fn storage_path(&self) -> &str {
