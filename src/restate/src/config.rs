@@ -34,7 +34,7 @@ pub struct Configuration {
     )]
     pub shutdown_grace_period: humantime::Duration,
     #[cfg_attr(feature = "options_schema", schemars(default))]
-    pub tracing: restate_tracing_instrumentation::Options,
+    pub observability: restate_tracing_instrumentation::Options,
     #[cfg_attr(feature = "options_schema", schemars(default))]
     pub meta: restate_meta::Options,
     #[cfg_attr(feature = "options_schema", schemars(default))]
@@ -45,7 +45,7 @@ impl Default for Configuration {
     fn default() -> Self {
         Self {
             shutdown_grace_period: Configuration::default_shutdown_grace_period(),
-            tracing: Default::default(),
+            observability: Default::default(),
             meta: Default::default(),
             worker: Default::default(),
         }
@@ -70,7 +70,11 @@ impl Configuration {
                 .merge(Yaml::file(config_file))
                 .merge(Env::prefixed("RESTATE_").split("__"))
                 // Override tracing.log with RUST_LOG, if present
-                .merge(Env::raw().only(&["RUST_LOG"]).map(|_| "tracing.log".into()))
+                .merge(
+                    Env::raw()
+                        .only(&["RUST_LOG"])
+                        .map(|_| "observability.log.filter".into()),
+                )
                 .extract()?,
         )
     }

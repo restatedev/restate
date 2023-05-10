@@ -42,12 +42,8 @@ CMAKE_OSX_ARCHITECTURES = "arm64"
 
 ## Tracing
 
-Restate supports exposing tracing information via opentelemetry.
-
-### Using Jaeger
-
-In order publish tracing information to [Jaeger](https://www.jaegertracing.io/), you have to enable the feature `jaeger`.
-Moreover, you have to start Jaeger.
+It is useful to enable tracing when testing the runtime. 
+To set up the runtime to publish traces to Jaeger, refer to the observability documentation in the Restate official documentation.
 
 #### Starting Jaeger on Linux
 
@@ -78,16 +74,6 @@ Moreover, you have to set the maximum udp package size to 65536 via
 
 ```shell
 sudo sysctl net.inet.udp.maxdgram=65536
-```
-
-### Using Zipkin
-
-In order to publish tracing information to [Zipkin](https://zipkin.io/), you hae to enable the feature `zipkin`.
-
-Moreover, you have to start Zipkin via
-
-```shell
-docker run -d -p 9411:9411 --name zipkin openzipkin/zipkin
 ```
 
 ## Setting up Knative

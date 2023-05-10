@@ -96,7 +96,7 @@ fn main() {
         // Apply tracing config globally
         // We need to apply this first to log correctly
         config
-            .tracing
+            .observability
             .init("Restate binary", std::process::id())
             .expect("failed to instrument logging and tracing!");
 
