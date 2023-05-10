@@ -5435,6 +5435,7 @@ dependencies = [
  "restate_meta",
  "schemars",
  "serde_json",
+ "serde_yaml 0.9.21",
  "tokio",
 ]
 
