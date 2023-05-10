@@ -64,6 +64,17 @@ pub struct Options {
     ingress_grpc: restate_ingress_grpc::Options,
     #[cfg_attr(feature = "options_schema", schemars(default))]
     invoker: restate_invoker::Options,
+    /// # Partitions
+    ///
+    /// Number of partitions to be used to process messages.
+    ///
+    /// Note: This config entry **will be removed** in future Restate releases,
+    /// as the partitions number will be dynamically configured depending on the load.
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_partitions")
+    )]
+    partitions: usize,
 }
 
 impl Default for Options {
@@ -75,6 +86,7 @@ impl Default for Options {
             storage_rocksdb: Default::default(),
             ingress_grpc: Default::default(),
             invoker: Default::default(),
+            partitions: Options::default_partitions(),
         }
     }
 }
@@ -82,6 +94,10 @@ impl Default for Options {
 impl Options {
     fn default_channel_size() -> usize {
         64
+    }
+
+    fn default_partitions() -> usize {
+        1024
     }
 
     pub fn storage_path(&self) -> &str {
@@ -172,7 +188,7 @@ impl Worker {
             ..
         } = opts;
 
-        let num_partition_processors = 10;
+        let num_partition_processors = opts.partitions as u64;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
         let external_client_ingress_id = IngressId(
