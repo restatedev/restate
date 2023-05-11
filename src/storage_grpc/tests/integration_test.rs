@@ -28,7 +28,9 @@ async fn test_state() {
         path,
         ..Default::default()
     };
-    let rocksdb = opts.build();
+    let rocksdb = opts
+        .build()
+        .expect("RocksDB storage creation should succeed");
     let opts: Options = Default::default();
     let svc = opts.build(rocksdb.clone());
 

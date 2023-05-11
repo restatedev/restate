@@ -24,22 +24,33 @@ pub enum ApplicationError {
     WorkerPanic(tokio::task::JoinError),
 }
 
+#[derive(Debug, thiserror::Error, CodedError)]
+#[error("failed creating restate application: {cause}")]
+pub struct BuildError {
+    #[from]
+    #[code]
+    cause: restate_worker::BuildError,
+}
+
 pub struct Application {
     meta: Meta,
     worker: Worker,
 }
 
 impl Application {
-    pub fn new(meta: restate_meta::Options, worker: restate_worker::Options) -> Self {
+    pub fn new(
+        meta: restate_meta::Options,
+        worker: restate_worker::Options,
+    ) -> Result<Self, BuildError> {
         let meta = meta.build();
         let worker = worker.build(
             meta.method_descriptor_registry(),
             meta.key_extractors_registry(),
             meta.reflections_registry(),
             meta.service_endpoint_registry(),
-        );
+        )?;
 
-        Self { meta, worker }
+        Ok(Self { meta, worker })
     }
 
     pub async fn run(mut self, drain: drain::Watch) -> Result<(), ApplicationError> {

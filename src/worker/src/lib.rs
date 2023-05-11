@@ -91,6 +91,14 @@ impl Default for Options {
     }
 }
 
+#[derive(Debug, thiserror::Error, CodedError)]
+#[error("failed creating worker: {cause}")]
+pub struct BuildError {
+    #[from]
+    #[code]
+    cause: restate_storage_rocksdb::BuildError,
+}
+
 impl Options {
     fn default_channel_size() -> usize {
         64
@@ -110,7 +118,7 @@ impl Options {
         key_extractor_registry: KeyExtractorsRegistry,
         reflections_registry: ReflectionRegistry,
         service_endpoint_registry: InMemoryServiceEndpointRegistry,
-    ) -> Worker {
+    ) -> Result<Worker, BuildError> {
         Worker::new(
             self,
             method_descriptor_registry,
@@ -178,7 +186,7 @@ impl Worker {
         key_extractor_registry: KeyExtractorsRegistry,
         reflections_registry: ReflectionRegistry,
         service_endpoint_registry: InMemoryServiceEndpointRegistry,
-    ) -> Self {
+    ) -> Result<Self, BuildError> {
         let Options {
             channel_size,
             ingress_grpc,
@@ -221,7 +229,7 @@ impl Worker {
 
         let network_handle = network.create_network_handle();
 
-        let rocksdb = storage_rocksdb.build();
+        let rocksdb = storage_rocksdb.build()?;
 
         let storage_grpc = storage_grpc.build(rocksdb.clone());
 
@@ -253,7 +261,7 @@ impl Worker {
 
         consensus.register_state_machines(command_senders);
 
-        Self {
+        Ok(Self {
             consensus,
             processors,
             network,
@@ -264,7 +272,7 @@ impl Worker {
                 ingress_dispatcher_loop,
                 network_ingress_sender,
             ),
-        }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

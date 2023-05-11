@@ -17,6 +17,7 @@ use crate::TableKind::{
     Deduplication, Inbox, Journal, Outbox, PartitionStateMachine, State, Status, Timers,
 };
 use bytes::BytesMut;
+use codederror::CodedError;
 use futures::{ready, FutureExt, Stream};
 use futures_util::future::ok;
 use futures_util::StreamExt;
@@ -145,8 +146,32 @@ impl Options {
         CompressionType::Zstd
     }
 
-    pub fn build(self) -> RocksDBStorage {
+    pub fn build(self) -> std::result::Result<RocksDBStorage, BuildError> {
         RocksDBStorage::new(self)
+    }
+}
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum BuildError {
+    #[error("db is locked: {0}")]
+    #[code(restate_errors::RT0005)]
+    DbLocked(rocksdb::Error),
+    #[error(transparent)]
+    #[code(unknown)]
+    Other(rocksdb::Error),
+}
+
+impl BuildError {
+    fn from_rocksdb_error(err: rocksdb::Error) -> Self {
+        let err_message = err.to_string();
+
+        if err_message.starts_with("IO error: While lock file:")
+            && err_message.ends_with("Resource temporarily unavailable")
+        {
+            BuildError::DbLocked(err)
+        } else {
+            BuildError::Other(err)
+        }
     }
 }
 
@@ -156,7 +181,7 @@ pub struct RocksDBStorage {
 }
 
 impl RocksDBStorage {
-    fn new(opts: Options) -> Self {
+    fn new(opts: Options) -> std::result::Result<Self, BuildError> {
         let mut db_options = rocksdb::Options::default();
         db_options.create_if_missing(true);
         db_options.create_missing_column_families(true);
@@ -185,9 +210,9 @@ impl RocksDBStorage {
         ];
 
         let db = DB::open_cf_descriptors(&db_options, opts.path, tables)
-            .expect("Unable to open the database");
+            .map_err(BuildError::from_rocksdb_error)?;
 
-        Self { db: Arc::new(db) }
+        Ok(Self { db: Arc::new(db) })
     }
 
     #[inline]

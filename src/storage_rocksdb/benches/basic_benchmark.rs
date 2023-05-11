@@ -13,7 +13,9 @@ async fn writing_to_rocksdb(base_path: &path::Path) {
         path: base_path.to_str().unwrap().into(),
         ..Default::default()
     };
-    let rocksdb = opts.build();
+    let rocksdb = opts
+        .build()
+        .expect("RocksDB storage creation should succeed");
 
     //
     // write

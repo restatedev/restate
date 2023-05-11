@@ -31,7 +31,9 @@ async fn test_read_write() {
         path,
         ..Default::default()
     };
-    let rocksdb = opts.build();
+    let rocksdb = opts
+        .build()
+        .expect("RocksDB storage creation should succeed");
 
     //
     // run the tests

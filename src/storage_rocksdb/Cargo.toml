@@ -15,14 +15,17 @@ options_schema = ["dep:schemars"]
 restate_common = {workspace = true}
 bytes = {workspace = true}
 bytestring = { workspace = true }
+codederror = { workspace = true }
 uuid = { workspace = true }
 futures = {workspace = true}
 futures-util = {workspace = true}
 prost = {workspace = true}
 schemars = { workspace = true, optional = true }
+restate_errors = { workspace = true }
 restate_storage_proto = { workspace = true, features = ["conversion"] }
 restate_storage_api = { workspace = true }
 serde = {workspace = true}
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 rocksdb = { workspace = true }

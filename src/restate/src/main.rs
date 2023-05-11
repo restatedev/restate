@@ -3,6 +3,7 @@ use clap::Parser;
 use codederror::CodedError;
 use restate::Configuration;
 use restate_errors::fmt::RestateCode;
+use std::error::Error;
 use std::path::PathBuf;
 use tokio::io;
 use tracing::{info, warn};
@@ -122,8 +123,12 @@ fn main() {
 
         let app = Application::new(config.meta, config.worker);
 
-        let (shutdown_signal, shutdown_watch) = drain::channel();
+        if let Err(err) = app {
+            handle_error(err);
+        }
+        let app = app.unwrap();
 
+        let (shutdown_signal, shutdown_watch) = drain::channel();
         let application = app.run(shutdown_watch);
         tokio::pin!(application);
 
@@ -144,16 +149,19 @@ fn main() {
             },
             result = &mut application => {
                 if let Err(err) = result {
-                    info!("{err:?}");
-                    restate_errors::error_it!(err, "Restate application failed");
-                    // We terminate the main here in order to avoid the destruction of the Tokio
-                    // runtime. If we did this, potentially running Tokio tasks might otherwise cause panics
-                    // which adds noise.
-                    std::process::exit(EXIT_CODE_FAILURE);
+                    handle_error(err);
                 } else {
                     panic!("Unexpected termination of restate application. Please contact the Restate developers.");
                 }
             }
         }
     });
+}
+
+fn handle_error<E: Error + CodedError>(err: E) -> ! {
+    restate_errors::error_it!(err, "Restate application failed");
+    // We terminate the main here in order to avoid the destruction of the Tokio
+    // runtime. If we did this, potentially running Tokio tasks might otherwise cause panics
+    // which adds noise.
+    std::process::exit(EXIT_CODE_FAILURE);
 }
