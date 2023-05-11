@@ -104,21 +104,30 @@ impl PartialOrd for TimerValue {
     }
 }
 
+// We use the TimerKey to read the timers in an absolute order. The timer service
+// relies on this order in order to process each timer exactly once. That is the
+// reason why the ordering of the TimerValue and how the TimerKey is laid out in
+// RocksDB need to be exactly the same.
+//
+// TODO: https://github.com/restatedev/restate/issues/394
 impl Ord for TimerValue {
     fn cmp(&self, other: &Self) -> Ordering {
         self.wake_up_time
             .cmp(&other.wake_up_time)
             .then_with(|| {
-                self.service_invocation_id
-                    .service_id
-                    .cmp(&other.service_invocation_id.service_id)
+                let service_id = &self.service_invocation_id.service_id;
+                let invocation_id = &self.service_invocation_id.invocation_id;
+
+                let other_service_id = &other.service_invocation_id.service_id;
+                let other_invocation_id = &other.service_invocation_id.invocation_id;
+
+                service_id
+                    .service_name
+                    .cmp(&other_service_id.service_name)
+                    .then_with(|| service_id.key.cmp(&other_service_id.key))
+                    .then_with(|| invocation_id.cmp(other_invocation_id))
             })
             .then_with(|| self.entry_index.cmp(&other.entry_index))
-            .then_with(|| {
-                self.service_invocation_id
-                    .invocation_id
-                    .cmp(&other.service_invocation_id.invocation_id)
-            })
     }
 }
 
