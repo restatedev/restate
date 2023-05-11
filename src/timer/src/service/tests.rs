@@ -1,6 +1,6 @@
 use crate::service::clock::tests::ManualClock;
 use crate::service::clock::TokioClock;
-use crate::{Output, Timer, TimerKey, TimerReader, TimerService};
+use crate::{Output, Sequenced, Timer, TimerKey, TimerReader, TimerService};
 use futures_util::stream;
 use restate_common::types::MillisSinceEpoch;
 use restate_test_utils::{let_assert, test};
@@ -15,7 +15,7 @@ struct MockTimerReader<T>
 where
     T: Timer,
 {
-    timers: Arc<Mutex<BTreeMap<T::TimerKey, T>>>,
+    timers: Arc<Mutex<BTreeMap<T::TimerKey, Sequenced<T>>>>,
 }
 
 impl<T> MockTimerReader<T>
@@ -28,13 +28,16 @@ where
         }
     }
 
-    fn add_timer(&self, timer: T) {
-        self.timers.lock().unwrap().insert(timer.timer_key(), timer);
+    fn add_timer(&self, seq_timer: Sequenced<T>) {
+        self.timers
+            .lock()
+            .unwrap()
+            .insert(seq_timer.timer().timer_key(), seq_timer);
     }
 
-    fn add_timers(&self, timers: impl IntoIterator<Item = T>) {
-        for timer in timers {
-            self.add_timer(timer);
+    fn add_timers(&self, timers: impl IntoIterator<Item = Sequenced<T>>) {
+        for seq_timer in timers {
+            self.add_timer(seq_timer);
         }
     }
 }
@@ -43,7 +46,7 @@ impl<T> TimerReader<T> for MockTimerReader<T>
 where
     T: Timer + Send + Ord + Clone,
 {
-    type TimerStream<'a> = stream::Iter<std::vec::IntoIter<T>> where T: 'a;
+    type TimerStream<'a> = stream::Iter<std::vec::IntoIter<Sequenced<T>>> where T: 'a;
 
     fn scan_timers(
         &self,
@@ -126,9 +129,9 @@ async fn no_timer_is_dropped() {
 
     let service_task = tokio::spawn(service.run(shutdown_watch));
 
-    let timer_1 = TimerValue::new(0, 0.into());
-    let timer_2 = TimerValue::new(1, 1.into());
-    let timer_3 = TimerValue::new(2, 2.into());
+    let timer_1 = Sequenced::new(0, TimerValue::new(0, 0.into()));
+    let timer_2 = Sequenced::new(1, TimerValue::new(1, 1.into()));
+    let timer_3 = Sequenced::new(2, TimerValue::new(2, 2.into()));
 
     timer_handle.add_timer(timer_1).await.unwrap();
     timer_handle.add_timer(timer_2).await.unwrap();
@@ -138,11 +141,11 @@ async fn no_timer_is_dropped() {
     tokio::task::yield_now().await;
 
     let_assert!(Some(Output::TimerFired(fired_timer_1)) = output_rx.recv().await);
-    assert_eq!(fired_timer_1, timer_1);
+    assert_eq!(fired_timer_1, timer_1.into_timer());
     let_assert!(Some(Output::TimerFired(fired_timer_2)) = output_rx.recv().await);
-    assert_eq!(fired_timer_2, timer_2);
+    assert_eq!(fired_timer_2, timer_2.into_timer());
     let_assert!(Some(Output::TimerFired(fired_timer_3)) = output_rx.recv().await);
-    assert_eq!(fired_timer_3, timer_3);
+    assert_eq!(fired_timer_3, timer_3.into_timer());
 
     shutdown_signal.drain().await;
 
@@ -171,7 +174,7 @@ async fn timers_fire_in_wake_up_order() {
     for i in 0..num_timers {
         let wake_up_time = (now + num_timers - i).into();
         timer_handle
-            .add_timer(TimerValue::new(i, wake_up_time))
+            .add_timer(Sequenced::new(i, TimerValue::new(i, wake_up_time)))
             .await
             .unwrap();
     }
@@ -196,7 +199,7 @@ async fn loading_timers_from_reader() {
     let num_timers = 10;
 
     for i in 0..num_timers {
-        timer_reader.add_timer(TimerValue::new(i, i.into()))
+        timer_reader.add_timer(Sequenced::new(i, TimerValue::new(i, i.into())))
     }
 
     let service = TimerService::new(Some(1), output_tx, timer_reader, clock.clone());
@@ -226,7 +229,7 @@ async fn advancing_time_triggers_timer() {
     let num_timers = 10;
 
     for i in 0..num_timers {
-        timer_reader.add_timer(TimerValue::new(i, i.into()))
+        timer_reader.add_timer(Sequenced::new(i, TimerValue::new(i, i.into())));
     }
 
     let service = TimerService::new(Some(1), output_tx, timer_reader, clock.clone());
@@ -272,9 +275,9 @@ async fn add_new_timers() {
     let timer_reader = MockTimerReader::<TimerValue>::new();
 
     timer_reader.add_timers(vec![
-        TimerValue::new(0, 0.into()),
-        TimerValue::new(1, 1.into()),
-        TimerValue::new(3, 10.into()),
+        Sequenced::new(0, TimerValue::new(0, 0.into())),
+        Sequenced::new(1, TimerValue::new(1, 1.into())),
+        Sequenced::new(2, TimerValue::new(3, 10.into())),
     ]);
 
     let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone());
@@ -284,7 +287,7 @@ async fn add_new_timers() {
     let join_handle = tokio::spawn(service.run(shutdown_watch));
 
     clock.advance_time_to(MillisSinceEpoch::new(5));
-    let new_timer = TimerValue::new(2, 5.into());
+    let new_timer = Sequenced::new(3, TimerValue::new(2, 5.into()));
     timer_reader.add_timer(new_timer);
 
     // notify timer about new timer
@@ -306,7 +309,7 @@ async fn earlier_timers_replace_older_ones() {
     let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
     let (output_tx, mut output_rx) = mpsc::channel(1);
     let timer_reader = MockTimerReader::<TimerValue>::new();
-    timer_reader.add_timer(TimerValue::new(1, 10.into()));
+    timer_reader.add_timer(Sequenced::new(0, TimerValue::new(1, 10.into())));
 
     let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone());
     let timer_handle = service.create_timer_handle();
@@ -317,7 +320,7 @@ async fn earlier_timers_replace_older_ones() {
     // give timer service the chance to load the initial timers
     tokio::task::yield_now().await;
 
-    let new_timer = TimerValue::new(0, 5.into());
+    let new_timer = Sequenced::new(1, TimerValue::new(0, 5.into()));
     timer_reader.add_timer(new_timer);
     timer_handle.add_timer(new_timer).await.unwrap();
 
@@ -340,8 +343,8 @@ async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
     let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
     let (output_tx, mut output_rx) = mpsc::channel(1);
     let timer_reader = MockTimerReader::<TimerValue>::new();
-    timer_reader.add_timer(TimerValue::new(0, 2.into()));
-    timer_reader.add_timer(TimerValue::new(2, 5.into()));
+    timer_reader.add_timer(Sequenced::new(0, TimerValue::new(0, 2.into())));
+    timer_reader.add_timer(Sequenced::new(1, TimerValue::new(2, 5.into())));
 
     let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone());
     let timer_handle = service.create_timer_handle();
@@ -356,7 +359,7 @@ async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
 
     let_assert!(Some(Output::TimerFired(TimerValue { value: 0, .. })) = output_rx.recv().await);
 
-    let new_timer = TimerValue::new(1, 0.into());
+    let new_timer = Sequenced::new(2, TimerValue::new(1, 0.into()));
     timer_reader.add_timer(new_timer);
     timer_handle.add_timer(new_timer).await.unwrap();
 
@@ -366,6 +369,45 @@ async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
     clock.advance_time_to(MillisSinceEpoch::new(10));
 
     for i in 1..3 {
+        let_assert!(Some(Output::TimerFired(TimerValue { value, .. })) = output_rx.recv().await);
+        assert_eq!(value, i);
+    }
+
+    shutdown_signal.drain().await;
+    join_handle.await.unwrap().unwrap();
+}
+
+#[test(tokio::test)]
+async fn deduplicating_timers() {
+    let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
+    let (output_tx, mut output_rx) = mpsc::channel(1);
+    let timer_reader = MockTimerReader::<TimerValue>::new();
+    let first_timer = Sequenced::new(0, TimerValue::new(0, 1.into()));
+    timer_reader.add_timer(first_timer);
+    timer_reader.add_timer(Sequenced::new(1, TimerValue::new(1, 2.into())));
+
+    let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone());
+    let timer_handle = service.create_timer_handle();
+
+    let (shutdown_signal, shutdown_watch) = drain::channel();
+    let join_handle = tokio::spawn(service.run(shutdown_watch));
+
+    // give timer service the chance to load the initial timers
+    tokio::task::yield_now().await;
+
+    clock.advance_time_to(MillisSinceEpoch::new(1));
+
+    let_assert!(Some(Output::TimerFired(TimerValue { value: 0, .. })) = output_rx.recv().await);
+
+    // simulate the late arrival of the first timer on the input channel
+    timer_handle.add_timer(first_timer).await.unwrap();
+
+    // give timer service chance to process timers
+    tokio::task::yield_now().await;
+
+    clock.advance_time_to(MillisSinceEpoch::new(2));
+
+    for i in 1..2 {
         let_assert!(Some(Output::TimerFired(TimerValue { value, .. })) = output_rx.recv().await);
         assert_eq!(value, i);
     }

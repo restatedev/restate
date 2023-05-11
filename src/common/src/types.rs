@@ -274,6 +274,8 @@ pub type PeerTarget<Msg> = (PeerId, Msg);
 /// Index type used messages in the runtime
 pub type MessageIndex = u64;
 
+pub type TimerSeqNumber = u64;
+
 #[derive(Debug, Clone, Copy)]
 pub enum AckKind {
     Acknowledge(MessageIndex),
@@ -542,4 +544,20 @@ pub struct TimerKey {
 pub enum Timer {
     CompleteSleepEntry,
     Invoke(ServiceInvocation),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SequencedTimer {
+    seq_number: TimerSeqNumber,
+    timer: Timer,
+}
+
+impl SequencedTimer {
+    pub fn new(seq_number: TimerSeqNumber, timer: Timer) -> Self {
+        Self { seq_number, timer }
+    }
+
+    pub fn into_inner(self) -> (TimerSeqNumber, Timer) {
+        (self.seq_number, self.timer)
+    }
 }

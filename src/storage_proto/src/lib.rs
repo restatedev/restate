@@ -32,8 +32,8 @@ pub mod storage {
                 invocation_resolution_result, invocation_status, outbox_message, response_result,
                 timer, BackgroundCallResolutionResult, EnrichedEntryHeader, InboxEntry,
                 InvocationResolutionResult, InvocationStatus, JournalEntry, JournalMeta,
-                OutboxMessage, ResponseResult, ServiceInvocation, ServiceInvocationId,
-                ServiceInvocationResponseSink, SpanContext, Timer,
+                OutboxMessage, ResponseResult, SequencedTimer, ServiceInvocation,
+                ServiceInvocationId, ServiceInvocationResponseSink, SpanContext, Timer,
             };
             use bytes::{Buf, Bytes};
             use bytestring::ByteString;
@@ -1098,6 +1098,28 @@ pub mod storage {
                         restate_common::types::Timer::Invoke(si) => Timer {
                             value: Some(timer::Value::Invoke(ServiceInvocation::from(si))),
                         },
+                    }
+                }
+            }
+
+            impl TryFrom<SequencedTimer> for restate_common::types::SequencedTimer {
+                type Error = ConversionError;
+
+                fn try_from(value: SequencedTimer) -> Result<Self, Self::Error> {
+                    let timer = value.timer.ok_or(ConversionError::missing_field("timer"))?;
+                    Ok(restate_common::types::SequencedTimer::new(
+                        value.seq_number,
+                        restate_common::types::Timer::try_from(timer)?,
+                    ))
+                }
+            }
+
+            impl From<restate_common::types::SequencedTimer> for SequencedTimer {
+                fn from(value: restate_common::types::SequencedTimer) -> Self {
+                    let (seq_number, timer) = value.into_inner();
+                    SequencedTimer {
+                        seq_number,
+                        timer: Some(Timer::from(timer)),
                     }
                 }
             }

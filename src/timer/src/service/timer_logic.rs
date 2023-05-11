@@ -1,7 +1,8 @@
 #![allow(clippy::enum_variant_names)]
 
-use crate::{Output, TimerKey, TimerServiceError};
+use crate::{Output, Sequenced, TimerKey, TimerServiceError};
 use pin_project::pin_project;
+use restate_common::types::TimerSeqNumber;
 use std::fmt::Debug;
 use std::future;
 use std::future::Future;
@@ -89,6 +90,8 @@ pub(crate) struct TimerLogic<
 
     max_fired_timer: Option<Timer::TimerKey>,
 
+    max_seq_number: Option<TimerSeqNumber>,
+
     timer_queue: DoublePriorityQueue<Timer>,
 
     reserve_permit: ReservePermit,
@@ -108,7 +111,7 @@ where
     ReservePermitFuture:
         Future<Output = Result<mpsc::Permit<'a, Output<Timer>>, mpsc::error::SendError<()>>>,
     LoadTimers: Fn(usize, Option<Timer::TimerKey>) -> TimerStream,
-    TimerStream: Stream<Item = Timer>,
+    TimerStream: Stream<Item = Sequenced<Timer>>,
 {
     pub(crate) fn new(
         clock: Clock,
@@ -128,6 +131,7 @@ where
                 None,
             )),
             max_fired_timer: None,
+            max_seq_number: None,
             timer_queue: DoublePriorityQueue::default(),
             reserve_permit,
             load_timers,
@@ -135,11 +139,24 @@ where
         }
     }
 
-    pub(crate) fn add_timer(self: Pin<&mut Self>, timer: Timer) {
+    pub(crate) fn add_timer(self: Pin<&mut Self>, timer: Sequenced<Timer>) {
         let this = self.project();
         let timer_queue = this.timer_queue;
         let max_fired_timer = this.max_fired_timer;
+        let max_seq_number = this.max_seq_number;
         let mut state = this.state;
+
+        let (seq_number, timer) = timer.into_inner();
+
+        if max_seq_number
+            .map(|max_seq_number| max_seq_number >= seq_number)
+            .unwrap_or(false)
+        {
+            trace!("Received an already processed timer. Ignoring it.");
+            return;
+        } else {
+            *max_seq_number = Some(seq_number);
+        }
 
         match state.as_mut().project() {
             StateProj::Idle(waker) => {
@@ -237,6 +254,7 @@ where
         let this = self.project();
         let timer_queue = this.timer_queue;
         let max_fired_timer = this.max_fired_timer;
+        let max_seq_number = this.max_seq_number;
         let mut state = this.state;
         let reserve_permit = this.reserve_permit;
         let load_timers = this.load_timers;
@@ -247,11 +265,20 @@ where
                     return Poll::Pending;
                 }
                 StateProj::LoadTimers(timer_stream) => {
-                    let next_timer = ready!(timer_stream.poll_next(cx));
+                    let seq_next_timer = ready!(timer_stream.poll_next(cx));
 
                     let mut finished_loading_timers = false;
 
-                    if let Some(next_timer) = next_timer {
+                    if let Some(seq_next_timer) = seq_next_timer {
+                        let (seq_number, next_timer) = seq_next_timer.into_inner();
+
+                        if max_seq_number
+                            .map(|max_seq_number| max_seq_number < seq_number)
+                            .unwrap_or(true)
+                        {
+                            *max_seq_number = Some(seq_number);
+                        }
+
                         let timer_key = next_timer.timer_key();
 
                         // We can only stop loading timers if we know that all subsequent timers have

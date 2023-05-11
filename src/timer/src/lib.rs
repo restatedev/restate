@@ -1,6 +1,6 @@
 extern crate core;
 
-use restate_common::types::MillisSinceEpoch;
+use restate_common::types::{MillisSinceEpoch, TimerSeqNumber};
 use std::fmt::Debug;
 use std::hash::Hash;
 use tokio::sync::mpsc;
@@ -15,7 +15,7 @@ pub use service::{TimerService, TimerServiceError};
 
 #[derive(Debug)]
 enum Input<T> {
-    Timer { timer: T },
+    Timer { timer: Sequenced<T> },
 }
 
 #[derive(Debug, PartialEq)]
@@ -51,7 +51,7 @@ where
     ///
     /// Only if **no** memory limit has been configured on the associated timer service, this is
     /// not required.
-    pub async fn add_timer(&self, timer: T) -> Result<(), Error> {
+    pub async fn add_timer(&self, timer: Sequenced<T>) -> Result<(), Error> {
         self.input_tx
             .send(Input::Timer { timer })
             .await
@@ -71,11 +71,35 @@ pub trait TimerKey: Ord + Clone + Debug {
     fn wake_up_time(&self) -> MillisSinceEpoch;
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Sequenced<T> {
+    seq_number: TimerSeqNumber,
+    timer: T,
+}
+
+impl<T> Sequenced<T> {
+    pub fn new(seq_number: TimerSeqNumber, timer: T) -> Self {
+        Self { seq_number, timer }
+    }
+
+    pub fn into_inner(self) -> (TimerSeqNumber, T) {
+        (self.seq_number, self.timer)
+    }
+
+    pub fn into_timer(self) -> T {
+        self.timer
+    }
+
+    pub fn timer(&self) -> &T {
+        &self.timer
+    }
+}
+
 pub trait TimerReader<T>
 where
     T: Timer,
 {
-    type TimerStream<'a>: Stream<Item = T> + Send
+    type TimerStream<'a>: Stream<Item = Sequenced<T>> + Send
     where
         Self: 'a;
 

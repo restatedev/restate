@@ -7,7 +7,7 @@ use crate::{Result, TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
-use restate_common::types::{PartitionId, Timer, TimerKey};
+use restate_common::types::{PartitionId, SequencedTimer, TimerKey};
 use restate_storage_api::timer_table::TimerTable;
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
@@ -94,9 +94,14 @@ fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
 }
 
 impl TimerTable for RocksDBTransaction {
-    fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) -> PutFuture {
+    fn add_timer(
+        &mut self,
+        partition_id: PartitionId,
+        key: &TimerKey,
+        seq_timer: SequencedTimer,
+    ) -> PutFuture {
         let key = write_timer_key(partition_id, key);
-        let value = ProtoValue(storage::v1::Timer::from(timer));
+        let value = ProtoValue(storage::v1::SequencedTimer::from(seq_timer));
 
         self.put_kv(key, value);
 
@@ -116,7 +121,7 @@ impl TimerTable for RocksDBTransaction {
         partition_id: PartitionId,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
-    ) -> GetStream<(TimerKey, Timer)> {
+    ) -> GetStream<(TimerKey, SequencedTimer)> {
         let scan = exclusive_start_key_range(partition_id, exclusive_start);
         let mut produced = 0;
         self.for_each_key_value(scan, move |k, v| {
@@ -124,17 +129,18 @@ impl TimerTable for RocksDBTransaction {
                 return TableScanIterationDecision::Break;
             }
             produced += 1;
-            let res = decode_timer_key_value(k, v);
+            let res = decode_seq_timer_key_value(k, v);
             Emit(res)
         })
     }
 }
 
-fn decode_timer_key_value(k: &[u8], v: &[u8]) -> Result<(TimerKey, Timer)> {
+fn decode_seq_timer_key_value(k: &[u8], v: &[u8]) -> Result<(TimerKey, SequencedTimer)> {
     let timer_key = timer_key_from_key_slice(k)?;
 
-    let timer = Timer::try_from(
-        storage::v1::Timer::decode(v).map_err(|error| StorageError::Generic(error.into()))?,
+    let timer = SequencedTimer::try_from(
+        storage::v1::SequencedTimer::decode(v)
+            .map_err(|error| StorageError::Generic(error.into()))?,
     )?;
 
     Ok((timer_key, timer))

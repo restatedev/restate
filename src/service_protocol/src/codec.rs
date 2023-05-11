@@ -1,4 +1,5 @@
 use super::pb::protocol;
+use std::fmt::Debug;
 
 use std::mem;
 
@@ -55,11 +56,16 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
         })
     }
 
-    fn write_completion<H: Header>(
+    fn write_completion<H: Header + Debug>(
         entry: &mut RawEntry<H>,
         completion_result: CompletionResult,
     ) -> Result<(), RawEntryCodecError> {
-        debug_assert_eq!(entry.header.is_completed(), Some(false));
+        debug_assert_eq!(
+            entry.header.is_completed(),
+            Some(false),
+            "Entry '{:?}' is already completed",
+            entry
+        );
 
         // Prepare the result to serialize in protobuf
         let completion_result_message = match completion_result {

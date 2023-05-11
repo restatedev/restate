@@ -1,6 +1,7 @@
 use super::*;
 use restate_common::types::RawEntry;
 use restate_common::utils::GenericError;
+use std::fmt::Debug;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawEntryHeader {
@@ -101,7 +102,7 @@ pub trait RawEntryCodec {
 
     fn deserialize<H: Header>(entry: &RawEntry<H>) -> Result<Entry, RawEntryCodecError>;
 
-    fn write_completion<H: Header>(
+    fn write_completion<H: Header + Debug>(
         entry: &mut RawEntry<H>,
         completion_result: CompletionResult,
     ) -> Result<(), RawEntryCodecError>;

@@ -4,7 +4,7 @@ use restate_common::types::{
     CompletionResult, EnrichedRawEntry, EntryIndex, InvocationId, InvocationResponse,
     JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseResult, ServiceId,
     ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, SpanRelation, Timer,
+    ServiceInvocationSpanContext, SpanRelation, Timer, TimerSeqNumber,
 };
 use restate_journal::raw::Header;
 use restate_journal::Completion;
@@ -98,6 +98,7 @@ pub(crate) enum Effect {
 
     // Timers
     RegisterTimer {
+        seq_number: TimerSeqNumber,
         timer_value: TimerValue,
     },
     DeleteTimer {
@@ -353,7 +354,7 @@ impl Effect {
                 restate.state.key = ?key,
                 "Effect: Get state"
             ),
-            Effect::RegisterTimer { timer_value } => match &timer_value.value {
+            Effect::RegisterTimer { timer_value, .. } => match &timer_value.value {
                 Timer::CompleteSleepEntry => debug_if_leader!(
                     is_leader,
                     restate.timer.key = %timer_value.display_key(),
@@ -679,8 +680,15 @@ impl Effects {
         })
     }
 
-    pub(crate) fn register_timer(&mut self, timer_value: TimerValue) {
-        self.effects.push(Effect::RegisterTimer { timer_value })
+    pub(crate) fn register_timer(
+        &mut self,
+        timer_seq_number: TimerSeqNumber,
+        timer_value: TimerValue,
+    ) {
+        self.effects.push(Effect::RegisterTimer {
+            seq_number: timer_seq_number,
+            timer_value,
+        })
     }
 
     pub(crate) fn delete_timer(

@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use restate_common::types::{
-    ServiceId, ServiceInvocation, ServiceInvocationId, SpanRelation, Timer, TimerKey,
+    SequencedTimer, ServiceId, ServiceInvocation, ServiceInvocationId, SpanRelation, Timer,
+    TimerKey,
 };
 use restate_storage_api::timer_table::TimerTable;
 use restate_storage_api::{Storage, Transaction};
@@ -17,7 +18,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 0,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry,
+        SequencedTimer::new(0, Timer::CompleteSleepEntry),
     )
     .await;
 
@@ -31,7 +32,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 1,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry,
+        SequencedTimer::new(1, Timer::CompleteSleepEntry),
     )
     .await;
 
@@ -55,7 +56,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 2,
             timestamp: 1,
         },
-        Timer::Invoke(service_invocation),
+        SequencedTimer::new(2, Timer::Invoke(service_invocation)),
     )
     .await;
 
@@ -72,7 +73,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 0,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry,
+        SequencedTimer::new(3, Timer::CompleteSleepEntry),
     )
     .await;
 
@@ -86,7 +87,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 0,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry,
+        SequencedTimer::new(4, Timer::CompleteSleepEntry),
     )
     .await;
 }

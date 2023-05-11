@@ -9,6 +9,7 @@ use restate_common::types::{
 use restate_common::utils::GenericError;
 use restate_invoker::{InvokeInputJournal, InvokerInputSender, InvokerNotRunning};
 use restate_network::NetworkNotRunning;
+use restate_timer::Sequenced;
 use std::fmt::Debug;
 use std::ops::DerefMut;
 use std::panic;
@@ -131,8 +132,13 @@ where
                     let _ = shuffle_hint_tx
                         .try_send(shuffle::NewOutboxMessage::new(seq_number, message));
                 }
-                ActuatorMessage::RegisterTimer(timer_value) => {
-                    timer_handle.add_timer(timer_value).await?;
+                ActuatorMessage::RegisterTimer {
+                    seq_number,
+                    timer_value,
+                } => {
+                    timer_handle
+                        .add_timer(Sequenced::new(seq_number, timer_value))
+                        .await?;
                 }
                 ActuatorMessage::AckStoredEntry {
                     service_invocation_id,

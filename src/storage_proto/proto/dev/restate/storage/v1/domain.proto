@@ -286,3 +286,8 @@ message Timer {
         ServiceInvocation invoke = 2;
     }
 }
+
+message SequencedTimer {
+    uint64 seq_number = 1;
+    Timer timer = 2;
+}
