@@ -3780,6 +3780,7 @@ dependencies = [
  "restate_test_utils",
  "rocksdb",
  "schemars",
+ "semver",
  "serde",
  "tempfile",
  "thiserror",

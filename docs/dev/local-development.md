@@ -12,11 +12,12 @@ The project contains some Rust libraries binding to native libraries/build tools
 * [CMake](https://cmake.org/)
 * [OpenSSL](https://www.openssl.org/)
 * [RocksDB](http://rocksdb.org/)
+* [Protobuf compiler](https://grpc.io/docs/protoc-installation/) version >= 3.15
 
 To setup these on Fedora, run:
 
 ```
-sudo dnf install clang lld lldb libcxx cmake openssl-devel rocksdb-devel
+sudo dnf install clang lld lldb libcxx cmake openssl-devel rocksdb-devel protobuf-compiler
 ```
 
 ## Speeding builds up via sccache
