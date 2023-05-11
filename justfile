@@ -53,7 +53,8 @@ _os_target := if _os == "macos" {
 
 _default_target := `rustc -vV | sed -n 's|host: ||p'`
 target := _arch + "-" + _os_target + if _os == "linux" { "-" + libc } else { "" }
-_target-option := if target != _default_target { "--target " + target } else { "" }
+_resolved_target := if target != _default_target { target } else { "" }
+_target-option := if _resolved_target != "" { "--target " + _resolved_target } else { "" }
 
 clean:
     cargo clean
@@ -86,19 +87,19 @@ build *flags: (_target-installed target)
 cross-build *flags:
     #!/usr/bin/env bash
     if [[ {{ target }} =~ "linux" ]]; then
-      docker run --rm -v `pwd`:/restate:Z -w /restate {{ dev_tools_image }} just _target-option="--target {{ target }}" features={{ features }} build {{ flags }}
+      docker run --rm -v `pwd`:/restate:Z -w /restate {{ dev_tools_image }} just _resolved_target={{ target }} features={{ features }} build {{ flags }}
     elif [[ {{ target }} =~ "darwin" ]]; then
       if [[ {{ os() }} != "macos" ]]; then
         echo "Cannot built macos target on non-macos host";
       else
-        just _target-option="--target {{ target }}" features={{ features }} build {{ flags }};
+        just _resolved_target={{ target }} features={{ features }} build {{ flags }};
       fi
     else
       echo "Unsupported target: {{ target }}";
     fi
 
 print-target:
-    @echo {{ target }}
+    @echo {{ _resolved_target }}
 
 run *flags: (_target-installed target)
     cargo run {{ _target-option }} {{ flags }}

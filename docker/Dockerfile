@@ -38,11 +38,11 @@ RUN just arch=$TARGETARCH chef-cook --release --bin restate
 COPY . .
 RUN just arch=$TARGETARCH build --release --bin restate && \
     just notice-file && \
-    mv target/$(just --evaluate arch=$TARGETARCH _arch)-unknown-linux-gnu/release/restate target/release/restate
+    mv target/$(just arch=$TARGETARCH print-target)/release/restate target/restate
 
 # We do not need the Rust toolchain to run the binary!
 FROM debian:bookworm-slim AS runtime
-COPY --from=builder /restate/target/release/restate /usr/local/bin
+COPY --from=builder /restate/target/restate /usr/local/bin
 COPY --from=builder /restate/NOTICE /NOTICE
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
