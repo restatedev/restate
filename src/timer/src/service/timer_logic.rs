@@ -30,9 +30,9 @@ enum State<TimerKey, ReservePermitFuture, TimerStream, SleepFuture> {
 impl<TimerKey, ReservePermitFuture, TimerStream, SleepFuture>
     State<TimerKey, ReservePermitFuture, TimerStream, SleepFuture>
 {
-    fn process_timers(timer_batch: TimerBatch<TimerKey>) -> Self {
+    fn process_timers(timer_batch: Option<TimerBatch<TimerKey>>) -> Self {
         State::ProcessTimers {
-            timer_batch: Some(timer_batch),
+            timer_batch,
             process_timers_state: ProcessTimersState::ReadNextTimer,
         }
     }
@@ -87,6 +87,8 @@ pub(crate) struct TimerLogic<
     #[pin]
     state: State<Timer::TimerKey, ReservePermitFuture, TimerStream, Clock::SleepFuture>,
 
+    max_fired_timer: Option<Timer::TimerKey>,
+
     timer_queue: DoublePriorityQueue<Timer>,
 
     reserve_permit: ReservePermit,
@@ -125,6 +127,7 @@ where
                 num_timers_in_memory_limit.unwrap_or(usize::MAX),
                 None,
             )),
+            max_fired_timer: None,
             timer_queue: DoublePriorityQueue::default(),
             reserve_permit,
             load_timers,
@@ -135,6 +138,7 @@ where
     pub(crate) fn add_timer(self: Pin<&mut Self>, timer: Timer) {
         let this = self.project();
         let timer_queue = this.timer_queue;
+        let max_fired_timer = this.max_fired_timer;
         let mut state = this.state;
 
         match state.as_mut().project() {
@@ -147,9 +151,13 @@ where
                 trace!("Start processing timers because new timer {timer:?} was added.");
 
                 let timer_key = timer.timer_key();
-                timer_queue.push(timer, timer_key.clone());
+                let timer_batch =
+                    TimerBatch::new(Self::max_timer_key(&timer_key, max_fired_timer.as_ref()));
+
+                timer_queue.push(timer, timer_key);
                 waker.wake_by_ref();
-                state.set(State::process_timers(TimerBatch::new(timer_key)));
+
+                state.set(State::process_timers(Some(timer_batch)));
             }
             StateProj::LoadTimers(_) => {
                 trace!("Add timer {timer:?} to in memory queue while loading timers from storage.");
@@ -159,7 +167,11 @@ where
 
                 this.num_timers_in_memory_limit
                     .map(|num_timers_in_memory_limit| {
-                        Self::trim_timer_queue(timer_queue, num_timers_in_memory_limit)
+                        Self::trim_timer_queue(
+                            timer_queue,
+                            num_timers_in_memory_limit,
+                            max_fired_timer.as_ref(),
+                        )
                     });
             }
             StateProj::ProcessTimers {
@@ -179,16 +191,20 @@ where
                     // the new timer is guaranteed to be smaller than the current end
                     let new_batch_end = this
                         .num_timers_in_memory_limit
-                        .map(|limit| Self::trim_timer_queue(timer_queue, limit))
+                        .map(|limit| {
+                            Self::trim_timer_queue(timer_queue, limit, max_fired_timer.as_ref())
+                        })
                         .unwrap_or(true);
 
                     if new_batch_end {
-                        let new_end = timer_queue
+                        let (_, timer_key) = timer_queue
                             .peek_max()
-                            .expect("Timer queue should contain at least one element.")
-                            .1
-                            .clone();
-                        *timer_batch = TimerBatch::new(new_end);
+                            .expect("Timer queue should contain at least one element.");
+
+                        *timer_batch = TimerBatch::new(Self::max_timer_key(
+                            timer_key,
+                            max_fired_timer.as_ref(),
+                        ));
                         trace!("Updated current timer batch to {timer_batch:?}.");
                     }
 
@@ -220,6 +236,7 @@ where
     ) -> Poll<Result<(), TimerServiceError>> {
         let this = self.project();
         let timer_queue = this.timer_queue;
+        let max_fired_timer = this.max_fired_timer;
         let mut state = this.state;
         let reserve_permit = this.reserve_permit;
         let load_timers = this.load_timers;
@@ -257,22 +274,29 @@ where
                         }
 
                         // get rid of larger timers that exceed in memory threshold
-                        this.num_timers_in_memory_limit
-                            .map(|limit| Self::trim_timer_queue(timer_queue, limit));
+                        this.num_timers_in_memory_limit.map(|limit| {
+                            Self::trim_timer_queue(timer_queue, limit, max_fired_timer.as_ref())
+                        });
                     } else {
                         finished_loading_timers = true;
                     }
 
                     if finished_loading_timers {
                         // get rid of larger timers that exceed in memory threshold
-                        this.num_timers_in_memory_limit
-                            .map(|limit| Self::trim_timer_queue(timer_queue, limit));
+                        this.num_timers_in_memory_limit.map(|limit| {
+                            Self::trim_timer_queue(timer_queue, limit, max_fired_timer.as_ref())
+                        });
 
                         if let Some((_, timer_key)) = timer_queue.peek_max() {
                             trace!("Start processing timers.");
+                            let timer_batch = TimerBatch::new(Self::max_timer_key(
+                                timer_key,
+                                max_fired_timer.as_ref(),
+                            ));
+
                             state.set(State::ProcessTimers {
                                 process_timers_state: ProcessTimersState::ReadNextTimer,
-                                timer_batch: Some(TimerBatch::new(timer_key.clone())),
+                                timer_batch: Some(timer_batch),
                             });
                         } else {
                             trace!("Go into idle state because there are no timers to await.");
@@ -299,14 +323,18 @@ where
                                     .set(ProcessTimersState::NotifyDueTimer(reserve_permit()))
                             }
                         } else {
-                            trace!("Finished processing of current timer batch. Trying loading new timers from storage.");
-                            let end_of_batch = timer_batch
-                                .take()
-                                .expect("Timer batch needs to have an end.")
-                                .end;
+                            let end_of_batch =
+                                timer_batch.take().map(|timer_batch| timer_batch.end);
+
+                            assert_eq!(
+                                max_fired_timer, &end_of_batch,
+                                "Max fired timer should coincide with end of batch."
+                            );
+
+                            trace!("Finished processing of current timer batch '{:?}'. Trying loading new timers from storage.", end_of_batch);
                             state.set(State::LoadTimers(load_timers(
                                 this.num_timers_in_memory_limit.unwrap_or(usize::MAX),
-                                Some(end_of_batch),
+                                end_of_batch,
                             )))
                         }
                     }
@@ -324,9 +352,18 @@ where
 
                         let permit = permit.unwrap();
 
-                        if let Some((timer, _)) = timer_queue.pop_min() {
+                        if let Some((timer, timer_key)) = timer_queue.pop_min() {
                             trace!("Send notification for fired timer {timer:?}.");
-                            permit.send(Output::TimerFired(timer))
+                            permit.send(Output::TimerFired(timer));
+
+                            // update max fired timer if the fired timer is larger
+                            if max_fired_timer
+                                .as_ref()
+                                .map(|max_fired_timer| *max_fired_timer < timer_key)
+                                .unwrap_or(true)
+                            {
+                                *max_fired_timer = Some(timer_key);
+                            }
                         }
 
                         trace!("Try to read next timer.");
@@ -341,9 +378,14 @@ where
         future::poll_fn(|cx| self.as_mut().poll(cx)).await
     }
 
+    /// Trim timer queue with respect to target queue size and max fired timer so far.
+    /// Only timers that are larger than the max fired timer can be trimmed. The next
+    /// read from storage needs to continue at least from the max fired timer because
+    /// we cannot guarantee that triggered timers have been deleted.
     fn trim_timer_queue(
         timer_queue: &mut DoublePriorityQueue<Timer>,
         target_queue_size: usize,
+        max_fired_timer: Option<&Timer::TimerKey>,
     ) -> bool {
         debug_assert!(
             target_queue_size >= 1,
@@ -353,13 +395,40 @@ where
         let mut has_trimmed_queue = false;
 
         while timer_queue.len() > target_queue_size {
-            let (popped_timer, _) = timer_queue
-                .pop_max()
+            let (_, current_max_key) = timer_queue
+                .peek_max()
                 .expect("Element must exist since queue is not empty.");
-            trace!("Removing timer {popped_timer:?} from in memory timer queue.");
-            has_trimmed_queue = true;
+
+            // only trim timers that are larger than the max fired timer, because that's where the
+            // next read will at least continue from
+            if max_fired_timer
+                .map(|last_fired_timer| last_fired_timer < current_max_key)
+                .unwrap_or(true)
+            {
+                let (popped_timer, _) = timer_queue
+                    .pop_max()
+                    .expect("Element must exist since queue is not empty.");
+                trace!("Removing timer {popped_timer:?} from in memory timer queue.");
+                has_trimmed_queue = true;
+            } else {
+                break;
+            }
         }
 
         has_trimmed_queue
+    }
+
+    fn max_timer_key(
+        timer_key: &Timer::TimerKey,
+        max_fired_timer: Option<&Timer::TimerKey>,
+    ) -> Timer::TimerKey {
+        if max_fired_timer
+            .map(|max_fired_timer| max_fired_timer > timer_key)
+            .unwrap_or(false)
+        {
+            max_fired_timer.unwrap().clone()
+        } else {
+            timer_key.clone()
+        }
     }
 }

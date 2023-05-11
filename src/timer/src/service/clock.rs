@@ -61,6 +61,7 @@ pub mod tests {
             assert!(inner.time <= time);
 
             inner.time = time;
+            inner.wake_up_sleeps();
         }
     }
 
@@ -95,6 +96,10 @@ pub mod tests {
         fn advance_time(&mut self, duration: Duration) {
             self.time = MillisSinceEpoch::new(self.time.as_u64() + duration.as_millis() as u64);
 
+            self.wake_up_sleeps();
+        }
+
+        fn wake_up_sleeps(&mut self) {
             while let Some(sleep_future) = self.pending_sleep_futures.peek() {
                 if sleep_future.0.wake_up_time > self.time {
                     break;

@@ -321,9 +321,51 @@ async fn earlier_timers_replace_older_ones() {
     timer_reader.add_timer(new_timer);
     timer_handle.add_timer(new_timer).await.unwrap();
 
+    // give timer service chance to process timers
+    tokio::task::yield_now().await;
+
     clock.advance_time_to(MillisSinceEpoch::new(10));
 
     for i in 0..2 {
+        let_assert!(Some(Output::TimerFired(TimerValue { value, .. })) = output_rx.recv().await);
+        assert_eq!(value, i);
+    }
+
+    shutdown_signal.drain().await;
+    join_handle.await.unwrap().unwrap();
+}
+
+#[test(tokio::test)]
+async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
+    let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
+    let (output_tx, mut output_rx) = mpsc::channel(1);
+    let timer_reader = MockTimerReader::<TimerValue>::new();
+    timer_reader.add_timer(TimerValue::new(0, 2.into()));
+    timer_reader.add_timer(TimerValue::new(2, 5.into()));
+
+    let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone());
+    let timer_handle = service.create_timer_handle();
+
+    let (shutdown_signal, shutdown_watch) = drain::channel();
+    let join_handle = tokio::spawn(service.run(shutdown_watch));
+
+    // give timer service the chance to load the initial timers
+    tokio::task::yield_now().await;
+
+    clock.advance_time_to(MillisSinceEpoch::new(3));
+
+    let_assert!(Some(Output::TimerFired(TimerValue { value: 0, .. })) = output_rx.recv().await);
+
+    let new_timer = TimerValue::new(1, 0.into());
+    timer_reader.add_timer(new_timer);
+    timer_handle.add_timer(new_timer).await.unwrap();
+
+    // give timer service chance to process timers
+    tokio::task::yield_now().await;
+
+    clock.advance_time_to(MillisSinceEpoch::new(10));
+
+    for i in 1..3 {
         let_assert!(Some(Output::TimerFired(TimerValue { value, .. })) = output_rx.recv().await);
         assert_eq!(value, i);
     }
