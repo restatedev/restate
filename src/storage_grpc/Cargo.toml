@@ -37,3 +37,4 @@ tracing-subscriber = { workspace = true }
 [build-dependencies]
 tonic-build = { workspace = true }
 prost-build = { workspace = true }
+semver = "1.0.17"
