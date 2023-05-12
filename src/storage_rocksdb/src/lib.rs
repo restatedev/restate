@@ -22,10 +22,9 @@ use futures::{ready, FutureExt, Stream};
 use futures_util::future::ok;
 use futures_util::StreamExt;
 use restate_storage_api::{GetFuture, GetStream, PutFuture, Storage, StorageError, Transaction};
-use rocksdb::DBCompressionType::Lz4;
 use rocksdb::{
-    ColumnFamily, DBCompressionType, DBPinnableSlice, DBRawIteratorWithThreadMode, PrefixRange,
-    ReadOptions, SingleThreaded, WriteBatch,
+    BlockBasedOptions, Cache, ColumnFamily, DBCompressionType, DBPinnableSlice,
+    DBRawIteratorWithThreadMode, PrefixRange, ReadOptions, SingleThreaded, WriteBatch,
 };
 use std::pin::Pin;
 use std::sync::Arc;
@@ -79,17 +78,6 @@ pub enum TableKind {
     Journal,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-pub enum CompressionType {
-    /// No compression
-    None,
-    /// Compression using lz4
-    Lz4,
-    /// Compression using zlib
-    Zstd,
-}
-
 /// # Storage options
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
@@ -97,7 +85,7 @@ pub enum CompressionType {
 pub struct Options {
     /// # Storage path
     ///
-    /// The root path to use for the Rocksdb storage
+    /// The root path to use for the Rocksdb storage.
     #[cfg_attr(
         feature = "options_schema",
         schemars(default = "Options::default_path")
@@ -106,21 +94,39 @@ pub struct Options {
 
     /// # Threads
     ///
-    /// The number of threads to reserve to Rocksdb background tasks
+    /// The number of threads to reserve to Rocksdb background tasks.
     #[cfg_attr(
         feature = "options_schema",
         schemars(default = "Options::default_threads")
     )]
     pub threads: usize,
 
-    /// # Compression type
+    /// # Write Buffer size
     ///
-    /// The type of compression to use
+    /// The size of a single memtable. Once memtable exceeds this size, it is marked immutable and a new one is created.
     #[cfg_attr(
         feature = "options_schema",
-        schemars(default = "Options::default_compression")
+        schemars(default = "Options::default_write_buffer_size")
     )]
-    pub compression: CompressionType,
+    pub write_buffer_size: usize,
+
+    /// # Maximum total WAL size
+    ///
+    /// Max WAL size, that after this Rocksdb start flushing mem tables to disk.
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_max_total_wal_size")
+    )]
+    pub max_total_wal_size: u64,
+
+    /// # Maximum cache size
+    ///
+    /// The memory size used for rocksdb caches.
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_cache_size")
+    )]
+    pub cache_size: usize,
 }
 
 impl Default for Options {
@@ -128,7 +134,9 @@ impl Default for Options {
         Self {
             path: Options::default_path(),
             threads: Options::default_threads(),
-            compression: Options::default_compression(),
+            write_buffer_size: Options::default_write_buffer_size(),
+            max_total_wal_size: Options::default_max_total_wal_size(),
+            cache_size: Options::default_cache_size(),
         }
     }
 }
@@ -139,15 +147,22 @@ impl Options {
     }
 
     fn default_threads() -> usize {
-        4
-    }
-
-    fn default_compression() -> CompressionType {
-        CompressionType::Zstd
+        10
     }
 
     pub fn build(self) -> std::result::Result<RocksDBStorage, BuildError> {
         RocksDBStorage::new(self)
+    }
+    fn default_write_buffer_size() -> usize {
+        0
+    }
+
+    fn default_max_total_wal_size() -> u64 {
+        2 * (1 << 30) // 2 GiB
+    }
+
+    fn default_cache_size() -> usize {
+        1 << 30 // 1 GB
     }
 }
 
@@ -180,35 +195,145 @@ pub struct RocksDBStorage {
     db: Arc<DB>,
 }
 
+fn db_options(opts: &Options) -> rocksdb::Options {
+    let mut db_options = rocksdb::Options::default();
+    db_options.create_if_missing(true);
+    db_options.create_missing_column_families(true);
+    if opts.threads > 0 {
+        db_options.increase_parallelism(opts.threads as i32);
+        db_options.set_max_background_jobs(opts.threads as i32);
+    }
+    //
+    // Disable WAL archiving.
+    // the following two options has to be both 0 to disable WAL log archive.
+    //
+    db_options.set_wal_size_limit_mb(0);
+    db_options.set_wal_ttl_seconds(0);
+    //
+    // Once the WAL logs exceed this size, rocksdb start will start flush memtables to disk
+    // We set this value to 10GB by default, to make sure that we don't flush
+    // memtables prematurely.
+    db_options.set_max_total_wal_size(opts.max_total_wal_size);
+    //
+    // write buffer
+    //
+    // we disable the total write buffer size, since in restate the column family
+    // number is static.
+    //
+    db_options.set_db_write_buffer_size(0);
+    //
+    // enable pipelined writes for higher write throughput.
+    // we have lots of background threads trying to commit their WriteBatch in parallel.
+    // https://github.com/facebook/rocksdb/wiki/Pipelined-Write
+    db_options.set_enable_pipelined_write(true);
+    //
+    // Let rocksdb decide for level sizes.
+    //
+    db_options.set_level_compaction_dynamic_level_bytes(true);
+    db_options.set_compaction_readahead_size(1 << 21);
+    //
+    // We use Tokio's background threads to access rocksdb, and
+    // at most we have 512 threads.
+    //
+    db_options.set_table_cache_num_shard_bits(9);
+    //
+    // no need to retain 1000 log files by default.
+    //
+    db_options.set_keep_log_file_num(1);
+    //
+    // Allow mmap read and write.
+    //
+    db_options.set_allow_mmap_reads(true);
+    db_options.set_allow_mmap_writes(true);
+
+    db_options
+}
+
+fn cf_options(opts: &Options, cache: Option<Cache>) -> rocksdb::Options {
+    let mut cf_options = rocksdb::Options::default();
+    //
+    //
+    // write buffer
+    //
+    if opts.write_buffer_size > 0 {
+        cf_options.set_write_buffer_size(opts.write_buffer_size)
+    }
+    //
+    // Most of the changes are highly temporal, we try to delay flushing
+    // As much as we can to increase the chances to observe a deletion.
+    //
+    cf_options.set_max_write_buffer_number(3);
+    cf_options.set_min_write_buffer_number_to_merge(2);
+    //
+    // bloom filters and block cache.
+    //
+    let mut block_opts = BlockBasedOptions::default();
+    block_opts.set_bloom_filter(10.0, true);
+    // use the latest Rocksdb table format.
+    // https://github.com/facebook/rocksdb/blob/f059c7d9b96300091e07429a60f4ad55dac84859/include/rocksdb/table.h#L275
+    block_opts.set_format_version(5);
+    if let Some(cache) = cache {
+        block_opts.set_cache_index_and_filter_blocks(true);
+        block_opts.set_block_cache(&cache);
+    }
+    cf_options.set_block_based_table_factory(&block_opts);
+    //
+    // Set compactions per level
+    //
+    cf_options.set_num_levels(7);
+    cf_options.set_compression_per_level(&[
+        DBCompressionType::Snappy,
+        DBCompressionType::Snappy,
+        DBCompressionType::Snappy,
+        DBCompressionType::Snappy,
+        DBCompressionType::Snappy,
+        DBCompressionType::Snappy,
+        DBCompressionType::Zstd,
+    ]);
+
+    cf_options
+}
+
 impl RocksDBStorage {
     fn new(opts: Options) -> std::result::Result<Self, BuildError> {
-        let mut db_options = rocksdb::Options::default();
-        db_options.create_if_missing(true);
-        db_options.create_missing_column_families(true);
-        if opts.threads > 0 {
-            db_options.increase_parallelism(opts.threads as i32);
-        }
-        db_options.set_allow_concurrent_memtable_write(true);
-        match opts.compression {
-            CompressionType::Lz4 => db_options.set_compression_type(Lz4),
-            CompressionType::Zstd => db_options.set_compression_type(DBCompressionType::Zstd),
-            _ => {}
-        }
-        // TODO: set more rocksdb options from opts.
+        let cache = if opts.cache_size > 0 {
+            Some(
+                Cache::new_lru_cache(opts.cache_size)
+                    .expect("Was not able to create a Cache for rocksdb"),
+            )
+        } else {
+            None
+        };
+
         let tables = [
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(State), db_options.clone()),
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(Status), db_options.clone()),
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(Inbox), db_options.clone()),
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(Outbox), db_options.clone()),
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(Deduplication), db_options.clone()),
+            //
+            // keyed by partition key + user key
+            //
+            rocksdb::ColumnFamilyDescriptor::new(cf_name(Inbox), cf_options(&opts, cache.clone())),
+            rocksdb::ColumnFamilyDescriptor::new(cf_name(State), cf_options(&opts, cache.clone())),
+            rocksdb::ColumnFamilyDescriptor::new(cf_name(Status), cf_options(&opts, cache.clone())),
+            rocksdb::ColumnFamilyDescriptor::new(
+                cf_name(Journal),
+                cf_options(&opts, cache.clone()),
+            ),
+            //
+            // keyed by partition id + suffix
+            //
+            rocksdb::ColumnFamilyDescriptor::new(cf_name(Outbox), cf_options(&opts, cache.clone())),
+            rocksdb::ColumnFamilyDescriptor::new(cf_name(Timers), cf_options(&opts, cache.clone())),
+            // keyed by partition_id + partition_id
+            rocksdb::ColumnFamilyDescriptor::new(
+                cf_name(Deduplication),
+                cf_options(&opts, cache.clone()),
+            ),
+            // keyed by partition_id + u64
             rocksdb::ColumnFamilyDescriptor::new(
                 cf_name(PartitionStateMachine),
-                db_options.clone(),
+                cf_options(&opts, cache),
             ),
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(Timers), db_options.clone()),
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(Journal), db_options.clone()),
         ];
 
+        let db_options = db_options(&opts);
         let db = DB::open_cf_descriptors(&db_options, opts.path, tables)
             .map_err(BuildError::from_rocksdb_error)?;
 
