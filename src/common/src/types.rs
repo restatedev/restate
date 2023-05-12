@@ -60,10 +60,7 @@ impl ServiceInvocationId {
         invocation_id: impl Into<InvocationId>,
     ) -> Self {
         Self {
-            service_id: ServiceId {
-                service_name: service_name.into(),
-                key: key.into(),
-            },
+            service_id: ServiceId::new(service_name, key),
             invocation_id: invocation_id.into(),
         }
     }
@@ -80,19 +77,24 @@ pub struct ServiceId {
     pub service_name: ByteString,
     /// Identifies the service instance for the given service name
     pub key: Bytes,
+
+    partition_key: PartitionKey,
 }
 
 impl ServiceId {
     pub fn new(service_name: impl Into<ByteString>, key: impl Into<Bytes>) -> Self {
+        let key = key.into();
+        let partition_key = HashPartitioner::compute_partition_key(&key);
+
         Self {
             service_name: service_name.into(),
-            key: key.into(),
+            key,
+            partition_key,
         }
     }
 
     pub fn partition_key(&self) -> PartitionKey {
-        // Todo: Figure out whether to cache this value in ServiceId struct
-        HashPartitioner::compute_partition_key(&self.key)
+        self.partition_key
     }
 }
 
