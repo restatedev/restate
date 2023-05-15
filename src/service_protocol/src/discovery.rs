@@ -91,6 +91,9 @@ pub struct DiscoveredEndpointMetadata {
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum ServiceDiscoveryError {
     // User errors
+    #[error("bad uri '{0}'. The uri must contain either `http` or `https` scheme, a valid authority and can contain a path where the service endpoint is exposed.")]
+    #[code(unknown)]
+    BadUri(String),
     #[error("cannot find the dev.restate.ext.service_type extension in the descriptor of service '{0}'. You must annotate a service using the dev.restate.ext.service_type extension to specify whether your service is KEYED, UNKEYED or SINGLETON")]
     #[code(META0001)]
     MissingServiceTypeExtension(String),
@@ -159,7 +162,8 @@ impl ServiceDiscoveryError {
     pub fn is_user_error(&self) -> bool {
         matches!(
             self,
-            ServiceDiscoveryError::MissingServiceTypeExtension(_)
+            ServiceDiscoveryError::BadUri(_)
+                | ServiceDiscoveryError::MissingServiceTypeExtension(_)
                 | ServiceDiscoveryError::KeyedServiceWithoutMethods(_)
                 | ServiceDiscoveryError::MissingKeyField(_)
                 | ServiceDiscoveryError::MoreThanOneKeyField(_)
@@ -182,7 +186,7 @@ impl ServiceDiscovery {
                 .enable_http2()
                 .build(),
         );
-        let uri = append_discover(uri);
+        let uri = append_discover(uri)?;
 
         let (mut parts, body) = self
             .retry_policy
@@ -410,7 +414,7 @@ fn resolve_key_field(
     Ok(field_descriptor)
 }
 
-fn append_discover(uri: &Uri) -> Uri {
+fn append_discover(uri: &Uri) -> Result<Uri, ServiceDiscoveryError> {
     let p = format!(
         "{}{}",
         match uri.path().strip_suffix('/') {
@@ -420,18 +424,18 @@ fn append_discover(uri: &Uri) -> Uri {
         DISCOVER_PATH
     );
 
-    Uri::builder()
+    Ok(Uri::builder()
         .authority(
             uri.authority()
-                .expect("The service endpoint URI must have the authority")
+                .ok_or_else(|| ServiceDiscoveryError::BadUri(uri.to_string()))?
                 .clone(),
         )
         .scheme(
             uri.scheme()
-                .expect("The service endpoint URI must have the scheme")
+                .ok_or_else(|| ServiceDiscoveryError::BadUri(uri.to_string()))?
                 .clone(),
         )
         .path_and_query(p)
         .build()
-        .unwrap()
+        .unwrap())
 }
