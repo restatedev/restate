@@ -3,7 +3,7 @@ use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use http::request::Parts;
 use http::{Method, Request, Response, StatusCode};
 use hyper::Body;
-use prost_reflect::{DynamicMessage, MethodDescriptor};
+use prost_reflect::{DeserializeOptions, DynamicMessage, MethodDescriptor, SerializeOptions};
 use serde::Serialize;
 use tonic::{Code, Status};
 use tracing::warn;
@@ -13,6 +13,7 @@ use content_type::ConnectContentType;
 pub(super) async fn decode_request(
     request: Request<Body>,
     method_descriptor: &MethodDescriptor,
+    deserialize_options: DeserializeOptions,
 ) -> Result<(ConnectContentType, DynamicMessage), Response<Body>> {
     let (mut parts, body) = request.into_parts();
 
@@ -47,7 +48,12 @@ pub(super) async fn decode_request(
         };
 
         // Transcode the message
-        let msg = match content_type::read_message(content_type, method_descriptor.input(), body) {
+        let msg = match content_type::read_message(
+            content_type,
+            method_descriptor.input(),
+            deserialize_options,
+            body,
+        ) {
             Ok(msg) => msg,
             Err(e) => {
                 warn!(
@@ -72,6 +78,7 @@ pub(super) async fn decode_request(
 pub(super) fn encode_response<B: Buf>(
     response_body: B,
     method_descriptor: &MethodDescriptor,
+    serialize_options: SerializeOptions,
     request_content_type: ConnectContentType,
 ) -> Response<Body> {
     let dynamic_message = match DynamicMessage::decode(method_descriptor.output(), response_body) {
@@ -85,7 +92,8 @@ pub(super) fn encode_response<B: Buf>(
     };
 
     let (content_type_header, body) =
-        match content_type::write_message(request_content_type, dynamic_message) {
+        match content_type::write_message(request_content_type, serialize_options, dynamic_message)
+        {
             Ok(r) => r,
             Err(err) => {
                 warn!("The response payload cannot be serialized: {}", err);
@@ -157,12 +165,17 @@ pub(super) mod content_type {
     pub(super) fn read_message(
         content_type: ConnectContentType,
         msg_desc: MessageDescriptor,
+        deserialize_options: DeserializeOptions,
         payload_buf: impl Buf + Sized,
     ) -> Result<DynamicMessage, BoxError> {
         match content_type {
             ConnectContentType::Json => {
                 let mut deser = serde_json::Deserializer::from_reader(payload_buf.reader());
-                let dynamic_message = DynamicMessage::deserialize(msg_desc, &mut deser)?;
+                let dynamic_message = DynamicMessage::deserialize_with_options(
+                    msg_desc,
+                    &mut deser,
+                    &deserialize_options,
+                )?;
                 deser.end()?;
                 Ok(dynamic_message)
             }
@@ -172,13 +185,14 @@ pub(super) mod content_type {
 
     pub(super) fn write_message(
         content_type: ConnectContentType,
+        serialize_options: SerializeOptions,
         msg: DynamicMessage,
     ) -> Result<(HeaderValue, Body), BoxError> {
         match content_type {
             ConnectContentType::Json => {
                 let mut ser = serde_json::Serializer::new(BytesMut::new().writer());
 
-                msg.serialize(&mut ser)?;
+                msg.serialize_with_options(&mut ser, &serialize_options)?;
 
                 Ok((
                     APPLICATION_JSON_HEADER,
@@ -218,6 +232,7 @@ pub(super) mod content_type {
             read_message(
                 ConnectContentType::Json,
                 greeter_get_count_method_descriptor().input(),
+                DeserializeOptions::default(),
                 Bytes::from("{}"),
             )
             .unwrap()
@@ -229,6 +244,7 @@ pub(super) mod content_type {
         async fn write_google_protobuf_empty() {
             let (_, b) = write_message(
                 ConnectContentType::Json,
+                SerializeOptions::default(),
                 DynamicMessage::new(greeter_get_count_method_descriptor().input()),
             )
             .unwrap();
@@ -379,6 +395,7 @@ mod tests {
                 .body(json!({"person": "Francesco"}).to_string().into())
                 .unwrap(),
             &greeter_greet_method_descriptor(),
+            DeserializeOptions::default(),
         )
         .await
         .unwrap();
@@ -410,6 +427,7 @@ mod tests {
                 )
                 .unwrap(),
             &greeter_greet_method_descriptor(),
+            DeserializeOptions::default(),
         )
         .await
         .unwrap();
@@ -435,6 +453,7 @@ mod tests {
                 .body(json!({"person": "Francesco"}).to_string().into())
                 .unwrap(),
             &greeter_greet_method_descriptor(),
+            DeserializeOptions::default(),
         )
         .await
         .unwrap_err();
@@ -452,6 +471,7 @@ mod tests {
                 .body("person: Francesco".to_string().into())
                 .unwrap(),
             &greeter_greet_method_descriptor(),
+            DeserializeOptions::default(),
         )
         .await
         .unwrap_err();
@@ -471,6 +491,7 @@ mod tests {
         let mut res = encode_response(
             pb_response,
             &greeter_greet_method_descriptor(),
+            SerializeOptions::default(),
             ConnectContentType::Json,
         );
 
@@ -482,5 +503,41 @@ mod tests {
             json_body.get("greeting").unwrap().as_str().unwrap(),
             "Hello Francesco"
         );
+    }
+
+    #[test(tokio::test)]
+    async fn encode_empty_message() {
+        let pb_response = Bytes::from(pb::GreetingResponse::default().encode_to_vec());
+
+        let mut res = encode_response(
+            pb_response,
+            &greeter_greet_method_descriptor(),
+            SerializeOptions::default(),
+            ConnectContentType::Json,
+        );
+
+        let body = res.data().await.unwrap().unwrap();
+        let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(json_body.as_object().unwrap().is_empty())
+    }
+
+    #[test(tokio::test)]
+    async fn encode_empty_message_with_defaults_encoding() {
+        let pb_response = Bytes::from(pb::GreetingResponse::default().encode_to_vec());
+
+        let mut res = encode_response(
+            pb_response,
+            &greeter_greet_method_descriptor(),
+            SerializeOptions::new().skip_default_fields(false),
+            ConnectContentType::Json,
+        );
+
+        let body = res.data().await.unwrap().unwrap();
+        let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body.get("greeting").unwrap().as_str().unwrap(), "");
     }
 }

@@ -2,6 +2,7 @@ mod connect_adapter;
 mod tonic_adapter;
 mod tower_utils;
 
+use super::options::JsonOptions;
 use super::*;
 
 use std::future::Future;
@@ -54,6 +55,7 @@ impl Protocol {
         service_name: String,
         method_name: String,
         descriptor: MethodDescriptor,
+        json: JsonOptions,
         req: Request<hyper::Body>,
         handler_fn: H,
     ) -> Result<Response<BoxBody>, BoxError>
@@ -76,6 +78,7 @@ impl Protocol {
             Protocol::Connect => Ok(Self::handle_connect_request(
                 ingress_request_headers,
                 descriptor,
+                json,
                 req,
                 handler_fn,
             )
@@ -129,6 +132,7 @@ impl Protocol {
     async fn handle_connect_request<H, F>(
         ingress_request_headers: IngressRequestHeaders,
         descriptor: MethodDescriptor,
+        json: JsonOptions,
         req: Request<hyper::Body>,
         handler_fn: H,
     ) -> Response<BoxBody>
@@ -137,7 +141,9 @@ impl Protocol {
         F: Future<Output = IngressResult> + Send,
     {
         let (content_type, request_message) =
-            match connect_adapter::decode_request(req, &descriptor).await {
+            match connect_adapter::decode_request(req, &descriptor, json.to_deserialize_options())
+                .await
+            {
                 Ok(req) => req,
                 Err(error_res) => return error_res.map(to_box_body),
             };
@@ -148,7 +154,13 @@ impl Protocol {
             Err(error) => return connect_adapter::status::status_response(error).map(to_box_body),
         };
 
-        connect_adapter::encode_response(response, &descriptor, content_type).map(to_box_body)
+        connect_adapter::encode_response(
+            response,
+            &descriptor,
+            json.to_serialize_options(),
+            content_type,
+        )
+        .map(to_box_body)
     }
 }
 
@@ -206,6 +218,7 @@ mod tests {
                 Context::default(),
             ),
             greeter_greet_method_descriptor(),
+            JsonOptions::default(),
             request,
             greeter_service_fn,
         )

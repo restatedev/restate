@@ -1,3 +1,4 @@
+use super::options::JsonOptions;
 use super::protocol::{BoxBody, Protocol};
 use super::reflection::{ServerReflection, ServerReflectionServer};
 use super::*;
@@ -25,6 +26,7 @@ where
     ReflectionService: ServerReflection,
 {
     ingress_id: IngressId,
+    json: JsonOptions,
     invocation_factory: InvocationFactory,
     method_registry: MethodRegistry,
     reflection_server: GrpcWebService<ServerReflectionServer<ReflectionService>>,
@@ -42,6 +44,7 @@ where
     fn clone(&self) -> Self {
         Self {
             ingress_id: self.ingress_id,
+            json: self.json.clone(),
             invocation_factory: self.invocation_factory.clone(),
             method_registry: self.method_registry.clone(),
             reflection_server: self.reflection_server.clone(),
@@ -58,6 +61,7 @@ where
 {
     pub fn new(
         ingress_id: IngressId,
+        json: JsonOptions,
         invocation_factory: InvocationFactory,
         method_registry: MethodRegistry,
         reflection_service: ReflectionService,
@@ -66,6 +70,7 @@ where
     ) -> Self {
         Self {
             ingress_id,
+            json,
             invocation_factory,
             method_registry,
             reflection_server: GrpcWebLayer::new()
@@ -255,6 +260,7 @@ where
             service_name,
             method_name,
             descriptor,
+            self.json.clone(),
             req,
             ingress_request_handler,
         );

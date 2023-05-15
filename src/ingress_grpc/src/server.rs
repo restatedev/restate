@@ -1,3 +1,4 @@
+use super::options::JsonOptions;
 use super::*;
 
 use crate::reflection::ServerReflection;
@@ -38,6 +39,7 @@ pub struct HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionS
 
     // Parameters to build the layers
     ingress_id: IngressId,
+    json: JsonOptions,
     method_descriptor_registry: DescriptorRegistry,
     invocation_factory: InvocationFactory,
     reflection_service: ReflectionService,
@@ -54,9 +56,11 @@ where
     InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
     ReflectionService: ServerReflection,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         listening_addr: SocketAddr,
         concurrency_limit: usize,
+        json: JsonOptions,
         ingress_id: IngressId,
         method_descriptor_registry: DescriptorRegistry,
         invocation_factory: InvocationFactory,
@@ -68,6 +72,7 @@ where
         let ingress = Self {
             listening_addr,
             concurrency_limit,
+            json,
             ingress_id,
             method_descriptor_registry,
             invocation_factory,
@@ -84,6 +89,7 @@ where
             listening_addr,
             concurrency_limit,
             ingress_id,
+            json,
             method_descriptor_registry,
             invocation_factory,
             reflection_service,
@@ -105,6 +111,7 @@ where
                 .layer(CorsLayer::very_permissive())
                 .service(handler::Handler::new(
                     ingress_id,
+                    json,
                     invocation_factory,
                     method_descriptor_registry,
                     reflection_service,
@@ -287,6 +294,7 @@ mod tests {
         let (ingress, start_signal) = HyperServerIngress::new(
             "0.0.0.0:0".parse().unwrap(),
             Semaphore::MAX_PERMITS,
+            JsonOptions::default(),
             IngressId("0.0.0.0:0".parse().unwrap()),
             test_descriptor_registry(),
             MockServiceInvocationFactory,
