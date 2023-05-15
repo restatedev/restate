@@ -56,6 +56,8 @@ target := _arch + "-" + _os_target + if _os == "linux" { "-" + libc } else { "" 
 _resolved_target := if target != _default_target { target } else { "" }
 _target-option := if _resolved_target != "" { "--target " + _resolved_target } else { "" }
 
+_flamegraph_options := if os() == "macos" { "--root" } else { "" }
+
 clean:
     cargo clean
 
@@ -124,6 +126,9 @@ generate-config-schema:
 
 check-deny:
     cargo deny check
+
+flamegraph *flags:
+    cargo flamegraph {{ _flamegraph_options }} {{ flags }}
 
 _target-installed target:
     #!/usr/bin/env bash
