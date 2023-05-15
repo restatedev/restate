@@ -23,34 +23,31 @@ define_table_key!(
     )
 );
 
-fn write_status_key(partition_key: PartitionKey, service_id: &ServiceId) -> StatusKey {
+fn write_status_key(service_id: &ServiceId) -> StatusKey {
     StatusKey::default()
-        .partition_key(partition_key)
+        .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone())
 }
 
-fn status_key_from_bytes(mut bytes: Bytes) -> crate::Result<(PartitionKey, ServiceId)> {
+fn status_key_from_bytes(mut bytes: Bytes) -> crate::Result<ServiceId> {
     let key = StatusKey::deserialize_from(&mut bytes)?;
     let partition_key = key.partition_key_ok_or().cloned()?;
-    Ok((
+    Ok(ServiceId::with_partition_key(
         partition_key,
-        ServiceId::new(
-            key.service_name_ok_or().cloned()?,
-            key.service_key_ok_or().cloned()?,
-        ),
+        key.service_name_ok_or().cloned()?,
+        key.service_key_ok_or().cloned()?,
     ))
 }
 
 impl StatusTable for RocksDBTransaction {
     fn put_invocation_status(
         &mut self,
-        partition_key: PartitionKey,
         service_id: &ServiceId,
         status: InvocationStatus,
     ) -> PutFuture {
         let key = StatusKey::default()
-            .partition_key(partition_key)
+            .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
@@ -63,11 +60,10 @@ impl StatusTable for RocksDBTransaction {
 
     fn get_invocation_status(
         &mut self,
-        partition_key: PartitionKey,
         service_id: &ServiceId,
     ) -> GetFuture<Option<InvocationStatus>> {
         let key = StatusKey::default()
-            .partition_key(partition_key)
+            .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
@@ -84,12 +80,8 @@ impl StatusTable for RocksDBTransaction {
         })
     }
 
-    fn delete_invocation_status(
-        &mut self,
-        partition_key: PartitionKey,
-        service_id: &ServiceId,
-    ) -> PutFuture {
-        let key = write_status_key(partition_key, service_id);
+    fn delete_invocation_status(&mut self, service_id: &ServiceId) -> PutFuture {
+        let key = write_status_key(service_id);
 
         self.delete_key(&key);
 
@@ -121,14 +113,10 @@ fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<ServiceIn
         storage::v1::invocation_status::Invoked { invocation_id, .. },
     )) = status.status
     {
-        let (_, service_id) = status_key_from_bytes(Bytes::copy_from_slice(k))?;
+        let service_id = status_key_from_bytes(Bytes::copy_from_slice(k))?;
         let uuid = Uuid::from_slice(&invocation_id)
             .map_err(|error| StorageError::Generic(error.into()))?;
-        Ok(Some(ServiceInvocationId::new(
-            service_id.service_name,
-            service_id.key,
-            uuid,
-        )))
+        Ok(Some(ServiceInvocationId::with_service_id(service_id, uuid)))
     } else {
         Ok(None)
     }
@@ -142,11 +130,12 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let key = write_status_key(1337, &ServiceId::new("svc-1", "key-1")).serialize();
+        let key =
+            write_status_key(&ServiceId::with_partition_key(1337, "svc-1", "key-1")).serialize();
 
-        let (partition_key, service_id) = status_key_from_bytes(key.freeze()).unwrap();
+        let service_id = status_key_from_bytes(key.freeze()).unwrap();
 
-        assert_eq!(partition_key, 1337);
+        assert_eq!(service_id.partition_key(), 1337);
         assert_eq!(service_id.service_name, "svc-1");
         assert_eq!(service_id.key, "key-1");
     }

@@ -26,7 +26,6 @@ define_table_key!(
 impl InboxTable for RocksDBTransaction {
     fn put_invocation(
         &mut self,
-        partition_key: PartitionKey,
         service_id: &ServiceId,
         InboxEntry {
             inbox_sequence_number,
@@ -34,7 +33,7 @@ impl InboxTable for RocksDBTransaction {
         }: InboxEntry,
     ) -> PutFuture {
         let key = InboxKey::default()
-            .partition_key(partition_key)
+            .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone())
             .sequence_number(inbox_sequence_number);
@@ -46,14 +45,9 @@ impl InboxTable for RocksDBTransaction {
         ready()
     }
 
-    fn delete_invocation(
-        &mut self,
-        partition_key: PartitionKey,
-        service_id: &ServiceId,
-        sequence_number: u64,
-    ) -> PutFuture {
+    fn delete_invocation(&mut self, service_id: &ServiceId, sequence_number: u64) -> PutFuture {
         let key = InboxKey::default()
-            .partition_key(partition_key)
+            .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone())
             .sequence_number(sequence_number);
@@ -62,22 +56,14 @@ impl InboxTable for RocksDBTransaction {
         ready()
     }
 
-    fn peek_inbox(
-        &mut self,
-        partition_key: PartitionKey,
-        service_id: &ServiceId,
-    ) -> GetFuture<Option<InboxEntry>> {
-        let mut stream = self.inbox(partition_key, service_id);
+    fn peek_inbox(&mut self, service_id: &ServiceId) -> GetFuture<Option<InboxEntry>> {
+        let mut stream = self.inbox(service_id);
         async move { stream.next().await.transpose() }.boxed()
     }
 
-    fn inbox(
-        &mut self,
-        partition_key: PartitionKey,
-        service_id: &ServiceId,
-    ) -> GetStream<InboxEntry> {
+    fn inbox(&mut self, service_id: &ServiceId) -> GetStream<InboxEntry> {
         let key = InboxKey::default()
-            .partition_key(partition_key)
+            .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
@@ -104,15 +90,11 @@ mod tests {
     use crate::inbox_table::InboxKey;
     use crate::keys::TableKey;
     use bytes::{Bytes, BytesMut};
-    use restate_common::types::{PartitionKey, ServiceId};
+    use restate_common::types::ServiceId;
 
-    fn message_key(
-        partition_key: PartitionKey,
-        service_id: &ServiceId,
-        sequence_number: u64,
-    ) -> Bytes {
+    fn message_key(service_id: &ServiceId, sequence_number: u64) -> Bytes {
         let key = InboxKey {
-            partition_key: Some(partition_key),
+            partition_key: Some(service_id.partition_key()),
             service_name: Some(service_id.service_name.clone()),
             service_key: Some(service_id.key.clone()),
             sequence_number: Some(sequence_number),
@@ -122,9 +104,9 @@ mod tests {
         buf.freeze()
     }
 
-    fn inbox_key(partition_key: PartitionKey, service_id: &ServiceId) -> Bytes {
+    fn inbox_key(service_id: &ServiceId) -> Bytes {
         let key = InboxKey {
-            partition_key: Some(partition_key),
+            partition_key: Some(service_id.partition_key()),
             service_name: Some(service_id.service_name.clone()),
             service_key: Some(service_id.key.clone()),
             sequence_number: None,
@@ -135,12 +117,15 @@ mod tests {
 
     #[test]
     fn inbox_key_covers_all_messages_of_a_service() {
-        let prefix_key = inbox_key(1337, &ServiceId::new("svc-1", "key-a"));
+        let prefix_key = inbox_key(&ServiceId::with_partition_key(1337, "svc-1", "key-a"));
 
-        let low_key = message_key(1337, &ServiceId::new("svc-1", "key-a"), 0);
+        let low_key = message_key(&ServiceId::with_partition_key(1337, "svc-1", "key-a"), 0);
         assert!(low_key.starts_with(&prefix_key));
 
-        let high_key = message_key(1337, &ServiceId::new("svc-1", "key-a"), u64::MAX);
+        let high_key = message_key(
+            &ServiceId::with_partition_key(1337, "svc-1", "key-a"),
+            u64::MAX,
+        );
         assert!(high_key.starts_with(&prefix_key));
     }
 
@@ -150,22 +135,24 @@ mod tests {
         // across services
         //
         assert!(
-            message_key(1337, &ServiceId::new("svc-1", ""), 0)
-                < message_key(1337, &ServiceId::new("svc-2", ""), 0)
+            message_key(&ServiceId::with_partition_key(1337, "svc-1", ""), 0)
+                < message_key(&ServiceId::with_partition_key(1337, "svc-2", ""), 0)
         );
         //
         // same service across keys
         //
         assert!(
-            message_key(1337, &ServiceId::new("svc-1", "a"), 0)
-                < message_key(1337, &ServiceId::new("svc-1", "b"), 0)
+            message_key(&ServiceId::with_partition_key(1337, "svc-1", "a"), 0)
+                < message_key(&ServiceId::with_partition_key(1337, "svc-1", "b"), 0)
         );
         //
         // within the same service and key
         //
-        let mut previous_key = message_key(1337, &ServiceId::new("svc-1", "key-a"), 0);
+        let mut previous_key =
+            message_key(&ServiceId::with_partition_key(1337, "svc-1", "key-a"), 0);
         for i in 1..300 {
-            let current_key = message_key(1337, &ServiceId::new("svc-1", "key-a"), i);
+            let current_key =
+                message_key(&ServiceId::with_partition_key(1337, "svc-1", "key-a"), i);
             assert!(previous_key < current_key);
             previous_key = current_key;
         }

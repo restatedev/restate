@@ -38,18 +38,12 @@ where
         let mut transaction = self.0.transaction();
 
         async move {
-            let invocation_status = transaction
-                .get_invocation_status(sid.service_id.partition_key(), &sid.service_id)
-                .await?;
+            let invocation_status = transaction.get_invocation_status(&sid.service_id).await?;
 
             if let Some(InvocationStatus::Invoked(invoked_status)) = invocation_status {
                 let journal_metadata = invoked_status.journal_metadata;
                 let journal_stream = transaction
-                    .get_journal(
-                        sid.service_id.partition_key(),
-                        &sid.service_id,
-                        journal_metadata.length,
-                    )
+                    .get_journal(&sid.service_id, journal_metadata.length)
                     .map(|entry| {
                         entry
                             .map_err(JournalReaderError::Storage)

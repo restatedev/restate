@@ -19,13 +19,9 @@ define_table_key!(
 );
 
 #[inline]
-fn write_state_entry_key(
-    partition_key: PartitionKey,
-    service_id: &ServiceId,
-    state_key: impl AsRef<[u8]>,
-) -> StateKey {
+fn write_state_entry_key(service_id: &ServiceId, state_key: impl AsRef<[u8]>) -> StateKey {
     StateKey::default()
-        .partition_key(partition_key)
+        .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone())
         .state_key(state_key.as_ref().to_vec().into())
@@ -44,44 +40,37 @@ fn user_state_key_from_slice(key: &[u8]) -> Result<Bytes> {
 impl StateTable for RocksDBTransaction {
     fn put_user_state(
         &mut self,
-        partition_key: PartitionKey,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
         state_value: impl AsRef<[u8]>,
     ) -> PutFuture {
-        let key = write_state_entry_key(partition_key, service_id, state_key);
+        let key = write_state_entry_key(service_id, state_key);
         self.put_kv(key, state_value.as_ref());
         ready()
     }
 
     fn delete_user_state(
         &mut self,
-        partition_key: PartitionKey,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> PutFuture {
-        let key = write_state_entry_key(partition_key, service_id, state_key);
+        let key = write_state_entry_key(service_id, state_key);
         self.delete_key(&key);
         ready()
     }
 
     fn get_user_state(
         &mut self,
-        partition_key: PartitionKey,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> GetFuture<Option<Bytes>> {
-        let key = write_state_entry_key(partition_key, service_id, state_key);
+        let key = write_state_entry_key(service_id, state_key);
         self.get_blocking(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
     }
 
-    fn get_all_user_states(
-        &mut self,
-        partition_key: PartitionKey,
-        service_id: &ServiceId,
-    ) -> GetStream<(Bytes, Bytes)> {
+    fn get_all_user_states(&mut self, service_id: &ServiceId) -> GetStream<(Bytes, Bytes)> {
         let key = StateKey::default()
-            .partition_key(partition_key)
+            .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
@@ -102,44 +91,38 @@ mod tests {
     use crate::keys::TableKey;
     use crate::state_table::{user_state_key_from_slice, write_state_entry_key};
     use bytes::{Bytes, BytesMut};
-    use restate_common::types::{PartitionKey, ServiceId};
+    use restate_common::types::ServiceId;
 
     static EMPTY: Bytes = Bytes::from_static(b"");
 
-    fn state_entry_key(
-        partition_key: PartitionKey,
-        service_id: &ServiceId,
-        state_key: &Bytes,
-    ) -> BytesMut {
-        write_state_entry_key(partition_key, service_id, state_key).serialize()
+    fn state_entry_key(service_id: &ServiceId, state_key: &Bytes) -> BytesMut {
+        write_state_entry_key(service_id, state_key).serialize()
     }
 
     #[test]
     fn keys_sort_services() {
         assert!(
-            state_entry_key(1337, &ServiceId::new("svc-1", ""), &EMPTY)
-                < state_entry_key(1337, &ServiceId::new("svc-2", ""), &EMPTY)
+            state_entry_key(&ServiceId::with_partition_key(1337, "svc-1", ""), &EMPTY)
+                < state_entry_key(&ServiceId::with_partition_key(1337, "svc-2", ""), &EMPTY)
         );
     }
 
     #[test]
     fn keys_sort_same_services_but_different_keys() {
         assert!(
-            state_entry_key(1337, &ServiceId::new("svc-1", "a"), &EMPTY)
-                < state_entry_key(1337, &ServiceId::new("svc-1", "b"), &EMPTY)
+            state_entry_key(&ServiceId::with_partition_key(1337, "svc-1", "a"), &EMPTY)
+                < state_entry_key(&ServiceId::with_partition_key(1337, "svc-1", "b"), &EMPTY)
         );
     }
 
     #[test]
     fn keys_sort_same_services_and_keys_but_different_states() {
         let a = state_entry_key(
-            1337,
-            &ServiceId::new("svc-1", "key-a"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-a"),
             &Bytes::from_static(b"a"),
         );
         let b = state_entry_key(
-            1337,
-            &ServiceId::new("svc-1", "key-a"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-a"),
             &Bytes::from_static(b"b"),
         );
         assert!(a < b);
@@ -148,8 +131,7 @@ mod tests {
     #[test]
     fn user_state_key_can_be_extracted() {
         let a = state_entry_key(
-            1337,
-            &ServiceId::new("svc-1", "key-a"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-a"),
             &Bytes::from_static(b"seen_count"),
         );
 

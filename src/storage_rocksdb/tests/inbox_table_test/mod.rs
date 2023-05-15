@@ -7,24 +7,21 @@ use restate_storage_rocksdb::RocksDBStorage;
 async fn populate_data<T: InboxTable>(table: &mut T) {
     table
         .put_invocation(
-            1337,
-            &ServiceId::new("svc-1", "key-1"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
             InboxEntry::new(7, mock_service_invocation()),
         )
         .await;
 
     table
         .put_invocation(
-            1337,
-            &ServiceId::new("svc-1", "key-1"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
             InboxEntry::new(8, mock_service_invocation()),
         )
         .await;
 
     table
         .put_invocation(
-            1337,
-            &ServiceId::new("svc-1", "key-2"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
             InboxEntry::new(9, mock_service_invocation()),
         )
         .await;
@@ -32,7 +29,7 @@ async fn populate_data<T: InboxTable>(table: &mut T) {
 
 async fn find_the_next_message_in_an_inbox<T: InboxTable>(table: &mut T) {
     let result = table
-        .peek_inbox(1337, &ServiceId::new("svc-1", "key-1"))
+        .peek_inbox(&ServiceId::with_partition_key(1337, "svc-1", "key-1"))
         .await;
 
     assert_eq!(
@@ -42,7 +39,7 @@ async fn find_the_next_message_in_an_inbox<T: InboxTable>(table: &mut T) {
 }
 
 async fn get_svc_inbox<T: InboxTable>(table: &mut T) {
-    let stream = table.inbox(1337, &ServiceId::new("svc-1", "key-1"));
+    let stream = table.inbox(&ServiceId::with_partition_key(1337, "svc-1", "key-1"));
 
     let vec = vec![
         InboxEntry::new(7, mock_service_invocation()),
@@ -54,13 +51,13 @@ async fn get_svc_inbox<T: InboxTable>(table: &mut T) {
 
 async fn delete_entry<T: InboxTable>(table: &mut T) {
     table
-        .delete_invocation(1337, &ServiceId::new("svc-1", "key-1"), 7)
+        .delete_invocation(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), 7)
         .await;
 }
 
 async fn peek_after_delete<T: InboxTable>(table: &mut T) {
     let result = table
-        .peek_inbox(1337, &ServiceId::new("svc-1", "key-1"))
+        .peek_inbox(&ServiceId::with_partition_key(1337, "svc-1", "key-1"))
         .await;
 
     assert_eq!(

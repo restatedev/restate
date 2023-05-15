@@ -14,29 +14,25 @@ const MOCK_JOURNAL_ENTRY: JournalEntry = JournalEntry::Entry(EnrichedRawEntry::n
 
 async fn populate_data<T: JournalTable>(txn: &mut T) {
     txn.put_journal_entry(
-        1337,
-        &ServiceId::new("svc-1", "key-1"),
+        &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
         0,
         MOCK_JOURNAL_ENTRY,
     )
     .await;
     txn.put_journal_entry(
-        1337,
-        &ServiceId::new("svc-1", "key-1"),
+        &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
         1,
         MOCK_JOURNAL_ENTRY,
     )
     .await;
     txn.put_journal_entry(
-        1337,
-        &ServiceId::new("svc-1", "key-1"),
+        &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
         2,
         MOCK_JOURNAL_ENTRY,
     )
     .await;
     txn.put_journal_entry(
-        1337,
-        &ServiceId::new("svc-1", "key-1"),
+        &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
         3,
         MOCK_JOURNAL_ENTRY,
     )
@@ -44,7 +40,7 @@ async fn populate_data<T: JournalTable>(txn: &mut T) {
 }
 
 async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
-    let mut journal = txn.get_journal(1337, &ServiceId::new("svc-1", "key-1"), 4);
+    let mut journal = txn.get_journal(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), 4);
     let mut count = 0;
     while (journal.next().await).is_some() {
         count += 1;
@@ -54,7 +50,7 @@ async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
 }
 
 async fn get_subset_of_a_journal<T: JournalTable>(txn: &mut T) {
-    let mut journal = txn.get_journal(1337, &ServiceId::new("svc-1", "key-1"), 2);
+    let mut journal = txn.get_journal(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), 2);
     let mut count = 0;
     while (journal.next().await).is_some() {
         count += 1;
@@ -65,14 +61,17 @@ async fn get_subset_of_a_journal<T: JournalTable>(txn: &mut T) {
 
 async fn point_lookups<T: JournalTable>(txn: &mut T) {
     let result = txn
-        .get_journal_entry(1337, &ServiceId::new("svc-1", "key-1"), 2)
+        .get_journal_entry(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), 2)
         .await
         .expect("should not fail");
 
     assert!(result.is_some());
 
     let result = txn
-        .get_journal_entry(1337, &ServiceId::new("svc-1", "key-1"), 10000)
+        .get_journal_entry(
+            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
+            10000,
+        )
         .await
         .expect("should not fail");
 
@@ -80,14 +79,14 @@ async fn point_lookups<T: JournalTable>(txn: &mut T) {
 }
 
 async fn delete_journal<T: JournalTable>(txn: &mut T) {
-    txn.delete_journal(1337, &ServiceId::new("svc-1", "key-1"), 4)
+    txn.delete_journal(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), 4)
         .await;
 }
 
 async fn verify_journal_deleted<T: JournalTable>(txn: &mut T) {
     for i in 0..4 {
         let result = txn
-            .get_journal_entry(1337, &ServiceId::new("svc-1", "key-1"), i)
+            .get_journal_entry(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), i)
             .await
             .expect("should not fail");
 

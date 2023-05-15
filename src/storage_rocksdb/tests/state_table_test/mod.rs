@@ -8,8 +8,7 @@ use restate_storage_rocksdb::RocksDBStorage;
 async fn populate_data<T: StateTable>(table: &mut T) {
     table
         .put_user_state(
-            1337,
-            &ServiceId::new("svc-1", "key-1"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
             &Bytes::from_static(b"k1"),
             &Bytes::from_static(b"v1"),
         )
@@ -17,8 +16,7 @@ async fn populate_data<T: StateTable>(table: &mut T) {
 
     table
         .put_user_state(
-            1337,
-            &ServiceId::new("svc-1", "key-1"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
             &Bytes::from_static(b"k2"),
             &Bytes::from_static(b"v2"),
         )
@@ -26,8 +24,7 @@ async fn populate_data<T: StateTable>(table: &mut T) {
 
     table
         .put_user_state(
-            1337,
-            &ServiceId::new("svc-1", "key-2"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
             &Bytes::from_static(b"k2"),
             &Bytes::from_static(b"v2"),
         )
@@ -37,8 +34,7 @@ async fn populate_data<T: StateTable>(table: &mut T) {
 async fn point_lookup<T: StateTable>(table: &mut T) {
     let result = table
         .get_user_state(
-            1337,
-            &ServiceId::new("svc-1", "key-1"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
             &Bytes::from_static(b"k1"),
         )
         .await
@@ -48,7 +44,7 @@ async fn point_lookup<T: StateTable>(table: &mut T) {
 }
 
 async fn prefix_scans<T: StateTable>(table: &mut T) {
-    let result = table.get_all_user_states(1337, &ServiceId::new("svc-1", "key-1"));
+    let result = table.get_all_user_states(&ServiceId::with_partition_key(1337, "svc-1", "key-1"));
 
     let expected = vec![
         (Bytes::from_static(b"k1"), Bytes::from_static(b"v1")),
@@ -61,8 +57,7 @@ async fn prefix_scans<T: StateTable>(table: &mut T) {
 async fn deletes<T: StateTable>(table: &mut T) {
     table
         .delete_user_state(
-            1337,
-            &ServiceId::new("svc-1", "key-1"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
             &Bytes::from_static(b"k2"),
         )
         .await;
@@ -71,8 +66,7 @@ async fn deletes<T: StateTable>(table: &mut T) {
 async fn verify_delete<T: StateTable>(table: &mut T) {
     let result = table
         .get_user_state(
-            1337,
-            &ServiceId::new("svc-1", "key-1"),
+            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
             &Bytes::from_static(b"k2"),
         )
         .await
@@ -82,7 +76,7 @@ async fn verify_delete<T: StateTable>(table: &mut T) {
 }
 
 async fn verify_prefix_scan_after_delete<T: StateTable>(table: &mut T) {
-    let result = table.get_all_user_states(1337, &ServiceId::new("svc-1", "key-1"));
+    let result = table.get_all_user_states(&ServiceId::with_partition_key(1337, "svc-1", "key-1"));
 
     let expected = vec![(Bytes::from_static(b"k1"), Bytes::from_static(b"v1"))];
 

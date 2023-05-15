@@ -170,7 +170,7 @@ where
         async {
             Ok(self
                 .inner
-                .get_invocation_status(service_id.partition_key(), service_id)
+                .get_invocation_status(service_id)
                 .await?
                 .unwrap_or_default())
         }
@@ -183,7 +183,7 @@ where
     ) -> BoxFuture<Result<Option<InboxEntry>, StateReaderError>> {
         async {
             self.inner
-                .peek_inbox(service_id.partition_key(), service_id)
+                .peek_inbox(service_id)
                 .await
                 .map_err(StateReaderError::Storage)
         }
@@ -201,7 +201,7 @@ where
         async move {
             Ok(self
                 .inner
-                .get_journal_entry(service_id.partition_key(), service_id, entry_index)
+                .get_journal_entry(service_id, entry_index)
                 .await?
                 .map(|journal_entry| match journal_entry {
                     JournalEntry::Entry(EnrichedRawEntry { header, .. }) => {
@@ -225,9 +225,7 @@ where
         status: InvocationStatus,
     ) -> BoxFuture<Result<(), StateStorageError>> {
         async {
-            self.inner
-                .put_invocation_status(service_id.partition_key(), service_id, status)
-                .await;
+            self.inner.put_invocation_status(service_id, status).await;
             Ok(())
         }
         .boxed()
@@ -239,9 +237,7 @@ where
         journal_length: EntryIndex,
     ) -> BoxFuture<Result<(), StateStorageError>> {
         async move {
-            self.inner
-                .delete_journal(service_id.partition_key(), service_id, journal_length)
-                .await;
+            self.inner.delete_journal(service_id, journal_length).await;
             Ok(())
         }
         .boxed()
@@ -255,12 +251,7 @@ where
     ) -> BoxFuture<Result<(), StateStorageError>> {
         async move {
             self.inner
-                .put_journal_entry(
-                    service_id.partition_key(),
-                    service_id,
-                    entry_index,
-                    JournalEntry::Entry(journal_entry),
-                )
+                .put_journal_entry(service_id, entry_index, JournalEntry::Entry(journal_entry))
                 .await;
 
             Ok(())
@@ -277,7 +268,6 @@ where
         async move {
             self.inner
                 .put_journal_entry(
-                    service_id.partition_key(),
                     service_id,
                     entry_index,
                     JournalEntry::Completion(completion_result),
@@ -296,7 +286,7 @@ where
         async move {
             let result = self
                 .inner
-                .get_journal_entry(service_id.partition_key(), service_id, entry_index)
+                .get_journal_entry(service_id, entry_index)
                 .await?;
 
             Ok(result.and_then(|journal_entry| match journal_entry {
@@ -315,7 +305,7 @@ where
         async move {
             let result = self
                 .inner
-                .get_journal_entry(service_id.partition_key(), service_id, entry_index)
+                .get_journal_entry(service_id, entry_index)
                 .await?;
 
             Ok(result.and_then(|journal_entry| match journal_entry {
@@ -336,11 +326,7 @@ where
             let service_id = service_invocation.id.service_id.clone();
 
             self.inner
-                .put_invocation(
-                    service_invocation.id.service_id.partition_key(),
-                    &service_id,
-                    InboxEntry::new(seq_number, service_invocation),
-                )
+                .put_invocation(&service_id, InboxEntry::new(seq_number, service_invocation))
                 .await;
 
             Ok(())
@@ -401,11 +387,7 @@ where
     ) -> BoxFuture<Result<(), StateStorageError>> {
         async move {
             self.inner
-                .delete_invocation(
-                    service_id.partition_key(),
-                    service_id,
-                    inbox_sequence_number,
-                )
+                .delete_invocation(service_id, inbox_sequence_number)
                 .await;
             Ok(())
         }
@@ -419,9 +401,7 @@ where
         value: Bytes,
     ) -> BoxFuture<Result<(), StateStorageError>> {
         async move {
-            self.inner
-                .put_user_state(service_id.partition_key(), service_id, &key, &value)
-                .await;
+            self.inner.put_user_state(service_id, &key, &value).await;
 
             Ok(())
         }
@@ -433,13 +413,7 @@ where
         service_id: &'a ServiceId,
         key: &'a Bytes,
     ) -> BoxFuture<Result<Option<Bytes>, StateStorageError>> {
-        async move {
-            Ok(self
-                .inner
-                .get_user_state(service_id.partition_key(), service_id, key)
-                .await?)
-        }
-        .boxed()
+        async move { Ok(self.inner.get_user_state(service_id, key).await?) }.boxed()
     }
 
     fn clear_state<'a>(
@@ -448,9 +422,7 @@ where
         key: &'a Bytes,
     ) -> BoxFuture<Result<(), StateStorageError>> {
         async move {
-            self.inner
-                .delete_user_state(service_id.partition_key(), service_id, key)
-                .await;
+            self.inner.delete_user_state(service_id, key).await;
             Ok(())
         }
         .boxed()

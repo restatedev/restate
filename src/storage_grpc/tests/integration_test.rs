@@ -41,8 +41,7 @@ async fn test_state() {
     for i in 0..101 {
         let svc_key = format!("key-{}", i / 10);
         txn.put_user_state(
-            1337,
-            &ServiceId::new("svc-1", svc_key),
+            &ServiceId::with_partition_key(1337, "svc-1", svc_key),
             &Bytes::from(format!("{i}")),
             &Bytes::from(format!("{i}")),
         )

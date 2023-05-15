@@ -59,8 +59,12 @@ impl ServiceInvocationId {
         key: impl Into<Bytes>,
         invocation_id: impl Into<InvocationId>,
     ) -> Self {
+        Self::with_service_id(ServiceId::new(service_name, key), invocation_id)
+    }
+
+    pub fn with_service_id(service_id: ServiceId, invocation_id: impl Into<InvocationId>) -> Self {
         Self {
-            service_id: ServiceId::new(service_name, key),
+            service_id,
             invocation_id: invocation_id.into(),
         }
     }
@@ -85,10 +89,19 @@ impl ServiceId {
     pub fn new(service_name: impl Into<ByteString>, key: impl Into<Bytes>) -> Self {
         let key = key.into();
         let partition_key = HashPartitioner::compute_partition_key(&key);
+        Self::with_partition_key(partition_key, service_name, key)
+    }
 
+    /// # Important
+    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`].
+    pub fn with_partition_key(
+        partition_key: PartitionKey,
+        service_name: impl Into<ByteString>,
+        key: impl Into<Bytes>,
+    ) -> Self {
         Self {
             service_name: service_name.into(),
-            key,
+            key: key.into(),
             partition_key,
         }
     }

@@ -22,13 +22,9 @@ define_table_key!(
     )
 );
 
-fn write_journal_entry_key(
-    partition_key: PartitionKey,
-    service_id: &ServiceId,
-    journal_index: u32,
-) -> JournalKey {
+fn write_journal_entry_key(service_id: &ServiceId, journal_index: u32) -> JournalKey {
     JournalKey::default()
-        .partition_key(partition_key)
+        .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone())
         .journal_index(journal_index)
@@ -37,13 +33,12 @@ fn write_journal_entry_key(
 impl JournalTable for RocksDBTransaction {
     fn put_journal_entry(
         &mut self,
-        partition_key: PartitionKey,
         service_id: &ServiceId,
         journal_index: u32,
         journal_entry: JournalEntry,
     ) -> PutFuture {
         let key = JournalKey::default()
-            .partition_key(partition_key)
+            .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone())
             .journal_index(journal_index);
@@ -57,12 +52,11 @@ impl JournalTable for RocksDBTransaction {
 
     fn get_journal_entry(
         &mut self,
-        partition_key: PartitionKey,
         service_id: &ServiceId,
         journal_index: u32,
     ) -> GetFuture<Option<JournalEntry>> {
         let key = JournalKey::default()
-            .partition_key(partition_key)
+            .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone())
             .journal_index(journal_index);
@@ -82,12 +76,11 @@ impl JournalTable for RocksDBTransaction {
 
     fn get_journal(
         &mut self,
-        partition_key: PartitionKey,
         service_id: &ServiceId,
         journal_length: EntryIndex,
     ) -> GetStream<'static, JournalEntry> {
         let key = JournalKey::default()
-            .partition_key(partition_key)
+            .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
@@ -102,13 +95,8 @@ impl JournalTable for RocksDBTransaction {
         .boxed()
     }
 
-    fn delete_journal(
-        &mut self,
-        partition_key: PartitionKey,
-        service_id: &ServiceId,
-        journal_length: EntryIndex,
-    ) -> PutFuture {
-        let mut key = write_journal_entry_key(partition_key, service_id, 0);
+    fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) -> PutFuture {
+        let mut key = write_journal_entry_key(service_id, 0);
         let mut k = &mut key;
         for journal_index in 0..journal_length {
             k.journal_index = Some(journal_index);
@@ -123,14 +111,10 @@ mod tests {
     use crate::journal_table::write_journal_entry_key;
     use crate::keys::TableKey;
     use bytes::Bytes;
-    use restate_common::types::{PartitionKey, ServiceId};
+    use restate_common::types::ServiceId;
 
-    fn journal_entry_key(
-        partition_key: PartitionKey,
-        service_id: &ServiceId,
-        journal_index: u32,
-    ) -> Bytes {
-        write_journal_entry_key(partition_key, service_id, journal_index)
+    fn journal_entry_key(service_id: &ServiceId, journal_index: u32) -> Bytes {
+        write_journal_entry_key(service_id, journal_index)
             .serialize()
             .freeze()
     }
@@ -141,22 +125,24 @@ mod tests {
         // across services
         //
         assert!(
-            journal_entry_key(1337, &ServiceId::new("svc-1", ""), 0)
-                < journal_entry_key(1337, &ServiceId::new("svc-2", ""), 0)
+            journal_entry_key(&ServiceId::with_partition_key(1337, "svc-1", ""), 0)
+                < journal_entry_key(&ServiceId::with_partition_key(1337, "svc-2", ""), 0)
         );
         //
         // same service across keys
         //
         assert!(
-            journal_entry_key(1337, &ServiceId::new("svc-1", "a"), 0)
-                < journal_entry_key(1337, &ServiceId::new("svc-1", "b"), 0)
+            journal_entry_key(&ServiceId::with_partition_key(1337, "svc-1", "a"), 0)
+                < journal_entry_key(&ServiceId::with_partition_key(1337, "svc-1", "b"), 0)
         );
         //
         // within the same service and key
         //
-        let mut previous_key = journal_entry_key(1337, &ServiceId::new("svc-1", "key-a"), 0);
+        let mut previous_key =
+            journal_entry_key(&ServiceId::with_partition_key(1337, "svc-1", "key-a"), 0);
         for i in 1..300 {
-            let current_key = journal_entry_key(1337, &ServiceId::new("svc-1", "key-a"), i);
+            let current_key =
+                journal_entry_key(&ServiceId::with_partition_key(1337, "svc-1", "key-a"), i);
             assert!(previous_key < current_key);
             previous_key = current_key;
         }
