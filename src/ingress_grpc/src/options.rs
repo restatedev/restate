@@ -97,7 +97,7 @@ impl JsonOptions {
     }
 
     fn default_serialize_skip_default_fields() -> bool {
-        true
+        false
     }
 
     pub(crate) fn to_serialize_options(&self) -> SerializeOptions {
