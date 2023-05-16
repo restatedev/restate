@@ -1,7 +1,7 @@
 use crate::{assert_stream_eq, uuid_str};
 use restate_common::types::{
-    InvocationId, InvocationStatus, InvokedStatus, JournalMetadata, ServiceId, ServiceInvocationId,
-    ServiceInvocationSpanContext, SuspendedStatus,
+    InvocationId, InvocationMetadata, InvocationStatus, JournalMetadata, MillisSinceEpoch,
+    ServiceId, ServiceInvocationId, ServiceInvocationSpanContext,
 };
 use restate_storage_api::status_table::StatusTable;
 use restate_storage_api::{Storage, Transaction};
@@ -9,20 +9,26 @@ use restate_storage_rocksdb::RocksDBStorage;
 use std::collections::HashSet;
 
 fn invoked_status(invocation_id: InvocationId) -> InvocationStatus {
-    InvocationStatus::Invoked(InvokedStatus::new(
+    InvocationStatus::Invoked(InvocationMetadata::new(
         invocation_id,
         JournalMetadata::new("service", ServiceInvocationSpanContext::empty(), 0),
         None,
+        MillisSinceEpoch::new(0),
+        MillisSinceEpoch::new(0),
     ))
 }
 
 fn suspended_status(invocation_id: InvocationId) -> InvocationStatus {
-    InvocationStatus::Suspended(SuspendedStatus::new(
-        invocation_id,
-        JournalMetadata::new("service", ServiceInvocationSpanContext::empty(), 0),
-        None,
-        HashSet::default(),
-    ))
+    InvocationStatus::Suspended {
+        metadata: InvocationMetadata::new(
+            invocation_id,
+            JournalMetadata::new("service", ServiceInvocationSpanContext::empty(), 0),
+            None,
+            MillisSinceEpoch::new(0),
+            MillisSinceEpoch::new(0),
+        ),
+        waiting_for_completed_entries: HashSet::default(),
+    }
 }
 
 async fn populate_data<T: StatusTable>(txn: &mut T) {

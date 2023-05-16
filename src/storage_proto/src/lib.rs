@@ -39,7 +39,8 @@ pub mod storage {
             use bytestring::ByteString;
             use opentelemetry_api::trace::TraceState;
             use restate_common::errors::ConversionError;
-            use std::collections::VecDeque;
+            use restate_common::types::MillisSinceEpoch;
+            use std::collections::{HashSet, VecDeque};
             use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
             use std::str::FromStr;
 
@@ -53,13 +54,15 @@ pub mod storage {
                     {
                         invocation_status::Status::Invoked(invoked) => {
                             let invoked_status =
-                                restate_common::types::InvokedStatus::try_from(invoked)?;
+                                restate_common::types::InvocationMetadata::try_from(invoked)?;
                             restate_common::types::InvocationStatus::Invoked(invoked_status)
                         }
                         invocation_status::Status::Suspended(suspended) => {
-                            let suspended_status =
-                                restate_common::types::SuspendedStatus::try_from(suspended)?;
-                            restate_common::types::InvocationStatus::Suspended(suspended_status)
+                            let (metadata, waiting_for_completed_entries) = suspended.try_into()?;
+                            restate_common::types::InvocationStatus::Suspended {
+                                metadata,
+                                waiting_for_completed_entries,
+                            }
                         }
                         invocation_status::Status::Free(_) => {
                             restate_common::types::InvocationStatus::Free
@@ -76,9 +79,13 @@ pub mod storage {
                         restate_common::types::InvocationStatus::Invoked(invoked_status) => {
                             invocation_status::Status::Invoked(Invoked::from(invoked_status))
                         }
-                        restate_common::types::InvocationStatus::Suspended(suspended_status) => {
-                            invocation_status::Status::Suspended(Suspended::from(suspended_status))
-                        }
+                        restate_common::types::InvocationStatus::Suspended {
+                            metadata,
+                            waiting_for_completed_entries,
+                        } => invocation_status::Status::Suspended(Suspended::from((
+                            metadata,
+                            waiting_for_completed_entries,
+                        ))),
                         restate_common::types::InvocationStatus::Free => {
                             invocation_status::Status::Free(Free {})
                         }
@@ -90,7 +97,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<Invoked> for restate_common::types::InvokedStatus {
+            impl TryFrom<Invoked> for restate_common::types::InvocationMetadata {
                 type Error = ConversionError;
 
                 fn try_from(value: Invoked) -> Result<Self, Self::Error> {
@@ -107,31 +114,42 @@ pub mod storage {
                                 .ok_or(ConversionError::missing_field("response_sink"))?,
                         )?;
 
-                    Ok(restate_common::types::InvokedStatus::new(
+                    Ok(restate_common::types::InvocationMetadata::new(
                         invocation_id,
                         journal_metadata,
                         response_sink,
+                        MillisSinceEpoch::new(value.creation_time),
+                        MillisSinceEpoch::new(value.modification_time),
                     ))
                 }
             }
 
-            impl From<restate_common::types::InvokedStatus> for Invoked {
-                fn from(value: restate_common::types::InvokedStatus) -> Self {
-                    let restate_common::types::InvokedStatus {
+            impl From<restate_common::types::InvocationMetadata> for Invoked {
+                fn from(value: restate_common::types::InvocationMetadata) -> Self {
+                    let restate_common::types::InvocationMetadata {
                         invocation_id,
                         response_sink,
                         journal_metadata,
+                        creation_time,
+                        modification_time,
                     } = value;
 
                     Invoked {
                         response_sink: Some(ServiceInvocationResponseSink::from(response_sink)),
                         invocation_id: invocation_id_to_bytes(&invocation_id),
                         journal_meta: Some(JournalMeta::from(journal_metadata)),
+                        creation_time: creation_time.as_u64(),
+                        modification_time: modification_time.as_u64(),
                     }
                 }
             }
 
-            impl TryFrom<Suspended> for restate_common::types::SuspendedStatus {
+            impl TryFrom<Suspended>
+                for (
+                    restate_common::types::InvocationMetadata,
+                    HashSet<restate_common::types::EntryIndex>,
+                )
+            {
                 type Error = ConversionError;
 
                 fn try_from(value: Suspended) -> Result<Self, Self::Error> {
@@ -151,27 +169,43 @@ pub mod storage {
                     let waiting_for_completed_entries =
                         value.waiting_for_completed_entries.into_iter().collect();
 
-                    Ok(restate_common::types::SuspendedStatus::new(
-                        invocation_id,
-                        journal_metadata,
-                        response_sink,
+                    Ok((
+                        restate_common::types::InvocationMetadata::new(
+                            invocation_id,
+                            journal_metadata,
+                            response_sink,
+                            MillisSinceEpoch::new(value.creation_time),
+                            MillisSinceEpoch::new(value.modification_time),
+                        ),
                         waiting_for_completed_entries,
                     ))
                 }
             }
 
-            impl From<restate_common::types::SuspendedStatus> for Suspended {
-                fn from(value: restate_common::types::SuspendedStatus) -> Self {
-                    let invocation_id = invocation_id_to_bytes(&value.invocation_id);
-                    let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
-                    let journal_meta = JournalMeta::from(value.journal_metadata);
+            impl
+                From<(
+                    restate_common::types::InvocationMetadata,
+                    HashSet<restate_common::types::EntryIndex>,
+                )> for Suspended
+            {
+                fn from(
+                    (metadata, waiting_for_completed_entries): (
+                        restate_common::types::InvocationMetadata,
+                        HashSet<restate_common::types::EntryIndex>,
+                    ),
+                ) -> Self {
+                    let invocation_id = invocation_id_to_bytes(&metadata.invocation_id);
+                    let response_sink = ServiceInvocationResponseSink::from(metadata.response_sink);
+                    let journal_meta = JournalMeta::from(metadata.journal_metadata);
                     let waiting_for_completed_entries =
-                        value.waiting_for_completed_entries.into_iter().collect();
+                        waiting_for_completed_entries.into_iter().collect();
 
                     Suspended {
                         invocation_id,
                         response_sink: Some(response_sink),
                         journal_meta: Some(journal_meta),
+                        creation_time: metadata.creation_time.as_u64(),
+                        modification_time: metadata.modification_time.as_u64(),
                         waiting_for_completed_entries,
                     }
                 }
