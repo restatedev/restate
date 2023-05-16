@@ -161,6 +161,10 @@ enum OtherInputCommand {
         entry_index: EntryIndex,
     },
 
+    /// Abort specific invocation id
+    #[allow(dead_code)]
+    Abort(ServiceInvocationId),
+
     /// Command used to clean up internal state when a partition leader is going away
     AbortAllPartition,
 
@@ -445,9 +449,17 @@ where
                         Input { partition, inner: InputCommand::Other(OtherInputCommand::RegisterPartition(sender)) } => {
                             state_machine_coordinator.register_partition(partition, sender);
                         },
+                        Input { partition, inner: InputCommand::Other(OtherInputCommand::Abort(service_invocation_id)) } => {
+                            if let Some(psm) = state_machine_coordinator.resolve_partition(partition) {
+                                psm.abort(service_invocation_id)
+                            } else {
+                                // We can skip it as it means the invocation was aborted or not yet started
+                                continue
+                            };
+                        }
                         Input { partition, inner: InputCommand::Other(OtherInputCommand::AbortAllPartition) } => {
                             if let Some(mut partition_state_machine) = state_machine_coordinator.remove_partition(partition) {
-                                partition_state_machine.abort();
+                                partition_state_machine.abort_all();
                             } else {
                                 // This is safe to ignore
                             }
@@ -692,7 +704,7 @@ mod state_machine_coordinator {
 
         pub(super) fn abort_all(&mut self) {
             for partition in self.partitions.values_mut() {
-                partition.abort();
+                partition.abort_all();
             }
         }
     }
@@ -755,7 +767,7 @@ mod state_machine_coordinator {
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
-        pub(super) fn abort(&mut self) {
+        pub(super) fn abort_all(&mut self) {
             for (service_invocation_id, sm) in self.invocation_state_machines.iter_mut() {
                 trace!(
                     rpc.service = %service_invocation_id.service_id.service_name,
@@ -765,6 +777,25 @@ mod state_machine_coordinator {
                 );
                 sm.abort()
             }
+        }
+
+        #[instrument(
+            level = "trace",
+            skip_all,
+            fields(
+                restate.invoker.partition_leader_epoch = ?self.partition,
+                restate.invocation.key = ?service_invocation_id.service_id.key,
+                restate.invocation.id = %service_invocation_id.invocation_id
+            )
+        )]
+        pub(super) fn abort(&mut self, service_invocation_id: ServiceInvocationId) {
+            if let Some(mut sm) = self
+                .invocation_state_machines
+                .remove(&service_invocation_id)
+            {
+                sm.abort()
+            }
+            // If no state machine, it might have been already aborted.
         }
 
         #[instrument(
