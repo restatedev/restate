@@ -96,6 +96,10 @@ Next you can install Knative via:
 KNATIVE_VERSION=1.8.0 curl -sL https://raw.githubusercontent.com/csantanapr/knative-minikube/master/install.sh | bash
 ```
 
+## Runtime documentation
+
+This section explains how to generate the configuration documentation and REST api documentation.
+
 ### Build the configuration documentation
 
 Requirements:
