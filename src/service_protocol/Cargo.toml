@@ -10,8 +10,8 @@ publish = false
 [features]
 default = []
 protocol = []
-message = ["protocol", "dep:bytes-utils", "dep:codederror", "dep:restate_errors", "dep:size", "dep:tracing"]
-codec = ["protocol", "dep:thiserror", "dep:restate_journal", "dep:paste"]
+message = ["protocol", "dep:restate_common", "dep:bytes-utils", "dep:codederror", "dep:restate_errors", "dep:size", "dep:tracing"]
+codec = ["protocol", "dep:restate_common", "dep:thiserror", "dep:restate_journal", "dep:paste"]
 discovery = ["dep:thiserror", "dep:codederror", "dep:restate_errors", "dep:restate_service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:restate_common", "dep:restate_service_metadata"]
 
 [dependencies]
