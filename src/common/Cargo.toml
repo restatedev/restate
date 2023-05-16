@@ -15,6 +15,7 @@ serde = ["dep:serde", "dep:serde_with"]
 options_schema = ["serde", "dep:schemars"]
 
 [dependencies]
+base64 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 schemars = { workspace = true, optional = true }
