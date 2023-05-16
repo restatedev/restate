@@ -257,6 +257,7 @@ pub struct Options {
     jaeger_file: Option<JaegerFileOptions>,
 
     /// # Logging options
+    #[cfg_attr(feature = "options_schema", schemars(default))]
     log: LogOptions,
 }
 
