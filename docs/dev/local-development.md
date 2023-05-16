@@ -137,3 +137,15 @@ To generate the HTML documentation:
 ```shell
 $ npx @redocly/cli build-docs openapi.json
 ```
+
+## Performance analysis
+
+For performance analysis you can generate a flamegraph of the runtime binary via:
+
+```shell
+$ just flamegraph --bin restate
+```
+
+This command will produce a `flamegraph.svg` in the current working directory when the process is stopped.
+
+See the [flamegraph documentation](https://github.com/flamegraph-rs/flamegraph#usage) for more details.
