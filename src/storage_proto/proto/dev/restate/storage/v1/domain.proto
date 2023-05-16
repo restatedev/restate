@@ -30,13 +30,17 @@ message InvocationStatus {
         bytes invocation_id = 1;
         JournalMeta journal_meta = 2;
         ServiceInvocationResponseSink response_sink = 3;
+        uint64 creation_time = 4;
+        uint64 modification_time = 5;
     }
 
     message Suspended {
         bytes invocation_id = 1;
         JournalMeta journal_meta = 2;
         ServiceInvocationResponseSink response_sink = 3;
-        repeated uint32 waiting_for_completed_entries = 4;
+        uint64 creation_time = 4;
+        uint64 modification_time = 5;
+        repeated uint32 waiting_for_completed_entries = 6;
     }
 
     message Free {

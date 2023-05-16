@@ -5,6 +5,7 @@ use opentelemetry_api::trace::{SpanContext, TraceContextExt};
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Display, Formatter};
+use std::time::SystemTime;
 use tracing::{info_span, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
@@ -300,6 +301,18 @@ impl MillisSinceEpoch {
         MillisSinceEpoch(millis_since_epoch)
     }
 
+    pub fn now() -> Self {
+        MillisSinceEpoch::new(
+            u64::try_from(
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("duration since Unix epoch should be well-defined")
+                    .as_millis(),
+            )
+            .expect("millis since Unix epoch should fit in u64"),
+        )
+    }
+
     pub fn as_u64(&self) -> u64 {
         self.0
     }
@@ -320,53 +333,38 @@ impl Display for MillisSinceEpoch {
 /// Status of a service instance.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InvocationStatus {
-    Invoked(InvokedStatus),
-    Suspended(SuspendedStatus),
+    Invoked(InvocationMetadata),
+    Suspended {
+        metadata: InvocationMetadata,
+        waiting_for_completed_entries: HashSet<EntryIndex>,
+    },
     /// Service instance is currently not invoked
     Free,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct InvokedStatus {
+pub struct InvocationMetadata {
     pub invocation_id: InvocationId,
     pub journal_metadata: JournalMetadata,
     pub response_sink: Option<ServiceInvocationResponseSink>,
+    pub creation_time: MillisSinceEpoch,
+    pub modification_time: MillisSinceEpoch,
 }
 
-impl InvokedStatus {
+impl InvocationMetadata {
     pub fn new(
         invocation_id: InvocationId,
         journal_metadata: JournalMetadata,
         response_sink: Option<ServiceInvocationResponseSink>,
+        creation_time: MillisSinceEpoch,
+        modification_time: MillisSinceEpoch,
     ) -> Self {
         Self {
             invocation_id,
             journal_metadata,
             response_sink,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SuspendedStatus {
-    pub invocation_id: InvocationId,
-    pub journal_metadata: JournalMetadata,
-    pub response_sink: Option<ServiceInvocationResponseSink>,
-    pub waiting_for_completed_entries: HashSet<EntryIndex>,
-}
-
-impl SuspendedStatus {
-    pub fn new(
-        invocation_id: InvocationId,
-        journal_metadata: JournalMetadata,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        waiting_for_completed_entries: HashSet<EntryIndex>,
-    ) -> Self {
-        Self {
-            invocation_id,
-            journal_metadata,
-            response_sink,
-            waiting_for_completed_entries,
+            creation_time,
+            modification_time,
         }
     }
 }

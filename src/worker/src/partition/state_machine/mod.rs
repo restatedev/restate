@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId,
-    InvocationResponse, InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch,
+    InvocationMetadata, InvocationResponse, InvocationStatus, MessageIndex, MillisSinceEpoch,
     OutboxMessage, ResolutionResult, ResponseResult, ServiceId, ServiceInvocation,
     ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation,
     Timer, TimerSeqNumber,
@@ -17,7 +17,7 @@ use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use tracing::{debug, instrument, trace, warn};
 
-use crate::partition::effects::{Effects, JournalInformation};
+use crate::partition::effects::Effects;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
 
 mod dedup;
@@ -225,11 +225,11 @@ where
         let span_relation = extract_span_relation(&status);
 
         let_assert!(
-            InvocationStatus::Invoked(invoked_status) = status,
+            InvocationStatus::Invoked(invocation_metadata) = status,
             "Expect to only receive invoker messages when being invoked"
         );
         debug_assert!(
-            invoked_status.invocation_id == service_invocation_id.invocation_id,
+            invocation_metadata.invocation_id == service_invocation_id.invocation_id,
             "Expect to receive invoker messages for the currently invoked invocation id"
         );
 
@@ -240,8 +240,7 @@ where
                     service_invocation_id,
                     entry_index,
                     entry,
-                    invoked_status.journal_metadata,
-                    invoked_status.response_sink,
+                    invocation_metadata,
                 )
                 .await?;
             }
@@ -268,16 +267,11 @@ where
                     }
                 }
                 if any_completed {
-                    effects.resume_service(
-                        service_invocation_id,
-                        invoked_status.journal_metadata,
-                        invoked_status.response_sink,
-                    );
+                    effects.resume_service(service_invocation_id.service_id, invocation_metadata);
                 } else {
                     effects.suspend_service(
-                        service_invocation_id,
-                        invoked_status.journal_metadata,
-                        invoked_status.response_sink,
+                        service_invocation_id.service_id,
+                        invocation_metadata,
                         waiting_for_completed_entries,
                     );
                 }
@@ -285,21 +279,21 @@ where
             InvokerEffectKind::End => {
                 self.notify_invocation_result(
                     &service_invocation_id,
-                    invoked_status.journal_metadata.method,
-                    invoked_status.journal_metadata.span_context,
+                    invocation_metadata.journal_metadata.method,
+                    invocation_metadata.journal_metadata.span_context,
                     effects,
                     Ok(()),
                 );
                 self.complete_invocation(
                     service_invocation_id,
                     state,
-                    invoked_status.journal_metadata.length,
+                    invocation_metadata.journal_metadata.length,
                     effects,
                 )
                 .await?;
             }
             InvokerEffectKind::Failed { error, error_code } => {
-                if let Some(response_sink) = invoked_status.response_sink {
+                if let Some(response_sink) = invocation_metadata.response_sink {
                     let outbox_message = Self::create_response(
                         &service_invocation_id,
                         response_sink,
@@ -311,15 +305,15 @@ where
 
                 self.notify_invocation_result(
                     &service_invocation_id,
-                    invoked_status.journal_metadata.method,
-                    invoked_status.journal_metadata.span_context,
+                    invocation_metadata.journal_metadata.method,
+                    invocation_metadata.journal_metadata.span_context,
                     effects,
                     Err((error_code, error.to_string())),
                 );
                 self.complete_invocation(
                     service_invocation_id,
                     state,
-                    invoked_status.journal_metadata.length,
+                    invocation_metadata.journal_metadata.length,
                     effects,
                 )
                 .await?;
@@ -335,11 +329,10 @@ where
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
-        journal_metadata: JournalMetadata,
-        response_sink: Option<ServiceInvocationResponseSink>,
+        invocation_metadata: InvocationMetadata,
     ) -> Result<(), Error> {
         debug_assert_eq!(
-            entry_index, journal_metadata.length,
+            entry_index, invocation_metadata.journal_metadata.length,
             "Expect to receive next journal entry"
         );
 
@@ -352,7 +345,7 @@ where
                 );
             }
             EnrichedEntryHeader::OutputStream => {
-                if let Some(ref response_sink) = response_sink {
+                if let Some(ref response_sink) = invocation_metadata.response_sink {
                     let_assert!(
                         Entry::OutputStream(OutputStreamEntry { result }) =
                             Codec::deserialize(&journal_entry)?
@@ -374,9 +367,8 @@ where
                     );
 
                     effects.get_state_and_append_completed_entry(
-                        service_invocation_id,
-                        journal_metadata,
-                        response_sink,
+                        service_invocation_id.service_id,
+                        invocation_metadata,
                         key,
                         entry_index,
                         journal_entry,
@@ -391,9 +383,8 @@ where
                 );
 
                 effects.set_state(
-                    service_invocation_id,
-                    journal_metadata,
-                    response_sink,
+                    service_invocation_id.service_id,
+                    invocation_metadata,
                     key,
                     value,
                     journal_entry,
@@ -409,9 +400,8 @@ where
                         Codec::deserialize(&journal_entry)?
                 );
                 effects.clear_state(
-                    service_invocation_id,
-                    journal_metadata,
-                    response_sink,
+                    service_invocation_id.service_id,
+                    invocation_metadata,
                     key,
                     journal_entry,
                     entry_index,
@@ -530,9 +520,8 @@ where
             EnrichedEntryHeader::Awakeable { is_completed } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
                 effects.append_awakeable_entry(
-                    service_invocation_id,
-                    journal_metadata,
-                    response_sink,
+                    service_invocation_id.service_id,
+                    invocation_metadata,
                     entry_index,
                     journal_entry,
                 );
@@ -550,9 +539,8 @@ where
             } => {
                 if requires_ack {
                     effects.append_journal_entry_and_ack_storage(
-                        service_invocation_id,
-                        journal_metadata,
-                        response_sink,
+                        service_invocation_id.service_id,
+                        invocation_metadata,
                         entry_index,
                         journal_entry,
                     );
@@ -562,9 +550,8 @@ where
         }
 
         effects.append_journal_entry(
-            service_invocation_id,
-            journal_metadata,
-            response_sink,
+            service_invocation_id.service_id,
+            invocation_metadata,
             entry_index,
             journal_entry,
         );
@@ -585,11 +572,11 @@ where
         let mut span_relation = SpanRelation::None;
 
         match status {
-            InvocationStatus::Invoked(invoked_status) => {
-                if invoked_status.invocation_id == service_invocation_id.invocation_id {
+            InvocationStatus::Invoked(metadata) => {
+                if metadata.invocation_id == service_invocation_id.invocation_id {
                     effects.store_and_forward_completion(service_invocation_id.clone(), completion);
                     related_sid = Some(service_invocation_id);
-                    span_relation = invoked_status.journal_metadata.span_context.as_parent();
+                    span_relation = metadata.journal_metadata.span_context.as_parent();
                 } else {
                     debug!(
                         rpc.service = %service_invocation_id.service_id.service_name,
@@ -600,20 +587,17 @@ where
                     );
                 }
             }
-            InvocationStatus::Suspended(suspended_status) => {
-                if suspended_status.invocation_id == service_invocation_id.invocation_id {
-                    span_relation = suspended_status.journal_metadata.span_context.as_parent();
+            InvocationStatus::Suspended {
+                metadata,
+                waiting_for_completed_entries,
+            } => {
+                if metadata.invocation_id == service_invocation_id.invocation_id {
+                    span_relation = metadata.journal_metadata.span_context.as_parent();
 
-                    if suspended_status
-                        .waiting_for_completed_entries
-                        .contains(&completion.entry_index)
-                    {
+                    if waiting_for_completed_entries.contains(&completion.entry_index) {
                         effects.store_completion_and_resume(
-                            JournalInformation::new(
-                                service_invocation_id.clone(),
-                                suspended_status.journal_metadata,
-                                suspended_status.response_sink,
-                            ),
+                            service_invocation_id.service_id.clone(),
+                            metadata,
                             completion,
                         );
                     } else {
@@ -767,8 +751,10 @@ where
 
 fn extract_span_relation(status: &InvocationStatus) -> SpanRelation {
     match status {
-        InvocationStatus::Invoked(status) => status.journal_metadata.span_context.as_parent(),
-        InvocationStatus::Suspended(status) => status.journal_metadata.span_context.as_parent(),
+        InvocationStatus::Invoked(metadata) => metadata.journal_metadata.span_context.as_parent(),
+        InvocationStatus::Suspended { metadata, .. } => {
+            metadata.journal_metadata.span_context.as_parent()
+        }
         InvocationStatus::Free => SpanRelation::None,
     }
 }
