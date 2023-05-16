@@ -16,9 +16,14 @@ pub struct ListServiceMethodsResponse {
 /// List discovered methods for service
 #[openapi(
     summary = "List service methods",
+    description = "List all the methods of the given service.",
     operation_id = "list_service_methods",
     tags = "service_method",
-    parameters(path(name = "service", schema = "std::string::String"))
+    parameters(path(
+        name = "service",
+        description = "Fully qualified service name.",
+        schema = "std::string::String"
+    ))
 )]
 pub async fn list_service_methods<S, M: MethodDescriptorRegistry>(
     State(state): State<Arc<RestEndpointState<S, M>>>,
@@ -51,11 +56,20 @@ pub struct GetServiceMethodResponse {
 /// Get an method of a service
 #[openapi(
     summary = "Get service method",
+    description = "Get the method of a service",
     operation_id = "get_service_method",
     tags = "service_method",
     parameters(
-        path(name = "service", schema = "std::string::String"),
-        path(name = "method", schema = "std::string::String")
+        path(
+            name = "service",
+            description = "Fully qualified service name.",
+            schema = "std::string::String"
+        ),
+        path(
+            name = "method",
+            description = "Method name.",
+            schema = "std::string::String"
+        )
     )
 )]
 pub async fn get_service_method<S, M: MethodDescriptorRegistry>(

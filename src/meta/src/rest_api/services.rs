@@ -41,6 +41,7 @@ pub struct RegisterServiceEndpointResponse {
 /// Discover endpoint and return discovered endpoints.
 #[openapi(
     summary = "Discover service endpoint",
+    description = "Discover service endpoint and register it in the meta information storage. If the service endpoint is already registered, it will be re-discovered and will override the previous stored metadata.",
     operation_id = "discover_service_endpoint",
     tags = "service_endpoint"
 )]
@@ -78,6 +79,7 @@ pub struct ListServicesResponse {
 /// List services
 #[openapi(
     summary = "List services",
+    description = "List all registered services.",
     operation_id = "list_services",
     tags = "service"
 )]
@@ -107,9 +109,14 @@ pub struct GetServiceResponse {
 /// Get a service
 #[openapi(
     summary = "Get service",
+    description = "Get a registered service.",
     operation_id = "get_service",
     tags = "service",
-    parameters(path(name = "service", schema = "std::string::String"))
+    parameters(path(
+        name = "service",
+        description = "Fully qualified service name.",
+        schema = "std::string::String"
+    ))
 )]
 pub async fn get_service<S: ServiceEndpointRegistry, M>(
     State(state): State<Arc<RestEndpointState<S, M>>>,
