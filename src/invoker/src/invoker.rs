@@ -180,7 +180,10 @@ pub struct Options {
     /// # Retry policy
     ///
     /// Retry policy to use for all the invocations handled by this invoker.
-    #[cfg_attr(feature = "options_schema", schemars(default))]
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_retry_policy")
+    )]
     retry_policy: RetryPolicy,
 
     /// # Suspension timeout
@@ -240,7 +243,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            retry_policy: Default::default(),
+            retry_policy: Options::default_retry_policy(),
             suspension_timeout: Options::default_suspension_timeout(),
             response_abort_timeout: Options::default_response_abort_timeout(),
             message_size_warning: Options::default_message_size_warning(),
@@ -250,6 +253,18 @@ impl Default for Options {
 }
 
 impl Options {
+    fn default_retry_policy() -> RetryPolicy {
+        RetryPolicy::exponential(
+            Duration::from_millis(50),
+            2.0,
+            // Formula:
+            // y\ =\sum_{n=0}^{x}\min\left(10,\ 0.05\cdot2x\right)
+            // 77 retries are roughly 10 minutes
+            77,
+            Some(Duration::from_secs(10)),
+        )
+    }
+
     fn default_suspension_timeout() -> humantime::Duration {
         Duration::from_secs(60).into()
     }
