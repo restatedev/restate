@@ -168,68 +168,44 @@ macro_rules! debug_if_leader {
 impl Effect {
     fn log(&self, is_leader: bool) {
         match self {
-            Effect::InvokeService(ServiceInvocation {
-                id, method_name, ..
-            }) => debug_if_leader!(
+            Effect::InvokeService(ServiceInvocation { method_name, .. }) => debug_if_leader!(
                 is_leader,
-                rpc.service = %id.service_id.service_name,
                 rpc.method = %method_name,
-                restate.invocation.key = ?id.service_id.key,
-                restate.invocation.id = %id.invocation_id,
                 "Effect: Invoke service"
             ),
             Effect::ResumeService {
                 journal_information:
                     JournalInformation {
-                        service_invocation_id,
                         journal_metadata: JournalMetadata { method, length, .. },
                         ..
                     },
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation_id.service_id.service_name,
                 rpc.method = %method,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.length = length,
                 "Effect: Resume service"
             ),
             Effect::SuspendService {
                 journal_information:
                     JournalInformation {
-                        service_invocation_id,
                         journal_metadata: JournalMetadata { method, length, .. },
                         ..
                     },
                 waiting_for_completed_entries,
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation_id.service_id.service_name,
                 rpc.method = %method,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.length = length,
                 "Effect: Suspend service waiting on entries {:?}",
                 waiting_for_completed_entries
             ),
-            Effect::DropJournalAndFreeService {
-                service_id,
-                journal_length,
-            } => debug_if_leader!(
+            Effect::DropJournalAndFreeService { journal_length, .. } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_id.service_name,
-                restate.invocation.key = ?service_id.key,
                 restate.journal.length = journal_length,
                 "Effect: Release service instance lock"
             ),
-            Effect::EnqueueIntoInbox {
-                service_invocation,
-                seq_number,
-            } => debug_if_leader!(
+            Effect::EnqueueIntoInbox { seq_number, .. } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation.id.service_id.service_name,
-                restate.invocation.key = ?service_invocation.id.service_id.key,
-                restate.invocation.id = %service_invocation.id.invocation_id,
                 restate.inbox.seq = seq_number,
                 "Effect: Enqueue invocation in inbox"
             ),
@@ -319,13 +295,11 @@ impl Effect {
                 trace!(restate.outbox.seq = seq_number, "Effect: Truncate outbox")
             }
             Effect::DropJournalAndPopInbox {
-                service_id,
                 journal_length,
                 inbox_sequence_number,
+                ..
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_id.service_name,
-                restate.invocation.key = ?service_id.key,
                 restate.journal.length = journal_length,
                 restate.inbox.seq = inbox_sequence_number,
                 "Effect: Execute next enqueued invocation"
@@ -383,122 +357,82 @@ impl Effect {
             ),
             Effect::AppendJournalEntry {
                 journal_entry,
-                journal_information:
-                    JournalInformation {
-                        service_invocation_id,
-                        ..
-                    },
                 entry_index,
                 ..
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.index = entry_index,
                 "Effect: Write journal entry {:?} to storage",
                 journal_entry.header.to_entry_type()
             ),
             Effect::AppendAwakeableEntry {
                 journal_entry,
-                journal_information:
-                    JournalInformation {
-                        service_invocation_id,
-                        ..
-                    },
                 entry_index,
                 ..
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.index = entry_index,
                 "Effect: Write journal entry {:?} to storage",
                 journal_entry.header.to_entry_type()
             ),
             Effect::AppendJournalEntryAndAck {
                 journal_entry,
-                journal_information:
-                    JournalInformation {
-                        service_invocation_id,
-                        ..
-                    },
                 entry_index,
                 ..
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.index = entry_index,
                 "Effect: Write journal entry {:?} to storage and ack back",
                 journal_entry.header.to_entry_type()
             ),
             Effect::StoreCompletion {
-                service_invocation_id,
                 completion:
                     Completion {
                         entry_index,
                         result,
                     },
+                ..
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.index = entry_index,
                 "Effect: Store completion {}",
                 CompletionResultFmt(result)
             ),
             Effect::StoreCompletionAndForward {
-                service_invocation_id,
                 completion:
                     Completion {
                         entry_index,
                         result,
                     },
+                ..
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.index = entry_index,
                 "Effect: Store completion {} and forward to service endpoint",
                 CompletionResultFmt(result)
             ),
             Effect::StoreCompletionAndResume {
-                journal_information:
-                    JournalInformation {
-                        service_invocation_id,
-                        ..
-                    },
                 completion:
                     Completion {
                         entry_index,
                         result,
                     },
+                ..
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.index = entry_index,
                 "Effect: Store completion {} and resume invocation",
                 CompletionResultFmt(result)
             ),
             Effect::ForwardCompletion {
-                service_invocation_id,
                 completion:
                     Completion {
                         entry_index,
                         result,
                     },
+                ..
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
                 restate.journal.index = entry_index,
                 "Effect: Forward completion {} to service endpoint",
                 CompletionResultFmt(result)

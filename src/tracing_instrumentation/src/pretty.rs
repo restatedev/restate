@@ -164,8 +164,6 @@ where
             writer.write_char('\n')?;
         }
 
-        writer.write_char('\n')?;
-
         let mut restate_error_code_visitor = RestateErrorCodeWriter::new(writer.by_ref());
         event.record(&mut restate_error_code_visitor);
         restate_error_code_visitor.finish()
