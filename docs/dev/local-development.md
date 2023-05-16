@@ -140,6 +140,10 @@ $ npx @redocly/cli build-docs openapi.json
 
 ## Performance analysis
 
+Requirements:
+
+* [flamegraph](https://github.com/flamegraph-rs/flamegraph#installation)
+
 For performance analysis you can generate a flamegraph of the runtime binary via:
 
 ```shell
