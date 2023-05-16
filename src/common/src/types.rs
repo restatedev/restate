@@ -5,7 +5,8 @@ use opentelemetry_api::trace::{SpanContext, TraceContextExt};
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Display, Formatter};
-use std::time::SystemTime;
+use std::ops::Add;
+use std::time::{Duration, SystemTime};
 use tracing::{info_span, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
@@ -302,15 +303,7 @@ impl MillisSinceEpoch {
     }
 
     pub fn now() -> Self {
-        MillisSinceEpoch::new(
-            u64::try_from(
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .expect("duration since Unix epoch should be well-defined")
-                    .as_millis(),
-            )
-            .expect("millis since Unix epoch should fit in u64"),
-        )
+        SystemTime::now().into()
     }
 
     pub fn as_u64(&self) -> u64 {
@@ -321,6 +314,26 @@ impl MillisSinceEpoch {
 impl From<u64> for MillisSinceEpoch {
     fn from(value: u64) -> Self {
         Self::new(value)
+    }
+}
+
+impl From<SystemTime> for MillisSinceEpoch {
+    fn from(value: SystemTime) -> Self {
+        MillisSinceEpoch::new(
+            u64::try_from(
+                value
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("duration since Unix epoch should be well-defined")
+                    .as_millis(),
+            )
+            .expect("millis since Unix epoch should fit in u64"),
+        )
+    }
+}
+
+impl From<MillisSinceEpoch> for SystemTime {
+    fn from(value: MillisSinceEpoch) -> Self {
+        SystemTime::UNIX_EPOCH.add(Duration::from_millis(value.as_u64()))
     }
 }
 
