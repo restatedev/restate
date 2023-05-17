@@ -27,7 +27,7 @@ pub struct CancelInvocationRequest {
     ///
     /// Identifier of the service invocation to cancel/kill.
     #[allow(dead_code)]
-    id: ServiceInvocationId,
+    sid: ServiceInvocationId,
 }
 
 /// Cancel/kill an invocation
