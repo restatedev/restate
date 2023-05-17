@@ -13,7 +13,7 @@ use restate_journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, Entry,
     GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
 };
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use tracing::{debug, instrument, trace, warn};
 
@@ -23,6 +23,7 @@ use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
 mod dedup;
 
 pub(crate) use dedup::DeduplicatingStateMachine;
+use restate_common::errors::ErrorCode;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -36,6 +37,8 @@ pub(crate) enum Error {
 
 #[derive(Debug)]
 pub(crate) enum Command {
+    #[allow(dead_code)]
+    Kill(ServiceInvocationId),
     Invoker(InvokerEffect),
     Timer(TimerValue),
     OutboxTruncation(MessageIndex),
@@ -170,7 +173,57 @@ where
                 Ok((None, SpanRelation::None))
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
+            Command::Kill(sid) => self.try_kill_invocation(sid, state, effects).await,
         };
+    }
+
+    async fn try_kill_invocation<State: StateReader>(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        state: &mut State,
+        effects: &mut Effects,
+    ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
+        let status = state
+            .get_invocation_status(&service_invocation_id.service_id)
+            .await?;
+
+        match status {
+            InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. }
+                if metadata.invocation_id == service_invocation_id.invocation_id =>
+            {
+                let (sid, related_span) = self
+                    .kill_invocation(service_invocation_id, metadata, state, effects)
+                    .await?;
+                Ok((Some(sid), related_span))
+            }
+            _ => {
+                trace!("Received kill command for unknown invocation with sid '{service_invocation_id}'. Ignoring command.");
+                Ok((None, SpanRelation::None))
+            }
+        }
+    }
+
+    async fn kill_invocation<State: StateReader>(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        metadata: InvocationMetadata,
+        state: &mut State,
+        effects: &mut Effects,
+    ) -> Result<(ServiceInvocationId, SpanRelation), Error> {
+        let related_span = metadata.journal_metadata.span_context.as_parent();
+
+        self.fail_invocation(
+            effects,
+            state,
+            service_invocation_id.clone(),
+            metadata,
+            ErrorCode::Aborted.into(),
+            "killed",
+        )
+        .await?;
+        effects.abort_invocation(service_invocation_id.clone());
+
+        Ok((service_invocation_id, related_span))
     }
 
     async fn on_timer<State: StateReader>(
@@ -295,50 +348,81 @@ where
                 }
             }
             InvokerEffectKind::End => {
-                self.notify_invocation_result(
-                    &service_invocation_id,
-                    invocation_metadata.journal_metadata.method,
-                    invocation_metadata.journal_metadata.span_context,
-                    effects,
-                    Ok(()),
-                );
-                self.complete_invocation(
-                    service_invocation_id,
-                    state,
-                    invocation_metadata.journal_metadata.length,
-                    effects,
-                )
-                .await?;
+                self.finish_invocation(effects, state, service_invocation_id, invocation_metadata)
+                    .await?;
             }
             InvokerEffectKind::Failed { error, error_code } => {
-                if let Some(response_sink) = invocation_metadata.response_sink {
-                    let outbox_message = Self::create_response(
-                        &service_invocation_id,
-                        response_sink,
-                        ResponseResult::Failure(error_code, error.to_string().into()),
-                    );
-                    // TODO: We probably only need to send the response if we haven't send a response before
-                    self.send_message(outbox_message, effects);
-                }
-
-                self.notify_invocation_result(
-                    &service_invocation_id,
-                    invocation_metadata.journal_metadata.method,
-                    invocation_metadata.journal_metadata.span_context,
+                self.fail_invocation(
                     effects,
-                    Err((error_code, error.to_string())),
-                );
-                self.complete_invocation(
-                    service_invocation_id,
                     state,
-                    invocation_metadata.journal_metadata.length,
-                    effects,
+                    service_invocation_id,
+                    invocation_metadata,
+                    error_code,
+                    error,
                 )
                 .await?;
             }
         }
 
         Ok((related_sid, span_relation))
+    }
+
+    async fn finish_invocation<State: StateReader>(
+        &mut self,
+        effects: &mut Effects,
+        state: &mut State,
+        service_invocation_id: ServiceInvocationId,
+        invocation_metadata: InvocationMetadata,
+    ) -> Result<(), Error> {
+        self.notify_invocation_result(
+            &service_invocation_id,
+            invocation_metadata.journal_metadata.method,
+            invocation_metadata.journal_metadata.span_context,
+            effects,
+            Ok(()),
+        );
+        self.complete_invocation(
+            service_invocation_id,
+            state,
+            invocation_metadata.journal_metadata.length,
+            effects,
+        )
+        .await
+    }
+
+    async fn fail_invocation<State: StateReader>(
+        &mut self,
+        effects: &mut Effects,
+        state: &mut State,
+        service_invocation_id: ServiceInvocationId,
+        invocation_metadata: InvocationMetadata,
+        error_code: i32,
+        error: impl Display,
+    ) -> Result<(), Error> {
+        if let Some(response_sink) = invocation_metadata.response_sink {
+            let outbox_message = Self::create_response(
+                &service_invocation_id,
+                response_sink,
+                ResponseResult::Failure(error_code, error.to_string().into()),
+            );
+            // TODO: We probably only need to send the response if we haven't send a response before
+            self.send_message(outbox_message, effects);
+        }
+
+        self.notify_invocation_result(
+            &service_invocation_id,
+            invocation_metadata.journal_metadata.method,
+            invocation_metadata.journal_metadata.span_context,
+            effects,
+            Err((error_code, error.to_string())),
+        );
+        self.complete_invocation(
+            service_invocation_id,
+            state,
+            invocation_metadata.journal_metadata.length,
+            effects,
+        )
+        .await
     }
 
     async fn handle_journal_entry(
