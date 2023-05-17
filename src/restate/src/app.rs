@@ -61,7 +61,9 @@ impl Application {
         //  Will be replaced with https://github.com/restatedev/restate/issues/91
         self.meta.init().await?;
 
-        let mut meta_handle = tokio::spawn(self.meta.run(shutdown_watch.clone()));
+        let worker_command_tx = self.worker.worker_command_tx();
+        let mut meta_handle =
+            tokio::spawn(self.meta.run(shutdown_watch.clone(), worker_command_tx));
         let mut worker_handle = tokio::spawn(self.worker.run(shutdown_watch));
 
         let shutdown = drain.signaled();

@@ -1,8 +1,10 @@
 use anyhow::bail;
 use restate_common::retry_policy::RetryPolicy;
+use restate_common::worker_command::WorkerCommandSender;
 use schemars::gen::SchemaSettings;
 use std::env;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()
@@ -29,7 +31,9 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
 
     // We start the Meta component, then download the openapi schema generated
     let (shutdown_signal, shutdown_watch) = drain::channel();
-    let join_handle = tokio::spawn(meta_service.run(shutdown_watch));
+    let (command_tx, _command_rx) = mpsc::channel(1);
+    let worker_command_tx = WorkerCommandSender::new(command_tx);
+    let join_handle = tokio::spawn(meta_service.run(shutdown_watch, worker_command_tx));
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)
         .retry_operation(|| async { reqwest::get(openapi_address.clone()).await?.text().await })

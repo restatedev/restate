@@ -5,6 +5,7 @@ mod storage;
 use codederror::CodedError;
 use rest_api::MetaRestEndpoint;
 use restate_common::retry_policy::RetryPolicy;
+use restate_common::worker_command::WorkerCommandSender;
 use restate_ingress_grpc::ReflectionRegistry;
 use restate_service_key_extractor::KeyExtractorsRegistry;
 use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
@@ -151,7 +152,11 @@ impl Meta {
         Ok(())
     }
 
-    pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
+    pub async fn run(
+        self,
+        drain: drain::Watch,
+        worker_command_tx: WorkerCommandSender,
+    ) -> Result<(), Error> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         let meta_handle = self.service.meta_handle();
@@ -163,6 +168,7 @@ impl Meta {
             meta_handle,
             service_endpoint_registry,
             method_descriptor_registry,
+            worker_command_tx,
             shutdown_watch,
         );
         tokio::pin!(service_fut, rest_endpoint_fut);
