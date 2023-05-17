@@ -202,6 +202,11 @@ where
                     let _ = span.enter();
                 }
                 ActuatorMessage::SendAckResponse(ack_response) => ack_tx.send(ack_response).await?,
+                ActuatorMessage::AbortInvocation(service_invocation_id) => {
+                    invoker_tx
+                        .abort_invocation(partition_leader_epoch, service_invocation_id)
+                        .await?
+                }
             }
         }
 

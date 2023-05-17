@@ -51,6 +51,7 @@ pub trait InvokerInputSender {
         service_invocation_id: ServiceInvocationId,
         journal: InvokeInputJournal,
     ) -> Self::Future;
+
     fn resume(
         &mut self,
         partition: PartitionLeaderEpoch,
@@ -64,6 +65,7 @@ pub trait InvokerInputSender {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
     ) -> Self::Future;
+
     fn notify_stored_entry_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
@@ -72,6 +74,13 @@ pub trait InvokerInputSender {
     ) -> Self::Future;
 
     fn abort_all_partition(&mut self, partition: PartitionLeaderEpoch) -> Self::Future;
+
+    fn abort_invocation(
+        &mut self,
+        partition_leader_epoch: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+    ) -> Self::Future;
+
     fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
