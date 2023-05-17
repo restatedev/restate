@@ -116,6 +116,21 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
         )
     }
 
+    fn abort_invocation(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+    ) -> Self::Future {
+        futures::future::ready(
+            self.other_input
+                .send(Input {
+                    partition,
+                    inner: OtherInputCommand::Abort(service_invocation_id),
+                })
+                .map_err(|_| InvokerNotRunning),
+        )
+    }
+
     fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
@@ -162,7 +177,6 @@ enum OtherInputCommand {
     },
 
     /// Abort specific invocation id
-    #[allow(dead_code)]
     Abort(ServiceInvocationId),
 
     /// Command used to clean up internal state when a partition leader is going away
