@@ -18,3 +18,16 @@ impl ConversionError {
         ConversionError::MissingField(field)
     }
 }
+
+/// Error codes used to communicate failures of invocations. Currently, this is tied to
+/// grpc's error codes. See https://github.com/grpc/grpc/blob/master/doc/statuscodes.md#status-codes-and-their-use-in-grpc
+/// for more details.
+pub enum ErrorCode {
+    Aborted = 10,
+}
+
+impl From<ErrorCode> for i32 {
+    fn from(value: ErrorCode) -> Self {
+        value as i32
+    }
+}
