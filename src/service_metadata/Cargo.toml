@@ -14,7 +14,7 @@ serde_schema = ["serde", "dep:schemars", "restate_common/options_schema"]
 
 [dependencies]
 arc-swap = { workspace = true }
-base64 = "0.21"
+base64 = { workspace = true }
 restate_common = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
