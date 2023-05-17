@@ -1,6 +1,7 @@
 //! This module implements the Meta API endpoint.
 
 mod error;
+mod invocations;
 mod methods;
 mod services;
 mod state;
@@ -10,7 +11,7 @@ use axum::http::StatusCode;
 use codederror::CodedError;
 use futures::FutureExt;
 use hyper::Server;
-use okapi_operation::axum_integration::{get, post};
+use okapi_operation::axum_integration::{delete, get, post};
 use okapi_operation::*;
 use restate_service_metadata::{MethodDescriptorRegistry, ServiceEndpointRegistry};
 use std::net::SocketAddr;
@@ -86,6 +87,10 @@ impl MetaRestEndpoint {
             .route(
                 "/services/:service/methods/:method",
                 get(openapi_handler!(methods::get_service_method)),
+            )
+            .route(
+                "/invocations",
+                delete(openapi_handler!(invocations::cancel_invocation)),
             )
             .route_openapi_specification(
                 "/openapi",
