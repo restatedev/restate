@@ -54,6 +54,7 @@ pub(crate) enum ActuatorMessage {
         result: Result<(), (i32, String)>,
     },
     SendAckResponse(AckResponse),
+    AbortInvocation(ServiceInvocationId),
 }
 
 pub(crate) trait MessageCollector {
@@ -671,6 +672,9 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             }),
             Effect::SendAckResponse(ack_response) => {
                 collector.collect(ActuatorMessage::SendAckResponse(ack_response))
+            }
+            Effect::AbortInvocation(service_invocation_id) => {
+                collector.collect(ActuatorMessage::AbortInvocation(service_invocation_id))
             }
         }
 

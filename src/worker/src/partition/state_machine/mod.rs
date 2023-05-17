@@ -162,7 +162,7 @@ where
             }
             Command::Invoker(effect) => {
                 let (related_sid, span_relation) =
-                    self.on_invoker_effect(effects, state, effect).await?;
+                    self.try_invoker_effect(effects, state, effect).await?;
                 Ok((Some(related_sid), span_relation))
             }
             Command::OutboxTruncation(index) => {
@@ -209,6 +209,32 @@ where
         };
     }
 
+    async fn try_invoker_effect<State: StateReader>(
+        &mut self,
+        effects: &mut Effects,
+        state: &mut State,
+        invoker_effect: InvokerEffect,
+    ) -> Result<(ServiceInvocationId, SpanRelation), Error> {
+        let status = state
+            .get_invocation_status(&invoker_effect.service_invocation_id.service_id)
+            .await?;
+
+        match status {
+            InvocationStatus::Invoked(invocation_metadata)
+                if invocation_metadata.invocation_id
+                    == invoker_effect.service_invocation_id.invocation_id =>
+            {
+                self.on_invoker_effect(effects, state, invoker_effect, invocation_metadata)
+                    .await
+            }
+            _ => {
+                trace!("Received invoker effect for unknown service invocation. Ignoring the effect and aborting.");
+                effects.abort_invocation(invoker_effect.service_invocation_id.clone());
+                Ok((invoker_effect.service_invocation_id, SpanRelation::None))
+            }
+        }
+    }
+
     async fn on_invoker_effect<State: StateReader>(
         &mut self,
         effects: &mut Effects,
@@ -217,21 +243,13 @@ where
             service_invocation_id,
             kind,
         }: InvokerEffect,
+        invocation_metadata: InvocationMetadata,
     ) -> Result<(ServiceInvocationId, SpanRelation), Error> {
-        let status = state
-            .get_invocation_status(&service_invocation_id.service_id)
-            .await?;
         let related_sid = service_invocation_id.clone();
-        let span_relation = extract_span_relation(&status);
-
-        let_assert!(
-            InvocationStatus::Invoked(invocation_metadata) = status,
-            "Expect to only receive invoker messages when being invoked"
-        );
-        debug_assert!(
-            invocation_metadata.invocation_id == service_invocation_id.invocation_id,
-            "Expect to receive invoker messages for the currently invoked invocation id"
-        );
+        let span_relation = invocation_metadata
+            .journal_metadata
+            .span_context
+            .as_parent();
 
         match kind {
             InvokerEffectKind::JournalEntry { entry_index, entry } => {

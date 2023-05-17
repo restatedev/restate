@@ -139,6 +139,9 @@ pub(crate) enum Effect {
 
     // Acks
     SendAckResponse(AckResponse),
+
+    // Invoker commands
+    AbortInvocation(ServiceInvocationId),
 }
 
 macro_rules! debug_if_leader {
@@ -434,6 +437,9 @@ impl Effect {
                 if is_leader {
                     trace!("Effect: Sending ack response: {ack_response:?}");
                 }
+            }
+            Effect::AbortInvocation(_) => {
+                debug_if_leader!(is_leader, "Effect: Abort unknown invocation");
             }
         }
     }
@@ -732,6 +738,11 @@ impl Effects {
 
     pub(crate) fn send_ack_response(&mut self, ack_response: AckResponse) {
         self.effects.push(Effect::SendAckResponse(ack_response));
+    }
+
+    pub(crate) fn abort_invocation(&mut self, service_invocation_id: ServiceInvocationId) {
+        self.effects
+            .push(Effect::AbortInvocation(service_invocation_id));
     }
 
     /// We log only if the level is TRACE, or if the level is DEBUG and we're the leader.
