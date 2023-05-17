@@ -5,12 +5,14 @@ use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::journal_reader::JournalReader;
 use crate::range_partitioner::RangePartitioner;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
+use crate::services::Services;
 use codederror::CodedError;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use partition::ack::AckCommand;
 use partition::shuffle;
 use restate_common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
+use restate_common::worker_command::WorkerCommandSender;
 use restate_consensus::Consensus;
 use restate_ingress_grpc::ReflectionRegistry;
 use restate_invoker::{Invoker, UnboundedInvokerInputSender};
@@ -31,6 +33,7 @@ mod network_integration;
 mod partition;
 mod range_partitioner;
 mod service_invocation_factory;
+mod services;
 mod util;
 
 type PartitionProcessorCommand = AckCommand;
@@ -158,6 +161,9 @@ pub enum Error {
     #[error("no partition processor is running")]
     #[code(unknown)]
     NoPartitionProcessorRunning,
+    #[error("worker services failed: {0}")]
+    #[code(unknown)]
+    Services(#[from] services::Error),
 }
 
 impl Error {
@@ -177,6 +183,7 @@ pub struct Worker {
         InMemoryServiceEndpointRegistry,
     >,
     external_client_ingress_runner: ExternalClientIngressRunner,
+    services: Services,
 }
 
 impl Worker {
@@ -216,10 +223,12 @@ impl Worker {
             reflections_registry,
         );
 
+        let partition_table = FixedPartitionTable::new(num_partition_processors);
+
         let network = network_integration::Network::new(
             raft_in_tx,
             ingress_dispatcher_loop.create_response_sender(),
-            FixedPartitionTable::new(num_partition_processors),
+            partition_table.clone(),
             channel_size,
         );
         let network_ingress_sender = network.create_ingress_sender();
@@ -261,6 +270,8 @@ impl Worker {
 
         consensus.register_state_machines(command_senders);
 
+        let services = Services::new(consensus.create_proposal_sender(), partition_table);
+
         Ok(Self {
             consensus,
             processors,
@@ -272,6 +283,7 @@ impl Worker {
                 ingress_dispatcher_loop,
                 network_ingress_sender,
             ),
+            services,
         })
     }
 
@@ -305,6 +317,10 @@ impl Worker {
         ((peer_id, command_tx), processor)
     }
 
+    pub fn worker_command_tx(&self) -> WorkerCommandSender {
+        self.services.worker_command_tx()
+    }
+
     pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
@@ -314,13 +330,14 @@ impl Worker {
         );
         let mut invoker_handle = tokio::spawn(self.invoker.run(shutdown_watch.clone()));
         let mut network_handle = tokio::spawn(self.network.run(shutdown_watch.clone()));
-        let mut storage_grpc_handle = tokio::spawn(self.storage_grpc.run(shutdown_watch));
+        let mut storage_grpc_handle = tokio::spawn(self.storage_grpc.run(shutdown_watch.clone()));
         let mut consensus_handle = tokio::spawn(self.consensus.run());
         let mut processors_handles: FuturesUnordered<_> = self
             .processors
             .into_iter()
             .map(|partition_processor| tokio::spawn(partition_processor.run()))
             .collect();
+        let mut services_handle = tokio::spawn(self.services.run(shutdown_watch));
 
         let shutdown = drain.signaled();
 
@@ -339,7 +356,8 @@ impl Worker {
                     consensus_handle,
                     processors_handles.collect::<Vec<_>>(),
                     invoker_handle,
-                    external_client_ingress_handle);
+                    external_client_ingress_handle,
+                    services_handle);
 
                 debug!("Completed shutdown of worker");
             },
@@ -368,6 +386,10 @@ impl Worker {
             external_client_ingress_result = &mut external_client_ingress_handle => {
                 external_client_ingress_result.map_err(|err| Error::component_panic("external client ingress", err))??;
                 panic!("Unexpected termination of external client ingress.");
+            },
+            services_result = &mut services_handle => {
+                services_result.map_err(|err| Error::component_panic("worker services", err))??;
+                panic!("Unexpected termination of worker services.");
             },
         }
 
