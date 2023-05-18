@@ -1,11 +1,14 @@
 use crate::partitioner::HashPartitioner;
+use base64::display::Base64Display;
+use base64::prelude::*;
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::{SpanContext, TraceContextExt};
 use std::collections::HashSet;
 use std::fmt;
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
 use std::ops::Add;
+use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 use tracing::{info_span, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -45,16 +48,6 @@ pub struct ServiceInvocationId {
     pub invocation_id: InvocationId,
 }
 
-impl Display for ServiceInvocationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}[{:?}]({})",
-            self.service_id.service_name, self.service_id.key, self.invocation_id
-        )
-    }
-}
-
 impl ServiceInvocationId {
     pub fn new(
         service_name: impl Into<ByteString>,
@@ -69,6 +62,60 @@ impl ServiceInvocationId {
             service_id,
             invocation_id: invocation_id.into(),
         }
+    }
+}
+
+impl Display for ServiceInvocationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}-{}-{}",
+            self.service_id.service_name,
+            Base64Display::new(&self.service_id.key, &BASE64_STANDARD),
+            self.invocation_id.as_simple()
+        )
+    }
+}
+
+#[derive(Debug, Default, thiserror::Error)]
+#[error("cannot parse the opaque id, bad format")]
+pub struct ParseError {
+    #[source]
+    cause: Option<super::utils::GenericError>,
+}
+
+impl ParseError {
+    pub fn from_cause(cause: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self {
+            cause: Some(Box::new(cause)),
+        }
+    }
+}
+
+impl FromStr for ServiceInvocationId {
+    type Err = ParseError;
+
+    fn from_str(str: &str) -> Result<Self, Self::Err> {
+        // This encoding is based on the fact that neither invocation_id
+        // nor service_name can contain the '-' character
+        // Invocation id is serialized as simple
+        // Service name follows the fullIdent ABNF here:
+        // https://protobuf.dev/reference/protobuf/proto3-spec/#identifiers
+        let mut splits: Vec<&str> = str.splitn(3, '-').collect();
+        if splits.len() != 3 {
+            return Err(ParseError::default());
+        }
+        let invocation_id: Uuid = splits
+            .pop()
+            .unwrap()
+            .parse()
+            .map_err(ParseError::from_cause)?;
+        let key = BASE64_STANDARD
+            .decode(splits.pop().unwrap())
+            .map_err(ParseError::from_cause)?;
+        let service_name = splits.pop().unwrap().to_string();
+
+        Ok(ServiceInvocationId::new(service_name, key, invocation_id))
     }
 }
 
@@ -338,7 +385,7 @@ impl From<MillisSinceEpoch> for SystemTime {
 }
 
 impl Display for MillisSinceEpoch {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} ms since epoch", self.0)
     }
 }
@@ -570,5 +617,51 @@ impl SequencedTimer {
 
     pub fn into_inner(self) -> (TimerSeqNumber, Timer) {
         (self.seq_number, self.timer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod service_invocation_id {
+        use super::*;
+
+        macro_rules! roundtrip_test {
+            ($test_name:ident, $sid:expr) => {
+                mod $test_name {
+                    use super::*;
+
+                    #[test]
+                    fn roundtrip() {
+                        let expected_sid = $sid;
+                        let opaque_sid: String = expected_sid.to_string();
+                        let actual_sid: ServiceInvocationId = opaque_sid.parse().unwrap();
+                        assert_eq!(expected_sid, actual_sid);
+                    }
+                }
+            };
+        }
+
+        roundtrip_test!(
+            keyed_service_with_hyphens,
+            ServiceInvocationId::new(
+                "my.example.Service",
+                "-------stuff------".as_bytes().to_vec(),
+                Uuid::now_v7(),
+            )
+        );
+        roundtrip_test!(
+            unkeyed_service,
+            ServiceInvocationId::new(
+                "my.example.Service",
+                Uuid::now_v7().as_bytes().to_vec(),
+                Uuid::now_v7(),
+            )
+        );
+        roundtrip_test!(
+            empty_key,
+            ServiceInvocationId::new("my.example.Service", "".as_bytes().to_vec(), Uuid::now_v7(),)
+        );
     }
 }
