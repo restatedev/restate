@@ -330,8 +330,7 @@ where
                     {
                         trace!(
                             rpc.service = %service_invocation_id.service_id.service_name,
-                            restate.invocation.key = ?service_invocation_id.service_id.key,
-                            restate.invocation.id = %service_invocation_id.invocation_id,
+                            restate.invocation.sid = %service_invocation_id,
                             "Resuming instead of suspending service because an awaited entry is completed/acked.");
                         any_completed = true;
                         break;
@@ -682,8 +681,7 @@ where
                 } else {
                     debug!(
                         rpc.service = %service_invocation_id.service_id.service_name,
-                        restate.invocation.key = ?service_invocation_id.service_id.key,
-                        restate.invocation.id = %service_invocation_id.invocation_id,
+                        restate.invocation.sid = %service_invocation_id,
                         ?completion,
                         "Ignoring completion for invocation that is no longer running."
                     );
@@ -709,8 +707,7 @@ where
                 } else {
                     debug!(
                         rpc.service = %service_invocation_id.service_id.service_name,
-                        restate.invocation.key = ?service_invocation_id.service_id.key,
-                        restate.invocation.id = %service_invocation_id.invocation_id,
+                        restate.invocation.sid = %service_invocation_id,
                         ?completion,
                         "Ignoring completion for invocation that is no longer running."
                     );
@@ -719,8 +716,7 @@ where
             InvocationStatus::Free => {
                 debug!(
                     rpc.service = %service_invocation_id.service_id.service_name,
-                    restate.invocation.key = ?service_invocation_id.service_id.key,
-                    restate.invocation.id = %service_invocation_id.invocation_id,
+                    restate.invocation.sid = %service_invocation_id,
                     ?completion,
                     "Ignoring completion for invocation that is no longer running."
                 )
@@ -739,9 +735,8 @@ where
         result: Result<(), (i32, String)>,
     ) {
         effects.notify_invocation_result(
-            service_invocation_id.service_id.service_name.clone(),
+            service_invocation_id.clone(),
             service_method,
-            service_invocation_id.invocation_id,
             span_context,
             result,
         );

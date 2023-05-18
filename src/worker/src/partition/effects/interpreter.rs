@@ -2,13 +2,11 @@ use crate::partition::effects::{Effect, Effects};
 use crate::partition::{AckResponse, TimerValue};
 use assert2::let_assert;
 use bytes::Bytes;
-use bytestring::ByteString;
 use futures::future::BoxFuture;
 use restate_common::types::{
-    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId,
-    InvocationMetadata, InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch,
-    OutboxMessage, ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
-    Timer, TimerSeqNumber,
+    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationMetadata,
+    InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext, Timer, TimerSeqNumber,
 };
 use restate_common::utils::GenericError;
 use restate_invoker::InvokeInputJournal;
@@ -47,9 +45,8 @@ pub(crate) enum ActuatorMessage {
         completion: Completion,
     },
     CommitEndSpan {
-        service_name: ByteString,
+        service_invocation_id: ServiceInvocationId,
         service_method: String,
-        invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (i32, String)>,
     },
@@ -658,15 +655,13 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .await?;
             }
             Effect::NotifyInvocationResult {
-                service_name,
+                service_invocation_id,
                 service_method,
-                invocation_id,
                 span_context,
                 result,
             } => collector.collect(ActuatorMessage::CommitEndSpan {
-                service_name,
+                service_invocation_id,
                 service_method,
-                invocation_id,
                 span_context,
                 result,
             }),

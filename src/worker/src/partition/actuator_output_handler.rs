@@ -7,7 +7,7 @@ use bytes::Bytes;
 use opentelemetry_api::trace::SpanContext;
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, InvocationId, RawEntry,
-    ResolutionResult, ServiceInvocationSpanContext, SpanRelation,
+    ResolutionResult, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
 };
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use restate_journal::InvokeRequest;
@@ -216,10 +216,12 @@ where
 
                 // Create the span context
                 let (span_context, span) = ServiceInvocationSpanContext::start(
-                    &request.service_name,
+                    &ServiceInvocationId::new(
+                        request.service_name.clone(),
+                        service_key.clone(),
+                        invocation_id,
+                    ),
                     &request.method_name,
-                    &service_key,
-                    invocation_id,
                     span_relation,
                 );
 

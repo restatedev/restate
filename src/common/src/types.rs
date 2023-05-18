@@ -184,13 +184,8 @@ impl ServiceInvocation {
         response_sink: Option<ServiceInvocationResponseSink>,
         related_span: SpanRelation,
     ) -> (Self, Span) {
-        let (span_context, span) = ServiceInvocationSpanContext::start(
-            &id.service_id.service_name,
-            &method_name,
-            &id.service_id.key,
-            id.invocation_id,
-            related_span,
-        );
+        let (span_context, span) =
+            ServiceInvocationSpanContext::start(&id, &method_name, related_span);
         (
             Self {
                 id,
@@ -250,20 +245,17 @@ impl ServiceInvocationSpanContext {
 
     /// See [`ServiceInvocation::new`] for more details.
     pub fn start(
-        service_name: &str,
+        service_invocation_id: &ServiceInvocationId,
         method_name: &str,
-        service_key: impl fmt::Debug,
-        invocation_id: impl Display,
         related_span: SpanRelation,
     ) -> (ServiceInvocationSpanContext, Span) {
         // Create the span
         let span = info_span!(
             "service_invocation",
             rpc.system = "restate",
-            rpc.service = service_name,
+            rpc.service = %service_invocation_id.service_id.service_name,
             rpc.method = method_name,
-            restate.invocation.key = ?service_key,
-            restate.invocation.id = %invocation_id);
+            restate.invocation.sid = %service_invocation_id);
 
         // Attach the related span.
         // Note: As it stands with tracing_opentelemetry 0.18 there seems to be
