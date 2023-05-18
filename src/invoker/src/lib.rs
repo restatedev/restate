@@ -17,6 +17,12 @@ pub use crate::invoker::*;
 
 mod invocation_task;
 
+// --- Error trait used to figure out whether errors are transient or not
+
+pub trait InvokerError: std::error::Error {
+    fn is_transient(&self) -> bool;
+}
+
 // --- Journal Reader
 
 pub trait JournalReader {
@@ -90,8 +96,6 @@ pub trait InvokerInputSender {
 
 // --- Output messages
 
-pub type InvokerError = Box<dyn std::error::Error + Send + Sync + 'static>;
-
 #[derive(Debug)]
 pub struct OutputEffect {
     pub service_invocation_id: ServiceInvocationId,
@@ -114,6 +118,6 @@ pub enum Kind {
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
     Failed {
         error_code: i32,
-        error: InvokerError,
+        error: Box<dyn InvokerError + Send + Sync + 'static>,
     },
 }
