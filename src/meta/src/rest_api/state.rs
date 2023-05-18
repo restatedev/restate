@@ -37,7 +37,6 @@ impl<S, M> RestEndpointState<S, M> {
         &self.method_descriptor_registry
     }
 
-    #[allow(dead_code)]
     pub fn worker_command_tx(&self) -> &WorkerCommandSender {
         &self.worker_command_tx
     }
