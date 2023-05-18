@@ -3,6 +3,7 @@ use super::state::*;
 use axum::extract::State;
 use axum::Json;
 use okapi_operation::*;
+use restate_common::{opaque, types};
 use restate_service_metadata::MethodDescriptorRegistry;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -18,7 +19,17 @@ pub enum ServiceInvocationId {
     ///
     /// Token representation of the service invocation identifier.
     /// This is the same representation used by the Restate CLI SQL interface.
-    Token(String),
+    Token(opaque::ServiceInvocationId),
+}
+
+impl ServiceInvocationId {
+    fn into_service_invocation_id(self) -> Result<types::ServiceInvocationId, MetaApiError> {
+        match self {
+            ServiceInvocationId::Token(opaque_sid) => opaque_sid
+                .try_into()
+                .map_err(|e: opaque::ParseError| MetaApiError::InvalidField("sid", e.to_string())),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -38,9 +49,12 @@ pub struct CancelInvocationRequest {
     tags = "invocation"
 )]
 pub async fn cancel_invocation<S, M: MethodDescriptorRegistry>(
-    State(_): State<Arc<RestEndpointState<S, M>>>,
-    #[request_body(required = true)] Json(_): Json<CancelInvocationRequest>,
+    State(state): State<Arc<RestEndpointState<S, M>>>,
+    #[request_body(required = true)] Json(req): Json<CancelInvocationRequest>,
 ) -> Result<(), MetaApiError> {
-    //
+    state
+        .worker_command_tx()
+        .kill_invocation(req.sid.into_service_invocation_id()?)
+        .await?;
     Ok(())
 }
