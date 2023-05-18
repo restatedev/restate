@@ -275,10 +275,7 @@ impl Options {
         RetryPolicy::exponential(
             Duration::from_millis(50),
             2.0,
-            // Formula:
-            // y\ =\sum_{n=0}^{x}\min\left(10,\ 0.05\cdot2x\right)
-            // 77 retries are roughly 10 minutes
-            77,
+            usize::MAX,
             Some(Duration::from_secs(10)),
         )
     }

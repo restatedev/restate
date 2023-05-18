@@ -127,6 +127,8 @@ impl RetryPolicy {
         max_attempts: usize,
         max_interval: Option<Duration>,
     ) -> Self {
+        // Formula to compute the time based on number of retries:
+        // y = \sum_{n=0}^{x} \min \left( max_interval,\ initial_interval \cdot factor x \right)
         Self::Exponential {
             initial_interval: initial_interval.into(),
             factor,
