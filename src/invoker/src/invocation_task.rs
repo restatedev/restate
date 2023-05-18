@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
+use crate::InvokerError;
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{future, stream, FutureExt, Stream, StreamExt};
@@ -73,16 +74,9 @@ pub(crate) enum InvocationTaskError {
     Other(#[from] Box<dyn Error + Send + Sync + 'static>),
 }
 
-impl InvocationTaskError {
-    /// A transient error is retried when possible.
-    pub(crate) fn is_transient(&self) -> bool {
-        matches!(
-            self,
-            InvocationTaskError::Network(_)
-                | InvocationTaskError::UnexpectedJoinError(_)
-                | InvocationTaskError::Other(_)
-                | InvocationTaskError::ResponseTimeout
-        )
+impl InvokerError for InvocationTaskError {
+    fn is_transient(&self) -> bool {
+        true
     }
 }
 

@@ -34,7 +34,7 @@ pub(crate) enum InvokerEffectKind {
     End,
     Failed {
         error_code: i32,
-        error: InvokerError,
+        error: Box<dyn InvokerError + Send + Sync + 'static>,
     },
 }
 

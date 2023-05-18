@@ -453,7 +453,8 @@ where
                                         message_size_warning,
                                         message_size_limit,
                                         &mut invocation_tasks,
-                                        &invocation_tasks_tx
+                                        &invocation_tasks_tx,
+                                        &mut retry_timers,
                                     )
                                 ).await;
                         },
@@ -495,7 +496,8 @@ where
                                         message_size_warning,
                                         message_size_limit,
                                         &mut invocation_tasks,
-                                        &invocation_tasks_tx
+                                        &invocation_tasks_tx,
+                                        &mut retry_timers,
                                     ),
                                     entry_index
                                 )
@@ -523,7 +525,8 @@ where
                         },
                         InvocationTaskOutputInner::Closed => {
                             partition_state_machine.handle_invocation_task_closed(
-                                invocation_task_msg.service_invocation_id
+                                invocation_task_msg.service_invocation_id,
+                                     &mut retry_timers
                             ).await
                         },
                         InvocationTaskOutputInner::Failed(e) => {
@@ -557,7 +560,8 @@ where
                                 message_size_warning,
                                 message_size_limit,
                                 &mut invocation_tasks,
-                                &invocation_tasks_tx
+                                &invocation_tasks_tx,
+                                &mut retry_timers,
                             )
                         ).await;
                     }
@@ -605,21 +609,36 @@ mod state_machine_coordinator {
     use super::*;
     use std::time::SystemTime;
 
-    use crate::invocation_task::{InvocationTask, InvocationTaskError};
+    use crate::invocation_task::InvocationTask;
 
+    use codederror::CodedError;
     use restate_errors::warn_it;
     use restate_journal::raw::Header;
     use restate_service_metadata::{ProtocolType, ServiceEndpointRegistry};
     use tonic::Code;
     use tracing::{instrument, warn};
 
-    #[derive(Debug, thiserror::Error)]
+    #[derive(Debug, thiserror::Error, codederror::CodedError)]
     #[error("Cannot find service {0} in the service endpoint registry")]
+    #[code(unknown)]
     pub struct CannotResolveEndpoint(String);
 
-    #[derive(Debug, thiserror::Error)]
+    impl InvokerError for CannotResolveEndpoint {
+        fn is_transient(&self) -> bool {
+            true
+        }
+    }
+
+    #[derive(Debug, thiserror::Error, codederror::CodedError)]
     #[error("Unexpected end of invocation stream. This is probably a symptom of an SDK bug, please contact the developers.")]
+    #[code(unknown)]
     pub struct UnexpectedEndOfInvocationStream;
+
+    impl InvokerError for UnexpectedEndOfInvocationStream {
+        fn is_transient(&self) -> bool {
+            true
+        }
+    }
 
     /// This struct groups the arguments to start an InvocationTask.
     ///
@@ -637,6 +656,7 @@ mod state_machine_coordinator {
         message_size_limit: Option<usize>,
         invocation_tasks: &'a mut JoinSet<()>,
         invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
+        retry_timers: &'a mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
     }
 
     impl<'a, JR, SER> StartInvocationTaskArguments<'a, JR, SER> {
@@ -652,6 +672,7 @@ mod state_machine_coordinator {
             message_size_limit: Option<usize>,
             invocation_tasks: &'a mut JoinSet<()>,
             invocation_tasks_tx: &'a mpsc::UnboundedSender<InvocationTaskOutput>,
+            retry_timers: &'a mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
         ) -> Self {
             Self {
                 client,
@@ -664,6 +685,7 @@ mod state_machine_coordinator {
                 message_size_limit,
                 invocation_tasks,
                 invocation_tasks_tx,
+                retry_timers,
             }
         }
     }
@@ -944,6 +966,7 @@ mod state_machine_coordinator {
         pub(super) async fn handle_invocation_task_closed(
             &mut self,
             service_invocation_id: ServiceInvocationId,
+            retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
         ) {
             if let Some(sm) = self
                 .invocation_state_machines
@@ -961,10 +984,10 @@ mod state_machine_coordinator {
                         "Protocol violation when executing the invocation. \
                         The invocation task was closed without a SuspensionMessage, nor an OutputStreamEntry"
                     );
-                    self.send_error(
+                    self.handle_invocation_task_failed(
                         service_invocation_id,
-                        Code::Internal,
                         UnexpectedEndOfInvocationStream,
+                        retry_timers,
                     )
                     .await;
                 }
@@ -986,14 +1009,14 @@ mod state_machine_coordinator {
         pub(super) async fn handle_invocation_task_failed(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            error: InvocationTaskError,
+            error: impl InvokerError + CodedError + Send + Sync + 'static,
             retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
         ) {
             if let Some(mut sm) = self
                 .invocation_state_machines
                 .remove(&service_invocation_id)
             {
-                warn_it!(error, "Error when executing the invocation",);
+                warn_it!(error, "Error when executing the invocation");
 
                 if sm.is_ending() {
                     // Soft protocol violation.
@@ -1106,8 +1129,12 @@ mod state_machine_coordinator {
                     let err = CannotResolveEndpoint(
                         service_invocation_id.service_id.service_name.to_string(),
                     );
-                    self.send_error(service_invocation_id, Code::Internal, err)
-                        .await;
+                    self.handle_invocation_task_failed(
+                        service_invocation_id,
+                        err,
+                        start_arguments.retry_timers,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -1210,7 +1237,7 @@ mod state_machine_coordinator {
             &self,
             service_invocation_id: ServiceInvocationId,
             code: Code,
-            err: impl std::error::Error + Send + Sync + 'static,
+            err: impl InvokerError + Send + Sync + 'static,
         ) {
             let _ = self
                 .output_tx
@@ -1437,15 +1464,17 @@ mod invocation_state_machine {
         pub(super) fn handle_task_error(&mut self) -> Option<Duration> {
             debug_assert!(matches!(
                 &self.invocation_state,
-                InvocationState::InFlight { .. }
+                InvocationState::InFlight { .. } | InvocationState::New
             ));
 
-            let (next_timer, journal_tracker) = match &self.invocation_state {
+            let journal_tracker = match &self.invocation_state {
                 InvocationState::InFlight {
                     journal_tracker, ..
-                } => (self.retry_iter.next(), *journal_tracker),
+                } => *journal_tracker,
+                InvocationState::New => JournalTracker::default(),
                 _ => unreachable!(),
             };
+            let next_timer = self.retry_iter.next();
 
             if next_timer.is_some() {
                 self.invocation_state = InvocationState::WaitingRetry {
