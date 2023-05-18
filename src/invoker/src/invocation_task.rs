@@ -241,9 +241,7 @@ where
             "invoker_invocation_task",
             rpc.system = "restate",
             rpc.service = %self.service_invocation_id.service_id.service_name,
-            restate.invocation.key = ?self.service_invocation_id.service_id.key,
-            restate.invocation.id = %self.service_invocation_id.invocation_id,
-            restate.protocol.mode = ?self.endpoint_metadata.protocol_type()
+            restate.invocation.sid = %self.service_invocation_id
         );
         let result = self
             .run_internal(input_journal)

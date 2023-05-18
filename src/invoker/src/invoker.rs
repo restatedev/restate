@@ -746,8 +746,7 @@ mod state_machine_coordinator {
             skip_all,
             fields(
                 rpc.service = %invoke_input_cmd.service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?invoke_input_cmd.service_invocation_id.service_id.key,
-                restate.invocation.id = %invoke_input_cmd.service_invocation_id.invocation_id,
+                restate.invocation.sid = %invoke_input_cmd.service_invocation_id,
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
@@ -785,8 +784,7 @@ mod state_machine_coordinator {
             for (service_invocation_id, sm) in self.invocation_state_machines.iter_mut() {
                 trace!(
                     rpc.service = %service_invocation_id.service_id.service_name,
-                    restate.invocation.key = ?service_invocation_id.service_id.key,
-                    restate.invocation.id = %service_invocation_id.invocation_id,
+                    restate.invocation.sid = %service_invocation_id,
                     "Aborting invocation"
                 );
                 sm.abort()
@@ -797,9 +795,9 @@ mod state_machine_coordinator {
             level = "trace",
             skip_all,
             fields(
+                rpc.service = %service_invocation_id.service_id.service_name,
+                restate.invocation.sid = %service_invocation_id,
                 restate.invoker.partition_leader_epoch = ?self.partition,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id
             )
         )]
         pub(super) fn abort(&mut self, service_invocation_id: ServiceInvocationId) {
@@ -817,8 +815,7 @@ mod state_machine_coordinator {
             skip_all,
             fields(
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invocation.sid = %service_invocation_id,
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
@@ -847,8 +844,7 @@ mod state_machine_coordinator {
             skip_all,
             fields(
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invocation.sid = %service_invocation_id,
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
@@ -873,8 +869,7 @@ mod state_machine_coordinator {
             skip_all,
             fields(
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invocation.sid = %service_invocation_id,
                 restate.invoker.partition_leader_epoch = ?self.partition,
                 restate.journal.index = entry_index,
             )
@@ -901,8 +896,7 @@ mod state_machine_coordinator {
             skip_all,
             fields(
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invocation.sid = %service_invocation_id,
                 restate.invoker.partition_leader_epoch = ?self.partition,
                 restate.journal.index = entry_index,
                 restate.journal.entry_type = ?entry.header.to_entry_type(),
@@ -946,8 +940,7 @@ mod state_machine_coordinator {
             skip_all,
             fields(
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invocation.sid = %service_invocation_id,
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
@@ -989,8 +982,7 @@ mod state_machine_coordinator {
             skip_all,
             fields(
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invocation.sid = %service_invocation_id,
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
@@ -1050,8 +1042,7 @@ mod state_machine_coordinator {
             skip_all,
             fields(
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invocation.sid = %service_invocation_id,
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
@@ -1071,8 +1062,7 @@ mod state_machine_coordinator {
                     // we need to return a message to the partition processor.
                     warn!(
                         rpc.service = %service_invocation_id.service_id.service_name,
-                        restate.invocation.key = ?service_invocation_id.service_id.key,
-                        restate.invocation.id = %service_invocation_id.invocation_id,
+                        restate.invocation.sid = %service_invocation_id,
                         "Protocol violation when executing the invocation. \
                         The invocation task sent an OutputStreamEntry and was closed with a SuspensionMessage"
                     );

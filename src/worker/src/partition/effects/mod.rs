@@ -1,10 +1,9 @@
 use bytes::Bytes;
-use bytestring::ByteString;
 use restate_common::types::{
-    CompletionResult, EnrichedRawEntry, EntryIndex, InvocationId, InvocationMetadata,
-    InvocationResponse, JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage,
-    ResponseResult, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationSpanContext, SpanRelation, Timer, TimerSeqNumber,
+    CompletionResult, EnrichedRawEntry, EntryIndex, InvocationMetadata, InvocationResponse,
+    JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseResult, ServiceId,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation, Timer,
+    TimerSeqNumber,
 };
 use restate_journal::raw::Header;
 use restate_journal::Completion;
@@ -130,9 +129,8 @@ pub(crate) enum Effect {
 
     // Tracing
     NotifyInvocationResult {
-        service_name: ByteString,
+        service_invocation_id: ServiceInvocationId,
         service_method: String,
-        invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (i32, String)>,
     },
@@ -209,8 +207,7 @@ impl Effect {
                 is_leader,
                 rpc.service = %service_invocation.id.service_id.service_name,
                 rpc.method = %service_invocation.method_name,
-                restate.invocation.key = ?service_invocation.id.service_id.key,
-                restate.invocation.id = %service_invocation.id.invocation_id,
+                restate.invocation.sid = %service_invocation.id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send service invocation to partition processor"
             ),
@@ -225,8 +222,7 @@ impl Effect {
             } => debug_if_leader!(
                 is_leader,
                 rpc.service = %id.service_id.service_name,
-                restate.invocation.key = ?id.service_id.key,
-                restate.invocation.id = %id.invocation_id,
+                restate.invocation.sid = %id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send success response to another invocation, completing entry index {}",
                 entry_index
@@ -242,8 +238,7 @@ impl Effect {
             } => debug_if_leader!(
                 is_leader,
                 rpc.service = %id.service_id.service_name,
-                restate.invocation.key = ?id.service_id.key,
-                restate.invocation.id = %id.invocation_id,
+                restate.invocation.sid = %id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send failure code {} response to another invocation, completing entry index {}. Reason: {}",
                 failure_code,
@@ -261,8 +256,7 @@ impl Effect {
             } => debug_if_leader!(
                 is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invocation.sid = %service_invocation_id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send success response to ingress"
             ),
@@ -277,8 +271,7 @@ impl Effect {
             } => debug_if_leader!(
                 is_leader,
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id,
+                restate.invocation.sid = %service_invocation_id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send failure code {} response to ingress. Reason: {}",
                 failure_code,
@@ -331,8 +324,7 @@ impl Effect {
                 Timer::Invoke(service_invocation) => debug_if_leader!(
                     is_leader,
                     rpc.service = %service_invocation.id.service_id.service_name,
-                    restate.invocation.key = ?service_invocation.id.service_id.key,
-                    restate.invocation.id = %service_invocation.id.invocation_id,
+                    restate.invocation.sid = %service_invocation.id,
                     restate.timer.key = %timer_value.display_key(),
                     restate.timer.wake_up_time = %timer_value.wake_up_time,
                     "Effect: Register background invoke timer"
@@ -721,16 +713,14 @@ impl Effects {
 
     pub(crate) fn notify_invocation_result(
         &mut self,
-        service_name: ByteString,
+        service_invocation_id: ServiceInvocationId,
         service_method: String,
-        invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (i32, String)>,
     ) {
         self.effects.push(Effect::NotifyInvocationResult {
-            service_name,
+            service_invocation_id,
             service_method,
-            invocation_id,
             span_context,
             result,
         })
@@ -761,14 +751,12 @@ impl Effects {
             (true, Some(service_invocation_id)) => debug_span!(
                 "state_machine_effects",
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id
+                restate.invocation.sid = %service_invocation_id,
             ),
             (false, Some(service_invocation_id)) => trace_span!(
                 "state_machine_effects",
                 rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.key = ?service_invocation_id.service_id.key,
-                restate.invocation.id = %service_invocation_id.invocation_id
+                restate.invocation.sid = %service_invocation_id,
             ),
             (true, None) => debug_span!("state_machine_effects"),
             (false, None) => trace_span!("state_machine_effects"),
