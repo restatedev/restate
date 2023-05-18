@@ -1,19 +1,19 @@
 use std::collections::HashSet;
 use std::error::Error;
-use std::future::Future;
+use std::future::{poll_fn, Future};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::stream::FusedStream;
-use futures::{future, stream, Stream, StreamExt};
+use futures::future::FusedFuture;
+use futures::{future, stream, FutureExt, Stream, StreamExt};
 use hyper::body::Sender;
 use hyper::client::HttpConnector;
 use hyper::http::response::Parts;
 use hyper::http::HeaderValue;
-use hyper::{http, Body, Request, Uri};
+use hyper::{http, Body, Request, Response, Uri};
 use hyper_rustls::HttpsConnector;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
@@ -302,20 +302,24 @@ where
         let (mut http_stream_tx, http_request) = self.prepare_request(uri);
         shortcircuit!(self.write_start(&mut http_stream_tx, journal_size).await);
 
-        // Start the request
-        let (mut http_stream_tx, mut http_stream_rx) = shortcircuit!(
-            self.wait_response_and_replay_end_loop(http_stream_tx, http_request, journal_stream,)
+        // Initialize the response stream state
+        let mut http_stream_rx = ResponseStreamState::initialize(&self.client, http_request);
+
+        // Execute the replay
+        shortcircuit!(
+            self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
                 .await
         );
 
         // Check all the entries have been replayed
         debug_assert_eq!(self.next_journal_index, journal_size);
 
-        // If we have the invoker_rx and the http_stream_tx, we can use the bidi stream loop,
-        // which both reads the invoker_rx and the http_stream_rx
-        if let (Some(invoker_rx), Some(http_stream_tx)) =
-            (self.invoker_rx.take(), http_stream_tx.take())
-        {
+        // If we have the invoker_rx and the protocol type is bidi stream,
+        // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
+        if let (Some(invoker_rx), ProtocolType::BidiStream) = (
+            self.invoker_rx.take(),
+            self.endpoint_metadata.protocol_type(),
+        ) {
             shortcircuit!(
                 self.bidi_stream_loop(
                     &service_invocation_span_context,
@@ -325,7 +329,11 @@ where
                 )
                 .await
             );
-        };
+        } else {
+            // Drop the http_stream_tx.
+            // This is required in HTTP/1.1 to let the service endpoint send the headers back
+            drop(http_stream_tx)
+        }
 
         // We don't have the invoker_rx, so we simply consume the response
         self.response_stream_loop(&service_invocation_span_context, &mut http_stream_rx)
@@ -335,66 +343,41 @@ where
     // --- Loops
 
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
-    async fn wait_response_and_replay_end_loop<JournalStream>(
+    async fn replay_loop<JournalStream>(
         &mut self,
-        http_stream_tx: Sender,
-        req: Request<Body>,
+        http_stream_tx: &mut Sender,
+        http_stream_rx: &mut ResponseStreamState,
         journal_stream: JournalStream,
-    ) -> TerminalLoopState<(Option<Sender>, Body)>
+    ) -> TerminalLoopState<()>
     where
         JournalStream: Stream<Item = PlainRawEntry> + Unpin,
     {
-        // Because the body sender blocks on waiting for the request body buffer to be available,
-        // we need to spawn the request initiation separately, otherwise the loop below
-        // will deadlock on the journal entry write.
-        // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
-        // spawned somewhere else (perhaps in the connection pool).
-        // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
-        let mut req_fut = AbortOnDrop(tokio::task::spawn(self.client.request(req)));
         let mut journal_stream = journal_stream.fuse();
-
-        let mut http_stream_rx_res = None;
-        let mut http_stream_tx_res = Some(http_stream_tx);
+        let got_headers_future = poll_fn(|cx| http_stream_rx.poll_wait_headers(cx)).fuse();
+        tokio::pin!(got_headers_future);
 
         loop {
             tokio::select! {
-                response_res = &mut req_fut, if http_stream_rx_res.is_none() => {
-                    let http_response = match shortcircuit!(response_res) {
-                        Ok(res) => res,
-                        Err(hyper_err) => shortcircuit!(hyper_err),
-                    };
-
-                    // Check the response is valid
-                    let (http_response_header, http_stream_rx) = http_response.into_parts();
-                    shortcircuit!(Self::validate_response(http_response_header));
-
-                    http_stream_rx_res = Some(http_stream_rx);
+                got_headers_res = got_headers_future.as_mut(), if !got_headers_future.is_terminated() => {
+                    // The reason we want to poll headers in this function is
+                    // to exit early in case an error is returned during replays.
+                    shortcircuit!(got_headers_res);
                 },
-                opt_je = journal_stream.next(), if !journal_stream.is_terminated() => {
+                opt_je = journal_stream.next() => {
                     match opt_je {
                         Some(je) => {
-                            let http_stream_tx = http_stream_tx_res
-                                .as_mut()
-                                .expect(
-                                    "the http response stream should exist as there are journal stream entries to replay. \
-                                    Perhaps the journal stream returned Some after returning None?");
                             shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
                             self.next_journal_index += 1;
                         },
-                        None if self.endpoint_metadata.protocol_type() == ProtocolType::RequestResponse => {
-                            // We need to close the request stream now,
-                            // as we don't have anything else to send anymore
-                            http_stream_tx_res = None;
-                        },
-                        _ => {}
+                        None => {
+                            // No need to wait for the headers to continue
+                            trace!("Finished to replay the journal");
+                            return TerminalLoopState::Continue(())
+                        }
                     }
-                },
-                else => break,
+                }
             }
         }
-
-        trace!("Finished to replay the journal");
-        TerminalLoopState::Continue((http_stream_tx_res, http_stream_rx_res.unwrap()))
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
@@ -403,7 +386,7 @@ where
         parent_span_context: &Arc<SpanContext>,
         mut http_stream_tx: Sender,
         mut invoker_rx: mpsc::UnboundedReceiver<Completion>,
-        http_stream_rx: &mut Body,
+        http_stream_rx: &mut ResponseStreamState,
     ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
@@ -421,10 +404,9 @@ where
                         },
                     }
                 },
-                opt_buf = http_stream_rx.next() => {
-                    match opt_buf {
-                        Some(Ok(buf)) => shortcircuit!(self.handle_read(parent_span_context, buf)),
-                        Some(Err(hyper_err)) => shortcircuit!(hyper_err),
+                opt_buf = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
+                    match shortcircuit!(opt_buf) {
+                        Some(buf) => shortcircuit!(self.handle_read(parent_span_context, buf)),
                         None => {
                             // Response stream is closed. No further processing is needed.
                             return TerminalLoopState::Closed
@@ -444,14 +426,13 @@ where
     async fn response_stream_loop(
         &mut self,
         parent_span_context: &Arc<SpanContext>,
-        http_stream_rx: &mut Body,
+        http_stream_rx: &mut ResponseStreamState,
     ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
-                opt_buf = http_stream_rx.next() => {
-                    match opt_buf {
-                        Some(Ok(buf)) => shortcircuit!(self.handle_read(parent_span_context, buf)),
-                        Some(Err(hyper_err)) => shortcircuit!(hyper_err),
+                opt_buf = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
+                    match shortcircuit!(opt_buf) {
+                        Some(buf) => shortcircuit!(self.handle_read(parent_span_context, buf)),
                         None => {
                             // Response stream is closed. No further processing is needed.
                             return TerminalLoopState::Closed
@@ -631,6 +612,81 @@ where
             .path_and_query(p)
             .build()
             .unwrap()
+    }
+}
+
+enum ResponseStreamState {
+    WaitingHeaders(AbortOnDrop<Result<Response<Body>, hyper::Error>>),
+    ReadingBody(Body),
+}
+
+impl ResponseStreamState {
+    fn initialize(
+        client: &hyper::Client<HttpsConnector<HttpConnector>, Body>,
+        req: Request<Body>,
+    ) -> Self {
+        // Because the body sender blocks on waiting for the request body buffer to be available,
+        // we need to spawn the request initiation separately, otherwise the loop below
+        // will deadlock on the journal entry write.
+        // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
+        // spawned somewhere else (perhaps in the connection pool).
+        // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
+        Self::WaitingHeaders(AbortOnDrop(tokio::task::spawn(client.request(req))))
+    }
+
+    // Could be replaced by a Future implementation
+    fn poll_wait_headers(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), InvocationTaskError>> {
+        match self {
+            ResponseStreamState::WaitingHeaders(join_handle) => {
+                let http_response = match ready!(join_handle.poll_unpin(cx)) {
+                    Ok(Ok(res)) => res,
+                    Ok(Err(hyper_err)) => {
+                        return Poll::Ready(Err(InvocationTaskError::Network(hyper_err)))
+                    }
+                    Err(join_err) => {
+                        return Poll::Ready(Err(InvocationTaskError::UnexpectedJoinError(join_err)))
+                    }
+                };
+
+                // Check the response is valid
+                let (http_response_header, body) = http_response.into_parts();
+                Self::validate_response(http_response_header)?;
+
+                // Transition to reading body
+                *self = ResponseStreamState::ReadingBody(body);
+
+                Poll::Ready(Ok(()))
+            }
+            ResponseStreamState::ReadingBody(_) => Poll::Ready(Ok(())),
+        }
+    }
+
+    // Could be replaced by a Stream implementation
+    fn poll_next_chunk(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<Bytes>, InvocationTaskError>> {
+        // Could be replaced by a Stream implementation
+        loop {
+            match self {
+                ResponseStreamState::WaitingHeaders(_) => {
+                    ready!(self.poll_wait_headers(cx))?;
+                }
+                ResponseStreamState::ReadingBody(b) => {
+                    let next_element = ready!(b.poll_next_unpin(cx));
+                    return Poll::Ready(match next_element.transpose() {
+                        Ok(opt) => Ok(opt),
+                        Err(err) => {
+                            if h2_reason(&err) == h2::Reason::NO_ERROR {
+                                Ok(None)
+                            } else {
+                                Err(InvocationTaskError::Network(err))
+                            }
+                        }
+                    });
+                }
+            }
+        }
     }
 
     fn validate_response(mut parts: Parts) -> Result<(), InvocationTaskError> {
