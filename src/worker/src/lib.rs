@@ -302,7 +302,7 @@ impl Worker {
         key_extractor: KeyExtractorsRegistry,
         rocksdb_storage: RocksDBStorage,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
-        let (command_tx, command_rx) = mpsc::channel(1);
+        let (command_tx, command_rx) = mpsc::channel(channel_size);
         let processor = PartitionProcessor::new(
             peer_id,
             peer_id,
