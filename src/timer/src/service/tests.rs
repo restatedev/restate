@@ -122,7 +122,7 @@ impl TimerKey for TimerValue {
 #[test(tokio::test)]
 async fn no_timer_is_dropped() {
     let (output_tx, mut output_rx) = mpsc::channel(1);
-    let service = TimerService::new(None, output_tx, MockTimerReader::new(), TokioClock);
+    let service = TimerService::new(None, output_tx, MockTimerReader::new(), TokioClock, 1);
     let timer_handle = service.create_timer_handle();
 
     let (shutdown_signal, shutdown_watch) = drain::channel();
@@ -156,7 +156,7 @@ async fn no_timer_is_dropped() {
 async fn timers_fire_in_wake_up_order() {
     let num_timers = 10;
     let (output_tx, mut output_rx) = mpsc::channel(num_timers as usize);
-    let service = TimerService::new(None, output_tx, MockTimerReader::new(), TokioClock);
+    let service = TimerService::new(None, output_tx, MockTimerReader::new(), TokioClock, 1);
 
     let timer_handle = service.create_timer_handle();
     let (shutdown_signal, shutdown_watch) = drain::channel();
@@ -202,7 +202,7 @@ async fn loading_timers_from_reader() {
         timer_reader.add_timer(Sequenced::new(i, TimerValue::new(i, i.into())))
     }
 
-    let service = TimerService::new(Some(1), output_tx, timer_reader, clock.clone());
+    let service = TimerService::new(Some(1), output_tx, timer_reader, clock.clone(), 1);
 
     let (shutdown_signal, shutdown_watch) = drain::channel();
     let join_handle = tokio::spawn(service.run(shutdown_watch));
@@ -232,7 +232,7 @@ async fn advancing_time_triggers_timer() {
         timer_reader.add_timer(Sequenced::new(i, TimerValue::new(i, i.into())));
     }
 
-    let service = TimerService::new(Some(1), output_tx, timer_reader, clock.clone());
+    let service = TimerService::new(Some(1), output_tx, timer_reader, clock.clone(), 1);
 
     let (shutdown_signal, shutdown_watch) = drain::channel();
     let join_handle = tokio::spawn(service.run(shutdown_watch));
@@ -280,7 +280,7 @@ async fn add_new_timers() {
         Sequenced::new(2, TimerValue::new(3, 10.into())),
     ]);
 
-    let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone());
+    let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone(), 1);
     let timer_handle = service.create_timer_handle();
 
     let (shutdown_signal, shutdown_watch) = drain::channel();
@@ -311,7 +311,7 @@ async fn earlier_timers_replace_older_ones() {
     let timer_reader = MockTimerReader::<TimerValue>::new();
     timer_reader.add_timer(Sequenced::new(0, TimerValue::new(1, 10.into())));
 
-    let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone());
+    let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone(), 1);
     let timer_handle = service.create_timer_handle();
 
     let (shutdown_signal, shutdown_watch) = drain::channel();
@@ -346,7 +346,7 @@ async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
     timer_reader.add_timer(Sequenced::new(0, TimerValue::new(0, 2.into())));
     timer_reader.add_timer(Sequenced::new(1, TimerValue::new(2, 5.into())));
 
-    let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone());
+    let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone(), 1);
     let timer_handle = service.create_timer_handle();
 
     let (shutdown_signal, shutdown_watch) = drain::channel();
@@ -386,7 +386,7 @@ async fn deduplicating_timers() {
     timer_reader.add_timer(first_timer);
     timer_reader.add_timer(Sequenced::new(1, TimerValue::new(1, 2.into())));
 
-    let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone());
+    let service = TimerService::new(Some(1), output_tx, timer_reader.clone(), clock.clone(), 1);
     let timer_handle = service.create_timer_handle();
 
     let (shutdown_signal, shutdown_watch) = drain::channel();

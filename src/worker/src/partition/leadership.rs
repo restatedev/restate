@@ -45,6 +45,7 @@ pub(super) struct FollowerState<I, N> {
     peer_id: PeerId,
     partition_id: PartitionId,
     timer_service_options: restate_timer::Options,
+    channel_size: usize,
     invoker_tx: I,
     network_handle: N,
     ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
@@ -259,6 +260,7 @@ where
         peer_id: PeerId,
         partition_id: PartitionId,
         timer_service_options: restate_timer::Options,
+        channel_size: usize,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
         ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
@@ -266,9 +268,10 @@ where
         (
             ActuatorStream::Follower,
             Self::Follower(FollowerState {
-                timer_service_options,
                 peer_id,
                 partition_id,
+                timer_service_options,
+                channel_size,
                 invoker_tx,
                 network_handle,
                 ack_tx,
@@ -316,12 +319,13 @@ where
             )
             .await?;
 
-            let (timer_tx, timer_rx) = mpsc::channel(1);
+            let (timer_tx, timer_rx) = mpsc::channel(follower_state.channel_size);
 
             let timer = follower_state.timer_service_options.build(
                 timer_tx,
                 partition_storage.clone(),
                 restate_timer::TokioClock,
+                follower_state.channel_size,
             );
             let timer_handle = timer.create_timer_handle();
 
@@ -413,6 +417,7 @@ where
                 FollowerState {
                     peer_id,
                     partition_id,
+                    channel_size,
                     timer_service_options: num_in_memory_timers,
                     mut invoker_tx,
                     network_handle,
@@ -448,6 +453,7 @@ where
                 peer_id,
                 partition_id,
                 num_in_memory_timers,
+                channel_size,
                 invoker_tx,
                 network_handle,
                 ack_tx,

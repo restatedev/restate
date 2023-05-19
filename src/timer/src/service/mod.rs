@@ -42,8 +42,9 @@ where
         output_tx: mpsc::Sender<Output<Timer>>,
         timer_reader: TimerReader,
         clock: Clock,
+        channel_size: usize,
     ) -> Self {
-        let (input_tx, input_rx) = mpsc::channel(64);
+        let (input_tx, input_rx) = mpsc::channel(channel_size);
 
         Self {
             input_rx,

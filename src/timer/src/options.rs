@@ -19,6 +19,7 @@ impl Options {
         output_tx: mpsc::Sender<Output<Timer>>,
         timer_reader: TimerReader,
         clock: Clock,
+        channel_size: usize,
     ) -> TimerService<Timer, TimerReader, Clock>
     where
         Timer: crate::Timer + Debug + Clone,
@@ -30,6 +31,7 @@ impl Options {
             output_tx,
             timer_reader,
             clock,
+            channel_size,
         )
     }
 }
