@@ -38,8 +38,8 @@ pub struct IngressDispatcherLoop {
 }
 
 impl IngressDispatcherLoop {
-    pub fn new(ingress_id: IngressId) -> IngressDispatcherLoop {
-        let (input_tx, input_rx) = mpsc::channel(64);
+    pub fn new(ingress_id: IngressId, channel_size: usize) -> IngressDispatcherLoop {
+        let (input_tx, input_rx) = mpsc::channel(channel_size);
         let (server_tx, server_rx) = mpsc::unbounded_channel();
 
         IngressDispatcherLoop {
@@ -185,7 +185,7 @@ mod tests {
         let (output_tx, _output_rx) = mpsc::channel(2);
 
         let ingress_dispatcher =
-            IngressDispatcherLoop::new(IngressId("127.0.0.1:0".parse().unwrap()));
+            IngressDispatcherLoop::new(IngressId("127.0.0.1:0".parse().unwrap()), 1);
         let input_sender = ingress_dispatcher.create_response_sender();
         let command_sender = ingress_dispatcher.create_command_sender();
 

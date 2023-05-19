@@ -221,6 +221,7 @@ impl Worker {
             method_descriptor_registry,
             invocation_factory,
             reflections_registry,
+            channel_size,
         );
 
         let partition_table = FixedPartitionTable::new(num_partition_processors);
