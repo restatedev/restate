@@ -272,7 +272,11 @@ impl Worker {
 
         consensus.register_state_machines(command_senders);
 
-        let services = Services::new(consensus.create_proposal_sender(), partition_table);
+        let services = Services::new(
+            consensus.create_proposal_sender(),
+            partition_table,
+            channel_size,
+        );
 
         Ok(Self {
             consensus,
