@@ -5,6 +5,7 @@ use codederror::CodedError;
 use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, Client, Method, Request, Uri};
+use hyper_proxy::{Intercept, Proxy, ProxyConnector};
 use hyper_rustls::HttpsConnectorBuilder;
 use prost::{DecodeError, Message};
 use prost_reflect::{
@@ -73,11 +74,15 @@ mod pb {
 #[derive(Debug, Default)]
 pub struct ServiceDiscovery {
     retry_policy: RetryPolicy,
+    proxy: Option<Proxy>,
 }
 
 impl ServiceDiscovery {
-    pub fn new(retry_policy: RetryPolicy) -> Self {
-        Self { retry_policy }
+    pub fn new(retry_policy: RetryPolicy, proxy_uri: Option<Uri>) -> Self {
+        Self {
+            retry_policy,
+            proxy: proxy_uri.map(|proxy_uri| Proxy::new(Intercept::Http, proxy_uri)),
+        }
     }
 }
 
@@ -179,13 +184,19 @@ impl ServiceDiscovery {
         uri: &Uri,
         additional_headers: &HashMap<HeaderName, HeaderValue>,
     ) -> Result<DiscoveredEndpointMetadata, ServiceDiscoveryError> {
-        let client = Client::builder().http2_only(true).build::<_, Body>(
-            HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .https_or_http()
-                .enable_http2()
-                .build(),
-        );
+        let connector = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_or_http()
+            .enable_http2()
+            .build();
+        let connector = if let Some(proxy) = self.proxy.clone() {
+            ProxyConnector::from_proxy_unsecured(connector, proxy)
+        } else {
+            ProxyConnector::unsecured(connector)
+        };
+        let client = Client::builder()
+            .http2_only(true)
+            .build::<_, Body>(connector);
         let uri = append_discover(uri)?;
 
         let (mut parts, body) = self

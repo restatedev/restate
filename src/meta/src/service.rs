@@ -105,6 +105,7 @@ where
         reflections_registry: ReflectionRegistry,
         storage: Storage,
         service_discovery_retry_policy: RetryPolicy,
+        proxy_uri: Option<Uri>,
     ) -> Self {
         let (api_cmd_tx, api_cmd_rx) = mpsc::unbounded_channel();
 
@@ -113,7 +114,7 @@ where
             method_descriptors_registry,
             service_endpoint_registry,
             reflections_registry,
-            service_discovery: ServiceDiscovery::new(service_discovery_retry_policy),
+            service_discovery: ServiceDiscovery::new(service_discovery_retry_policy, proxy_uri),
             storage,
             handle: MetaHandle(api_cmd_tx),
             api_cmd_rx,

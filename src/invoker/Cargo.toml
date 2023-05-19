@@ -18,6 +18,7 @@ restate_common = { workspace = true, features = ["serde"] }
 drain = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
+hyper-proxy = { workspace = true }
 hyper-rustls = { workspace = true }
 humantime = { workspace = true }
 h2 = { version = "0.3.15", features = ["unstable"] }
