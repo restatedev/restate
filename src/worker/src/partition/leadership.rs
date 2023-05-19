@@ -329,7 +329,7 @@ where
             );
             let timer_handle = timer.create_timer_handle();
 
-            let (shuffle_tx, shuffle_rx) = mpsc::channel(1);
+            let (shuffle_tx, shuffle_rx) = mpsc::channel(follower_state.channel_size);
 
             let shuffle = Shuffle::new(
                 follower_state.peer_id,
@@ -337,6 +337,7 @@ where
                 partition_storage,
                 follower_state.network_handle.create_shuffle_sender(),
                 shuffle_tx,
+                follower_state.channel_size,
             );
 
             follower_state
