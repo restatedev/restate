@@ -316,6 +316,7 @@ where
                 &mut follower_state.invoker_tx,
                 (follower_state.partition_id, leader_epoch),
                 &mut partition_storage,
+                follower_state.channel_size,
             )
             .await?;
 
@@ -378,11 +379,12 @@ where
         invoker_handle: &mut InvokerInputSender,
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_storage: &mut PartitionStorage<Storage>,
+        channel_size: usize,
     ) -> Result<mpsc::Receiver<restate_invoker::OutputEffect>, Error>
     where
         Storage: restate_storage_api::Storage,
     {
-        let (invoker_tx, invoker_rx) = mpsc::channel(1);
+        let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
 
         invoker_handle
             .register_partition(partition_leader_epoch, invoker_tx)
