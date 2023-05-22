@@ -20,6 +20,7 @@ use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry::trace::SpanContext;
 use opentelemetry_http::HeaderInjector;
 use restate_common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
+use restate_errors::warn_it;
 use restate_journal::raw::PlainRawEntry;
 use restate_journal::Completion;
 use restate_service_metadata::{EndpointMetadata, ProtocolType};
@@ -29,7 +30,7 @@ use restate_service_protocol::message::{
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
-use tracing::{debug, info, info_span, trace, warn, Instrument, Span};
+use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use super::{InvokeInputJournal, JournalMetadata, JournalReader};
@@ -63,6 +64,8 @@ pub(crate) enum InvocationTaskError {
     #[error("response timeout")]
     #[code(restate_errors::RT0001)]
     ResponseTimeout,
+    #[error("received a data frame after the end of stream. This is probably an SDK bug")]
+    WriteAfterEndOfStream,
     #[error(transparent)]
     Other(#[from] Box<dyn Error + Send + Sync + 'static>),
 }
@@ -222,20 +225,10 @@ where
     }
 
     /// Loop opening the request to service endpoint and consuming the stream
+    #[instrument(level = "info", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.service_invocation_id.service_id.service_name, restate.invocation.sid = %self.service_invocation_id), skip_all)]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
         // Create the span representing the lifecycle of this invocation task
-        let invocation_task_span = info_span!(
-            "invoker_invocation_task",
-            rpc.system = "restate",
-            rpc.service = %self.service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %self.service_invocation_id
-        );
-        let result = self
-            .run_internal(input_journal)
-            .instrument(invocation_task_span)
-            .await;
-
-        let inner = match result {
+        let inner = match self.run_internal(input_journal).await {
             TerminalLoopState::Continue(_) => {
                 unreachable!("This is not supposed to happen")
             }
@@ -243,6 +236,14 @@ where
             TerminalLoopState::Suspended(v) => InvocationTaskOutputInner::Suspended(v),
             TerminalLoopState::Failed(e) => InvocationTaskOutputInner::Failed(e),
         };
+        // Sanity check of the stream decoder
+        if self.decoder.has_remaining() {
+            warn_it!(
+                InvocationTaskError::WriteAfterEndOfStream,
+                "The read buffer is non empty after the stream has been closed."
+            );
+        }
+
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             service_invocation_id: self.service_invocation_id,
