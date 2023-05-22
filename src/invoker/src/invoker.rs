@@ -263,8 +263,9 @@ pub struct Options {
 
     /// # Proxy URI
     ///
-    /// A URI eg http://127.0.0.1:10001 of a server to which all invocations should be sent, with the host header set to the service endpoint URI
-    /// HTTPS proxy URIs are supported, but only HTTP outbound traffic will be proxied currently
+    /// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with the `Host` header set to the service endpoint URI.    
+    /// HTTPS proxy URIs are supported, but only HTTP endpoint traffic will be proxied currently.
+    /// Can be overridden by the `HTTP_PROXY` environment variable.
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
     proxy_uri: Option<Uri>,
