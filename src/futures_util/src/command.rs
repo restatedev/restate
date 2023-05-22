@@ -28,6 +28,12 @@ impl<T> CommandResponseSender<T> {
             _ => true,
         }
     }
+
+    pub async fn aborted(&mut self) {
+        if let Some(tx) = &mut self.tx {
+            tx.closed().await
+        }
+    }
 }
 
 pub type CommandResponseReceiver<T> = oneshot::Receiver<T>;
