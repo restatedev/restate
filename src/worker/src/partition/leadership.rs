@@ -45,6 +45,7 @@ pub(super) struct FollowerState<I, N> {
     peer_id: PeerId,
     partition_id: PartitionId,
     timer_service_options: restate_timer::Options,
+    channel_size: usize,
     invoker_tx: I,
     network_handle: N,
     ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
@@ -259,6 +260,7 @@ where
         peer_id: PeerId,
         partition_id: PartitionId,
         timer_service_options: restate_timer::Options,
+        channel_size: usize,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
         ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
@@ -266,9 +268,10 @@ where
         (
             ActuatorStream::Follower,
             Self::Follower(FollowerState {
-                timer_service_options,
                 peer_id,
                 partition_id,
+                timer_service_options,
+                channel_size,
                 invoker_tx,
                 network_handle,
                 ack_tx,
@@ -313,19 +316,21 @@ where
                 &mut follower_state.invoker_tx,
                 (follower_state.partition_id, leader_epoch),
                 &mut partition_storage,
+                follower_state.channel_size,
             )
             .await?;
 
-            let (timer_tx, timer_rx) = mpsc::channel(1);
+            let (timer_tx, timer_rx) = mpsc::channel(follower_state.channel_size);
 
             let timer = follower_state.timer_service_options.build(
                 timer_tx,
                 partition_storage.clone(),
                 restate_timer::TokioClock,
+                follower_state.channel_size,
             );
             let timer_handle = timer.create_timer_handle();
 
-            let (shuffle_tx, shuffle_rx) = mpsc::channel(1);
+            let (shuffle_tx, shuffle_rx) = mpsc::channel(follower_state.channel_size);
 
             let shuffle = Shuffle::new(
                 follower_state.peer_id,
@@ -333,6 +338,7 @@ where
                 partition_storage,
                 follower_state.network_handle.create_shuffle_sender(),
                 shuffle_tx,
+                follower_state.channel_size,
             );
 
             follower_state
@@ -373,11 +379,12 @@ where
         invoker_handle: &mut InvokerInputSender,
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_storage: &mut PartitionStorage<Storage>,
+        channel_size: usize,
     ) -> Result<mpsc::Receiver<restate_invoker::OutputEffect>, Error>
     where
         Storage: restate_storage_api::Storage,
     {
-        let (invoker_tx, invoker_rx) = mpsc::channel(1);
+        let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
 
         invoker_handle
             .register_partition(partition_leader_epoch, invoker_tx)
@@ -413,6 +420,7 @@ where
                 FollowerState {
                     peer_id,
                     partition_id,
+                    channel_size,
                     timer_service_options: num_in_memory_timers,
                     mut invoker_tx,
                     network_handle,
@@ -448,6 +456,7 @@ where
                 peer_id,
                 partition_id,
                 num_in_memory_timers,
+                channel_size,
                 invoker_tx,
                 network_handle,
                 ack_tx,

@@ -221,6 +221,7 @@ impl Worker {
             method_descriptor_registry,
             invocation_factory,
             reflections_registry,
+            channel_size,
         );
 
         let partition_table = FixedPartitionTable::new(num_partition_processors);
@@ -258,6 +259,7 @@ impl Worker {
                     idx,
                     partition_range,
                     timers.clone(),
+                    channel_size,
                     proposal_sender,
                     invoker_sender,
                     network_handle.clone(),
@@ -270,7 +272,11 @@ impl Worker {
 
         consensus.register_state_machines(command_senders);
 
-        let services = Services::new(consensus.create_proposal_sender(), partition_table);
+        let services = Services::new(
+            consensus.create_proposal_sender(),
+            partition_table,
+            channel_size,
+        );
 
         Ok(Self {
             consensus,
@@ -292,6 +298,7 @@ impl Worker {
         peer_id: PeerId,
         partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
+        channel_size: usize,
         proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: UnboundedInvokerInputSender,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
@@ -299,12 +306,13 @@ impl Worker {
         key_extractor: KeyExtractorsRegistry,
         rocksdb_storage: RocksDBStorage,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
-        let (command_tx, command_rx) = mpsc::channel(1);
+        let (command_tx, command_rx) = mpsc::channel(channel_size);
         let processor = PartitionProcessor::new(
             peer_id,
             peer_id,
             partition_key_range,
             timer_service_options,
+            channel_size,
             command_rx,
             IdentitySender::new(peer_id, proposal_sender),
             invoker_sender,

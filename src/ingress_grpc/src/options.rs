@@ -166,6 +166,7 @@ impl Options {
         descriptor_registry: DescriptorRegistry,
         invocation_factory: InvocationFactory,
         reflection_service: ReflectionService,
+        channel_size: usize,
     ) -> (
         IngressDispatcherLoop,
         HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionService>,
@@ -181,7 +182,7 @@ impl Options {
             json,
         } = self;
 
-        let ingress_dispatcher_loop = IngressDispatcherLoop::new(ingress_id);
+        let ingress_dispatcher_loop = IngressDispatcherLoop::new(ingress_id, channel_size);
 
         let (hyper_ingress_server, _) = HyperServerIngress::new(
             bind_address,

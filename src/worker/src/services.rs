@@ -28,8 +28,9 @@ impl Services {
     pub(crate) fn new(
         proposal_tx: ProposalSender<PeerTarget<AckCommand>>,
         partition_table: FixedPartitionTable,
+        channel_size: usize,
     ) -> Self {
-        let (command_tx, command_rx) = mpsc::channel(32);
+        let (command_tx, command_rx) = mpsc::channel(channel_size);
 
         Self {
             command_rx,

@@ -167,9 +167,10 @@ where
         outbox_reader: OR,
         network_tx: mpsc::Sender<ShuffleOutput>,
         truncation_tx: mpsc::Sender<OutboxTruncation>,
+        channel_size: usize,
     ) -> Self {
-        let (network_in_tx, network_in_rx) = mpsc::channel(32);
-        let (hint_tx, hint_rx) = mpsc::channel(1);
+        let (network_in_tx, network_in_rx) = mpsc::channel(channel_size);
+        let (hint_tx, hint_rx) = mpsc::channel(channel_size);
 
         Self {
             peer_id,
