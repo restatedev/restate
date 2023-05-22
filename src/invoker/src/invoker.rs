@@ -7,8 +7,7 @@ use std::{cmp, panic};
 
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
-use hyper::Uri;
-use restate_common::proxy_connector::ProxyConnector;
+use restate_common::proxy_connector::{Proxy, ProxyConnector};
 use restate_common::types::PartitionLeaderEpoch;
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_service_metadata::ServiceEndpointRegistry;
@@ -268,7 +267,7 @@ pub struct Options {
     /// Can be overridden by the `HTTP_PROXY` environment variable.
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
-    proxy_uri: Option<Uri>,
+    proxy_uri: Option<Proxy>,
 }
 
 impl Default for Options {
@@ -341,7 +340,7 @@ impl Options {
             response_abort_timeout: self.response_abort_timeout.into(),
             message_size_warning: self.message_size_warning,
             message_size_limit: self.message_size_limit,
-            proxy_uri: self.proxy_uri,
+            proxy: self.proxy_uri,
             journal_reader,
             _codec: PhantomData::<C>::default(),
         }
@@ -380,7 +379,7 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     response_abort_timeout: Duration,
     message_size_warning: usize,
     message_size_limit: Option<usize>,
-    proxy_uri: Option<Uri>,
+    proxy: Option<Proxy>,
 
     journal_reader: JournalReader,
 
@@ -611,7 +610,7 @@ where
         hyper::Client::builder()
             .http2_only(true)
             .build::<_, hyper::Body>(ProxyConnector::new(
-                self.proxy_uri.clone(),
+                self.proxy.clone(),
                 hyper_rustls::HttpsConnectorBuilder::new()
                     .with_native_roots()
                     .https_or_http()

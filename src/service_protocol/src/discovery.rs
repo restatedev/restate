@@ -11,7 +11,7 @@ use prost_reflect::{
     DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind, MethodDescriptor,
     ServiceDescriptor,
 };
-use restate_common::proxy_connector::ProxyConnector;
+use restate_common::proxy_connector::{Proxy, ProxyConnector};
 use restate_common::retry_policy::RetryPolicy;
 use restate_errors::{META0001, META0002, META0003};
 use restate_service_key_extractor::{KeyStructure, ServiceInstanceType};
@@ -74,14 +74,14 @@ mod pb {
 #[derive(Debug, Default)]
 pub struct ServiceDiscovery {
     retry_policy: RetryPolicy,
-    proxy_uri: Option<Uri>,
+    proxy: Option<Proxy>,
 }
 
 impl ServiceDiscovery {
-    pub fn new(retry_policy: RetryPolicy, proxy_uri: Option<Uri>) -> Self {
+    pub fn new(retry_policy: RetryPolicy, proxy: Option<Proxy>) -> Self {
         Self {
             retry_policy,
-            proxy_uri,
+            proxy,
         }
     }
 }
@@ -191,7 +191,7 @@ impl ServiceDiscovery {
             .build();
         let client = Client::builder()
             .http2_only(true)
-            .build::<_, Body>(ProxyConnector::new(self.proxy_uri.clone(), connector));
+            .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
         let uri = append_discover(uri)?;
 
         let (mut parts, body) = self

@@ -1,65 +1,97 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::fmt;
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
+use std::task::{Context, Poll};
 
-use futures::TryFutureExt;
-use hyper::http::uri::{InvalidUriParts, Scheme};
+use hyper::http::uri::{InvalidUri, Parts, Scheme};
 use hyper::Uri;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tower::Service;
 
-use crate::utils::GenericError;
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("invalid proxy Uri (must have scheme, authority, and path): {0}")]
+pub struct InvalidProxyUri(Uri);
+
+#[derive(Clone, Debug)]
+pub struct Proxy {
+    uri: Uri,
+}
+
+impl Display for Proxy {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.uri.fmt(f)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProxyFromStrErr {
+    #[error(transparent)]
+    InvalidUri(#[from] InvalidUri),
+    #[error(transparent)]
+    InvalidProxyUri(#[from] InvalidProxyUri),
+}
+
+impl FromStr for Proxy {
+    type Err = ProxyFromStrErr;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::new(Uri::from_str(s)?)?)
+    }
+}
+
+impl Proxy {
+    fn new(proxy_uri: Uri) -> Result<Self, InvalidProxyUri> {
+        match proxy_uri.clone().into_parts() {
+            // all three must be present
+            Parts {
+                scheme: Some(_),
+                authority: Some(_),
+                path_and_query: Some(_),
+                ..
+            } => Ok(Self { uri: proxy_uri }),
+            _ => Err(InvalidProxyUri(proxy_uri)),
+        }
+    }
+
+    fn dst(&self, dst: Uri) -> Uri {
+        // only proxy non TLS traffic, otherwise just pass through directly to underlying connector
+        if dst.scheme() != Some(&Scheme::HTTPS) {
+            let mut parts = self.clone().uri.into_parts();
+            parts.path_and_query = dst.path_and_query().cloned();
+
+            Uri::from_parts(parts).unwrap()
+        } else {
+            dst
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ProxyConnector<C> {
-    proxy_uri: Option<Uri>,
+    proxy: Option<Proxy>,
     connector: C,
 }
 
 impl<C> ProxyConnector<C> {
-    pub fn new(proxy_uri: Option<Uri>, connector: C) -> Self {
-        Self {
-            proxy_uri,
-            connector,
-        }
+    pub fn new(proxy: Option<Proxy>, connector: C) -> Self {
+        Self { proxy, connector }
     }
 }
 
 impl<C> Service<Uri> for ProxyConnector<C>
 where
     C: Service<Uri>,
-    C::Response: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    C::Future: Send + 'static,
-    C::Error: Into<GenericError> + 'static,
 {
     type Response = C::Response;
-    type Error = GenericError;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Error = C::Error;
+    type Future = C::Future;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match ready!(self.connector.poll_ready(cx)) {
-            Ok(()) => Poll::Ready(Ok(())),
-            Err(e) => Poll::Ready(Err(e.into())),
-        }
+        self.connector.poll_ready(cx)
     }
 
     fn call(&mut self, uri: Uri) -> Self::Future {
-        // only proxy non TLS traffic, otherwise just pass through directly to underlying connector
-        if uri.scheme() != Some(&Scheme::HTTPS) {
-            if let Some(proxy_uri) = &self.proxy_uri {
-                return match proxy_dst(&uri, proxy_uri) {
-                    Ok(proxy_uri) => Box::pin(self.connector.call(proxy_uri).map_err(Into::into)),
-                    Err(err) => Box::pin(futures::future::err(err.into())),
-                };
-            }
-        }
-
-        Box::pin(self.connector.call(uri).map_err(|err| err.into()))
+        self.connector.call(match &self.proxy {
+            Some(proxy) => proxy.dst(uri),
+            None => uri,
+        })
     }
-}
-
-fn proxy_dst(dst: &Uri, proxy: &Uri) -> Result<Uri, InvalidUriParts> {
-    let mut parts = proxy.clone().into_parts();
-    parts.path_and_query = dst.path_and_query().cloned();
-    Uri::from_parts(parts)
 }

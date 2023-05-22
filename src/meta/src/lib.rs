@@ -3,8 +3,8 @@ mod service;
 mod storage;
 
 use codederror::CodedError;
-use hyper::Uri;
 use rest_api::MetaRestEndpoint;
+use restate_common::proxy_connector::Proxy;
 use restate_common::retry_policy::RetryPolicy;
 use restate_common::worker_command::WorkerCommandSender;
 use restate_ingress_grpc::ReflectionRegistry;
@@ -59,7 +59,7 @@ pub struct Options {
     /// Can be overridden by the `HTTP_PROXY` environment variable.
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
-    proxy_uri: Option<Uri>,
+    proxy_uri: Option<Proxy>,
 }
 
 impl Default for Options {
