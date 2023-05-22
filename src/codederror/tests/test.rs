@@ -66,6 +66,9 @@ pub enum TopLevelCodeError {
         #[source]
         source: io::Error,
     },
+    #[code(E0002)]
+    #[error("specific error code")]
+    Specific,
 }
 
 #[test]
@@ -132,5 +135,15 @@ fn top_level_enum_code() {
     assert_eq!(
         format!("{}", e.decorate()),
         r"[E0003] io error when accessing to myfile.txt: Kind(NotFound). I know a friend who knows a friend that knows about E0003"
+    );
+}
+
+#[test]
+fn top_level_enum_code_with_variant_specific_code() {
+    let e = TopLevelCodeError::Specific;
+
+    assert_eq!(
+        format!("{}", e.decorate()),
+        r"[E0002] specific error code. Ask on the street about E0002"
     );
 }

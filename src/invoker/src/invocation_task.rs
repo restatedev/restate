@@ -41,15 +41,13 @@ use super::{InvokeInputJournal, JournalMetadata, JournalReader};
 const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/restate");
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
+#[code(restate_errors::RT0006)]
 pub(crate) enum InvocationTaskError {
     #[error("unexpected http status code: {0}")]
-    #[code(unknown)]
     UnexpectedResponse(http::StatusCode),
     #[error("unexpected content type: {0:?}")]
-    #[code(unknown)]
     UnexpectedContentType(Option<HeaderValue>),
     #[error("received unexpected message: {0:?}")]
-    #[code(unknown)]
     UnexpectedMessage(MessageType),
     #[error("encoding/decoding error: {0}")]
     Encoding(
@@ -58,19 +56,15 @@ pub(crate) enum InvocationTaskError {
         EncodingError,
     ),
     #[error("error when trying to read the journal: {0}")]
-    #[code(unknown)]
     JournalReader(Box<dyn Error + Send + Sync + 'static>),
     #[error("other hyper error: {0}")]
-    #[code(unknown)]
     Network(hyper::Error),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
-    #[code(unknown)]
     UnexpectedJoinError(#[from] JoinError),
     #[error("response timeout")]
     #[code(restate_errors::RT0001)]
     ResponseTimeout,
     #[error(transparent)]
-    #[code(unknown)]
     Other(#[from] Box<dyn Error + Send + Sync + 'static>),
 }
 
