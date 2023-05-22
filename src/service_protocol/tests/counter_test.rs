@@ -11,7 +11,7 @@ use restate_test_utils::test;
 #[ignore]
 #[test(tokio::test)]
 async fn counter_discovery() {
-    let discovery = ServiceDiscovery::new(RetryPolicy::None);
+    let discovery = ServiceDiscovery::new(RetryPolicy::None, None);
 
     let discovered_metadata = discovery
         .discover(

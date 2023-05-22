@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
 use prost_reflect::DescriptorPool;
+use restate_common::proxy_connector::Proxy;
 use restate_common::retry_policy::RetryPolicy;
 use restate_errors::{error_it, warn_it};
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
@@ -105,6 +106,7 @@ where
         reflections_registry: ReflectionRegistry,
         storage: Storage,
         service_discovery_retry_policy: RetryPolicy,
+        proxy: Option<Proxy>,
     ) -> Self {
         let (api_cmd_tx, api_cmd_rx) = mpsc::unbounded_channel();
 
@@ -113,7 +115,7 @@ where
             method_descriptors_registry,
             service_endpoint_registry,
             reflections_registry,
-            service_discovery: ServiceDiscovery::new(service_discovery_retry_policy),
+            service_discovery: ServiceDiscovery::new(service_discovery_retry_policy, proxy),
             storage,
             handle: MetaHandle(api_cmd_tx),
             api_cmd_rx,

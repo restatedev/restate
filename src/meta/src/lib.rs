@@ -4,12 +4,14 @@ mod storage;
 
 use codederror::CodedError;
 use rest_api::MetaRestEndpoint;
+use restate_common::proxy_connector::Proxy;
 use restate_common::retry_policy::RetryPolicy;
 use restate_common::worker_command::WorkerCommandSender;
 use restate_ingress_grpc::ReflectionRegistry;
 use restate_service_key_extractor::KeyExtractorsRegistry;
 use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use service::MetaService;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -18,6 +20,7 @@ use tokio::join;
 use tracing::{debug, error};
 
 /// # Meta options
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "MetaOptions"))]
@@ -48,6 +51,15 @@ pub struct Options {
         schemars(default = "Options::default_storage_path")
     )]
     storage_path: String,
+
+    /// # Proxy URI
+    ///
+    /// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with the `Host` header set to the service endpoint URI.    
+    /// HTTPS proxy URIs are supported, but only HTTP endpoint traffic will be proxied currently.
+    /// Can be overridden by the `HTTP_PROXY` environment variable.
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
+    proxy_uri: Option<Proxy>,
 }
 
 impl Default for Options {
@@ -56,6 +68,7 @@ impl Default for Options {
             rest_address: Options::default_rest_address(),
             rest_concurrency_limit: Options::default_rest_concurrency_limit(),
             storage_path: Options::default_storage_path(),
+            proxy_uri: None,
         }
     }
 }
@@ -94,6 +107,7 @@ impl Options {
             FileMetaStorage::new(self.storage_path.into()),
             // Total duration roughly 102 seconds
             RetryPolicy::exponential(Duration::from_millis(100), 2.0, 9, None),
+            self.proxy_uri,
         );
 
         Meta {

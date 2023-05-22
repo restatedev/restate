@@ -6,16 +6,15 @@ use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
+use crate::invoker::HttpsClient;
 use crate::InvokerError;
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{future, stream, FutureExt, Stream, StreamExt};
 use hyper::body::Sender;
-use hyper::client::HttpConnector;
 use hyper::http::response::Parts;
 use hyper::http::HeaderValue;
 use hyper::{http, Body, Request, Response, Uri};
-use hyper_rustls::HttpsConnector;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry::trace::SpanContext;
@@ -126,7 +125,7 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 /// Represents an open invocation stream
 pub(crate) struct InvocationTask<JR> {
     // Shared client
-    client: hyper::Client<HttpsConnector<HttpConnector>, Body>,
+    client: HttpsClient,
 
     // Connection params
     partition: PartitionLeaderEpoch,
@@ -193,7 +192,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        client: hyper::Client<HttpsConnector<HttpConnector>, Body>,
+        client: HttpsClient,
         partition: PartitionLeaderEpoch,
         sid: ServiceInvocationId,
         protocol_version: u16,
@@ -607,10 +606,7 @@ enum ResponseStreamState {
 }
 
 impl ResponseStreamState {
-    fn initialize(
-        client: &hyper::Client<HttpsConnector<HttpConnector>, Body>,
-        req: Request<Body>,
-    ) -> Self {
+    fn initialize(client: &HttpsClient, req: Request<Body>) -> Self {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.

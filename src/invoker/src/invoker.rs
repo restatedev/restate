@@ -7,6 +7,7 @@ use std::{cmp, panic};
 
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
+use restate_common::proxy_connector::{Proxy, ProxyConnector};
 use restate_common::types::PartitionLeaderEpoch;
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_service_metadata::ServiceEndpointRegistry;
@@ -186,8 +187,10 @@ enum OtherInputCommand {
     RegisterPartition(mpsc::Sender<OutputEffect>),
 }
 
-type HttpsClient =
-    hyper::Client<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>, hyper::Body>;
+pub(crate) type HttpsClient = hyper::Client<
+    ProxyConnector<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>>,
+    hyper::Body,
+>;
 
 /// # Invoker options
 #[serde_as]
@@ -256,6 +259,15 @@ pub struct Options {
     ///
     /// Threshold to fail the invocation in case protocol messages coming from service endpoint are larger than the specified amount.
     message_size_limit: Option<usize>,
+
+    /// # Proxy URI
+    ///
+    /// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with the `Host` header set to the service endpoint URI.    
+    /// HTTPS proxy URIs are supported, but only HTTP endpoint traffic will be proxied currently.
+    /// Can be overridden by the `HTTP_PROXY` environment variable.
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
+    proxy_uri: Option<Proxy>,
 }
 
 impl Default for Options {
@@ -266,6 +278,7 @@ impl Default for Options {
             response_abort_timeout: Options::default_response_abort_timeout(),
             message_size_warning: Options::default_message_size_warning(),
             message_size_limit: None,
+            proxy_uri: None,
         }
     }
 }
@@ -327,6 +340,7 @@ impl Options {
             response_abort_timeout: self.response_abort_timeout.into(),
             message_size_warning: self.message_size_warning,
             message_size_limit: self.message_size_limit,
+            proxy: self.proxy_uri,
             journal_reader,
             _codec: PhantomData::<C>::default(),
         }
@@ -365,6 +379,7 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     response_abort_timeout: Duration,
     message_size_warning: usize,
     message_size_limit: Option<usize>,
+    proxy: Option<Proxy>,
 
     journal_reader: JournalReader,
 
@@ -386,6 +401,9 @@ where
     }
 
     pub async fn run(self, drain: drain::Watch) {
+        // Create the shared HTTP Client to use
+        let client = self.get_client();
+
         let Invoker {
             mut invoke_input_rx,
             mut resume_input_rx,
@@ -430,9 +448,6 @@ where
             stream::select_with_strategy(invoke_stream, other_input_stream, |_: &mut ()| {
                 PollNext::Right
             });
-
-        // Create the shared HTTP Client to use
-        let client = Self::get_client();
 
         loop {
             tokio::select! {
@@ -591,16 +606,17 @@ where
 
     // TODO a single client uses the pooling provided by hyper, but this is not enough.
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
-    fn get_client() -> HttpsClient {
+    fn get_client(&self) -> HttpsClient {
         hyper::Client::builder()
             .http2_only(true)
-            .build::<_, hyper::Body>(
+            .build::<_, hyper::Body>(ProxyConnector::new(
+                self.proxy.clone(),
                 hyper_rustls::HttpsConnectorBuilder::new()
                     .with_native_roots()
                     .https_or_http()
                     .enable_http2()
                     .build(),
-            )
+            ))
     }
 }
 
