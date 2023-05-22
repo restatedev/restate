@@ -8,7 +8,7 @@ use std::{cmp, panic};
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
 use hyper::Uri;
-use hyper_proxy::{Intercept, Proxy, ProxyConnector};
+use restate_common::proxy_connector::ProxyConnector;
 use restate_common::types::PartitionLeaderEpoch;
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_service_metadata::ServiceEndpointRegistry;
@@ -322,10 +322,6 @@ impl Options {
 
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
-        let proxy = self
-            .proxy_uri
-            .map(|proxy_uri| Proxy::new(Intercept::Http, proxy_uri));
-
         Invoker {
             invoke_input_rx,
             resume_input_rx,
@@ -344,7 +340,7 @@ impl Options {
             response_abort_timeout: self.response_abort_timeout.into(),
             message_size_warning: self.message_size_warning,
             message_size_limit: self.message_size_limit,
-            proxy,
+            proxy_uri: self.proxy_uri,
             journal_reader,
             _codec: PhantomData::<C>::default(),
         }
@@ -383,7 +379,7 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     response_abort_timeout: Duration,
     message_size_warning: usize,
     message_size_limit: Option<usize>,
-    proxy: Option<Proxy>,
+    proxy_uri: Option<Uri>,
 
     journal_reader: JournalReader,
 
@@ -611,19 +607,16 @@ where
     // TODO a single client uses the pooling provided by hyper, but this is not enough.
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
     fn get_client(&self) -> HttpsClient {
-        let connector = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .https_or_http()
-            .enable_http2()
-            .build();
-        let connector = if let Some(proxy) = self.proxy.clone() {
-            ProxyConnector::from_proxy_unsecured(connector, proxy)
-        } else {
-            ProxyConnector::unsecured(connector)
-        };
         hyper::Client::builder()
             .http2_only(true)
-            .build::<_, hyper::Body>(connector)
+            .build::<_, hyper::Body>(ProxyConnector::new(
+                self.proxy_uri.clone(),
+                hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_native_roots()
+                    .https_or_http()
+                    .enable_http2()
+                    .build(),
+            ))
     }
 }
 

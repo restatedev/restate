@@ -29,7 +29,6 @@ tracing = { workspace = true, optional = true }
 restate_service_key_extractor = { workspace = true, optional = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "runtime"], optional = true }
 hyper-rustls = { workspace = true, optional = true }
-hyper-proxy = { workspace = true }
 restate_common = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }
 restate_service_metadata = { workspace = true, optional = true }

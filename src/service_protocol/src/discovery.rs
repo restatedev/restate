@@ -5,13 +5,13 @@ use codederror::CodedError;
 use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, Client, Method, Request, Uri};
-use hyper_proxy::{Intercept, Proxy, ProxyConnector};
 use hyper_rustls::HttpsConnectorBuilder;
 use prost::{DecodeError, Message};
 use prost_reflect::{
     DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind, MethodDescriptor,
     ServiceDescriptor,
 };
+use restate_common::proxy_connector::ProxyConnector;
 use restate_common::retry_policy::RetryPolicy;
 use restate_errors::{META0001, META0002, META0003};
 use restate_service_key_extractor::{KeyStructure, ServiceInstanceType};
@@ -74,14 +74,14 @@ mod pb {
 #[derive(Debug, Default)]
 pub struct ServiceDiscovery {
     retry_policy: RetryPolicy,
-    proxy: Option<Proxy>,
+    proxy_uri: Option<Uri>,
 }
 
 impl ServiceDiscovery {
     pub fn new(retry_policy: RetryPolicy, proxy_uri: Option<Uri>) -> Self {
         Self {
             retry_policy,
-            proxy: proxy_uri.map(|proxy_uri| Proxy::new(Intercept::Http, proxy_uri)),
+            proxy_uri,
         }
     }
 }
@@ -189,14 +189,9 @@ impl ServiceDiscovery {
             .https_or_http()
             .enable_http2()
             .build();
-        let connector = if let Some(proxy) = self.proxy.clone() {
-            ProxyConnector::from_proxy_unsecured(connector, proxy)
-        } else {
-            ProxyConnector::unsecured(connector)
-        };
         let client = Client::builder()
             .http2_only(true)
-            .build::<_, Body>(connector);
+            .build::<_, Body>(ProxyConnector::new(self.proxy_uri.clone(), connector));
         let uri = append_discover(uri)?;
 
         let (mut parts, body) = self
