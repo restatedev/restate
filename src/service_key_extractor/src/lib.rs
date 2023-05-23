@@ -151,6 +151,12 @@ pub enum Error {
     #[cfg(feature = "expand")]
     #[error("unexpected service instance type to expand the key. Only keys of keyed services can be expanded")]
     UnexpectedServiceInstanceType,
+    #[cfg(feature = "json")]
+    #[error("unexpected value for a singleton service. Singleton service have no service key associated")]
+    UnexpectedNonNullSingletonKey,
+    #[cfg(feature = "json")]
+    #[error("error when decoding the json key: {0}")]
+    DecodeJson(#[from] serde_json::Error),
 }
 
 mod extract_impls {
@@ -1058,7 +1064,7 @@ mod expand_impls {
                 // Now this message should be a well formed protobuf message, we can create the DynamicMessage
                 Ok(DynamicMessage::decode(descriptor, b.freeze())?)
             } else {
-                return Err(Error::UnexpectedServiceInstanceType);
+                Err(Error::UnexpectedServiceInstanceType)
             }
         }
     }

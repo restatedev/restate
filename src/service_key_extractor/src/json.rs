@@ -1,25 +1,62 @@
 use super::*;
+use prost::Message;
 
 use prost_reflect::{DynamicMessage, ServiceDescriptor};
-use serde::Serialize;
+use restate_serde_util::SerdeableUuid;
+use serde::de::IntoDeserializer;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use uuid::Uuid;
 
-trait RestateKeyConverter {
-    fn to_json(&self, service_descriptor: ServiceDescriptor, key: Bytes) -> Result<Value, Error>;
+pub trait RestateKeyConverter {
+    fn convert_key_to_json(
+        &self,
+        service_descriptor: ServiceDescriptor,
+        key: Bytes,
+    ) -> Result<Value, Error>;
+    fn generate_key_from_json(
+        &self,
+        service_descriptor: ServiceDescriptor,
+        key: Value,
+    ) -> Result<Bytes, Error>;
 }
 
 impl RestateKeyConverter for KeyExtractorsRegistry {
-    fn to_json(&self, service_descriptor: ServiceDescriptor, key: Bytes) -> Result<Value, Error> {
+    fn convert_key_to_json(
+        &self,
+        service_descriptor: ServiceDescriptor,
+        key: Bytes,
+    ) -> Result<Value, Error> {
         let services = self.services.load();
-        let service_instance_type =
-            KeyExtractorsRegistry::resolve_instance_type(&services, service_descriptor.name())?;
+        let service_instance_type = KeyExtractorsRegistry::resolve_instance_type(
+            &services,
+            service_descriptor.full_name(),
+        )?;
 
-        service_instance_type.to_json(service_descriptor, key)
+        service_instance_type.convert_key_to_json(service_descriptor, key)
+    }
+
+    fn generate_key_from_json(
+        &self,
+        service_descriptor: ServiceDescriptor,
+        key: Value,
+    ) -> Result<Bytes, Error> {
+        let services = self.services.load();
+        let service_instance_type = KeyExtractorsRegistry::resolve_instance_type(
+            &services,
+            service_descriptor.full_name(),
+        )?;
+
+        service_instance_type.generate_key_from_json(service_descriptor, key)
     }
 }
 
 impl RestateKeyConverter for ServiceInstanceType {
-    fn to_json(&self, service_descriptor: ServiceDescriptor, key: Bytes) -> Result<Value, Error> {
+    fn convert_key_to_json(
+        &self,
+        service_descriptor: ServiceDescriptor,
+        key: Bytes,
+    ) -> Result<Value, Error> {
         Ok(match self {
             keyed @ ServiceInstanceType::Keyed {
                 service_methods_key_field_root_number,
@@ -63,6 +100,51 @@ impl RestateKeyConverter for ServiceInstanceType {
             ),
             ServiceInstanceType::Singleton => Value::Object(Map::new()),
         })
+    }
+
+    fn generate_key_from_json(
+        &self,
+        service_descriptor: ServiceDescriptor,
+        key: Value,
+    ) -> Result<Bytes, Error> {
+        match self {
+            keyed @ ServiceInstanceType::Keyed {
+                service_methods_key_field_root_number,
+                ..
+            } => {
+                let method_desc = service_descriptor.methods().next().expect("Must have at least one method. This should have been checked in service discovery. This is a bug, please contact the developers");
+                let key_field = method_desc
+                    .input()
+                    .get_field(
+                        *service_methods_key_field_root_number
+                            .get(method_desc.name())
+                            .expect("Method must exist in the descriptor"),
+                    )
+                    .expect("Method must exist in the descriptor");
+
+                let mut input_map = serde_json::Map::new();
+                input_map.insert(key_field.json_name().to_string(), key);
+
+                let key_message = DynamicMessage::deserialize(
+                    method_desc.input(),
+                    Value::Object(input_map).into_deserializer(),
+                )?;
+
+                keyed.extract(
+                    service_descriptor.full_name(),
+                    method_desc.name(),
+                    key_message.encode_to_vec().into(),
+                )
+            }
+            ServiceInstanceType::Unkeyed => {
+                let parse_result: Uuid =
+                    SerdeableUuid::deserialize(key.into_deserializer())?.into();
+
+                Ok(parse_result.as_bytes().to_vec().into())
+            }
+            ServiceInstanceType::Singleton if key.is_null() => Ok(Bytes::default()),
+            ServiceInstanceType::Singleton => Err(Error::UnexpectedNonNullSingletonKey),
+        }
     }
 }
 
@@ -140,12 +222,12 @@ mod tests {
     // $field_name indicate which field to use as key.
     // $key_structure specifies the KeyStructure
     // The third variant of the macro allows to specify both test name and test message
-    macro_rules! to_json_tests {
+    macro_rules! json_tests {
         ($field_name:ident) => {
-            to_json_tests!($field_name, KeyStructure::Scalar);
+            json_tests!($field_name, KeyStructure::Scalar);
         };
         ($field_name:ident, $key_structure:expr) => {
-            to_json_tests!(
+            json_tests!(
                 test: $field_name,
                 field_name: $field_name,
                 key_structure: $key_structure,
@@ -157,7 +239,7 @@ mod tests {
                 use super::*;
 
                 #[test]
-                fn to_json() {
+                fn convert_key_to_json() {
                     let test_descriptor_message = test_descriptor_message();
                     let key_field = test_descriptor_message
                         .get_field_by_name(stringify!($field_name))
@@ -188,21 +270,60 @@ mod tests {
 
                     // Now convert the key to json
                     let extracted_json_key = service_instance_type
-                        .to_json(test_service_descriptor(), restate_key)
+                        .convert_key_to_json(test_service_descriptor(), restate_key)
                         .unwrap();
 
                     // Assert expanded field is equal to the one from the original message
                     assert_eq!(extracted_json_key, expected_json_key);
                 }
+
+                #[test]
+                fn generate_key_from_json() {
+                    let test_descriptor_message = test_descriptor_message();
+                    let key_field = test_descriptor_message
+                        .get_field_by_name(stringify!($field_name))
+                        .expect("Field should exist");
+                    let field_number = key_field.number();
+
+                    // Create test message and service instance type
+                    let test_message = $test_message;
+                    let service_instance_type =
+                        mock_keyed_service_instance_type($key_structure, field_number);
+
+                    // Build the expected restate key
+                    let expected_restate_key = service_instance_type
+                        .extract("", METHOD_NAME, test_message.encode_to_vec().into())
+                        .expect("successful key extraction");
+
+                    // Convert the message to json and get the key field
+                    let mut dynamic_test_message = DynamicMessage::new(test_descriptor_message);
+                    dynamic_test_message.transcode_from(&test_message).unwrap();
+                    let input_json_key = dynamic_test_message
+                        .serialize(serde_json::value::Serializer)
+                        .unwrap()
+                        .as_object()
+                        .unwrap()
+                        .get(key_field.json_name())
+                        .unwrap()
+                        .clone();
+
+                    // Now convert the key from json
+                    let extracted_restate_key = service_instance_type
+                        .generate_key_from_json(test_service_descriptor(), input_json_key)
+                        .unwrap();
+
+                    // Assert extracted field is equal to the one from the original message
+                    assert_eq!(extracted_restate_key, expected_restate_key);
+                }
             }
         };
     }
 
-    to_json_tests!(string);
-    to_json_tests!(bytes);
-    to_json_tests!(number);
-    to_json_tests!(nested_message, nested_key_structure());
-    to_json_tests!(
+    json_tests!(string);
+    json_tests!(bytes);
+    json_tests!(number);
+    json_tests!(nested_message, nested_key_structure());
+    json_tests!(
         test: nested_message_with_default,
         field_name: nested_message,
         key_structure: nested_key_structure(),
@@ -214,7 +335,7 @@ mod tests {
             ..Default::default()
         }
     );
-    to_json_tests!(
+    json_tests!(
         test: double_nested_message,
         field_name: nested_message,
         key_structure: nested_key_structure(),
@@ -231,7 +352,7 @@ mod tests {
     );
 
     #[test]
-    fn unkeyed_to_json() {
+    fn unkeyed_convert_key_to_json() {
         let service_instance_type = ServiceInstanceType::Unkeyed;
 
         // Extract the restate key
@@ -241,7 +362,7 @@ mod tests {
 
         // Now convert the key to json
         let extracted_json_key = service_instance_type
-            .to_json(test_service_descriptor(), restate_key)
+            .convert_key_to_json(test_service_descriptor(), restate_key)
             .unwrap();
 
         // Parsing uuid as string should work fine
@@ -253,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn singleton_to_json() {
+    fn singleton_convert_key_to_json() {
         let service_instance_type = ServiceInstanceType::Singleton;
 
         // Extract the restate key
@@ -263,10 +384,46 @@ mod tests {
 
         // Now convert the key to json
         let extracted_json_key = service_instance_type
-            .to_json(test_service_descriptor(), restate_key)
+            .convert_key_to_json(test_service_descriptor(), restate_key)
             .unwrap();
 
         // Should be an empty object
         assert!(extracted_json_key.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unkeyed_generate_key_from_json() {
+        let service_instance_type = ServiceInstanceType::Unkeyed;
+
+        // Extract the restate key
+        let expected_restate_key = service_instance_type
+            .extract("", METHOD_NAME, Bytes::new())
+            .expect("successful key extraction");
+
+        // Parse this as uuid
+        let uuid = Uuid::from_slice(&expected_restate_key).unwrap();
+
+        // Now convert the key to json
+        let extracted_restate_key = service_instance_type
+            .generate_key_from_json(
+                test_service_descriptor(),
+                Value::String(uuid.as_simple().to_string()),
+            )
+            .unwrap();
+
+        assert_eq!(extracted_restate_key, expected_restate_key);
+    }
+
+    #[test]
+    fn singleton_generate_key_from_json() {
+        let service_instance_type = ServiceInstanceType::Singleton;
+
+        // Now convert the key to json
+        let extracted_json_key = service_instance_type
+            .generate_key_from_json(test_service_descriptor(), Value::Null)
+            .unwrap();
+
+        // Should be an empty object
+        assert!(extracted_json_key.is_empty());
     }
 }
