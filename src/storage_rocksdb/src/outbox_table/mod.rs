@@ -1,8 +1,8 @@
 use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Outbox;
-use crate::{GetFuture, PutFuture, RocksDBTransaction, TableScan, TableScanIterationDecision};
-use futures_util::StreamExt;
+use crate::{GetFuture, PutFuture, RocksDBTransaction, TableScan};
+
 use prost::Message;
 use restate_common::types::{OutboxMessage, PartitionId};
 use restate_storage_api::outbox_table::OutboxTable;
@@ -46,12 +46,14 @@ impl OutboxTable for RocksDBTransaction {
             .partition_id(partition_id)
             .message_index(u64::MAX);
 
-        let mut stream = self
-            .for_each_key_value(TableScan::KeyRangeInclusive(start, end), |k, v| {
-                TableScanIterationDecision::Emit(decode_key_value(k, v))
-            });
-
-        Box::pin(async move { stream.next().await.transpose() })
+        self.get_first_blocking(TableScan::KeyRangeInclusive(start, end), |kv| {
+            if let Some((k, v)) = kv {
+                let t = decode_key_value(k, v)?;
+                Ok(Some(t))
+            } else {
+                Ok(None)
+            }
+        })
     }
 
     fn truncate_outbox(

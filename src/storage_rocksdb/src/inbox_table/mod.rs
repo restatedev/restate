@@ -5,7 +5,7 @@ use crate::{GetFuture, PutFuture, RocksDBTransaction};
 use crate::{Result, TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures_util::{FutureExt, StreamExt};
+
 use prost::Message;
 use restate_common::types::{InboxEntry, PartitionKey, ServiceId, ServiceInvocation};
 use restate_storage_api::inbox_table::InboxTable;
@@ -57,8 +57,18 @@ impl InboxTable for RocksDBTransaction {
     }
 
     fn peek_inbox(&mut self, service_id: &ServiceId) -> GetFuture<Option<InboxEntry>> {
-        let mut stream = self.inbox(service_id);
-        async move { stream.next().await.transpose() }.boxed()
+        let key = InboxKey::default()
+            .partition_key(service_id.partition_key())
+            .service_name(service_id.service_name.clone())
+            .service_key(service_id.key.clone());
+
+        self.get_first_blocking(TableScan::KeyPrefix(key), |kv| match kv {
+            Some((k, v)) => {
+                let entry = decode_inbox_key_value(k, v)?;
+                Ok(Some(entry))
+            }
+            None => Ok(None),
+        })
     }
 
     fn inbox(&mut self, service_id: &ServiceId) -> GetStream<InboxEntry> {

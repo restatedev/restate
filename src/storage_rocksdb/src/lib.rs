@@ -481,6 +481,26 @@ impl RocksDBTransaction {
     }
 
     #[inline]
+    pub fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> GetFuture<'static, R>
+    where
+        K: TableKey + Send + 'static,
+        F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let db = Clone::clone(&self.storage);
+        let background_task = move || {
+            let iterator = db.iterator_from(scan);
+            f(iterator.item())
+        };
+        tokio::task::spawn_blocking(background_task)
+            .map(|result| match result {
+                Ok(internal_result) => internal_result,
+                Err(join_error) => Err(StorageError::Generic(join_error.into())),
+            })
+            .boxed()
+    }
+
+    #[inline]
     pub fn for_each_key_value<K, F, R>(
         &self,
         scan: TableScan<K>,
