@@ -27,12 +27,13 @@ okapi-operation = { version = "0.2.1", features = ["axum-integration"] }
 # Serde
 serde = { workspace = true }
 serde_with = { workspace = true }
-serde_json = "1.0"
+serde_json = { workspace = true }
+restate_serde_util = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
 
 # Service discovery and metadata
 restate_common = { workspace = true, features = ["serde"] }
-restate_service_key_extractor = { workspace = true }
+restate_service_key_extractor = { workspace = true, features = ["json"] }
 restate_service_metadata = { workspace = true, features = ["serde", "serde_schema"] }
 restate_service_protocol = { workspace = true, features = ["discovery"] }
 prost-reflect = { workspace = true }
@@ -42,6 +43,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 codederror = { workspace = true }
 restate_errors = { workspace = true, features = ["include_doc"] }
+uuid = { workspace = true }
 
 # TODO remove this once we have meta-registry
 #  used for reflections registry

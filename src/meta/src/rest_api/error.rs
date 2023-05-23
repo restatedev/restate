@@ -31,8 +31,6 @@ pub enum MetaApiError {
     Worker(#[from] worker_command::Error),
 }
 
-impl MetaApiError {}
-
 /// # Error description response
 ///
 /// Error details of the response
@@ -48,15 +46,13 @@ struct ErrorDescriptionResponse {
 impl IntoResponse for MetaApiError {
     fn into_response(self) -> Response {
         let status_code = match &self {
-            MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
-            MetaApiError::ServiceNotFound(_) => StatusCode::NOT_FOUND,
-            MetaApiError::MethodNotFound {
-                service_name: _,
-                method_name: _,
-            } => StatusCode::NOT_FOUND,
+            MetaApiError::ServiceNotFound(_) | MetaApiError::MethodNotFound { .. } => {
+                StatusCode::NOT_FOUND
+            }
             MetaApiError::Meta(MetaError::Discovery(desc_error)) if desc_error.is_user_error() => {
                 StatusCode::BAD_REQUEST
             }
+            MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
             MetaApiError::Worker(_) => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };

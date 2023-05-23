@@ -176,12 +176,14 @@ impl Meta {
         let meta_handle = self.service.meta_handle();
         let service_endpoint_registry = self.service_endpoint_registry();
         let method_descriptor_registry = self.method_descriptor_registry();
+        let key_extractors_registry = self.key_extractors_registry();
 
         let service_fut = self.service.run(shutdown_watch.clone());
         let rest_endpoint_fut = self.rest_endpoint.run(
             meta_handle,
             service_endpoint_registry,
             method_descriptor_registry,
+            key_extractors_registry,
             worker_command_tx,
             shutdown_watch,
         );
