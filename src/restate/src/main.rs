@@ -51,14 +51,6 @@ impl WipeMode {
         meta_storage_dir: PathBuf,
         worker_storage_dir: PathBuf,
     ) -> io::Result<()> {
-        async fn wipe_if_exists(dir: PathBuf) -> io::Result<()> {
-            if tokio::fs::try_exists(&dir).await.ok().unwrap_or(false) {
-                info!("Wiping directory: {}", dir.display());
-                tokio::fs::remove_dir_all(&dir).await?;
-            }
-            Ok(())
-        }
-
         let (wipe_meta, wipe_worker) = match mode {
             Some(WipeMode::Worker) => (false, true),
             Some(WipeMode::Meta) => (true, false),
@@ -67,10 +59,10 @@ impl WipeMode {
         };
 
         if wipe_meta {
-            wipe_if_exists(meta_storage_dir).await?;
+            restate_fs_util::remove_dir_all_if_exists(meta_storage_dir).await?;
         }
         if wipe_worker {
-            wipe_if_exists(worker_storage_dir).await?;
+            restate_fs_util::remove_dir_all_if_exists(worker_storage_dir).await?;
         }
         Ok(())
     }

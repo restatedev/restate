@@ -40,6 +40,7 @@ pub struct SegmentQueue<T> {
 }
 
 impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
+
     /// creates a new spillable segment queue.
     ///
     /// # Arguments

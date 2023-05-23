@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio::io;
 use tokio::io::AsyncWriteExt;
-use tracing::{trace, warn};
+use tracing::trace;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetaStorageError {
@@ -125,8 +125,8 @@ impl MetaStorage for FileMetaStorage {
         };
 
         async move {
-            remove_if_exists(&metadata_file_path).await?;
-            remove_if_exists(&descriptor_file_path).await?;
+            restate_fs_util::remove_file_if_exists(&metadata_file_path).await?;
+            restate_fs_util::remove_file_if_exists(&descriptor_file_path).await?;
 
             let metadata_buf = serde_json::to_vec_pretty(&metadata_file_struct)?;
             let descriptor_pool_buf = descriptor_pool.encode_to_vec();
@@ -160,7 +160,7 @@ impl MetaStorage for FileMetaStorage {
         let root_path = self.root_path.clone();
         FutureExt::boxed(async move {
             // Try to create a dir, in case it doesn't exist
-            let _ = tokio::fs::create_dir_all(&root_path).await;
+            restate_fs_util::create_dir_all_if_doesnt_exists(&root_path).await?;
 
             // Find all the metadata files in the root path directory, then sort them by modified date
             let mut read_dir = tokio::fs::read_dir(root_path).await?;
@@ -207,12 +207,4 @@ impl MetaStorage for FileMetaStorage {
             Ok(StreamExt::boxed(result_stream))
         })
     }
-}
-
-async fn remove_if_exists(path: &PathBuf) -> io::Result<()> {
-    if tokio::fs::metadata(path).await.is_ok() {
-        warn!("Replacing file {}", path.display());
-        tokio::fs::remove_file(path).await?;
-    }
-    Ok(())
 }
