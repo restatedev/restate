@@ -297,10 +297,7 @@ fn cf_options(opts: &Options, cache: Option<Cache>) -> rocksdb::Options {
 impl RocksDBStorage {
     fn new(opts: Options) -> std::result::Result<Self, BuildError> {
         let cache = if opts.cache_size > 0 {
-            Some(
-                Cache::new_lru_cache(opts.cache_size)
-                    .expect("Was not able to create a Cache for rocksdb"),
-            )
+            Some(Cache::new_lru_cache(opts.cache_size))
         } else {
             None
         };

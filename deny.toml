@@ -120,6 +120,9 @@ skip = [
 
     # Clash between datafusion and invoker
     { name = "tokio-rustls"},
+
+    # Clash between rocksdb bindgen and prost-build
+    { name = "prettyplease"}
 ]
 deny = [
     # Each entry the name of a crate and a version range. If version is
