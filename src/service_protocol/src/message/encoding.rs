@@ -127,6 +127,10 @@ impl Decoder {
         }
     }
 
+    pub fn has_remaining(&self) -> bool {
+        self.buf.has_remaining()
+    }
+
     /// Concatenate a new chunk in the internal buffer.
     pub fn push(&mut self, buf: Bytes) {
         self.buf.push(buf)
