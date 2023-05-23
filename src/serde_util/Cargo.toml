@@ -1,0 +1,22 @@
+[package]
+name = "restate_serde_util"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+schema = ["dep:schemars"]
+
+[dependencies]
+uuid = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_with = { workspace = true }
+schemars = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

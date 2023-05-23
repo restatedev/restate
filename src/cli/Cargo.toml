@@ -27,7 +27,7 @@ prost-reflect = { workspace = true, features = ["derive", "serde", "text-format"
 restate_tracing_instrumentation = { workspace = true }
 rustyline = "10.0"
 serde = { workspace = true, features = ["derive"] }
-serde_json = "1.0"
+serde_json = { workspace = true }
 tonic = { workspace = true, features = ["default"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
