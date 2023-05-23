@@ -1000,10 +1000,11 @@ mod state_machine_coordinator {
                         "Protocol violation when executing the invocation. \
                         The invocation task was closed without a SuspensionMessage, nor an OutputStreamEntry"
                     );
-                    self.handle_invocation_task_failed(
+                    self.handle_error_event(
                         service_invocation_id,
                         UnexpectedEndOfInvocationStream,
                         retry_timers,
+                        sm,
                     )
                     .await;
                 }
@@ -1028,48 +1029,59 @@ mod state_machine_coordinator {
             error: impl InvokerError + CodedError + Send + Sync + 'static,
             retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
         ) {
-            if let Some(mut sm) = self
+            if let Some(sm) = self
                 .invocation_state_machines
                 .remove(&service_invocation_id)
             {
-                warn_it!(error, "Error when executing the invocation");
-
-                if sm.is_ending() {
-                    // Soft protocol violation.
-                    // This can happen in case we get an error after receiving an OutputStreamEntry.
-                    // Because handle_invocation_task_failed is the terminal message coming from the invocation task,
-                    // we need to return a message to the partition processor.
-                    warn!(
-                        "Protocol violation when executing the invocation. \
-                        The invocation task sent an OutputStreamEntry and an error afterwards"
-                    );
-                    self.send_end(service_invocation_id).await;
-                    return;
-                }
-
-                match sm.handle_task_error() {
-                    Some(next_retry_timer_duration) if error.is_transient() => {
-                        trace!(
-                            "Starting the retry timer {}. Invocation state: {:?}",
-                            humantime::format_duration(next_retry_timer_duration),
-                            sm.invocation_state_debug()
-                        );
-                        self.invocation_state_machines
-                            .insert(service_invocation_id.clone(), sm);
-                        retry_timers.sleep_until(
-                            SystemTime::now() + next_retry_timer_duration,
-                            (self.partition, service_invocation_id),
-                        );
-                    }
-                    _ => {
-                        trace!("Not going to retry the error");
-                        self.send_error(service_invocation_id, Code::Internal, error)
-                            .await;
-                    }
-                }
+                self.handle_error_event(service_invocation_id, error, retry_timers, sm)
+                    .await;
             } else {
                 // If no state machine, this might be a result for an aborted invocation.
                 trace!("No state machine found for invocation task error signal");
+            }
+        }
+
+        async fn handle_error_event(
+            &mut self,
+            service_invocation_id: ServiceInvocationId,
+            error: impl InvokerError + CodedError + Send + Sync + 'static,
+            retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
+            mut sm: InvocationStateMachine,
+        ) {
+            warn_it!(error, "Error when executing the invocation");
+
+            if sm.is_ending() {
+                // Soft protocol violation.
+                // This can happen in case we get an error after receiving an OutputStreamEntry.
+                // Because handle_invocation_task_failed is the terminal message coming from the invocation task,
+                // we need to return a message to the partition processor.
+                warn!(
+                    "Protocol violation when executing the invocation. \
+                    The invocation task sent an OutputStreamEntry and an error afterwards"
+                );
+                self.send_end(service_invocation_id).await;
+                return;
+            }
+
+            match sm.handle_task_error() {
+                Some(next_retry_timer_duration) if error.is_transient() => {
+                    trace!(
+                        "Starting the retry timer {}. Invocation state: {:?}",
+                        humantime::format_duration(next_retry_timer_duration),
+                        sm.invocation_state_debug()
+                    );
+                    self.invocation_state_machines
+                        .insert(service_invocation_id.clone(), sm);
+                    retry_timers.sleep_until(
+                        SystemTime::now() + next_retry_timer_duration,
+                        (self.partition, service_invocation_id),
+                    );
+                }
+                _ => {
+                    trace!("Not going to retry the error");
+                    self.send_error(service_invocation_id, Code::Internal, error)
+                        .await;
+                }
             }
         }
 
@@ -1145,10 +1157,13 @@ mod state_machine_coordinator {
                     let err = CannotResolveEndpoint(
                         service_invocation_id.service_id.service_name.to_string(),
                     );
-                    self.handle_invocation_task_failed(
+
+                    // This method needs a state machine
+                    self.handle_error_event(
                         service_invocation_id,
                         err,
                         start_arguments.retry_timers,
+                        state_machine_factory(start_arguments.default_retry_policy.clone()),
                     )
                     .await;
                     return;
