@@ -2,6 +2,7 @@ use super::storage::{MetaStorage, MetaStorageError};
 
 use futures::StreamExt;
 use std::collections::HashMap;
+use std::future::Future;
 
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
@@ -37,6 +38,9 @@ pub enum MetaError {
     #[error("meta closed")]
     #[code(unknown)]
     MetaClosed,
+    #[error("request aborted because the client went away")]
+    #[code(unknown)]
+    RequestAborted,
 }
 
 #[derive(Clone)]
@@ -146,17 +150,19 @@ where
         loop {
             tokio::select! {
                 cmd = self.api_cmd_rx.recv() => {
-                    let (req, replier) = cmd.expect("This channel should never be closed").into_inner();
+                    let (req, mut replier) = cmd.expect("This channel should never be closed").into_inner();
 
-                    // If error, the client went away, so it's fine to ignore it
-                    let _ = replier.send(match req {
+                    let res = match req {
                         MetaHandleRequest::DiscoverEndpoint { uri, additional_headers, retry_policy } => MetaHandleResponse::DiscoverEndpoint(
-                            self.discover_endpoint(uri, additional_headers, retry_policy).await
+                            self.discover_endpoint(uri, additional_headers, retry_policy, replier.aborted()).await
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
                         )
-                    });
+                    };
+
+                    // If error, the client went away, so it's fine to ignore it
+                    let _ = replier.send(res);
                 },
                 _ = shutdown.as_mut() => {
                     debug!("Shutdown meta");
@@ -199,13 +205,14 @@ where
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
         retry_policy: Option<RetryPolicy>,
+        abort_signal: impl Future<Output = ()>,
     ) -> Result<Vec<String>, MetaError> {
         debug!(http.url = %uri, "Discovering Service endpoint");
 
-        let discovered_metadata = self
-            .service_discovery
-            .discover(&uri, &additional_headers)
-            .await?;
+        let discovered_metadata = tokio::select! {
+            res = self.service_discovery.discover(&uri, &additional_headers) => res,
+            _ = abort_signal => return Err(MetaError::RequestAborted),
+        }?;
 
         // Store the new endpoint in storage
         let endpoint_metadata = EndpointMetadata::new(
