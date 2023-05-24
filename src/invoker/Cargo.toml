@@ -22,6 +22,7 @@ hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stre
 hyper-rustls = { workspace = true }
 humantime = { workspace = true }
 h2 = { version = "0.3.15", features = ["unstable"] }
+itertools = "0.10.5"
 paste = { workspace = true }
 prost = { workspace = true }
 schemars = { workspace = true, optional = true }

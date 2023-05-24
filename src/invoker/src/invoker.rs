@@ -268,6 +268,9 @@ pub struct Options {
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
     proxy_uri: Option<Proxy>,
+
+    #[cfg_attr(feature = "options_schema", schemars(skip))]
+    disable_eager_state: bool,
 }
 
 impl Default for Options {
@@ -279,6 +282,7 @@ impl Default for Options {
             message_size_warning: Options::default_message_size_warning(),
             message_size_limit: None,
             proxy_uri: None,
+            disable_eager_state: false,
         }
     }
 }
@@ -305,11 +309,12 @@ impl Options {
         1024 * 1024 * 10 // 10mb
     }
 
-    pub fn build<C, JR, JS, SER>(
+    pub fn build<C, JR, JS, SR, SER>(
         self,
         journal_reader: JR,
+        state_reader: SR,
         service_endpoint_registry: SER,
-    ) -> Invoker<C, JR, SER>
+    ) -> Invoker<C, JR, SR, SER>
     where
         C: RawEntryCodec,
         JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
@@ -338,17 +343,19 @@ impl Options {
             retry_policy: self.retry_policy,
             suspension_timeout: self.suspension_timeout.into(),
             response_abort_timeout: self.response_abort_timeout.into(),
+            disable_eager_state: self.disable_eager_state,
             message_size_warning: self.message_size_warning,
             message_size_limit: self.message_size_limit,
             proxy: self.proxy_uri,
             journal_reader,
+            state_reader,
             _codec: PhantomData::<C>::default(),
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
+pub struct Invoker<Codec, JournalReader, StateReader, ServiceEndpointRegistry> {
     invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     resume_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     other_input_rx: mpsc::UnboundedReceiver<Input<OtherInputCommand>>,
@@ -377,19 +384,23 @@ pub struct Invoker<Codec, JournalReader, ServiceEndpointRegistry> {
     retry_policy: RetryPolicy,
     suspension_timeout: Duration,
     response_abort_timeout: Duration,
+    disable_eager_state: bool,
     message_size_warning: usize,
     message_size_limit: Option<usize>,
     proxy: Option<Proxy>,
 
     journal_reader: JournalReader,
+    state_reader: StateReader,
 
     _codec: PhantomData<Codec>,
 }
 
-impl<C, JR, JS, SER> Invoker<C, JR, SER>
+impl<C, JR, SR, SER> Invoker<C, JR, SR, SER>
 where
-    JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-    JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+    JR: JournalReader + Clone + Send + Sync + 'static,
+    <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
+    SR: StateReader + Clone + Send + Sync + 'static,
+    <SR as StateReader>::StateIter: Send,
     SER: ServiceEndpointRegistry,
 {
     pub fn create_sender(&self) -> UnboundedInvokerInputSender {
@@ -415,9 +426,11 @@ where
             mut invocation_tasks,
             mut retry_timers,
             journal_reader,
+            state_reader,
             retry_policy,
             suspension_timeout,
             response_abort_timeout,
+            disable_eager_state,
             message_size_warning,
             message_size_limit,
             ..
@@ -461,10 +474,12 @@ where
                                     StartInvocationTaskArguments::new(
                                         &client,
                                         &journal_reader,
+                                        &state_reader,
                                         &service_endpoint_registry,
                                         &retry_policy,
                                         suspension_timeout,
                                         response_abort_timeout,
+                                        disable_eager_state,
                                         message_size_warning,
                                         message_size_limit,
                                         &mut invocation_tasks,
@@ -504,10 +519,12 @@ where
                                     StartInvocationTaskArguments::new(
                                         &client,
                                         &journal_reader,
+                                        &state_reader,
                                         &service_endpoint_registry,
                                         &retry_policy,
                                         suspension_timeout,
                                         response_abort_timeout,
+                                        disable_eager_state,
                                         message_size_warning,
                                         message_size_limit,
                                         &mut invocation_tasks,
@@ -567,10 +584,12 @@ where
                             StartInvocationTaskArguments::new(
                                 &client,
                                 &journal_reader,
+                                &state_reader,
                                 &service_endpoint_registry,
                                 &retry_policy,
                                 suspension_timeout,
                                 response_abort_timeout,
+                                disable_eager_state,
                                 message_size_warning,
                                 message_size_limit,
                                 &mut invocation_tasks,
@@ -660,13 +679,15 @@ mod state_machine_coordinator {
     /// Because the methods receiving this struct might not start
     /// the InvocationTask (e.g. if the request cannot be retried now),
     /// we pass only borrows so we create clones only if we need them.
-    pub(super) struct StartInvocationTaskArguments<'a, JR, SER> {
+    pub(super) struct StartInvocationTaskArguments<'a, JR, SR, SER> {
         client: &'a HttpsClient,
         journal_reader: &'a JR,
+        state_reader: &'a SR,
         service_endpoint_registry: &'a SER,
         default_retry_policy: &'a RetryPolicy,
         suspension_timeout: Duration,
         response_abort_timeout: Duration,
+        disable_eager_state: bool,
         message_size_warning: usize,
         message_size_limit: Option<usize>,
         invocation_tasks: &'a mut JoinSet<()>,
@@ -674,15 +695,17 @@ mod state_machine_coordinator {
         retry_timers: &'a mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
     }
 
-    impl<'a, JR, SER> StartInvocationTaskArguments<'a, JR, SER> {
+    impl<'a, JR, SR, SER> StartInvocationTaskArguments<'a, JR, SR, SER> {
         #[allow(clippy::too_many_arguments)]
         pub(super) fn new(
             client: &'a HttpsClient,
             journal_reader: &'a JR,
+            state_reader: &'a SR,
             service_endpoint_registry: &'a SER,
             default_retry_policy: &'a RetryPolicy,
             suspension_timeout: Duration,
             response_abort_timeout: Duration,
+            disable_eager_state: bool,
             message_size_warning: usize,
             message_size_limit: Option<usize>,
             invocation_tasks: &'a mut JoinSet<()>,
@@ -692,10 +715,12 @@ mod state_machine_coordinator {
             Self {
                 client,
                 journal_reader,
+                state_reader,
                 service_endpoint_registry,
                 default_retry_policy,
                 suspension_timeout,
                 response_abort_timeout,
+                disable_eager_state,
                 message_size_warning,
                 message_size_limit,
                 invocation_tasks,
@@ -784,13 +809,15 @@ mod state_machine_coordinator {
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
-        pub(super) async fn handle_invoke<JR, JS, SER>(
+        pub(super) async fn handle_invoke<JR, SR, SER>(
             &mut self,
             invoke_input_cmd: InvokeInputCommand,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SR, SER>,
         ) where
-            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+            JR: JournalReader + Clone + Send + Sync + 'static,
+            <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
+            SR: StateReader + Clone + Send + Sync + 'static,
+            <SR as StateReader>::StateIter: Send,
             SER: ServiceEndpointRegistry,
         {
             let service_invocation_id = invoke_input_cmd.service_invocation_id;
@@ -882,13 +909,15 @@ mod state_machine_coordinator {
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
-        pub(super) async fn handle_retry_timer_fired<JR, JS, SER>(
+        pub(super) async fn handle_retry_timer_fired<JR, SR, SER>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SR, SER>,
         ) where
-            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+            JR: JournalReader + Clone + Send + Sync + 'static,
+            <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
+            SR: StateReader + Clone + Send + Sync + 'static,
+            <SR as StateReader>::StateIter: Send,
             SER: ServiceEndpointRegistry,
         {
             trace!("Retry timeout fired");
@@ -908,14 +937,16 @@ mod state_machine_coordinator {
                 restate.journal.index = entry_index,
             )
         )]
-        pub(super) async fn handle_stored_entry_ack<JR, JS, SER>(
+        pub(super) async fn handle_stored_entry_ack<JR, SR, SER>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SR, SER>,
             entry_index: EntryIndex,
         ) where
-            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+            JR: JournalReader + Clone + Send + Sync + 'static,
+            <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
+            SR: StateReader + Clone + Send + Sync + 'static,
+            <SR as StateReader>::StateIter: Send,
             SER: ServiceEndpointRegistry,
         {
             trace!("Received a new stored journal entry acknowledgement");
@@ -1090,15 +1121,17 @@ mod state_machine_coordinator {
 
         // --- Helpers
 
-        async fn start_invocation_task<JR, JS, SER>(
+        async fn start_invocation_task<JR, SR, SER>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
             journal: InvokeInputJournal,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SR, SER>,
             state_machine_factory: impl FnOnce(RetryPolicy) -> InvocationStateMachine,
         ) where
-            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+            JR: JournalReader + Clone + Send + Sync + 'static,
+            <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
+            SR: StateReader + Clone + Send + Sync + 'static,
+            <SR as StateReader>::StateIter: Send,
             SER: ServiceEndpointRegistry,
         {
             // Resolve metadata
@@ -1149,9 +1182,11 @@ mod state_machine_coordinator {
                     metadata,
                     start_arguments.suspension_timeout,
                     start_arguments.response_abort_timeout,
+                    start_arguments.disable_eager_state,
                     start_arguments.message_size_warning,
                     start_arguments.message_size_limit,
                     start_arguments.journal_reader.clone(),
+                    start_arguments.state_reader.clone(),
                     start_arguments.invocation_tasks_tx.clone(),
                     completions_rx,
                 )
@@ -1168,14 +1203,16 @@ mod state_machine_coordinator {
                 .insert(service_invocation_id, invocation_state_machine);
         }
 
-        async fn handle_retry_event<JR, JS, SER, FN>(
+        async fn handle_retry_event<JR, SR, SER, FN>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SER>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SR, SER>,
             f: FN,
         ) where
-            JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-            JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+            JR: JournalReader + Clone + Send + Sync + 'static,
+            <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
+            SR: StateReader + Clone + Send + Sync + 'static,
+            <SR as StateReader>::StateIter: Send,
             SER: ServiceEndpointRegistry,
             FN: FnOnce(&mut InvocationStateMachine),
         {

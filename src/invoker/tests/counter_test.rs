@@ -5,7 +5,7 @@ mod mocks;
 
 use bytes::Bytes;
 use hyper::Uri;
-use mocks::{InMemoryJournalStorage, SimulatorAction};
+use mocks::{InMemoryJournalStorage, InMemoryStateStorage, SimulatorAction};
 use prost::Message;
 use restate_common::types::{CompletionResult, ServiceInvocationId};
 use restate_invoker::{Invoker, Kind, OutputEffect, UnboundedInvokerInputSender};
@@ -140,8 +140,13 @@ async fn bidi_stream() {
     let remote_invoker: Invoker<
         ProtobufRawEntryCodec,
         InMemoryJournalStorage,
+        InMemoryStateStorage,
         InMemoryServiceEndpointRegistry,
-    > = options.build(journal_reader.clone(), service_endpoint_registry);
+    > = options.build(
+        journal_reader.clone(),
+        InMemoryStateStorage::default(),
+        service_endpoint_registry,
+    );
 
     // Build the partition processor simulator
     let mut partition_processor_simulator =

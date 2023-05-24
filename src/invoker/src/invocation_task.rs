@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 use std::error::Error;
 use std::future::{poll_fn, Future};
+use std::iter;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
-use crate::invoker::HttpsClient;
-use crate::InvokerError;
+use crate::EagerState;
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{future, stream, FutureExt, Stream, StreamExt};
@@ -20,6 +20,7 @@ use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry::trace::SpanContext;
 use opentelemetry_http::HeaderInjector;
 use restate_common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
+use restate_common::utils::GenericError;
 use restate_errors::warn_it;
 use restate_journal::raw::{PlainRawEntry, RawEntryHeader};
 use restate_journal::Completion;
@@ -33,7 +34,9 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use super::{InvokeInputJournal, JournalMetadata, JournalReader};
+use super::{
+    HttpsClient, InvokeInputJournal, InvokerError, JournalMetadata, JournalReader, StateReader,
+};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -56,7 +59,9 @@ pub(crate) enum InvocationTaskError {
         EncodingError,
     ),
     #[error("error when trying to read the journal: {0}")]
-    JournalReader(Box<dyn Error + Send + Sync + 'static>),
+    JournalReader(GenericError),
+    #[error("error when trying to read the service instance state: {0}")]
+    StateReader(GenericError),
     #[error("other hyper error: {0}")]
     Network(hyper::Error),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
@@ -71,7 +76,7 @@ pub(crate) enum InvocationTaskError {
     #[error("Unexpected end of invocation stream, as it was closed with both a SuspensionMessage and an OutputStreamEntry. This is probably an SDK bug")]
     TooManyTerminalMessages,
     #[error(transparent)]
-    Other(#[from] Box<dyn Error + Send + Sync + 'static>),
+    Other(#[from] GenericError),
 }
 
 impl InvokerError for InvocationTaskError {
@@ -130,7 +135,7 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 }
 
 /// Represents an open invocation stream
-pub(crate) struct InvocationTask<JR> {
+pub(crate) struct InvocationTask<JR, SR> {
     // Shared client
     client: HttpsClient,
 
@@ -140,9 +145,11 @@ pub(crate) struct InvocationTask<JR> {
     endpoint_metadata: EndpointMetadata,
     suspension_timeout: Duration,
     response_abort_timeout: Duration,
+    disable_eager_state: bool,
 
     // Invoker tx/rx
     journal_reader: JR,
+    state_reader: SR,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
 
@@ -194,10 +201,12 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<JR, JS> InvocationTask<JR>
+impl<JR, SR> InvocationTask<JR, SR>
 where
-    JR: JournalReader<JournalStream = JS>,
-    JS: Stream<Item = PlainRawEntry> + Unpin,
+    JR: JournalReader + Clone + Send + Sync + 'static,
+    <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
+    SR: StateReader + Clone + Send + Sync + 'static,
+    <SR as StateReader>::StateIter: Send,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -208,9 +217,11 @@ where
         endpoint_metadata: EndpointMetadata,
         suspension_timeout: Duration,
         response_abort_timeout: Duration,
+        disable_eager_state: bool,
         message_size_warning: usize,
         message_size_limit: Option<usize>,
         journal_reader: JR,
+        state_reader: SR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
     ) -> Self {
@@ -221,8 +232,10 @@ where
             endpoint_metadata,
             suspension_timeout,
             response_abort_timeout,
+            disable_eager_state,
             next_journal_index: 0,
             journal_reader,
+            state_reader,
             invoker_tx,
             invoker_rx,
             encoder: Encoder::new(protocol_version),
@@ -273,20 +286,38 @@ where
 
     async fn run_internal(&mut self, input_journal: InvokeInputJournal) -> TerminalLoopState<()> {
         // Resolve journal and its metadata
-        let (journal_metadata, journal_stream) = match input_journal {
-            InvokeInputJournal::NoCachedJournal => {
-                let (journal_meta, journal_stream) = shortcircuit!(self
-                    .journal_reader
-                    .read_journal(&self.service_invocation_id)
-                    .await
-                    .map_err(|e| InvocationTaskError::JournalReader(Box::new(e))));
-                (journal_meta, future::Either::Left(journal_stream))
-            }
-            InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
-                journal_meta,
-                future::Either::Right(stream::iter(journal_items)),
-            ),
+        let read_journal_future = async {
+            Ok(match input_journal {
+                InvokeInputJournal::NoCachedJournal => {
+                    let (journal_meta, journal_stream) = self
+                        .journal_reader
+                        .read_journal(&self.service_invocation_id)
+                        .await
+                        .map_err(|e| InvocationTaskError::JournalReader(Box::new(e)))?;
+                    (journal_meta, future::Either::Left(journal_stream))
+                }
+                InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
+                    journal_meta,
+                    future::Either::Right(stream::iter(journal_items)),
+                ),
+            })
         };
+        // Read eager state
+        let read_state_future = async {
+            if self.disable_eager_state {
+                Ok(EagerState::<iter::Empty<_>>::default().map(itertools::Either::Right))
+            } else {
+                self.state_reader
+                    .read_state(&self.service_invocation_id.service_id)
+                    .await
+                    .map_err(|e| InvocationTaskError::StateReader(Box::new(e)))
+                    .map(|r| r.map(itertools::Either::Left))
+            }
+        };
+
+        // We execute those concurrently
+        let ((journal_metadata, journal_stream), state_iter) =
+            shortcircuit!(tokio::try_join!(read_journal_future, read_state_future));
 
         // Resolve the uri to use for the request
         let uri = self.prepare_uri(&journal_metadata);
@@ -306,7 +337,10 @@ where
 
         // Prepare the request and send start message
         let (mut http_stream_tx, http_request) = self.prepare_request(uri);
-        shortcircuit!(self.write_start(&mut http_stream_tx, journal_size).await);
+        shortcircuit!(
+            self.write_start(&mut http_stream_tx, journal_size, state_iter)
+                .await
+        );
 
         // Initialize the response stream state
         let mut http_stream_rx = ResponseStreamState::initialize(&self.client, http_request);
@@ -464,11 +498,14 @@ where
 
     // --- Read and write methods
 
-    async fn write_start(
+    async fn write_start<I: Iterator<Item = (Bytes, Bytes)>>(
         &mut self,
         http_stream_tx: &mut Sender,
         journal_size: u32,
+        state_entries: EagerState<I>,
     ) -> Result<(), InvocationTaskError> {
+        let is_partial = state_entries.is_partial();
+
         // Send the invoke frame
         self.write(
             http_stream_tx,
@@ -480,6 +517,8 @@ where
                     .into(),
                 self.service_invocation_id.service_id.key.clone(),
                 journal_size,
+                is_partial,
+                state_entries,
             ),
         )
         .await
@@ -525,7 +564,7 @@ where
     ) -> TerminalLoopState<()> {
         trace!(restate.protocol.message_header = ?mh, restate.protocol.message = ?message, "Received message");
         match message {
-            ProtocolMessage::Start(_) => TerminalLoopState::Failed(
+            ProtocolMessage::Start { .. } => TerminalLoopState::Failed(
                 InvocationTaskError::UnexpectedMessage(MessageType::Start),
             ),
             ProtocolMessage::Completion(_) => TerminalLoopState::Failed(

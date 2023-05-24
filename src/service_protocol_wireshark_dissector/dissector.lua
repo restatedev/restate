@@ -7,13 +7,17 @@ local p_service_protocol = Proto("restate_service_protocol", "Restate Service En
 -- Define the fields
 local f_ty = ProtoField.uint16("restate_service_protocol.message_type", "Message Type", base.HEX)
 local f_protocol_version = ProtoField.uint16("restate_service_protocol.protocol_version", "Protocol version")
-local f_completed = ProtoField.bool("restate_service_protocol.completed", "Completed flag", base.NONE, {
+local f_completed = ProtoField.bool("restate_service_protocol.completed", "COMPLETED", base.NONE, {
     "Completed",
     "Not completed"
 })
-local f_requires_ack = ProtoField.bool("restate_service_protocol.requires_ack", "Requires Ack flag", base.NONE, {
+local f_requires_ack = ProtoField.bool("restate_service_protocol.requires_ack", "REQUIRES_ACK", base.NONE, {
     "Requires ack",
     "Doesn't require ack"
+})
+local f_partial_state = ProtoField.bool("restate_service_protocol.partial_state", "PARTIAL_STATE", base.NONE, {
+    "Partial state",
+    "Complete state"
 })
 local f_len = ProtoField.uint16("restate_service_protocol.length", "Length", base.DEC)
 local f_message = ProtoField.string("restate_service_protocol.message", "Message", base.UNICODE)
@@ -23,6 +27,7 @@ p_service_protocol.fields = {
     f_protocol_version,
     f_completed,
     f_requires_ack,
+    f_partial_state,
     f_len,
     f_message
 }
@@ -48,6 +53,9 @@ function p_service_protocol.dissector(buf, pkt, tree)
         end
         if msg.requires_ack ~= nil then
             subtree:add(f_requires_ack, msg.requires_ack)
+        end
+        if msg.partial_state ~= nil then
+            subtree:add(f_partial_state, msg.partial_state)
         end
         subtree:add(f_message, buf(8), msg.message, msg.message)
     end

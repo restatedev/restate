@@ -13,7 +13,7 @@ use restate_common::types::{
 use restate_journal::raw::Header;
 use std::ops::RangeInclusive;
 
-pub mod journal_reader;
+pub mod invoker;
 
 use crate::partition::TimerValue;
 use restate_storage_api::outbox_table::OutboxTable;

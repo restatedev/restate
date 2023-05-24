@@ -57,9 +57,14 @@ impl Encoder {
 
 fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeader {
     match msg {
-        ProtocolMessage::Start(m) => MessageHeader::new_start(
+        ProtocolMessage::Start {
+            partial_state,
+            inner,
+        } => MessageHeader::new_start(
+            *partial_state,
             protocol_version,
-            m.encoded_len()
+            inner
+                .encoded_len()
                 .try_into()
                 .expect("Protocol messages can't be larger than u32"),
         ),
@@ -91,7 +96,7 @@ fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeade
 
 fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost::EncodeError> {
     match msg {
-        ProtocolMessage::Start(m) => m.encode(buf),
+        ProtocolMessage::Start { inner, .. } => inner.encode(buf),
         ProtocolMessage::Completion(m) => m.encode(buf),
         ProtocolMessage::Suspension(m) => m.encode(buf),
         ProtocolMessage::UnparsedEntry(entry) => {
@@ -210,7 +215,12 @@ fn decode_protocol_message(
     mut buf: impl Buf,
 ) -> Result<ProtocolMessage, prost::DecodeError> {
     Ok(match header.message_type() {
-        MessageType::Start => ProtocolMessage::Start(pb::protocol::StartMessage::decode(buf)?),
+        MessageType::Start => ProtocolMessage::Start {
+            partial_state: header
+                .partial_state()
+                .expect("StartMessage MUST parse the PARTIAL_STATE flag. This is a runtime bug."),
+            inner: pb::protocol::StartMessage::decode(buf)?,
+        },
         MessageType::Completion => {
             ProtocolMessage::Completion(pb::protocol::CompletionMessage::decode(buf)?)
         }
@@ -314,6 +324,8 @@ mod tests {
             "key".into(),
             Bytes::copy_from_slice(uuid::Uuid::now_v7().as_bytes()),
             1,
+            true,
+            vec![],
         );
         let expected_msg_1: ProtocolMessage = RawEntry::new(
             RawEntryHeader::PollInputStream { is_completed: true },
@@ -339,6 +351,7 @@ mod tests {
             actual_msg_header_0.protocol_version(),
             Some(protocol_version)
         );
+        assert_eq!(actual_msg_header_0.partial_state(), Some(true));
         assert_eq!(actual_msg_header_0.message_type(), MessageType::Start);
         assert_eq!(actual_msg_0, expected_msg_0);
 
