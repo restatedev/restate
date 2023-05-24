@@ -49,6 +49,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check disk space
+        run: df -h
+
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.3
 
@@ -65,10 +68,16 @@ jobs:
         run: df -h
 
       - name: Check working space directory
-        run: du ${GITHUB_WORKSPACE} -h -d 1
+        run: du / -h
 
       - name: Run tests
         run: just test
+
+      - name: Check disk space
+        run: df -h
+
+      - name: Check working space directory
+        run: du / -h
 
       - name: Run verification test
         run: just verification-test
