@@ -29,6 +29,7 @@ jobs:
             restatedev/documentation
             restatedev/sdk-typescript
             restatedev/node-template-generator
+            restatedev/tour-of-restate-typescript
             restatedev/example-shopping-cart-typescript
             restatedev/example-lambda-ts-greeter
             restatedev/example-ticket-reservation-system
