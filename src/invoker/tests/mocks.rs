@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use bytes::Bytes;
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::fmt::{Debug, Formatter};
@@ -12,10 +13,13 @@ use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use prost::Message;
 use restate_common::types::{
-    CompletionResult, EntryIndex, JournalMetadata, RawEntry, ServiceInvocationId,
+    CompletionResult, EntryIndex, JournalMetadata, RawEntry, ServiceId, ServiceInvocationId,
     ServiceInvocationSpanContext, SpanRelation,
 };
-use restate_invoker::{InvokeInputJournal, InvokerInputSender, JournalReader, Kind, OutputEffect};
+use restate_invoker::{
+    EagerState, InvokeInputJournal, InvokerInputSender, JournalReader, Kind, OutputEffect,
+    StateReader,
+};
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use restate_journal::Completion;
 use restate_service_protocol::pb::protocol::PollInputStreamEntryMessage;
@@ -267,6 +271,30 @@ impl JournalReader for InMemoryJournalStorage {
             let (meta, journal) = journals.get(&sid).unwrap();
 
             Ok((meta.clone(), stream::iter(journal.clone())))
+        }
+        .boxed()
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct InMemoryStateStorage {
+    #[allow(clippy::type_complexity)]
+    tables: Arc<Mutex<HashMap<ServiceId, Vec<(Bytes, Bytes)>>>>,
+}
+
+impl StateReader for InMemoryStateStorage {
+    type StateIter = IntoIter<(Bytes, Bytes)>;
+    type Error = Infallible;
+    type Future<'a> = BoxFuture<'static, Result<EagerState<Self::StateIter>, Self::Error>>;
+
+    fn read_state<'a>(&'a self, service_id: &'a ServiceId) -> Self::Future<'_> {
+        let table_arc = self.tables.clone();
+        let service_id = service_id.clone();
+        async move {
+            let tables = table_arc.lock().await;
+            Ok(EagerState::new_complete(
+                tables.get(&service_id).unwrap().clone().into_iter(),
+            ))
         }
         .boxed()
     }

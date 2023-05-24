@@ -2,7 +2,7 @@ extern crate core;
 
 use crate::ingress_integration::{ExternalClientIngressRunner, IngressIntegrationError};
 use crate::network_integration::FixedPartitionTable;
-use crate::partition::storage::journal_reader::JournalReader;
+use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::range_partitioner::RangePartitioner;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use crate::services::Services;
@@ -179,7 +179,8 @@ pub struct Worker {
     storage_grpc: StorageService,
     invoker: Invoker<
         ProtobufRawEntryCodec,
-        JournalReader<RocksDBStorage>,
+        InvokerStorageReader<RocksDBStorage>,
+        InvokerStorageReader<RocksDBStorage>,
         InMemoryServiceEndpointRegistry,
     >,
     external_client_ingress_runner: ExternalClientIngressRunner,
@@ -243,8 +244,10 @@ impl Worker {
 
         let storage_grpc = storage_grpc.build(rocksdb.clone());
 
+        let invoker_storage_reader = InvokerStorageReader::new(rocksdb.clone());
         let invoker = opts.invoker.build(
-            JournalReader::new(rocksdb.clone()),
+            invoker_storage_reader.clone(),
+            invoker_storage_reader,
             service_endpoint_registry,
         );
 

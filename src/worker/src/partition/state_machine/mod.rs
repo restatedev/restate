@@ -327,7 +327,7 @@ where
             } => {
                 debug_assert!(
                     !waiting_for_completed_entries.is_empty(),
-                    "Expecting at least one entry on which the invocation {service_invocation_id:?} is waiting."
+                    "Expecting at least one entry on which the invocation {service_invocation_id} is waiting."
                 );
                 let mut any_completed = false;
                 for entry_index in &waiting_for_completed_entries {
@@ -441,7 +441,7 @@ where
     ) -> Result<(), Error> {
         debug_assert_eq!(
             entry_index, invocation_metadata.journal_metadata.length,
-            "Expect to receive next journal entry"
+            "Expect to receive next journal entry for {service_invocation_id}"
         );
 
         match journal_entry.header {

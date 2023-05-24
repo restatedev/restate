@@ -18,7 +18,10 @@ pub use header::{MessageHeader, MessageKind, MessageType};
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolMessage {
     // Core
-    Start(pb::protocol::StartMessage),
+    Start {
+        partial_state: bool,
+        inner: pb::protocol::StartMessage,
+    },
     Completion(pb::protocol::CompletionMessage),
     Suspension(pb::protocol::SuspensionMessage),
 
@@ -31,12 +34,21 @@ impl ProtocolMessage {
         invocation_id: Bytes,
         instance_key: Bytes,
         known_entries: u32,
+        partial_state: bool,
+        state_map_entries: impl IntoIterator<Item = (Bytes, Bytes)>,
     ) -> Self {
-        ProtocolMessage::Start(pb::protocol::StartMessage {
-            invocation_id,
-            instance_key,
-            known_entries,
-        })
+        Self::Start {
+            partial_state,
+            inner: pb::protocol::StartMessage {
+                invocation_id,
+                instance_key,
+                known_entries,
+                state_map: state_map_entries
+                    .into_iter()
+                    .map(|(key, value)| pb::protocol::start_message::StateEntry { key, value })
+                    .collect(),
+            },
+        }
     }
 }
 

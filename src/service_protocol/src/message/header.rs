@@ -1,6 +1,7 @@
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
-const COMPLETED_MASK: u64 = 0x0001_0000_0000;
+const PARTIAL_STATE_MASK: u64 = 0x0400_0000_0000;
 const VERSION_MASK: u64 = 0x03FF_0000_0000;
+const COMPLETED_MASK: u64 = 0x0001_0000_0000;
 const REQUIRES_ACK_MASK: u64 = 0x0001_0000_0000;
 
 type MessageTypeId = u16;
@@ -64,6 +65,10 @@ impl MessageType {
     }
 
     fn has_protocol_version(&self) -> bool {
+        *self == MessageType::Start
+    }
+
+    fn has_partial_state_flag(&self) -> bool {
         *self == MessageType::Start
     }
 
@@ -140,11 +145,14 @@ pub struct MessageHeader {
     ty: MessageType,
     length: u32,
 
-    // Flags
-    /// Only `CompletableEntries` have completed flag. See [`MessageType#allows_completed_flag`].
-    completed_flag: Option<bool>,
+    // --- Flags
+    /// Only `StartMessage` has `PARTIAL_STATE`.
+    partial_state_flag: Option<bool>,
     /// Only `StartMessage` has protocol_version.
     protocol_version: Option<u16>,
+
+    /// Only `CompletableEntries` have completed flag. See [`MessageType#allows_completed_flag`].
+    completed_flag: Option<bool>,
     /// Only `Custom` entries have requires ack flag.
     requires_ack_flag: Option<bool>,
 }
@@ -152,15 +160,16 @@ pub struct MessageHeader {
 impl MessageHeader {
     #[inline]
     pub fn new(ty: MessageType, length: u32) -> Self {
-        Self::_new(ty, None, None, None, length)
+        Self::_new(ty, None, None, None, None, length)
     }
 
     #[inline]
-    pub fn new_start(protocol_version: u16, length: u32) -> Self {
+    pub fn new_start(partial_state: bool, protocol_version: u16, length: u32) -> Self {
         Self::_new(
             MessageType::Start,
-            None,
+            Some(partial_state),
             Some(protocol_version),
+            None,
             None,
             length,
         )
@@ -170,22 +179,24 @@ impl MessageHeader {
     pub fn new_completable_entry(ty: MessageType, completed: bool, length: u32) -> Self {
         debug_assert!(ty.has_completed_flag());
 
-        Self::_new(ty, Some(completed), None, None, length)
+        Self::_new(ty, None, None, Some(completed), None, length)
     }
 
     #[inline]
     fn _new(
         ty: MessageType,
-        completed_flag: Option<bool>,
+        partial_state_flag: Option<bool>,
         protocol_version: Option<u16>,
+        completed_flag: Option<bool>,
         requires_ack_flag: Option<bool>,
         length: u32,
     ) -> Self {
         MessageHeader {
             ty,
             length,
-            completed_flag,
+            partial_state_flag,
             protocol_version,
+            completed_flag,
             requires_ack_flag,
         }
     }
@@ -201,13 +212,18 @@ impl MessageHeader {
     }
 
     #[inline]
-    pub fn completed(&self) -> Option<bool> {
-        self.completed_flag
+    pub fn partial_state(&self) -> Option<bool> {
+        self.partial_state_flag
     }
 
     #[inline]
     pub fn protocol_version(&self) -> Option<u16> {
         self.protocol_version
+    }
+
+    #[inline]
+    pub fn completed(&self) -> Option<bool> {
+        self.completed_flag
     }
 
     #[inline]
@@ -221,6 +237,16 @@ impl MessageHeader {
     }
 }
 
+macro_rules! read_flag_if {
+    ($cond:expr, $value:expr, $mask:expr) => {
+        if $cond {
+            Some(($value & $mask) != 0)
+        } else {
+            None
+        }
+    };
+}
+
 impl TryFrom<u64> for MessageHeader {
     type Error = UnknownMessageType;
 
@@ -229,31 +255,34 @@ impl TryFrom<u64> for MessageHeader {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let ty_code = (value >> 48) as u16;
         let ty: MessageType = ty_code.try_into()?;
-        let completed_flag = if ty.has_completed_flag() {
-            Some((value & COMPLETED_MASK) != 0)
-        } else {
-            None
-        };
+        let partial_state_flag =
+            read_flag_if!(ty.has_partial_state_flag(), value, PARTIAL_STATE_MASK);
         let protocol_version = if ty.has_protocol_version() {
             Some(((value & VERSION_MASK) >> 32) as u16)
         } else {
             None
         };
-        let requires_ack_flag = if ty.has_requires_ack_flag() {
-            Some((value & REQUIRES_ACK_MASK) != 0)
-        } else {
-            None
-        };
+        let completed_flag = read_flag_if!(ty.has_completed_flag(), value, COMPLETED_MASK);
+        let requires_ack_flag = read_flag_if!(ty.has_requires_ack_flag(), value, REQUIRES_ACK_MASK);
         let length = value as u32;
 
         Ok(MessageHeader::_new(
             ty,
-            completed_flag,
+            partial_state_flag,
             protocol_version,
+            completed_flag,
             requires_ack_flag,
             length,
         ))
     }
+}
+
+macro_rules! write_flag {
+    ($flag:expr, $value:expr, $mask:expr) => {
+        if let Some(true) = $flag {
+            *$value |= $mask;
+        }
+    };
 }
 
 impl From<MessageHeader> for u64 {
@@ -263,15 +292,20 @@ impl From<MessageHeader> for u64 {
         let mut res =
             ((u16::from(message_header.ty) as u64) << 48) | (message_header.length as u64);
 
-        if let Some(true) = message_header.completed_flag {
-            res |= COMPLETED_MASK;
-        }
+        write_flag!(
+            message_header.partial_state_flag,
+            &mut res,
+            PARTIAL_STATE_MASK
+        );
         if let Some(protocol_version) = message_header.protocol_version {
             res |= (protocol_version as u64) << 32;
         }
-        if let Some(true) = message_header.requires_ack_flag {
-            res |= REQUIRES_ACK_MASK;
-        }
+        write_flag!(message_header.completed_flag, &mut res, COMPLETED_MASK);
+        write_flag!(
+            message_header.requires_ack_flag,
+            &mut res,
+            REQUIRES_ACK_MASK
+        );
 
         res
     }
@@ -339,8 +373,8 @@ mod tests {
     }
 
     roundtrip_test!(
-        invoke_test,
-        MessageHeader::new_start(1, 25),
+        start,
+        MessageHeader::new_start(false, 1, 25),
         Start,
         Core,
         25,
@@ -348,7 +382,16 @@ mod tests {
     );
 
     roundtrip_test!(
-        completion_test,
+        start_with_partial_state,
+        MessageHeader::new_start(true, 1, 25),
+        Start,
+        Core,
+        25,
+        version: 1
+    );
+
+    roundtrip_test!(
+        completion,
         MessageHeader::new(Completion, 22),
         Completion,
         Core,
@@ -393,7 +436,7 @@ mod tests {
 
     roundtrip_test!(
         custom_entry_with_requires_ack,
-        MessageHeader::_new(MessageType::Custom(0xFC00), None, None, Some(true), 10341),
+        MessageHeader::_new(MessageType::Custom(0xFC00), None, None, None, Some(true), 10341),
         MessageType::Custom(0xFC00),
         MessageKind::Custom,
         10341,

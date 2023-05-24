@@ -65,6 +65,9 @@ fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Tabl
         if let Some(requires_ack) = header.requires_ack() {
             set_table_values!(message_table, "requires_ack" => requires_ack);
         }
+        if let Some(partial_state) = header.partial_state_flag() {
+            set_table_values!(message_table, "partial_state" => partial_state);
+        }
 
         result_messages.push(message_table)?;
     }

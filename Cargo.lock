@@ -3622,6 +3622,7 @@ dependencies = [
  "humantime",
  "hyper",
  "hyper-rustls",
+ "itertools",
  "opentelemetry",
  "opentelemetry-http",
  "paste",
