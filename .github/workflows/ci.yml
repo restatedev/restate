@@ -61,6 +61,13 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
+      - name: Check disk space
+        run: df -h
+
+      - name: Check working space directory
+        continue-on-error: true
+        run: du / -h -t 100M 2>/dev/null
+
       - name: Run fmt
         run: just check-fmt
 
