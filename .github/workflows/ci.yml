@@ -61,6 +61,12 @@ jobs:
       - name: Run clippy
         run: just clippy
 
+      - name: Check disk space
+        run: df -h
+
+      - name: Check working space directory
+        run: du ${GITHUB_WORKSPACE} -h -d 1
+
       - name: Run tests
         run: just test
 
