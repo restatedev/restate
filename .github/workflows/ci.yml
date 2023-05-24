@@ -71,7 +71,8 @@ jobs:
         run: df -h
 
       - name: Check working space directory
-        run: du / -h -t 10M
+        continue-on-error: true
+        run: du / -h -t 100M 2>/dev/null
 
       - name: Run tests
         run: just test
@@ -80,7 +81,8 @@ jobs:
         run: df -h
 
       - name: Check working space directory
-        run: du / -h -t 10M
+        continue-on-error: true
+        run: du / -h -t 100M 2>/dev/null
 
       - name: Run verification test
         run: just verification-test
@@ -92,4 +94,5 @@ jobs:
         run: df -h
 
       - name: Check working space directory
-        run: du / -h -t 10M
+        continue-on-error: true
+        run: du / -h -t 100M 2>/dev/null
