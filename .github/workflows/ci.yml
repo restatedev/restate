@@ -33,6 +33,9 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
+      - name: Check disk space
+        run: df -h
+
       - uses: actions/checkout@v3
 
       - name: Install Rust toolchain
@@ -68,7 +71,7 @@ jobs:
         run: df -h
 
       - name: Check working space directory
-        run: du / -h
+        run: du / -h -t 10M
 
       - name: Run tests
         run: just test
@@ -77,10 +80,16 @@ jobs:
         run: df -h
 
       - name: Check working space directory
-        run: du / -h
+        run: du / -h -t 10M
 
       - name: Run verification test
         run: just verification-test
         env:
           TMPDIR: ${{ runner.temp }}
           RUST_LOG: "info"
+
+      - name: Check disk space
+        run: df -h
+
+      - name: Check working space directory
+        run: du / -h -t 10M
