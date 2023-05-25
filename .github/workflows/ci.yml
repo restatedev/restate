@@ -72,26 +72,32 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           RUST_LOG: "info"
 
-  build-docker-image:
-    name: Build Docker image
-    uses: ./.github/workflows/docker.yml
-    with:
-      # We don't publish it, as what matters is that the build remains on the current test machine
-      push: false
-
   e2e-test:
     name: Run e2e test (${{ matrix.os }})
-    needs: [ build-docker-image ]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: true
       matrix:
         os: [ ubuntu-latest ]
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout Restate runtime
+        uses: actions/checkout@v3
+        with:
+          path: restate
+
+      - name: Checkout E2E
+        uses: actions/checkout@v3
         with:
           repository: 'restatedev/e2e'
+          path: e2e
+          ref: main
+
+      - name: Set up QEMU dependency for docker caching
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
       - name: Install protoc
         uses: ./restate/.github/actions/install-protoc
@@ -111,16 +117,59 @@ jobs:
           node-version: "18.x"
           registry-url: "https://npm.pkg.github.com"
 
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2
+        with:
+          registry: 'ghcr.io'
+          username: ${{ secrets.GH_PACKAGE_READ_ACCESS_USER }}
+          password: ${{ secrets.GH_PACKAGE_READ_ACCESS_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: localhost/restatedev/restate
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v3
+        id: build
+        with:
+          context: restate
+          file: "restate/docker/Dockerfile"
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      # Temp fix
+      # https://github.com/docker/build-push-action/issues/252
+      # https://github.com/moby/buildkit/issues/1896
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
       # Run tests
       - name: Test
         uses: gradle/gradle-build-action@v2
         env:
           GH_PACKAGE_READ_ACCESS_USER: ${{ github.actor }}
           GH_PACKAGE_READ_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RESTATE_RUNTIME_CONTAINER: ${{ needs.e2e-test.outputs.image }}
+          RESTATE_RUNTIME_CONTAINER: ${{ steps.build.outputs.imageID }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           arguments: -Djib.console=plain build
+          build-root-directory: e2e
 
       # Upload container logs
       - uses: actions/upload-artifact@v3
