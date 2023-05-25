@@ -71,3 +71,63 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
           RUST_LOG: "info"
+
+  build-docker-image:
+    name: Build Docker image
+    uses: ./.github/workflows/docker.yml
+    with:
+      # We don't publish it, as what matters is that the build remains on the current test machine
+      push: false
+
+  e2e-test:
+    name: Run e2e test (${{ matrix.os }})
+    needs: [ build-docker-image ]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ ubuntu-latest ]
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          repository: 'restatedev/e2e'
+
+      - name: Install protoc
+        uses: ./restate/.github/actions/install-protoc
+
+      - name: Setup just
+        uses: extractions/setup-just@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: "18.x"
+          registry-url: "https://npm.pkg.github.com"
+
+      # Run tests
+      - name: Test
+        uses: gradle/gradle-build-action@v2
+        env:
+          GH_PACKAGE_READ_ACCESS_USER: ${{ github.actor }}
+          GH_PACKAGE_READ_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESTATE_RUNTIME_CONTAINER: ${{ needs.e2e-test.outputs.image }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          arguments: -Djib.console=plain build
+
+      # Upload container logs
+      - uses: actions/upload-artifact@v3
+        if: always() # Make sure this is run even when test fails
+        with:
+          name: e2e-container-logs
+          path: |
+            tests/build/test-results/*/container-logs/**
+            tests/build/reports/tests/**
+            tests/build/test-results/*/*.xml

@@ -2,6 +2,16 @@ name: Build Docker image
 
 on:
   workflow_call:
+    inputs:
+      push:
+        description: 'Should push'
+        default: true
+        required: false
+        type: boolean
+    outputs:
+      image:
+        description: "Image name"
+        value: ${{ jobs.build-and-push-image.outputs.image }}
   workflow_dispatch:
 
 env:
@@ -14,6 +24,9 @@ jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
     timeout-minutes: 70
+
+    outputs:
+      image: ${{ steps.build.outputs.imageID }}
 
     steps:
       - name: Checkout repository
@@ -61,10 +74,11 @@ jobs:
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v3
+        id: build
         with:
           context: .
           file: "docker/Dockerfile"
-          push: true
+          push: ${{ inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/arm64,linux/amd64
