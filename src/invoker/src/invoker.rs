@@ -541,7 +541,6 @@ where
                         InvocationTaskOutputInner::Closed => {
                             partition_state_machine.handle_invocation_task_closed(
                                 invocation_task_msg.service_invocation_id,
-                                     &mut retry_timers
                             ).await
                         },
                         InvocationTaskOutputInner::Failed(e) => {
@@ -948,7 +947,7 @@ mod state_machine_coordinator {
                 .invocation_state_machines
                 .get_mut(&service_invocation_id)
             {
-                sm.notify_new_entry(entry_index, &entry);
+                sm.notify_new_entry(entry_index);
                 trace!(
                     "Received a new entry. Invocation state: {:?}",
                     sm.invocation_state_debug()
@@ -982,32 +981,14 @@ mod state_machine_coordinator {
         pub(super) async fn handle_invocation_task_closed(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
         ) {
-            if let Some(sm) = self
+            if self
                 .invocation_state_machines
                 .remove(&service_invocation_id)
+                .is_some()
             {
-                if sm.is_ending() {
-                    trace!("Invocation task closed correctly");
-                    self.send_end(service_invocation_id).await;
-                } else {
-                    // Protocol violation.
-                    // We haven't received any output stream entry, but the invocation task was closed
-                    // Because handle_invocation_task_closed is the terminal message coming from the invocation task,
-                    // we need to return a message to the partition processor.
-                    warn!(
-                        "Protocol violation when executing the invocation. \
-                        The invocation task was closed without a SuspensionMessage, nor an OutputStreamEntry"
-                    );
-                    self.handle_error_event(
-                        service_invocation_id,
-                        UnexpectedEndOfInvocationStream,
-                        retry_timers,
-                        sm,
-                    )
-                    .await;
-                }
+                trace!("Invocation task closed correctly");
+                self.send_end(service_invocation_id).await;
             } else {
                 // If no state machine, this might be a result for an aborted invocation.
                 trace!("No state machine found for invocation task closed signal");
@@ -1050,19 +1031,6 @@ mod state_machine_coordinator {
         ) {
             warn_it!(error, "Error when executing the invocation");
 
-            if sm.is_ending() {
-                // Soft protocol violation.
-                // This can happen in case we get an error after receiving an OutputStreamEntry.
-                // Because handle_invocation_task_failed is the terminal message coming from the invocation task,
-                // we need to return a message to the partition processor.
-                warn!(
-                    "Protocol violation when executing the invocation. \
-                    The invocation task sent an OutputStreamEntry and an error afterwards"
-                );
-                self.send_end(service_invocation_id).await;
-                return;
-            }
-
             match sm.handle_task_error() {
                 Some(next_retry_timer_duration) if error.is_transient() => {
                     trace!(
@@ -1099,24 +1067,11 @@ mod state_machine_coordinator {
             service_invocation_id: ServiceInvocationId,
             entry_indexes: HashSet<EntryIndex>,
         ) {
-            if let Some(sm) = self
+            if self
                 .invocation_state_machines
                 .remove(&service_invocation_id)
+                .is_some()
             {
-                if sm.is_ending() {
-                    // Soft protocol violation.
-                    // We got both an output stream entry and the suspension message
-                    // Because handle_invocation_task_suspended is the terminal message coming from the invocation task,
-                    // we need to return a message to the partition processor.
-                    warn!(
-                        rpc.service = %service_invocation_id.service_id.service_name,
-                        restate.invocation.sid = %service_invocation_id,
-                        "Protocol violation when executing the invocation. \
-                        The invocation task sent an OutputStreamEntry and was closed with a SuspensionMessage"
-                    );
-                    self.send_end(service_invocation_id).await;
-                    return;
-                }
                 trace!("Suspending invocation");
                 let _ = self
                     .output_tx
@@ -1286,11 +1241,10 @@ mod state_machine_coordinator {
 
 mod invocation_state_machine {
     use super::*;
+    use std::fmt;
     use std::time::Duration;
-    use std::{fmt, mem};
 
     use restate_common::retry_policy;
-    use restate_journal::raw::RawEntryHeader;
     use restate_journal::Completion;
     use tokio::sync::mpsc;
     use tokio::task::AbortHandle;
@@ -1359,10 +1313,6 @@ mod invocation_state_machine {
             abort_handle: AbortHandle,
         },
 
-        // We remain in this state until we get the task result.
-        // We enter this state as soon as we see an OutpuStreamEntry.
-        WaitingClose,
-
         WaitingRetry {
             timer_fired: bool,
             journal_tracker: JournalTracker,
@@ -1389,7 +1339,6 @@ mod invocation_state_machine {
                             .unwrap_or(false),
                     )
                     .finish(),
-                InvocationState::WaitingClose => f.write_str("WaitingClose"),
                 InvocationState::WaitingRetry {
                     journal_tracker,
                     timer_fired,
@@ -1428,23 +1377,16 @@ mod invocation_state_machine {
         }
 
         pub(super) fn abort(&mut self) {
-            if let InvocationState::InFlight { abort_handle, .. } =
-                mem::replace(&mut self.invocation_state, InvocationState::WaitingClose)
-            {
+            if let InvocationState::InFlight { abort_handle, .. } = &mut self.invocation_state {
                 abort_handle.abort();
             }
         }
 
-        pub(super) fn notify_new_entry(&mut self, entry_index: EntryIndex, entry: &PlainRawEntry) {
+        pub(super) fn notify_new_entry(&mut self, entry_index: EntryIndex) {
             debug_assert!(matches!(
                 &self.invocation_state,
                 InvocationState::InFlight { .. }
             ));
-
-            if entry.header == RawEntryHeader::OutputStream {
-                self.invocation_state = InvocationState::WaitingClose;
-                return;
-            }
 
             if let InvocationState::InFlight {
                 journal_tracker, ..
@@ -1516,10 +1458,6 @@ mod invocation_state_machine {
             } else {
                 None
             }
-        }
-
-        pub(super) fn is_ending(&self) -> bool {
-            matches!(self.invocation_state, InvocationState::WaitingClose)
         }
 
         pub(super) fn is_ready_to_retry(&self) -> bool {
