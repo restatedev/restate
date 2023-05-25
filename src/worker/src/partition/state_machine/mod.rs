@@ -197,8 +197,15 @@ where
                 Ok((Some(sid), related_span))
             }
             _ => {
-                trace!("Received kill command for unknown invocation with sid '{service_invocation_id}'. Ignoring command.");
-                Ok((None, SpanRelation::None))
+                trace!("Received kill command for unknown invocation with sid '{service_invocation_id}'.");
+                // We still try to send the abort signal to the invoker,
+                // as it might be the case that previously the user sent an abort signal
+                // but some message was still between the invoker/PP queues.
+                // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
+                // and the abort message can overtake the invoke/resume.
+                // Consequently the invoker might have not received the abort and the user tried to send it again.
+                effects.abort_invocation(service_invocation_id.clone());
+                Ok((Some(service_invocation_id), SpanRelation::None))
             }
         }
     }
