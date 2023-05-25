@@ -21,7 +21,7 @@ use opentelemetry::trace::SpanContext;
 use opentelemetry_http::HeaderInjector;
 use restate_common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use restate_errors::warn_it;
-use restate_journal::raw::PlainRawEntry;
+use restate_journal::raw::{PlainRawEntry, RawEntryHeader};
 use restate_journal::Completion;
 use restate_service_metadata::{EndpointMetadata, ProtocolType};
 use restate_service_protocol::message::{
@@ -64,8 +64,12 @@ pub(crate) enum InvocationTaskError {
     #[error("response timeout")]
     #[code(restate_errors::RT0001)]
     ResponseTimeout,
-    #[error("received a data frame after the end of stream. This is probably an SDK bug")]
+    #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry. This is probably an SDK bug")]
     WriteAfterEndOfStream,
+    #[error("Unexpected end of invocation stream, as it was closed without a SuspensionMessage, nor an OutputStreamEntry. This is probably an SDK bug")]
+    MissingTerminalMessage,
+    #[error("Unexpected end of invocation stream, as it was closed with both a SuspensionMessage and an OutputStreamEntry. This is probably an SDK bug")]
+    TooManyTerminalMessages,
     #[error(transparent)]
     Other(#[from] Box<dyn Error + Send + Sync + 'static>),
 }
@@ -137,8 +141,6 @@ pub(crate) struct InvocationTask<JR> {
     suspension_timeout: Duration,
     response_abort_timeout: Duration,
 
-    next_journal_index: EntryIndex,
-
     // Invoker tx/rx
     journal_reader: JR,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -147,6 +149,10 @@ pub(crate) struct InvocationTask<JR> {
     // Encoder/Decoder
     encoder: Encoder,
     decoder: Decoder,
+
+    // Task state
+    next_journal_index: EntryIndex,
+    saw_output_stream_entry: bool,
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
@@ -221,21 +227,16 @@ where
             invoker_rx,
             encoder: Encoder::new(protocol_version),
             decoder: Decoder::new(message_size_warning, message_size_limit),
+            saw_output_stream_entry: false,
         }
     }
 
     /// Loop opening the request to service endpoint and consuming the stream
     #[instrument(level = "info", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.service_invocation_id.service_id.service_name, restate.invocation.sid = %self.service_invocation_id), skip_all)]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
-        // Create the span representing the lifecycle of this invocation task
-        let inner = match self.run_internal(input_journal).await {
-            TerminalLoopState::Continue(_) => {
-                unreachable!("This is not supposed to happen")
-            }
-            TerminalLoopState::Closed => InvocationTaskOutputInner::Closed,
-            TerminalLoopState::Suspended(v) => InvocationTaskOutputInner::Suspended(v),
-            TerminalLoopState::Failed(e) => InvocationTaskOutputInner::Failed(e),
-        };
+        // Execute the task
+        let terminal_state = self.run_internal(input_journal).await;
+
         // Sanity check of the stream decoder
         if self.decoder.has_remaining() {
             warn_it!(
@@ -243,6 +244,25 @@ where
                 "The read buffer is non empty after the stream has been closed."
             );
         }
+
+        // Sanity check of the final state
+        let inner = match (terminal_state, self.saw_output_stream_entry) {
+            (TerminalLoopState::Continue(_), _) => {
+                unreachable!("This is not supposed to happen. This is a runtime bug")
+            }
+            (TerminalLoopState::Closed, true) => {
+                // For the time being, seeing a OutputStreamEntry marks a correct closing of the invocation stream.
+                InvocationTaskOutputInner::Closed
+            }
+            (TerminalLoopState::Closed, false) => {
+                InvocationTaskOutputInner::Failed(InvocationTaskError::MissingTerminalMessage)
+            }
+            (TerminalLoopState::Suspended(_), true) => {
+                InvocationTaskOutputInner::Failed(InvocationTaskError::TooManyTerminalMessages)
+            }
+            (TerminalLoopState::Suspended(v), false) => InvocationTaskOutputInner::Suspended(v),
+            (TerminalLoopState::Failed(e), _) => InvocationTaskOutputInner::Failed(e),
+        };
 
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
@@ -352,6 +372,9 @@ where
                 opt_je = journal_stream.next() => {
                     match opt_je {
                         Some(je) => {
+                            if je.header == RawEntryHeader::OutputStream {
+                                self.saw_output_stream_entry = true;
+                            }
                             shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
                             self.next_journal_index += 1;
                         },
@@ -506,6 +529,9 @@ where
                 HashSet::from_iter(suspension.entry_indexes.into_iter()),
             ),
             ProtocolMessage::UnparsedEntry(entry) => {
+                if entry.header == RawEntryHeader::OutputStream {
+                    self.saw_output_stream_entry = true;
+                }
                 let _ = self.invoker_tx.send(InvocationTaskOutput {
                     partition: self.partition,
                     service_invocation_id: self.service_invocation_id.clone(),
