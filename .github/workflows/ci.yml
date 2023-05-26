@@ -35,6 +35,8 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - uses: ./.github/actions/clean-runner
+
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
