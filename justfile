@@ -130,6 +130,9 @@ check-deny:
 flamegraph *flags:
     cargo flamegraph {{ _flamegraph_options }} {{ flags }}
 
+udeps *flags:
+    RUSTC_BOOTSTRAP=1 cargo udeps --all-features --all-targets {{ flags }}
+
 _target-installed target:
     #!/usr/bin/env bash
     set -euo pipefail
