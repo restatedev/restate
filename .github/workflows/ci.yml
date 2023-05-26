@@ -35,17 +35,13 @@ jobs:
     steps:
       - name: Check disk space
         run: df -h
-
-      - name: Remove unnecessary software
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/local/.ghcup
           
       - name: Check disk space
         run: df -h
 
       - uses: actions/checkout@v3
+
+      - uses: ./.github/actions/clean-runner
 
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
