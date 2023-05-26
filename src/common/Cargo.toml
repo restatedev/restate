@@ -18,7 +18,6 @@ options_schema = ["serde", "dep:schemars"]
 base64 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-futures = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }

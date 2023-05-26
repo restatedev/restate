@@ -3481,7 +3481,6 @@ dependencies = [
  "arrow-array",
  "async-trait",
  "bytes",
- "bytestring",
  "clap 4.2.1",
  "datafusion",
  "datafusion-cli",
@@ -3509,7 +3508,6 @@ dependencies = [
  "base64 0.21.0",
  "bytes",
  "bytestring",
- "futures",
  "humantime",
  "hyper",
  "opentelemetry_api",
@@ -3530,12 +3528,10 @@ name = "restate_consensus"
 version = "0.1.2"
 dependencies = [
  "anyhow",
- "drain",
  "futures",
  "futures-sink",
  "pin-project",
  "restate_common",
- "restate_network",
  "restate_test_utils",
  "thiserror",
  "tokio",
@@ -3733,7 +3729,6 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-reflect",
- "restate_common",
  "restate_serde_util",
  "serde",
  "serde_json",
@@ -3903,7 +3898,6 @@ dependencies = [
 name = "restate_tracing_instrumentation"
 version = "0.1.2"
 dependencies = [
- "codederror",
  "console-subscriber",
  "nu-ansi-term",
  "opentelemetry",

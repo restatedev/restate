@@ -12,10 +12,8 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 restate_common = { workspace = true }
-drain = { workspace = true }
 futures = { workspace = true }
 futures-sink = { workspace = true }
-restate_network = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

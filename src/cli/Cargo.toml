@@ -15,7 +15,6 @@ path = "src/main.rs"
 arrow-array = { version = "36.0.0" }
 async-trait = { version = "0.1.68" }
 bytes = { workspace = true }
-bytestring = { workspace = true }
 clap = { version = "4.1", features = ["derive"] }
 datafusion = { version = "22.0.0" }
 datafusion-cli = { version = "22.0.0" }
