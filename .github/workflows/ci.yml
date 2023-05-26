@@ -67,7 +67,7 @@ jobs:
         run: just test
 
       - name: Run verification test
-        run: just verification-test
+        run: just verification-test $${{ github.run_id }}
         env:
           TMPDIR: ${{ runner.temp }}
           RUST_LOG: "info"

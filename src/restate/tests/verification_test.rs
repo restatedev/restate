@@ -26,7 +26,14 @@ impl Drop for SafeChild {
 #[test(tokio::test)]
 #[ignore = "Ignored because it requires the verification service running on localhost:8000. See .github/workflows/ci.yaml and https://github.com/restatedev/restate-verification for more details."]
 async fn verification() -> Result<(), Box<dyn std::error::Error>> {
-    let seed = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+    let seed = {
+        let seed = std::env::var("SEED").unwrap_or("".to_string());
+        if seed.is_empty() {
+            Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
+        } else {
+            seed
+        }
+    };
     let seed = seed.as_str();
     let width = 10;
     let depth = 4;
