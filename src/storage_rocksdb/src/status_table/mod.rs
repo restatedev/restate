@@ -50,6 +50,10 @@ impl StatusTable for RocksDBTransaction {
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
+        if status == InvocationStatus::Free {
+            self.delete_key(&key);
+            return ready();
+        }
 
         let value = ProtoValue(storage::v1::InvocationStatus::from(status));
 
