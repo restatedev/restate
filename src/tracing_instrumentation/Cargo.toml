@@ -16,7 +16,7 @@ options_schema = ["dep:schemars"]
 [dependencies]
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
-console-subscriber = { version = "0.1.8", optional = true }
+console-subscriber = { version = "0.1.9", optional = true }
 opentelemetry = { workspace = true, features = ["rt-tokio-current-thread", "rt-tokio"] }
 opentelemetry-jaeger = { version = "0.17", features = ["rt-tokio-current-thread", "rt-tokio"] }
 opentelemetry-semantic-conventions = "0.10"
