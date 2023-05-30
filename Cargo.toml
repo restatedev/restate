@@ -63,6 +63,7 @@ restate_common = { path = "src/common" }
 restate_consensus = { path = "src/consensus" }
 restate_errors = { path = "src/errors" }
 restate_futures_util = { path = "src/futures_util" }
+restate_hyper_util = { path = "src/hyper_util" }
 restate_ingress_grpc = { path = "src/ingress_grpc" }
 restate_queue = { path = "src/queue"}
 restate_invoker = { path = "src/invoker" }
