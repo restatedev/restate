@@ -5,7 +5,7 @@ use crate::{
 };
 use restate_common::traits::KeyedMessage;
 use restate_common::types::{PartitionKey, PeerId, PeerTarget};
-use restate_test_utils::test;
+use restate_test_util::test;
 use std::fmt::Debug;
 use std::future;
 use tokio::sync::mpsc;

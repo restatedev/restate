@@ -1,5 +1,5 @@
 [package]
-name = "restate_test_utils"
+name = "restate_test_util"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

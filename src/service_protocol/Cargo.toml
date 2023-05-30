@@ -38,7 +38,7 @@ restate_errors = { workspace = true, optional = true }
 size = { version = "0.4.1", optional = true }
 
 [dev-dependencies]
-restate_test_utils = { workspace = true }
+restate_test_util = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }

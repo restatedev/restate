@@ -42,5 +42,5 @@ restate_storage_grpc = { workspace = true}
 restate_storage_rocksdb = { workspace = true}
 
 [dev-dependencies]
-restate_test_utils = { workspace = true }
+restate_test_util = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -3,7 +3,7 @@ use crate::service::clock::TokioClock;
 use crate::{Output, Sequenced, Timer, TimerKey, TimerReader, TimerService};
 use futures_util::stream;
 use restate_common::types::MillisSinceEpoch;
-use restate_test_utils::{let_assert, test};
+use restate_test_util::{let_assert, test};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

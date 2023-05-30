@@ -162,7 +162,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::{Command, Consensus};
-    use restate_test_utils::test;
+    use restate_test_util::test;
     use tokio::sync::mpsc;
 
     #[test(tokio::test)]

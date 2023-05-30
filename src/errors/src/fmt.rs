@@ -113,7 +113,7 @@ mod tests {
     use super::*;
 
     use crate::RT0001;
-    use restate_test_utils::test;
+    use restate_test_util::test;
 
     #[derive(thiserror::Error, CodedError, Debug)]
     #[code(RT0001)]

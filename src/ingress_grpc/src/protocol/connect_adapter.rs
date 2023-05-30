@@ -212,7 +212,7 @@ pub(super) mod content_type {
 
         use bytes::Bytes;
         use http::HeaderValue;
-        use restate_test_utils::assert_eq;
+        use restate_test_util::assert_eq;
 
         #[test]
         fn resolve_json() {
@@ -382,7 +382,7 @@ mod tests {
     use http::StatusCode;
     use http_body::Body;
     use prost::Message;
-    use restate_test_utils::{assert_eq, test};
+    use restate_test_util::{assert_eq, test};
     use serde_json::json;
 
     #[test(tokio::test)]

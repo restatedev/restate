@@ -60,7 +60,7 @@ impl Iterator for RangePartitioner {
 mod tests {
     use crate::range_partitioner::RangePartitioner;
     use restate_common::types::PartitionKey;
-    use restate_test_utils::test;
+    use restate_test_util::test;
 
     #[test]
     fn range_partitioner_produces_consecutive_ranges() {

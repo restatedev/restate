@@ -6,7 +6,7 @@
 use hyper::Uri;
 use restate_common::retry_policy::RetryPolicy;
 use restate_service_protocol::discovery::*;
-use restate_test_utils::test;
+use restate_test_util::test;
 
 #[ignore]
 #[test(tokio::test)]

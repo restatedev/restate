@@ -17,7 +17,7 @@ use restate_service_metadata::{
     DeliveryOptions, EndpointMetadata, InMemoryServiceEndpointRegistry, ProtocolType,
 };
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_test_utils::{assert, assert_eq, let_assert, test};
+use restate_test_util::{assert, assert_eq, let_assert, test};
 use uuid::Uuid;
 
 type PartitionProcessorSimulator =

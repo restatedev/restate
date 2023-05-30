@@ -155,7 +155,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
-    use restate_test_utils::{assert_eq, test};
+    use restate_test_util::{assert_eq, test};
 
     use crate::mocks::*;
     use crate::reflection::ReflectionRegistry;

@@ -159,7 +159,7 @@ impl<T: Send, R: Send> From<Command<T, R>> for (T, CommandResponseSender<R>) {
 mod tests {
     use super::*;
 
-    use restate_test_utils::{assert_eq, test};
+    use restate_test_util::{assert_eq, test};
     use tokio::sync::mpsc;
 
     #[test(tokio::test)]

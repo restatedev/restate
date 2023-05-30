@@ -26,5 +26,5 @@ serde = { workspace = true }
 
 [dev-dependencies]
 futures-util = { workspace = true }
-restate_test_utils = { workspace = true }
+restate_test_util = { workspace = true }
 tracing-subscriber = {workspace = true }

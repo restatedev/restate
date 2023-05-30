@@ -7,8 +7,8 @@ use restate_storage_grpc::storage::v1::{
     key, scan_request::Filter, storage_client::StorageClient, Key, Pair, Range, ScanRequest, State,
 };
 use restate_storage_grpc::Options;
-use restate_test_utils::assert_eq;
-use restate_test_utils::test;
+use restate_test_util::assert_eq;
+use restate_test_util::test;
 use tempfile::tempdir;
 use tonic::transport::Channel;
 

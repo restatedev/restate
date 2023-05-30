@@ -178,7 +178,7 @@ mod tests {
     use super::*;
 
     use restate_common::types::IngressId;
-    use restate_test_utils::test;
+    use restate_test_util::test;
 
     #[test(tokio::test)]
     async fn test_closed_handler() {

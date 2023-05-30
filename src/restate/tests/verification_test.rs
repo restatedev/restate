@@ -7,7 +7,7 @@ use futures_util::TryFutureExt;
 use hyper::{http, StatusCode};
 use rand::distributions::{Alphanumeric, DistString};
 use restate_common::retry_policy::RetryPolicy;
-use restate_test_utils::test;
+use restate_test_util::test;
 use std::process::Command;
 use tempfile::Builder;
 use tracing::{info, warn};

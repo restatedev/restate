@@ -302,7 +302,7 @@ mod tests {
     use crate::pb;
     use restate_journal::raw::RawEntryHeader;
 
-    use restate_test_utils::{assert, assert_eq, let_assert};
+    use restate_test_util::{assert, assert_eq, let_assert};
 
     #[test]
     fn fill_decoder_with_several_messages() {
