@@ -92,6 +92,7 @@ jobs:
           repository: 'restatedev/e2e'
           path: e2e
           ref: main
+          token: ${{ secrets.GH_PACKAGE_READ_ACCESS_TOKEN }}
 
       - name: Set up QEMU dependency for docker caching
         uses: docker/setup-qemu-action@v2
@@ -163,10 +164,10 @@ jobs:
       - name: Test
         uses: gradle/gradle-build-action@v2
         env:
-          GH_PACKAGE_READ_ACCESS_USER: ${{ github.actor }}
-          GH_PACKAGE_READ_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PACKAGE_READ_ACCESS_USER: ${{ secrets.GH_PACKAGE_READ_ACCESS_USER }}
+          GH_PACKAGE_READ_ACCESS_TOKEN: ${{ secrets.GH_PACKAGE_READ_ACCESS_TOKEN }}
           RESTATE_RUNTIME_CONTAINER: ${{ steps.build.outputs.imageID }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGE_READ_ACCESS_TOKEN }}
         with:
           arguments: -Djib.console=plain build
           build-root-directory: e2e
