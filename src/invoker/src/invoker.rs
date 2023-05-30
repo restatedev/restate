@@ -7,8 +7,8 @@ use std::{cmp, panic};
 
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
-use restate_common::proxy_connector::{Proxy, ProxyConnector};
 use restate_common::types::PartitionLeaderEpoch;
+use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;

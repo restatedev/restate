@@ -3487,14 +3487,12 @@ dependencies = [
  "bytes",
  "bytestring",
  "humantime",
- "hyper",
  "opentelemetry_api",
  "schemars",
  "serde",
  "serde_with",
  "thiserror",
  "tokio",
- "tower",
  "tracing",
  "tracing-opentelemetry",
  "uuid",
@@ -3541,6 +3539,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "restate_hyper_util"
+version = "0.1.2"
+dependencies = [
+ "hyper",
+ "thiserror",
 ]
 
 [[package]]
@@ -3602,6 +3608,7 @@ dependencies = [
  "prost",
  "restate_common",
  "restate_errors",
+ "restate_hyper_util",
  "restate_journal",
  "restate_service_metadata",
  "restate_service_protocol",
@@ -3643,6 +3650,7 @@ dependencies = [
  "restate_common",
  "restate_errors",
  "restate_futures_util",
+ "restate_hyper_util",
  "restate_ingress_grpc",
  "restate_serde_util",
  "restate_service_key_extractor",
@@ -3745,6 +3753,7 @@ dependencies = [
  "prost-types",
  "restate_common",
  "restate_errors",
+ "restate_hyper_util",
  "restate_journal",
  "restate_service_key_extractor",
  "restate_service_metadata",

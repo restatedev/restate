@@ -33,6 +33,7 @@ schemars = { workspace = true }
 
 # Service discovery and metadata
 restate_common = { workspace = true, features = ["serde"] }
+restate_hyper_util = { workspace = true }
 restate_service_key_extractor = { workspace = true, features = ["json"] }
 restate_service_metadata = { workspace = true, features = ["serde", "serde_schema"] }
 restate_service_protocol = { workspace = true, features = ["discovery"] }
