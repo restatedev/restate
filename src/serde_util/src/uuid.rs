@@ -9,6 +9,8 @@ use uuid::Uuid;
 ///
 /// * As string in the uuid format
 /// * As Base64 encoded byte array
+///
+/// When serialized, the uuid will be represented as a human readable string.
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -36,7 +38,7 @@ impl From<Uuid> for SerdeableUuid {
 /// to deserialize [`Uuid`] as one of the following formats:
 ///
 /// * As string in the uuid format (provided by the [`uuid`] crate)
-/// * As regular byte array as represented by serde_json (provided by the [`uuid`] crate)
+/// * As regular byte array (provided by the [`uuid`] crate)
 /// * As Base64 encoded byte array
 ///
 /// When serializing, the string representation of uuid will be used.
