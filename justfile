@@ -125,7 +125,7 @@ generate-config-schema:
     cargo xtask generate-config-schema > restate_config_schema.json
 
 check-deny:
-    cargo deny check
+    cargo deny --all-features check
 
 flamegraph *flags:
     cargo flamegraph {{ _flamegraph_options }} {{ flags }}
