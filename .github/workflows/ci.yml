@@ -146,19 +146,12 @@ jobs:
           context: restate
           file: "restate/docker/Dockerfile"
           push: false
+          load: true # Loads the built image in the local container registry
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-
-      # Temp fix
-      # https://github.com/docker/build-push-action/issues/252
-      # https://github.com/moby/buildkit/issues/1896
-      - name: Move cache
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
       # Run tests
       - name: Test
@@ -171,6 +164,15 @@ jobs:
         with:
           arguments: -Djib.console=plain build
           build-root-directory: e2e
+
+      # Temp fix
+      # https://github.com/docker/build-push-action/issues/252
+      # https://github.com/moby/buildkit/issues/1896
+      - name: Move cache
+        if: always() # Make sure this is run even when test fails
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
       # Upload container logs
       - uses: actions/upload-artifact@v3
