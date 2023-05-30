@@ -3670,6 +3670,7 @@ dependencies = [
  "restate_errors",
  "restate_futures_util",
  "restate_ingress_grpc",
+ "restate_serde_util",
  "restate_service_key_extractor",
  "restate_service_metadata",
  "restate_service_protocol",
@@ -3681,6 +3682,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3711,6 +3713,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate_serde_util"
+version = "0.1.0"
+dependencies = [
+ "base64 0.21.0",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "uuid",
+]
+
+[[package]]
 name = "restate_service_key_extractor"
 version = "0.1.0"
 dependencies = [
@@ -3720,6 +3734,7 @@ dependencies = [
  "prost-build",
  "prost-reflect",
  "restate_common",
+ "restate_serde_util",
  "serde",
  "serde_json",
  "thiserror",

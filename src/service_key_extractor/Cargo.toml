@@ -13,7 +13,7 @@ publish = false
 default = []
 serde = ["dep:serde"]
 expand = ["prost-reflect"]
-json = ["expand", "prost-reflect/serde", "dep:serde_json"]
+json = ["expand", "prost-reflect/serde", "dep:serde_json", "dep:restate_serde_util"]
 
 [dependencies]
 arc-swap = { workspace = true }
@@ -25,9 +25,11 @@ uuid = { workspace = true }
 restate_common = { workspace = true }
 
 serde = { workspace = true, optional = true }
-serde_json = { version = "1.0", optional = true }
+serde_json = { workspace = true, optional = true }
 
 prost-reflect = { workspace = true, optional = true }
+
+restate_serde_util = { workspace = true, optional = true }
 
 [dev-dependencies]
 prost-reflect = { workspace = true }

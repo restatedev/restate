@@ -14,6 +14,7 @@ use hyper::Server;
 use okapi_operation::axum_integration::{delete, get, post};
 use okapi_operation::*;
 use restate_common::worker_command::WorkerCommandSender;
+use restate_service_key_extractor::json::RestateKeyConverter;
 use restate_service_metadata::{MethodDescriptorRegistry, ServiceEndpointRegistry};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -52,11 +53,13 @@ impl MetaRestEndpoint {
     pub async fn run<
         S: ServiceEndpointRegistry + Send + Sync + 'static,
         M: MethodDescriptorRegistry + Send + Sync + 'static,
+        K: RestateKeyConverter + Send + Sync + 'static,
     >(
         self,
         meta_handle: MetaHandle,
         service_endpoint_registry: S,
         method_descriptor_registry: M,
+        key_converter: K,
         worker_command_tx: WorkerCommandSender,
         drain: drain::Watch,
     ) -> Result<(), MetaRestServerError> {
@@ -64,6 +67,7 @@ impl MetaRestEndpoint {
             meta_handle,
             service_endpoint_registry,
             method_descriptor_registry,
+            key_converter,
             worker_command_tx,
         ));
 

@@ -25,8 +25,8 @@ pub struct ListServiceMethodsResponse {
         schema = "std::string::String"
     ))
 )]
-pub async fn list_service_methods<S, M: MethodDescriptorRegistry>(
-    State(state): State<Arc<RestEndpointState<S, M>>>,
+pub async fn list_service_methods<S, M: MethodDescriptorRegistry, K>(
+    State(state): State<Arc<RestEndpointState<S, M, K>>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ListServiceMethodsResponse>, MetaApiError> {
     match state
@@ -72,8 +72,8 @@ pub struct GetServiceMethodResponse {
         )
     )
 )]
-pub async fn get_service_method<S, M: MethodDescriptorRegistry>(
-    State(state): State<Arc<RestEndpointState<S, M>>>,
+pub async fn get_service_method<S, M: MethodDescriptorRegistry, K>(
+    State(state): State<Arc<RestEndpointState<S, M, K>>>,
     Path((service_name, method_name)): Path<(String, String)>,
 ) -> Result<Json<GetServiceMethodResponse>, MetaApiError> {
     let endpoint = state
