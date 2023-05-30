@@ -11,14 +11,24 @@ option go_package = "restate.dev/sdk-go/pb/service/protocol";
 
 // Type: 0x0000 + 0
 message StartMessage {
+  message StateEntry {
+    bytes key = 1;
+    // If value is an empty byte array,
+    // then it means the value is empty and not "missing" (e.g. empty string).
+    bytes value = 2;
+  }
+
   bytes invocation_id = 1;
   bytes instance_key = 2;
 
   uint32 known_entries = 3;
+
+  // protolint:disable:next REPEATED_FIELD_NAMES_PLURALIZED
+  repeated StateEntry state_map = 4;
 }
 
 // Type: 0x0000 + 1
-// Note: Completions that are simply acks will use this frame without sending back any result
+// Note: Completions that are simply acks will use this message without sending back any result
 message CompletionMessage {
   uint32 entry_index = 1;
 
