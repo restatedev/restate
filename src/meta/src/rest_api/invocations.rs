@@ -63,10 +63,7 @@ impl ServiceInvocationId {
 
                 // Convert the json key to restate key
                 let restate_key = key_converter
-                    .generate_key_from_json(
-                        service_descriptor,
-                        key.unwrap_or(serde_json::Value::Null),
-                    )
+                    .json_to_key(service_descriptor, key.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| MetaApiError::InvalidField("sid", e.to_string()))?;
 
                 Ok(types::ServiceInvocationId::new(
