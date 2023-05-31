@@ -1,9 +1,10 @@
 use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
+use crate::owned_iter::OwnedIterator;
 use crate::TableKind::Status;
 use crate::TableScan::PartitionKeyRange;
-use crate::TableScanIterationDecision;
 use crate::{GetFuture, PutFuture, RocksDBTransaction};
+use crate::{RocksDBStorage, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
@@ -108,6 +109,34 @@ impl StatusTable for RocksDBTransaction {
                 }
             },
         )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct OwnedStatusRow {
+    pub partition_key: PartitionKey,
+    pub service: ByteString,
+    pub service_key: Bytes,
+    pub invocation_status: InvocationStatus,
+}
+
+impl RocksDBStorage {
+    pub fn all_status(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Iterator<Item = OwnedStatusRow> + '_ {
+        let iter = self.iterator_from(PartitionKeyRange::<StatusKey>(range));
+        OwnedIterator::new(iter).map(|(mut key, value)| {
+            let state_key = StatusKey::deserialize_from(&mut key).unwrap();
+            let state_value = storage::v1::InvocationStatus::decode(value).unwrap();
+            let state_value = InvocationStatus::try_from(state_value).unwrap();
+            OwnedStatusRow {
+                partition_key: state_key.partition_key.unwrap(),
+                service: state_key.service_name.unwrap(),
+                service_key: state_key.service_key.unwrap(),
+                invocation_status: state_value,
+            }
+        })
     }
 }
 

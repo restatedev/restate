@@ -1,7 +1,7 @@
 use crate::assert_stream_eq;
 use bytes::Bytes;
 use restate_storage_api::state_table::StateTable;
-use restate_storage_api::{Storage, Transaction};
+use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::ServiceId;
 

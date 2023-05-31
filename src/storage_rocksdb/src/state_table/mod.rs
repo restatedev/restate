@@ -1,12 +1,14 @@
 use crate::keys::{define_table_key, TableKey};
+use crate::owned_iter::OwnedIterator;
 use crate::TableKind::State;
-use crate::{GetFuture, PutFuture, RocksDBTransaction};
+use crate::{GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
 use crate::{Result, TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId};
+use std::ops::RangeInclusive;
 
 define_table_key!(
     State,
@@ -84,6 +86,34 @@ fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {
     let user_key = user_state_key_from_slice(k)?;
     let user_value = Bytes::copy_from_slice(v);
     Ok((user_key, user_value))
+}
+
+#[derive(Clone, Debug)]
+pub struct OwnedStateRow {
+    pub partition_key: PartitionKey,
+    pub service: ByteString,
+    pub service_key: Bytes,
+    pub state_key: Bytes,
+    pub state_value: Bytes,
+}
+
+impl RocksDBStorage {
+    pub fn all_states(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Iterator<Item = OwnedStateRow> + '_ {
+        let iter = self.iterator_from(TableScan::PartitionKeyRange::<StateKey>(range));
+        OwnedIterator::new(iter).map(|(mut key, value)| {
+            let row_key = StateKey::deserialize_from(&mut key).unwrap();
+            OwnedStateRow {
+                partition_key: row_key.partition_key.unwrap(),
+                service: row_key.service_name.unwrap(),
+                service_key: row_key.service_key.unwrap(),
+                state_key: row_key.state_key.unwrap(),
+                state_value: value,
+            }
+        })
+    }
 }
 
 #[cfg(test)]

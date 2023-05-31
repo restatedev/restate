@@ -23,8 +23,8 @@ pub use restate_worker::{
     IngressOptions, IngressOptionsBuilder, IngressOptionsBuilderError, InvokerOptions,
     InvokerOptionsBuilder, InvokerOptionsBuilderError, Options as WorkerOptions,
     OptionsBuilder as WorkerOptionsBuilder, OptionsBuilderError as WorkerOptionsBuilderError,
-    RocksdbOptions, RocksdbOptionsBuilder, RocksdbOptionsBuilderError, StorageGrpcOptions,
-    StorageGrpcOptionsBuilder, StorageGrpcOptionsBuilderError, TimerOptions, TimerOptionsBuilder,
+    RocksdbOptions, RocksdbOptionsBuilder, RocksdbOptionsBuilderError, StorageQueryOptions,
+    StorageQueryOptionsBuilder, StorageQueryOptionsBuilderError, TimerOptions, TimerOptionsBuilder,
     TimerOptionsBuilderError,
 };
 

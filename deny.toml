@@ -8,7 +8,12 @@ notice = "warn"
 ignore = [
     # Caused by atty which is pulled in by criterion
     "RUSTSEC-2021-0145",
+
+    # Caused by arrow, and a workaround is applied in storage_query,
+    # as described by the advisory description.
+    "RUSTSEC-2020-0071"
 ]
+
 
 
 [licenses]
@@ -144,7 +149,18 @@ skip = [
 
     # Clash with criterion
     { name = "itertools" },
+
+    # Clash between datafusion-expr and arrow
+    { name = "strum"},
+    { name = "strum_macros"},
+
+    # Clash between pgwire and arrow
+    {name = "time"},
+
+    # clash between datafusion and arrow
+    {name = "wasi"},
 ]
+
 deny = [
     # Each entry the name of a crate and a version range. If version is
     # not specified, all versions will be matched.

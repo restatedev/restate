@@ -103,6 +103,7 @@ macro_rules! define_table_key {
         // serde
         impl crate::keys::TableKey for $key_name {
 
+            #[inline]
             fn table() -> crate::TableKind {
                 $table_kind
             }
@@ -116,12 +117,14 @@ macro_rules! define_table_key {
                 return true;
             }
 
+            #[inline]
             fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
                 $(
                 crate::codec::serialize(&self.$element, bytes);
                 )+
             }
 
+            #[inline]
             fn deserialize_from<B: bytes::Buf>(bytes: &mut B) -> crate::Result<Self> {
                 let mut this: Self = Default::default();
 

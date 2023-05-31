@@ -1,6 +1,6 @@
 use crate::{assert_stream_eq, uuid_str};
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, StatusTable};
-use restate_storage_api::{Storage, Transaction};
+use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{InvocationId, ServiceId, ServiceInvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
