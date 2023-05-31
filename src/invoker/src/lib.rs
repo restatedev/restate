@@ -103,8 +103,9 @@ pub trait StateReader {
 
 // --- Invoker input sender
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum InvokeInputJournal {
+    #[default]
     NoCachedJournal,
     CachedJournal(JournalMetadata, Vec<PlainRawEntry>),
 }

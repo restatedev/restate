@@ -2,6 +2,7 @@ use super::*;
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::path::PathBuf;
 use std::time::Duration;
 use std::{cmp, panic};
 
@@ -148,21 +149,16 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Input<I> {
     partition: PartitionLeaderEpoch,
     inner: I,
 }
 
-#[derive(Debug)]
-enum InputCommand {
-    Invoke(InvokeInputCommand),
-    Other(OtherInputCommand),
-}
-
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct InvokeInputCommand {
     service_invocation_id: ServiceInvocationId,
+    #[serde(skip)]
     journal: InvokeInputJournal,
 }
 
@@ -269,6 +265,16 @@ pub struct Options {
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
     proxy_uri: Option<Proxy>,
 
+    /// # Temporary directory
+    ///
+    /// Temporary directory to use for the invoker temporary files.
+    /// If empty, the system temporary directory will be used instead.
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(with = "String", default = "Options::default_tmp_dir")
+    )]
+    tmp_dir: PathBuf,
+
     #[cfg_attr(feature = "options_schema", schemars(skip))]
     disable_eager_state: bool,
 }
@@ -282,6 +288,7 @@ impl Default for Options {
             message_size_warning: Options::default_message_size_warning(),
             message_size_limit: None,
             proxy_uri: None,
+            tmp_dir: Options::default_tmp_dir(),
             disable_eager_state: false,
         }
     }
@@ -307,6 +314,10 @@ impl Options {
 
     fn default_message_size_warning() -> usize {
         1024 * 1024 * 10 // 10mb
+    }
+
+    fn default_tmp_dir() -> PathBuf {
+        restate_fs_util::generate_temp_dir_name("invoker")
     }
 
     pub fn build<C, JR, JS, SR, SER>(
@@ -347,6 +358,7 @@ impl Options {
             message_size_warning: self.message_size_warning,
             message_size_limit: self.message_size_limit,
             proxy: self.proxy_uri,
+            tmp_dir: self.tmp_dir,
             journal_reader,
             state_reader,
             _codec: PhantomData::<C>::default(),
@@ -388,6 +400,9 @@ pub struct Invoker<Codec, JournalReader, StateReader, ServiceEndpointRegistry> {
     message_size_warning: usize,
     message_size_limit: Option<usize>,
     proxy: Option<Proxy>,
+
+    // Invoker options
+    tmp_dir: PathBuf,
 
     journal_reader: JournalReader,
     state_reader: StateReader,
@@ -433,6 +448,7 @@ where
             disable_eager_state,
             message_size_warning,
             message_size_limit,
+            tmp_dir,
             ..
         } = self;
 
@@ -442,56 +458,51 @@ where
         // Merge the two invoke and resume streams into a single stream
         let invoke_input_stream = stream::poll_fn(move |cx| invoke_input_rx.poll_recv(cx));
         let resume_input_stream = stream::poll_fn(move |cx| resume_input_rx.poll_recv(cx));
-        let invoke_stream =
+        let mut invoke_stream =
             stream::select_with_strategy(invoke_input_stream, resume_input_stream, |_: &mut ()| {
                 PollNext::Right
-            })
-            .map(|i| Input {
-                partition: i.partition,
-                inner: InputCommand::Invoke(i.inner),
             });
 
-        // Merge the invoker and other streams
-        let other_input_stream =
-            stream::poll_fn(move |cx| other_input_rx.poll_recv(cx)).map(|i| Input {
-                partition: i.partition,
-                inner: InputCommand::Other(i.inner),
-            });
-        let mut input_stream =
-            stream::select_with_strategy(invoke_stream, other_input_stream, |_: &mut ()| {
-                PollNext::Right
-            });
+        // Prepare the segmented queue
+        let mut segmented_input_queue = restate_queue::SegmentQueue::init(tmp_dir, 1_056_784)
+            .await
+            .expect("Cannot initialize input spillable queue");
 
         loop {
             tokio::select! {
-                Some(input_message) = input_stream.next() => {
+                // --- Spillable queue loading/offloading
+                Some(invoke_input_command) = invoke_stream.next() => {
+                    segmented_input_queue.enqueue(invoke_input_command).await
+                },
+                Some(invoke_input_command) = segmented_input_queue.dequeue() => {
+                    state_machine_coordinator
+                        .must_resolve_partition(invoke_input_command.partition)
+                        .handle_invoke(
+                            invoke_input_command.inner,
+                            StartInvocationTaskArguments::new(
+                                &client,
+                                &journal_reader,
+                                &service_endpoint_registry,
+                                &retry_policy,
+                                suspension_timeout,
+                                response_abort_timeout,
+                                disable_eager_state,
+                                message_size_warning,
+                                message_size_limit,
+                                &mut invocation_tasks,
+                                &invocation_tasks_tx,
+                                &mut retry_timers,
+                            )
+                        ).await;
+                },
+
+                // --- Other commands (they don't go through the spillable queue)
+                Some(input_message) = other_input_rx.recv() => {
                     match input_message {
-                        Input { partition, inner: InputCommand::Invoke(invoke_input_command) } => {
-                            state_machine_coordinator
-                                .must_resolve_partition(partition)
-                                .handle_invoke(
-                                    invoke_input_command,
-                                    StartInvocationTaskArguments::new(
-                                        &client,
-                                        &journal_reader,
-                                        &state_reader,
-                                        &service_endpoint_registry,
-                                        &retry_policy,
-                                        suspension_timeout,
-                                        response_abort_timeout,
-                                        disable_eager_state,
-                                        message_size_warning,
-                                        message_size_limit,
-                                        &mut invocation_tasks,
-                                        &invocation_tasks_tx,
-                                        &mut retry_timers,
-                                    )
-                                ).await;
-                        },
-                        Input { partition, inner: InputCommand::Other(OtherInputCommand::RegisterPartition(sender)) } => {
+                        Input { partition, inner: OtherInputCommand::RegisterPartition(sender) } => {
                             state_machine_coordinator.register_partition(partition, sender);
                         },
-                        Input { partition, inner: InputCommand::Other(OtherInputCommand::Abort(service_invocation_id)) } => {
+                        Input { partition, inner: OtherInputCommand::Abort(service_invocation_id) } => {
                             if let Some(psm) = state_machine_coordinator.resolve_partition(partition) {
                                 psm.abort(service_invocation_id)
                             } else {
@@ -499,19 +510,19 @@ where
                                 continue
                             };
                         }
-                        Input { partition, inner: InputCommand::Other(OtherInputCommand::AbortAllPartition) } => {
+                        Input { partition, inner: OtherInputCommand::AbortAllPartition } => {
                             if let Some(mut partition_state_machine) = state_machine_coordinator.remove_partition(partition) {
                                 partition_state_machine.abort_all();
                             } else {
                                 // This is safe to ignore
                             }
                         }
-                        Input { partition, inner: InputCommand::Other(OtherInputCommand::Completion { service_invocation_id, completion }) } => {
+                        Input { partition, inner: OtherInputCommand::Completion { service_invocation_id, completion }} => {
                             state_machine_coordinator
                                 .must_resolve_partition(partition)
                                 .handle_completion(service_invocation_id, completion);
                         },
-                        Input { partition, inner: InputCommand::Other(OtherInputCommand::StoredEntryAck { service_invocation_id, entry_index, .. }) } => {
+                        Input { partition, inner: OtherInputCommand::StoredEntryAck { service_invocation_id, entry_index, .. } } => {
                             state_machine_coordinator
                                 .must_resolve_partition(partition)
                                 .handle_stored_entry_ack(
