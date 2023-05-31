@@ -42,15 +42,16 @@ jobs:
     needs: [run-tests]
     uses: ./.github/workflows/docker.yml
 
-  build-cli-binaries:
-    name: Build release cli binaries
-    needs: [run-tests]
-    uses: ./.github/workflows/cli.yml
+  # Disable cli building until it is ready for our users
+#  build-cli-binaries:
+#    name: Build release cli binaries
+#    needs: [run-tests]
+#    uses: ./.github/workflows/cli.yml
 
   create-release:
     name: Create release
     runs-on: ubuntu-latest
-    needs: [build-docker-image, build-cli-binaries]
+    needs: [build-docker-image]
 
     steps:
       - name: Download cli binaries
