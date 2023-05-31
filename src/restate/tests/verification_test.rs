@@ -45,7 +45,7 @@ async fn verification() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let child = Command::cargo_bin("restate")?
-        .env("RUST_LOG", "debug,hyper=warn,h2=warn,mio=warn")
+        .env("RUST_LOG", "info,hyper=warn,h2=warn,mio=warn")
         .current_dir(dir.path())
         .spawn()?;
     let mut _safe_child = SafeChild(child);
