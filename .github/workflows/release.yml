@@ -16,11 +16,7 @@ jobs:
 
       - name: Install dasel
         run: |
-          curl -s https://api.github.com/repos/tomwright/dasel/releases/latest | \
-          grep browser_download_url | \
-          grep linux_amd64 | \
-          cut -d '"' -f 4 | \
-          wget -qi - && \
+          wget -q https://github.com/TomWright/dasel/releases/download/v2.3.1/dasel_linux_amd64 && \
           mv dasel_linux_amd64 dasel && \
           chmod +x dasel && \
           ./dasel --version
