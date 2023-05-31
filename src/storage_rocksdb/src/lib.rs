@@ -5,6 +5,7 @@ pub mod inbox_table;
 pub mod journal_table;
 pub mod keys;
 pub mod outbox_table;
+mod owned_iter;
 pub mod scan;
 pub mod state_table;
 pub mod status_table;
@@ -373,6 +374,11 @@ impl RocksDBStorage {
         self.db.raw_iterator_cf_opt(&table, opts)
     }
 
+    pub fn full_iterator(&self, table: TableKind) -> DBIterator {
+        let table = self.table_handle(table);
+        self.db.raw_iterator_cf_opt(table, ReadOptions::default())
+    }
+
     fn iterator_from<K: TableKey>(&self, scan: TableScan<K>) -> DBIterator {
         let scan: PhysicalScan = scan.into();
         match scan {
@@ -393,6 +399,16 @@ impl RocksDBStorage {
             }
         }
     }
+
+    #[allow(clippy::needless_lifetimes)]
+    pub fn transaction(&self) -> RocksDBTransaction {
+        RocksDBTransaction {
+            write_batch: Default::default(),
+            storage: Clone::clone(self),
+            key_buffer: Default::default(),
+            value_buffer: Default::default(),
+        }
+    }
 }
 
 impl Storage for RocksDBStorage {
@@ -400,12 +416,7 @@ impl Storage for RocksDBStorage {
 
     #[allow(clippy::needless_lifetimes)]
     fn transaction(&self) -> Self::TransactionType {
-        RocksDBTransaction {
-            write_batch: Default::default(),
-            storage: Clone::clone(self),
-            key_buffer: Default::default(),
-            value_buffer: Default::default(),
-        }
+        RocksDBStorage::transaction(self)
     }
 }
 

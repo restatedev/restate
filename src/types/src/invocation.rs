@@ -239,6 +239,10 @@ impl ServiceInvocationSpanContext {
     pub fn is_sampled(&self) -> bool {
         self.span_context.trace_flags().is_sampled()
     }
+
+    pub fn trace_id(&self) -> TraceId {
+        self.span_context.trace_id()
+    }
 }
 
 impl From<ServiceInvocationSpanContext> for SpanContext {

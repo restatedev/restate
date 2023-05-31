@@ -17,7 +17,7 @@ use restate_invoker::{
 use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use restate_schema_impl::Schemas;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_grpc::StorageService;
+use restate_storage_query::service::PostgresQueryService;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{IngressId, PartitionKey, PeerId};
 use restate_types::message::PeerTarget;
@@ -43,10 +43,6 @@ pub use restate_invoker::{
     Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
     OptionsBuilderError as InvokerOptionsBuilderError,
 };
-pub use restate_storage_grpc::{
-    Options as StorageGrpcOptions, OptionsBuilder as StorageGrpcOptionsBuilder,
-    OptionsBuilderError as StorageGrpcOptionsBuilderError,
-};
 pub use restate_storage_rocksdb::{
     Options as RocksdbOptions, OptionsBuilder as RocksdbOptionsBuilder,
     OptionsBuilderError as RocksdbOptionsBuilderError,
@@ -54,6 +50,11 @@ pub use restate_storage_rocksdb::{
 pub use restate_timer::{
     Options as TimerOptions, OptionsBuilder as TimerOptionsBuilder,
     OptionsBuilderError as TimerOptionsBuilderError,
+};
+
+pub use restate_storage_query::{
+    Options as StorageQueryOptions, OptionsBuilder as StorageQueryOptionsBuilder,
+    OptionsBuilderError as StorageQueryOptionsBuilderError,
 };
 
 type PartitionProcessorCommand = AckCommand;
@@ -80,7 +81,7 @@ pub struct Options {
     #[cfg_attr(feature = "options_schema", schemars(default))]
     timers: TimerOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
-    storage_grpc: StorageGrpcOptions,
+    storage_query: StorageQueryOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
     storage_rocksdb: RocksdbOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
@@ -105,7 +106,7 @@ impl Default for Options {
         Self {
             channel_size: Options::default_channel_size(),
             timers: Default::default(),
-            storage_grpc: Default::default(),
+            storage_query: Default::default(),
             storage_rocksdb: Default::default(),
             ingress_grpc: Default::default(),
             invoker: Default::default(),
@@ -151,12 +152,9 @@ pub enum Error {
     #[error("network failed: {0}")]
     #[code(unknown)]
     Network(#[from] restate_network::RoutingError),
-    #[error("storage grpc failed: {0}")]
-    StorageGrpc(
-        #[from]
-        #[code]
-        restate_storage_grpc::Error,
-    ),
+    #[error("storage query failed: {0}")]
+    #[code(unknown)]
+    StorageQuery(#[from] restate_storage_query::Error),
     #[error("consensus failed: {0}")]
     #[code(unknown)]
     Consensus(#[from] anyhow::Error),
@@ -184,7 +182,7 @@ pub struct Worker {
     consensus: Consensus<PartitionProcessorCommand>,
     processors: Vec<PartitionProcessor>,
     network: network_integration::Network,
-    storage_grpc: StorageService,
+    storage_query: PostgresQueryService,
     invoker: InvokerService<
         InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,
@@ -201,7 +199,7 @@ impl Worker {
             channel_size,
             ingress_grpc,
             timers,
-            storage_grpc,
+            storage_query,
             storage_rocksdb,
             ..
         } = opts;
@@ -239,7 +237,7 @@ impl Worker {
 
         let rocksdb = storage_rocksdb.build()?;
 
-        let storage_grpc = storage_grpc.build(rocksdb.clone());
+        let storage_query = storage_query.build(rocksdb.clone());
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb.clone());
         let invoker = opts.invoker.build(
@@ -282,7 +280,7 @@ impl Worker {
             consensus,
             processors,
             network,
-            storage_grpc,
+            storage_query,
             invoker,
             external_client_ingress_runner: ExternalClientIngressRunner::new(
                 external_client_ingress,
@@ -336,7 +334,7 @@ impl Worker {
         );
         let mut invoker_handle = tokio::spawn(self.invoker.run(shutdown_watch.clone()));
         let mut network_handle = tokio::spawn(self.network.run(shutdown_watch.clone()));
-        let mut storage_grpc_handle = tokio::spawn(self.storage_grpc.run(shutdown_watch.clone()));
+        let mut storage_query_handle = tokio::spawn(self.storage_query.run(shutdown_watch.clone()));
         let mut consensus_handle = tokio::spawn(self.consensus.run());
         let mut processors_handles: FuturesUnordered<_> = self
             .processors
@@ -358,7 +356,7 @@ impl Worker {
                 // ignored because we are shutting down
                 let _ = join!(
                     network_handle,
-                    storage_grpc_handle,
+                    storage_query_handle,
                     consensus_handle,
                     processors_handles.collect::<Vec<_>>(),
                     invoker_handle,
@@ -375,9 +373,9 @@ impl Worker {
                 network_result.map_err(|err| Error::component_panic("network", err))??;
                 panic!("Unexpected termination of network.");
             },
-            storage_grpc_result = &mut storage_grpc_handle => {
-                storage_grpc_result.map_err(|err| Error::component_panic("storage grpc", err))??;
-                panic!("Unexpected termination of storage grpc.");
+            storage_query_result = &mut storage_query_handle => {
+                storage_query_result.map_err(|err| Error::component_panic("storage query", err))??;
+                panic!("Unexpected termination of storage query.");
             },
             consensus_result = &mut consensus_handle => {
                 consensus_result.map_err(|err| Error::component_panic("consensus", err))??;

@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use restate_storage_api::deduplication_table::DeduplicationTable;
-use restate_storage_api::{Storage, Transaction};
+use restate_storage_api::Transaction;
 use std::path;
 use tempfile::tempdir;
 use tokio::runtime::Builder;
