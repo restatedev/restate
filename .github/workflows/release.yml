@@ -27,7 +27,8 @@ jobs:
 
       - name: Verify version
         run: |
-          version=$(./dasel -f Cargo.toml -r toml 'workspace.package.version')
+          # write yaml to remove quotes
+          version=$(./dasel --file Cargo.toml --read toml 'workspace.package.version' --write yaml)
           tag_version=${{ github.ref_name }}
           tag_version=${tag_version#v}
           if [ ${tag_version} != ${version} ]; then
