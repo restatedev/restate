@@ -152,7 +152,7 @@ where
             .map(|max_seq_number| max_seq_number >= seq_number)
             .unwrap_or(false)
         {
-            trace!("Received an already processed timer. Ignoring it.");
+            trace!("Received an already processed timer {timer:?}. Ignoring it.");
             return;
         } else {
             *max_seq_number = Some(seq_number);
