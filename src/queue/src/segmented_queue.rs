@@ -40,6 +40,16 @@ pub struct SegmentQueue<T> {
 }
 
 impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
+    /// Create a new spillable segment queue, initializing the spillable_base_path directory.
+    pub async fn init(
+        spillable_base_path: impl AsRef<Path>,
+        in_memory_element_threshold: usize,
+    ) -> std::io::Result<Self> {
+        restate_fs_util::remove_dir_all_if_exists(&spillable_base_path).await?;
+        restate_fs_util::create_dir_all_if_doesnt_exists(&spillable_base_path).await?;
+
+        Ok(Self::new(spillable_base_path, in_memory_element_threshold))
+    }
 
     /// creates a new spillable segment queue.
     ///
@@ -218,7 +228,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> Segment<T> {
             Mutable { buffer } => {
                 let len = buffer.len();
                 let buffer = mem::take(buffer);
-                let handle = tokio::spawn(io::create_segment_infalliable(base_dir, id, buffer));
+                let handle = tokio::spawn(io::create_segment_infallible(base_dir, id, buffer));
                 if background {
                     *self = StoringToDisk { id, len, handle };
                 } else {

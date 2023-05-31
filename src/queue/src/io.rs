@@ -83,7 +83,7 @@ pub(crate) async fn consume_segment_infallible<T: DeserializeOwned + Send + 'sta
     values
 }
 
-pub(crate) async fn create_segment_infalliable<T: Serialize + Send + 'static>(
+pub(crate) async fn create_segment_infallible<T: Serialize + Send + 'static>(
     mut base_path: PathBuf,
     segment_id: u64,
     values: VecDeque<T>,
