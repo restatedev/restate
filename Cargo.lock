@@ -875,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "codederror"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "codederror-impl",
  "thiserror",
@@ -883,7 +883,7 @@ dependencies = [
 
 [[package]]
 name = "codederror-impl"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3445,7 +3445,7 @@ dependencies = [
 
 [[package]]
 name = "restate"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "assert_cmd",
  "clap 4.2.1",
@@ -3476,7 +3476,7 @@ dependencies = [
 
 [[package]]
 name = "restate_cli"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "arrow-array",
  "async-trait",
@@ -3504,7 +3504,7 @@ dependencies = [
 
 [[package]]
 name = "restate_common"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64 0.21.0",
  "bytes",
@@ -3527,7 +3527,7 @@ dependencies = [
 
 [[package]]
 name = "restate_consensus"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "drain",
@@ -3545,7 +3545,7 @@ dependencies = [
 
 [[package]]
 name = "restate_errors"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "codederror",
  "paste",
@@ -3558,7 +3558,7 @@ dependencies = [
 
 [[package]]
 name = "restate_futures_util"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "futures",
  "pin-project",
@@ -3571,7 +3571,7 @@ dependencies = [
 
 [[package]]
 name = "restate_ingress_grpc"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -3611,7 +3611,7 @@ dependencies = [
 
 [[package]]
 name = "restate_invoker"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "bytes-utils",
@@ -3647,7 +3647,7 @@ dependencies = [
 
 [[package]]
 name = "restate_journal"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "bytestring",
@@ -3657,7 +3657,7 @@ dependencies = [
 
 [[package]]
 name = "restate_meta"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "axum",
  "codederror",
@@ -3687,7 +3687,7 @@ dependencies = [
 
 [[package]]
 name = "restate_network"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "drain",
@@ -3703,7 +3703,7 @@ dependencies = [
 
 [[package]]
 name = "restate_queue"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bincode",
  "criterion",
@@ -3714,7 +3714,7 @@ dependencies = [
 
 [[package]]
 name = "restate_serde_util"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64 0.21.0",
  "schemars",
@@ -3726,7 +3726,7 @@ dependencies = [
 
 [[package]]
 name = "restate_service_key_extractor"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -3743,7 +3743,7 @@ dependencies = [
 
 [[package]]
 name = "restate_service_metadata"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "base64 0.21.0",
@@ -3758,7 +3758,7 @@ dependencies = [
 
 [[package]]
 name = "restate_service_protocol"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "bytes-utils",
@@ -3786,7 +3786,7 @@ dependencies = [
 
 [[package]]
 name = "restate_storage_api"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "futures-util",
@@ -3796,7 +3796,7 @@ dependencies = [
 
 [[package]]
 name = "restate_storage_grpc"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "codederror",
@@ -3824,7 +3824,7 @@ dependencies = [
 
 [[package]]
 name = "restate_storage_proto"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "bytestring",
@@ -3837,7 +3837,7 @@ dependencies = [
 
 [[package]]
 name = "restate_storage_rocksdb"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "bytestring",
@@ -3864,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "restate_test_utils"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "assert2",
  "pretty_assertions",
@@ -3873,7 +3873,7 @@ dependencies = [
 
 [[package]]
 name = "restate_timer"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "ahash",
  "drain",
@@ -3893,7 +3893,7 @@ dependencies = [
 
 [[package]]
 name = "restate_timer_queue"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "futures",
  "tokio",
@@ -3901,7 +3901,7 @@ dependencies = [
 
 [[package]]
 name = "restate_tracing_instrumentation"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "codederror",
  "console-subscriber",
@@ -3921,7 +3921,7 @@ dependencies = [
 
 [[package]]
 name = "restate_worker"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "assert2",
@@ -5460,7 +5460,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "drain",
