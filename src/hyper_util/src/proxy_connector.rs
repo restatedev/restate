@@ -4,8 +4,8 @@ use std::str::FromStr;
 use std::task::{Context, Poll};
 
 use hyper::http::uri::{InvalidUri, Parts, Scheme};
+use hyper::service::Service;
 use hyper::Uri;
-use tower::Service;
 
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("invalid proxy Uri (must have scheme, authority, and path): {0}")]
@@ -23,7 +23,7 @@ impl Display for Proxy {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum ProxyFromStrErr {
+pub enum ProxyFromStrError {
     #[error(transparent)]
     InvalidUri(#[from] InvalidUri),
     #[error(transparent)]
@@ -31,7 +31,7 @@ pub enum ProxyFromStrErr {
 }
 
 impl FromStr for Proxy {
-    type Err = ProxyFromStrErr;
+    type Err = ProxyFromStrError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(Self::new(Uri::from_str(s)?)?)
     }

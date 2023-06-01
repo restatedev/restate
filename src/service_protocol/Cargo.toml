@@ -12,7 +12,7 @@ default = []
 protocol = []
 message = ["protocol", "dep:restate_common", "dep:bytes-utils", "dep:codederror", "dep:restate_errors", "dep:size", "dep:tracing"]
 codec = ["protocol", "dep:restate_common", "dep:thiserror", "dep:restate_journal", "dep:paste"]
-discovery = ["dep:thiserror", "dep:codederror", "dep:restate_errors", "dep:restate_service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:restate_common", "dep:restate_service_metadata"]
+discovery = ["dep:thiserror", "dep:codederror", "dep:restate_errors", "dep:restate_service_key_extractor", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:restate_common", "dep:restate_hyper_util", "dep:restate_service_metadata"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -34,6 +34,7 @@ prost-reflect = { workspace = true, optional = true }
 restate_service_metadata = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
 restate_errors = { workspace = true, optional = true }
+restate_hyper_util = { workspace = true, optional = true }
 
 size = { version = "0.4.1", optional = true }
 
