@@ -3438,7 +3438,7 @@ dependencies = [
  "restate_common",
  "restate_errors",
  "restate_meta",
- "restate_test_utils",
+ "restate_test_util",
  "restate_tracing_instrumentation",
  "restate_worker",
  "schemars",
@@ -3508,7 +3508,7 @@ dependencies = [
  "futures-sink",
  "pin-project",
  "restate_common",
- "restate_test_utils",
+ "restate_test_util",
  "thiserror",
  "tokio",
  "tracing",
@@ -3521,7 +3521,7 @@ version = "0.1.2"
 dependencies = [
  "codederror",
  "paste",
- "restate_test_utils",
+ "restate_test_util",
  "termimad",
  "thiserror",
  "tracing",
@@ -3534,7 +3534,7 @@ version = "0.1.2"
 dependencies = [
  "futures",
  "pin-project",
- "restate_test_utils",
+ "restate_test_util",
  "thiserror",
  "tokio",
  "tracing",
@@ -3572,7 +3572,7 @@ dependencies = [
  "restate_errors",
  "restate_futures_util",
  "restate_service_metadata",
- "restate_test_utils",
+ "restate_test_util",
  "schemars",
  "serde",
  "serde_json",
@@ -3612,7 +3612,7 @@ dependencies = [
  "restate_journal",
  "restate_service_metadata",
  "restate_service_protocol",
- "restate_test_utils",
+ "restate_test_util",
  "restate_timer_queue",
  "schemars",
  "serde",
@@ -3676,7 +3676,7 @@ dependencies = [
  "futures",
  "pin-project",
  "restate_common",
- "restate_test_utils",
+ "restate_test_util",
  "thiserror",
  "tokio",
  "tracing",
@@ -3757,7 +3757,7 @@ dependencies = [
  "restate_journal",
  "restate_service_key_extractor",
  "restate_service_metadata",
- "restate_test_utils",
+ "restate_test_util",
  "size",
  "thiserror",
  "tokio",
@@ -3790,7 +3790,7 @@ dependencies = [
  "restate_errors",
  "restate_storage_api",
  "restate_storage_rocksdb",
- "restate_test_utils",
+ "restate_test_util",
  "rocksdb",
  "schemars",
  "semver",
@@ -3845,7 +3845,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_test_utils"
+name = "restate_test_util"
 version = "0.1.2"
 dependencies = [
  "assert2",
@@ -3863,7 +3863,7 @@ dependencies = [
  "pin-project",
  "priority-queue",
  "restate_common",
- "restate_test_utils",
+ "restate_test_util",
  "schemars",
  "serde",
  "thiserror",
@@ -3925,7 +3925,7 @@ dependencies = [
  "restate_storage_api",
  "restate_storage_grpc",
  "restate_storage_rocksdb",
- "restate_test_utils",
+ "restate_test_util",
  "restate_timer",
  "schemars",
  "serde",

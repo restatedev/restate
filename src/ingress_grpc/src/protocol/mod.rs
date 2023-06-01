@@ -184,7 +184,7 @@ mod tests {
     use http::header::CONTENT_TYPE;
     use http::{Method, Request, StatusCode};
     use hyper::body::HttpBody;
-    use restate_test_utils::{assert_eq, test};
+    use restate_test_util::{assert_eq, test};
     use serde_json::json;
 
     fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<IngressResult> {

@@ -55,7 +55,7 @@ schemars = { workspace = true, optional = true }
 
 [dev-dependencies]
 hyper = { workspace = true, features = ["client"] }
-restate_test_utils = { workspace = true }
+restate_test_util = { workspace = true }
 tonic = { workspace = true, features = ["default"] }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
