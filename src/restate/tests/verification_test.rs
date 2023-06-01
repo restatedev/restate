@@ -24,7 +24,7 @@ impl Drop for SafeChild {
 }
 
 #[test(tokio::test)]
-#[ignore = "Ignored because it requires the verification service running on localhost:8000. See .github/workflows/ci.yaml and https://github.com/restatedev/restate-verification for more details."]
+#[ignore = "Ignored because it requires the verification service running on localhost:8080. See .github/workflows/ci.yaml and https://github.com/restatedev/e2e/pkgs/container/e2e-node-services for more details."]
 async fn verification() -> Result<(), Box<dyn std::error::Error>> {
     let seed = {
         let seed = std::env::var("SEED").unwrap_or("".to_string());
@@ -55,7 +55,7 @@ async fn verification() -> Result<(), Box<dyn std::error::Error>> {
     let policy = RetryPolicy::fixed_delay(std::time::Duration::from_secs(1), 30);
 
     policy
-        .retry_operation(|| discover(client, "http://127.0.0.1:8000"))
+        .retry_operation(|| discover(client, "http://127.0.0.1:8080"))
         .await?;
 
     let policy = RetryPolicy::fixed_delay(std::time::Duration::from_secs(2), 500);

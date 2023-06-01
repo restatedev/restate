@@ -12,6 +12,9 @@ jobs:
   lint-build-and-test:
     name: Lint, build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: read
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -24,11 +27,13 @@ jobs:
       RUSTC_WRAPPER: "sccache"
     services:
       verifier:
-        image: ghcr.io/restatedev/restate-verification:latest
+        image: ghcr.io/restatedev/e2e-node-services:latest
+        env:
+          SERVICES: interpreter.CommandInterpreter,verifier.CommandVerifier
         ports:
-          - "8000:8000"
+          - "8080:8080"
         options: >-
-          --health-cmd "curl --http2-prior-knowledge 127.0.0.1:8000/health"
+          --health-cmd "curl --http2-prior-knowledge 127.0.0.1:8080/health"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
