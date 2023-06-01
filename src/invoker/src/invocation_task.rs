@@ -320,12 +320,18 @@ where
         // Check all the entries have been replayed
         debug_assert_eq!(self.next_journal_index, journal_size);
 
+        // Force protocol type to RequestResponse if suspension_timeout is zero
+        let protocol_type = if self.suspension_timeout.is_zero() {
+            ProtocolType::RequestResponse
+        } else {
+            self.endpoint_metadata.protocol_type()
+        };
+
         // If we have the invoker_rx and the protocol type is bidi stream,
         // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
-        if let (Some(invoker_rx), ProtocolType::BidiStream) = (
-            self.invoker_rx.take(),
-            self.endpoint_metadata.protocol_type(),
-        ) {
+        if let (Some(invoker_rx), ProtocolType::BidiStream) =
+            (self.invoker_rx.take(), protocol_type)
+        {
             shortcircuit!(
                 self.bidi_stream_loop(
                     &service_invocation_span_context,
