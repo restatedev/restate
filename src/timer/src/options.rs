@@ -1,6 +1,5 @@
-use crate::{Output, TimerService};
+use crate::service::TimerService;
 use std::fmt::Debug;
-use tokio::sync::mpsc;
 
 /// # Timer options
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -18,25 +17,17 @@ pub struct Options {
 }
 
 impl Options {
-    pub fn build<Timer, TimerReader, Clock>(
+    pub fn build<'a, Timer, TimerReader, Clock>(
         &self,
-        output_tx: mpsc::Sender<Output<Timer>>,
-        timer_reader: TimerReader,
+        timer_reader: &'a TimerReader,
         clock: Clock,
-        channel_size: usize,
-    ) -> TimerService<Timer, TimerReader, Clock>
+    ) -> TimerService<'a, Timer, Clock, TimerReader>
     where
         Timer: crate::Timer + Debug + Clone,
         TimerReader: crate::TimerReader<Timer>,
         Clock: crate::Clock,
     {
-        TimerService::new(
-            self.num_timers_in_memory_limit,
-            output_tx,
-            timer_reader,
-            clock,
-            channel_size,
-        )
+        TimerService::new(clock, self.num_timers_in_memory_limit, timer_reader)
     }
 
     fn default_num_timers_in_memory_limit() -> usize {

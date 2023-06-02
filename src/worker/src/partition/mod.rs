@@ -21,16 +21,13 @@ pub(super) use crate::partition::ack::{
 };
 use crate::partition::actuator_output_handler::ActuatorOutputHandler;
 use crate::partition::effects::{Effects, Interpreter};
-use crate::partition::leadership::LeadershipState;
+use crate::partition::leadership::{ActuatorOutput, LeadershipState, TaskResult};
 use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
 use restate_storage_rocksdb::RocksDBStorage;
 pub(crate) use state_machine::Command;
 use state_machine::DeduplicatingStateMachine;
 pub(super) use types::TimerValue;
-
-type TimerOutput = restate_timer::Output<TimerValue>;
-type TimerHandle = restate_timer::TimerHandle<TimerValue>;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
@@ -118,6 +115,9 @@ where
         // The max number of effects should be 2 atm (e.g. RegisterTimer and AppendJournalEntry)
         let mut effects = Effects::with_capacity(2);
 
+        let partition_storage =
+            PartitionStorage::new(partition_id, partition_key_range, rocksdb_storage);
+
         let (mut actuator_stream, mut leadership_state) = LeadershipState::follower(
             peer_id,
             partition_id,
@@ -127,9 +127,6 @@ where
             network_handle,
             ack_tx,
         );
-
-        let partition_storage =
-            PartitionStorage::new(partition_id, partition_key_range, rocksdb_storage);
 
         let mut state_machine =
             Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?;
@@ -174,7 +171,7 @@ where
 
                                 (actuator_stream, leadership_state) = leadership_state.become_leader(
                                     leader_epoch,
-                                    partition_storage.clone())
+                                    &partition_storage)
                                 .await?;
                             }
                             restate_consensus::Command::BecomeFollower => {
@@ -197,8 +194,15 @@ where
                     actuator_output_handler.handle(actuator_output).await;
                 },
                 task_result = leadership_state.run_tasks() => {
-                    Err(task_result)?
-                }
+                    match task_result {
+                        TaskResult::Timer(timer) => {
+                            actuator_output_handler.handle(ActuatorOutput::Timer(timer)).await;
+                        },
+                        TaskResult::TerminatedTask(result) => {
+                            Err(result)?
+                        }
+                    }
+                },
             }
         }
 

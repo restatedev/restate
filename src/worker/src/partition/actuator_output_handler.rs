@@ -1,6 +1,6 @@
 use crate::partition::leadership::ActuatorOutput;
-use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
-use crate::partition::{AckCommand, Command, TimerOutput};
+use crate::partition::types::{InvokerEffect, InvokerEffectKind};
+use crate::partition::{AckCommand, Command};
 use crate::util::IdentitySender;
 use assert2::let_assert;
 use bytes::Bytes;
@@ -59,13 +59,11 @@ where
                     )))
                     .await;
             }
-            ActuatorOutput::Timer(timer_output) => {
-                let timer_effect = self.map_timer_output_into_effect(timer_output);
-
+            ActuatorOutput::Timer(timer) => {
                 // Err only if the consensus module is shutting down
                 let _ = self
                     .proposal_tx
-                    .send(AckCommand::no_ack(Command::Timer(timer_effect)))
+                    .send(AckCommand::no_ack(Command::Timer(timer)))
                     .await;
             }
         };
@@ -257,11 +255,5 @@ where
     ) -> Result<Bytes, restate_service_key_extractor::Error> {
         self.key_extractor
             .extract(service_name, service_method, payload)
-    }
-
-    fn map_timer_output_into_effect(&self, timer_output: TimerOutput) -> TimerValue {
-        match timer_output {
-            TimerOutput::TimerFired(timer) => timer,
-        }
     }
 }

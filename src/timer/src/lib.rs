@@ -3,7 +3,6 @@ extern crate core;
 use restate_common::types::{MillisSinceEpoch, TimerSeqNumber};
 use std::fmt::Debug;
 use std::hash::Hash;
-use tokio::sync::mpsc;
 use tokio_stream::Stream;
 
 mod options;
@@ -11,53 +10,7 @@ mod service;
 
 pub use options::Options;
 pub use service::clock::{Clock, TokioClock};
-pub use service::{TimerService, TimerServiceError};
-
-#[derive(Debug)]
-enum Input<T> {
-    Timer { timer: Sequenced<T> },
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Output<T> {
-    TimerFired(T),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("timer service has been closed")]
-    Closed,
-}
-
-#[derive(Debug, Clone)]
-pub struct TimerHandle<T> {
-    input_tx: mpsc::Sender<Input<T>>,
-}
-
-impl<T> TimerHandle<T>
-where
-    T: Timer,
-{
-    fn new(input_tx: mpsc::Sender<Input<T>>) -> Self {
-        Self { input_tx }
-    }
-
-    /// Adds a timer to the associated [`TimerService`].
-    ///
-    /// # Important
-    /// Before adding a timer via this method, the timer needs to be made available
-    /// to the associated timer service via the provided [`TimerReader`]. This usually
-    /// entails storing the timer so that the timer reader can retrieve it.
-    ///
-    /// Only if **no** memory limit has been configured on the associated timer service, this is
-    /// not required.
-    pub async fn add_timer(&self, timer: Sequenced<T>) -> Result<(), Error> {
-        self.input_tx
-            .send(Input::Timer { timer })
-            .await
-            .map_err(|_| Error::Closed)
-    }
-}
+pub use service::TimerService;
 
 pub trait Timer: Hash + Eq {
     type TimerKey: TimerKey;
