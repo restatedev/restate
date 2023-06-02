@@ -76,3 +76,13 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
           RUST_LOG: "info"
+
+      - name: Build release binary
+        run: just build --release --bin restate
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: restate
+          path: target/release/restate
+          retention-days: 1
+          if-no-files-found: error
