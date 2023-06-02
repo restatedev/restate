@@ -77,14 +77,10 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           RUST_LOG: "info"
 
-      - name: Build release binary
-        run: just build --release --bin restate
-        if: ${{ runner.os == 'Linux' && runner.arch	== 'X64' }}
-
       - uses: actions/upload-artifact@v3
         if: ${{ runner.os == 'Linux' && runner.arch	== 'X64' }}
         with:
           name: restate
-          path: target/release/restate
+          path: target/debug/restate
           retention-days: 1
           if-no-files-found: error
