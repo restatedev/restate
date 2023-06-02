@@ -21,7 +21,7 @@ use restate_storage_api::{PutFuture, Transaction as OtherTransaction};
 use restate_timer::TimerReader;
 
 #[derive(Debug, Clone)]
-pub(super) struct PartitionStorage<Storage> {
+pub(crate) struct PartitionStorage<Storage> {
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
     storage: Storage,
