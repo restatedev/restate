@@ -3,8 +3,12 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::future::Future;
 use std::mem;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::Poll::Pending;
+use std::task::{Context, Poll, Waker};
 use tokio::task::JoinHandle;
 
 use crate::segmented_queue::Segment::{
@@ -37,6 +41,25 @@ pub struct SegmentQueue<T> {
     in_memory_element_threshold: usize,
     next_segment_id: u64,
     spillable_base_path: PathBuf,
+    len: usize,
+    waker: Option<Waker>,
+}
+
+pub struct NonEmptyFuture<'a, T> {
+    queue: &'a mut SegmentQueue<T>,
+}
+
+impl<'a, T: Send + 'static> Future for NonEmptyFuture<'a, T> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.queue.is_empty() {
+            self.queue.waker = Some(cx.waker().clone());
+            Pending
+        } else {
+            Poll::Ready(())
+        }
+    }
 }
 
 impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
@@ -63,6 +86,8 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
             in_memory_element_threshold,
             next_segment_id: 0,
             spillable_base_path: spillable_base_path.as_ref().into(),
+            len: 0,
+            waker: None,
         }
     }
 
@@ -70,9 +95,12 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     /// Please note, that if the number of elements that are currently enqueued is greater than the
     /// threshold provided, this operation might take some time to complete, as it has to flush the queue to disk.
     pub async fn enqueue(&mut self, element: T) {
+        self.len += 1;
+
         if self.enqueue_internal(element) < self.in_memory_element_threshold {
             return;
         }
+
         let background_flush = self.has_previous_store_completed();
         // SAFETY: enqueue_internal will always make sure that the last segment in
         // SAFETY: self.segments is mutable, therefore it can not be empty.
@@ -97,10 +125,15 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
         }
     }
 
+    pub async fn dequeue(&mut self) -> Option<T> {
+        self.wait_for_non_emptiness().await;
+        self.try_dequeue().await
+    }
+
     /// dequeues an element of type T that was previously encoded.
     /// note that this operation might take a while to complete as it might have to load a previously
     /// serialized element from disk.
-    pub async fn dequeue(&mut self) -> Option<T> {
+    pub async fn try_dequeue(&mut self) -> Option<T> {
         match self.segments.front_mut() {
             Some(segment) => {
                 if segment.is_on_disk() {
@@ -116,16 +149,11 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
                 if len == 0 {
                     self.segments.pop_front();
                 }
+                head.is_some().then(|| self.len -= 1);
                 head
             }
             None => None,
         }
-    }
-
-    /// preload if the current segment has less than a half of the in memory threshold.
-    #[inline]
-    fn should_preload(&self, len: usize) -> bool {
-        2 * len < self.in_memory_element_threshold
     }
 
     fn try_preload_next_segment(&mut self) {
@@ -141,7 +169,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     /// This function returns the size of the mutable segment after insertion.
     ///
     fn enqueue_internal(&mut self, element: T) -> usize {
-        match self.segments.back_mut() {
+        let len = match self.segments.back_mut() {
             Some(segment) if segment.is_mutable() => {
                 segment.enqueue(element);
                 segment.len()
@@ -156,9 +184,31 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
 
                 1
             }
+        };
+        if let Some(w) = self.waker.take() {
+            w.wake()
         }
+        len
     }
 }
+
+impl<T> SegmentQueue<T> {
+    pub fn wait_for_non_emptiness(&mut self) -> NonEmptyFuture<T> {
+        NonEmptyFuture { queue: self }
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// preload if the current segment has less than a half of the in memory threshold.
+    #[inline]
+    fn should_preload(&self, len: usize) -> bool {
+        2 * len < self.in_memory_element_threshold
+    }
+}
+
 /// Mutable -> StoringToDisk -> OnDisk -> LoadingFromDisk -> LoadedFromDisk
 #[derive(Debug)]
 enum Segment<T> {
@@ -252,11 +302,11 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> Segment<T> {
                     handle.await.expect("Was not able to store to disk");
                     *self = OnDisk { id: *id, len: *len };
                 }
-                OnDisk { id, .. } => {
+                OnDisk { id, len } => {
                     let path = path.clone();
-                    let buffer = io::consume_segment_infallible(path, *id).await;
+                    let handle = tokio::spawn(io::consume_segment_infallible(path, *id));
 
-                    *self = LoadedFromDisk { buffer };
+                    *self = LoadingFromDisk { len: *len, handle };
                 }
                 LoadingFromDisk { handle, .. } => {
                     let buffer = handle.await.expect("Unable to load a segment");
