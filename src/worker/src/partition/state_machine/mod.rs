@@ -6,7 +6,7 @@ use restate_common::types::{
     InvocationMetadata, InvocationResponse, InvocationStatus, MessageIndex, MillisSinceEpoch,
     OutboxMessage, ResolutionResult, ResponseResult, ServiceId, ServiceInvocation,
     ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation,
-    Timer, TimerSeqNumber,
+    Timer,
 };
 use restate_journal::raw::{RawEntryCodec, RawEntryCodecError};
 use restate_journal::{
@@ -76,20 +76,14 @@ pub(crate) trait StateReader {
 pub(crate) fn create_deduplicating_state_machine<Codec>(
     inbox_seq_number: MessageIndex,
     outbox_seq_number: MessageIndex,
-    timer_seq_number: TimerSeqNumber,
 ) -> DeduplicatingStateMachine<Codec> {
-    DeduplicatingStateMachine::new(StateMachine::new(
-        inbox_seq_number,
-        outbox_seq_number,
-        timer_seq_number,
-    ))
+    DeduplicatingStateMachine::new(StateMachine::new(inbox_seq_number, outbox_seq_number))
 }
 
 pub(crate) struct StateMachine<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
     outbox_seq_number: MessageIndex,
-    timer_seq_number: TimerSeqNumber,
 
     _codec: PhantomData<Codec>,
 }
@@ -104,15 +98,10 @@ impl<Codec> Debug for StateMachine<Codec> {
 }
 
 impl<Codec> StateMachine<Codec> {
-    pub(crate) fn new(
-        inbox_seq_number: MessageIndex,
-        outbox_seq_number: MessageIndex,
-        timer_seq_number: TimerSeqNumber,
-    ) -> Self {
+    pub(crate) fn new(inbox_seq_number: MessageIndex, outbox_seq_number: MessageIndex) -> Self {
         Self {
             inbox_seq_number,
             outbox_seq_number,
-            timer_seq_number,
             _codec: PhantomData::default(),
         }
     }
@@ -524,18 +513,14 @@ where
                     Entry::Sleep(SleepEntry { wake_up_time, .. }) =
                         Codec::deserialize(&journal_entry)?
                 );
-                effects.register_timer(
-                    self.timer_seq_number,
-                    TimerValue::new_sleep(
-                        // Registering a timer generates multiple effects: timer registration and
-                        // journal append which each generate actuator messages for the timer service
-                        // and the invoker --> Cloning required
-                        service_invocation_id.clone(),
-                        MillisSinceEpoch::new(wake_up_time as u64),
-                        entry_index,
-                    ),
-                );
-                self.timer_seq_number += 1;
+                effects.register_timer(TimerValue::new_sleep(
+                    // Registering a timer generates multiple effects: timer registration and
+                    // journal append which each generate actuator messages for the timer service
+                    // and the invoker --> Cloning required
+                    service_invocation_id.clone(),
+                    MillisSinceEpoch::new(wake_up_time as u64),
+                    entry_index,
+                ));
             }
             EnrichedEntryHeader::Invoke {
                 ref resolution_result,
@@ -608,16 +593,12 @@ where
                             effects,
                         );
                     } else {
-                        effects.register_timer(
-                            self.timer_seq_number,
-                            TimerValue::new_invoke(
-                                service_invocation_id.clone(),
-                                MillisSinceEpoch::new(invoke_time as u64),
-                                entry_index,
-                                service_invocation,
-                            ),
-                        );
-                        self.timer_seq_number += 1;
+                        effects.register_timer(TimerValue::new_invoke(
+                            service_invocation_id.clone(),
+                            MillisSinceEpoch::new(invoke_time as u64),
+                            entry_index,
+                            service_invocation,
+                        ));
                     }
                 }
                 ResolutionResult::Failure { error_code, error } => {

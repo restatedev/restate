@@ -3,7 +3,6 @@ use restate_common::types::{
     CompletionResult, EnrichedRawEntry, EntryIndex, InvocationMetadata, InvocationResponse,
     JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseResult, ServiceId,
     ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation, Timer,
-    TimerSeqNumber,
 };
 use restate_journal::raw::Header;
 use restate_journal::Completion;
@@ -81,7 +80,6 @@ pub(crate) enum Effect {
 
     // Timers
     RegisterTimer {
-        seq_number: TimerSeqNumber,
         timer_value: TimerValue,
     },
     DeleteTimer {
@@ -578,15 +576,8 @@ impl Effects {
         })
     }
 
-    pub(crate) fn register_timer(
-        &mut self,
-        timer_seq_number: TimerSeqNumber,
-        timer_value: TimerValue,
-    ) {
-        self.effects.push(Effect::RegisterTimer {
-            seq_number: timer_seq_number,
-            timer_value,
-        })
+    pub(crate) fn register_timer(&mut self, timer_value: TimerValue) {
+        self.effects.push(Effect::RegisterTimer { timer_value })
     }
 
     pub(crate) fn delete_timer(

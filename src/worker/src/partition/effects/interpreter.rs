@@ -6,7 +6,7 @@ use futures::future::BoxFuture;
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationMetadata,
     InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId,
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext, Timer, TimerSeqNumber,
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext, Timer,
 };
 use restate_common::utils::GenericError;
 use restate_invoker::InvokeInputJournal;
@@ -33,7 +33,6 @@ pub(crate) enum ActuatorMessage {
         message: OutboxMessage,
     },
     RegisterTimer {
-        seq_number: TimerSeqNumber,
         timer_value: TimerValue,
     },
     AckStoredEntry {
@@ -129,11 +128,6 @@ pub(crate) trait StateStorage {
         seq_number: MessageIndex,
     ) -> BoxFuture<Result<(), StateStorageError>>;
 
-    fn store_timer_seq_number(
-        &mut self,
-        seq_number: TimerSeqNumber,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
-
     fn truncate_outbox(
         &mut self,
         outbox_sequence_number: MessageIndex,
@@ -169,7 +163,6 @@ pub(crate) trait StateStorage {
     // Timer
     fn store_timer(
         &mut self,
-        seq_number: TimerSeqNumber,
         service_invocation_id: ServiceInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
@@ -449,13 +442,9 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     },
                 })
             }
-            Effect::RegisterTimer {
-                seq_number,
-                timer_value,
-            } => {
+            Effect::RegisterTimer { timer_value } => {
                 state_storage
                     .store_timer(
-                        seq_number,
                         timer_value.service_invocation_id.clone(),
                         timer_value.wake_up_time,
                         timer_value.entry_index,
@@ -463,13 +452,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     )
                     .await?;
 
-                // need to store the next timer sequence number
-                state_storage.store_inbox_seq_number(seq_number + 1).await?;
-
-                collector.collect(ActuatorMessage::RegisterTimer {
-                    seq_number,
-                    timer_value,
-                });
+                collector.collect(ActuatorMessage::RegisterTimer { timer_value });
             }
             Effect::DeleteTimer {
                 service_invocation_id,

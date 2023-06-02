@@ -1,12 +1,12 @@
 use crate::{GetStream, PutFuture};
-use restate_common::types::{PartitionId, SequencedTimer, TimerKey};
+use restate_common::types::{PartitionId, Timer, TimerKey};
 
 pub trait TimerTable {
     fn add_timer(
         &mut self,
         partition_id: PartitionId,
         timer_key: &TimerKey,
-        seq_timer: SequencedTimer,
+        timer: Timer,
     ) -> PutFuture;
 
     fn delete_timer(&mut self, partition_id: PartitionId, timer_key: &TimerKey) -> PutFuture;
@@ -16,5 +16,5 @@ pub trait TimerTable {
         partition_id: PartitionId,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
-    ) -> GetStream<(TimerKey, SequencedTimer)>;
+    ) -> GetStream<(TimerKey, Timer)>;
 }

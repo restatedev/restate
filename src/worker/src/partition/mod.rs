@@ -222,14 +222,10 @@ where
         let mut transaction = partition_storage.create_transaction();
         let inbox_seq_number = transaction.load_inbox_seq_number().await?;
         let outbox_seq_number = transaction.load_outbox_seq_number().await?;
-        let timer_seq_number = transaction.load_timer_seq_number().await?;
         transaction.commit().await?;
 
-        let state_machine = state_machine::create_deduplicating_state_machine(
-            inbox_seq_number,
-            outbox_seq_number,
-            timer_seq_number,
-        );
+        let state_machine =
+            state_machine::create_deduplicating_state_machine(inbox_seq_number, outbox_seq_number);
 
         Ok(state_machine)
     }

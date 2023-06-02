@@ -7,8 +7,8 @@ use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
 use restate_common::types::{
     CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationStatus, JournalEntry,
-    MessageIndex, MillisSinceEpoch, OutboxMessage, PartitionId, PartitionKey, SequencedTimer,
-    ServiceId, ServiceInvocation, ServiceInvocationId, Timer, TimerKey, TimerSeqNumber,
+    MessageIndex, MillisSinceEpoch, OutboxMessage, PartitionId, PartitionKey, ServiceId,
+    ServiceInvocation, ServiceInvocationId, Timer, TimerKey,
 };
 use restate_journal::raw::Header;
 use std::ops::RangeInclusive;
@@ -18,7 +18,7 @@ pub mod journal_reader;
 use crate::partition::TimerValue;
 use restate_storage_api::outbox_table::OutboxTable;
 use restate_storage_api::{PutFuture, Transaction as OtherTransaction};
-use restate_timer::{Sequenced, TimerReader};
+use restate_timer::TimerReader;
 
 #[derive(Debug, Clone)]
 pub(super) struct PartitionStorage<Storage> {
@@ -92,7 +92,7 @@ where
         partition_id: PartitionId,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
-    ) -> BoxStream<'_, Result<(TimerKey, SequencedTimer), restate_storage_api::StorageError>> {
+    ) -> BoxStream<'_, Result<(TimerKey, Timer), restate_storage_api::StorageError>> {
         self.inner
             .next_timers_greater_than(partition_id, exclusive_start, limit)
     }
@@ -107,12 +107,6 @@ where
         &mut self,
     ) -> BoxFuture<'_, Result<MessageIndex, restate_storage_api::StorageError>> {
         self.load_seq_number(fsm_variable::INBOX_SEQ_NUMBER)
-    }
-
-    pub(super) fn load_timer_seq_number(
-        &mut self,
-    ) -> BoxFuture<'_, Result<TimerSeqNumber, restate_storage_api::StorageError>> {
-        self.load_seq_number(fsm_variable::TIMER_SEQ_NUMBER)
     }
 
     fn store_seq_number(
@@ -369,13 +363,6 @@ where
         self.store_seq_number(seq_number, fsm_variable::OUTBOX_SEQ_NUMBER)
     }
 
-    fn store_timer_seq_number(
-        &mut self,
-        seq_number: TimerSeqNumber,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
-        self.store_seq_number(seq_number, fsm_variable::TIMER_SEQ_NUMBER)
-    }
-
     fn truncate_outbox(
         &mut self,
         outbox_sequence_number: MessageIndex,
@@ -443,7 +430,6 @@ where
 
     fn store_timer(
         &mut self,
-        seq_number: TimerSeqNumber,
         service_invocation_id: ServiceInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
@@ -457,11 +443,7 @@ where
             };
 
             self.inner
-                .add_timer(
-                    self.partition_id,
-                    &timer_key,
-                    SequencedTimer::new(seq_number, timer),
-                )
+                .add_timer(self.partition_id, &timer_key, timer)
                 .await;
             Ok(())
         }
@@ -491,7 +473,6 @@ where
 mod fsm_variable {
     pub(crate) const INBOX_SEQ_NUMBER: u64 = 0;
     pub(crate) const OUTBOX_SEQ_NUMBER: u64 = 1;
-    pub(crate) const TIMER_SEQ_NUMBER: u64 = 2;
 }
 
 impl<TransactionType> Committable for Transaction<TransactionType>
@@ -537,7 +518,7 @@ impl<Storage> TimerReader<TimerValue> for PartitionStorage<Storage>
 where
     Storage: restate_storage_api::Storage + Send + Sync,
 {
-    type TimerStream<'a> = BoxStream<'a, Sequenced<TimerValue>> where Self: 'a;
+    type TimerStream<'a> = BoxStream<'a, TimerValue> where Self: 'a;
 
     fn scan_timers(
         &self,
@@ -556,18 +537,11 @@ where
             let timer_stream = transaction
                 .next_timers_greater_than(self.partition_id, exclusive_start.as_ref(), num_timers)
                 .map(|result| {
-                    result.map(|(timer_key, value)| {
-                        let (seq_number, timer) = value.into_inner();
-
-                        Sequenced::new(
-                            seq_number,
-                            TimerValue {
-                                service_invocation_id: timer_key.service_invocation_id,
-                                wake_up_time: MillisSinceEpoch::new(timer_key.timestamp),
-                                entry_index: timer_key.journal_index,
-                                value: timer,
-                            },
-                        )
+                    result.map(|(timer_key, timer)| TimerValue {
+                        service_invocation_id: timer_key.service_invocation_id,
+                        wake_up_time: MillisSinceEpoch::new(timer_key.timestamp),
+                        entry_index: timer_key.journal_index,
+                        value: timer,
                     })
                 })
                 // TODO: Update timer service to maintain transaction while reading the timer stream: See https://github.com/restatedev/restate/issues/273

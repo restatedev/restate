@@ -1,6 +1,6 @@
 extern crate core;
 
-use restate_common::types::{MillisSinceEpoch, TimerSeqNumber};
+use restate_common::types::MillisSinceEpoch;
 use std::fmt::Debug;
 use std::hash::Hash;
 use tokio_stream::Stream;
@@ -24,35 +24,11 @@ pub trait TimerKey: Ord + Clone + Debug {
     fn wake_up_time(&self) -> MillisSinceEpoch;
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Sequenced<T> {
-    seq_number: TimerSeqNumber,
-    timer: T,
-}
-
-impl<T> Sequenced<T> {
-    pub fn new(seq_number: TimerSeqNumber, timer: T) -> Self {
-        Self { seq_number, timer }
-    }
-
-    pub fn into_inner(self) -> (TimerSeqNumber, T) {
-        (self.seq_number, self.timer)
-    }
-
-    pub fn into_timer(self) -> T {
-        self.timer
-    }
-
-    pub fn timer(&self) -> &T {
-        &self.timer
-    }
-}
-
 pub trait TimerReader<T>
 where
     T: Timer,
 {
-    type TimerStream<'a>: Stream<Item = Sequenced<T>> + Send
+    type TimerStream<'a>: Stream<Item = T> + Send
     where
         Self: 'a;
 

@@ -1135,28 +1135,6 @@ pub mod storage {
                     }
                 }
             }
-
-            impl TryFrom<SequencedTimer> for restate_common::types::SequencedTimer {
-                type Error = ConversionError;
-
-                fn try_from(value: SequencedTimer) -> Result<Self, Self::Error> {
-                    let timer = value.timer.ok_or(ConversionError::missing_field("timer"))?;
-                    Ok(restate_common::types::SequencedTimer::new(
-                        value.seq_number,
-                        restate_common::types::Timer::try_from(timer)?,
-                    ))
-                }
-            }
-
-            impl From<restate_common::types::SequencedTimer> for SequencedTimer {
-                fn from(value: restate_common::types::SequencedTimer) -> Self {
-                    let (seq_number, timer) = value.into_inner();
-                    SequencedTimer {
-                        seq_number,
-                        timer: Some(Timer::from(timer)),
-                    }
-                }
-            }
         }
     }
 }

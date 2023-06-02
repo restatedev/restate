@@ -1,6 +1,6 @@
 use crate::service::clock::tests::ManualClock;
 use crate::service::clock::TokioClock;
-use crate::{Sequenced, Timer, TimerKey, TimerReader, TimerService};
+use crate::{Timer, TimerKey, TimerReader, TimerService};
 use futures_util::stream;
 use restate_common::types::MillisSinceEpoch;
 use restate_test_util::{let_assert, test};
@@ -16,7 +16,7 @@ struct MockTimerReader<T>
 where
     T: Timer,
 {
-    timers: Arc<Mutex<BTreeMap<T::TimerKey, Sequenced<T>>>>,
+    timers: Arc<Mutex<BTreeMap<T::TimerKey, T>>>,
 }
 
 impl<T> MockTimerReader<T>
@@ -29,16 +29,13 @@ where
         }
     }
 
-    fn add_timer(&self, seq_timer: Sequenced<T>) {
-        self.timers
-            .lock()
-            .unwrap()
-            .insert(seq_timer.timer().timer_key(), seq_timer);
+    fn add_timer(&self, timer: T) {
+        self.timers.lock().unwrap().insert(timer.timer_key(), timer);
     }
 
-    fn add_timers(&self, timers: impl IntoIterator<Item = Sequenced<T>>) {
-        for seq_timer in timers {
-            self.add_timer(seq_timer);
+    fn add_timers(&self, timers: impl IntoIterator<Item = T>) {
+        for timer in timers {
+            self.add_timer(timer);
         }
     }
 }
@@ -47,7 +44,7 @@ impl<T> TimerReader<T> for MockTimerReader<T>
 where
     T: Timer + Send + Ord + Clone,
 {
-    type TimerStream<'a> = stream::Iter<std::vec::IntoIter<Sequenced<T>>> where T: 'a;
+    type TimerStream<'a> = stream::Iter<std::vec::IntoIter<T>> where T: 'a;
 
     fn scan_timers(
         &self,
@@ -126,17 +123,17 @@ async fn no_timer_is_dropped() {
     let service = TimerService::new(TokioClock, None, &timer_reader);
     tokio::pin!(service);
 
-    let timer_1 = Sequenced::new(0, TimerValue::new(0, 0.into()));
-    let timer_2 = Sequenced::new(1, TimerValue::new(1, 1.into()));
-    let timer_3 = Sequenced::new(2, TimerValue::new(2, 2.into()));
+    let timer_1 = TimerValue::new(0, 0.into());
+    let timer_2 = TimerValue::new(1, 1.into());
+    let timer_3 = TimerValue::new(2, 2.into());
 
     service.as_mut().add_timer(timer_1);
     service.as_mut().add_timer(timer_2);
     service.as_mut().add_timer(timer_3);
 
-    assert_eq!(service.as_mut().next_timer().await, timer_1.into_timer());
-    assert_eq!(service.as_mut().next_timer().await, timer_2.into_timer());
-    assert_eq!(service.as_mut().next_timer().await, timer_3.into_timer());
+    assert_eq!(service.as_mut().next_timer().await, timer_1);
+    assert_eq!(service.as_mut().next_timer().await, timer_2);
+    assert_eq!(service.as_mut().next_timer().await, timer_3);
 }
 
 #[test(tokio::test)]
@@ -156,9 +153,7 @@ async fn timers_fire_in_wake_up_order() {
 
     for i in 0..num_timers {
         let wake_up_time = (now + num_timers - i).into();
-        service
-            .as_mut()
-            .add_timer(Sequenced::new(i, TimerValue::new(i, wake_up_time)));
+        service.as_mut().add_timer(TimerValue::new(i, wake_up_time));
     }
 
     for i in (0..num_timers).rev() {
@@ -176,7 +171,7 @@ async fn loading_timers_from_reader() {
     let num_timers = 10;
 
     for i in 0..num_timers {
-        timer_reader.add_timer(Sequenced::new(i, TimerValue::new(i, i.into())))
+        timer_reader.add_timer(TimerValue::new(i, i.into()))
     }
 
     let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
@@ -200,7 +195,7 @@ async fn advancing_time_triggers_timer() {
     let num_timers = 10;
 
     for i in 0..num_timers {
-        timer_reader.add_timer(Sequenced::new(i, TimerValue::new(i, i.into())));
+        timer_reader.add_timer(TimerValue::new(i, i.into()));
     }
 
     let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
@@ -240,16 +235,16 @@ async fn add_new_timers() {
     let timer_reader = MockTimerReader::<TimerValue>::new();
 
     timer_reader.add_timers(vec![
-        Sequenced::new(0, TimerValue::new(0, 0.into())),
-        Sequenced::new(1, TimerValue::new(1, 1.into())),
-        Sequenced::new(2, TimerValue::new(3, 10.into())),
+        TimerValue::new(0, 0.into()),
+        TimerValue::new(1, 1.into()),
+        TimerValue::new(3, 10.into()),
     ]);
 
     let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
     tokio::pin!(service);
 
     clock.advance_time_to(MillisSinceEpoch::new(5));
-    let new_timer = Sequenced::new(3, TimerValue::new(2, 5.into()));
+    let new_timer = TimerValue::new(2, 5.into());
     timer_reader.add_timer(new_timer);
 
     // notify timer about new timer
@@ -267,7 +262,7 @@ async fn add_new_timers() {
 async fn earlier_timers_replace_older_ones() {
     let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
     let timer_reader = MockTimerReader::<TimerValue>::new();
-    timer_reader.add_timer(Sequenced::new(0, TimerValue::new(1, 10.into())));
+    timer_reader.add_timer(TimerValue::new(1, 10.into()));
 
     let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
     tokio::pin!(service);
@@ -275,7 +270,7 @@ async fn earlier_timers_replace_older_ones() {
     // give timer service chance to load timers
     yield_to_timer_service(&mut service).await;
 
-    let new_timer = Sequenced::new(1, TimerValue::new(0, 5.into()));
+    let new_timer = TimerValue::new(0, 5.into());
     timer_reader.add_timer(new_timer);
     service.as_mut().add_timer(new_timer);
 
@@ -307,8 +302,8 @@ async fn yield_to_timer_service<
 async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
     let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
     let timer_reader = MockTimerReader::<TimerValue>::new();
-    timer_reader.add_timer(Sequenced::new(0, TimerValue::new(0, 2.into())));
-    timer_reader.add_timer(Sequenced::new(1, TimerValue::new(2, 5.into())));
+    timer_reader.add_timer(TimerValue::new(0, 2.into()));
+    timer_reader.add_timer(TimerValue::new(2, 5.into()));
 
     let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
     tokio::pin!(service);
@@ -320,42 +315,13 @@ async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
 
     let_assert!(TimerValue { value: 0, .. } = service.as_mut().next_timer().await);
 
-    let new_timer = Sequenced::new(2, TimerValue::new(1, 0.into()));
+    let new_timer = TimerValue::new(1, 0.into());
     timer_reader.add_timer(new_timer);
     service.as_mut().add_timer(new_timer);
 
     clock.advance_time_to(MillisSinceEpoch::new(10));
 
     for i in 1..3 {
-        let_assert!(TimerValue { value, .. } = service.as_mut().next_timer().await);
-        assert_eq!(value, i);
-    }
-}
-
-#[test(tokio::test)]
-async fn deduplicating_timers() {
-    let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
-    let timer_reader = MockTimerReader::<TimerValue>::new();
-    let first_timer = Sequenced::new(0, TimerValue::new(0, 1.into()));
-    timer_reader.add_timer(first_timer);
-    timer_reader.add_timer(Sequenced::new(1, TimerValue::new(1, 2.into())));
-
-    let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
-    tokio::pin!(service);
-
-    // give timer service the chance to load the initial timers
-    yield_to_timer_service(&mut service).await;
-
-    clock.advance_time_to(MillisSinceEpoch::new(1));
-
-    let_assert!(TimerValue { value: 0, .. } = service.as_mut().next_timer().await);
-
-    // simulate the late arrival of the first timer on the input channel
-    service.as_mut().add_timer(first_timer);
-
-    clock.advance_time_to(MillisSinceEpoch::new(2));
-
-    for i in 1..2 {
         let_assert!(TimerValue { value, .. } = service.as_mut().next_timer().await);
         assert_eq!(value, i);
     }
