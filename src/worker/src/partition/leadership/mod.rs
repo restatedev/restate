@@ -1,7 +1,6 @@
 use crate::partition::effects::ActuatorMessage;
 use crate::partition::shuffle::Shuffle;
-use crate::partition::storage::PartitionStorage;
-use crate::partition::{shuffle, AckResponse, TimerValue};
+use crate::partition::{shuffle, storage, AckResponse, TimerValue};
 use futures::{future, Stream, StreamExt};
 use restate_common::types::{
     LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId,
@@ -20,6 +19,7 @@ use tokio::task::JoinError;
 mod actuator;
 
 pub(crate) use actuator::{ActuatorMessageCollector, ActuatorOutput, ActuatorStream};
+use restate_storage_rocksdb::RocksDBStorage;
 
 pub(crate) trait InvocationReader {
     type InvokedInvocationStream<'a>: Stream<
@@ -31,19 +31,16 @@ pub(crate) trait InvocationReader {
     fn scan_invoked_invocations(&mut self) -> Self::InvokedInvocationStream<'_>;
 }
 
-type TimerService<'a, Storage> =
-    restate_timer::TimerService<'a, TimerValue, TokioClock, PartitionStorage<Storage>>;
+type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
+type TimerService<'a> = restate_timer::TimerService<'a, TimerValue, TokioClock, PartitionStorage>;
 
-pub(crate) struct LeaderState<'a, Storage>
-where
-    Storage: restate_storage_api::Storage + Send + Sync,
-{
+pub(crate) struct LeaderState<'a> {
     leader_epoch: LeaderEpoch,
     shutdown_signal: drain::Signal,
     shuffle_hint_tx: mpsc::Sender<shuffle::NewOutboxMessage>,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
     message_buffer: Vec<ActuatorMessage>,
-    timer_service: Pin<Box<TimerService<'a, Storage>>>,
+    timer_service: Pin<Box<TimerService<'a>>>,
 }
 
 pub(crate) struct FollowerState<I, N> {
@@ -68,24 +65,19 @@ pub(crate) enum Error {
     Storage(#[from] restate_storage_api::StorageError),
 }
 
-pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle, Storage>
-where
-    Storage: restate_storage_api::Storage + Send + Sync,
-{
+pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle> {
     Follower(FollowerState<InvokerInputSender, NetworkHandle>),
 
     Leader {
         follower_state: FollowerState<InvokerInputSender, NetworkHandle>,
-        leader_state: LeaderState<'a, Storage>,
+        leader_state: LeaderState<'a>,
     },
 }
 
-impl<'a, InvokerInputSender, NetworkHandle, Storage>
-    LeadershipState<'a, InvokerInputSender, NetworkHandle, Storage>
+impl<'a, InvokerInputSender, NetworkHandle> LeadershipState<'a, InvokerInputSender, NetworkHandle>
 where
     InvokerInputSender: restate_invoker::InvokerInputSender,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-    Storage: restate_storage_api::Storage + Clone + Send + Sync + 'static,
 {
     pub(crate) fn follower(
         peer_id: PeerId,
@@ -117,11 +109,11 @@ where
     pub(crate) async fn become_leader(
         self,
         leader_epoch: LeaderEpoch,
-        partition_storage: &'a PartitionStorage<Storage>,
+        partition_storage: &'a PartitionStorage,
     ) -> Result<
         (
             ActuatorStream,
-            LeadershipState<'a, InvokerInputSender, NetworkHandle, Storage>,
+            LeadershipState<'a, InvokerInputSender, NetworkHandle>,
         ),
         Error,
     > {
@@ -140,11 +132,11 @@ where
     async fn unchecked_become_leader(
         self,
         leader_epoch: LeaderEpoch,
-        partition_storage: &'a PartitionStorage<Storage>,
+        partition_storage: &'a PartitionStorage,
     ) -> Result<
         (
             ActuatorStream,
-            LeadershipState<'a, InvokerInputSender, NetworkHandle, Storage>,
+            LeadershipState<'a, InvokerInputSender, NetworkHandle>,
         ),
         Error,
     > {
@@ -209,7 +201,7 @@ where
     async fn register_at_invoker(
         invoker_handle: &mut InvokerInputSender,
         partition_leader_epoch: PartitionLeaderEpoch,
-        partition_storage: &PartitionStorage<Storage>,
+        partition_storage: &PartitionStorage,
         channel_size: usize,
     ) -> Result<mpsc::Receiver<restate_invoker::OutputEffect>, Error> {
         let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
@@ -247,7 +239,7 @@ where
     ) -> Result<
         (
             ActuatorStream,
-            LeadershipState<'a, InvokerInputSender, NetworkHandle, Storage>,
+            LeadershipState<'a, InvokerInputSender, NetworkHandle>,
         ),
         Error,
     > {
@@ -313,7 +305,7 @@ where
 
     pub(crate) fn into_message_collector(
         self,
-    ) -> ActuatorMessageCollector<'a, InvokerInputSender, NetworkHandle, Storage> {
+    ) -> ActuatorMessageCollector<'a, InvokerInputSender, NetworkHandle> {
         match self {
             LeadershipState::Follower(follower_state) => {
                 ActuatorMessageCollector::Follower(follower_state)

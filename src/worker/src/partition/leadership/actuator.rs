@@ -11,13 +11,10 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, info_span, trace, warn, warn_span};
 
-pub(crate) enum ActuatorMessageCollector<'a, I, N, S>
-where
-    S: restate_storage_api::Storage + Send + Sync,
-{
+pub(crate) enum ActuatorMessageCollector<'a, I, N> {
     Leader {
         follower_state: FollowerState<I, N>,
-        leader_state: LeaderState<'a, S>,
+        leader_state: LeaderState<'a>,
     },
     Follower(FollowerState<I, N>),
 }
@@ -30,15 +27,14 @@ pub(crate) enum ActuatorMessageCollectorError {
     Ack(#[from] mpsc::error::SendError<AckResponse>),
 }
 
-impl<'a, I, N, S> ActuatorMessageCollector<'a, I, N, S>
+impl<'a, I, N> ActuatorMessageCollector<'a, I, N>
 where
     I: InvokerInputSender,
     N: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-    S: restate_storage_api::Storage + Send + Sync,
 {
     pub(crate) async fn send(
         self,
-    ) -> Result<LeadershipState<'a, I, N, S>, ActuatorMessageCollectorError> {
+    ) -> Result<LeadershipState<'a, I, N>, ActuatorMessageCollectorError> {
         match self {
             ActuatorMessageCollector::Leader {
                 mut follower_state,
@@ -69,7 +65,7 @@ where
         partition_leader_epoch: PartitionLeaderEpoch,
         invoker_tx: &mut I,
         shuffle_hint_tx: &mut mpsc::Sender<shuffle::NewOutboxMessage>,
-        mut timer_service: Pin<&mut TimerService<'a, S>>,
+        mut timer_service: Pin<&mut TimerService<'a>>,
         ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
         messages: impl IntoIterator<Item = ActuatorMessage>,
     ) -> Result<(), ActuatorMessageCollectorError> {
@@ -173,10 +169,7 @@ where
     }
 }
 
-impl<'a, I, N, S> MessageCollector for ActuatorMessageCollector<'a, I, N, S>
-where
-    S: restate_storage_api::Storage + Send + Sync,
-{
+impl<'a, I, N> MessageCollector for ActuatorMessageCollector<'a, I, N> {
     fn collect(&mut self, message: ActuatorMessage) {
         match self {
             ActuatorMessageCollector::Leader {
