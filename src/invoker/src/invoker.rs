@@ -482,6 +482,7 @@ where
                             StartInvocationTaskArguments::new(
                                 &client,
                                 &journal_reader,
+                                &state_reader,
                                 &service_endpoint_registry,
                                 &retry_policy,
                                 suspension_timeout,
