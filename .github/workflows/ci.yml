@@ -84,3 +84,17 @@ jobs:
           path: target/debug/restate
           retention-days: 1
           if-no-files-found: error
+
+  e2e:
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    secrets: inherit
+    needs: lint-build-and-test
+    uses: restatedev/e2e/.github/workflows/e2e.yaml@e2e-workflow-call
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      e2eRef: e2e-workflow-call
