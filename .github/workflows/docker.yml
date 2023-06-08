@@ -2,6 +2,18 @@ name: Build Docker image
 
 on:
   workflow_call:
+    inputs:
+      artifactInsteadOfPush:
+        description: 'skip pushing docker image and build an artifact instead'
+        required: false
+        default: false
+        type: boolean
+      platforms:
+        description: 'platforms for docker build step'
+        required: false
+        default: ''
+        type: string
+
   workflow_dispatch:
 
 env:
@@ -51,14 +63,30 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
 
-      - name: Build and push Docker image
+      - name: Build${{inputs.artifactInsteadOfPush != true && ' and push ' || ' '}}Docker image
+        id: build
         uses: docker/build-push-action@v3
         with:
           context: .
           file: "docker/Dockerfile"
-          push: true
+          push: ${{ inputs.artifactInsteadOfPush != true }}
           tags: ${{ steps.meta.outputs.tags }}
+          load: ${{ inputs.artifactInsteadOfPush }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/arm64,linux/amd64
+          platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
           cache-from: type=gha,scope=${{ github.workflow }}
           cache-to: type=gha,mode=max,scope=${{ github.workflow }}
+
+      - name: Save docker image as tar
+        if: ${{ inputs.artifactInsteadOfPush }}
+        run: |
+          docker save -o restate.tar ${{ steps.build.outputs.imageid }}
+
+      - name: Upload docker image tar as artifact
+        if: ${{ inputs.artifactInsteadOfPush }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: restate.tar
+          path: restate.tar
+          retention-days: 1
+          if-no-files-found: error
