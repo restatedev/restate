@@ -19,8 +19,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        #os: [ubuntu-latest, macos-latest] # 1 macos-latest minute counts as 10 minutes --> quite expensive :-(
-        os: [ubuntu-latest]
+        #os: [ubuntu-22.04, macos-latest] # 1 macos-latest minute counts as 10 minutes --> quite expensive :-(
+        os: [ubuntu-22.04]
     env:
       RUST_BACKTRACE: full
       SCCACHE_GHA_ENABLED: "true"
@@ -76,3 +76,25 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
           RUST_LOG: "info"
+
+      - uses: actions/upload-artifact@v3
+        if: ${{ runner.os == 'Linux' && runner.arch == 'X64' }}
+        with:
+          name: restate
+          path: target/debug/restate
+          retention-days: 1
+          if-no-files-found: error
+
+  e2e:
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    secrets: inherit
+    needs: lint-build-and-test
+    uses: restatedev/e2e/.github/workflows/e2e.yaml@main
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      e2eRef: main
