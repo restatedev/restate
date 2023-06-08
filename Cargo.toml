@@ -2,9 +2,9 @@
 members = [
     "src/*",
     "src/codederror/impl",
-    "tools/xtask"
+    "tools/xtask",
+    "tools/service_protocol_wireshark_dissector"
 ]
-exclude = ["src/service_protocol_wireshark_dissector"]
 
 [workspace.package]
 version = "0.1.3"
@@ -94,3 +94,7 @@ panic = "abort"
 [profile.dev]
 # Let's be defensive and abort on every panic
 panic = "abort"
+
+[profile.release.package.service_protocol_wireshark_dissector]
+opt-level = "z"  # Optimize for size.
+strip = true  # Automatically strip symbols from the binary.

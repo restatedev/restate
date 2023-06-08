@@ -107,7 +107,7 @@ run *flags: (_target-installed target)
     cargo run {{ _target-option }} {{ flags }}
 
 test: (_target-installed target)
-    cargo test {{ _target-option }} --workspace --all-features
+    cargo test {{ _target-option }} --workspace --all-features --exclude service_protocol_wireshark_dissector --exclude xtask
 
 verification-test seed='': (_target-installed target)
     SEED={{seed}} cargo test {{ _target-option }} --package restate verification --all-features -- --ignored --exact --nocapture
