@@ -11,6 +11,7 @@ use futures::stream::{PollNext, StreamExt};
 use restate_common::types::PartitionLeaderEpoch;
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec};
+use restate_queue::SegmentQueue;
 use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;
 use serde_with::serde_as;
@@ -464,7 +465,7 @@ where
             });
 
         // Prepare the segmented queue
-        let mut segmented_input_queue = restate_queue::SegmentQueue::init(tmp_dir, 1_056_784)
+        let mut segmented_input_queue = SegmentQueue::init(tmp_dir, 1_056_784)
             .await
             .expect("Cannot initialize input spillable queue");
 
@@ -474,7 +475,7 @@ where
                 Some(invoke_input_command) = invoke_stream.next() => {
                     segmented_input_queue.enqueue(invoke_input_command).await
                 },
-                Some(invoke_input_command) = segmented_input_queue.dequeue() => {
+                Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() => {
                     state_machine_coordinator
                         .must_resolve_partition(invoke_input_command.partition)
                         .handle_invoke(

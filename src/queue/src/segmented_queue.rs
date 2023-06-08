@@ -3,12 +3,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::future::Future;
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::task::Poll::Pending;
-use std::task::{Context, Poll, Waker};
 use tokio::task::JoinHandle;
 
 use crate::segmented_queue::Segment::{
@@ -42,24 +38,6 @@ pub struct SegmentQueue<T> {
     next_segment_id: u64,
     spillable_base_path: PathBuf,
     len: usize,
-    waker: Option<Waker>,
-}
-
-pub struct NonEmptyFuture<'a, T> {
-    queue: &'a mut SegmentQueue<T>,
-}
-
-impl<'a, T: Send + 'static> Future for NonEmptyFuture<'a, T> {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.queue.is_empty() {
-            self.queue.waker = Some(cx.waker().clone());
-            Pending
-        } else {
-            Poll::Ready(())
-        }
-    }
 }
 
 impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
@@ -87,7 +65,6 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
             next_segment_id: 0,
             spillable_base_path: spillable_base_path.as_ref().into(),
             len: 0,
-            waker: None,
         }
     }
 
@@ -126,14 +103,6 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     }
 
     pub async fn dequeue(&mut self) -> Option<T> {
-        self.wait_for_non_emptiness().await;
-        self.try_dequeue().await
-    }
-
-    /// dequeues an element of type T that was previously encoded.
-    /// note that this operation might take a while to complete as it might have to load a previously
-    /// serialized element from disk.
-    pub async fn try_dequeue(&mut self) -> Option<T> {
         match self.segments.front_mut() {
             Some(segment) => {
                 if segment.is_on_disk() {
@@ -185,20 +154,13 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
                 1
             }
         };
-        if let Some(w) = self.waker.take() {
-            w.wake()
-        }
         len
     }
 }
 
 impl<T> SegmentQueue<T> {
-    pub fn wait_for_non_emptiness(&mut self) -> NonEmptyFuture<T> {
-        NonEmptyFuture { queue: self }
-    }
-
     #[inline]
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
