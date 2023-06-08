@@ -95,6 +95,6 @@ panic = "abort"
 # Let's be defensive and abort on every panic
 panic = "abort"
 
-[profile.release.package.restate_service_protocol_wireshark_dissector]
+[profile.release.package.service_protocol_wireshark_dissector]
 opt-level = "z"  # Optimize for size.
 strip = true  # Automatically strip symbols from the binary.

@@ -3827,17 +3827,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_service_protocol_wireshark_dissector"
-version = "0.1.3"
-dependencies = [
- "bytes",
- "mlua",
- "restate_journal",
- "restate_service_protocol",
- "thiserror",
-]
-
-[[package]]
 name = "restate_storage_api"
 version = "0.1.3"
 dependencies = [
@@ -4342,6 +4331,17 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "service_protocol_wireshark_dissector"
+version = "0.1.3"
+dependencies = [
+ "bytes",
+ "mlua",
+ "restate_journal",
+ "restate_service_protocol",
+ "thiserror",
 ]
 
 [[package]]
