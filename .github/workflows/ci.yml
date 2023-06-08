@@ -94,7 +94,7 @@ jobs:
       actions: read
     secrets: inherit
     needs: lint-build-and-test
-    uses: restatedev/e2e/.github/workflows/e2e.yaml@e2e-workflow-call
+    uses: restatedev/e2e/.github/workflows/e2e.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-      e2eRef: e2e-workflow-call
+      e2eRef: main
