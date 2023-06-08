@@ -75,6 +75,8 @@ pub(crate) enum InvocationTaskError {
     MissingTerminalMessage,
     #[error("Unexpected end of invocation stream, as it was closed with both a SuspensionMessage and an OutputStreamEntry. This is probably an SDK bug")]
     TooManyTerminalMessages,
+    #[error("Unexpected end of invocation stream, as it was closed with too many OutputStreamEntry. Only one is allowed. This is probably an SDK bug")]
+    TooManyOutputStreamEntry,
     #[error(transparent)]
     Other(#[from] GenericError),
 }
@@ -413,7 +415,7 @@ where
                     match opt_je {
                         Some(je) => {
                             if je.header == RawEntryHeader::OutputStream {
-                                self.saw_output_stream_entry = true;
+                                shortcircuit!(self.notify_saw_output_stream_entry());
                             }
                             shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
                             self.next_journal_index += 1;
@@ -575,7 +577,7 @@ where
             ),
             ProtocolMessage::UnparsedEntry(entry) => {
                 if entry.header == RawEntryHeader::OutputStream {
-                    self.saw_output_stream_entry = true;
+                    shortcircuit!(self.notify_saw_output_stream_entry());
                 }
                 let _ = self.invoker_tx.send(InvocationTaskOutput {
                     partition: self.partition,
@@ -590,6 +592,14 @@ where
                 TerminalLoopState::Continue(())
             }
         }
+    }
+
+    fn notify_saw_output_stream_entry(&mut self) -> Result<(), InvocationTaskError> {
+        if self.saw_output_stream_entry {
+            return Err(InvocationTaskError::TooManyOutputStreamEntry);
+        }
+        self.saw_output_stream_entry = true;
+        Ok(())
     }
 
     // --- HTTP related methods
