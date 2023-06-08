@@ -122,7 +122,10 @@ skip = [
     { name = "tokio-rustls"},
 
     # Clash between rocksdb bindgen and prost-build
-    { name = "prettyplease"}
+    { name = "prettyplease"},
+
+    # Clash between assert_cmd (verification test) and mlua (service_protocol_wireshark_dissector)
+    { name = "bstr"}
 ]
 deny = [
     # Each entry the name of a crate and a version range. If version is

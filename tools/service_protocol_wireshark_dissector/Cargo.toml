@@ -1,7 +1,10 @@
 [package]
 name = "restate_service_protocol_wireshark_dissector"
-version = "0.0.0"
-edition = "2021"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [lib]
@@ -18,14 +21,10 @@ luajit = ["mlua/luajit"]
 
 [dependencies]
 # Dependencies needed to decode packets
-restate_service_protocol = { path = "../service_protocol", features = ["codec", "message"] }
-journal = { path = "../journal" }
-bytes = "1.4"
-thiserror = "1.0"
+restate_service_protocol = { workspace = true, features = ["codec", "message"] }
+restate_journal = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
 
 # Lua
 mlua = { version = "0.8", features = ["module", "macros", "vendored"] }
-
-[profile.release]
-opt-level = "z"  # Optimize for size.
-strip = true  # Automatically strip symbols from the binary.
