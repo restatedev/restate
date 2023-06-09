@@ -77,15 +77,15 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           RUST_LOG: "info"
 
-      - uses: actions/upload-artifact@v3
-        if: ${{ runner.os == 'Linux' && runner.arch == 'X64' }}
-        with:
-          name: restate
-          path: target/debug/restate
-          retention-days: 1
-          if-no-files-found: error
+  docker:
+    name: Create docker image
+    uses: ./.github/workflows/docker.yml
+    with:
+      artifactInsteadOfPush: true
+      platforms: linux/amd64
 
   e2e:
+    name: Run e2e tests
     permissions:
       contents: read
       issues: read
@@ -93,7 +93,7 @@ jobs:
       pull-requests: write
       actions: read
     secrets: inherit
-    needs: lint-build-and-test
+    needs: docker
     uses: restatedev/e2e/.github/workflows/e2e.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
