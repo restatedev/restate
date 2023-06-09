@@ -94,7 +94,7 @@ jobs:
       actions: read
     secrets: inherit
     needs: docker
-    uses: restatedev/e2e/.github/workflows/e2e.yaml@accept-docker-tar
+    uses: restatedev/e2e/.github/workflows/e2e.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-      e2eRef: accept-docker-tar
+      e2eRef: main
