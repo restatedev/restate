@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use futures::Stream;
 use opentelemetry::trace::SpanContext;
+use restate_common::errors::InvocationError;
 use restate_common::retry_policy::RetryPolicy;
 use restate_common::types::{
     EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceId, ServiceInvocationId,
@@ -20,7 +21,7 @@ mod invocation_task;
 
 // --- Error trait used to figure out whether errors are transient or not
 
-pub trait InvokerError: std::error::Error {
+trait InvokerError: std::error::Error + Into<InvocationError> {
     fn is_transient(&self) -> bool;
 }
 
@@ -182,8 +183,5 @@ pub enum Kind {
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
-    Failed {
-        error_code: i32,
-        error: Box<dyn InvokerError + Send + Sync + 'static>,
-    },
+    Failed(InvocationError),
 }

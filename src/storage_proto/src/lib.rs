@@ -633,7 +633,7 @@ pub mod storage {
                                 .map_err(ConversionError::invalid_data);
 
                             restate_common::types::CompletionResult::Failure(
-                                failure.error_code,
+                                failure.error_code.into(),
                                 failure_message?,
                             )
                         }
@@ -657,7 +657,7 @@ pub mod storage {
                         }
                         restate_common::types::CompletionResult::Failure(error_code, message) => {
                             completion_result::Result::Failure(Failure {
-                                error_code,
+                                error_code: error_code.into(),
                                 message: message.into_bytes(),
                             })
                         }
@@ -836,7 +836,7 @@ pub mod storage {
                                 .map_err(ConversionError::invalid_data)?;
 
                             Some(restate_common::types::ResolutionResult::Failure {
-                                error_code: failure.error_code,
+                                error_code: failure.error_code.into(),
                                 error,
                             })
                         }
@@ -869,7 +869,7 @@ pub mod storage {
                                 error,
                             } => invocation_resolution_result::Result::Failure(
                                 invocation_resolution_result::Failure {
-                                    error_code,
+                                    error_code: error_code.into(),
                                     error: error.into_bytes(),
                                 },
                             ),
@@ -912,7 +912,7 @@ pub mod storage {
                             let error = ByteString::try_from(failure.error)
                                 .map_err(ConversionError::invalid_data)?;
                             restate_common::types::ResolutionResult::Failure {
-                                error_code: failure.error_code,
+                                error_code: failure.error_code.into(),
                                 error,
                             }
                         }
@@ -941,7 +941,7 @@ pub mod storage {
                         restate_common::types::ResolutionResult::Failure { error_code, error } => {
                             background_call_resolution_result::Result::Failure(
                                 background_call_resolution_result::Failure {
-                                    error_code,
+                                    error_code: error_code.into(),
                                     error: error.into_bytes(),
                                 },
                             )
@@ -1071,7 +1071,7 @@ pub mod storage {
                         }
                         response_result::ResponseResult::ResponseFailure(failure) => {
                             restate_common::types::ResponseResult::Failure(
-                                failure.failure_code,
+                                failure.failure_code.into(),
                                 ByteString::try_from(failure.failure_message)
                                     .map_err(ConversionError::invalid_data)?,
                             )
@@ -1093,7 +1093,7 @@ pub mod storage {
                         restate_common::types::ResponseResult::Failure(error_code, error) => {
                             response_result::ResponseResult::ResponseFailure(
                                 response_result::ResponseFailure {
-                                    failure_code: error_code,
+                                    failure_code: error_code.into(),
                                     failure_message: error.into_bytes(),
                                 },
                             )

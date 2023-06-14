@@ -11,8 +11,8 @@ pub use reflection::{ReflectionRegistry, RegistrationError};
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
-use bytestring::ByteString;
 use opentelemetry::Context;
+use restate_common::errors::InvocationError;
 use restate_common::types::{
     AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation, ServiceInvocationId,
     ServiceInvocationResponseSink, SpanRelation,
@@ -42,31 +42,11 @@ impl IngressRequestHeaders {
     }
 }
 
-type IngressResult = Result<IngressResponse, Status>;
+type IngressResult = Result<IngressResponse, IngressError>;
 
 pub type IngressRequest = (IngressRequestHeaders, Bytes);
 pub type IngressResponse = Bytes;
-
-#[derive(Debug, Clone)]
-pub struct IngressError {
-    code: i32,
-    error_msg: ByteString,
-}
-
-impl IngressError {
-    pub fn new(code: i32, error_msg: impl Into<ByteString>) -> Self {
-        Self {
-            code,
-            error_msg: error_msg.into(),
-        }
-    }
-}
-
-impl From<IngressError> for Status {
-    fn from(value: IngressError) -> Self {
-        Status::new(value.code.into(), value.error_msg)
-    }
-}
+pub type IngressError = InvocationError;
 
 // --- Input and output messages to interact with ingress
 

@@ -80,6 +80,12 @@ fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeade
                 .try_into()
                 .expect("Protocol messages can't be larger than u32"),
         ),
+        ProtocolMessage::Error(m) => MessageHeader::new(
+            MessageType::Error,
+            m.encoded_len()
+                .try_into()
+                .expect("Protocol messages can't be larger than u32"),
+        ),
         ProtocolMessage::UnparsedEntry(entry) => match entry.header.is_completed() {
             Some(completed_flag) => MessageHeader::new_completable_entry(
                 raw_header_to_message_type(&entry.header),
@@ -99,6 +105,7 @@ fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost:
         ProtocolMessage::Start { inner, .. } => inner.encode(buf),
         ProtocolMessage::Completion(m) => m.encode(buf),
         ProtocolMessage::Suspension(m) => m.encode(buf),
+        ProtocolMessage::Error(m) => m.encode(buf),
         ProtocolMessage::UnparsedEntry(entry) => {
             buf.put(entry.entry.clone());
             Ok(())
@@ -227,6 +234,7 @@ fn decode_protocol_message(
         MessageType::Suspension => {
             ProtocolMessage::Suspension(pb::protocol::SuspensionMessage::decode(buf)?)
         }
+        MessageType::Error => ProtocolMessage::Error(pb::protocol::ErrorMessage::decode(buf)?),
         _ => ProtocolMessage::UnparsedEntry(RawEntry::new(
             message_header_to_raw_header(header),
             // NOTE: This is a no-op copy if the Buf is instance of Bytes.
@@ -249,6 +257,7 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> RawEntryHeade
         MessageType::Start => unreachable!(),
         MessageType::Completion => unreachable!(),
         MessageType::Suspension => unreachable!(),
+        MessageType::Error => unreachable!(),
         MessageType::PollInputStreamEntry => RawEntryHeader::PollInputStream {
             is_completed: message_header
                 .completed()

@@ -5,6 +5,7 @@ use super::pb;
 
 use bytes::Bytes;
 use prost::Message;
+use restate_common::errors::InvocationError;
 use restate_common::types::CompletionResult;
 use restate_journal::raw::PlainRawEntry;
 use restate_journal::Completion;
@@ -24,6 +25,7 @@ pub enum ProtocolMessage {
     },
     Completion(pb::protocol::CompletionMessage),
     Suspension(pb::protocol::SuspensionMessage),
+    Error(pb::protocol::ErrorMessage),
 
     // Entries are not parsed at this point
     UnparsedEntry(PlainRawEntry),
@@ -66,7 +68,7 @@ impl From<Completion> for ProtocolMessage {
                 }
                 CompletionResult::Failure(code, message) => Some(
                     pb::protocol::completion_message::Result::Failure(pb::protocol::Failure {
-                        code,
+                        code: code.into(),
                         message: message.to_string(),
                     }),
                 ),
@@ -78,5 +80,15 @@ impl From<Completion> for ProtocolMessage {
 impl From<PlainRawEntry> for ProtocolMessage {
     fn from(value: PlainRawEntry) -> Self {
         Self::UnparsedEntry(value)
+    }
+}
+
+impl From<pb::protocol::ErrorMessage> for InvocationError {
+    fn from(value: pb::protocol::ErrorMessage) -> Self {
+        if value.description.is_empty() {
+            InvocationError::new(value.code, value.message)
+        } else {
+            InvocationError::new_with_description(value.code, value.message, value.description)
+        }
     }
 }

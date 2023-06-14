@@ -243,7 +243,7 @@ where
                         Ok(response_payload)
                     }
                     Ok(Err(error)) => {
-                        let status: Status = error;
+                        let status: Status = error.into();
                         info!(rpc.grpc.status_code = ?status.code(), rpc.grpc.status_message = ?status.message(), "Complete external gRPC request with a failure");
                         Err(status)
                     }

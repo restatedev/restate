@@ -19,6 +19,7 @@ pub(crate) use interpreter::{
     ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
     StateStorageError,
 };
+use restate_common::errors::InvocationErrorCode;
 
 #[derive(Debug)]
 pub(crate) enum Effect {
@@ -130,7 +131,7 @@ pub(crate) enum Effect {
         service_invocation_id: ServiceInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
-        result: Result<(), (i32, String)>,
+        result: Result<(), (InvocationErrorCode, String)>,
     },
 
     // Acks
@@ -707,7 +708,7 @@ impl Effects {
         service_invocation_id: ServiceInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
-        result: Result<(), (i32, String)>,
+        result: Result<(), (InvocationErrorCode, String)>,
     ) {
         self.effects.push(Effect::NotifyInvocationResult {
             service_invocation_id,

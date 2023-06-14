@@ -177,6 +177,7 @@ impl DispatcherLoopHandler {
 mod tests {
     use super::*;
 
+    use bytestring::ByteString;
     use restate_common::types::IngressId;
     use restate_test_util::test;
 

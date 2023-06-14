@@ -2,6 +2,7 @@ use bytes::Bytes;
 use mlua::prelude::*;
 use mlua::{Table, Value};
 
+use restate_common::errors::InvocationError;
 use restate_journal::raw::RawEntryCodec;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{Decoder, MessageType, ProtocolMessage};
@@ -48,6 +49,9 @@ fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Tabl
                 }
                 ProtocolMessage::Suspension(s) => {
                     format!("{:#?}", s)
+                }
+                ProtocolMessage::Error(e) => {
+                    format!("{:?}", InvocationError::from(e))
                 }
                 ProtocolMessage::UnparsedEntry(e) => {
                     format!("{:#?}", ProtobufRawEntryCodec::deserialize(&e).map_err(LuaError::external)?)

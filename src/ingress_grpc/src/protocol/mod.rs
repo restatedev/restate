@@ -61,7 +61,7 @@ impl Protocol {
     ) -> Result<Response<BoxBody>, BoxError>
     where
         H: FnOnce(IngressRequest) -> F + Clone + Send + 'static,
-        F: Future<Output = IngressResult> + Send,
+        F: Future<Output = Result<IngressResponse, Status>> + Send,
     {
         // Extract tracing context if any
         let tracing_context = TraceContextPropagator::new()
@@ -95,7 +95,7 @@ impl Protocol {
         // TODO Clone bound is not needed,
         //  remove it once https://github.com/hyperium/tonic/issues/1290 is released
         H: FnOnce(IngressRequest) -> F + Clone + Send + 'static,
-        F: Future<Output = IngressResult> + Send,
+        F: Future<Output = Result<IngressResponse, Status>> + Send,
     {
         // Why FnOnce and service_fn_once are safe here?
         //
@@ -138,7 +138,7 @@ impl Protocol {
     ) -> Response<BoxBody>
     where
         H: FnOnce(IngressRequest) -> F + Send + 'static,
-        F: Future<Output = IngressResult> + Send,
+        F: Future<Output = Result<IngressResponse, Status>> + Send,
     {
         let (content_type, request_message) =
             match connect_adapter::decode_request(req, &descriptor, json.to_deserialize_options())
@@ -187,7 +187,7 @@ mod tests {
     use restate_test_util::{assert_eq, test};
     use serde_json::json;
 
-    fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<IngressResult> {
+    fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<Result<IngressResponse, Status>> {
         let person = pb::GreetingRequest::decode(ingress_req.1).unwrap().person;
         ok(pb::GreetingResponse {
             greeting: format!("Hello {person}"),

@@ -1,6 +1,7 @@
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
+use restate_common::errors::{InvocationError, InvocationErrorCode, RestateErrorCode};
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId,
     InvocationMetadata, InvocationResponse, InvocationStatus, MessageIndex, MillisSinceEpoch,
@@ -13,7 +14,7 @@ use restate_journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, Entry,
     GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
 };
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use tracing::{debug, instrument, trace, warn};
 
@@ -23,7 +24,11 @@ use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
 mod dedup;
 
 pub(crate) use dedup::DeduplicatingStateMachine;
-use restate_common::errors::ErrorCode;
+
+const KILLED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
+    InvocationErrorCode::Restate(RestateErrorCode::Killed),
+    "killed",
+);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -213,8 +218,7 @@ where
             state,
             service_invocation_id.clone(),
             metadata,
-            ErrorCode::Aborted.into(),
-            "killed",
+            KILLED_INVOCATION_ERROR,
         )
         .await?;
         effects.abort_invocation(service_invocation_id.clone());
@@ -346,14 +350,13 @@ where
                 self.finish_invocation(effects, state, service_invocation_id, invocation_metadata)
                     .await?;
             }
-            InvokerEffectKind::Failed { error, error_code } => {
+            InvokerEffectKind::Failed(e) => {
                 self.fail_invocation(
                     effects,
                     state,
                     service_invocation_id,
                     invocation_metadata,
-                    error_code,
-                    error,
+                    e,
                 )
                 .await?;
             }
@@ -391,14 +394,14 @@ where
         state: &mut State,
         service_invocation_id: ServiceInvocationId,
         invocation_metadata: InvocationMetadata,
-        error_code: i32,
-        error: impl Display,
+        error: InvocationError,
     ) -> Result<(), Error> {
+        let code = error.code();
         if let Some(response_sink) = invocation_metadata.response_sink {
             let outbox_message = Self::create_response(
                 &service_invocation_id,
                 response_sink,
-                ResponseResult::Failure(error_code, error.to_string().into()),
+                ResponseResult::Failure(code.into(), error.message().into()),
             );
             // TODO: We probably only need to send the response if we haven't send a response before
             self.send_message(outbox_message, effects);
@@ -409,7 +412,7 @@ where
             invocation_metadata.journal_metadata.method,
             invocation_metadata.journal_metadata.span_context,
             effects,
-            Err((error_code, error.to_string())),
+            Err((code, error.to_string())),
         );
         self.complete_invocation(
             service_invocation_id,
@@ -720,7 +723,7 @@ where
         service_method: String,
         span_context: ServiceInvocationSpanContext,
         effects: &mut Effects,
-        result: Result<(), (i32, String)>,
+        result: Result<(), (InvocationErrorCode, String)>,
     ) {
         effects.notify_invocation_result(
             service_invocation_id.clone(),

@@ -654,15 +654,14 @@ where
 mod state_machine_coordinator {
     use super::invocation_state_machine::InvocationStateMachine;
     use super::*;
-    use std::time::SystemTime;
 
     use crate::invocation_task::InvocationTask;
-
     use codederror::CodedError;
+    use restate_common::errors::UserErrorCode::Internal;
     use restate_errors::warn_it;
     use restate_journal::raw::Header;
     use restate_service_metadata::{ProtocolType, ServiceEndpointRegistry};
-    use tonic::Code;
+    use std::time::SystemTime;
     use tracing::{instrument, warn};
 
     #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -676,14 +675,9 @@ mod state_machine_coordinator {
         }
     }
 
-    #[derive(Debug, thiserror::Error, codederror::CodedError)]
-    #[error("Unexpected end of invocation stream. This is probably a symptom of an SDK bug, please contact the developers.")]
-    #[code(unknown)]
-    pub struct UnexpectedEndOfInvocationStream;
-
-    impl InvokerError for UnexpectedEndOfInvocationStream {
-        fn is_transient(&self) -> bool {
-            true
+    impl From<CannotResolveEndpoint> for InvocationError {
+        fn from(value: CannotResolveEndpoint) -> Self {
+            InvocationError::new(Internal, value.to_string())
         }
     }
 
@@ -1091,8 +1085,7 @@ mod state_machine_coordinator {
                 }
                 _ => {
                     trace!("Not going to retry the error");
-                    self.send_error(service_invocation_id, Code::Internal, error)
-                        .await;
+                    self.send_error(service_invocation_id, error).await;
                 }
             }
         }
@@ -1272,17 +1265,13 @@ mod state_machine_coordinator {
         async fn send_error(
             &self,
             service_invocation_id: ServiceInvocationId,
-            code: Code,
-            err: impl InvokerError + Send + Sync + 'static,
+            err: impl Into<InvocationError>,
         ) {
             let _ = self
                 .output_tx
                 .send(OutputEffect {
                     service_invocation_id,
-                    kind: Kind::Failed {
-                        error_code: code.into(),
-                        error: Box::new(err),
-                    },
+                    kind: Kind::Failed(err.into()),
                 })
                 .await;
         }

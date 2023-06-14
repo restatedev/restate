@@ -3,6 +3,7 @@ use crate::partition::{AckResponse, TimerValue};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
+use restate_common::errors::InvocationErrorCode;
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationMetadata,
     InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId,
@@ -47,7 +48,7 @@ pub(crate) enum ActuatorMessage {
         service_invocation_id: ServiceInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
-        result: Result<(), (i32, String)>,
+        result: Result<(), (InvocationErrorCode, String)>,
     },
     SendAckResponse(AckResponse),
     AbortInvocation(ServiceInvocationId),

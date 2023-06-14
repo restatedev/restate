@@ -228,7 +228,9 @@ mod shuffle_integration {
 
             let result = match response {
                 ResponseResult::Success(result) => Ok(result),
-                ResponseResult::Failure(i32, error_msg) => Err(IngressError::new(i32, error_msg)),
+                ResponseResult::Failure(err_code, error_msg) => {
+                    Err(IngressError::new(err_code, error_msg.to_string()))
+                }
             };
 
             restate_ingress_grpc::IngressInput::response(IngressResponseMessage {

@@ -1,3 +1,4 @@
+use crate::errors::UserErrorCode;
 use crate::partitioner::HashPartitioner;
 use base64::display::Base64Display;
 use base64::prelude::*;
@@ -210,7 +211,7 @@ pub struct InvocationResponse {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResponseResult {
     Success(Bytes),
-    Failure(i32, ByteString),
+    Failure(UserErrorCode, ByteString),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -514,7 +515,7 @@ pub enum ResolutionResult {
         span_context: ServiceInvocationSpanContext,
     },
     Failure {
-        error_code: i32,
+        error_code: UserErrorCode,
         error: ByteString,
     },
 }
@@ -560,7 +561,7 @@ pub enum CompletionResult {
     Ack,
     Empty,
     Success(Bytes),
-    Failure(i32, ByteString),
+    Failure(UserErrorCode, ByteString),
 }
 
 impl From<ResponseResult> for CompletionResult {

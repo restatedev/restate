@@ -19,6 +19,7 @@ use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry::trace::SpanContext;
 use opentelemetry_http::HeaderInjector;
+use restate_common::errors::{InvocationError, UserErrorCode};
 use restate_common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use restate_common::utils::GenericError;
 use restate_errors::warn_it;
@@ -69,10 +70,10 @@ pub(crate) enum InvocationTaskError {
     #[error("response timeout")]
     #[code(restate_errors::RT0001)]
     ResponseTimeout,
+    #[error(transparent)]
+    Invocation(#[from] InvocationError),
     #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry. This is probably an SDK bug")]
     WriteAfterEndOfStream,
-    #[error("Unexpected end of invocation stream, as it was closed without a SuspensionMessage, nor an OutputStreamEntry. This is probably an SDK bug")]
-    MissingTerminalMessage,
     #[error("Unexpected end of invocation stream, as it was closed with both a SuspensionMessage and an OutputStreamEntry. This is probably an SDK bug")]
     TooManyTerminalMessages,
     #[error("Unexpected end of invocation stream, as it was closed with too many OutputStreamEntry. Only one is allowed. This is probably an SDK bug")]
@@ -84,6 +85,15 @@ pub(crate) enum InvocationTaskError {
 impl InvokerError for InvocationTaskError {
     fn is_transient(&self) -> bool {
         true
+    }
+}
+
+impl From<InvocationTaskError> for InvocationError {
+    fn from(value: InvocationTaskError) -> Self {
+        match value {
+            InvocationTaskError::Invocation(e) => e,
+            e => InvocationError::new(UserErrorCode::Internal, e.to_string()),
+        }
     }
 }
 
@@ -270,7 +280,7 @@ where
                 InvocationTaskOutputInner::Closed
             }
             (TerminalLoopState::Closed, false) => {
-                InvocationTaskOutputInner::Failed(InvocationTaskError::MissingTerminalMessage)
+                InvocationTaskOutputInner::Failed(InvocationError::default().into())
             }
             (TerminalLoopState::Suspended(_), true) => {
                 InvocationTaskOutputInner::Failed(InvocationTaskError::TooManyTerminalMessages)
@@ -575,6 +585,9 @@ where
             ProtocolMessage::Suspension(suspension) => TerminalLoopState::Suspended(
                 HashSet::from_iter(suspension.entry_indexes.into_iter()),
             ),
+            ProtocolMessage::Error(e) => {
+                TerminalLoopState::Failed(InvocationTaskError::Invocation(e.into()))
+            }
             ProtocolMessage::UnparsedEntry(entry) => {
                 if entry.header == RawEntryHeader::OutputStream {
                     shortcircuit!(self.notify_saw_output_stream_entry());

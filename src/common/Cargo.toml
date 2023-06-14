@@ -12,6 +12,7 @@ publish = false
 [features]
 default = []
 serde = ["dep:serde", "dep:serde_with"]
+tonic_conversions = ["dep:tonic"]
 options_schema = ["serde", "dep:schemars"]
 
 [dependencies]
@@ -26,6 +27,7 @@ uuid = { workspace = true }
 opentelemetry_api = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
+tonic = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

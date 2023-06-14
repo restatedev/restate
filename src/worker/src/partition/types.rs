@@ -1,7 +1,7 @@
+use restate_common::errors::InvocationError;
 use restate_common::types::{
     EnrichedRawEntry, EntryIndex, MillisSinceEpoch, ServiceInvocation, ServiceInvocationId, Timer,
 };
-use restate_invoker::InvokerError;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt;
@@ -32,10 +32,7 @@ pub(crate) enum InvokerEffectKind {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     End,
-    Failed {
-        error_code: i32,
-        error: Box<dyn InvokerError + Send + Sync + 'static>,
-    },
+    Failed(InvocationError),
 }
 
 #[derive(Debug, Clone)]

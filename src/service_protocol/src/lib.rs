@@ -43,7 +43,7 @@ mod pb_into {
                 result: match msg.result.ok_or("result")? {
                     output_stream_entry_message::Result::Value(r) => EntryResult::Success(r),
                     output_stream_entry_message::Result::Failure(Failure { code, message }) => {
-                        EntryResult::Failure(code, message.into())
+                        EntryResult::Failure(code.into(), message.into())
                     }
                 },
             }))
@@ -107,7 +107,7 @@ mod pb_into {
                 result: msg.result.map(|v| match v {
                     invoke_entry_message::Result::Value(r) => EntryResult::Success(r),
                     invoke_entry_message::Result::Failure(Failure { code, message }) => {
-                        EntryResult::Failure(code, message.into())
+                        EntryResult::Failure(code.into(), message.into())
                     }
                 }),
             }))
@@ -137,7 +137,7 @@ mod pb_into {
                 result: msg.result.map(|v| match v {
                     awakeable_entry_message::Result::Value(r) => EntryResult::Success(r),
                     awakeable_entry_message::Result::Failure(Failure { code, message }) => {
-                        EntryResult::Failure(code, message.into())
+                        EntryResult::Failure(code.into(), message.into())
                     }
                 }),
             }))

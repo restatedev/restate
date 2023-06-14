@@ -78,7 +78,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
             CompletionResult::Success(b) => protocol::completion_message::Result::Value(b),
             CompletionResult::Failure(code, message) => {
                 protocol::completion_message::Result::Failure(protocol::Failure {
-                    code,
+                    code: code.into(),
                     message: message.to_string(),
                 })
             }

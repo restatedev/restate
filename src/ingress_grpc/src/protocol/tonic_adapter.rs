@@ -29,7 +29,7 @@ impl<H> TonicUnaryServiceAdapter<H> {
 impl<H, F> UnaryService<Bytes> for TonicUnaryServiceAdapter<H>
 where
     H: FnOnce(IngressRequest) -> F + Clone + Send,
-    F: Future<Output = IngressResult> + Send,
+    F: Future<Output = Result<IngressResponse, Status>> + Send,
 {
     type Response = Bytes;
     type Future = TonicUnaryServiceAdapterFuture<F>;
@@ -52,7 +52,7 @@ pub(super) struct TonicUnaryServiceAdapterFuture<F>(#[pin] F);
 
 impl<F> Future for TonicUnaryServiceAdapterFuture<F>
 where
-    F: Future<Output = IngressResult>,
+    F: Future<Output = Result<IngressResponse, Status>>,
 {
     type Output = Result<tonic::Response<Bytes>, Status>;
 

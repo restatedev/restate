@@ -1,4 +1,5 @@
 use super::*;
+use restate_common::errors::UserErrorCode;
 use restate_common::types::EntryIndex;
 
 pub trait CompletableEntry: private::Sealed {
@@ -33,14 +34,14 @@ pub enum EntryType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryResult {
     Success(Bytes),
-    Failure(i32, ByteString),
+    Failure(UserErrorCode, ByteString),
 }
 
 impl From<EntryResult> for ResponseResult {
     fn from(value: EntryResult) -> Self {
         match value {
             EntryResult::Success(bytes) => ResponseResult::Success(bytes),
-            EntryResult::Failure(i32, error_msg) => ResponseResult::Failure(i32, error_msg),
+            EntryResult::Failure(code, error_msg) => ResponseResult::Failure(code, error_msg),
         }
     }
 }

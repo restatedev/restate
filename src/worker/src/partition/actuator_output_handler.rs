@@ -5,6 +5,7 @@ use crate::util::IdentitySender;
 use assert2::let_assert;
 use bytes::Bytes;
 use opentelemetry_api::trace::SpanContext;
+use restate_common::errors::UserErrorCode;
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, InvocationId, RawEntry,
     ResolutionResult, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
@@ -97,9 +98,7 @@ where
                 waiting_for_completed_entries,
             },
             restate_invoker::Kind::End => InvokerEffectKind::End,
-            restate_invoker::Kind::Failed { error_code, error } => {
-                InvokerEffectKind::Failed { error_code, error }
-            }
+            restate_invoker::Kind::Failed(e) => InvokerEffectKind::Failed(e),
         }
     }
 
@@ -193,7 +192,7 @@ where
 
         if let Err(err) = entry {
             return ResolutionResult::Failure {
-                error_code: 13,
+                error_code: UserErrorCode::Internal,
                 error: err.to_string().into(),
             };
         }
@@ -233,7 +232,7 @@ where
                 }
             }
             Err(restate_service_key_extractor::Error::NotFound) => ResolutionResult::Failure {
-                error_code: 5,
+                error_code: UserErrorCode::NotFound,
                 error: format!(
                     "{}/{} not found",
                     request.service_name, &request.method_name
@@ -241,7 +240,7 @@ where
                 .into(),
             },
             Err(err) => ResolutionResult::Failure {
-                error_code: 13,
+                error_code: UserErrorCode::Internal,
                 error: err.to_string().into(),
             },
         }
