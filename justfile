@@ -109,9 +109,6 @@ run *flags: (_target-installed target)
 test: (_target-installed target)
     cargo test {{ _target-option }} --workspace --all-features --exclude service_protocol_wireshark_dissector --exclude xtask
 
-verification-test seed='': (_target-installed target)
-    SEED={{seed}} cargo test {{ _target-option }} --package restate verification --all-features -- --ignored --exact --nocapture
-
 # Runs lints and tests
 verify: lint test
 
