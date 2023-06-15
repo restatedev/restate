@@ -34,12 +34,3 @@ restate_errors = { workspace = true, features = ["include_doc"] }
 restate_meta = { workspace = true }
 restate_tracing_instrumentation = { workspace = true }
 restate_worker = { workspace = true }
-
-[dev-dependencies]
-assert_cmd = "2.0.10"
-hyper = { workspace = true }
-rand = "0.8.5"
-tempfile = "3.4.0"
-restate_test_util = { workspace = true }
-thiserror = { workspace = true }
-tracing-subscriber = { workspace = true }
