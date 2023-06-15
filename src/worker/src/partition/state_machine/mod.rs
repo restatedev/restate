@@ -16,7 +16,7 @@ use restate_journal::{
 };
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use tracing::{debug, instrument, trace, warn};
+use tracing::{debug, instrument, trace};
 
 use crate::partition::effects::Effects;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
@@ -529,85 +529,71 @@ where
                 ref resolution_result,
                 ..
             } => {
-                if let Some(resolution_result) = resolution_result {
-                    match resolution_result {
-                        ResolutionResult::Success {
-                            service_key,
-                            invocation_id,
-                            span_context,
-                        } => {
-                            let_assert!(
-                                Entry::Invoke(InvokeEntry { request, .. }) =
-                                    Codec::deserialize(&journal_entry)?
-                            );
-
-                            let service_invocation = Self::create_service_invocation(
-                                *invocation_id,
-                                service_key.clone(),
-                                request,
-                                Some((service_invocation_id.clone(), entry_index)),
-                                span_context.clone(),
-                            );
-                            self.send_message(
-                                OutboxMessage::ServiceInvocation(service_invocation),
-                                effects,
-                            );
-                        }
-                        ResolutionResult::Failure { error_code, error } => effects
-                            .forward_completion(
-                                service_invocation_id.clone(),
-                                Completion::new(
-                                    entry_index,
-                                    CompletionResult::Failure(*error_code, error.clone()),
-                                ),
-                            ),
-                    }
-                } else {
-                    // no action needed for an invoke entry that has been completed by the service endpoint
-                }
-            }
-            EnrichedEntryHeader::BackgroundInvoke {
-                ref resolution_result,
-            } => match resolution_result {
-                ResolutionResult::Success {
+                if let Some(ResolutionResult {
                     service_key,
                     invocation_id,
                     span_context,
-                } => {
+                }) = resolution_result
+                {
                     let_assert!(
-                        Entry::BackgroundInvoke(BackgroundInvokeEntry {
-                            request,
-                            invoke_time
-                        }) = Codec::deserialize(&journal_entry)?
+                        Entry::Invoke(InvokeEntry { request, .. }) =
+                            Codec::deserialize(&journal_entry)?
                     );
 
                     let service_invocation = Self::create_service_invocation(
                         *invocation_id,
                         service_key.clone(),
                         request,
-                        None,
+                        Some((service_invocation_id.clone(), entry_index)),
                         span_context.clone(),
                     );
+                    self.send_message(
+                        OutboxMessage::ServiceInvocation(service_invocation),
+                        effects,
+                    );
+                } else {
+                    // no action needed for an invoke entry that has been completed by the service endpoint
+                }
+            }
+            EnrichedEntryHeader::BackgroundInvoke {
+                ref resolution_result,
+            } => {
+                let ResolutionResult {
+                    service_key,
+                    invocation_id,
+                    span_context,
+                } = resolution_result;
 
-                    // 0 is equal to not set, meaning execute now
-                    if invoke_time == 0 {
-                        self.send_message(
-                            OutboxMessage::ServiceInvocation(service_invocation),
-                            effects,
-                        );
-                    } else {
-                        effects.register_timer(TimerValue::new_invoke(
-                            service_invocation_id.clone(),
-                            MillisSinceEpoch::new(invoke_time as u64),
-                            entry_index,
-                            service_invocation,
-                        ));
-                    }
+                let_assert!(
+                    Entry::BackgroundInvoke(BackgroundInvokeEntry {
+                        request,
+                        invoke_time
+                    }) = Codec::deserialize(&journal_entry)?
+                );
+
+                let service_invocation = Self::create_service_invocation(
+                    *invocation_id,
+                    service_key.clone(),
+                    request,
+                    None,
+                    span_context.clone(),
+                );
+
+                // 0 is equal to not set, meaning execute now
+                if invoke_time == 0 {
+                    self.send_message(
+                        OutboxMessage::ServiceInvocation(service_invocation),
+                        effects,
+                    );
+                } else {
+                    effects.register_timer(TimerValue::new_invoke(
+                        service_invocation_id.clone(),
+                        MillisSinceEpoch::new(invoke_time as u64),
+                        entry_index,
+                        service_invocation,
+                    ));
                 }
-                ResolutionResult::Failure { error_code, error } => {
-                    warn!("Failed to send background invocation: Error code: {error_code}, error message: {error}");
-                }
-            },
+            }
             // special handling because we can have a completion present
             EnrichedEntryHeader::Awakeable { is_completed } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");

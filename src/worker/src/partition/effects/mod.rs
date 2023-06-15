@@ -121,10 +121,6 @@ pub(crate) enum Effect {
         metadata: InvocationMetadata,
         completion: Completion,
     },
-    ForwardCompletion {
-        completion: Completion,
-        service_invocation_id: ServiceInvocationId,
-    },
 
     // Tracing
     NotifyInvocationResult {
@@ -408,19 +404,6 @@ impl Effect {
                 "Effect: Store completion {} and resume invocation",
                 CompletionResultFmt(result)
             ),
-            Effect::ForwardCompletion {
-                completion:
-                    Completion {
-                        entry_index,
-                        result,
-                    },
-                ..
-            } => debug_if_leader!(
-                is_leader,
-                restate.journal.index = entry_index,
-                "Effect: Forward completion {} to service endpoint",
-                CompletionResultFmt(result)
-            ),
             Effect::NotifyInvocationResult { .. } => {
                 // No need to log this
             }
@@ -650,17 +633,6 @@ impl Effects {
         completion: Completion,
     ) {
         self.effects.push(Effect::StoreCompletion {
-            service_invocation_id,
-            completion,
-        });
-    }
-
-    pub(crate) fn forward_completion(
-        &mut self,
-        service_invocation_id: ServiceInvocationId,
-        completion: Completion,
-    ) {
-        self.effects.push(Effect::ForwardCompletion {
             service_invocation_id,
             completion,
         });
