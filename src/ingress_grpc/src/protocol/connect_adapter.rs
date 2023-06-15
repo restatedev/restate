@@ -1,18 +1,19 @@
 use bytes::Buf;
+use content_type::ConnectContentType;
 use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use http::request::Parts;
 use http::{Method, Request, Response, StatusCode};
 use hyper::Body;
 use prost_reflect::{DeserializeOptions, DynamicMessage, MethodDescriptor, SerializeOptions};
+use restate_service_metadata::MethodDescriptorRegistry;
 use serde::Serialize;
 use tonic::{Code, Status};
 use tracing::warn;
 
-use content_type::ConnectContentType;
-
-pub(super) async fn decode_request(
+pub(super) async fn decode_request<MethodRegistry: MethodDescriptorRegistry>(
     request: Request<Body>,
     method_descriptor: &MethodDescriptor,
+    method_registry: MethodRegistry,
     deserialize_options: DeserializeOptions,
 ) -> Result<(ConnectContentType, DynamicMessage), Response<Body>> {
     let (mut parts, body) = request.into_parts();
@@ -51,6 +52,7 @@ pub(super) async fn decode_request(
         let msg = match content_type::read_message(
             content_type,
             method_descriptor.input(),
+            method_registry,
             deserialize_options,
             body,
         ) {
@@ -130,7 +132,9 @@ pub(super) mod content_type {
     use bytes::{Buf, BufMut, BytesMut};
     use http::HeaderValue;
     use prost::Message;
-    use prost_reflect::MessageDescriptor;
+    use prost_reflect::{MessageDescriptor, Value};
+    use serde::de::IntoDeserializer;
+    use serde::Deserialize;
     use tower::BoxError;
 
     const APPLICATION_JSON: &str = "application/json";
@@ -162,13 +166,22 @@ pub(super) mod content_type {
         None
     }
 
-    pub(super) fn read_message(
+    pub(super) fn read_message<MethodRegistry: MethodDescriptorRegistry>(
         content_type: ConnectContentType,
         msg_desc: MessageDescriptor,
+        method_registry: MethodRegistry,
         deserialize_options: DeserializeOptions,
         payload_buf: impl Buf + Sized,
     ) -> Result<DynamicMessage, BoxError> {
         match content_type {
+            ConnectContentType::Json if msg_desc.full_name() == "dev.restate.InvokeRequest" => {
+                read_json_invoke_request(
+                    msg_desc,
+                    method_registry,
+                    deserialize_options,
+                    payload_buf,
+                )
+            }
             ConnectContentType::Json => {
                 let mut deser = serde_json::Deserializer::from_reader(payload_buf.reader());
                 let dynamic_message = DynamicMessage::deserialize_with_options(
@@ -181,6 +194,49 @@ pub(super) mod content_type {
             }
             ConnectContentType::Protobuf => Ok(DynamicMessage::decode(msg_desc, payload_buf)?),
         }
+    }
+
+    // TODO this is a bit of a awful hack to parse the InvokeRequest.argument as json object.
+    //  We'll improve this with a JsonMapper interface, as described here:
+    //  https://github.com/restatedev/restate/issues/43
+    pub(super) fn read_json_invoke_request<MethodRegistry: MethodDescriptorRegistry>(
+        invoke_request_msg_desc: MessageDescriptor,
+        method_registry: MethodRegistry,
+        deserialize_options: DeserializeOptions,
+        payload_buf: impl Buf + Sized,
+    ) -> Result<DynamicMessage, BoxError> {
+        #[derive(Deserialize)]
+        struct InvokeRequestAdapter {
+            service: String,
+            method: String,
+            argument: serde_json::Value,
+        }
+
+        let adapter: InvokeRequestAdapter = serde_json::from_reader(payload_buf.reader())?;
+
+        let descriptor = method_registry
+            .resolve_method_descriptor(&adapter.service, &adapter.method)
+            // TODO this error propagation is not great
+            .ok_or_else(|| {
+                Status::not_found(format!("{}/{} not found", adapter.service, adapter.method))
+            })?;
+
+        let argument_dynamic_message = DynamicMessage::deserialize_with_options(
+            descriptor.input(),
+            adapter.argument.into_deserializer(),
+            &deserialize_options,
+        )?;
+
+        let mut invoke_req_msg = DynamicMessage::new(invoke_request_msg_desc);
+        invoke_req_msg.set_field_by_name("service", Value::String(adapter.service));
+        invoke_req_msg.set_field_by_name("method", Value::String(adapter.method));
+        // TODO can skip this serialization by implementing prost::Message on InvokeRequestAdapter
+        invoke_req_msg.set_field_by_name(
+            "argument",
+            Value::Bytes(argument_dynamic_message.encode_to_vec().into()),
+        );
+
+        Ok(invoke_req_msg)
     }
 
     pub(super) fn write_message(
@@ -208,7 +264,7 @@ pub(super) mod content_type {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::mocks::greeter_get_count_method_descriptor;
+        use crate::mocks::{greeter_get_count_method_descriptor, test_descriptor_registry};
 
         use bytes::Bytes;
         use http::HeaderValue;
@@ -232,6 +288,7 @@ pub(super) mod content_type {
             read_message(
                 ConnectContentType::Json,
                 greeter_get_count_method_descriptor().input(),
+                test_descriptor_registry(),
                 DeserializeOptions::default(),
                 Bytes::from("{}"),
             )
@@ -377,7 +434,10 @@ pub(super) mod status {
 mod tests {
     use super::*;
 
-    use crate::mocks::{greeter_greet_method_descriptor, pb};
+    use crate::mocks::{
+        greeter_greet_method_descriptor, ingress_invoke_method_descriptor, pb,
+        test_descriptor_registry,
+    };
     use bytes::Bytes;
     use http::StatusCode;
     use http_body::Body;
@@ -395,6 +455,7 @@ mod tests {
                 .body(json!({"person": "Francesco"}).to_string().into())
                 .unwrap(),
             &greeter_greet_method_descriptor(),
+            test_descriptor_registry(),
             DeserializeOptions::default(),
         )
         .await
@@ -427,6 +488,7 @@ mod tests {
                 )
                 .unwrap(),
             &greeter_greet_method_descriptor(),
+            test_descriptor_registry(),
             DeserializeOptions::default(),
         )
         .await
@@ -444,6 +506,82 @@ mod tests {
     }
 
     #[test(tokio::test)]
+    async fn decode_invoke_json() {
+        let json_payload = json!({
+            "service": "greeter.Greeter",
+            "method": "Greet",
+            "argument": {
+                "person": "Francesco"
+            }
+        });
+
+        let (ct, request_payload) = decode_request(
+            Request::builder()
+                .uri("http://localhost/dev.restate.Ingress/Invoke")
+                .method(Method::POST)
+                .header(CONTENT_TYPE, "application/json")
+                .body(json_payload.to_string().into())
+                .unwrap(),
+            &ingress_invoke_method_descriptor(),
+            test_descriptor_registry(),
+            DeserializeOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            request_payload
+                .transcode_to::<crate::pb::restate::services::InvokeRequest>()
+                .unwrap(),
+            crate::pb::restate::services::InvokeRequest {
+                service: "greeter.Greeter".to_string(),
+                method: "Greet".to_string(),
+                argument: pb::GreetingRequest {
+                    person: "Francesco".to_string(),
+                }
+                .encode_to_vec()
+                .into(),
+            }
+        );
+        assert_eq!(ct, ConnectContentType::Json);
+    }
+
+    #[test(tokio::test)]
+    async fn decode_invoke_protobuf() {
+        let invoke_request = crate::pb::restate::services::InvokeRequest {
+            service: "greeter.Greeter".to_string(),
+            method: "Greet".to_string(),
+            argument: pb::GreetingRequest {
+                person: "Francesco".to_string(),
+            }
+            .encode_to_vec()
+            .into(),
+        };
+
+        let (ct, request_payload) = decode_request(
+            Request::builder()
+                .uri("http://localhost/dev.restate.Ingress/Invoke")
+                .method(Method::POST)
+                .header(CONTENT_TYPE, "application/protobuf")
+                .body(invoke_request.encode_to_vec().into())
+                .unwrap(),
+            &greeter_greet_method_descriptor(),
+            test_descriptor_registry(),
+            DeserializeOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            request_payload
+                .transcode_to::<crate::pb::restate::services::InvokeRequest>()
+                .unwrap(),
+            invoke_request
+        );
+        assert_eq!(ct, ConnectContentType::Protobuf);
+    }
+
+    #[test(tokio::test)]
     async fn decode_wrong_http_method() {
         let err_response = decode_request(
             Request::builder()
@@ -453,6 +591,7 @@ mod tests {
                 .body(json!({"person": "Francesco"}).to_string().into())
                 .unwrap(),
             &greeter_greet_method_descriptor(),
+            test_descriptor_registry(),
             DeserializeOptions::default(),
         )
         .await
@@ -471,6 +610,7 @@ mod tests {
                 .body("person: Francesco".to_string().into())
                 .unwrap(),
             &greeter_greet_method_descriptor(),
+            test_descriptor_registry(),
             DeserializeOptions::default(),
         )
         .await

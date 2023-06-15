@@ -1,6 +1,8 @@
 use super::options::JsonOptions;
+use super::pb::grpc::reflection::{
+    server_reflection_server::ServerReflection, server_reflection_server::ServerReflectionServer,
+};
 use super::protocol::{BoxBody, Protocol};
-use super::reflection::{ServerReflection, ServerReflectionServer};
 use super::*;
 
 use std::sync::Arc;
@@ -12,6 +14,7 @@ use http::{Request, Response, StatusCode};
 use http_body::Body;
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
+use prost::Message;
 use restate_common::types::{IngressId, ServiceInvocationResponseSink, SpanRelation};
 use restate_service_metadata::MethodDescriptorRegistry;
 use tokio::sync::Semaphore;
@@ -87,7 +90,7 @@ impl<InvocationFactory, MethodRegistry, ReflectionService> Service<Request<Hyper
     for Handler<InvocationFactory, MethodRegistry, ReflectionService>
 where
     InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
-    MethodRegistry: MethodDescriptorRegistry,
+    MethodRegistry: MethodDescriptorRegistry + Clone + Send + 'static,
     ReflectionService: ServerReflection,
 {
     type Response = Response<BoxBody>;
@@ -144,6 +147,8 @@ where
         let method_name = path_parts.remove(2).to_string();
         let service_name = path_parts.remove(1).to_string();
 
+        // --- Special Restate services
+        // Reflections
         if ServerReflectionServer::<ReflectionService>::NAME == service_name {
             return self
                 .reflection_server
@@ -154,20 +159,6 @@ where
                 .map_err(BoxError::from)
                 .boxed();
         }
-
-        // Find the service method descriptor
-        let descriptor = if let Some(desc) = self
-            .method_registry
-            .resolve_method_descriptor(&service_name, &method_name)
-        {
-            desc
-        } else {
-            debug!("{}/{} not found", service_name, method_name);
-            return ok(protocol.encode_status(Status::not_found(format!(
-                "{service_name}/{method_name} not found"
-            ))))
-            .boxed();
-        };
 
         // Encapsulate in this closure the remaining part of the processing
         let ingress_id = self.ingress_id;
@@ -197,12 +188,30 @@ where
             let ingress_span_context = ingress_span.context().span().span_context().clone();
 
             async move {
+                let mut service_name = req_headers.service_name;
+                let mut method_name = req_headers.method_name;
+                let mut req_payload = req_payload;
+                let mut response_sink = Some(ServiceInvocationResponseSink::Ingress(ingress_id));
+                let mut wait_response = true;
+
+                // Ingress built-in service
+                if is_ingress_invoke(&service_name, &method_name) {
+                    let invoke_request = pb::restate::services::InvokeRequest::decode(req_payload)
+                        .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+                    service_name = invoke_request.service;
+                    method_name = invoke_request.method;
+                    req_payload = invoke_request.argument;
+                    response_sink = None;
+                    wait_response = false;
+                }
+
                 // Create the service_invocation
                 let (service_invocation, service_invocation_span) = match invocation_factory.create(
-                    &req_headers.service_name,
-                    &req_headers.method_name,
+                    &service_name,
+                    &method_name,
                     req_payload,
-                    Some(ServiceInvocationResponseSink::Ingress(ingress_id)),
+                    response_sink,
                     SpanRelation::Parent(ingress_span_context)
                 ) {
                     Ok(i) => i,
@@ -222,8 +231,22 @@ where
                 // https://docs.rs/tracing/latest/tracing/struct.Span.html#in-asynchronous-code
                 let enter_service_invocation_span = service_invocation_span.enter();
 
-                // More trace info
-                trace!(restate.invocation.request_headers = ?req_headers);
+                // Ingress built-in service just sends a fire and forget and closes
+                if !wait_response {
+                    let sid = service_invocation.id.to_string();
+
+                    if dispatcher_command_sender.send(Command::fire_and_forget(
+                        service_invocation
+                    )).is_err() {
+                        debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
+                        return Err(Status::unavailable("Unavailable"));
+                    }
+                    return Ok(
+                        pb::restate::services::InvokeResponse {
+                            sid,
+                        }.encode_to_vec().into()
+                    )
+                }
 
                 // Send the service invocation
                 let (service_invocation_command, response_rx) =
@@ -259,7 +282,7 @@ where
         let result_fut = protocol.handle_request(
             service_name,
             method_name,
-            descriptor,
+            self.method_registry.clone(),
             self.json.clone(),
             req,
             ingress_request_handler,
@@ -282,4 +305,8 @@ fn span_relation(request_span: &SpanContext) -> SpanRelation {
     } else {
         SpanRelation::None
     }
+}
+
+fn is_ingress_invoke(service_name: &str, method_name: &str) -> bool {
+    "dev.restate.Ingress" == service_name && "Invoke" == method_name
 }

@@ -1,7 +1,8 @@
-use super::reflection::ServerReflection;
+use super::pb::grpc::reflection::server_reflection_server::ServerReflection;
 use super::HyperServerIngress;
 use super::*;
 
+use crate::pb::MethodDescriptorRegistryWithIngressService;
 use prost_reflect::{DeserializeOptions, SerializeOptions};
 use restate_common::types::IngressId;
 use restate_service_metadata::MethodDescriptorRegistry;
@@ -169,7 +170,11 @@ impl Options {
         channel_size: usize,
     ) -> (
         IngressDispatcherLoop,
-        HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionService>,
+        HyperServerIngress<
+            MethodDescriptorRegistryWithIngressService<DescriptorRegistry>,
+            InvocationFactory,
+            ReflectionService,
+        >,
     )
     where
         DescriptorRegistry: MethodDescriptorRegistry + Clone + Send + 'static,
@@ -189,7 +194,7 @@ impl Options {
             concurrency_limit,
             json,
             ingress_id,
-            descriptor_registry,
+            MethodDescriptorRegistryWithIngressService::new(descriptor_registry),
             invocation_factory,
             reflection_service,
             ingress_dispatcher_loop.create_command_sender(),
