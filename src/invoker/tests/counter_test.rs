@@ -3,13 +3,14 @@
 
 mod mocks;
 
+use crate::mocks::MockEntryEnricher;
 use bytes::Bytes;
 use hyper::Uri;
 use mocks::{InMemoryJournalStorage, InMemoryStateStorage, SimulatorAction};
 use prost::Message;
-use restate_common::types::{CompletionResult, ServiceInvocationId};
+use restate_common::types::{CompletionResult, EnrichedEntryHeader, ServiceInvocationId};
 use restate_invoker::{Invoker, Kind, OutputEffect, UnboundedInvokerInputSender};
-use restate_journal::raw::{RawEntryCodec, RawEntryHeader};
+use restate_journal::raw::RawEntryCodec;
 use restate_journal::{
     Completion, Entry, EntryResult, GetStateEntry, GetStateValue, OutputStreamEntry,
 };
@@ -50,7 +51,7 @@ fn register_counter_test_steps(partition_processor_simulator: &mut PartitionProc
                 }
             } = out
         );
-        assert!(let RawEntryHeader::GetState { is_completed: false } = entry.header);
+        assert!(let EnrichedEntryHeader::GetState { is_completed: false } = entry.header);
 
         let_assert!(
             Ok(Entry::GetState(GetStateEntry {
@@ -85,7 +86,7 @@ fn register_set_state_and_output_steps(
                 ..
             } = out
         );
-        assert!(let RawEntryHeader::SetState = entry.header);
+        assert!(let EnrichedEntryHeader::SetState = entry.header);
 
         SimulatorAction::Noop
     });
@@ -100,7 +101,7 @@ fn register_set_state_and_output_steps(
                 ..
             } = out
         );
-        assert!(let RawEntryHeader::OutputStream = entry.header);
+        assert!(let EnrichedEntryHeader::OutputStream = entry.header);
 
         let_assert!(Ok(Entry::OutputStream(OutputStreamEntry {
             result: EntryResult::Success(mut result)
@@ -141,10 +142,12 @@ async fn bidi_stream() {
         ProtobufRawEntryCodec,
         InMemoryJournalStorage,
         InMemoryStateStorage,
+        MockEntryEnricher,
         InMemoryServiceEndpointRegistry,
     > = options.build(
         journal_reader.clone(),
         InMemoryStateStorage::default(),
+        MockEntryEnricher::default(),
         service_endpoint_registry,
     );
 
