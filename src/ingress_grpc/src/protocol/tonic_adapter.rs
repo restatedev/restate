@@ -28,7 +28,7 @@ impl<H> TonicUnaryServiceAdapter<H> {
 
 impl<H, F> UnaryService<Bytes> for TonicUnaryServiceAdapter<H>
 where
-    H: FnOnce(IngressRequest) -> F + Clone + Send,
+    H: FnOnce(IngressRequest) -> F + Send,
     F: Future<Output = Result<IngressResponse, Status>> + Send,
 {
     type Response = Bytes;

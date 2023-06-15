@@ -1,12 +1,14 @@
 mod dispatcher;
 mod handler;
 mod options;
+mod pb;
 mod protocol;
 mod reflection;
 mod server;
 
 pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
 pub use options::Options;
+pub use pb::MethodDescriptorRegistryWithIngressService;
 pub use reflection::{ReflectionRegistry, RegistrationError};
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
@@ -203,7 +205,21 @@ mod mocks {
     pub(super) fn test_descriptor_registry() -> InMemoryMethodDescriptorRegistry {
         let registry = InMemoryMethodDescriptorRegistry::default();
         registry.register(greeter_service_descriptor());
+        registry.register(ingress_service_descriptor());
         registry
+    }
+
+    pub(super) fn ingress_service_descriptor() -> ServiceDescriptor {
+        crate::pb::DEV_RESTATE_DESCRIPTOR_POOL
+            .get_service_by_name("dev.restate.Ingress")
+            .unwrap()
+    }
+
+    pub(super) fn ingress_invoke_method_descriptor() -> MethodDescriptor {
+        ingress_service_descriptor()
+            .methods()
+            .find(|m| m.name() == "Invoke")
+            .unwrap()
     }
 
     pub(super) fn greeter_service_descriptor() -> ServiceDescriptor {

@@ -15,10 +15,12 @@ use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use prost::Message;
 use prost_reflect::MethodDescriptor;
+use restate_service_metadata::MethodDescriptorRegistry;
 use tonic::server::Grpc;
 use tonic::Status;
 use tower::{BoxError, Layer, Service};
 use tower_utils::service_fn_once;
+use tracing::debug;
 
 pub(crate) enum Protocol {
     // Use tonic (gRPC or gRPC-Web)
@@ -50,19 +52,32 @@ impl Protocol {
         }
     }
 
-    pub(crate) async fn handle_request<H, F>(
+    pub(crate) async fn handle_request<MethodRegistry, Handler, HandlerFut>(
         self,
         service_name: String,
         method_name: String,
-        descriptor: MethodDescriptor,
+        method_registry: MethodRegistry,
         json: JsonOptions,
         req: Request<hyper::Body>,
-        handler_fn: H,
+        handler_fn: Handler,
     ) -> Result<Response<BoxBody>, BoxError>
     where
-        H: FnOnce(IngressRequest) -> F + Clone + Send + 'static,
-        F: Future<Output = Result<IngressResponse, Status>> + Send,
+        MethodRegistry: MethodDescriptorRegistry,
+        Handler: FnOnce(IngressRequest) -> HandlerFut + Send + 'static,
+        HandlerFut: Future<Output = Result<IngressResponse, Status>> + Send,
     {
+        // Find the service method descriptor
+        let descriptor = if let Some(desc) =
+            method_registry.resolve_method_descriptor(&service_name, &method_name)
+        {
+            desc
+        } else {
+            debug!("{}/{} not found", service_name, method_name);
+            return Ok(self.encode_status(Status::not_found(format!(
+                "{service_name}/{method_name} not found"
+            ))));
+        };
+
         // Extract tracing context if any
         let tracing_context = TraceContextPropagator::new()
             .extract(&opentelemetry_http::HeaderExtractor(req.headers()));
@@ -78,6 +93,7 @@ impl Protocol {
             Protocol::Connect => Ok(Self::handle_connect_request(
                 ingress_request_headers,
                 descriptor,
+                method_registry,
                 json,
                 req,
                 handler_fn,
@@ -86,16 +102,14 @@ impl Protocol {
         }
     }
 
-    async fn handle_tonic_request<H, F>(
+    async fn handle_tonic_request<Handler, HandlerFut>(
         ingress_request_headers: IngressRequestHeaders,
         req: Request<hyper::Body>,
-        handler_fn: H,
+        handler_fn: Handler,
     ) -> Result<Response<BoxBody>, BoxError>
     where
-        // TODO Clone bound is not needed,
-        //  remove it once https://github.com/hyperium/tonic/issues/1290 is released
-        H: FnOnce(IngressRequest) -> F + Clone + Send + 'static,
-        F: Future<Output = Result<IngressResponse, Status>> + Send,
+        Handler: FnOnce(IngressRequest) -> HandlerFut + Send + 'static,
+        HandlerFut: Future<Output = Result<IngressResponse, Status>> + Send,
     {
         // Why FnOnce and service_fn_once are safe here?
         //
@@ -129,24 +143,30 @@ impl Protocol {
             .map(|res| res.map(to_box_body))
     }
 
-    async fn handle_connect_request<H, F>(
+    async fn handle_connect_request<MethodRegistry, Handler, HandlerFut>(
         ingress_request_headers: IngressRequestHeaders,
         descriptor: MethodDescriptor,
+        method_registry: MethodRegistry,
         json: JsonOptions,
         req: Request<hyper::Body>,
-        handler_fn: H,
+        handler_fn: Handler,
     ) -> Response<BoxBody>
     where
-        H: FnOnce(IngressRequest) -> F + Send + 'static,
-        F: Future<Output = Result<IngressResponse, Status>> + Send,
+        MethodRegistry: MethodDescriptorRegistry,
+        Handler: FnOnce(IngressRequest) -> HandlerFut + Send + 'static,
+        HandlerFut: Future<Output = Result<IngressResponse, Status>> + Send,
     {
-        let (content_type, request_message) =
-            match connect_adapter::decode_request(req, &descriptor, json.to_deserialize_options())
-                .await
-            {
-                Ok(req) => req,
-                Err(error_res) => return error_res.map(to_box_body),
-            };
+        let (content_type, request_message) = match connect_adapter::decode_request(
+            req,
+            &descriptor,
+            method_registry,
+            json.to_deserialize_options(),
+        )
+        .await
+        {
+            Ok(req) => req,
+            Err(error_res) => return error_res.map(to_box_body),
+        };
 
         let ingress_request_body = Bytes::from(request_message.encode_to_vec());
         let response = match handler_fn((ingress_request_headers, ingress_request_body)).await {
@@ -188,8 +208,10 @@ mod tests {
     use serde_json::json;
 
     fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<Result<IngressResponse, Status>> {
-        let person = pb::GreetingRequest::decode(ingress_req.1).unwrap().person;
-        ok(pb::GreetingResponse {
+        let person = mocks::pb::GreetingRequest::decode(ingress_req.1)
+            .unwrap()
+            .person;
+        ok(mocks::pb::GreetingResponse {
             greeting: format!("Hello {person}"),
         }
         .encode_to_vec()
@@ -218,6 +240,7 @@ mod tests {
                 Context::default(),
             ),
             greeter_greet_method_descriptor(),
+            test_descriptor_registry(),
             JsonOptions::default(),
             request,
             greeter_service_fn,

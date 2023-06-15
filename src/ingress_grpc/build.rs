@@ -12,9 +12,14 @@ fn main() -> std::io::Result<()> {
         .compile_protos(
             &[
                 "proto/grpc/reflection/v1alpha/reflection.proto",
+                "proto/dev/restate/services.proto",
                 "tests/proto/greeter.proto",
             ],
-            &["proto/grpc/reflection/v1alpha", "tests/proto"],
+            &[
+                "proto/grpc/reflection/v1alpha",
+                "proto/dev/restate",
+                "tests/proto",
+            ],
         )?;
     Ok(())
 }

@@ -9,7 +9,9 @@ use tokio::select;
 use tokio::sync::mpsc;
 
 type ExternalClientIngress = HyperServerIngress<
-    InMemoryMethodDescriptorRegistry,
+    restate_ingress_grpc::MethodDescriptorRegistryWithIngressService<
+        InMemoryMethodDescriptorRegistry,
+    >,
     DefaultServiceInvocationFactory,
     ReflectionRegistry,
 >;

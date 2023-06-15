@@ -9,6 +9,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
+use crate::pb::grpc::reflection::server_reflection_request::MessageRequest;
+use crate::pb::grpc::reflection::server_reflection_response::MessageResponse;
+use crate::pb::grpc::reflection::server_reflection_server::*;
+use crate::pb::grpc::reflection::*;
 use arc_swap::{ArcSwap, Guard};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -18,19 +22,9 @@ use prost_reflect::{DescriptorPool, FileDescriptor, ServiceDescriptor};
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, trace};
 
-mod pb {
-    #![allow(warnings)]
-    #![allow(clippy::all)]
-    #![allow(unknown_lints)]
-    include!(concat!(env!("OUT_DIR"), "/grpc.reflection.v1alpha.rs"));
-}
-
-pub use pb::server_reflection_server::ServerReflection;
-pub use pb::server_reflection_server::ServerReflectionServer;
-
 #[derive(Debug, Clone, Default)]
 struct ReflectionServiceState {
-    service_names: Vec<pb::ServiceResponse>,
+    service_names: Vec<ServiceResponse>,
 
     // The usize here is used for reference count
     files: HashMap<String, (usize, Bytes)>,
@@ -63,7 +57,7 @@ impl ReflectionServiceState {
                 // This insert retains the order
                 self.service_names.insert(
                     insert_index,
-                    pb::ServiceResponse {
+                    ServiceResponse {
                         name: service_name.clone(),
                     },
                 );
@@ -123,9 +117,29 @@ impl ReflectionServiceState {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct ReflectionRegistry {
     reflection_service_state: Arc<ArcSwap<ReflectionServiceState>>,
+}
+
+impl Default for ReflectionRegistry {
+    fn default() -> Self {
+        let mut registry = Self {
+            reflection_service_state: Default::default(),
+        };
+        registry
+            .register_new_services(
+                "self_ingress".to_string(),
+                vec![
+                    "grpc.reflection.v1alpha.ServerReflection".to_string(),
+                    "dev.restate.Ingress".to_string(),
+                ],
+                crate::pb::DEV_RESTATE_DESCRIPTOR_POOL.clone(),
+            )
+            .expect("Registering self_ingress in the reflections should not fail");
+
+        registry
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -338,18 +352,13 @@ fn extract_name(
 }
 
 pub struct ReflectionServiceStream {
-    request_stream: Streaming<pb::ServerReflectionRequest>,
+    request_stream: Streaming<ServerReflectionRequest>,
     state: Guard<Arc<ReflectionServiceState>>,
 }
 
 impl ReflectionServiceStream {
-    fn handle_request(
-        &self,
-        request: &pb::server_reflection_request::MessageRequest,
-    ) -> Result<pb::server_reflection_response::MessageResponse, Status> {
-        use pb::server_reflection_request::*;
-        use pb::server_reflection_response::*;
-        use pb::*;
+    fn handle_request(&self, request: &MessageRequest) -> Result<MessageResponse, Status> {
+        use crate::pb::grpc::reflection::*;
 
         Ok(match request {
             MessageRequest::FileByFilename(f) => self
@@ -389,12 +398,9 @@ impl ReflectionServiceStream {
 }
 
 impl Stream for ReflectionServiceStream {
-    type Item = Result<pb::ServerReflectionResponse, Status>;
+    type Item = Result<ServerReflectionResponse, Status>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        use pb::server_reflection_response::*;
-        use pb::*;
-
         let request = match ready!(self.request_stream.poll_next_unpin(cx)) {
             Some(Ok(req)) => req,
             _ => return Poll::Ready(None),
@@ -430,7 +436,7 @@ impl ServerReflection for ReflectionRegistry {
 
     async fn server_reflection_info(
         &self,
-        request: Request<Streaming<pb::ServerReflectionRequest>>,
+        request: Request<Streaming<ServerReflectionRequest>>,
     ) -> Result<Response<Self::ServerReflectionInfoStream>, Status> {
         Ok(Response::new(ReflectionServiceStream {
             request_stream: request.into_inner(),
