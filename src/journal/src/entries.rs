@@ -1,6 +1,7 @@
 use super::*;
 use restate_common::errors::UserErrorCode;
 use restate_common::types::EntryIndex;
+use std::fmt;
 
 pub trait CompletableEntry: private::Sealed {
     fn is_completed(&self) -> bool;
@@ -29,6 +30,12 @@ pub enum EntryType {
     Awakeable,
     CompleteAwakeable,
     Custom,
+}
+
+impl fmt::Display for EntryType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

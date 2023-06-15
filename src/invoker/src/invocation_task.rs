@@ -3,7 +3,6 @@ use std::error::Error;
 use std::future::{poll_fn, Future};
 use std::iter;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
@@ -17,14 +16,17 @@ use hyper::http::HeaderValue;
 use hyper::{http, Body, Request, Response, Uri};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
-use opentelemetry::trace::SpanContext;
 use opentelemetry_http::HeaderInjector;
 use restate_common::errors::{InvocationError, UserErrorCode};
-use restate_common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
+use restate_common::types::{
+    EnrichedRawEntry, EntryIndex, PartitionLeaderEpoch, ServiceInvocationId,
+    ServiceInvocationSpanContext,
+};
 use restate_common::utils::GenericError;
 use restate_errors::warn_it;
-use restate_journal::raw::{PlainRawEntry, RawEntryHeader};
+use restate_journal::raw::{Header, PlainRawEntry, RawEntryHeader};
 use restate_journal::Completion;
+use restate_journal::{EntryEnricher, EntryType};
 use restate_service_metadata::{EndpointMetadata, ProtocolType};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
@@ -70,6 +72,8 @@ pub(crate) enum InvocationTaskError {
     #[error("response timeout")]
     #[code(restate_errors::RT0001)]
     ResponseTimeout,
+    #[error("cannot process received entry at index {0} of type {1}: {2}")]
+    EntryEnrichment(EntryIndex, EntryType, #[source] GenericError),
     #[error(transparent)]
     Invocation(#[from] InvocationError),
     #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry. This is probably an SDK bug")]
@@ -132,8 +136,7 @@ pub(crate) struct InvocationTaskOutput {
 pub(crate) enum InvocationTaskOutputInner {
     NewEntry {
         entry_index: EntryIndex,
-        entry: PlainRawEntry,
-        parent_span_context: Arc<SpanContext>,
+        entry: EnrichedRawEntry,
     },
     Closed,
     Suspended(HashSet<EntryIndex>),
@@ -147,7 +150,7 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 }
 
 /// Represents an open invocation stream
-pub(crate) struct InvocationTask<JR, SR> {
+pub(crate) struct InvocationTask<JR, SR, EE> {
     // Shared client
     client: HttpsClient,
 
@@ -162,6 +165,7 @@ pub(crate) struct InvocationTask<JR, SR> {
     // Invoker tx/rx
     journal_reader: JR,
     state_reader: SR,
+    entry_enricher: EE,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
 
@@ -213,12 +217,13 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<JR, SR> InvocationTask<JR, SR>
+impl<JR, SR, EE> InvocationTask<JR, SR, EE>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
+    EE: EntryEnricher,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -234,6 +239,7 @@ where
         message_size_limit: Option<usize>,
         journal_reader: JR,
         state_reader: SR,
+        entry_enricher: EE,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
     ) -> Self {
@@ -248,6 +254,7 @@ where
             next_journal_index: 0,
             journal_reader,
             state_reader,
+            entry_enricher,
             invoker_tx,
             invoker_rx,
             encoder: Encoder::new(protocol_version),
@@ -345,7 +352,7 @@ where
 
         // Create an arc of the parent SpanContext.
         // We send this with every journal entry to correctly link new spans generated from journal entries.
-        let service_invocation_span_context = Arc::new(journal_metadata.span_context.into());
+        let service_invocation_span_context = journal_metadata.span_context;
 
         // Prepare the request and send start message
         let (mut http_stream_tx, http_request) = self.prepare_request(uri);
@@ -444,7 +451,7 @@ where
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
     async fn bidi_stream_loop(
         &mut self,
-        parent_span_context: &Arc<SpanContext>,
+        parent_span_context: &ServiceInvocationSpanContext,
         mut http_stream_tx: Sender,
         mut invoker_rx: mpsc::UnboundedReceiver<Completion>,
         http_stream_rx: &mut ResponseStreamState,
@@ -486,7 +493,7 @@ where
 
     async fn response_stream_loop(
         &mut self,
-        parent_span_context: &Arc<SpanContext>,
+        parent_span_context: &ServiceInvocationSpanContext,
         http_stream_rx: &mut ResponseStreamState,
     ) -> TerminalLoopState<()> {
         loop {
@@ -556,7 +563,7 @@ where
 
     fn handle_read(
         &mut self,
-        parent_span_context: &Arc<SpanContext>,
+        parent_span_context: &ServiceInvocationSpanContext,
         buf: Bytes,
     ) -> TerminalLoopState<()> {
         self.decoder.push(buf);
@@ -570,7 +577,7 @@ where
 
     fn handle_message(
         &mut self,
-        parent_span_context: &Arc<SpanContext>,
+        parent_span_context: &ServiceInvocationSpanContext,
         mh: MessageHeader,
         message: ProtocolMessage,
     ) -> TerminalLoopState<()> {
@@ -592,13 +599,21 @@ where
                 if entry.header == RawEntryHeader::OutputStream {
                     shortcircuit!(self.notify_saw_output_stream_entry());
                 }
+                let entry_type = entry.header.to_entry_type();
+                let enriched_entry = shortcircuit!(self
+                    .entry_enricher
+                    .enrich_entry(entry, parent_span_context)
+                    .map_err(|e| InvocationTaskError::EntryEnrichment(
+                        self.next_journal_index,
+                        entry_type,
+                        e
+                    )));
                 let _ = self.invoker_tx.send(InvocationTaskOutput {
                     partition: self.partition,
                     service_invocation_id: self.service_invocation_id.clone(),
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
-                        entry,
-                        parent_span_context: Arc::clone(parent_span_context),
+                        entry: enriched_entry,
                     },
                 });
                 self.next_journal_index += 1;

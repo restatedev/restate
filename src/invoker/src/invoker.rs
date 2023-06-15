@@ -12,6 +12,7 @@ use restate_common::types::PartitionLeaderEpoch;
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_queue::SegmentQueue;
+use restate_journal::EntryEnricher;
 use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;
 use serde_with::serde_as;
@@ -321,16 +322,18 @@ impl Options {
         restate_fs_util::generate_temp_dir_name("invoker")
     }
 
-    pub fn build<C, JR, JS, SR, SER>(
+    pub fn build<C, JR, JS, SR, EE, SER>(
         self,
         journal_reader: JR,
         state_reader: SR,
+        entry_enricher: EE,
         service_endpoint_registry: SER,
-    ) -> Invoker<C, JR, SR, SER>
+    ) -> Invoker<C, JR, SR, EE, SER>
     where
         C: RawEntryCodec,
         JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+        EE: EntryEnricher,
         SER: ServiceEndpointRegistry,
     {
         let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
@@ -362,13 +365,14 @@ impl Options {
             tmp_dir: self.tmp_dir,
             journal_reader,
             state_reader,
+            entry_enricher,
             _codec: PhantomData::<C>::default(),
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Invoker<Codec, JournalReader, StateReader, ServiceEndpointRegistry> {
+pub struct Invoker<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
     invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     resume_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     other_input_rx: mpsc::UnboundedReceiver<Input<OtherInputCommand>>,
@@ -407,16 +411,18 @@ pub struct Invoker<Codec, JournalReader, StateReader, ServiceEndpointRegistry> {
 
     journal_reader: JournalReader,
     state_reader: StateReader,
+    entry_enricher: EntryEnricher,
 
     _codec: PhantomData<Codec>,
 }
 
-impl<C, JR, SR, SER> Invoker<C, JR, SR, SER>
+impl<C, JR, SR, EE, SER> Invoker<C, JR, SR, EE, SER>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
+    EE: EntryEnricher + Clone + Send + 'static,
     SER: ServiceEndpointRegistry,
 {
     pub fn create_sender(&self) -> UnboundedInvokerInputSender {
@@ -443,6 +449,7 @@ where
             mut retry_timers,
             journal_reader,
             state_reader,
+            entry_enricher,
             retry_policy,
             suspension_timeout,
             response_abort_timeout,
@@ -484,6 +491,7 @@ where
                                 &client,
                                 &journal_reader,
                                 &state_reader,
+                                &entry_enricher,
                                 &service_endpoint_registry,
                                 &retry_policy,
                                 suspension_timeout,
@@ -533,6 +541,7 @@ where
                                         &client,
                                         &journal_reader,
                                         &state_reader,
+                                        &entry_enricher,
                                         &service_endpoint_registry,
                                         &retry_policy,
                                         suspension_timeout,
@@ -560,12 +569,11 @@ where
                         };
 
                     match invocation_task_msg.inner {
-                        InvocationTaskOutputInner::NewEntry {entry_index, entry, parent_span_context} => {
+                        InvocationTaskOutputInner::NewEntry {entry_index, entry} => {
                             partition_state_machine.handle_new_entry(
                                 invocation_task_msg.service_invocation_id,
                                 entry_index,
                                 entry,
-                                parent_span_context
                             ).await
                         },
                         InvocationTaskOutputInner::Closed => {
@@ -598,6 +606,7 @@ where
                                 &client,
                                 &journal_reader,
                                 &state_reader,
+                                &entry_enricher,
                                 &service_endpoint_registry,
                                 &retry_policy,
                                 suspension_timeout,
@@ -660,6 +669,7 @@ mod state_machine_coordinator {
     use restate_common::errors::UserErrorCode::Internal;
     use restate_errors::warn_it;
     use restate_journal::raw::Header;
+    use restate_journal::EntryEnricher;
     use restate_service_metadata::{ProtocolType, ServiceEndpointRegistry};
     use std::time::SystemTime;
     use tracing::{instrument, warn};
@@ -686,10 +696,11 @@ mod state_machine_coordinator {
     /// Because the methods receiving this struct might not start
     /// the InvocationTask (e.g. if the request cannot be retried now),
     /// we pass only borrows so we create clones only if we need them.
-    pub(super) struct StartInvocationTaskArguments<'a, JR, SR, SER> {
+    pub(super) struct StartInvocationTaskArguments<'a, JR, SR, EE, SER> {
         client: &'a HttpsClient,
         journal_reader: &'a JR,
         state_reader: &'a SR,
+        entry_enricher: &'a EE,
         service_endpoint_registry: &'a SER,
         default_retry_policy: &'a RetryPolicy,
         suspension_timeout: Duration,
@@ -702,12 +713,13 @@ mod state_machine_coordinator {
         retry_timers: &'a mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
     }
 
-    impl<'a, JR, SR, SER> StartInvocationTaskArguments<'a, JR, SR, SER> {
+    impl<'a, JR, SR, EE, SER> StartInvocationTaskArguments<'a, JR, SR, EE, SER> {
         #[allow(clippy::too_many_arguments)]
         pub(super) fn new(
             client: &'a HttpsClient,
             journal_reader: &'a JR,
             state_reader: &'a SR,
+            entry_enricher: &'a EE,
             service_endpoint_registry: &'a SER,
             default_retry_policy: &'a RetryPolicy,
             suspension_timeout: Duration,
@@ -723,6 +735,7 @@ mod state_machine_coordinator {
                 client,
                 journal_reader,
                 state_reader,
+                entry_enricher,
                 service_endpoint_registry,
                 default_retry_policy,
                 suspension_timeout,
@@ -816,15 +829,16 @@ mod state_machine_coordinator {
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
-        pub(super) async fn handle_invoke<JR, SR, SER>(
+        pub(super) async fn handle_invoke<JR, SR, EE, SER>(
             &mut self,
             invoke_input_cmd: InvokeInputCommand,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SR, SER>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SR, EE, SER>,
         ) where
             JR: JournalReader + Clone + Send + Sync + 'static,
             <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
             SR: StateReader + Clone + Send + Sync + 'static,
             <SR as StateReader>::StateIter: Send,
+            EE: EntryEnricher + Clone + Send + 'static,
             SER: ServiceEndpointRegistry,
         {
             let service_invocation_id = invoke_input_cmd.service_invocation_id;
@@ -916,15 +930,16 @@ mod state_machine_coordinator {
                 restate.invoker.partition_leader_epoch = ?self.partition,
             )
         )]
-        pub(super) async fn handle_retry_timer_fired<JR, SR, SER>(
+        pub(super) async fn handle_retry_timer_fired<JR, SR, EE, SER>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SR, SER>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SR, EE, SER>,
         ) where
             JR: JournalReader + Clone + Send + Sync + 'static,
             <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
             SR: StateReader + Clone + Send + Sync + 'static,
             <SR as StateReader>::StateIter: Send,
+            EE: EntryEnricher + Clone + Send + 'static,
             SER: ServiceEndpointRegistry,
         {
             trace!("Retry timeout fired");
@@ -944,16 +959,17 @@ mod state_machine_coordinator {
                 restate.journal.index = entry_index,
             )
         )]
-        pub(super) async fn handle_stored_entry_ack<JR, SR, SER>(
+        pub(super) async fn handle_stored_entry_ack<JR, SR, EE, SER>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SR, SER>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SR, EE, SER>,
             entry_index: EntryIndex,
         ) where
             JR: JournalReader + Clone + Send + Sync + 'static,
             <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
             SR: StateReader + Clone + Send + Sync + 'static,
             <SR as StateReader>::StateIter: Send,
+            EE: EntryEnricher + Clone + Send + 'static,
             SER: ServiceEndpointRegistry,
         {
             trace!("Received a new stored journal entry acknowledgement");
@@ -978,8 +994,7 @@ mod state_machine_coordinator {
             &mut self,
             service_invocation_id: ServiceInvocationId,
             entry_index: EntryIndex,
-            entry: PlainRawEntry,
-            parent_span_context: Arc<SpanContext>,
+            entry: EnrichedRawEntry,
         ) {
             if let Some(sm) = self
                 .invocation_state_machines
@@ -994,11 +1009,7 @@ mod state_machine_coordinator {
                     .output_tx
                     .send(OutputEffect {
                         service_invocation_id,
-                        kind: Kind::JournalEntry {
-                            entry_index,
-                            entry,
-                            parent_span_context,
-                        },
+                        kind: Kind::JournalEntry { entry_index, entry },
                     })
                     .await;
             } else {
@@ -1127,17 +1138,18 @@ mod state_machine_coordinator {
 
         // --- Helpers
 
-        async fn start_invocation_task<JR, SR, SER>(
+        async fn start_invocation_task<JR, SR, EE, SER>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
             journal: InvokeInputJournal,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SR, SER>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SR, EE, SER>,
             state_machine_factory: impl FnOnce(RetryPolicy) -> InvocationStateMachine,
         ) where
             JR: JournalReader + Clone + Send + Sync + 'static,
             <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
             SR: StateReader + Clone + Send + Sync + 'static,
             <SR as StateReader>::StateIter: Send,
+            EE: EntryEnricher + Clone + Send + 'static,
             SER: ServiceEndpointRegistry,
         {
             // Resolve metadata
@@ -1193,6 +1205,7 @@ mod state_machine_coordinator {
                     start_arguments.message_size_limit,
                     start_arguments.journal_reader.clone(),
                     start_arguments.state_reader.clone(),
+                    start_arguments.entry_enricher.clone(),
                     start_arguments.invocation_tasks_tx.clone(),
                     completions_rx,
                 )
@@ -1209,16 +1222,17 @@ mod state_machine_coordinator {
                 .insert(service_invocation_id, invocation_state_machine);
         }
 
-        async fn handle_retry_event<JR, SR, SER, FN>(
+        async fn handle_retry_event<JR, SR, EE, SER, FN>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            start_arguments: StartInvocationTaskArguments<'_, JR, SR, SER>,
+            start_arguments: StartInvocationTaskArguments<'_, JR, SR, EE, SER>,
             f: FN,
         ) where
             JR: JournalReader + Clone + Send + Sync + 'static,
             <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
             SR: StateReader + Clone + Send + Sync + 'static,
             <SR as StateReader>::StateIter: Send,
+            EE: EntryEnricher + Clone + Send + 'static,
             SER: ServiceEndpointRegistry,
             FN: FnOnce(&mut InvocationStateMachine),
         {
