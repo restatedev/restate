@@ -95,45 +95,22 @@ message InboxEntry {
 }
 
 message InvocationResolutionResult {
-
-    message None {
-    }
-
     message Success {
         bytes invocation_id = 1;
         bytes service_key = 2;
         SpanContext span_context = 3;
     }
 
-    message Failure {
-        uint32 error_code  = 1;
-        bytes error = 2;
-    }
-
     oneof result {
-        None none = 1;
+        google.protobuf.Empty none = 1;
         Success success = 2;
-        Failure failure = 3;
     }
 }
 
 message BackgroundCallResolutionResult {
-
-    message Success {
-        bytes invocation_id = 1;
-        bytes service_key = 2;
-        SpanContext span_context = 3;
-    }
-
-    message Failure {
-        uint32 error_code  = 1;
-        bytes error = 2;
-    }
-
-    oneof result {
-        Success success = 1;
-        Failure failure = 2;
-    }
+    bytes invocation_id = 1;
+    bytes service_key = 2;
+    SpanContext span_context = 3;
 }
 message EnrichedEntryHeader {
 

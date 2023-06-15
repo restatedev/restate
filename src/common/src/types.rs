@@ -507,17 +507,11 @@ impl<H> RawEntry<H> {
 
 /// Result of the target service resolution
 #[derive(Debug, Clone)]
-pub enum ResolutionResult {
-    Success {
-        invocation_id: InvocationId,
-        service_key: Bytes,
-        // When resolving the service and generating its id, we also generate the associated span
-        span_context: ServiceInvocationSpanContext,
-    },
-    Failure {
-        error_code: UserErrorCode,
-        error: ByteString,
-    },
+pub struct ResolutionResult {
+    pub invocation_id: InvocationId,
+    pub service_key: Bytes,
+    // When resolving the service and generating its id, we also generate the associated span
+    pub span_context: ServiceInvocationSpanContext,
 }
 
 /// Enriched variant of the journal headers to store additional runtime specific information

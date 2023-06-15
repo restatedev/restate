@@ -28,12 +28,12 @@ pub mod storage {
                 Ingress, PartitionProcessor, ResponseSink,
             };
             use crate::storage::v1::{
-                background_call_resolution_result, enriched_entry_header,
-                invocation_resolution_result, invocation_status, outbox_message, response_result,
-                timer, BackgroundCallResolutionResult, EnrichedEntryHeader, InboxEntry,
-                InvocationResolutionResult, InvocationStatus, JournalEntry, JournalMeta,
-                OutboxMessage, ResponseResult, SequencedTimer, ServiceInvocation,
-                ServiceInvocationId, ServiceInvocationResponseSink, SpanContext, Timer,
+                enriched_entry_header, invocation_resolution_result, invocation_status,
+                outbox_message, response_result, timer, BackgroundCallResolutionResult,
+                EnrichedEntryHeader, InboxEntry, InvocationResolutionResult, InvocationStatus,
+                JournalEntry, JournalMeta, OutboxMessage, ResponseResult, SequencedTimer,
+                ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanContext,
+                Timer,
             };
             use bytes::{Buf, Bytes};
             use bytestring::ByteString;
@@ -822,22 +822,13 @@ pub mod storage {
                                 try_bytes_into_invocation_id(success.invocation_id)?;
                             let service_key = success.service_key;
 
-                            Some(restate_common::types::ResolutionResult::Success {
+                            Some(restate_common::types::ResolutionResult {
                                 span_context:
                                     restate_common::types::ServiceInvocationSpanContext::new(
                                         span_context,
                                     ),
                                 invocation_id,
                                 service_key,
-                            })
-                        }
-                        invocation_resolution_result::Result::Failure(failure) => {
-                            let error = ByteString::try_from(failure.error)
-                                .map_err(ConversionError::invalid_data)?;
-
-                            Some(restate_common::types::ResolutionResult::Failure {
-                                error_code: failure.error_code.into(),
-                                error,
                             })
                         }
                     };
@@ -851,7 +842,7 @@ pub mod storage {
                     let result = match value {
                         None => invocation_resolution_result::Result::None(Default::default()),
                         Some(resolution_result) => match resolution_result {
-                            restate_common::types::ResolutionResult::Success {
+                            restate_common::types::ResolutionResult {
                                 invocation_id,
                                 service_key,
                                 span_context,
@@ -862,15 +853,6 @@ pub mod storage {
                                     span_context: Some(SpanContext::from(
                                         opentelemetry_api::trace::SpanContext::from(span_context),
                                     )),
-                                },
-                            ),
-                            restate_common::types::ResolutionResult::Failure {
-                                error_code,
-                                error,
-                            } => invocation_resolution_result::Result::Failure(
-                                invocation_resolution_result::Failure {
-                                    error_code: error_code.into(),
-                                    error: error.into_bytes(),
                                 },
                             ),
                         },
@@ -886,70 +868,32 @@ pub mod storage {
                 type Error = ConversionError;
 
                 fn try_from(value: BackgroundCallResolutionResult) -> Result<Self, Self::Error> {
-                    let resolution_result = match value
-                        .result
-                        .ok_or(ConversionError::missing_field("result"))?
-                    {
-                        background_call_resolution_result::Result::Success(success) => {
-                            let span_context = opentelemetry_api::trace::SpanContext::try_from(
-                                success
-                                    .span_context
-                                    .ok_or(ConversionError::missing_field("span_context"))?,
-                            )?;
-                            let invocation_id =
-                                try_bytes_into_invocation_id(success.invocation_id)?;
-                            let service_key = success.service_key;
-                            restate_common::types::ResolutionResult::Success {
-                                span_context:
-                                    restate_common::types::ServiceInvocationSpanContext::new(
-                                        span_context,
-                                    ),
-                                invocation_id,
-                                service_key,
-                            }
-                        }
-                        background_call_resolution_result::Result::Failure(failure) => {
-                            let error = ByteString::try_from(failure.error)
-                                .map_err(ConversionError::invalid_data)?;
-                            restate_common::types::ResolutionResult::Failure {
-                                error_code: failure.error_code.into(),
-                                error,
-                            }
-                        }
-                    };
+                    let span_context = opentelemetry_api::trace::SpanContext::try_from(
+                        value
+                            .span_context
+                            .ok_or(ConversionError::missing_field("span_context"))?,
+                    )?;
+                    let invocation_id = try_bytes_into_invocation_id(value.invocation_id)?;
+                    let service_key = value.service_key;
 
-                    Ok(resolution_result)
+                    Ok(restate_common::types::ResolutionResult {
+                        span_context: restate_common::types::ServiceInvocationSpanContext::new(
+                            span_context,
+                        ),
+                        invocation_id,
+                        service_key,
+                    })
                 }
             }
 
             impl From<restate_common::types::ResolutionResult> for BackgroundCallResolutionResult {
                 fn from(value: restate_common::types::ResolutionResult) -> Self {
-                    let result = match value {
-                        restate_common::types::ResolutionResult::Success {
-                            invocation_id,
-                            span_context,
-                            service_key,
-                        } => background_call_resolution_result::Result::Success(
-                            background_call_resolution_result::Success {
-                                invocation_id: invocation_id_to_bytes(&invocation_id),
-                                service_key,
-                                span_context: Some(SpanContext::from(
-                                    opentelemetry_api::trace::SpanContext::from(span_context),
-                                )),
-                            },
-                        ),
-                        restate_common::types::ResolutionResult::Failure { error_code, error } => {
-                            background_call_resolution_result::Result::Failure(
-                                background_call_resolution_result::Failure {
-                                    error_code: error_code.into(),
-                                    error: error.into_bytes(),
-                                },
-                            )
-                        }
-                    };
-
                     BackgroundCallResolutionResult {
-                        result: Some(result),
+                        invocation_id: invocation_id_to_bytes(&value.invocation_id),
+                        service_key: value.service_key,
+                        span_context: Some(SpanContext::from(
+                            opentelemetry_api::trace::SpanContext::from(value.span_context),
+                        )),
                     }
                 }
             }
