@@ -71,7 +71,7 @@ jobs:
           file: "docker/Dockerfile"
           push: ${{ inputs.artifactInsteadOfPush != true }}
           tags: ${{ steps.meta.outputs.tags }}
-          load: ${{ inputs.artifactInsteadOfPush }}
+          load: ${{ inputs.artifactInsteadOfPush == true }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
           cache-from: type=gha,scope=${{ github.workflow }}
