@@ -67,6 +67,12 @@ pub(crate) enum InvocationTaskError {
     Network(hyper::Error),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
     UnexpectedJoinError(#[from] JoinError),
+    #[error("got bad SuspensionMessage without journal indexes")]
+    EmptySuspensionMessage,
+    #[error(
+        "got bad SuspensionMessage, suspending on journal indexes {0:?}, but journal length is {1}"
+    )]
+    BadSuspensionMessage(HashSet<EntryIndex>, EntryIndex),
     #[error("response timeout")]
     #[code(restate_errors::RT0001)]
     ResponseTimeout,
@@ -582,9 +588,19 @@ where
             ProtocolMessage::Completion(_) => TerminalLoopState::Failed(
                 InvocationTaskError::UnexpectedMessage(MessageType::Completion),
             ),
-            ProtocolMessage::Suspension(suspension) => TerminalLoopState::Suspended(
-                HashSet::from_iter(suspension.entry_indexes.into_iter()),
-            ),
+            ProtocolMessage::Suspension(suspension) => {
+                let suspension_indexes = HashSet::from_iter(suspension.entry_indexes.into_iter());
+                if suspension_indexes.is_empty() {
+                    return TerminalLoopState::Failed(InvocationTaskError::EmptySuspensionMessage);
+                }
+                if *suspension_indexes.iter().max().unwrap() >= self.next_journal_index {
+                    return TerminalLoopState::Failed(InvocationTaskError::BadSuspensionMessage(
+                        suspension_indexes,
+                        self.next_journal_index,
+                    ));
+                }
+                TerminalLoopState::Suspended(suspension_indexes)
+            }
             ProtocolMessage::Error(e) => {
                 TerminalLoopState::Failed(InvocationTaskError::Invocation(e.into()))
             }
