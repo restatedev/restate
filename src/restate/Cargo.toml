@@ -31,6 +31,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 restate_common = { workspace = true }
 restate_errors = { workspace = true, features = ["include_doc"] }
+restate_fs_util = { workspace = true }
 restate_meta = { workspace = true }
 restate_tracing_instrumentation = { workspace = true }
 restate_worker = { workspace = true }

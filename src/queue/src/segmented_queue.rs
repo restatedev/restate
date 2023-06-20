@@ -37,9 +37,21 @@ pub struct SegmentQueue<T> {
     in_memory_element_threshold: usize,
     next_segment_id: u64,
     spillable_base_path: PathBuf,
+    len: usize,
 }
 
 impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
+    /// Create a new spillable segment queue, initializing the spillable_base_path directory.
+    pub async fn init(
+        spillable_base_path: impl AsRef<Path>,
+        in_memory_element_threshold: usize,
+    ) -> std::io::Result<Self> {
+        restate_fs_util::remove_dir_all_if_exists(&spillable_base_path).await?;
+        restate_fs_util::create_dir_all_if_doesnt_exists(&spillable_base_path).await?;
+
+        Ok(Self::new(spillable_base_path, in_memory_element_threshold))
+    }
+
     /// creates a new spillable segment queue.
     ///
     /// # Arguments
@@ -52,6 +64,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
             in_memory_element_threshold,
             next_segment_id: 0,
             spillable_base_path: spillable_base_path.as_ref().into(),
+            len: 0,
         }
     }
 
@@ -59,9 +72,12 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     /// Please note, that if the number of elements that are currently enqueued is greater than the
     /// threshold provided, this operation might take some time to complete, as it has to flush the queue to disk.
     pub async fn enqueue(&mut self, element: T) {
+        self.len += 1;
+
         if self.enqueue_internal(element) < self.in_memory_element_threshold {
             return;
         }
+
         let background_flush = self.has_previous_store_completed();
         // SAFETY: enqueue_internal will always make sure that the last segment in
         // SAFETY: self.segments is mutable, therefore it can not be empty.
@@ -86,9 +102,6 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
         }
     }
 
-    /// dequeues an element of type T that was previously encoded.
-    /// note that this operation might take a while to complete as it might have to load a previously
-    /// serialized element from disk.
     pub async fn dequeue(&mut self) -> Option<T> {
         match self.segments.front_mut() {
             Some(segment) => {
@@ -105,16 +118,11 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
                 if len == 0 {
                     self.segments.pop_front();
                 }
+                head.is_some().then(|| self.len -= 1);
                 head
             }
             None => None,
         }
-    }
-
-    /// preload if the current segment has less than a half of the in memory threshold.
-    #[inline]
-    fn should_preload(&self, len: usize) -> bool {
-        2 * len < self.in_memory_element_threshold
     }
 
     fn try_preload_next_segment(&mut self) {
@@ -130,7 +138,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     /// This function returns the size of the mutable segment after insertion.
     ///
     fn enqueue_internal(&mut self, element: T) -> usize {
-        match self.segments.back_mut() {
+        let len = match self.segments.back_mut() {
             Some(segment) if segment.is_mutable() => {
                 segment.enqueue(element);
                 segment.len()
@@ -145,9 +153,24 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
 
                 1
             }
-        }
+        };
+        len
     }
 }
+
+impl<T> SegmentQueue<T> {
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// preload if the current segment has less than a half of the in memory threshold.
+    #[inline]
+    fn should_preload(&self, len: usize) -> bool {
+        2 * len < self.in_memory_element_threshold
+    }
+}
+
 /// Mutable -> StoringToDisk -> OnDisk -> LoadingFromDisk -> LoadedFromDisk
 #[derive(Debug)]
 enum Segment<T> {
@@ -217,7 +240,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> Segment<T> {
             Mutable { buffer } => {
                 let len = buffer.len();
                 let buffer = mem::take(buffer);
-                let handle = tokio::spawn(io::create_segment_infalliable(base_dir, id, buffer));
+                let handle = tokio::spawn(io::create_segment_infallible(base_dir, id, buffer));
                 if background {
                     *self = StoringToDisk { id, len, handle };
                 } else {
@@ -241,11 +264,11 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> Segment<T> {
                     handle.await.expect("Was not able to store to disk");
                     *self = OnDisk { id: *id, len: *len };
                 }
-                OnDisk { id, .. } => {
+                OnDisk { id, len } => {
                     let path = path.clone();
-                    let buffer = io::consume_segment_infallible(path, *id).await;
+                    let handle = tokio::spawn(io::consume_segment_infallible(path, *id));
 
-                    *self = LoadedFromDisk { buffer };
+                    *self = LoadingFromDisk { len: *len, handle };
                 }
                 LoadingFromDisk { handle, .. } => {
                     let buffer = handle.await.expect("Unable to load a segment");

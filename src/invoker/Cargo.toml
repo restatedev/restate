@@ -16,6 +16,7 @@ bytes = { workspace = true }
 bytes-utils = { workspace = true }
 restate_common = { workspace = true, features = ["serde"] }
 restate_hyper_util = { workspace = true }
+restate_fs_util = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
@@ -42,6 +43,7 @@ restate_journal = { workspace = true }
 restate_service_metadata = { workspace = true }
 restate_service_protocol = { workspace = true, features = ["message"] }
 restate_timer_queue = { workspace = true }
+restate_queue = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }

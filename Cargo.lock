@@ -3432,6 +3432,7 @@ dependencies = [
  "pin-project",
  "restate_common",
  "restate_errors",
+ "restate_fs_util",
  "restate_meta",
  "restate_tracing_instrumentation",
  "restate_worker",
@@ -3521,6 +3522,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate_fs_util"
+version = "0.1.2"
+dependencies = [
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "restate_futures_util"
 version = "0.1.3"
 dependencies = [
@@ -3601,8 +3611,10 @@ dependencies = [
  "prost",
  "restate_common",
  "restate_errors",
+ "restate_fs_util",
  "restate_hyper_util",
  "restate_journal",
+ "restate_queue",
  "restate_service_metadata",
  "restate_service_protocol",
  "restate_test_util",
@@ -3642,6 +3654,7 @@ dependencies = [
  "prost-reflect",
  "restate_common",
  "restate_errors",
+ "restate_fs_util",
  "restate_futures_util",
  "restate_hyper_util",
  "restate_ingress_grpc",
@@ -3682,6 +3695,7 @@ version = "0.1.3"
 dependencies = [
  "bincode",
  "criterion",
+ "restate_fs_util",
  "serde",
  "tempfile",
  "tokio",
