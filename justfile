@@ -68,7 +68,7 @@ check-fmt:
     cargo fmt --all -- --check
 
 clippy: (_target-installed target)
-    cargo clippy {{ _target-option }} --all-targets -- -D warnings
+    cargo clippy {{ _target-option }} --all-targets --workspace -- -D warnings
 
 # Runs all lints (fmt, clippy, deny)
 lint: check-fmt clippy check-deny
@@ -82,7 +82,11 @@ chef-cook *flags: (_target-installed target)
     cargo chef cook --recipe-path recipe.json {{ _target-option }} {{ _features }} {{ flags }}
 
 build *flags: (_target-installed target)
-    cargo build {{ _target-option }} {{ _features }} {{ flags }} --workspace --exclude service_protocol_wireshark_dissector --exclude xtask
+    cargo build {{ _target-option }} {{ _features }} {{ flags }}
+
+build-tools *flags: (_target-installed target)
+    cd {{justfile_directory()}}/tools/xtask; cargo build {{ _target-option }} {{ _features }} {{ flags }}
+    cd {{justfile_directory()}}/tools/service_protocol_wireshark_dissector; cargo build {{ _target-option }} {{ _features }} {{ flags }}
 
 # Might be able to use cross-rs at some point but for now it could not handle a container image that
 # has a rust toolchain installed. Alternatively, we can create a separate cross-rs builder image.
@@ -107,7 +111,7 @@ run *flags: (_target-installed target)
     cargo run {{ _target-option }} {{ flags }}
 
 test: (_target-installed target)
-    cargo test {{ _target-option }} --workspace --all-features --exclude service_protocol_wireshark_dissector --exclude xtask
+    cargo test {{ _target-option }} --all-features
 
 # Runs lints and tests
 verify: lint test

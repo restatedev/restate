@@ -5,6 +5,7 @@ members = [
     "tools/xtask",
     "tools/service_protocol_wireshark_dissector"
 ]
+default-members = [ "src/*", "src/codederror/impl" ]
 
 [workspace.package]
 version = "0.1.3"
