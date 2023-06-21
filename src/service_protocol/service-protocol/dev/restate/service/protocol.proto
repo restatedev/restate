@@ -124,8 +124,9 @@ message ClearStateEntryMessage {
 // Kind: Completable JournalEntry
 // Type: 0x0C00 + 0
 message SleepEntryMessage {
-  // Duration since UNIX Epoch
-  int64 wake_up_time = 1;
+  // Wake up time.
+  // The time is set as duration since UNIX Epoch.
+  uint64 wake_up_time = 1;
 
   google.protobuf.Empty result = 13;
 }
@@ -156,7 +157,7 @@ message BackgroundInvokeEntryMessage {
   // The time is set as duration since UNIX Epoch.
   // If this value is not set, equal to 0, or past in time,
   // the runtime will execute this BackgroundInvoke as soon as possible.
-  int64 invoke_time = 4;
+  uint64 invoke_time = 4;
 }
 
 // Kind: Completable JournalEntry
