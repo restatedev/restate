@@ -94,7 +94,7 @@ pub struct ClearStateEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SleepEntry {
-    pub wake_up_time: i64,
+    pub wake_up_time: u64,
     pub fired: bool,
 }
 
@@ -126,7 +126,7 @@ impl CompletableEntry for InvokeEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundInvokeEntry {
     pub request: InvokeRequest,
-    pub invoke_time: i64,
+    pub invoke_time: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

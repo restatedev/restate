@@ -521,7 +521,7 @@ where
                     // journal append which each generate actuator messages for the timer service
                     // and the invoker --> Cloning required
                     service_invocation_id.clone(),
-                    MillisSinceEpoch::new(wake_up_time as u64),
+                    MillisSinceEpoch::new(wake_up_time),
                     entry_index,
                 ));
             }
@@ -588,7 +588,7 @@ where
                 } else {
                     effects.register_timer(TimerValue::new_invoke(
                         service_invocation_id.clone(),
-                        MillisSinceEpoch::new(invoke_time as u64),
+                        MillisSinceEpoch::new(invoke_time),
                         entry_index,
                         service_invocation,
                     ));

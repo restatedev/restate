@@ -640,4 +640,15 @@ mod tests {
             ServiceInvocationId::new("my.example.Service", "".as_bytes().to_vec(), Uuid::now_v7(),)
         );
     }
+
+    mod time {
+        use crate::types::MillisSinceEpoch;
+        use std::time::SystemTime;
+
+        #[test]
+        fn millis_should_not_overflow() {
+            let t: SystemTime = MillisSinceEpoch::new(u64::MAX).into();
+            println!("{:?}", t);
+        }
+    }
 }
