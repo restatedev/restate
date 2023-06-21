@@ -82,7 +82,7 @@ chef-cook *flags: (_target-installed target)
     cargo chef cook --recipe-path recipe.json {{ _target-option }} {{ _features }} {{ flags }}
 
 build *flags: (_target-installed target)
-    cargo build {{ _target-option }} {{ _features }} {{ flags }}
+    cargo build {{ _target-option }} {{ _features }} {{ flags }} --workspace --exclude service_protocol_wireshark_dissector --exclude xtask
 
 # Might be able to use cross-rs at some point but for now it could not handle a container image that
 # has a rust toolchain installed. Alternatively, we can create a separate cross-rs builder image.
