@@ -491,6 +491,7 @@ pub enum OutboxMessage {
 /// This struct represents a serialized journal entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawEntry<H> {
+    // TODO can we get rid of these pub here?
     pub header: H,
     pub entry: Bytes,
 }
@@ -503,21 +504,18 @@ impl<H> RawEntry<H> {
     pub fn into_inner(self) -> (H, Bytes) {
         (self.header, self.entry)
     }
+
+    // TODO fn ty(&self) -> EntryType could be useful, but we need the header interface.
+    //  Probably can be fixed with https://github.com/restatedev/restate/issues/420
 }
 
 /// Result of the target service resolution
 #[derive(Debug, Clone)]
-pub enum ResolutionResult {
-    Success {
-        invocation_id: InvocationId,
-        service_key: Bytes,
-        // When resolving the service and generating its id, we also generate the associated span
-        span_context: ServiceInvocationSpanContext,
-    },
-    Failure {
-        error_code: UserErrorCode,
-        error: ByteString,
-    },
+pub struct ResolutionResult {
+    pub invocation_id: InvocationId,
+    pub service_key: Bytes,
+    // When resolving the service and generating its id, we also generate the associated span
+    pub span_context: ServiceInvocationSpanContext,
 }
 
 /// Enriched variant of the journal headers to store additional runtime specific information
@@ -555,6 +553,9 @@ pub enum EnrichedEntryHeader {
 }
 
 pub type EnrichedRawEntry = RawEntry<EnrichedEntryHeader>;
+
+// TODO From<EnrichedRawEntry> for PlainRawEntry can be useful
+//  Probably can be fixed with https://github.com/restatedev/restate/issues/420
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionResult {

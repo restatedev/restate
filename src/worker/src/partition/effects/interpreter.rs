@@ -550,15 +550,6 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 Self::store_completion(state_storage, &service_invocation_id, entry_index, result)
                     .await?;
             }
-            Effect::ForwardCompletion {
-                service_invocation_id,
-                completion,
-            } => {
-                collector.collect(ActuatorMessage::ForwardCompletion {
-                    service_invocation_id,
-                    completion,
-                });
-            }
             Effect::StoreCompletionAndForward {
                 service_invocation_id,
                 completion:

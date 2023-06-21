@@ -4,9 +4,9 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use restate_common::types::{CompletionResult, EntryIndex, ResponseResult};
 
-pub mod raw;
-
 mod enriched;
+pub mod raw;
+pub use enriched::EntryEnricher;
 mod entries;
 pub use entries::*;
 

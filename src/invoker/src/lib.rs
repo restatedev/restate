@@ -1,17 +1,15 @@
 use bytes::Bytes;
-use std::collections::HashSet;
-use std::future::Future;
-use std::sync::Arc;
-
 use futures::Stream;
-use opentelemetry::trace::SpanContext;
 use restate_common::errors::InvocationError;
 use restate_common::retry_policy::RetryPolicy;
 use restate_common::types::{
-    EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceId, ServiceInvocationId,
+    EnrichedRawEntry, EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceId,
+    ServiceInvocationId,
 };
 use restate_journal::raw::PlainRawEntry;
 use restate_journal::Completion;
+use std::collections::HashSet;
+use std::future::Future;
 use tokio::sync::mpsc;
 
 mod invoker;
@@ -173,9 +171,7 @@ pub struct OutputEffect {
 pub enum Kind {
     JournalEntry {
         entry_index: EntryIndex,
-        entry: PlainRawEntry,
-        /// If this entry generates new spans, use this SpanContext as parent span
-        parent_span_context: Arc<SpanContext>,
+        entry: EnrichedRawEntry,
     },
     Suspended {
         waiting_for_completed_entries: HashSet<EntryIndex>,

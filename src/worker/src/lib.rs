@@ -1,6 +1,7 @@
 extern crate core;
 
 use crate::ingress_integration::{ExternalClientIngressRunner, IngressIntegrationError};
+use crate::invoker_integration::EntryEnricher;
 use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::range_partitioner::RangePartitioner;
@@ -29,6 +30,7 @@ use tracing::debug;
 use util::IdentitySender;
 
 mod ingress_integration;
+mod invoker_integration;
 mod network_integration;
 mod partition;
 mod range_partitioner;
@@ -43,7 +45,6 @@ type PartitionProcessor = partition::PartitionProcessor<
     ProtobufRawEntryCodec,
     UnboundedInvokerInputSender,
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-    KeyExtractorsRegistry,
 >;
 
 /// # Worker options
@@ -181,6 +182,7 @@ pub struct Worker {
         ProtobufRawEntryCodec,
         InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,
+        EntryEnricher<KeyExtractorsRegistry, ProtobufRawEntryCodec>,
         InMemoryServiceEndpointRegistry,
     >,
     external_client_ingress_runner: ExternalClientIngressRunner,
@@ -248,6 +250,7 @@ impl Worker {
         let invoker = opts.invoker.build(
             invoker_storage_reader.clone(),
             invoker_storage_reader,
+            EntryEnricher::new(key_extractor_registry),
             service_endpoint_registry,
         );
 
@@ -267,7 +270,6 @@ impl Worker {
                     invoker_sender,
                     network_handle.clone(),
                     network.create_partition_processor_sender(),
-                    key_extractor_registry.clone(),
                     rocksdb.clone(),
                 )
             })
@@ -306,7 +308,6 @@ impl Worker {
         invoker_sender: UnboundedInvokerInputSender,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
         ack_sender: PartitionProcessorSender<partition::AckResponse>,
-        key_extractor: KeyExtractorsRegistry,
         rocksdb_storage: RocksDBStorage,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(channel_size);
@@ -321,7 +322,6 @@ impl Worker {
             invoker_sender,
             network_handle,
             ack_sender,
-            key_extractor,
             rocksdb_storage,
         );
 

@@ -13,15 +13,16 @@ use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use prost::Message;
 use restate_common::types::{
-    CompletionResult, EntryIndex, JournalMetadata, RawEntry, ServiceId, ServiceInvocationId,
-    ServiceInvocationSpanContext, SpanRelation,
+    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, JournalMetadata, RawEntry,
+    ResolutionResult, ServiceId, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
 };
+use restate_common::utils::GenericError;
 use restate_invoker::{
     EagerState, InvokeInputJournal, InvokerInputSender, JournalReader, Kind, OutputEffect,
     StateReader,
 };
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
-use restate_journal::Completion;
+use restate_journal::{Completion, EntryEnricher};
 use restate_service_protocol::pb::protocol::PollInputStreamEntryMessage;
 use tokio::sync::{mpsc, Mutex};
 use tracing::debug;
@@ -114,7 +115,7 @@ where
             .append_entry(
                 &sid,
                 RawEntry::new(
-                    RawEntryHeader::PollInputStream { is_completed: true },
+                    EnrichedEntryHeader::PollInputStream { is_completed: true },
                     PollInputStreamEntryMessage {
                         value: request_payload.encode_to_vec().into(),
                     }
@@ -221,11 +222,7 @@ impl InMemoryJournalStorage {
         );
     }
 
-    pub async fn append_entry(
-        &mut self,
-        sid: &ServiceInvocationId,
-        entry: impl Into<PlainRawEntry>,
-    ) {
+    pub async fn append_entry(&mut self, sid: &ServiceInvocationId, entry: EnrichedRawEntry) {
         let mut journals = self.journals.lock().await;
         let (meta, journal) = journals
             .get_mut(sid)
@@ -233,7 +230,11 @@ impl InMemoryJournalStorage {
 
         meta.length += 1;
 
-        journal.push(entry.into());
+        // TODO workaround because we cannot implement From<EnrichedRawEntry> for PlainRawEntry due
+        //  to https://github.com/restatedev/restate/issues/420
+        let entry = PlainRawEntry::new(entry.header.into(), entry.entry);
+
+        journal.push(entry);
     }
 
     pub async fn complete_entry<Codec>(
@@ -297,5 +298,63 @@ impl StateReader for InMemoryStateStorage {
             ))
         }
         .boxed()
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct MockEntryEnricher;
+
+impl EntryEnricher for MockEntryEnricher {
+    fn enrich_entry(
+        &self,
+        raw_entry: PlainRawEntry,
+        invocation_span_context: &ServiceInvocationSpanContext,
+    ) -> Result<EnrichedRawEntry, GenericError> {
+        let enriched_header = match raw_entry.header {
+            RawEntryHeader::PollInputStream { is_completed } => {
+                EnrichedEntryHeader::PollInputStream { is_completed }
+            }
+            RawEntryHeader::OutputStream => EnrichedEntryHeader::OutputStream,
+            RawEntryHeader::GetState { is_completed } => {
+                EnrichedEntryHeader::GetState { is_completed }
+            }
+            RawEntryHeader::SetState => EnrichedEntryHeader::SetState,
+            RawEntryHeader::ClearState => EnrichedEntryHeader::ClearState,
+            RawEntryHeader::Sleep { is_completed } => EnrichedEntryHeader::Sleep { is_completed },
+            RawEntryHeader::Invoke { is_completed } => {
+                if !is_completed {
+                    EnrichedEntryHeader::Invoke {
+                        is_completed,
+                        resolution_result: Some(ResolutionResult {
+                            invocation_id: Default::default(),
+                            service_key: Default::default(),
+                            span_context: invocation_span_context.clone(),
+                        }),
+                    }
+                } else {
+                    // No need to service resolution if the entry was completed by the service endpoint
+                    EnrichedEntryHeader::Invoke {
+                        is_completed,
+                        resolution_result: None,
+                    }
+                }
+            }
+            RawEntryHeader::BackgroundInvoke => EnrichedEntryHeader::BackgroundInvoke {
+                resolution_result: ResolutionResult {
+                    invocation_id: Default::default(),
+                    service_key: Default::default(),
+                    span_context: invocation_span_context.clone(),
+                },
+            },
+            RawEntryHeader::Awakeable { is_completed } => {
+                EnrichedEntryHeader::Awakeable { is_completed }
+            }
+            RawEntryHeader::CompleteAwakeable => EnrichedEntryHeader::CompleteAwakeable,
+            RawEntryHeader::Custom { code, requires_ack } => {
+                EnrichedEntryHeader::Custom { code, requires_ack }
+            }
+        };
+
+        Ok(RawEntry::new(enriched_header, raw_entry.entry))
     }
 }

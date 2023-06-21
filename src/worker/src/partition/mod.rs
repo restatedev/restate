@@ -30,8 +30,7 @@ use state_machine::DeduplicatingStateMachine;
 pub(super) use types::TimerValue;
 
 #[derive(Debug)]
-pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
-{
+pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle> {
     peer_id: PeerId,
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
@@ -48,20 +47,17 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
 
     ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
 
-    key_extractor: KeyExtractor,
-
     rocksdb_storage: RocksDBStorage,
 
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
-impl<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
-    PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, KeyExtractor>
+impl<RawEntryCodec, InvokerInputSender, NetworkHandle>
+    PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle>
 where
     RawEntryCodec: restate_journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: restate_invoker::InvokerInputSender + Clone,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-    KeyExtractor: restate_service_key_extractor::KeyExtractor,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -75,7 +71,6 @@ where
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
         ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
-        key_extractor: KeyExtractor,
         rocksdb_storage: RocksDBStorage,
     ) -> Self {
         Self {
@@ -89,7 +84,6 @@ where
             invoker_tx,
             network_handle,
             ack_tx,
-            key_extractor,
             _entry_codec: Default::default(),
             rocksdb_storage,
         }
@@ -107,7 +101,6 @@ where
             network_handle,
             proposal_tx,
             ack_tx,
-            key_extractor,
             rocksdb_storage,
             ..
         } = self;
@@ -133,8 +126,7 @@ where
 
         debug!(%peer_id, %partition_id, ?state_machine, "Created state machine");
 
-        let actuator_output_handler =
-            ActuatorOutputHandler::<_, RawEntryCodec>::new(proposal_tx, key_extractor);
+        let actuator_output_handler = ActuatorOutputHandler::new(proposal_tx);
 
         loop {
             tokio::select! {

@@ -1,39 +1,12 @@
-use restate_common::errors::InvocationError;
 use restate_common::types::{
-    EnrichedRawEntry, EntryIndex, MillisSinceEpoch, ServiceInvocation, ServiceInvocationId, Timer,
+    EntryIndex, MillisSinceEpoch, ServiceInvocation, ServiceInvocationId, Timer,
 };
 use std::cmp::Ordering;
-use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-#[derive(Debug)]
-pub(crate) struct InvokerEffect {
-    pub(crate) service_invocation_id: ServiceInvocationId,
-    pub(crate) kind: InvokerEffectKind,
-}
-
-impl InvokerEffect {
-    pub(super) fn new(service_invocation_id: ServiceInvocationId, kind: InvokerEffectKind) -> Self {
-        Self {
-            service_invocation_id,
-            kind,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) enum InvokerEffectKind {
-    JournalEntry {
-        entry_index: EntryIndex,
-        entry: EnrichedRawEntry,
-    },
-    Suspended {
-        waiting_for_completed_entries: HashSet<EntryIndex>,
-    },
-    End,
-    Failed(InvocationError),
-}
+pub(crate) type InvokerEffect = restate_invoker::OutputEffect;
+pub(crate) type InvokerEffectKind = restate_invoker::Kind;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TimerValue {
