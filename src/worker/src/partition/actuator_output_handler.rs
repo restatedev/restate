@@ -2,7 +2,7 @@ use super::leadership::ActuatorOutput;
 use super::{AckCommand, Command};
 use crate::util::IdentitySender;
 
-/// Responsible for enriching and then proposing [`ActuatorOutput`].
+/// Responsible for proposing [ActuatorOutput].
 pub(super) struct ActuatorOutputHandler {
     proposal_tx: IdentitySender<AckCommand>,
 }
