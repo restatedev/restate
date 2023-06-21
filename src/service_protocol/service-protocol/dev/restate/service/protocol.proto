@@ -28,7 +28,7 @@ message StartMessage {
 }
 
 // Type: 0x0000 + 1
-// Note: Completions that are simply acks will use this message without sending back any result
+// Note: Acks to custom messages will have the `empty` field filled.
 message CompletionMessage {
   uint32 entry_index = 1;
 
@@ -50,6 +50,21 @@ message SuspensionMessage {
   repeated uint32 entry_indexes = 1;  // protolint:disable:this REPEATED_FIELD_NAMES_PLURALIZED
 }
 
+// Type: 0x0000 + 3
+message ErrorMessage {
+  // The code can be:
+  // * Any of the error codes defined by OutputStreamEntry.failure (see Failure message)
+  // * JOURNAL_MISMATCH = 32, that is when the SDK cannot replay a journal due to the mismatch between the journal and the actual code.
+  // * PROTOCOL_VIOLATION = 33, that is when the SDK receives an unexpected message or an expected message variant, given its state.
+  //
+  // If 16 < code < 32, or code > 33, the runtime will interpret it as code 2 (UNKNOWN).
+  uint32 code = 1;
+  // Contains a concise error message, e.g. Throwable#getMessage() in Java.
+  string message = 2;
+  // Contains a verbose error description, e.g. the exception stacktrace.
+  string description = 3;
+}
+
 // --- Journal Entries ---
 
 // Every Completable JournalEntry has a result field, filled only and only if the entry is in DONE state.
@@ -69,7 +84,7 @@ message PollInputStreamEntryMessage {
   bytes value = 14;
 }
 
-// Kind: Ack-able JournalEntry
+// Kind: Non-Completable JournalEntry
 // Type: 0x0400 + 1
 message OutputStreamEntryMessage {
   oneof result {
@@ -91,14 +106,14 @@ message GetStateEntryMessage {
   };
 }
 
-// Kind: Ack-able JournalEntry
+// Kind: Non-Completable JournalEntry
 // Type: 0x0800 + 1
 message SetStateEntryMessage {
   bytes key = 1;
   bytes value = 3;
 }
 
-// Kind: Ack-able JournalEntry
+// Kind: Non-Completable JournalEntry
 // Type: 0x0800 + 2
 message ClearStateEntryMessage {
   bytes key = 1;
@@ -129,7 +144,7 @@ message InvokeEntryMessage {
   };
 }
 
-// Kind: Ack-able JournalEntry
+// Kind: Non-Completable JournalEntry
 // Type: 0x0C00 + 2
 message BackgroundInvokeEntryMessage {
   string service_name = 1;
@@ -153,7 +168,7 @@ message AwakeableEntryMessage {
   };
 }
 
-// Kind: Ack-able JournalEntry
+// Kind: Non-Completable JournalEntry
 // Type: 0x0C00 + 4
 message CompleteAwakeableEntryMessage {
   string service_name = 1;
@@ -166,7 +181,14 @@ message CompleteAwakeableEntryMessage {
 
 // --- Nested messages
 
+// This failure object carries user visible errors,
+// e.g. invocation failure return value or failure result of an InvokeEntryMessage.
 message Failure {
-  int32 code = 1;
+  // The code should be any of the gRPC error codes,
+  // as defined here: https://github.com/grpc/grpc/blob/master/doc/statuscodes.md#status-codes-and-their-use-in-grpc
+  //
+  // If code > 16, the runtime will interpret it as code 2 (UNKNOWN).
+  uint32 code = 1;
+  // Contains a concise error message, e.g. Throwable#getMessage() in Java.
   string message = 2;
 }
