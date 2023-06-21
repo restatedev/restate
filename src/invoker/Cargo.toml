@@ -17,6 +17,7 @@ bytes-utils = { workspace = true }
 restate_common = { workspace = true, features = ["serde"] }
 restate_hyper_util = { workspace = true }
 restate_fs_util = { workspace = true }
+restate_futures_util = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }

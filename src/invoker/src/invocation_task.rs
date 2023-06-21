@@ -17,7 +17,7 @@ use hyper::{http, Body, Request, Response, Uri};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
-use restate_common::errors::{InvocationError, UserErrorCode};
+use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
 use restate_common::types::{
     EnrichedRawEntry, EntryIndex, PartitionLeaderEpoch, ServiceInvocationId,
     ServiceInvocationSpanContext,
@@ -96,13 +96,18 @@ impl InvokerError for InvocationTaskError {
     fn is_transient(&self) -> bool {
         true
     }
-}
 
-impl From<InvocationTaskError> for InvocationError {
-    fn from(value: InvocationTaskError) -> Self {
-        match value {
-            InvocationTaskError::Invocation(e) => e,
+    fn as_invocation_error(&self) -> InvocationError {
+        match self {
+            InvocationTaskError::Invocation(e) => e.clone(),
             e => InvocationError::new(UserErrorCode::Internal, e.to_string()),
+        }
+    }
+
+    fn invocation_error_code(&self) -> InvocationErrorCode {
+        match self {
+            InvocationTaskError::Invocation(e) => e.code(),
+            _ => UserErrorCode::Internal.into(),
         }
     }
 }

@@ -3614,6 +3614,7 @@ dependencies = [
  "restate_common",
  "restate_errors",
  "restate_fs_util",
+ "restate_futures_util",
  "restate_hyper_util",
  "restate_journal",
  "restate_queue",
