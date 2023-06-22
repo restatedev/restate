@@ -483,9 +483,8 @@ where
                     segmented_input_queue.enqueue(invoke_input_command).await
                 },
                 Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() => {
-                    state_machine_coordinator
-                        .must_resolve_partition(invoke_input_command.partition)
-                        .handle_invoke(
+                    if let Some(psm) = state_machine_coordinator.resolve_partition(invoke_input_command.partition) {
+                        psm.handle_invoke(
                             invoke_input_command.inner,
                             StartInvocationTaskArguments::new(
                                 &client,
@@ -504,6 +503,12 @@ where
                                 &mut retry_timers,
                             )
                         ).await;
+                    } else {
+                        trace!(
+                            restate.invoker.partition_leader_epoch = ?invoke_input_command.partition,
+                            "Ignoring Invoke command because there is no matching partition"
+                        );
+                    }
                 },
 
                 // --- Other commands (they don't go through the spillable queue)
@@ -516,26 +521,35 @@ where
                             if let Some(psm) = state_machine_coordinator.resolve_partition(partition) {
                                 psm.abort(service_invocation_id)
                             } else {
-                                // We can skip it as it means the invocation was aborted or not yet started
-                                continue
-                            };
+                                trace!(
+                                    restate.invoker.partition_leader_epoch = ?partition,
+                                    "Ignoring Abort command because there is no matching partition"
+                                );
+                            }
                         }
                         Input { partition, inner: OtherInputCommand::AbortAllPartition } => {
                             if let Some(mut partition_state_machine) = state_machine_coordinator.remove_partition(partition) {
                                 partition_state_machine.abort_all();
                             } else {
-                                // This is safe to ignore
+                                trace!(
+                                    restate.invoker.partition_leader_epoch = ?partition,
+                                    "Ignoring AbortAll command because there is no matching partition"
+                                );
                             }
                         }
                         Input { partition, inner: OtherInputCommand::Completion { service_invocation_id, completion }} => {
-                            state_machine_coordinator
-                                .must_resolve_partition(partition)
-                                .handle_completion(service_invocation_id, completion);
+                            if let Some(psm) = state_machine_coordinator.resolve_partition(partition) {
+                                psm.handle_completion(service_invocation_id, completion);
+                            } else {
+                                trace!(
+                                    restate.invoker.partition_leader_epoch = ?partition,
+                                    "Ignoring Completion command because there is no matching partition"
+                                );
+                            }
                         },
                         Input { partition, inner: OtherInputCommand::StoredEntryAck { service_invocation_id, entry_index, .. } } => {
-                            state_machine_coordinator
-                                .must_resolve_partition(partition)
-                                .handle_stored_entry_ack(
+                            if let Some(psm) = state_machine_coordinator.resolve_partition(partition) {
+                                psm.handle_stored_entry_ack(
                                     service_invocation_id,
                                     StartInvocationTaskArguments::new(
                                         &client,
@@ -556,6 +570,12 @@ where
                                     entry_index
                                 )
                                 .await;
+                            } else {
+                                trace!(
+                                    restate.invoker.partition_leader_epoch = ?partition,
+                                    "Ignoring StoredEntryAck command because there is no matching partition"
+                                );
+                            }
                         }
                     }
                 },
@@ -564,6 +584,10 @@ where
                         if let Some(psm) = state_machine_coordinator.resolve_partition(invocation_task_msg.partition) {
                             psm
                         } else {
+                            trace!(
+                                restate.invoker.partition_leader_epoch = ?invocation_task_msg.partition,
+                                "Ignoring InvocationTaskOutput command because there is no matching partition"
+                            );
                             // We can skip it as it means the invocation was aborted
                             continue
                         };
@@ -619,8 +643,12 @@ where
                                 &mut retry_timers,
                             )
                         ).await;
+                    } else {
+                        trace!(
+                            restate.invoker.partition_leader_epoch = ?partition,
+                            "Ignoring timer fired command because there is no matching partition"
+                        );
                     }
-                    // We can skip it as it means the invocation was aborted
                 },
                 Some(invocation_task_result) = invocation_tasks.join_next() => {
                     if let Err(err) = invocation_task_result {
@@ -762,17 +790,6 @@ mod state_machine_coordinator {
             partition: PartitionLeaderEpoch,
         ) -> Option<&mut PartitionInvocationStateMachineCoordinator> {
             self.partitions.get_mut(&partition)
-        }
-
-        #[inline]
-        pub(super) fn must_resolve_partition(
-            &mut self,
-            partition: PartitionLeaderEpoch,
-        ) -> &mut PartitionInvocationStateMachineCoordinator {
-            self.partitions.get_mut(&partition).expect(
-                "An event has been triggered for an unknown partition. \
-                This is not supposed to happen, and is probably a bug.",
-            )
         }
 
         #[inline]
