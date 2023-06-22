@@ -42,7 +42,6 @@ pub(crate) enum Error {
 
 #[derive(Debug)]
 pub(crate) enum Command {
-    #[allow(dead_code)]
     Kill(ServiceInvocationId),
     Invoker(InvokerEffect),
     Timer(TimerValue),
