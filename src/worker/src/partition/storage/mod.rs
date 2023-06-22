@@ -58,6 +58,16 @@ pub(crate) struct Transaction<TransactionType> {
     inner: TransactionType,
 }
 
+impl<TransactionType> Transaction<TransactionType> {
+    #[inline]
+    fn assert_partition_key(&self, service_id: &ServiceId) {
+        assert!(self.partition_key_range.contains(&service_id.partition_key()),
+                "Partition key '{}' is not part of PartitionStorage's partition '{:?}'. This indicates a bug.",
+                service_id.partition_key(),
+                self.partition_key_range);
+    }
+}
+
 impl<TransactionType> Transaction<TransactionType>
 where
     TransactionType: restate_storage_api::Transaction,
@@ -167,6 +177,7 @@ where
         &'a mut self,
         service_id: &'a ServiceId,
     ) -> BoxFuture<Result<InvocationStatus, StateReaderError>> {
+        self.assert_partition_key(service_id);
         async {
             Ok(self
                 .inner
@@ -181,6 +192,7 @@ where
         &'a mut self,
         service_id: &'a ServiceId,
     ) -> BoxFuture<Result<Option<InboxEntry>, StateReaderError>> {
+        self.assert_partition_key(service_id);
         async {
             self.inner
                 .peek_inbox(service_id)
@@ -198,6 +210,7 @@ where
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<bool, StateReaderError>> {
+        self.assert_partition_key(service_id);
         async move {
             Ok(self
                 .inner
@@ -224,6 +237,7 @@ where
         service_id: &'a ServiceId,
         status: InvocationStatus,
     ) -> BoxFuture<Result<(), StateStorageError>> {
+        self.assert_partition_key(service_id);
         async {
             self.inner.put_invocation_status(service_id, status).await;
             Ok(())
@@ -236,6 +250,7 @@ where
         service_id: &'a ServiceId,
         journal_length: EntryIndex,
     ) -> BoxFuture<Result<(), StateStorageError>> {
+        self.assert_partition_key(service_id);
         async move {
             self.inner.delete_journal(service_id, journal_length).await;
             Ok(())
@@ -249,6 +264,7 @@ where
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) -> BoxFuture<Result<(), StateStorageError>> {
+        self.assert_partition_key(service_id);
         async move {
             self.inner
                 .put_journal_entry(service_id, entry_index, JournalEntry::Entry(journal_entry))
@@ -265,6 +281,7 @@ where
         entry_index: EntryIndex,
         completion_result: CompletionResult,
     ) -> BoxFuture<Result<(), StateStorageError>> {
+        self.assert_partition_key(service_id);
         async move {
             self.inner
                 .put_journal_entry(
@@ -283,6 +300,7 @@ where
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<Option<CompletionResult>, StateStorageError>> {
+        self.assert_partition_key(service_id);
         async move {
             let result = self
                 .inner
@@ -302,6 +320,7 @@ where
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<Option<EnrichedRawEntry>, StateStorageError>> {
+        self.assert_partition_key(service_id);
         async move {
             let result = self
                 .inner
@@ -321,6 +340,7 @@ where
         seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
     ) -> BoxFuture<Result<(), StateStorageError>> {
+        self.assert_partition_key(&service_invocation.id.service_id);
         async move {
             // TODO: Avoid cloning when moving this logic into the RocksDB storage impl
             let service_id = service_invocation.id.service_id.clone();
@@ -400,6 +420,7 @@ where
         key: Bytes,
         value: Bytes,
     ) -> BoxFuture<Result<(), StateStorageError>> {
+        self.assert_partition_key(service_id);
         async move {
             self.inner.put_user_state(service_id, &key, &value).await;
 
@@ -413,6 +434,7 @@ where
         service_id: &'a ServiceId,
         key: &'a Bytes,
     ) -> BoxFuture<Result<Option<Bytes>, StateStorageError>> {
+        self.assert_partition_key(service_id);
         async move { Ok(self.inner.get_user_state(service_id, key).await?) }.boxed()
     }
 
@@ -421,6 +443,7 @@ where
         service_id: &'a ServiceId,
         key: &'a Bytes,
     ) -> BoxFuture<Result<(), StateStorageError>> {
+        self.assert_partition_key(service_id);
         async move {
             self.inner.delete_user_state(service_id, key).await;
             Ok(())
@@ -435,6 +458,7 @@ where
         entry_index: EntryIndex,
         timer: Timer,
     ) -> BoxFuture<Result<(), StateStorageError>> {
+        self.assert_partition_key(&service_invocation_id.service_id);
         async move {
             let timer_key = TimerKey {
                 service_invocation_id,
@@ -456,6 +480,7 @@ where
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<(), StateStorageError>> {
+        self.assert_partition_key(&service_invocation_id.service_id);
         async move {
             let timer_key = TimerKey {
                 service_invocation_id,
