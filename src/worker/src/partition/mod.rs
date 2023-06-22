@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
 pub mod ack;
 mod actuator_output_handler;
@@ -89,6 +89,7 @@ where
         }
     }
 
+    #[instrument(level = "trace", skip_all, fields(peer_id = %self.peer_id, partition_id = %self.partition_id))]
     pub(super) async fn run(self) -> anyhow::Result<()> {
         let PartitionProcessor {
             peer_id,
@@ -123,8 +124,6 @@ where
 
         let mut state_machine =
             Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?;
-
-        debug!(%peer_id, %partition_id, ?state_machine, "Created state machine");
 
         let actuator_output_handler = ActuatorOutputHandler::new(proposal_tx);
 
