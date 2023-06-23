@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
+use crate::service::InvokerError;
 use crate::EagerState;
 use bytes::Bytes;
 use futures::future::FusedFuture;
@@ -37,9 +38,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use super::{
-    HttpsClient, InvokeInputJournal, InvokerError, JournalMetadata, JournalReader, StateReader,
-};
+use super::{HttpsClient, InvokeInputJournal, JournalMetadata, JournalReader, StateReader};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256

@@ -3,7 +3,7 @@ use crate::partition::leadership::{FollowerState, LeaderState, LeadershipState, 
 use crate::partition::{shuffle, AckResponse, TimerValue};
 use futures::{Stream, StreamExt};
 use restate_common::types::PartitionLeaderEpoch;
-use restate_invoker::{InvokerInputSender, InvokerNotRunning};
+use restate_invoker::{ServiceHandle, ServiceNotRunning};
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -22,14 +22,14 @@ pub(crate) enum ActuatorMessageCollector<'a, I, N> {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ActuatorMessageCollectorError {
     #[error(transparent)]
-    Invoker(#[from] InvokerNotRunning),
+    Invoker(#[from] ServiceNotRunning),
     #[error("failed to send ack response: {0}")]
     Ack(#[from] mpsc::error::SendError<AckResponse>),
 }
 
 impl<'a, I, N> ActuatorMessageCollector<'a, I, N>
 where
-    I: InvokerInputSender,
+    I: ServiceHandle,
     N: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
     pub(crate) async fn send(

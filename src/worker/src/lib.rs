@@ -15,7 +15,9 @@ use restate_common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
 use restate_common::worker_command::WorkerCommandSender;
 use restate_consensus::Consensus;
 use restate_ingress_grpc::ReflectionRegistry;
-use restate_invoker::{Service as InvokerService, UnboundedInvokerInputSender};
+use restate_invoker::{
+    ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
+};
 use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use restate_service_key_extractor::KeyExtractorsRegistry;
 use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
@@ -42,7 +44,7 @@ type ConsensusCommand = restate_consensus::Command<PartitionProcessorCommand>;
 type ConsensusMsg = PeerTarget<PartitionProcessorCommand>;
 type PartitionProcessor = partition::PartitionProcessor<
     ProtobufRawEntryCodec,
-    UnboundedInvokerInputSender,
+    InvokerChannelServiceHandle,
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 >;
 
@@ -258,7 +260,7 @@ impl Worker {
         let (command_senders, processors): (Vec<_>, Vec<_>) = partitioner
             .map(|(idx, partition_range)| {
                 let proposal_sender = consensus.create_proposal_sender();
-                let invoker_sender = invoker.create_sender();
+                let invoker_sender = invoker.handle();
 
                 Self::create_partition_processor(
                     idx,
@@ -304,7 +306,7 @@ impl Worker {
         timer_service_options: restate_timer::Options,
         channel_size: usize,
         proposal_sender: mpsc::Sender<ConsensusMsg>,
-        invoker_sender: UnboundedInvokerInputSender,
+        invoker_sender: InvokerChannelServiceHandle,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
         ack_sender: PartitionProcessorSender<partition::AckResponse>,
         rocksdb_storage: RocksDBStorage,

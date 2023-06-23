@@ -1,25 +1,27 @@
 use super::*;
 
-use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::path::PathBuf;
-use std::sync::Weak;
-use std::time::Duration;
-use std::{cmp, panic};
-
+use codederror::CodedError;
+use futures::future::BoxFuture;
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
+use futures::FutureExt;
 use restate_common::types::PartitionLeaderEpoch;
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_journal::EntryEnricher;
 use restate_queue::SegmentQueue;
 use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;
+use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::path::PathBuf;
+use std::sync::Weak;
+use std::time::Duration;
+use std::{cmp, panic};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{debug, trace};
 
-use crate::status::InvocationStatusReportInner;
+use crate::status_handle::{InvocationStatusReportInner, StatusHandle};
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use state_machine_coordinator::StartInvocationTaskArguments;
 
@@ -28,133 +30,7 @@ mod invocation_task;
 mod state_machine_coordinator;
 mod status_store;
 
-#[derive(Debug, Clone)]
-pub struct UnboundedInvokerInputSender {
-    invoke_input: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
-    resume_input: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
-    other_input: mpsc::UnboundedSender<Input<OtherInputCommand>>,
-}
-
-impl InvokerInputSender for UnboundedInvokerInputSender {
-    type Future = futures::future::Ready<Result<(), InvokerNotRunning>>;
-
-    fn invoke(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        journal: InvokeInputJournal,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.invoke_input
-                .send(Input {
-                    partition,
-                    inner: InvokeInputCommand {
-                        service_invocation_id,
-                        journal,
-                    },
-                })
-                .map_err(|_| InvokerNotRunning),
-        )
-    }
-
-    fn resume(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        journal: InvokeInputJournal,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.resume_input
-                .send(Input {
-                    partition,
-                    inner: InvokeInputCommand {
-                        service_invocation_id,
-                        journal,
-                    },
-                })
-                .map_err(|_| InvokerNotRunning),
-        )
-    }
-
-    fn notify_completion(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        completion: Completion,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.other_input
-                .send(Input {
-                    partition,
-                    inner: OtherInputCommand::Completion {
-                        service_invocation_id,
-                        completion,
-                    },
-                })
-                .map_err(|_| InvokerNotRunning),
-        )
-    }
-
-    fn notify_stored_entry_ack(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        entry_index: EntryIndex,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.other_input
-                .send(Input {
-                    partition,
-                    inner: OtherInputCommand::StoredEntryAck {
-                        service_invocation_id,
-                        entry_index,
-                    },
-                })
-                .map_err(|_| InvokerNotRunning),
-        )
-    }
-
-    fn abort_all_partition(&mut self, partition: PartitionLeaderEpoch) -> Self::Future {
-        futures::future::ready(
-            self.other_input
-                .send(Input {
-                    partition,
-                    inner: OtherInputCommand::AbortAllPartition,
-                })
-                .map_err(|_| InvokerNotRunning),
-        )
-    }
-
-    fn abort_invocation(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.other_input
-                .send(Input {
-                    partition,
-                    inner: OtherInputCommand::Abort(service_invocation_id),
-                })
-                .map_err(|_| InvokerNotRunning),
-        )
-    }
-
-    fn register_partition(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        sender: mpsc::Sender<Effect>,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.other_input
-                .send(Input {
-                    partition,
-                    inner: OtherInputCommand::RegisterPartition(sender),
-                })
-                .map_err(|_| InvokerNotRunning),
-        )
-    }
-}
+// -- Handles implementations
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Input<I> {
@@ -202,10 +78,196 @@ pub(crate) enum OtherInputCommand {
     ),
 }
 
+#[derive(Debug, Clone)]
+pub struct ChannelServiceHandle {
+    invoke_input: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
+    resume_input: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
+    other_input: mpsc::UnboundedSender<Input<OtherInputCommand>>,
+}
+
+impl ServiceHandle for ChannelServiceHandle {
+    type Future = futures::future::Ready<Result<(), ServiceNotRunning>>;
+
+    fn invoke(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        journal: InvokeInputJournal,
+    ) -> Self::Future {
+        futures::future::ready(
+            self.invoke_input
+                .send(Input {
+                    partition,
+                    inner: InvokeInputCommand {
+                        service_invocation_id,
+                        journal,
+                    },
+                })
+                .map_err(|_| ServiceNotRunning),
+        )
+    }
+
+    fn resume(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        journal: InvokeInputJournal,
+    ) -> Self::Future {
+        futures::future::ready(
+            self.resume_input
+                .send(Input {
+                    partition,
+                    inner: InvokeInputCommand {
+                        service_invocation_id,
+                        journal,
+                    },
+                })
+                .map_err(|_| ServiceNotRunning),
+        )
+    }
+
+    fn notify_completion(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        completion: Completion,
+    ) -> Self::Future {
+        futures::future::ready(
+            self.other_input
+                .send(Input {
+                    partition,
+                    inner: OtherInputCommand::Completion {
+                        service_invocation_id,
+                        completion,
+                    },
+                })
+                .map_err(|_| ServiceNotRunning),
+        )
+    }
+
+    fn notify_stored_entry_ack(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        entry_index: EntryIndex,
+    ) -> Self::Future {
+        futures::future::ready(
+            self.other_input
+                .send(Input {
+                    partition,
+                    inner: OtherInputCommand::StoredEntryAck {
+                        service_invocation_id,
+                        entry_index,
+                    },
+                })
+                .map_err(|_| ServiceNotRunning),
+        )
+    }
+
+    fn abort_all_partition(&mut self, partition: PartitionLeaderEpoch) -> Self::Future {
+        futures::future::ready(
+            self.other_input
+                .send(Input {
+                    partition,
+                    inner: OtherInputCommand::AbortAllPartition,
+                })
+                .map_err(|_| ServiceNotRunning),
+        )
+    }
+
+    fn abort_invocation(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+    ) -> Self::Future {
+        futures::future::ready(
+            self.other_input
+                .send(Input {
+                    partition,
+                    inner: OtherInputCommand::Abort(service_invocation_id),
+                })
+                .map_err(|_| ServiceNotRunning),
+        )
+    }
+
+    fn register_partition(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        sender: mpsc::Sender<Effect>,
+    ) -> Self::Future {
+        futures::future::ready(
+            self.other_input
+                .send(Input {
+                    partition,
+                    inner: OtherInputCommand::RegisterPartition(sender),
+                })
+                .map_err(|_| ServiceNotRunning),
+        )
+    }
+}
+
+pub struct ChannelStatusReader(pub(crate) mpsc::UnboundedSender<Input<OtherInputCommand>>);
+
+pub struct InvocationStatusReportIterator(
+    std::vec::IntoIter<(
+        ServiceInvocationId,
+        PartitionLeaderEpoch,
+        Weak<InvocationStatusReportInner>,
+    )>,
+);
+
+impl Iterator for InvocationStatusReportIterator {
+    type Item = InvocationStatusReport;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for (sid, partition, weak) in self.0.by_ref() {
+            if let Some(report) = weak.upgrade() {
+                return Some(InvocationStatusReport(sid, partition, report));
+            }
+        }
+        None
+    }
+}
+
+impl StatusHandle for ChannelStatusReader {
+    type Iterator =
+        itertools::Either<std::iter::Empty<InvocationStatusReport>, InvocationStatusReportIterator>;
+    type Future = BoxFuture<'static, Self::Iterator>;
+
+    fn read_status(&self) -> Self::Future {
+        let (cmd, rx) = restate_futures_util::command::Command::prepare(());
+        if self
+            .0
+            .send(Input {
+                partition: (0, 0),
+                inner: OtherInputCommand::ReadStatus(cmd),
+            })
+            .is_err()
+        {
+            return std::future::ready(itertools::Either::Left(std::iter::empty::<
+                InvocationStatusReport,
+            >()))
+            .boxed();
+        }
+        async move {
+            if let Ok(weak_status_vec) = rx.await {
+                itertools::Either::Right(InvocationStatusReportIterator(
+                    weak_status_vec.into_iter(),
+                ))
+            } else {
+                itertools::Either::Left(std::iter::empty::<InvocationStatusReport>())
+            }
+        }
+        .boxed()
+    }
+}
+
 pub(crate) type HttpsClient = hyper::Client<
     ProxyConnector<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>>,
     hyper::Body,
 >;
+
+// -- Service implementation
 
 #[derive(Debug)]
 pub struct Service<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
@@ -312,16 +374,16 @@ where
     EE: EntryEnricher + Clone + Send + 'static,
     SER: ServiceEndpointRegistry,
 {
-    pub fn create_sender(&self) -> UnboundedInvokerInputSender {
-        UnboundedInvokerInputSender {
+    pub fn handle(&self) -> ChannelServiceHandle {
+        ChannelServiceHandle {
             invoke_input: self.invoke_input_tx.clone(),
             resume_input: self.resume_input_tx.clone(),
             other_input: self.other_input_tx.clone(),
         }
     }
 
-    pub fn create_status_reader(&self) -> InvokerStatusReader {
-        InvokerStatusReader(self.other_input_tx.clone())
+    pub fn status_reader(&self) -> ChannelStatusReader {
+        ChannelStatusReader(self.other_input_tx.clone())
     }
 
     pub async fn run(self, drain: drain::Watch) {
@@ -587,5 +649,26 @@ where
                     .enable_http2()
                     .build(),
             ))
+    }
+}
+
+/// Internal error trait for the invoker errors
+trait InvokerError: std::error::Error {
+    fn is_transient(&self) -> bool;
+    fn as_invocation_error(&self) -> InvocationError;
+
+    fn invocation_error_code(&self) -> InvocationErrorCode {
+        UserErrorCode::Internal.into()
+    }
+}
+
+impl<InvokerCodedError: InvokerError + CodedError> From<&InvokerCodedError>
+    for InvocationErrorReport
+{
+    fn from(value: &InvokerCodedError) -> Self {
+        InvocationErrorReport {
+            err: value.as_invocation_error(),
+            doc_error_code: value.code(),
+        }
     }
 }

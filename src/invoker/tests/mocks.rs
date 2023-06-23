@@ -18,8 +18,7 @@ use restate_common::types::{
 };
 use restate_common::utils::GenericError;
 use restate_invoker::{
-    EagerState, Effect, EffectKind, InvokeInputJournal, InvokerInputSender, JournalReader,
-    StateReader,
+    EagerState, Effect, EffectKind, InvokeInputJournal, JournalReader, ServiceHandle, StateReader,
 };
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use restate_journal::{Completion, EntryEnricher};
@@ -59,7 +58,7 @@ impl Debug for SimulatorStep {
 
 impl<InvokerInput, Codec> PartitionProcessorSimulator<InvokerInput, Codec>
 where
-    InvokerInput: InvokerInputSender,
+    InvokerInput: ServiceHandle,
 {
     pub async fn new(journals: InMemoryJournalStorage, mut in_tx: InvokerInput) -> Self {
         let (out_tx, out_rx) = mpsc::channel(100);
@@ -100,7 +99,7 @@ where
 
 impl<InvokerInput, Codec> PartitionProcessorSimulator<InvokerInput, Codec>
 where
-    InvokerInput: InvokerInputSender + Debug,
+    InvokerInput: ServiceHandle + Debug,
     Codec: RawEntryCodec,
 {
     pub async fn invoke(

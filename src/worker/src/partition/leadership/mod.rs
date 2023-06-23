@@ -6,7 +6,7 @@ use restate_common::types::{
     LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId,
 };
 use restate_common::utils::GenericError;
-use restate_invoker::{InvokeInputJournal, InvokerNotRunning};
+use restate_invoker::{InvokeInputJournal, ServiceNotRunning};
 use restate_network::NetworkNotRunning;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
@@ -56,7 +56,7 @@ pub(crate) struct FollowerState<I, N> {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Invoker(#[from] InvokerNotRunning),
+    Invoker(#[from] ServiceNotRunning),
     #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Network(#[from] NetworkNotRunning),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
@@ -76,7 +76,7 @@ pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle> {
 
 impl<'a, InvokerInputSender, NetworkHandle> LeadershipState<'a, InvokerInputSender, NetworkHandle>
 where
-    InvokerInputSender: restate_invoker::InvokerInputSender,
+    InvokerInputSender: restate_invoker::ServiceHandle,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
     pub(crate) fn follower(

@@ -1,12 +1,9 @@
-use super::service::{Input, OtherInputCommand};
-use super::*;
-
-use codederror::{Code, CodedError};
-use restate_common::errors::InvocationError;
+use codederror::Code;
+use restate_common::errors::{InvocationError, InvocationErrorCode};
 use restate_common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, ServiceInvocationId};
 use std::fmt;
+use std::future::Future;
 use std::time::SystemTime;
-use tokio::sync::mpsc;
 
 // -- Status data structure
 
@@ -14,7 +11,7 @@ use tokio::sync::mpsc;
 pub struct InvocationStatusReport(
     pub(crate) ServiceInvocationId,
     pub(crate) PartitionLeaderEpoch,
-    pub(crate) InvocationStatusReportInner,
+    pub(crate) Arc<InvocationStatusReportInner>,
 );
 
 impl InvocationStatusReport {
@@ -68,8 +65,8 @@ impl Default for InvocationStatusReportInner {
 
 #[derive(Debug, Clone)]
 pub struct InvocationErrorReport {
-    err: InvocationError,
-    doc_error_code: Option<&'static Code>,
+    pub(crate) err: InvocationError,
+    pub(crate) doc_error_code: Option<&'static Code>,
 }
 
 impl InvocationErrorReport {
@@ -86,45 +83,13 @@ impl InvocationErrorReport {
     }
 }
 
-impl<InvokerCodedError: InvokerError + CodedError> From<&InvokerCodedError>
-    for InvocationErrorReport
-{
-    fn from(value: &InvokerCodedError) -> Self {
-        InvocationErrorReport {
-            err: value.to_invocation_error(),
-            doc_error_code: value.code(),
-        }
-    }
-}
-
-// -- Status reader
-
 /// Struct to access the status of the invocations currently handled by the invoker
-pub struct InvokerStatusReader(pub(crate) mpsc::UnboundedSender<Input<OtherInputCommand>>);
+pub trait StatusHandle {
+    type Iterator: Iterator<Item = InvocationStatusReport>;
+    type Future: Future<Output = Self::Iterator>;
 
-impl InvokerStatusReader {
     /// This method returns a snapshot of the status of all the invocations currently being processed by this invoker.
     ///
     /// The data returned by this method is eventually consistent.
-    pub async fn read_status(&self) -> impl Iterator<Item = InvocationStatusReport> {
-        let (cmd, rx) = restate_futures_util::command::Command::prepare(());
-        if self
-            .0
-            .send(Input {
-                // TODO we should perhaps change the data structure here,
-                //  as partition has no meaning for this command.
-                partition: (0, 0),
-                inner: OtherInputCommand::ReadStatus(cmd),
-            })
-            .is_err()
-        {
-            return itertools::Either::Left(std::iter::empty());
-        }
-
-        if let Ok(status_vec) = rx.await {
-            itertools::Either::Right(status_vec.into_iter())
-        } else {
-            itertools::Either::Left(std::iter::empty())
-        }
-    }
+    fn read_status(&self) -> Self::Future;
 }

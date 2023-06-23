@@ -9,7 +9,7 @@ use hyper::Uri;
 use mocks::{InMemoryJournalStorage, InMemoryStateStorage, SimulatorAction};
 use prost::Message;
 use restate_common::types::{CompletionResult, EnrichedEntryHeader, ServiceInvocationId};
-use restate_invoker::{Effect, EffectKind, Service, UnboundedInvokerInputSender};
+use restate_invoker::{ChannelServiceHandle, Effect, EffectKind, Service};
 use restate_journal::raw::RawEntryCodec;
 use restate_journal::{
     Completion, Entry, EntryResult, GetStateEntry, GetStateValue, OutputStreamEntry,
@@ -22,7 +22,7 @@ use restate_test_util::{assert, assert_eq, let_assert, test};
 use uuid::Uuid;
 
 type PartitionProcessorSimulator =
-    mocks::PartitionProcessorSimulator<UnboundedInvokerInputSender, ProtobufRawEntryCodec>;
+    mocks::PartitionProcessorSimulator<ChannelServiceHandle, ProtobufRawEntryCodec>;
 
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct CounterAddRequest {
@@ -153,7 +153,7 @@ async fn bidi_stream() {
 
     // Build the partition processor simulator
     let mut partition_processor_simulator =
-        PartitionProcessorSimulator::new(journal_reader, remote_invoker.create_sender()).await;
+        PartitionProcessorSimulator::new(journal_reader, remote_invoker.handle()).await;
     partition_processor_simulator
         .invoke(
             sid.clone(),

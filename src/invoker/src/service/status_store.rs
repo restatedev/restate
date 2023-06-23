@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::status::InvocationStatusReportInner;
+use crate::status_handle::InvocationStatusReportInner;
 use std::sync::Weak;
 
 #[derive(Default)]
