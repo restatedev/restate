@@ -36,6 +36,7 @@ jobs:
     name: Test release
     needs: [verify-version]
     uses: ./.github/workflows/ci.yml
+    secrets: inherit
 
   build-docker-image:
     name: Build release Docker image
