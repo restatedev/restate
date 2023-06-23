@@ -10,7 +10,6 @@ use restate_journal::raw::PlainRawEntry;
 use restate_journal::Completion;
 use std::collections::HashSet;
 use std::future::Future;
-use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::mpsc;
 
@@ -26,9 +25,9 @@ pub use status::{InvocationErrorReport, InvocationStatusReport, InvokerStatusRea
 
 trait InvokerError: std::error::Error {
     fn is_transient(&self) -> bool;
-    fn as_invocation_error(&self) -> InvocationError;
+    fn to_invocation_error(&self) -> InvocationError;
 
-    fn invocation_error_code(&self) -> InvocationErrorCode {
+    fn as_invocation_error_code(&self) -> InvocationErrorCode {
         UserErrorCode::Internal.into()
     }
 }

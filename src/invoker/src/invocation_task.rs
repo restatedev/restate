@@ -97,14 +97,14 @@ impl InvokerError for InvocationTaskError {
         true
     }
 
-    fn as_invocation_error(&self) -> InvocationError {
+    fn to_invocation_error(&self) -> InvocationError {
         match self {
             InvocationTaskError::Invocation(e) => e.clone(),
             e => InvocationError::new(UserErrorCode::Internal, e.to_string()),
         }
     }
 
-    fn invocation_error_code(&self) -> InvocationErrorCode {
+    fn as_invocation_error_code(&self) -> InvocationErrorCode {
         match self {
             InvocationTaskError::Invocation(e) => e.code(),
             _ => UserErrorCode::Internal.into(),

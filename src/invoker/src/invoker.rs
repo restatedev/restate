@@ -3,7 +3,6 @@ use super::*;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::path::PathBuf;
-use std::sync::Weak;
 use std::time::Duration;
 use std::{cmp, panic};
 
@@ -23,7 +22,6 @@ use tracing::{debug, trace};
 
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use crate::invoker::state_machine_coordinator::StartInvocationTaskArguments;
-use crate::status::InvocationStatusReportInner;
 
 #[derive(Debug, Clone)]
 pub struct UnboundedInvokerInputSender {
@@ -187,16 +185,7 @@ pub(crate) enum OtherInputCommand {
     RegisterPartition(mpsc::Sender<OutputEffect>),
 
     // Read status
-    ReadStatus(
-        restate_futures_util::command::Command<
-            (),
-            Vec<(
-                ServiceInvocationId,
-                PartitionLeaderEpoch,
-                Weak<InvocationStatusReportInner>,
-            )>,
-        >,
-    ),
+    ReadStatus(restate_futures_util::command::Command<(), Vec<InvocationStatusReport>>),
 }
 
 pub(crate) type HttpsClient = hyper::Client<
@@ -600,7 +589,7 @@ where
                             }
                         },
                         Input { inner: OtherInputCommand::ReadStatus(cmd), .. } => {
-                            let _ = cmd.reply(status_store.weak_iter().collect());
+                            let _ = cmd.reply(status_store.iter().collect());
                         }
                     }
                 },
@@ -741,7 +730,7 @@ mod state_machine_coordinator {
             true
         }
 
-        fn as_invocation_error(&self) -> InvocationError {
+        fn to_invocation_error(&self) -> InvocationError {
             InvocationError::new(Internal, self.to_string())
         }
     }
@@ -1150,7 +1139,7 @@ mod state_machine_coordinator {
                 _ => {
                     trace!("Not going to retry the error");
                     status.on_end(&self.partition, &service_invocation_id);
-                    self.send_error(service_invocation_id, error.as_invocation_error())
+                    self.send_error(service_invocation_id, error.to_invocation_error())
                         .await;
                 }
             }
@@ -1597,31 +1586,19 @@ mod status_store {
     use super::*;
 
     use crate::status::InvocationStatusReportInner;
-    use std::sync::Weak;
 
     #[derive(Default)]
     pub(super) struct InvocationStatusStore(
-        HashMap<
-            PartitionLeaderEpoch,
-            HashMap<ServiceInvocationId, Arc<InvocationStatusReportInner>>,
-        >,
+        HashMap<PartitionLeaderEpoch, HashMap<ServiceInvocationId, InvocationStatusReportInner>>,
     );
 
     impl InvocationStatusStore {
-        pub(super) fn weak_iter(
-            &self,
-        ) -> impl Iterator<
-            Item = (
-                ServiceInvocationId,
-                PartitionLeaderEpoch,
-                Weak<InvocationStatusReportInner>,
-            ),
-        > + '_ {
+        pub(super) fn iter(&self) -> impl Iterator<Item = InvocationStatusReport> + '_ {
             self.0
                 .iter()
                 .flat_map(|(partition_leader_epoch, inner_map)| {
                     inner_map.iter().map(move |(sid, report)| {
-                        (sid.clone(), *partition_leader_epoch, Arc::downgrade(report))
+                        InvocationStatusReport(sid.clone(), *partition_leader_epoch, report.clone())
                     })
                 })
         }
@@ -1633,13 +1610,12 @@ mod status_store {
             partition: PartitionLeaderEpoch,
             sid: ServiceInvocationId,
         ) {
-            let report = Arc::make_mut(
-                self.0
-                    .entry(partition)
-                    .or_insert_with(Default::default)
-                    .entry(sid)
-                    .or_insert_with(Default::default),
-            );
+            let report = self
+                .0
+                .entry(partition)
+                .or_insert_with(Default::default)
+                .entry(sid)
+                .or_insert_with(Default::default);
             report.start_count += 1;
             report.last_start_at = SystemTime::now();
             report.in_flight = true;
@@ -1664,13 +1640,12 @@ mod status_store {
             sid: ServiceInvocationId,
             reason: impl Into<InvocationErrorReport>,
         ) {
-            let report = Arc::make_mut(
-                self.0
-                    .entry(partition)
-                    .or_insert_with(Default::default)
-                    .entry(sid)
-                    .or_insert_with(Default::default),
-            );
+            let report = self
+                .0
+                .entry(partition)
+                .or_insert_with(Default::default)
+                .entry(sid)
+                .or_insert_with(Default::default);
             report.in_flight = false;
             report.last_retry_attempt_failure = Some(reason.into());
         }

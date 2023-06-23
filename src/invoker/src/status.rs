@@ -5,7 +5,6 @@ use codederror::{Code, CodedError};
 use restate_common::errors::InvocationError;
 use restate_common::types::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, ServiceInvocationId};
 use std::fmt;
-use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::mpsc;
 
@@ -13,9 +12,9 @@ use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub struct InvocationStatusReport(
-    ServiceInvocationId,
-    PartitionLeaderEpoch,
-    Arc<InvocationStatusReportInner>,
+    pub(crate) ServiceInvocationId,
+    pub(crate) PartitionLeaderEpoch,
+    pub(crate) InvocationStatusReportInner,
 );
 
 impl InvocationStatusReport {
@@ -92,7 +91,7 @@ impl<InvokerCodedError: InvokerError + CodedError> From<&InvokerCodedError>
 {
     fn from(value: &InvokerCodedError) -> Self {
         InvocationErrorReport {
-            err: value.as_invocation_error(),
+            err: value.to_invocation_error(),
             doc_error_code: value.code(),
         }
     }
@@ -112,6 +111,8 @@ impl InvokerStatusReader {
         if self
             .0
             .send(Input {
+                // TODO we should perhaps change the data structure here,
+                //  as partition has no meaning for this command.
                 partition: (0, 0),
                 inner: OtherInputCommand::ReadStatus(cmd),
             })
@@ -120,13 +121,8 @@ impl InvokerStatusReader {
             return itertools::Either::Left(std::iter::empty());
         }
 
-        if let Ok(weak_status_vec) = rx.await {
-            itertools::Either::Right(weak_status_vec.into_iter().filter_map(
-                |(sid, partition, weak)| {
-                    weak.upgrade()
-                        .map(|inner| InvocationStatusReport(sid, partition, inner))
-                },
-            ))
+        if let Ok(status_vec) = rx.await {
+            itertools::Either::Right(status_vec.into_iter())
         } else {
             itertools::Either::Left(std::iter::empty())
         }
