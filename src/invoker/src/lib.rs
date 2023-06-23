@@ -18,7 +18,11 @@ pub use crate::invoker::*;
 
 mod invocation_task;
 
+mod options;
+pub use options::Options;
+
 mod status;
+
 pub use status::{InvocationErrorReport, InvocationStatusReport, InvokerStatusReader};
 
 // --- Error trait used to figure out whether errors are transient or not
