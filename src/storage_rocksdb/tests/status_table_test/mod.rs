@@ -57,7 +57,7 @@ async fn populate_data<T: StatusTable>(txn: &mut T) {
     .await;
 
     txn.put_invocation_status(
-        &ServiceId::with_partition_key(u64::MAX, "svc-u64", "key-0"),
+        &ServiceId::with_partition_key(u32::MAX, "svc-u64", "key-0"),
         invoked_status(uuid_str("218756fa-3f7f-7854-a76b-42c59a3d7f2d")),
     )
     .await;
@@ -99,9 +99,9 @@ async fn verify_all_svc_with_status_invoked<T: StatusTable>(txn: &mut T) {
 }
 
 async fn verify_last_partition_all_svc_with_status_invoked<T: StatusTable>(txn: &mut T) {
-    let stream = txn.invoked_invocations(4000..=u64::MAX);
+    let stream = txn.invoked_invocations(4000..=u32::MAX);
     let expected = vec![ServiceInvocationId::with_service_id(
-        ServiceId::with_partition_key(u64::MAX, "svc-u64", "key-0"),
+        ServiceId::with_partition_key(u32::MAX, "svc-u64", "key-0"),
         uuid_str("218756fa-3f7f-7854-a76b-42c59a3d7f2d"),
     )];
 

@@ -34,14 +34,14 @@ message PartitionStateMachine {
 }
 
 message Inbox {
-  optional uint64 partition_key = 1;
+  optional uint32 partition_key = 1;
   optional string service_name = 2;
   optional bytes service_key = 3;
   optional uint64 sequence_number = 4;
 }
 
 message Journal {
-  optional uint64 partition_key = 1;
+  optional uint32 partition_key = 1;
   optional string service_name = 2;
   optional bytes service_key = 3;
   optional uint32 journal_index = 4;
@@ -53,14 +53,14 @@ message Outbox {
 }
 
 message State {
-  optional uint64 partition_key = 1;
+  optional uint32 partition_key = 1;
   optional string service_name = 2;
   optional bytes service_key = 3;
   optional bytes state_key = 4;
 }
 
 message Status {
-  optional uint64 partition_key = 1;
+  optional uint32 partition_key = 1;
   optional string service_name = 2;
   optional bytes service_key = 3;
 }
