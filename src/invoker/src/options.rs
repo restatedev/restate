@@ -147,7 +147,7 @@ impl Options {
         state_reader: SR,
         entry_enricher: EE,
         service_endpoint_registry: SER,
-    ) -> Invoker<C, JR, SR, EE, SER>
+    ) -> Service<C, JR, SR, EE, SER>
     where
         C: RawEntryCodec,
         JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
@@ -155,7 +155,7 @@ impl Options {
         EE: EntryEnricher,
         SER: ServiceEndpointRegistry,
     {
-        Invoker::new(
+        Service::new(
             service_endpoint_registry,
             self.retry_policy,
             *self.suspension_timeout,

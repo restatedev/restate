@@ -9,7 +9,7 @@ use hyper::Uri;
 use mocks::{InMemoryJournalStorage, InMemoryStateStorage, SimulatorAction};
 use prost::Message;
 use restate_common::types::{CompletionResult, EnrichedEntryHeader, ServiceInvocationId};
-use restate_invoker::{Effect, EffectKind, Invoker, UnboundedInvokerInputSender};
+use restate_invoker::{Effect, EffectKind, Service, UnboundedInvokerInputSender};
 use restate_journal::raw::RawEntryCodec;
 use restate_journal::{
     Completion, Entry, EntryResult, GetStateEntry, GetStateValue, OutputStreamEntry,
@@ -138,7 +138,7 @@ async fn bidi_stream() {
 
     // Start invoker
     let options = restate_invoker::Options::default();
-    let remote_invoker: Invoker<
+    let remote_invoker: Service<
         ProtobufRawEntryCodec,
         InMemoryJournalStorage,
         InMemoryStateStorage,

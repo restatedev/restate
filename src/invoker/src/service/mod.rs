@@ -208,7 +208,7 @@ pub(crate) type HttpsClient = hyper::Client<
 >;
 
 #[derive(Debug)]
-pub struct Invoker<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
+pub struct Service<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
     invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     resume_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     other_input_rx: mpsc::UnboundedReceiver<Input<OtherInputCommand>>,
@@ -252,7 +252,7 @@ pub struct Invoker<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndp
     _codec: PhantomData<Codec>,
 }
 
-impl<C, JR, SR, EE, SER> Invoker<C, JR, SR, EE, SER> {
+impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         service_endpoint_registry: SER,
@@ -267,7 +267,7 @@ impl<C, JR, SR, EE, SER> Invoker<C, JR, SR, EE, SER> {
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
-    ) -> Invoker<C, JR, SR, EE, SER> {
+    ) -> Service<C, JR, SR, EE, SER> {
         let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
         let (resume_input_tx, resume_input_rx) = mpsc::unbounded_channel();
         let (other_input_tx, other_input_rx) = mpsc::unbounded_channel();
@@ -303,7 +303,7 @@ impl<C, JR, SR, EE, SER> Invoker<C, JR, SR, EE, SER> {
     }
 }
 
-impl<C, JR, SR, EE, SER> Invoker<C, JR, SR, EE, SER>
+impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -328,7 +328,7 @@ where
         // Create the shared HTTP Client to use
         let client = self.get_client();
 
-        let Invoker {
+        let Service {
             mut invoke_input_rx,
             mut resume_input_rx,
             mut other_input_rx,

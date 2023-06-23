@@ -15,7 +15,7 @@ use restate_common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
 use restate_common::worker_command::WorkerCommandSender;
 use restate_consensus::Consensus;
 use restate_ingress_grpc::ReflectionRegistry;
-use restate_invoker::{Invoker, UnboundedInvokerInputSender};
+use restate_invoker::{Service as InvokerService, UnboundedInvokerInputSender};
 use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use restate_service_key_extractor::KeyExtractorsRegistry;
 use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
@@ -177,7 +177,7 @@ pub struct Worker {
     processors: Vec<PartitionProcessor>,
     network: network_integration::Network,
     storage_grpc: StorageService,
-    invoker: Invoker<
+    invoker: InvokerService<
         ProtobufRawEntryCodec,
         InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,
