@@ -1,10 +1,7 @@
-use std::hash;
+use crate::types::PartitionKey;
 
-/// Trait for messages that have a routing key
-pub trait KeyedMessage {
-    type RoutingKey<'a>: hash::Hash
-    where
-        Self: 'a;
-    /// Returns a reference to the bytes of a keyed message
-    fn routing_key(&self) -> Self::RoutingKey<'_>;
+/// Trait for messages that have a partition key
+pub trait PartitionedMessage {
+    /// Returns the partition key
+    fn partition_key(&self) -> PartitionKey;
 }

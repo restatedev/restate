@@ -3,7 +3,7 @@ use crate::{
     ConsensusOrShuffleTarget, PartitionTable, PartitionTableError, TargetConsensusOrShuffle,
     TargetShuffle,
 };
-use restate_common::traits::KeyedMessage;
+use restate_common::traits::PartitionedMessage;
 use restate_common::types::{PeerId, PeerTarget};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -35,7 +35,7 @@ impl<I, ItoC, ItoS, C, S, P> IngressRouter<I, ItoC, ItoS, C, S, P>
 where
     I: TargetConsensusOrShuffle<ItoC, ItoS>,
     ItoS: TargetShuffle + Into<S> + Debug,
-    ItoC: KeyedMessage + Into<C> + Debug,
+    ItoC: PartitionedMessage + Into<C> + Debug,
     P: PartitionTable,
 {
     pub(super) fn new(

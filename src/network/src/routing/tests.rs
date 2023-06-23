@@ -3,7 +3,7 @@ use crate::{
     PartitionTableError, ShuffleOrIngressTarget, TargetConsensusOrIngress,
     TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress,
 };
-use restate_common::traits::KeyedMessage;
+use restate_common::traits::PartitionedMessage;
 use restate_common::types::{PartitionKey, PeerId, PeerTarget};
 use restate_test_util::test;
 use std::fmt::Debug;
@@ -25,10 +25,8 @@ impl PartitionTable for MockPartitionTable {
 #[derive(Debug, PartialEq, Copy, Clone)]
 struct ConsensusMsg(u64);
 
-impl KeyedMessage for ConsensusMsg {
-    type RoutingKey<'a> = u64;
-
-    fn routing_key(&self) -> Self::RoutingKey<'_> {
+impl PartitionedMessage for ConsensusMsg {
+    fn partition_key(&self) -> PartitionKey {
         0
     }
 }
