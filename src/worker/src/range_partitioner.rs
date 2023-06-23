@@ -2,17 +2,17 @@ use restate_common::types::{PartitionKey, PeerId};
 use std::ops::RangeInclusive;
 
 pub(crate) struct RangePartitioner {
-    num_partitions: PeerId,
+    num_partitions: u32,
     partition_length: PartitionKey,
     partition_remainder: PartitionKey,
 
     current_remainder: PartitionKey,
-    next_partition: PeerId,
+    next_partition: u32,
     next_start_partition_key: PartitionKey,
 }
 
 impl RangePartitioner {
-    pub(crate) fn new(num_partitions: PeerId) -> Self {
+    pub(crate) fn new(num_partitions: u32) -> Self {
         Self {
             num_partitions,
             partition_length: PartitionKey::MAX / num_partitions,
@@ -44,7 +44,7 @@ impl Iterator for RangePartitioner {
                 self.next_start_partition_key..=(end_partition_key - 1)
             };
 
-            let result = Some((self.next_partition, partition_key_range));
+            let result = Some((u64::from(self.next_partition), partition_key_range));
 
             self.next_partition += 1;
             self.next_start_partition_key = end_partition_key;

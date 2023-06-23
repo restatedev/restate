@@ -25,11 +25,11 @@ pub(super) type Network = restate_network::Network<
 
 #[derive(Debug, Clone)]
 pub(super) struct FixedPartitionTable {
-    number_partitions: u64,
+    number_partitions: u32,
 }
 
 impl FixedPartitionTable {
-    pub(super) fn new(number_partitions: u64) -> Self {
+    pub(super) fn new(number_partitions: u32) -> Self {
         Self { number_partitions }
     }
 }
@@ -39,7 +39,7 @@ impl PartitionTable for FixedPartitionTable {
 
     fn partition_key_to_target_peer(&self, partition_key: PartitionKey) -> Self::Future {
         let target_partition = partition_key % self.number_partitions;
-        ok(target_partition)
+        ok(u64::from(target_partition))
     }
 }
 

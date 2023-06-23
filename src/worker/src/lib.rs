@@ -78,7 +78,7 @@ pub struct Options {
         feature = "options_schema",
         schemars(default = "Options::default_partitions")
     )]
-    partitions: usize,
+    partitions: u32,
 }
 
 impl Default for Options {
@@ -108,7 +108,7 @@ impl Options {
         64
     }
 
-    fn default_partitions() -> usize {
+    fn default_partitions() -> u32 {
         1024
     }
 
@@ -206,7 +206,7 @@ impl Worker {
             ..
         } = opts;
 
-        let num_partition_processors = opts.partitions as u64;
+        let num_partition_processors = opts.partitions;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
         let external_client_ingress_id = IngressId(
