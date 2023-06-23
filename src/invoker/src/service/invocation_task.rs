@@ -137,13 +137,13 @@ fn h2_reason(err: &hyper::Error) -> h2::Reason {
         .unwrap_or(h2::Reason::INTERNAL_ERROR)
 }
 
-pub(crate) struct InvocationTaskOutput {
-    pub(crate) partition: PartitionLeaderEpoch,
-    pub(crate) service_invocation_id: ServiceInvocationId,
-    pub(crate) inner: InvocationTaskOutputInner,
+pub(super) struct InvocationTaskOutput {
+    pub(super) partition: PartitionLeaderEpoch,
+    pub(super) service_invocation_id: ServiceInvocationId,
+    pub(super) inner: InvocationTaskOutputInner,
 }
 
-pub(crate) enum InvocationTaskOutputInner {
+pub(super) enum InvocationTaskOutputInner {
     NewEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
@@ -160,7 +160,7 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 }
 
 /// Represents an open invocation stream
-pub(crate) struct InvocationTask<JR, SR, EE> {
+pub(super) struct InvocationTask<JR, SR, EE> {
     // Shared client
     client: HttpsClient,
 

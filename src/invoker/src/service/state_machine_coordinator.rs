@@ -149,11 +149,11 @@ impl PartitionInvocationStateMachineCoordinator {
         level = "trace",
         skip_all,
         fields(
-        rpc.service = %invoke_input_cmd.service_invocation_id.service_id.service_name,
-        restate.invocation.sid = %invoke_input_cmd.service_invocation_id,
-        restate.invoker.partition_leader_epoch = ?self.partition,
+            rpc.service = %invoke_input_cmd.service_invocation_id.service_id.service_name,
+            restate.invocation.sid = %invoke_input_cmd.service_invocation_id,
+            restate.invoker.partition_leader_epoch = ?self.partition,
         )
-        )]
+    )]
     pub(in crate::service) async fn handle_invoke<JR, SR, EE, SER>(
         &mut self,
         invoke_input_cmd: InvokeInputCommand,
@@ -186,9 +186,9 @@ impl PartitionInvocationStateMachineCoordinator {
         level = "trace",
         skip_all,
         fields(
-        restate.invoker.partition_leader_epoch = ?self.partition,
+            restate.invoker.partition_leader_epoch = ?self.partition,
         )
-        )]
+    )]
     pub(in crate::service) fn abort_all(&mut self) {
         for (service_invocation_id, sm) in self.invocation_state_machines.iter_mut() {
             trace!(
@@ -204,11 +204,11 @@ impl PartitionInvocationStateMachineCoordinator {
         level = "trace",
         skip_all,
         fields(
-        rpc.service = %service_invocation_id.service_id.service_name,
-        restate.invocation.sid = %service_invocation_id,
-        restate.invoker.partition_leader_epoch = ?self.partition,
+            rpc.service = %service_invocation_id.service_id.service_name,
+            restate.invocation.sid = %service_invocation_id,
+            restate.invoker.partition_leader_epoch = ?self.partition,
         )
-        )]
+    )]
     pub(in crate::service) fn abort(&mut self, service_invocation_id: ServiceInvocationId) {
         if let Some(mut sm) = self
             .invocation_state_machines
@@ -223,11 +223,11 @@ impl PartitionInvocationStateMachineCoordinator {
         level = "trace",
         skip_all,
         fields(
-        rpc.service = %service_invocation_id.service_id.service_name,
-        restate.invocation.sid = %service_invocation_id,
-        restate.invoker.partition_leader_epoch = ?self.partition,
+            rpc.service = %service_invocation_id.service_id.service_name,
+            restate.invocation.sid = %service_invocation_id,
+            restate.invoker.partition_leader_epoch = ?self.partition,
         )
-        )]
+    )]
     pub(in crate::service) fn handle_completion(
         &mut self,
         service_invocation_id: ServiceInvocationId,
@@ -252,11 +252,11 @@ impl PartitionInvocationStateMachineCoordinator {
         level = "trace",
         skip_all,
         fields(
-        rpc.service = %service_invocation_id.service_id.service_name,
-        restate.invocation.sid = %service_invocation_id,
-        restate.invoker.partition_leader_epoch = ?self.partition,
+            rpc.service = %service_invocation_id.service_id.service_name,
+            restate.invocation.sid = %service_invocation_id,
+            restate.invoker.partition_leader_epoch = ?self.partition,
         )
-        )]
+    )]
     pub(in crate::service) async fn handle_retry_timer_fired<JR, SR, EE, SER>(
         &mut self,
         service_invocation_id: ServiceInvocationId,
@@ -281,12 +281,12 @@ impl PartitionInvocationStateMachineCoordinator {
         level = "trace",
         skip_all,
         fields(
-        rpc.service = %service_invocation_id.service_id.service_name,
-        restate.invocation.sid = %service_invocation_id,
-        restate.invoker.partition_leader_epoch = ?self.partition,
-        restate.journal.index = entry_index,
+            rpc.service = %service_invocation_id.service_id.service_name,
+            restate.invocation.sid = %service_invocation_id,
+            restate.invoker.partition_leader_epoch = ?self.partition,
+            restate.journal.index = entry_index,
         )
-        )]
+    )]
     pub(in crate::service) async fn handle_stored_entry_ack<JR, SR, EE, SER>(
         &mut self,
         service_invocation_id: ServiceInvocationId,
@@ -312,13 +312,13 @@ impl PartitionInvocationStateMachineCoordinator {
         level = "trace",
         skip_all,
         fields(
-        rpc.service = %service_invocation_id.service_id.service_name,
-        restate.invocation.sid = %service_invocation_id,
-        restate.invoker.partition_leader_epoch = ?self.partition,
-        restate.journal.index = entry_index,
-        restate.journal.entry_type = ?entry.header.to_entry_type(),
+            rpc.service = %service_invocation_id.service_id.service_name,
+            restate.invocation.sid = %service_invocation_id,
+            restate.invoker.partition_leader_epoch = ?self.partition,
+            restate.journal.index = entry_index,
+            restate.journal.entry_type = ?entry.header.to_entry_type(),
         )
-        )]
+    )]
     pub(in crate::service) async fn handle_new_entry(
         &mut self,
         service_invocation_id: ServiceInvocationId,
@@ -351,11 +351,11 @@ impl PartitionInvocationStateMachineCoordinator {
         level = "warn",
         skip_all,
         fields(
-        rpc.service = %service_invocation_id.service_id.service_name,
-        restate.invocation.sid = %service_invocation_id,
-        restate.invoker.partition_leader_epoch = ?self.partition,
+            rpc.service = %service_invocation_id.service_id.service_name,
+            restate.invocation.sid = %service_invocation_id,
+            restate.invoker.partition_leader_epoch = ?self.partition,
         )
-        )]
+    )]
     pub(in crate::service) async fn handle_invocation_task_closed(
         &mut self,
         service_invocation_id: ServiceInvocationId,
@@ -379,11 +379,11 @@ impl PartitionInvocationStateMachineCoordinator {
         level = "warn",
         skip_all,
         fields(
-        rpc.service = %service_invocation_id.service_id.service_name,
-        restate.invocation.sid = %service_invocation_id,
-        restate.invoker.partition_leader_epoch = ?self.partition,
+            rpc.service = %service_invocation_id.service_id.service_name,
+            restate.invocation.sid = %service_invocation_id,
+            restate.invoker.partition_leader_epoch = ?self.partition,
         )
-        )]
+    )]
     pub(in crate::service) async fn handle_invocation_task_failed(
         &mut self,
         service_invocation_id: ServiceInvocationId,
@@ -441,11 +441,11 @@ impl PartitionInvocationStateMachineCoordinator {
         level = "trace",
         skip_all,
         fields(
-        rpc.service = %service_invocation_id.service_id.service_name,
-        restate.invocation.sid = %service_invocation_id,
-        restate.invoker.partition_leader_epoch = ?self.partition,
+            rpc.service = %service_invocation_id.service_id.service_name,
+            restate.invocation.sid = %service_invocation_id,
+            restate.invoker.partition_leader_epoch = ?self.partition,
         )
-        )]
+    )]
     pub(in crate::service) async fn handle_invocation_task_suspended(
         &mut self,
         service_invocation_id: ServiceInvocationId,
