@@ -1,29 +1,29 @@
 use super::*;
 
+use crate::status_handle::StatusHandle;
 use codederror::CodedError;
 use futures::future::BoxFuture;
 use futures::stream;
 use futures::stream::{PollNext, StreamExt};
 use futures::FutureExt;
-use restate_common::types::PartitionLeaderEpoch;
+use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
+use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
+use restate_common::retry_policy::RetryPolicy;
+use restate_common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
-use restate_journal::EntryEnricher;
+use restate_journal::{Completion, EntryEnricher};
 use restate_queue::SegmentQueue;
 use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;
+use state_machine_coordinator::StartInvocationTaskArguments;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::path::PathBuf;
-use std::sync::Weak;
 use std::time::Duration;
 use std::{cmp, panic};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{debug, trace};
-
-use crate::status_handle::{InvocationStatusReportInner, StatusHandle};
-use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
-use state_machine_coordinator::StartInvocationTaskArguments;
 
 mod invocation_state_machine;
 mod invocation_task;
@@ -66,16 +66,7 @@ pub(crate) enum OtherInputCommand {
     RegisterPartition(mpsc::Sender<Effect>),
 
     // Read status
-    ReadStatus(
-        restate_futures_util::command::Command<
-            (),
-            Vec<(
-                ServiceInvocationId,
-                PartitionLeaderEpoch,
-                Weak<InvocationStatusReportInner>,
-            )>,
-        >,
-    ),
+    ReadStatus(restate_futures_util::command::Command<(), Vec<InvocationStatusReport>>),
 }
 
 #[derive(Debug, Clone)]
@@ -208,30 +199,11 @@ impl ServiceHandle for ChannelServiceHandle {
 
 pub struct ChannelStatusReader(pub(crate) mpsc::UnboundedSender<Input<OtherInputCommand>>);
 
-pub struct InvocationStatusReportIterator(
-    std::vec::IntoIter<(
-        ServiceInvocationId,
-        PartitionLeaderEpoch,
-        Weak<InvocationStatusReportInner>,
-    )>,
-);
-
-impl Iterator for InvocationStatusReportIterator {
-    type Item = InvocationStatusReport;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        for (sid, partition, weak) in self.0.by_ref() {
-            if let Some(report) = weak.upgrade() {
-                return Some(InvocationStatusReport(sid, partition, report));
-            }
-        }
-        None
-    }
-}
-
 impl StatusHandle for ChannelStatusReader {
-    type Iterator =
-        itertools::Either<std::iter::Empty<InvocationStatusReport>, InvocationStatusReportIterator>;
+    type Iterator = itertools::Either<
+        std::iter::Empty<InvocationStatusReport>,
+        std::vec::IntoIter<InvocationStatusReport>,
+    >;
     type Future = BoxFuture<'static, Self::Iterator>;
 
     fn read_status(&self) -> Self::Future {
@@ -250,10 +222,8 @@ impl StatusHandle for ChannelStatusReader {
             .boxed();
         }
         async move {
-            if let Ok(weak_status_vec) = rx.await {
-                itertools::Either::Right(InvocationStatusReportIterator(
-                    weak_status_vec.into_iter(),
-                ))
+            if let Ok(status_vec) = rx.await {
+                itertools::Either::Right(status_vec.into_iter())
             } else {
                 itertools::Either::Left(std::iter::empty::<InvocationStatusReport>())
             }
@@ -535,7 +505,7 @@ where
                             }
                         },
                         Input { inner: OtherInputCommand::ReadStatus(cmd), .. } => {
-                            let _ = cmd.reply(status_store.weak_iter().collect());
+                            let _ = cmd.reply(status_store.iter().collect());
                         }
                     }
                 },
@@ -655,9 +625,9 @@ where
 /// Internal error trait for the invoker errors
 trait InvokerError: std::error::Error {
     fn is_transient(&self) -> bool;
-    fn as_invocation_error(&self) -> InvocationError;
+    fn to_invocation_error(&self) -> InvocationError;
 
-    fn invocation_error_code(&self) -> InvocationErrorCode {
+    fn as_invocation_error_code(&self) -> InvocationErrorCode {
         UserErrorCode::Internal.into()
     }
 }
@@ -667,7 +637,7 @@ impl<InvokerCodedError: InvokerError + CodedError> From<&InvokerCodedError>
 {
     fn from(value: &InvokerCodedError) -> Self {
         InvocationErrorReport {
-            err: value.as_invocation_error(),
+            err: value.to_invocation_error(),
             doc_error_code: value.code(),
         }
     }

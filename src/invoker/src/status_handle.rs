@@ -11,7 +11,7 @@ use std::time::SystemTime;
 pub struct InvocationStatusReport(
     pub(crate) ServiceInvocationId,
     pub(crate) PartitionLeaderEpoch,
-    pub(crate) Arc<InvocationStatusReportInner>,
+    pub(crate) InvocationStatusReportInner,
 );
 
 impl InvocationStatusReport {

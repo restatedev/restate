@@ -1,13 +1,8 @@
-use std::collections::HashSet;
-use std::error::Error;
-use std::future::{poll_fn, Future};
-use std::iter;
-use std::pin::Pin;
-use std::task::{ready, Context, Poll};
-use std::time::Duration;
+use super::HttpsClient;
 
 use crate::service::InvokerError;
 use crate::EagerState;
+use crate::{InvokeInputJournal, JournalReader, StateReader};
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{future, stream, FutureExt, Stream, StreamExt};
@@ -20,7 +15,7 @@ use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
 use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
 use restate_common::types::{
-    EnrichedRawEntry, EntryIndex, PartitionLeaderEpoch, ServiceInvocationId,
+    EnrichedRawEntry, EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceInvocationId,
     ServiceInvocationSpanContext,
 };
 use restate_common::utils::GenericError;
@@ -32,13 +27,18 @@ use restate_service_metadata::{EndpointMetadata, ProtocolType};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
+use std::collections::HashSet;
+use std::error::Error;
+use std::future::{poll_fn, Future};
+use std::iter;
+use std::pin::Pin;
+use std::task::{ready, Context, Poll};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-
-use super::{HttpsClient, InvokeInputJournal, JournalMetadata, JournalReader, StateReader};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256

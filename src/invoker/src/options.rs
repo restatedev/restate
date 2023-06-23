@@ -1,8 +1,10 @@
 use super::*;
 
+use futures::Stream;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use restate_common::retry_policy::RetryPolicy;
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_journal::EntryEnricher;

@@ -1,8 +1,10 @@
 use crate::service::invocation_state_machine::InvocationStateMachine;
 use crate::service::*;
+use std::collections::HashSet;
 
 use codederror::CodedError;
 use restate_common::errors::UserErrorCode::Internal;
+use restate_common::types::EnrichedRawEntry;
 use restate_errors::warn_it;
 use restate_journal::raw::Header;
 use restate_journal::EntryEnricher;
@@ -20,7 +22,7 @@ impl InvokerError for CannotResolveEndpoint {
         true
     }
 
-    fn as_invocation_error(&self) -> InvocationError {
+    fn to_invocation_error(&self) -> InvocationError {
         InvocationError::new(Internal, self.to_string())
     }
 }
@@ -429,7 +431,7 @@ impl PartitionInvocationStateMachineCoordinator {
             _ => {
                 trace!("Not going to retry the error");
                 status.on_end(&self.partition, &service_invocation_id);
-                self.send_error(service_invocation_id, error.as_invocation_error())
+                self.send_error(service_invocation_id, error.to_invocation_error())
                     .await;
             }
         }
