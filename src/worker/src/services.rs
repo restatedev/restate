@@ -1,9 +1,8 @@
-use crate::network_integration::FixedPartitionTable;
 use crate::partition::{AckCommand, Command};
 use restate_common::types::PeerTarget;
 use restate_common::worker_command::{WorkerCommand, WorkerCommandSender};
 use restate_consensus::ProposalSender;
-use restate_network::{PartitionTable, PartitionTableError};
+use restate_network::PartitionTableError;
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -15,19 +14,22 @@ pub enum Error {
     PartitionNotFound(#[from] PartitionTableError),
 }
 
-pub(crate) struct Services {
+pub(crate) struct Services<PartitionTable> {
     command_rx: mpsc::Receiver<WorkerCommand>,
 
     proposal_tx: ProposalSender<PeerTarget<AckCommand>>,
-    partition_table: FixedPartitionTable,
+    partition_table: PartitionTable,
 
     command_tx: WorkerCommandSender,
 }
 
-impl Services {
+impl<PartitionTable> Services<PartitionTable>
+where
+    PartitionTable: restate_network::PartitionTable,
+{
     pub(crate) fn new(
         proposal_tx: ProposalSender<PeerTarget<AckCommand>>,
-        partition_table: FixedPartitionTable,
+        partition_table: PartitionTable,
         channel_size: usize,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(channel_size);

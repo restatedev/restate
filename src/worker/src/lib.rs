@@ -2,9 +2,8 @@ extern crate core;
 
 use crate::ingress_integration::{ExternalClientIngressRunner, IngressIntegrationError};
 use crate::invoker_integration::EntryEnricher;
-use crate::network_integration::FixedPartitionTable;
 use crate::partition::storage::invoker::InvokerStorageReader;
-use crate::range_partitioner::RangePartitioner;
+use crate::partitioning_scheme::FixedConsecutivePartitions;
 use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use crate::services::Services;
 use codederror::CodedError;
@@ -33,7 +32,7 @@ mod ingress_integration;
 mod invoker_integration;
 mod network_integration;
 mod partition;
-mod range_partitioner;
+mod partitioning_scheme;
 mod service_invocation_factory;
 mod services;
 mod util;
@@ -186,7 +185,7 @@ pub struct Worker {
         InMemoryServiceEndpointRegistry,
     >,
     external_client_ingress_runner: ExternalClientIngressRunner,
-    services: Services,
+    services: Services<FixedConsecutivePartitions>,
 }
 
 impl Worker {
@@ -227,7 +226,7 @@ impl Worker {
             channel_size,
         );
 
-        let partition_table = FixedPartitionTable::new(num_partition_processors);
+        let partition_table = FixedConsecutivePartitions::new(num_partition_processors);
 
         let network = network_integration::Network::new(
             raft_in_tx,
@@ -254,9 +253,9 @@ impl Worker {
             service_endpoint_registry,
         );
 
-        let range_partitioner = RangePartitioner::new(num_partition_processors);
+        let partitioner = partition_table.partitioner();
 
-        let (command_senders, processors): (Vec<_>, Vec<_>) = range_partitioner
+        let (command_senders, processors): (Vec<_>, Vec<_>) = partitioner
             .map(|(idx, partition_range)| {
                 let proposal_sender = consensus.create_proposal_sender();
                 let invoker_sender = invoker.create_sender();

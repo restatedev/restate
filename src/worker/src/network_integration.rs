@@ -3,9 +3,7 @@
 
 use crate::partition;
 use crate::partition::shuffle;
-use futures::future::{ok, Ready};
-use restate_common::types::PartitionKey;
-use restate_network::{PartitionTable, PartitionTableError};
+use crate::partitioning_scheme::FixedConsecutivePartitions;
 
 pub(super) type Network = restate_network::Network<
     partition::AckCommand,
@@ -20,28 +18,8 @@ pub(super) type Network = restate_network::Network<
     partition::AckResponse,
     partition::ShuffleDeduplicationResponse,
     partition::IngressAckResponse,
-    FixedPartitionTable,
+    FixedConsecutivePartitions,
 >;
-
-#[derive(Debug, Clone)]
-pub(super) struct FixedPartitionTable {
-    number_partitions: u32,
-}
-
-impl FixedPartitionTable {
-    pub(super) fn new(number_partitions: u32) -> Self {
-        Self { number_partitions }
-    }
-}
-
-impl PartitionTable for FixedPartitionTable {
-    type Future = Ready<Result<u64, PartitionTableError>>;
-
-    fn partition_key_to_target_peer(&self, partition_key: PartitionKey) -> Self::Future {
-        let target_partition = partition_key % self.number_partitions;
-        ok(u64::from(target_partition))
-    }
-}
 
 mod ingress_integration {
     use crate::partition;
