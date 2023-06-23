@@ -1,4 +1,4 @@
-use super::invoker::{Input, OtherInputCommand};
+use super::service::{Input, OtherInputCommand};
 use super::*;
 
 use codederror::{Code, CodedError};

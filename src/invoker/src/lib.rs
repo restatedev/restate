@@ -13,10 +13,8 @@ use std::future::Future;
 use std::time::SystemTime;
 use tokio::sync::mpsc;
 
-mod invoker;
-pub use crate::invoker::*;
-
-mod invocation_task;
+mod service;
+pub use crate::service::*;
 
 mod options;
 pub use options::Options;
