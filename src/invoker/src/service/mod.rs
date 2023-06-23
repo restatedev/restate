@@ -15,7 +15,6 @@ use restate_journal::{Completion, EntryEnricher};
 use restate_queue::SegmentQueue;
 use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;
-use state_machine_coordinator::StartInvocationTaskArguments;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -245,8 +244,6 @@ pub struct Service<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndp
     resume_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
     other_input_rx: mpsc::UnboundedReceiver<Input<OtherInputCommand>>,
 
-    state_machine_coordinator: state_machine_coordinator::InvocationStateMachineCoordinator,
-
     // Used for constructing the invoker sender
     invoke_input_tx: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
     resume_input_tx: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
@@ -258,12 +255,6 @@ pub struct Service<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndp
     // Channel to communicate with invocation tasks
     invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invocation_tasks_rx: mpsc::UnboundedReceiver<InvocationTaskOutput>,
-
-    // Set of stream coroutines
-    invocation_tasks: JoinSet<()>,
-
-    // Retry timers
-    retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
 
     // Connection/protocol options
     retry_policy: RetryPolicy,
@@ -310,15 +301,12 @@ impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER> {
             invoke_input_rx,
             resume_input_rx,
             other_input_rx,
-            state_machine_coordinator: Default::default(),
             invoke_input_tx,
             resume_input_tx,
             other_input_tx,
             service_endpoint_registry,
             invocation_tasks_tx,
             invocation_tasks_rx,
-            invocation_tasks: Default::default(),
-            retry_timers: Default::default(),
             retry_policy,
             suspension_timeout,
             response_abort_timeout,
@@ -364,12 +352,9 @@ where
             mut invoke_input_rx,
             mut resume_input_rx,
             mut other_input_rx,
-            mut state_machine_coordinator,
             service_endpoint_registry,
             invocation_tasks_tx,
             mut invocation_tasks_rx,
-            mut invocation_tasks,
-            mut retry_timers,
             journal_reader,
             state_reader,
             entry_enricher,
@@ -399,6 +384,24 @@ where
             .await
             .expect("Cannot initialize input spillable queue");
 
+        let mut service_state = ServiceState {
+            client,
+            journal_reader,
+            state_reader,
+            entry_enricher,
+            service_endpoint_registry,
+            suspension_timeout,
+            response_abort_timeout,
+            disable_eager_state,
+            message_size_warning,
+            message_size_limit,
+            invocation_tasks: Default::default(),
+            invocation_tasks_tx,
+            default_retry_policy: retry_policy,
+            retry_timers: Default::default(),
+        };
+        let mut state_machine_coordinator =
+            state_machine_coordinator::InvocationStateMachineCoordinator::default();
         let mut status_store = status_store::InvocationStatusStore::default();
 
         loop {
@@ -410,24 +413,9 @@ where
                 Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() => {
                     if let Some(psm) = state_machine_coordinator.resolve_partition(invoke_input_command.partition) {
                         psm.handle_invoke(
+                            &mut service_state,
+                            &mut status_store,
                             invoke_input_command.inner,
-                            StartInvocationTaskArguments::new(
-                                &client,
-                                &journal_reader,
-                                &state_reader,
-                                &entry_enricher,
-                                &service_endpoint_registry,
-                                &retry_policy,
-                                suspension_timeout,
-                                response_abort_timeout,
-                                disable_eager_state,
-                                message_size_warning,
-                                message_size_limit,
-                                &mut invocation_tasks,
-                                &invocation_tasks_tx,
-                                &mut retry_timers,
-                            ),
-                            &mut status_store
                         ).await;
                     } else {
                         trace!(
@@ -476,25 +464,10 @@ where
                         Input { partition, inner: OtherInputCommand::StoredEntryAck { service_invocation_id, entry_index, .. } } => {
                             if let Some(psm) = state_machine_coordinator.resolve_partition(partition) {
                                 psm.handle_stored_entry_ack(
+                                    &mut service_state,
+                                    &mut status_store,
                                     service_invocation_id,
-                                    StartInvocationTaskArguments::new(
-                                        &client,
-                                        &journal_reader,
-                                        &state_reader,
-                                        &entry_enricher,
-                                        &service_endpoint_registry,
-                                        &retry_policy,
-                                        suspension_timeout,
-                                        response_abort_timeout,
-                                        disable_eager_state,
-                                        message_size_warning,
-                                        message_size_limit,
-                                        &mut invocation_tasks,
-                                        &invocation_tasks_tx,
-                                        &mut retry_timers,
-                                    ),
                                     entry_index,
-                                    &mut status_store
                                 )
                                 .await;
                             } else {
@@ -532,50 +505,35 @@ where
                         },
                         InvocationTaskOutputInner::Closed => {
                             partition_state_machine.handle_invocation_task_closed(
+                                &mut status_store,
                                 invocation_task_msg.service_invocation_id,
-                                &mut status_store
                             ).await
                         },
                         InvocationTaskOutputInner::Failed(e) => {
                             partition_state_machine.handle_invocation_task_failed(
+                                &mut service_state.retry_timers,
+                                &mut status_store,
                                 invocation_task_msg.service_invocation_id,
                                 e,
-                                &mut retry_timers,
-                                &mut status_store
                             ).await
                         },
                         InvocationTaskOutputInner::Suspended(indexes) => {
                             partition_state_machine.handle_invocation_task_suspended(
+                                &mut status_store,
                                 invocation_task_msg.service_invocation_id,
-                                indexes,
-                                &mut status_store
+                                indexes
                             ).await
                         }
                     };
                 },
-                timer = retry_timers.await_timer() => {
+                timer = service_state.retry_timers.await_timer() => {
                     let (partition, sid) = timer.into_inner();
 
                     if let Some(partition_state_machine) = state_machine_coordinator.resolve_partition(partition) {
                         partition_state_machine.handle_retry_timer_fired(
-                            sid,
-                            StartInvocationTaskArguments::new(
-                                &client,
-                                &journal_reader,
-                                &state_reader,
-                                &entry_enricher,
-                                &service_endpoint_registry,
-                                &retry_policy,
-                                suspension_timeout,
-                                response_abort_timeout,
-                                disable_eager_state,
-                                message_size_warning,
-                                message_size_limit,
-                                &mut invocation_tasks,
-                                &invocation_tasks_tx,
-                                &mut retry_timers,
-                            ),
-                            &mut status_store
+                            &mut service_state,
+                            &mut status_store,
+                            sid
                         ).await;
                     } else {
                         trace!(
@@ -584,7 +542,7 @@ where
                         );
                     }
                 },
-                Some(invocation_task_result) = invocation_tasks.join_next() => {
+                Some(invocation_task_result) = service_state.invocation_tasks.join_next() => {
                     if let Err(err) = invocation_task_result {
                         // Propagate panics coming from invocation tasks.
                         if err.is_panic() {
@@ -603,7 +561,7 @@ where
         }
 
         // Wait for all the tasks to shutdown
-        invocation_tasks.shutdown().await;
+        service_state.invocation_tasks.shutdown().await;
     }
 
     // TODO a single client uses the pooling provided by hyper, but this is not enough.
@@ -620,6 +578,24 @@ where
                     .build(),
             ))
     }
+}
+
+/// This is a subset of Service {} to contain the state we need to carry around in the state machines.
+struct ServiceState<JR, SR, EE, SER> {
+    client: HttpsClient,
+    journal_reader: JR,
+    state_reader: SR,
+    entry_enricher: EE,
+    service_endpoint_registry: SER,
+    default_retry_policy: RetryPolicy,
+    suspension_timeout: Duration,
+    response_abort_timeout: Duration,
+    disable_eager_state: bool,
+    message_size_warning: usize,
+    message_size_limit: Option<usize>,
+    invocation_tasks: JoinSet<()>,
+    invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+    retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
 }
 
 /// Internal error trait for the invoker errors
