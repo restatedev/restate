@@ -168,20 +168,20 @@ pub trait InvokerInputSender {
     fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-        sender: mpsc::Sender<OutputEffect>,
+        sender: mpsc::Sender<Effect>,
     ) -> Self::Future;
 }
 
-// --- Output messages
+// --- Invoker effects
 
 #[derive(Debug)]
-pub struct OutputEffect {
+pub struct Effect {
     pub service_invocation_id: ServiceInvocationId,
-    pub kind: Kind,
+    pub kind: EffectKind,
 }
 
 #[derive(Debug)]
-pub enum Kind {
+pub enum EffectKind {
     JournalEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,

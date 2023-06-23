@@ -186,14 +186,14 @@ impl<'a, I, N> MessageCollector for ActuatorMessageCollector<'a, I, N> {
 pub(crate) enum ActuatorStream {
     Follower,
     Leader {
-        invoker_stream: ReceiverStream<restate_invoker::OutputEffect>,
+        invoker_stream: ReceiverStream<restate_invoker::Effect>,
         shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
     },
 }
 
 impl ActuatorStream {
     pub(crate) fn leader(
-        invoker_rx: mpsc::Receiver<restate_invoker::OutputEffect>,
+        invoker_rx: mpsc::Receiver<restate_invoker::Effect>,
         shuffle_rx: mpsc::Receiver<shuffle::OutboxTruncation>,
     ) -> Self {
         ActuatorStream::Leader {
@@ -205,7 +205,7 @@ impl ActuatorStream {
 
 #[derive(Debug)]
 pub(crate) enum ActuatorOutput {
-    Invoker(restate_invoker::OutputEffect),
+    Invoker(restate_invoker::Effect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerValue),
 }

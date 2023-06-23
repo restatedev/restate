@@ -136,7 +136,7 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
     fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-        sender: mpsc::Sender<OutputEffect>,
+        sender: mpsc::Sender<Effect>,
     ) -> Self::Future {
         futures::future::ready(
             self.other_input
@@ -180,7 +180,7 @@ pub(crate) enum OtherInputCommand {
     AbortAllPartition,
 
     // needed for dynamic registration at Invoker
-    RegisterPartition(mpsc::Sender<OutputEffect>),
+    RegisterPartition(mpsc::Sender<Effect>),
 
     // Read status
     ReadStatus(restate_futures_util::command::Command<(), Vec<InvocationStatusReport>>),
@@ -688,7 +688,7 @@ mod state_machine_coordinator {
         pub(super) fn register_partition(
             &mut self,
             partition: PartitionLeaderEpoch,
-            sender: mpsc::Sender<OutputEffect>,
+            sender: mpsc::Sender<Effect>,
         ) {
             self.partitions.insert(
                 partition,
@@ -706,12 +706,12 @@ mod state_machine_coordinator {
     #[derive(Debug)]
     pub(super) struct PartitionInvocationStateMachineCoordinator {
         partition: PartitionLeaderEpoch,
-        output_tx: mpsc::Sender<OutputEffect>,
+        output_tx: mpsc::Sender<Effect>,
         invocation_state_machines: HashMap<ServiceInvocationId, InvocationStateMachine>,
     }
 
     impl PartitionInvocationStateMachineCoordinator {
-        fn new(partition: PartitionLeaderEpoch, sender: mpsc::Sender<OutputEffect>) -> Self {
+        fn new(partition: PartitionLeaderEpoch, sender: mpsc::Sender<Effect>) -> Self {
             Self {
                 partition,
                 output_tx: sender,
@@ -912,9 +912,9 @@ mod state_machine_coordinator {
                 );
                 let _ = self
                     .output_tx
-                    .send(OutputEffect {
+                    .send(Effect {
                         service_invocation_id,
-                        kind: Kind::JournalEntry { entry_index, entry },
+                        kind: EffectKind::JournalEntry { entry_index, entry },
                     })
                     .await;
             } else {
@@ -1037,9 +1037,9 @@ mod state_machine_coordinator {
                 status.on_end(&self.partition, &service_invocation_id);
                 let _ = self
                     .output_tx
-                    .send(OutputEffect {
+                    .send(Effect {
                         service_invocation_id,
-                        kind: Kind::Suspended {
+                        kind: EffectKind::Suspended {
                             waiting_for_completed_entries: entry_indexes,
                         },
                     })
@@ -1188,9 +1188,9 @@ mod state_machine_coordinator {
         async fn send_end(&self, service_invocation_id: ServiceInvocationId) {
             let _ = self
                 .output_tx
-                .send(OutputEffect {
+                .send(Effect {
                     service_invocation_id,
-                    kind: Kind::End,
+                    kind: EffectKind::End,
                 })
                 .await;
         }
@@ -1202,9 +1202,9 @@ mod state_machine_coordinator {
         ) {
             let _ = self
                 .output_tx
-                .send(OutputEffect {
+                .send(Effect {
                     service_invocation_id,
-                    kind: Kind::Failed(err),
+                    kind: EffectKind::Failed(err),
                 })
                 .await;
         }

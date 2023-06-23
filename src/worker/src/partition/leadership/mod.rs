@@ -203,7 +203,7 @@ where
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_storage: &PartitionStorage,
         channel_size: usize,
-    ) -> Result<mpsc::Receiver<restate_invoker::OutputEffect>, Error> {
+    ) -> Result<mpsc::Receiver<restate_invoker::Effect>, Error> {
         let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
 
         invoker_handle
