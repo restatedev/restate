@@ -152,9 +152,9 @@ impl InvokerInputSender for UnboundedInvokerInputSender {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct Input<I> {
-    partition: PartitionLeaderEpoch,
-    inner: I,
+pub(crate) struct Input<I> {
+    pub(crate) partition: PartitionLeaderEpoch,
+    pub(crate) inner: I,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -165,7 +165,7 @@ struct InvokeInputCommand {
 }
 
 #[derive(Debug)]
-enum OtherInputCommand {
+pub(crate) enum OtherInputCommand {
     Completion {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
@@ -183,6 +183,9 @@ enum OtherInputCommand {
 
     // needed for dynamic registration at Invoker
     RegisterPartition(mpsc::Sender<OutputEffect>),
+
+    // Read status
+    ReadStatus(restate_futures_util::command::Command<(), Vec<InvocationStatusReport>>),
 }
 
 pub(crate) type HttpsClient = hyper::Client<
@@ -433,6 +436,10 @@ where
         }
     }
 
+    pub fn create_status_reader(&self) -> InvokerStatusReader {
+        InvokerStatusReader(self.other_input_tx.clone())
+    }
+
     pub async fn run(self, drain: drain::Watch) {
         // Create the shared HTTP Client to use
         let client = self.get_client();
@@ -476,6 +483,8 @@ where
             .await
             .expect("Cannot initialize input spillable queue");
 
+        let mut status_store = status_store::InvocationStatusStore::default();
+
         loop {
             tokio::select! {
                 // --- Spillable queue loading/offloading
@@ -501,7 +510,8 @@ where
                                 &mut invocation_tasks,
                                 &invocation_tasks_tx,
                                 &mut retry_timers,
-                            )
+                            ),
+                            &mut status_store
                         ).await;
                     } else {
                         trace!(
@@ -567,7 +577,8 @@ where
                                         &invocation_tasks_tx,
                                         &mut retry_timers,
                                     ),
-                                    entry_index
+                                    entry_index,
+                                    &mut status_store
                                 )
                                 .await;
                             } else {
@@ -576,6 +587,9 @@ where
                                     "Ignoring StoredEntryAck command because there is no matching partition"
                                 );
                             }
+                        },
+                        Input { inner: OtherInputCommand::ReadStatus(cmd), .. } => {
+                            let _ = cmd.reply(status_store.iter().collect());
                         }
                     }
                 },
@@ -603,19 +617,22 @@ where
                         InvocationTaskOutputInner::Closed => {
                             partition_state_machine.handle_invocation_task_closed(
                                 invocation_task_msg.service_invocation_id,
+                                &mut status_store
                             ).await
                         },
                         InvocationTaskOutputInner::Failed(e) => {
                             partition_state_machine.handle_invocation_task_failed(
                                 invocation_task_msg.service_invocation_id,
                                 e,
-                                &mut retry_timers
+                                &mut retry_timers,
+                                &mut status_store
                             ).await
                         },
                         InvocationTaskOutputInner::Suspended(indexes) => {
                             partition_state_machine.handle_invocation_task_suspended(
                                 invocation_task_msg.service_invocation_id,
-                                indexes
+                                indexes,
+                                &mut status_store
                             ).await
                         }
                     };
@@ -641,7 +658,8 @@ where
                                 &mut invocation_tasks,
                                 &invocation_tasks_tx,
                                 &mut retry_timers,
-                            )
+                            ),
+                            &mut status_store
                         ).await;
                     } else {
                         trace!(
@@ -702,7 +720,7 @@ mod state_machine_coordinator {
     use std::time::SystemTime;
     use tracing::{instrument, warn};
 
-    #[derive(Debug, thiserror::Error, codederror::CodedError)]
+    #[derive(Debug, Clone, thiserror::Error, codederror::CodedError)]
     #[error("Cannot find service {0} in the service endpoint registry")]
     #[code(unknown)]
     pub struct CannotResolveEndpoint(String);
@@ -711,11 +729,9 @@ mod state_machine_coordinator {
         fn is_transient(&self) -> bool {
             true
         }
-    }
 
-    impl From<CannotResolveEndpoint> for InvocationError {
-        fn from(value: CannotResolveEndpoint) -> Self {
-            InvocationError::new(Internal, value.to_string())
+        fn to_invocation_error(&self) -> InvocationError {
+            InvocationError::new(Internal, self.to_string())
         }
     }
 
@@ -850,6 +866,7 @@ mod state_machine_coordinator {
             &mut self,
             invoke_input_cmd: InvokeInputCommand,
             start_arguments: StartInvocationTaskArguments<'_, JR, SR, EE, SER>,
+            status: &mut status_store::InvocationStatusStore,
         ) where
             JR: JournalReader + Clone + Send + Sync + 'static,
             <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -867,6 +884,7 @@ mod state_machine_coordinator {
                 service_invocation_id.clone(),
                 invoke_input_cmd.journal,
                 start_arguments,
+                status,
                 InvocationStateMachine::create,
             )
             .await
@@ -951,6 +969,7 @@ mod state_machine_coordinator {
             &mut self,
             service_invocation_id: ServiceInvocationId,
             start_arguments: StartInvocationTaskArguments<'_, JR, SR, EE, SER>,
+            status: &mut status_store::InvocationStatusStore,
         ) where
             JR: JournalReader + Clone + Send + Sync + 'static,
             <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -960,7 +979,7 @@ mod state_machine_coordinator {
             SER: ServiceEndpointRegistry,
         {
             trace!("Retry timeout fired");
-            self.handle_retry_event(service_invocation_id, start_arguments, |sm| {
+            self.handle_retry_event(service_invocation_id, start_arguments, status, |sm| {
                 sm.notify_retry_timer_fired()
             })
             .await;
@@ -981,6 +1000,7 @@ mod state_machine_coordinator {
             service_invocation_id: ServiceInvocationId,
             start_arguments: StartInvocationTaskArguments<'_, JR, SR, EE, SER>,
             entry_index: EntryIndex,
+            status: &mut status_store::InvocationStatusStore,
         ) where
             JR: JournalReader + Clone + Send + Sync + 'static,
             <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -990,7 +1010,7 @@ mod state_machine_coordinator {
             SER: ServiceEndpointRegistry,
         {
             trace!("Received a new stored journal entry acknowledgement");
-            self.handle_retry_event(service_invocation_id, start_arguments, |sm| {
+            self.handle_retry_event(service_invocation_id, start_arguments, status, |sm| {
                 sm.notify_stored_ack(entry_index)
             })
             .await;
@@ -1047,6 +1067,7 @@ mod state_machine_coordinator {
         pub(super) async fn handle_invocation_task_closed(
             &mut self,
             service_invocation_id: ServiceInvocationId,
+            status: &mut status_store::InvocationStatusStore,
         ) {
             if self
                 .invocation_state_machines
@@ -1054,6 +1075,7 @@ mod state_machine_coordinator {
                 .is_some()
             {
                 trace!("Invocation task closed correctly");
+                status.on_end(&self.partition, &service_invocation_id);
                 self.send_end(service_invocation_id).await;
             } else {
                 // If no state machine, this might be a result for an aborted invocation.
@@ -1075,12 +1097,13 @@ mod state_machine_coordinator {
             service_invocation_id: ServiceInvocationId,
             error: impl InvokerError + CodedError + Send + Sync + 'static,
             retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
+            status: &mut status_store::InvocationStatusStore,
         ) {
             if let Some(sm) = self
                 .invocation_state_machines
                 .remove(&service_invocation_id)
             {
-                self.handle_error_event(service_invocation_id, error, retry_timers, sm)
+                self.handle_error_event(service_invocation_id, error, retry_timers, sm, status)
                     .await;
             } else {
                 // If no state machine, this might be a result for an aborted invocation.
@@ -1088,12 +1111,13 @@ mod state_machine_coordinator {
             }
         }
 
-        async fn handle_error_event(
+        async fn handle_error_event<E: InvokerError + CodedError + Send + Sync + 'static>(
             &mut self,
             service_invocation_id: ServiceInvocationId,
-            error: impl InvokerError + CodedError + Send + Sync + 'static,
+            error: E,
             retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
             mut sm: InvocationStateMachine,
+            status: &mut status_store::InvocationStatusStore,
         ) {
             warn_it!(error, "Error when executing the invocation");
 
@@ -1104,6 +1128,7 @@ mod state_machine_coordinator {
                         humantime::format_duration(next_retry_timer_duration),
                         sm.invocation_state_debug()
                     );
+                    status.on_failure(self.partition, service_invocation_id.clone(), &error);
                     self.invocation_state_machines
                         .insert(service_invocation_id.clone(), sm);
                     retry_timers.sleep_until(
@@ -1113,7 +1138,9 @@ mod state_machine_coordinator {
                 }
                 _ => {
                     trace!("Not going to retry the error");
-                    self.send_error(service_invocation_id, error).await;
+                    status.on_end(&self.partition, &service_invocation_id);
+                    self.send_error(service_invocation_id, error.to_invocation_error())
+                        .await;
                 }
             }
         }
@@ -1131,6 +1158,7 @@ mod state_machine_coordinator {
             &mut self,
             service_invocation_id: ServiceInvocationId,
             entry_indexes: HashSet<EntryIndex>,
+            status: &mut status_store::InvocationStatusStore,
         ) {
             if self
                 .invocation_state_machines
@@ -1138,6 +1166,7 @@ mod state_machine_coordinator {
                 .is_some()
             {
                 trace!("Suspending invocation");
+                status.on_end(&self.partition, &service_invocation_id);
                 let _ = self
                     .output_tx
                     .send(OutputEffect {
@@ -1160,6 +1189,7 @@ mod state_machine_coordinator {
             service_invocation_id: ServiceInvocationId,
             journal: InvokeInputJournal,
             start_arguments: StartInvocationTaskArguments<'_, JR, SR, EE, SER>,
+            status: &mut status_store::InvocationStatusStore,
             state_machine_factory: impl FnOnce(RetryPolicy) -> InvocationStateMachine,
         ) where
             JR: JournalReader + Clone + Send + Sync + 'static,
@@ -1187,6 +1217,7 @@ mod state_machine_coordinator {
                         err,
                         start_arguments.retry_timers,
                         state_machine_factory(start_arguments.default_retry_policy.clone()),
+                        status,
                     )
                     .await;
                     return;
@@ -1230,9 +1261,10 @@ mod state_machine_coordinator {
             );
 
             // Transition the state machine, and store it
+            status.on_start(self.partition, service_invocation_id.clone());
             invocation_state_machine.start(abort_handle, completions_tx);
             trace!(
-                "Invocation task started, state: {:?}",
+                "Invocation task started state. Invocation state: {:?}",
                 invocation_state_machine.invocation_state_debug()
             );
             self.invocation_state_machines
@@ -1243,6 +1275,7 @@ mod state_machine_coordinator {
             &mut self,
             service_invocation_id: ServiceInvocationId,
             start_arguments: StartInvocationTaskArguments<'_, JR, SR, EE, SER>,
+            status: &mut status_store::InvocationStatusStore,
             f: FN,
         ) where
             JR: JournalReader + Clone + Send + Sync + 'static,
@@ -1264,6 +1297,7 @@ mod state_machine_coordinator {
                         service_invocation_id,
                         InvokeInputJournal::NoCachedJournal,
                         start_arguments,
+                        status,
                         // In case we're retrying, we don't modify the retry policy
                         |_| sm,
                     )
@@ -1296,13 +1330,13 @@ mod state_machine_coordinator {
         async fn send_error(
             &self,
             service_invocation_id: ServiceInvocationId,
-            err: impl Into<InvocationError>,
+            err: InvocationError,
         ) {
             let _ = self
                 .output_tx
                 .send(OutputEffect {
                     service_invocation_id,
-                    kind: Kind::Failed(err.into()),
+                    kind: Kind::Failed(err),
                 })
                 .await;
         }
@@ -1311,11 +1345,11 @@ mod state_machine_coordinator {
 
 mod invocation_state_machine {
     use super::*;
-    use std::fmt;
-    use std::time::Duration;
 
     use restate_common::retry_policy;
     use restate_journal::Completion;
+    use std::fmt;
+    use std::time::Duration;
     use tokio::sync::mpsc;
     use tokio::task::AbortHandle;
 
@@ -1375,9 +1409,9 @@ mod invocation_state_machine {
     enum InvocationState {
         New,
 
-        // If there is no completion channel, then the stream is open in request/response mode
         InFlight {
-            // This can be none if the invocation task is request/response
+            // If there is no completions_tx,
+            // then the stream is open in request/response mode
             completions_tx: Option<mpsc::UnboundedSender<Completion>>,
             journal_tracker: JournalTracker,
             abort_handle: AbortHandle,
@@ -1543,6 +1577,77 @@ mod invocation_state_machine {
         #[inline]
         pub(super) fn invocation_state_debug(&self) -> impl fmt::Debug + '_ {
             &self.invocation_state
+        }
+    }
+}
+
+// -- Status store
+mod status_store {
+    use super::*;
+
+    use crate::status::InvocationStatusReportInner;
+
+    #[derive(Default)]
+    pub(super) struct InvocationStatusStore(
+        HashMap<PartitionLeaderEpoch, HashMap<ServiceInvocationId, InvocationStatusReportInner>>,
+    );
+
+    impl InvocationStatusStore {
+        pub(super) fn iter(&self) -> impl Iterator<Item = InvocationStatusReport> + '_ {
+            self.0
+                .iter()
+                .flat_map(|(partition_leader_epoch, inner_map)| {
+                    inner_map.iter().map(move |(sid, report)| {
+                        InvocationStatusReport(sid.clone(), *partition_leader_epoch, report.clone())
+                    })
+                })
+        }
+
+        // -- Methods used by the invoker to notify the status
+
+        pub(super) fn on_start(
+            &mut self,
+            partition: PartitionLeaderEpoch,
+            sid: ServiceInvocationId,
+        ) {
+            let report = self
+                .0
+                .entry(partition)
+                .or_insert_with(Default::default)
+                .entry(sid)
+                .or_insert_with(Default::default);
+            report.start_count += 1;
+            report.last_start_at = SystemTime::now();
+            report.in_flight = true;
+        }
+
+        pub(super) fn on_end(
+            &mut self,
+            partition: &PartitionLeaderEpoch,
+            sid: &ServiceInvocationId,
+        ) {
+            if let Some(inner) = self.0.get_mut(partition) {
+                inner.remove(sid);
+                if inner.is_empty() {
+                    self.0.remove(partition);
+                }
+            }
+        }
+
+        pub(super) fn on_failure(
+            &mut self,
+            partition: PartitionLeaderEpoch,
+            sid: ServiceInvocationId,
+            reason: impl Into<InvocationErrorReport>,
+        ) {
+            let report = self
+                .0
+                .entry(partition)
+                .or_insert_with(Default::default)
+                .entry(sid)
+                .or_insert_with(Default::default);
+            report.in_flight = false;
+            report.last_retry_attempt_failure = Some(reason.into());
         }
     }
 }

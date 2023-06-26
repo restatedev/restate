@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use futures::Stream;
-use restate_common::errors::InvocationError;
+use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
 use restate_common::retry_policy::RetryPolicy;
 use restate_common::types::{
     EnrichedRawEntry, EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceId,
@@ -10,6 +10,7 @@ use restate_journal::raw::PlainRawEntry;
 use restate_journal::Completion;
 use std::collections::HashSet;
 use std::future::Future;
+use std::time::SystemTime;
 use tokio::sync::mpsc;
 
 mod invoker;
@@ -17,10 +18,18 @@ pub use crate::invoker::*;
 
 mod invocation_task;
 
+mod status;
+pub use status::{InvocationErrorReport, InvocationStatusReport, InvokerStatusReader};
+
 // --- Error trait used to figure out whether errors are transient or not
 
-trait InvokerError: std::error::Error + Into<InvocationError> {
+trait InvokerError: std::error::Error {
     fn is_transient(&self) -> bool;
+    fn to_invocation_error(&self) -> InvocationError;
+
+    fn as_invocation_error_code(&self) -> InvocationErrorCode {
+        UserErrorCode::Internal.into()
+    }
 }
 
 // --- Journal Reader
