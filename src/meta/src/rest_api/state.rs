@@ -1,30 +1,29 @@
 use crate::service::MetaHandle;
-use restate_common::worker_command::WorkerCommandSender;
 
 /// Handlers share this state
 #[derive(Clone)]
-pub struct RestEndpointState<S, M, K> {
+pub struct RestEndpointState<S, M, K, W> {
     meta_handle: MetaHandle,
     service_endpoint_registry: S,
     method_descriptor_registry: M,
     key_converter: K,
-    worker_command_tx: WorkerCommandSender,
+    worker_handle: W,
 }
 
-impl<S, M, K> RestEndpointState<S, M, K> {
+impl<S, M, K, W> RestEndpointState<S, M, K, W> {
     pub fn new(
         meta_handle: MetaHandle,
         service_endpoint_registry: S,
         method_descriptor_registry: M,
         key_converter: K,
-        worker_command_tx: WorkerCommandSender,
+        worker_handle: W,
     ) -> Self {
         Self {
             meta_handle,
             service_endpoint_registry,
             method_descriptor_registry,
             key_converter,
-            worker_command_tx,
+            worker_handle,
         }
     }
 
@@ -44,7 +43,7 @@ impl<S, M, K> RestEndpointState<S, M, K> {
         &self.key_converter
     }
 
-    pub fn worker_command_tx(&self) -> &WorkerCommandSender {
-        &self.worker_command_tx
+    pub fn worker_handle(&self) -> &W {
+        &self.worker_handle
     }
 }

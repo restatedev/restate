@@ -3665,6 +3665,7 @@ dependencies = [
  "restate_service_key_extractor",
  "restate_service_metadata",
  "restate_service_protocol",
+ "restate_worker_api",
  "schemars",
  "serde",
  "serde_json",
@@ -3937,6 +3938,7 @@ dependencies = [
  "restate_storage_rocksdb",
  "restate_test_util",
  "restate_timer",
+ "restate_worker_api",
  "schemars",
  "serde",
  "thiserror",
@@ -3944,6 +3946,14 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "restate_worker_api"
+version = "0.1.5"
+dependencies = [
+ "restate_common",
+ "thiserror",
 ]
 
 [[package]]
@@ -5443,6 +5453,7 @@ dependencies = [
  "restate",
  "restate_common",
  "restate_meta",
+ "restate_worker_api",
  "schemars",
  "serde_json",
  "serde_yaml",

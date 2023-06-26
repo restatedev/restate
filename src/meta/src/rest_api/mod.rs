@@ -13,7 +13,6 @@ use futures::FutureExt;
 use hyper::Server;
 use okapi_operation::axum_integration::{delete, get, post};
 use okapi_operation::*;
-use restate_common::worker_command::WorkerCommandSender;
 use restate_service_key_extractor::json::RestateKeyConverter;
 use restate_service_metadata::{MethodDescriptorRegistry, ServiceEndpointRegistry};
 use std::net::SocketAddr;
@@ -54,13 +53,14 @@ impl MetaRestEndpoint {
         S: ServiceEndpointRegistry + Send + Sync + 'static,
         M: MethodDescriptorRegistry + Send + Sync + 'static,
         K: RestateKeyConverter + Send + Sync + 'static,
+        W: restate_worker_api::Handle + Send + Sync + 'static,
     >(
         self,
         meta_handle: MetaHandle,
         service_endpoint_registry: S,
         method_descriptor_registry: M,
         key_converter: K,
-        worker_command_tx: WorkerCommandSender,
+        worker_handle: W,
         drain: drain::Watch,
     ) -> Result<(), MetaRestServerError> {
         let shared_state = Arc::new(state::RestEndpointState::new(
@@ -68,7 +68,7 @@ impl MetaRestEndpoint {
             service_endpoint_registry,
             method_descriptor_registry,
             key_converter,
-            worker_command_tx,
+            worker_handle,
         ));
 
         // Setup the router

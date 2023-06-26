@@ -5,7 +5,6 @@ mod storage;
 use codederror::CodedError;
 use rest_api::MetaRestEndpoint;
 use restate_common::retry_policy::RetryPolicy;
-use restate_common::worker_command::WorkerCommandSender;
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_ingress_grpc::ReflectionRegistry;
 use restate_service_key_extractor::KeyExtractorsRegistry;
@@ -169,7 +168,7 @@ impl Meta {
     pub async fn run(
         self,
         drain: drain::Watch,
-        worker_command_tx: WorkerCommandSender,
+        worker_handle: impl restate_worker_api::Handle + Send + Sync + 'static,
     ) -> Result<(), Error> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
@@ -184,7 +183,7 @@ impl Meta {
             service_endpoint_registry,
             method_descriptor_registry,
             key_extractors_registry,
-            worker_command_tx,
+            worker_handle,
             shutdown_watch,
         );
         tokio::pin!(service_fut, rest_endpoint_fut);

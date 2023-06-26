@@ -6,7 +6,6 @@ use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
-use restate_common::worker_command;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -28,7 +27,7 @@ pub enum MetaApiError {
     #[error(transparent)]
     Meta(#[from] MetaError),
     #[error(transparent)]
-    Worker(#[from] worker_command::Error),
+    Worker(#[from] restate_worker_api::Error),
 }
 
 /// # Error description response

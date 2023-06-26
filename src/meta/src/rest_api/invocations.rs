@@ -92,12 +92,18 @@ pub struct CancelInvocationRequest {
     operation_id = "cancel_invocation",
     tags = "invocation"
 )]
-pub async fn cancel_invocation<S, M: MethodDescriptorRegistry, K: RestateKeyConverter>(
-    State(state): State<Arc<RestEndpointState<S, M, K>>>,
+pub async fn cancel_invocation<S, M, K, W>(
+    State(state): State<Arc<RestEndpointState<S, M, K, W>>>,
     #[request_body(required = true)] Json(req): Json<CancelInvocationRequest>,
-) -> Result<(), MetaApiError> {
+) -> Result<(), MetaApiError>
+where
+    M: MethodDescriptorRegistry,
+    K: RestateKeyConverter,
+    W: restate_worker_api::Handle + Send,
+    W::Future: Send,
+{
     state
-        .worker_command_tx()
+        .worker_handle()
         .kill_invocation(req.sid.into_service_invocation_id(
             state.method_descriptor_registry(),
             state.key_converter(),

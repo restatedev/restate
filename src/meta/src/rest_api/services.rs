@@ -45,8 +45,8 @@ pub struct RegisterServiceEndpointResponse {
     operation_id = "discover_service_endpoint",
     tags = "service_endpoint"
 )]
-pub async fn discover_service_endpoint<S: ServiceEndpointRegistry, M, K>(
-    State(state): State<Arc<RestEndpointState<S, M, K>>>,
+pub async fn discover_service_endpoint<S: ServiceEndpointRegistry, M, K, W>(
+    State(state): State<Arc<RestEndpointState<S, M, K, W>>>,
     #[request_body(required = true)] Json(payload): Json<RegisterServiceEndpointRequest>,
 ) -> Result<Json<RegisterServiceEndpointResponse>, MetaApiError> {
     let headers = payload
@@ -83,8 +83,8 @@ pub struct ListServicesResponse {
     operation_id = "list_services",
     tags = "service"
 )]
-pub async fn list_services<S: ServiceEndpointRegistry, M, K>(
-    State(state): State<Arc<RestEndpointState<S, M, K>>>,
+pub async fn list_services<S: ServiceEndpointRegistry, M, K, W>(
+    State(state): State<Arc<RestEndpointState<S, M, K, W>>>,
 ) -> Result<Json<ListServicesResponse>, MetaApiError> {
     Ok(ListServicesResponse {
         endpoints: state
@@ -118,8 +118,8 @@ pub struct GetServiceResponse {
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service<S: ServiceEndpointRegistry, M, K>(
-    State(state): State<Arc<RestEndpointState<S, M, K>>>,
+pub async fn get_service<S: ServiceEndpointRegistry, M, K, W>(
+    State(state): State<Arc<RestEndpointState<S, M, K, W>>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<GetServiceResponse>, MetaApiError> {
     match state

@@ -1,10 +1,40 @@
 use crate::partition::{AckCommand, Command};
-use restate_common::types::PeerTarget;
-use restate_common::worker_command::{WorkerCommand, WorkerCommandSender};
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use restate_common::types::{PeerTarget, ServiceInvocationId};
 use restate_consensus::ProposalSender;
 use restate_network::PartitionTableError;
 use tokio::sync::mpsc;
 use tracing::debug;
+
+/// Commands that can be sent to a worker.
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum WorkerCommand {
+    KillInvocation(ServiceInvocationId),
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkerCommandSender(mpsc::Sender<WorkerCommand>);
+
+impl WorkerCommandSender {
+    fn new(command_tx: mpsc::Sender<WorkerCommand>) -> Self {
+        Self(command_tx)
+    }
+}
+
+impl restate_worker_api::Handle for WorkerCommandSender {
+    type Future = BoxFuture<'static, Result<(), restate_worker_api::Error>>;
+
+    fn kill_invocation(&self, service_invocation_id: ServiceInvocationId) -> Self::Future {
+        let tx = self.0.clone();
+        async move {
+            tx.send(WorkerCommand::KillInvocation(service_invocation_id))
+                .await
+                .map_err(|_| restate_worker_api::Error::Unreachable)
+        }
+        .boxed()
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

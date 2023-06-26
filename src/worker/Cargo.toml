@@ -40,6 +40,7 @@ restate_service_protocol = { workspace = true, features = ["codec"] }
 restate_storage_api = { workspace = true}
 restate_storage_grpc = { workspace = true}
 restate_storage_rocksdb = { workspace = true}
+restate_worker_api = { workspace = true }
 
 [dev-dependencies]
 restate_test_util = { workspace = true }
