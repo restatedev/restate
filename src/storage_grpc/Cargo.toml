@@ -30,7 +30,7 @@ tonic = { workspace = true, features = ["default"] }
 
 [dev-dependencies]
 restate_test_util = { workspace = true }
-tempfile = "*"
+tempfile = { workspace = true }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
 
