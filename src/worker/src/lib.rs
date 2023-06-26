@@ -12,7 +12,6 @@ use futures::StreamExt;
 use partition::ack::AckCommand;
 use partition::shuffle;
 use restate_common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
-use restate_common::worker_command::WorkerCommandSender;
 use restate_consensus::Consensus;
 use restate_ingress_grpc::ReflectionRegistry;
 use restate_invoker::{
@@ -329,7 +328,7 @@ impl Worker {
         ((peer_id, command_tx), processor)
     }
 
-    pub fn worker_command_tx(&self) -> WorkerCommandSender {
+    pub fn worker_command_tx(&self) -> impl restate_worker_api::Handle + Send + Sync {
         self.services.worker_command_tx()
     }
 
