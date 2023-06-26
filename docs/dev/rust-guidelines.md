@@ -36,3 +36,9 @@ let other_component= OtherComponent::new(event_loop.create_communication_struct(
 ## Error design
 
 * Use `thiserror` whenever possible to implement errors.
+
+## Asynchronous communication
+
+When developing components which communicate via channels (message passing) with each other, keep in mind that message ordering can only be maintained when using a single channel.
+As soon as there are two different channels between these components, the order in which messages are consumed from them can in the general case not be guaranteed.
+The result can be unforeseen race conditions.
