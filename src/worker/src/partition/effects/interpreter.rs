@@ -243,56 +243,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
     ) -> Result<(), Error> {
         match effect {
             Effect::InvokeService(service_invocation) => {
-                let creation_time = MillisSinceEpoch::now();
-                state_storage
-                    .store_invocation_status(
-                        &service_invocation.id.service_id,
-                        InvocationStatus::Invoked(InvocationMetadata::new(
-                            service_invocation.id.invocation_id,
-                            JournalMetadata::new(
-                                service_invocation.method_name.clone(),
-                                service_invocation.span_context.clone(),
-                                1, // initial length is 1, because we store the poll input stream entry
-                            ),
-                            service_invocation.response_sink,
-                            creation_time,
-                            creation_time,
-                        )),
-                    )
-                    .await?;
-
-                let_assert!(
-                    restate_common::types::RawEntry {
-                        header: RawEntryHeader::PollInputStream { is_completed },
-                        entry
-                    } = Codec::serialize_as_unary_input_entry(service_invocation.argument)
-                );
-
-                let input_entry = EnrichedRawEntry::new(
-                    EnrichedEntryHeader::PollInputStream { is_completed },
-                    entry,
-                );
-
-                let raw_bytes = input_entry.entry.clone();
-
-                state_storage
-                    .store_journal_entry(&service_invocation.id.service_id, 0, input_entry)
-                    .await?;
-
-                collector.collect(ActuatorMessage::Invoke {
-                    service_invocation_id: service_invocation.id,
-                    invoke_input_journal: InvokeInputJournal::CachedJournal(
-                        JournalMetadata {
-                            method: service_invocation.method_name.to_string(),
-                            length: 1,
-                            span_context: service_invocation.span_context,
-                        },
-                        vec![PlainRawEntry::new(
-                            RawEntryHeader::PollInputStream { is_completed },
-                            raw_bytes,
-                        )],
-                    ),
-                });
+                Self::invoke_service(state_storage, collector, service_invocation).await?;
             }
             Effect::ResumeService {
                 service_id,
@@ -620,6 +571,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 service_id,
                 inbox_sequence_number,
                 journal_length,
+                service_invocation,
             } => {
                 // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
                 state_storage
@@ -628,6 +580,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 state_storage
                     .truncate_inbox(&service_id, inbox_sequence_number)
                     .await?;
+                Self::invoke_service(state_storage, collector, service_invocation).await?;
             }
             Effect::NotifyInvocationResult {
                 service_invocation_id,
@@ -648,6 +601,62 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             }
         }
 
+        Ok(())
+    }
+
+    async fn invoke_service<S: StateStorage, C: MessageCollector>(
+        state_storage: &mut S,
+        collector: &mut C,
+        service_invocation: ServiceInvocation,
+    ) -> Result<(), Error> {
+        let creation_time = MillisSinceEpoch::now();
+        state_storage
+            .store_invocation_status(
+                &service_invocation.id.service_id,
+                InvocationStatus::Invoked(InvocationMetadata::new(
+                    service_invocation.id.invocation_id,
+                    JournalMetadata::new(
+                        service_invocation.method_name.clone(),
+                        service_invocation.span_context.clone(),
+                        1, // initial length is 1, because we store the poll input stream entry
+                    ),
+                    service_invocation.response_sink,
+                    creation_time,
+                    creation_time,
+                )),
+            )
+            .await?;
+
+        let_assert!(
+            restate_common::types::RawEntry {
+                header: RawEntryHeader::PollInputStream { is_completed },
+                entry
+            } = Codec::serialize_as_unary_input_entry(service_invocation.argument)
+        );
+
+        let input_entry =
+            EnrichedRawEntry::new(EnrichedEntryHeader::PollInputStream { is_completed }, entry);
+
+        let raw_bytes = input_entry.entry.clone();
+
+        state_storage
+            .store_journal_entry(&service_invocation.id.service_id, 0, input_entry)
+            .await?;
+
+        collector.collect(ActuatorMessage::Invoke {
+            service_invocation_id: service_invocation.id,
+            invoke_input_journal: InvokeInputJournal::CachedJournal(
+                JournalMetadata {
+                    method: service_invocation.method_name.to_string(),
+                    length: 1,
+                    span_context: service_invocation.span_context,
+                },
+                vec![PlainRawEntry::new(
+                    RawEntryHeader::PollInputStream { is_completed },
+                    raw_bytes,
+                )],
+            ),
+        });
         Ok(())
     }
 

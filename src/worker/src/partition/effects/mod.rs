@@ -53,6 +53,7 @@ pub(crate) enum Effect {
         service_id: ServiceId,
         inbox_sequence_number: MessageIndex,
         journal_length: EntryIndex,
+        service_invocation: ServiceInvocation,
     },
 
     // State
@@ -278,13 +279,25 @@ impl Effect {
             Effect::DropJournalAndPopInbox {
                 journal_length,
                 inbox_sequence_number,
+                service_invocation:
+                    ServiceInvocation {
+                        method_name, id, ..
+                    },
                 ..
-            } => debug_if_leader!(
-                is_leader,
-                restate.journal.length = journal_length,
-                restate.inbox.seq = inbox_sequence_number,
-                "Effect: Execute next enqueued invocation"
-            ),
+            } => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.journal.length = journal_length,
+                    restate.inbox.seq = inbox_sequence_number,
+                    "Effect: Drop journal and truncate inbox"
+                );
+                debug_if_leader!(
+                    is_leader,
+                    rpc.method = %method_name,
+                    restate.invocation.sid = %id,
+                    "Effect: Invoke next enqueued invocation"
+                );
+            }
             Effect::SetState {
                 key, entry_index, ..
             } => debug_if_leader!(
@@ -667,11 +680,13 @@ impl Effects {
         service_id: ServiceId,
         inbox_sequence_number: MessageIndex,
         journal_length: EntryIndex,
+        service_invocation: ServiceInvocation,
     ) {
         self.effects.push(Effect::DropJournalAndPopInbox {
             service_id,
             inbox_sequence_number,
             journal_length,
+            service_invocation,
         });
     }
 

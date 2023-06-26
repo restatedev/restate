@@ -734,8 +734,8 @@ where
                 service_invocation_id.service_id,
                 inbox_sequence_number,
                 journal_length,
+                service_invocation,
             );
-            effects.invoke_service(service_invocation);
         } else {
             effects.drop_journal_and_free_service(service_invocation_id.service_id, journal_length);
         }
