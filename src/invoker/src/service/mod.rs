@@ -580,7 +580,7 @@ where
     }
 }
 
-/// This is a subset of Service {} to contain the state we need to carry around in the state machines.
+/// This is a subset of Service to contain the state we need to carry around in the state machines.
 struct ServiceState<JR, SR, EE, SER> {
     client: HttpsClient,
     journal_reader: JR,
