@@ -1,6 +1,5 @@
-use restate_common::types::{
-    EntryIndex, MillisSinceEpoch, ServiceInvocation, ServiceInvocationId, Timer,
-};
+use restate_common::types::{EntryIndex, MillisSinceEpoch, ServiceInvocation, ServiceInvocationId};
+use restate_storage_api::timer_table::Timer;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};

@@ -4,8 +4,8 @@ use crate::TableKind::Outbox;
 use crate::{GetFuture, PutFuture, RocksDBTransaction, TableScan};
 
 use prost::Message;
-use restate_common::types::{OutboxMessage, PartitionId};
-use restate_storage_api::outbox_table::OutboxTable;
+use restate_common::types::PartitionId;
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::{ready, StorageError};
 use restate_storage_proto::storage;
 use std::io::Cursor;

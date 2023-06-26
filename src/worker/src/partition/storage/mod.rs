@@ -7,16 +7,19 @@ use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
 use restate_common::journal::raw::Header;
 use restate_common::types::{
-    CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationStatus, JournalEntry,
-    MessageIndex, MillisSinceEpoch, OutboxMessage, PartitionId, PartitionKey, ServiceId,
-    ServiceInvocation, ServiceInvocationId, Timer, TimerKey,
+    CompletionResult, EnrichedRawEntry, EntryIndex, MessageIndex, MillisSinceEpoch, PartitionId,
+    PartitionKey, ServiceId, ServiceInvocation, ServiceInvocationId,
 };
 use std::ops::RangeInclusive;
 
 pub mod invoker;
 
 use crate::partition::TimerValue;
-use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::inbox_table::InboxEntry;
+use restate_storage_api::journal_table::JournalEntry;
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::status_table::InvocationStatus;
+use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::{PutFuture, Transaction as OtherTransaction};
 use restate_timer::TimerReader;
 

@@ -2,14 +2,11 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
 use restate_common::journal::raw::PlainRawEntry;
-use restate_common::types::{
-    EnrichedRawEntry, InvocationStatus, JournalEntry, JournalMetadata, ServiceId,
-    ServiceInvocationId,
-};
+use restate_common::types::{EnrichedRawEntry, JournalMetadata, ServiceId, ServiceInvocationId};
 use restate_invoker::EagerState;
-use restate_storage_api::journal_table::JournalTable;
+use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::state_table::StateTable;
-use restate_storage_api::status_table::StatusTable;
+use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::Transaction;
 use std::vec::IntoIter;
 

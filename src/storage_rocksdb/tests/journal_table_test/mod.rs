@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use futures_util::StreamExt;
-use restate_common::types::{EnrichedEntryHeader, EnrichedRawEntry, JournalEntry, ServiceId};
-use restate_storage_api::journal_table::JournalTable;
+use restate_common::types::{EnrichedEntryHeader, EnrichedRawEntry, ServiceId};
+use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::{Storage, Transaction};
 use restate_storage_rocksdb::RocksDBStorage;
 

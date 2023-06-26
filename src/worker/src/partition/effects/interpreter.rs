@@ -9,11 +9,14 @@ use restate_common::journal::raw::{
 };
 use restate_common::journal::Completion;
 use restate_common::types::{
-    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationMetadata,
-    InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId,
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext, Timer,
+    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, JournalMetadata,
+    MessageIndex, MillisSinceEpoch, ServiceId, ServiceInvocation, ServiceInvocationId,
+    ServiceInvocationSpanContext,
 };
 use restate_invoker::InvokeInputJournal;
+use restate_storage_api::outbox_table::OutboxMessage;
+use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
+use restate_storage_api::timer_table::Timer;
 use std::marker::PhantomData;
 
 #[derive(Debug, thiserror::Error)]

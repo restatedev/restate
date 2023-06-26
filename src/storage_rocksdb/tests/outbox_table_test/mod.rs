@@ -1,6 +1,5 @@
 use crate::mock_service_invocation;
-use restate_common::types::OutboxMessage;
-use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::{Storage, Transaction};
 use restate_storage_rocksdb::RocksDBStorage;
 

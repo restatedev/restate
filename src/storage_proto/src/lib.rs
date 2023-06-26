@@ -70,7 +70,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<InvocationStatus> for restate_common::types::InvocationStatus {
+            impl TryFrom<InvocationStatus> for restate_storage_api::status_table::InvocationStatus {
                 type Error = ConversionError;
 
                 fn try_from(value: InvocationStatus) -> Result<Self, Self::Error> {
@@ -80,18 +80,22 @@ pub mod storage {
                     {
                         invocation_status::Status::Invoked(invoked) => {
                             let invoked_status =
-                                restate_common::types::InvocationMetadata::try_from(invoked)?;
-                            restate_common::types::InvocationStatus::Invoked(invoked_status)
+                                restate_storage_api::status_table::InvocationMetadata::try_from(
+                                    invoked,
+                                )?;
+                            restate_storage_api::status_table::InvocationStatus::Invoked(
+                                invoked_status,
+                            )
                         }
                         invocation_status::Status::Suspended(suspended) => {
                             let (metadata, waiting_for_completed_entries) = suspended.try_into()?;
-                            restate_common::types::InvocationStatus::Suspended {
+                            restate_storage_api::status_table::InvocationStatus::Suspended {
                                 metadata,
                                 waiting_for_completed_entries,
                             }
                         }
                         invocation_status::Status::Free(_) => {
-                            restate_common::types::InvocationStatus::Free
+                            restate_storage_api::status_table::InvocationStatus::Free
                         }
                     };
 
@@ -99,20 +103,20 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::InvocationStatus> for InvocationStatus {
-                fn from(value: restate_common::types::InvocationStatus) -> Self {
+            impl From<restate_storage_api::status_table::InvocationStatus> for InvocationStatus {
+                fn from(value: restate_storage_api::status_table::InvocationStatus) -> Self {
                     let status = match value {
-                        restate_common::types::InvocationStatus::Invoked(invoked_status) => {
-                            invocation_status::Status::Invoked(Invoked::from(invoked_status))
-                        }
-                        restate_common::types::InvocationStatus::Suspended {
+                        restate_storage_api::status_table::InvocationStatus::Invoked(
+                            invoked_status,
+                        ) => invocation_status::Status::Invoked(Invoked::from(invoked_status)),
+                        restate_storage_api::status_table::InvocationStatus::Suspended {
                             metadata,
                             waiting_for_completed_entries,
                         } => invocation_status::Status::Suspended(Suspended::from((
                             metadata,
                             waiting_for_completed_entries,
                         ))),
-                        restate_common::types::InvocationStatus::Free => {
+                        restate_storage_api::status_table::InvocationStatus::Free => {
                             invocation_status::Status::Free(Free {})
                         }
                     };
@@ -123,7 +127,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<Invoked> for restate_common::types::InvocationMetadata {
+            impl TryFrom<Invoked> for restate_storage_api::status_table::InvocationMetadata {
                 type Error = ConversionError;
 
                 fn try_from(value: Invoked) -> Result<Self, Self::Error> {
@@ -140,7 +144,7 @@ pub mod storage {
                                 .ok_or(ConversionError::missing_field("response_sink"))?,
                         )?;
 
-                    Ok(restate_common::types::InvocationMetadata::new(
+                    Ok(restate_storage_api::status_table::InvocationMetadata::new(
                         invocation_id,
                         journal_metadata,
                         response_sink,
@@ -150,9 +154,9 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::InvocationMetadata> for Invoked {
-                fn from(value: restate_common::types::InvocationMetadata) -> Self {
-                    let restate_common::types::InvocationMetadata {
+            impl From<restate_storage_api::status_table::InvocationMetadata> for Invoked {
+                fn from(value: restate_storage_api::status_table::InvocationMetadata) -> Self {
+                    let restate_storage_api::status_table::InvocationMetadata {
                         invocation_id,
                         response_sink,
                         journal_metadata,
@@ -172,7 +176,7 @@ pub mod storage {
 
             impl TryFrom<Suspended>
                 for (
-                    restate_common::types::InvocationMetadata,
+                    restate_storage_api::status_table::InvocationMetadata,
                     HashSet<restate_common::types::EntryIndex>,
                 )
             {
@@ -196,7 +200,7 @@ pub mod storage {
                         value.waiting_for_completed_entries.into_iter().collect();
 
                     Ok((
-                        restate_common::types::InvocationMetadata::new(
+                        restate_storage_api::status_table::InvocationMetadata::new(
                             invocation_id,
                             journal_metadata,
                             response_sink,
@@ -210,13 +214,13 @@ pub mod storage {
 
             impl
                 From<(
-                    restate_common::types::InvocationMetadata,
+                    restate_storage_api::status_table::InvocationMetadata,
                     HashSet<restate_common::types::EntryIndex>,
                 )> for Suspended
             {
                 fn from(
                     (metadata, waiting_for_completed_entries): (
-                        restate_common::types::InvocationMetadata,
+                        restate_storage_api::status_table::InvocationMetadata,
                         HashSet<restate_common::types::EntryIndex>,
                     ),
                 ) -> Self {
@@ -555,7 +559,7 @@ pub mod storage {
                 ingress_id.0.to_string()
             }
 
-            impl TryFrom<JournalEntry> for restate_common::types::JournalEntry {
+            impl TryFrom<JournalEntry> for restate_storage_api::journal_table::JournalEntry {
                 type Error = ConversionError;
 
                 fn try_from(value: JournalEntry) -> Result<Self, Self::Error> {
@@ -563,11 +567,13 @@ pub mod storage {
                         .kind
                         .ok_or(ConversionError::missing_field("kind"))?
                     {
-                        Kind::Entry(journal_entry) => restate_common::types::JournalEntry::Entry(
-                            restate_common::types::EnrichedRawEntry::try_from(journal_entry)?,
-                        ),
+                        Kind::Entry(journal_entry) => {
+                            restate_storage_api::journal_table::JournalEntry::Entry(
+                                restate_common::types::EnrichedRawEntry::try_from(journal_entry)?,
+                            )
+                        }
                         Kind::CompletionResult(completion_result) => {
-                            restate_common::types::JournalEntry::Completion(
+                            restate_storage_api::journal_table::JournalEntry::Completion(
                                 restate_common::types::CompletionResult::try_from(
                                     completion_result,
                                 )?,
@@ -579,15 +585,15 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::JournalEntry> for JournalEntry {
-                fn from(value: restate_common::types::JournalEntry) -> Self {
+            impl From<restate_storage_api::journal_table::JournalEntry> for JournalEntry {
+                fn from(value: restate_storage_api::journal_table::JournalEntry) -> Self {
                     match value {
-                        restate_common::types::JournalEntry::Entry(entry) => {
+                        restate_storage_api::journal_table::JournalEntry::Entry(entry) => {
                             JournalEntry::from(entry)
                         }
-                        restate_common::types::JournalEntry::Completion(completion) => {
-                            JournalEntry::from(completion)
-                        }
+                        restate_storage_api::journal_table::JournalEntry::Completion(
+                            completion,
+                        ) => JournalEntry::from(completion),
                     }
                 }
             }
@@ -924,7 +930,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<OutboxMessage> for restate_common::types::OutboxMessage {
+            impl TryFrom<OutboxMessage> for restate_storage_api::outbox_table::OutboxMessage {
                 type Error = ConversionError;
 
                 fn try_from(value: OutboxMessage) -> Result<Self, Self::Error> {
@@ -934,7 +940,7 @@ pub mod storage {
                     {
                         outbox_message::OutboxMessage::ServiceInvocationCase(
                             service_invocation,
-                        ) => restate_common::types::OutboxMessage::ServiceInvocation(
+                        ) => restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(
                             restate_common::types::ServiceInvocation::try_from(
                                 service_invocation
                                     .service_invocation
@@ -943,7 +949,7 @@ pub mod storage {
                         ),
                         outbox_message::OutboxMessage::ServiceInvocationResponse(
                             invocation_response,
-                        ) => restate_common::types::OutboxMessage::ServiceResponse(
+                        ) => restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
                             restate_common::types::InvocationResponse {
                                 entry_index: invocation_response.entry_index,
                                 id: restate_common::types::ServiceInvocationId::try_from(
@@ -959,7 +965,7 @@ pub mod storage {
                             },
                         ),
                         outbox_message::OutboxMessage::IngressResponse(ingress_response) => {
-                            restate_common::types::OutboxMessage::IngressResponse {
+                            restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
                                 service_invocation_id:
                                     restate_common::types::ServiceInvocationId::try_from(
                                         ingress_response.service_invocation_id.ok_or(
@@ -982,10 +988,10 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::OutboxMessage> for OutboxMessage {
-                fn from(value: restate_common::types::OutboxMessage) -> Self {
+            impl From<restate_storage_api::outbox_table::OutboxMessage> for OutboxMessage {
+                fn from(value: restate_storage_api::outbox_table::OutboxMessage) -> Self {
                     let outbox_message = match value {
-                        restate_common::types::OutboxMessage::ServiceInvocation(
+                        restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(
                             service_invocation,
                         ) => outbox_message::OutboxMessage::ServiceInvocationCase(
                             OutboxServiceInvocation {
@@ -994,7 +1000,7 @@ pub mod storage {
                                 )),
                             },
                         ),
-                        restate_common::types::OutboxMessage::ServiceResponse(
+                        restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
                             invocation_response,
                         ) => outbox_message::OutboxMessage::ServiceInvocationResponse(
                             OutboxServiceInvocationResponse {
@@ -1007,7 +1013,7 @@ pub mod storage {
                                 )),
                             },
                         ),
-                        restate_common::types::OutboxMessage::IngressResponse {
+                        restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
                             ingress_id,
                             service_invocation_id,
                             response,
@@ -1076,30 +1082,32 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<Timer> for restate_common::types::Timer {
+            impl TryFrom<Timer> for restate_storage_api::timer_table::Timer {
                 type Error = ConversionError;
 
                 fn try_from(value: Timer) -> Result<Self, Self::Error> {
                     Ok(
                         match value.value.ok_or(ConversionError::missing_field("value"))? {
                             timer::Value::CompleteSleepEntry(_) => {
-                                restate_common::types::Timer::CompleteSleepEntry
+                                restate_storage_api::timer_table::Timer::CompleteSleepEntry
                             }
-                            timer::Value::Invoke(si) => restate_common::types::Timer::Invoke(
-                                restate_common::types::ServiceInvocation::try_from(si)?,
-                            ),
+                            timer::Value::Invoke(si) => {
+                                restate_storage_api::timer_table::Timer::Invoke(
+                                    restate_common::types::ServiceInvocation::try_from(si)?,
+                                )
+                            }
                         },
                     )
                 }
             }
 
-            impl From<restate_common::types::Timer> for Timer {
-                fn from(value: restate_common::types::Timer) -> Self {
+            impl From<restate_storage_api::timer_table::Timer> for Timer {
+                fn from(value: restate_storage_api::timer_table::Timer) -> Self {
                     match value {
-                        restate_common::types::Timer::CompleteSleepEntry => Timer {
+                        restate_storage_api::timer_table::Timer::CompleteSleepEntry => Timer {
                             value: Some(timer::Value::CompleteSleepEntry(Default::default())),
                         },
-                        restate_common::types::Timer::Invoke(si) => Timer {
+                        restate_storage_api::timer_table::Timer::Invoke(si) => Timer {
                             value: Some(timer::Value::Invoke(ServiceInvocation::from(si))),
                         },
                     }

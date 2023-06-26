@@ -1,6 +1,6 @@
 use crate::{assert_stream_eq, mock_service_invocation};
-use restate_common::types::{InboxEntry, ServiceId};
-use restate_storage_api::inbox_table::InboxTable;
+use restate_common::types::ServiceId;
+use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::{Storage, Transaction};
 use restate_storage_rocksdb::RocksDBStorage;
 
