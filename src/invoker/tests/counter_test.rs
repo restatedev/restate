@@ -9,7 +9,7 @@ use hyper::Uri;
 use mocks::{InMemoryJournalStorage, InMemoryStateStorage, SimulatorAction};
 use prost::Message;
 use restate_common::types::{CompletionResult, EnrichedEntryHeader, ServiceInvocationId};
-use restate_invoker::{Invoker, Kind, OutputEffect, UnboundedInvokerInputSender};
+use restate_invoker::{ChannelServiceHandle, Effect, EffectKind, Service};
 use restate_journal::raw::RawEntryCodec;
 use restate_journal::{
     Completion, Entry, EntryResult, GetStateEntry, GetStateValue, OutputStreamEntry,
@@ -22,7 +22,7 @@ use restate_test_util::{assert, assert_eq, let_assert, test};
 use uuid::Uuid;
 
 type PartitionProcessorSimulator =
-    mocks::PartitionProcessorSimulator<UnboundedInvokerInputSender, ProtobufRawEntryCodec>;
+    mocks::PartitionProcessorSimulator<ChannelServiceHandle, ProtobufRawEntryCodec>;
 
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct CounterAddRequest {
@@ -42,9 +42,9 @@ pub struct CounterUpdateResult {
 fn register_counter_test_steps(partition_processor_simulator: &mut PartitionProcessorSimulator) {
     partition_processor_simulator.append_handler_step(|out| {
         let_assert!(
-            OutputEffect {
+            Effect {
                 service_invocation_id,
-                kind: Kind::JournalEntry {
+                kind: EffectKind::JournalEntry {
                     entry_index: 1,
                     entry,
                     ..
@@ -77,8 +77,8 @@ fn register_set_state_and_output_steps(
 ) {
     partition_processor_simulator.append_handler_step(|out| {
         let_assert!(
-            OutputEffect {
-                kind: Kind::JournalEntry {
+            Effect {
+                kind: EffectKind::JournalEntry {
                     entry_index: 2,
                     entry,
                     ..
@@ -92,8 +92,8 @@ fn register_set_state_and_output_steps(
     });
     partition_processor_simulator.append_handler_step(|out| {
         let_assert!(
-            OutputEffect {
-                kind: Kind::JournalEntry {
+            Effect {
+                kind: EffectKind::JournalEntry {
                     entry_index: 3,
                     entry,
                     ..
@@ -138,7 +138,7 @@ async fn bidi_stream() {
 
     // Start invoker
     let options = restate_invoker::Options::default();
-    let remote_invoker: Invoker<
+    let remote_invoker: Service<
         ProtobufRawEntryCodec,
         InMemoryJournalStorage,
         InMemoryStateStorage,
@@ -153,7 +153,7 @@ async fn bidi_stream() {
 
     // Build the partition processor simulator
     let mut partition_processor_simulator =
-        PartitionProcessorSimulator::new(journal_reader, remote_invoker.create_sender()).await;
+        PartitionProcessorSimulator::new(journal_reader, remote_invoker.handle()).await;
     partition_processor_simulator
         .invoke(
             sid.clone(),

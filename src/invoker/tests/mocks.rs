@@ -18,8 +18,7 @@ use restate_common::types::{
 };
 use restate_common::utils::GenericError;
 use restate_invoker::{
-    EagerState, InvokeInputJournal, InvokerInputSender, JournalReader, Kind, OutputEffect,
-    StateReader,
+    EagerState, Effect, EffectKind, InvokeInputJournal, JournalReader, ServiceHandle, StateReader,
 };
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use restate_journal::{Completion, EntryEnricher};
@@ -31,7 +30,7 @@ use tracing::debug;
 pub struct PartitionProcessorSimulator<InvokerInput, Codec> {
     journals: InMemoryJournalStorage,
     in_tx: InvokerInput,
-    out_rx: mpsc::Receiver<OutputEffect>,
+    out_rx: mpsc::Receiver<Effect>,
 
     steps: VecDeque<SimulatorStep>,
 
@@ -39,7 +38,7 @@ pub struct PartitionProcessorSimulator<InvokerInput, Codec> {
 }
 
 enum SimulatorStep {
-    Handle(Box<dyn FnOnce(OutputEffect) -> SimulatorAction>),
+    Handle(Box<dyn FnOnce(Effect) -> SimulatorAction>),
     Do(Duration, Box<dyn FnOnce() -> SimulatorAction>),
 }
 
@@ -59,7 +58,7 @@ impl Debug for SimulatorStep {
 
 impl<InvokerInput, Codec> PartitionProcessorSimulator<InvokerInput, Codec>
 where
-    InvokerInput: InvokerInputSender,
+    InvokerInput: ServiceHandle,
 {
     pub async fn new(journals: InMemoryJournalStorage, mut in_tx: InvokerInput) -> Self {
         let (out_tx, out_rx) = mpsc::channel(100);
@@ -76,7 +75,7 @@ where
 
     pub fn append_handler_step<Fn>(&mut self, f: Fn)
     where
-        Fn: FnOnce(OutputEffect) -> SimulatorAction + 'static,
+        Fn: FnOnce(Effect) -> SimulatorAction + 'static,
     {
         self.steps.push_back(SimulatorStep::Handle(Box::new(f)));
     }
@@ -100,7 +99,7 @@ where
 
 impl<InvokerInput, Codec> PartitionProcessorSimulator<InvokerInput, Codec>
 where
-    InvokerInput: InvokerInputSender + Debug,
+    InvokerInput: ServiceHandle + Debug,
     Codec: RawEntryCodec,
 {
     pub async fn invoke(
@@ -139,10 +138,10 @@ where
                     let out = self.out_rx.recv().await.unwrap();
                     debug!("Got from invoker: {:?}", out);
 
-                    if let OutputEffect {
+                    if let Effect {
                         service_invocation_id,
                         kind:
-                            Kind::JournalEntry {
+                            EffectKind::JournalEntry {
                                 entry_index, entry, ..
                             },
                     } = &out

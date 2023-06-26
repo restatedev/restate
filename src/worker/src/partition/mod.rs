@@ -56,7 +56,7 @@ impl<RawEntryCodec, InvokerInputSender, NetworkHandle>
     PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle>
 where
     RawEntryCodec: restate_journal::raw::RawEntryCodec + Default + Debug,
-    InvokerInputSender: restate_invoker::InvokerInputSender + Clone,
+    InvokerInputSender: restate_invoker::ServiceHandle + Clone,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
     #[allow(clippy::too_many_arguments)]
