@@ -46,8 +46,9 @@ restate_timer_queue = { workspace = true }
 restate_queue = { workspace = true }
 
 [dev-dependencies]
-uuid = { workspace = true }
+restate_journal = { workspace = true, features = ["mocks"] }
 restate_test_util = { workspace = true }
 tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
 
 restate_service_protocol = { workspace = true, features = ["codec"] }

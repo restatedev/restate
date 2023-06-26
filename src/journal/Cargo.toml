@@ -14,3 +14,7 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 restate_common = { workspace = true }
 thiserror = { workspace = true }
+
+[features]
+default = []
+mocks = []

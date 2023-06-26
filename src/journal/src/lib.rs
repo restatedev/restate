@@ -9,6 +9,8 @@ pub mod raw;
 pub use enriched::EntryEnricher;
 mod entries;
 pub use entries::*;
+#[cfg(feature = "mocks")]
+pub mod mocks;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
