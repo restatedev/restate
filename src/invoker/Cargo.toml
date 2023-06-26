@@ -48,6 +48,7 @@ restate_queue = { workspace = true }
 [dev-dependencies]
 restate_journal = { workspace = true, features = ["mocks"] }
 restate_test_util = { workspace = true }
+tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 

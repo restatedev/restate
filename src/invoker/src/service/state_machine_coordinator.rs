@@ -99,7 +99,7 @@ impl PartitionInvocationStateMachineCoordinator {
         &mut self,
         service_state: &mut ServiceState<JR, SR, EE, SER>,
         status: &mut status_store::InvocationStatusStore,
-        invoke_input_cmd: InvokeInputCommand,
+        invoke_input_cmd: InvokeCommand,
     ) where
         JR: JournalReader + Clone + Send + Sync + 'static,
         <JR as JournalReader>::JournalStream: Unpin + Send + 'static,

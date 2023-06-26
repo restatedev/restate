@@ -3,8 +3,6 @@ use super::*;
 use crate::status_handle::StatusHandle;
 use codederror::CodedError;
 use futures::future::BoxFuture;
-use futures::stream;
-use futures::stream::{PollNext, StreamExt};
 use futures::FutureExt;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
@@ -37,15 +35,25 @@ pub(crate) struct Input<I> {
     pub(crate) inner: I,
 }
 
+impl<I> Input<I> {
+    fn new(partition_leader_epoch: PartitionLeaderEpoch, inner: I) -> Self {
+        Self {
+            partition: partition_leader_epoch,
+            inner,
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct InvokeInputCommand {
+pub(crate) struct InvokeCommand {
     service_invocation_id: ServiceInvocationId,
     #[serde(skip)]
     journal: InvokeInputJournal,
 }
 
 #[derive(Debug)]
-pub(crate) enum OtherInputCommand {
+pub(crate) enum Command {
+    Invoke(InvokeCommand),
     Completion {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
@@ -70,9 +78,7 @@ pub(crate) enum OtherInputCommand {
 
 #[derive(Debug, Clone)]
 pub struct ChannelServiceHandle {
-    invoke_input: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
-    resume_input: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
-    other_input: mpsc::UnboundedSender<Input<OtherInputCommand>>,
+    input: mpsc::UnboundedSender<Input<Command>>,
 }
 
 impl ServiceHandle for ChannelServiceHandle {
@@ -85,13 +91,13 @@ impl ServiceHandle for ChannelServiceHandle {
         journal: InvokeInputJournal,
     ) -> Self::Future {
         futures::future::ready(
-            self.invoke_input
+            self.input
                 .send(Input {
                     partition,
-                    inner: InvokeInputCommand {
+                    inner: Command::Invoke(InvokeCommand {
                         service_invocation_id,
                         journal,
-                    },
+                    }),
                 })
                 .map_err(|_| ServiceNotRunning),
         )
@@ -104,13 +110,13 @@ impl ServiceHandle for ChannelServiceHandle {
         journal: InvokeInputJournal,
     ) -> Self::Future {
         futures::future::ready(
-            self.resume_input
+            self.input
                 .send(Input {
                     partition,
-                    inner: InvokeInputCommand {
+                    inner: Command::Invoke(InvokeCommand {
                         service_invocation_id,
                         journal,
-                    },
+                    }),
                 })
                 .map_err(|_| ServiceNotRunning),
         )
@@ -123,10 +129,10 @@ impl ServiceHandle for ChannelServiceHandle {
         completion: Completion,
     ) -> Self::Future {
         futures::future::ready(
-            self.other_input
+            self.input
                 .send(Input {
                     partition,
-                    inner: OtherInputCommand::Completion {
+                    inner: Command::Completion {
                         service_invocation_id,
                         completion,
                     },
@@ -142,10 +148,10 @@ impl ServiceHandle for ChannelServiceHandle {
         entry_index: EntryIndex,
     ) -> Self::Future {
         futures::future::ready(
-            self.other_input
+            self.input
                 .send(Input {
                     partition,
-                    inner: OtherInputCommand::StoredEntryAck {
+                    inner: Command::StoredEntryAck {
                         service_invocation_id,
                         entry_index,
                     },
@@ -156,10 +162,10 @@ impl ServiceHandle for ChannelServiceHandle {
 
     fn abort_all_partition(&mut self, partition: PartitionLeaderEpoch) -> Self::Future {
         futures::future::ready(
-            self.other_input
+            self.input
                 .send(Input {
                     partition,
-                    inner: OtherInputCommand::AbortAllPartition,
+                    inner: Command::AbortAllPartition,
                 })
                 .map_err(|_| ServiceNotRunning),
         )
@@ -171,10 +177,10 @@ impl ServiceHandle for ChannelServiceHandle {
         service_invocation_id: ServiceInvocationId,
     ) -> Self::Future {
         futures::future::ready(
-            self.other_input
+            self.input
                 .send(Input {
                     partition,
-                    inner: OtherInputCommand::Abort(service_invocation_id),
+                    inner: Command::Abort(service_invocation_id),
                 })
                 .map_err(|_| ServiceNotRunning),
         )
@@ -186,17 +192,17 @@ impl ServiceHandle for ChannelServiceHandle {
         sender: mpsc::Sender<Effect>,
     ) -> Self::Future {
         futures::future::ready(
-            self.other_input
+            self.input
                 .send(Input {
                     partition,
-                    inner: OtherInputCommand::RegisterPartition(sender),
+                    inner: Command::RegisterPartition(sender),
                 })
                 .map_err(|_| ServiceNotRunning),
         )
     }
 }
 
-pub struct ChannelStatusReader(pub(crate) mpsc::UnboundedSender<Input<OtherInputCommand>>);
+pub struct ChannelStatusReader(pub(crate) mpsc::UnboundedSender<Input<Command>>);
 
 impl StatusHandle for ChannelStatusReader {
     type Iterator = itertools::Either<
@@ -211,7 +217,7 @@ impl StatusHandle for ChannelStatusReader {
             .0
             .send(Input {
                 partition: (0, 0),
-                inner: OtherInputCommand::ReadStatus(cmd),
+                inner: Command::ReadStatus(cmd),
             })
             .is_err()
         {
@@ -240,14 +246,10 @@ pub(crate) type HttpsClient = hyper::Client<
 
 #[derive(Debug)]
 pub struct Service<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
-    invoke_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
-    resume_input_rx: mpsc::UnboundedReceiver<Input<InvokeInputCommand>>,
-    other_input_rx: mpsc::UnboundedReceiver<Input<OtherInputCommand>>,
+    input_rx: mpsc::UnboundedReceiver<Input<Command>>,
 
     // Used for constructing the invoker sender
-    invoke_input_tx: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
-    resume_input_tx: mpsc::UnboundedSender<Input<InvokeInputCommand>>,
-    other_input_tx: mpsc::UnboundedSender<Input<OtherInputCommand>>,
+    input_tx: mpsc::UnboundedSender<Input<Command>>,
 
     // Service endpoints registry
     service_endpoint_registry: ServiceEndpointRegistry,
@@ -291,19 +293,13 @@ impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER> {
         state_reader: SR,
         entry_enricher: EE,
     ) -> Service<C, JR, SR, EE, SER> {
-        let (invoke_input_tx, invoke_input_rx) = mpsc::unbounded_channel();
-        let (resume_input_tx, resume_input_rx) = mpsc::unbounded_channel();
-        let (other_input_tx, other_input_rx) = mpsc::unbounded_channel();
+        let (input_tx, input_rx) = mpsc::unbounded_channel();
 
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
         Self {
-            invoke_input_rx,
-            resume_input_rx,
-            other_input_rx,
-            invoke_input_tx,
-            resume_input_tx,
-            other_input_tx,
+            input_rx,
+            input_tx,
             service_endpoint_registry,
             invocation_tasks_tx,
             invocation_tasks_rx,
@@ -334,14 +330,12 @@ where
 {
     pub fn handle(&self) -> ChannelServiceHandle {
         ChannelServiceHandle {
-            invoke_input: self.invoke_input_tx.clone(),
-            resume_input: self.resume_input_tx.clone(),
-            other_input: self.other_input_tx.clone(),
+            input: self.input_tx.clone(),
         }
     }
 
     pub fn status_reader(&self) -> ChannelStatusReader {
-        ChannelStatusReader(self.other_input_tx.clone())
+        ChannelStatusReader(self.input_tx.clone())
     }
 
     pub async fn run(self, drain: drain::Watch) {
@@ -349,9 +343,7 @@ where
         let client = self.get_client();
 
         let Service {
-            mut invoke_input_rx,
-            mut resume_input_rx,
-            mut other_input_rx,
+            mut input_rx,
             service_endpoint_registry,
             invocation_tasks_tx,
             mut invocation_tasks_rx,
@@ -370,14 +362,6 @@ where
 
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
-
-        // Merge the two invoke and resume streams into a single stream
-        let invoke_input_stream = stream::poll_fn(move |cx| invoke_input_rx.poll_recv(cx));
-        let resume_input_stream = stream::poll_fn(move |cx| resume_input_rx.poll_recv(cx));
-        let mut invoke_stream =
-            stream::select_with_strategy(invoke_input_stream, resume_input_stream, |_: &mut ()| {
-                PollNext::Right
-            });
 
         // Prepare the segmented queue
         let mut segmented_input_queue = SegmentQueue::init(tmp_dir, 1_056_784)
@@ -406,32 +390,20 @@ where
 
         loop {
             tokio::select! {
-                // --- Spillable queue loading/offloading
-                Some(invoke_input_command) = invoke_stream.next() => {
-                    segmented_input_queue.enqueue(invoke_input_command).await
-                },
-                Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() => {
-                    if let Some(psm) = state_machine_coordinator.resolve_partition(invoke_input_command.partition) {
-                        psm.handle_invoke(
-                            &mut service_state,
-                            &mut status_store,
-                            invoke_input_command.inner,
-                        ).await;
-                    } else {
-                        trace!(
-                            restate.invoker.partition_leader_epoch = ?invoke_input_command.partition,
-                            "Ignoring Invoke command because there is no matching partition"
-                        );
-                    }
-                },
-
-                // --- Other commands (they don't go through the spillable queue)
-                Some(input_message) = other_input_rx.recv() => {
+                Some(input_message) = input_rx.recv() => {
                     match input_message {
-                        Input { partition, inner: OtherInputCommand::RegisterPartition(sender) } => {
+                        // --- Spillable queue loading/offloading
+                        Input { partition, inner: Command::Invoke(invoke_command) } => {
+                            segmented_input_queue.enqueue(Input::new(
+                                partition,
+                                invoke_command,
+                            )).await;
+                        },
+                        // --- Other commands (they don't go through the spillable queue)
+                        Input { partition, inner: Command::RegisterPartition(sender) } => {
                             state_machine_coordinator.register_partition(partition, sender);
                         },
-                        Input { partition, inner: OtherInputCommand::Abort(service_invocation_id) } => {
+                        Input { partition, inner: Command::Abort(service_invocation_id) } => {
                             if let Some(psm) = state_machine_coordinator.resolve_partition(partition) {
                                 psm.abort(service_invocation_id)
                             } else {
@@ -441,7 +413,7 @@ where
                                 );
                             }
                         }
-                        Input { partition, inner: OtherInputCommand::AbortAllPartition } => {
+                        Input { partition, inner: Command::AbortAllPartition } => {
                             if let Some(mut partition_state_machine) = state_machine_coordinator.remove_partition(partition) {
                                 partition_state_machine.abort_all();
                             } else {
@@ -451,7 +423,7 @@ where
                                 );
                             }
                         }
-                        Input { partition, inner: OtherInputCommand::Completion { service_invocation_id, completion }} => {
+                        Input { partition, inner: Command::Completion { service_invocation_id, completion }} => {
                             if let Some(psm) = state_machine_coordinator.resolve_partition(partition) {
                                 psm.handle_completion(service_invocation_id, completion);
                             } else {
@@ -461,7 +433,7 @@ where
                                 );
                             }
                         },
-                        Input { partition, inner: OtherInputCommand::StoredEntryAck { service_invocation_id, entry_index, .. } } => {
+                        Input { partition, inner: Command::StoredEntryAck { service_invocation_id, entry_index, .. } } => {
                             if let Some(psm) = state_machine_coordinator.resolve_partition(partition) {
                                 psm.handle_stored_entry_ack(
                                     &mut service_state,
@@ -477,11 +449,27 @@ where
                                 );
                             }
                         },
-                        Input { inner: OtherInputCommand::ReadStatus(cmd), .. } => {
+                        Input { inner: Command::ReadStatus(cmd), .. } => {
                             let _ = cmd.reply(status_store.iter().collect());
                         }
                     }
                 },
+
+                Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() => {
+                    if let Some(psm) = state_machine_coordinator.resolve_partition(invoke_input_command.partition) {
+                        psm.handle_invoke(
+                            &mut service_state,
+                            &mut status_store,
+                            invoke_input_command.inner,
+                        ).await;
+                    } else {
+                        trace!(
+                            restate.invoker.partition_leader_epoch = ?invoke_input_command.partition,
+                            "Ignoring Invoke command because there is no matching partition"
+                        );
+                    }
+                },
+
                 Some(invocation_task_msg) = invocation_tasks_rx.recv() => {
                     let partition_state_machine =
                         if let Some(psm) = state_machine_coordinator.resolve_partition(invocation_task_msg.partition) {
@@ -616,5 +604,72 @@ impl<InvokerCodedError: InvokerError + CodedError> From<&InvokerCodedError>
             err: value.to_invocation_error(),
             doc_error_code: value.code(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{journal_reader, state_reader, InvokeInputJournal, Service, ServiceHandle};
+    use bytes::Bytes;
+    use restate_common::retry_policy::RetryPolicy;
+    use restate_common::types::{InvocationId, ServiceInvocationId};
+    use restate_service_metadata::InMemoryServiceEndpointRegistry;
+    use restate_service_protocol::codec::ProtobufRawEntryCodec;
+    use restate_test_util::{check, test};
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    #[test(tokio::test)]
+    async fn input_order_is_maintained() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let service: Service<ProtobufRawEntryCodec, _, _, _, _> = Service::new(
+            // all invocations are unknown leading to immediate retries
+            InMemoryServiceEndpointRegistry::default(),
+            // fixed amount of retries so that an invocation eventually completes with a failure
+            RetryPolicy::fixed_delay(Duration::ZERO, 1),
+            Duration::ZERO,
+            Duration::ZERO,
+            false,
+            1024,
+            None,
+            None,
+            tempdir.into_path(),
+            journal_reader::mocks::EmptyJournalReader,
+            state_reader::mocks::EmptyStateReader,
+            restate_journal::mocks::MockEntryEnricher::default(),
+        );
+
+        let (signal, watch) = drain::channel();
+
+        let mut handle = service.handle();
+
+        let invoker_join_handle = tokio::spawn(service.run(watch));
+
+        let partition_leader_epoch = (0, 0);
+        let sid = ServiceInvocationId::new("TestService", Bytes::new(), InvocationId::now_v7());
+
+        let (output_tx, mut output_rx) = mpsc::channel(1);
+
+        handle
+            .register_partition(partition_leader_epoch, output_tx)
+            .await
+            .unwrap();
+        handle
+            .invoke(
+                partition_leader_epoch,
+                sid,
+                InvokeInputJournal::NoCachedJournal,
+            )
+            .await
+            .unwrap();
+
+        // If input order between 'register partition' and 'invoke' is not maintained, then it can happen
+        // that 'invoke' arrives before 'register partition'. In this case, the invoker service will drop
+        // the invocation and we won't see a result for the invocation (failure because the service endpoint
+        // cannot be resolved).
+        check!(let Some(_) = output_rx.recv().await);
+
+        signal.drain().await;
+        invoker_join_handle.await.unwrap();
     }
 }
