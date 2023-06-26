@@ -38,6 +38,7 @@ restate_fs_util = { workspace = true }
 restate_service_key_extractor = { workspace = true, features = ["json"] }
 restate_service_metadata = { workspace = true, features = ["serde", "serde_schema"] }
 restate_service_protocol = { workspace = true, features = ["discovery"] }
+restate_worker_api = { workspace = true }
 prost-reflect = { workspace = true }
 
 # Others

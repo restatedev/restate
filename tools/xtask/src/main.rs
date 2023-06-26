@@ -1,10 +1,9 @@
 use anyhow::bail;
 use restate_common::retry_policy::RetryPolicy;
-use restate_common::worker_command::WorkerCommandSender;
+use restate_common::types::ServiceInvocationId;
 use schemars::gen::SchemaSettings;
 use std::env;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()
@@ -22,6 +21,17 @@ fn generate_default_config() -> anyhow::Result<()> {
     Ok(())
 }
 
+// Need this for worker Handle
+struct Mock;
+
+impl restate_worker_api::Handle for Mock {
+    type Future = std::future::Ready<Result<(), restate_worker_api::Error>>;
+
+    fn kill_invocation(&self, _: ServiceInvocationId) -> Self::Future {
+        unimplemented!()
+    }
+}
+
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let meta_options = restate_meta::Options::default();
     let rest_address = meta_options.rest_address();
@@ -31,9 +41,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
 
     // We start the Meta component, then download the openapi schema generated
     let (shutdown_signal, shutdown_watch) = drain::channel();
-    let (command_tx, _command_rx) = mpsc::channel(1);
-    let worker_command_tx = WorkerCommandSender::new(command_tx);
-    let join_handle = tokio::spawn(meta_service.run(shutdown_watch, worker_command_tx));
+    let join_handle = tokio::spawn(meta_service.run(shutdown_watch, Mock));
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)
         .retry_operation(|| async { reqwest::get(openapi_address.clone()).await?.text().await })
