@@ -1,0 +1,12 @@
+[package]
+name = "restate_worker_api"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate_common = { workspace = true }
+thiserror = { workspace = true }

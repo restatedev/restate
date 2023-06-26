@@ -86,6 +86,7 @@ restate_timer = { path = "src/timer" }
 restate_timer_queue = { path = "src/timer_queue" }
 restate_tracing_instrumentation = { path = "src/tracing_instrumentation" }
 restate_worker = { path = "src/worker" }
+restate_worker_api = { path = "src/worker_api" }
 
 [profile.release]
 opt-level = 3
