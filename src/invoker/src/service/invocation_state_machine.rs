@@ -193,17 +193,22 @@ impl InvocationStateMachine {
 
     /// Returns Some() with the timer for the next retry, otherwise None if retry limit exhausted
     pub(super) fn handle_task_error(&mut self) -> Option<Duration> {
-        debug_assert!(matches!(
-            &self.invocation_state,
-            InvocationState::InFlight { .. } | InvocationState::New
-        ));
-
         let journal_tracker = match &self.invocation_state {
             InvocationState::InFlight {
                 journal_tracker, ..
             } => *journal_tracker,
             InvocationState::New => JournalTracker::default(),
-            _ => unreachable!(),
+            InvocationState::WaitingRetry {
+                journal_tracker,
+                timer_fired,
+            } => {
+                // TODO: https://github.com/restatedev/restate/issues/538
+                assert!(timer_fired,
+                        "Restate does not support multiple retry timers yet. This would require \
+                        deduplicating timers by some mean (e.g. fencing them off, overwriting \
+                        old timers, not registering a new timer if an old timer has not fired yet, etc.)");
+                *journal_tracker
+            }
         };
         let next_timer = self.retry_iter.next();
 
@@ -231,5 +236,28 @@ impl InvocationStateMachine {
     #[inline]
     pub(super) fn invocation_state_debug(&self) -> impl fmt::Debug + '_ {
         &self.invocation_state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::service::invocation_state_machine::{InvocationState, InvocationStateMachine};
+    use restate_common::retry_policy::RetryPolicy;
+    use restate_test_util::{check, test};
+    use std::time::Duration;
+
+    #[test]
+    fn handle_error_when_waiting_for_retry() {
+        let mut invocation_state_machine =
+            InvocationStateMachine::create(RetryPolicy::fixed_delay(Duration::from_secs(1), 10));
+
+        assert!(invocation_state_machine.handle_task_error().is_some());
+        check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+
+        invocation_state_machine.notify_retry_timer_fired();
+
+        // We stay in `WaitingForRetry`
+        assert!(invocation_state_machine.handle_task_error().is_some());
+        check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
     }
 }
