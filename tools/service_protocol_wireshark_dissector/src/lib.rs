@@ -3,7 +3,7 @@ use mlua::prelude::*;
 use mlua::{Table, Value};
 
 use restate_common::errors::InvocationError;
-use restate_journal::raw::RawEntryCodec;
+use restate_common::journal::raw::RawEntryCodec;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{Decoder, MessageType, ProtocolMessage};
 

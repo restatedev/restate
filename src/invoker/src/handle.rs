@@ -1,10 +1,10 @@
 use super::Effect;
 
+use restate_common::journal::raw::PlainRawEntry;
+use restate_common::journal::Completion;
 use restate_common::types::{
     EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceInvocationId,
 };
-use restate_journal::raw::PlainRawEntry;
-use restate_journal::Completion;
 use std::future::Future;
 use tokio::sync::mpsc;
 

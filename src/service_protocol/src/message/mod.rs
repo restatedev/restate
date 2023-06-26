@@ -6,9 +6,9 @@ use super::pb;
 use bytes::Bytes;
 use prost::Message;
 use restate_common::errors::InvocationError;
+use restate_common::journal::raw::PlainRawEntry;
+use restate_common::journal::Completion;
 use restate_common::types::CompletionResult;
-use restate_journal::raw::PlainRawEntry;
-use restate_journal::Completion;
 
 mod encoding;
 mod header;

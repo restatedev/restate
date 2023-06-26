@@ -1,8 +1,8 @@
 //! This crate defines the journal model.
 
+use crate::types::{CompletionResult, EntryIndex, ResponseResult};
 use bytes::Bytes;
 use bytestring::ByteString;
-use restate_common::types::{CompletionResult, EntryIndex, ResponseResult};
 
 mod enriched;
 pub mod raw;

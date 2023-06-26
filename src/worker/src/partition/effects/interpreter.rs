@@ -4,14 +4,16 @@ use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use restate_common::errors::InvocationErrorCode;
+use restate_common::journal::raw::{
+    PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
+};
+use restate_common::journal::Completion;
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationMetadata,
     InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId,
     ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext, Timer,
 };
 use restate_invoker::InvokeInputJournal;
-use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
-use restate_journal::Completion;
 use std::marker::PhantomData;
 
 #[derive(Debug, thiserror::Error)]

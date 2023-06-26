@@ -14,14 +14,14 @@ use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
 use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
+use restate_common::journal::raw::{Header, PlainRawEntry, RawEntryHeader};
+use restate_common::journal::Completion;
+use restate_common::journal::{EntryEnricher, EntryType};
 use restate_common::types::{
     EnrichedRawEntry, EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceInvocationId,
     ServiceInvocationSpanContext,
 };
 use restate_errors::warn_it;
-use restate_journal::raw::{Header, PlainRawEntry, RawEntryHeader};
-use restate_journal::Completion;
-use restate_journal::{EntryEnricher, EntryType};
 use restate_service_metadata::{EndpointMetadata, ProtocolType};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,

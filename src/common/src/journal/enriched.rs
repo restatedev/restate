@@ -1,9 +1,10 @@
-use crate::raw::{Header, PlainRawEntry, RawEntryHeader};
-use crate::EntryType;
-use restate_common::types::ServiceInvocationSpanContext;
+use super::raw::{Header, PlainRawEntry, RawEntryHeader};
+use super::EntryType;
+
+use crate::types::ServiceInvocationSpanContext;
 
 // Re-exports that should be moved here. See https://github.com/restatedev/restate/issues/420
-pub use restate_common::types::{EnrichedEntryHeader, EnrichedRawEntry};
+pub use crate::types::{EnrichedEntryHeader, EnrichedRawEntry};
 
 pub trait EntryEnricher {
     fn enrich_entry(

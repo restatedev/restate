@@ -1,6 +1,6 @@
 use futures::Stream;
+use restate_common::journal::raw::PlainRawEntry;
 use restate_common::types::{JournalMetadata, ServiceInvocationId};
-use restate_journal::raw::PlainRawEntry;
 use std::future::Future;
 
 pub trait JournalReader {

@@ -23,7 +23,6 @@ luajit = ["mlua/luajit"]
 # Dependencies needed to decode packets
 restate_common = { workspace = true }
 restate_service_protocol = { workspace = true, features = ["codec", "message"] }
-restate_journal = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 

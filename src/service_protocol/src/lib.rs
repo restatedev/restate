@@ -23,7 +23,7 @@ pub mod pb {
 mod pb_into {
     use super::pb::protocol::*;
 
-    use restate_journal::*;
+    use restate_common::journal::*;
 
     impl TryFrom<PollInputStreamEntryMessage> for Entry {
         type Error = &'static str;

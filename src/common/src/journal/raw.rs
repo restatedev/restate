@@ -1,5 +1,5 @@
 use super::*;
-use restate_common::types::RawEntry;
+use crate::types::RawEntry;
 use std::fmt::Debug;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

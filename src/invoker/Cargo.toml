@@ -40,7 +40,6 @@ opentelemetry-http = { workspace = true }
 
 codederror = { workspace = true }
 restate_errors = { workspace = true }
-restate_journal = { workspace = true }
 restate_service_metadata = { workspace = true }
 restate_service_protocol = { workspace = true, features = ["message"] }
 restate_timer_queue = { workspace = true }

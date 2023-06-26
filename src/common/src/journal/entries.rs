@@ -1,6 +1,7 @@
 use super::*;
-use restate_common::errors::UserErrorCode;
-use restate_common::types::EntryIndex;
+
+use crate::errors::UserErrorCode;
+use crate::types::EntryIndex;
 use std::fmt;
 
 pub trait CompletableEntry: private::Sealed {
