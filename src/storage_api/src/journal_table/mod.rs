@@ -1,5 +1,12 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use restate_common::types::{EntryIndex, JournalEntry, ServiceId};
+use restate_common::types::{CompletionResult, EnrichedRawEntry, EntryIndex, ServiceId};
+
+/// Different types of journal entries persisted by the runtime
+#[derive(Debug)]
+pub enum JournalEntry {
+    Entry(EnrichedRawEntry),
+    Completion(CompletionResult),
+}
 
 pub trait JournalTable {
     fn put_journal_entry(

@@ -5,7 +5,6 @@ use base64::prelude::*;
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::{SpanContext, TraceContextExt};
-use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Display;
 use std::ops::Add;
@@ -381,67 +380,6 @@ impl Display for MillisSinceEpoch {
     }
 }
 
-/// Status of a service instance.
-#[derive(Debug, Clone, PartialEq)]
-pub enum InvocationStatus {
-    Invoked(InvocationMetadata),
-    Suspended {
-        metadata: InvocationMetadata,
-        waiting_for_completed_entries: HashSet<EntryIndex>,
-    },
-    /// Service instance is currently not invoked
-    Free,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct InvocationMetadata {
-    pub invocation_id: InvocationId,
-    pub journal_metadata: JournalMetadata,
-    pub response_sink: Option<ServiceInvocationResponseSink>,
-    pub creation_time: MillisSinceEpoch,
-    pub modification_time: MillisSinceEpoch,
-}
-
-impl InvocationMetadata {
-    pub fn new(
-        invocation_id: InvocationId,
-        journal_metadata: JournalMetadata,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        creation_time: MillisSinceEpoch,
-        modification_time: MillisSinceEpoch,
-    ) -> Self {
-        Self {
-            invocation_id,
-            journal_metadata,
-            response_sink,
-            creation_time,
-            modification_time,
-        }
-    }
-}
-
-impl Default for InvocationStatus {
-    fn default() -> Self {
-        InvocationStatus::Free
-    }
-}
-
-/// Entry of the inbox
-#[derive(Debug, Clone, PartialEq)]
-pub struct InboxEntry {
-    pub inbox_sequence_number: MessageIndex,
-    pub service_invocation: ServiceInvocation,
-}
-
-impl InboxEntry {
-    pub fn new(inbox_sequence_number: MessageIndex, service_invocation: ServiceInvocation) -> Self {
-        Self {
-            inbox_sequence_number,
-            service_invocation,
-        }
-    }
-}
-
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]
 pub struct JournalMetadata {
@@ -462,30 +400,6 @@ impl JournalMetadata {
             length,
         }
     }
-}
-
-/// Status of a given journal
-#[derive(Debug)]
-pub struct JournalStatus {
-    pub length: EntryIndex,
-    pub span_context: ServiceInvocationSpanContext,
-}
-
-/// Types of outbox messages.
-#[derive(Debug, Clone, PartialEq)]
-pub enum OutboxMessage {
-    /// Service invocation to send to another partition processor
-    ServiceInvocation(ServiceInvocation),
-
-    /// Service response to sent to another partition processor
-    ServiceResponse(InvocationResponse),
-
-    /// Service response to send to an ingress as a response to an external client request
-    IngressResponse {
-        ingress_id: IngressId,
-        service_invocation_id: ServiceInvocationId,
-        response: ResponseResult,
-    },
 }
 
 /// This struct represents a serialized journal entry.
@@ -574,26 +488,6 @@ impl From<ResponseResult> for CompletionResult {
             }
         }
     }
-}
-
-/// Different types of journal entries persisted by the runtime
-#[derive(Debug)]
-pub enum JournalEntry {
-    Entry(EnrichedRawEntry),
-    Completion(CompletionResult),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TimerKey {
-    pub service_invocation_id: ServiceInvocationId,
-    pub journal_index: u32,
-    pub timestamp: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Timer {
-    CompleteSleepEntry,
-    Invoke(ServiceInvocation),
 }
 
 #[cfg(test)]

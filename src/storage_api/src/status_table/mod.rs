@@ -1,6 +1,55 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use restate_common::types::{InvocationStatus, PartitionKey, ServiceId, ServiceInvocationId};
+use restate_common::types::{
+    EntryIndex, InvocationId, JournalMetadata, MillisSinceEpoch, PartitionKey, ServiceId,
+    ServiceInvocationId, ServiceInvocationResponseSink,
+};
+use std::collections::HashSet;
 use std::ops::RangeInclusive;
+
+/// Status of a service instance.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InvocationStatus {
+    Invoked(InvocationMetadata),
+    Suspended {
+        metadata: InvocationMetadata,
+        waiting_for_completed_entries: HashSet<EntryIndex>,
+    },
+    /// Service instance is currently not invoked
+    Free,
+}
+
+impl Default for InvocationStatus {
+    fn default() -> Self {
+        InvocationStatus::Free
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InvocationMetadata {
+    pub invocation_id: InvocationId,
+    pub journal_metadata: JournalMetadata,
+    pub response_sink: Option<ServiceInvocationResponseSink>,
+    pub creation_time: MillisSinceEpoch,
+    pub modification_time: MillisSinceEpoch,
+}
+
+impl InvocationMetadata {
+    pub fn new(
+        invocation_id: InvocationId,
+        journal_metadata: JournalMetadata,
+        response_sink: Option<ServiceInvocationResponseSink>,
+        creation_time: MillisSinceEpoch,
+        modification_time: MillisSinceEpoch,
+    ) -> Self {
+        Self {
+            invocation_id,
+            journal_metadata,
+            response_sink,
+            creation_time,
+            modification_time,
+        }
+    }
+}
 
 pub trait StatusTable {
     fn put_invocation_status(
