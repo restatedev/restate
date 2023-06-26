@@ -1,18 +1,14 @@
 use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
-use restate_common::errors::ConversionError;
-pub use restate_common::utils::GenericError;
+use restate_common::utils::GenericError;
 
-//
-// A Generic storage Error
-//
-
+/// Storage error
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error("generic storage error: {0}")]
     Generic(#[from] GenericError),
     #[error("failed to convert Rust objects to/from protobuf: {0}")]
-    Conversion(#[from] ConversionError),
+    Conversion(GenericError),
     #[error("Integrity constrained is violated")]
     DataIntegrityError,
 }

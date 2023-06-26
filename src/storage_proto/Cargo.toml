@@ -15,9 +15,11 @@ conversion = ["dep:restate_common", "dep:bytes", "dep:bytestring", "dep:opentele
 bytes = { workspace = true, optional = true }
 bytestring = { workspace = true, optional = true }
 restate_common = { workspace = true, optional = true }
+restate_storage_api = { workspace = true }
 opentelemetry_api = { workspace = true, optional = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
+thiserror = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }

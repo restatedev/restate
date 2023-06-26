@@ -5,6 +5,7 @@ use crate::{GetFuture, PutFuture, RocksDBTransaction, TableScan};
 
 use prost::Message;
 use restate_common::types::{OutboxMessage, PartitionId};
+use restate_common::utils::GenericError;
 use restate_storage_api::outbox_table::OutboxTable;
 use restate_storage_api::{ready, StorageError};
 use restate_storage_proto::storage;
@@ -81,7 +82,7 @@ fn decode_key_value(k: &[u8], v: &[u8]) -> crate::Result<(u64, OutboxMessage)> {
     // decode value
     let decoded = storage::v1::OutboxMessage::decode(v)
         .map_err(|error| StorageError::Generic(error.into()))?;
-    let outbox_message = OutboxMessage::try_from(decoded).map_err(StorageError::Conversion)?;
+    let outbox_message = OutboxMessage::try_from(decoded).map_err(GenericError::from)?;
 
     Ok((sequence_number, outbox_message))
 }

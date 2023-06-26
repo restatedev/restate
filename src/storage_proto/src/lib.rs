@@ -1,3 +1,31 @@
+use restate_common::utils::GenericError;
+use restate_storage_api::StorageError;
+
+/// Error type for conversion related problems (e.g. Rust <-> Protobuf)
+#[derive(Debug, thiserror::Error)]
+pub enum ConversionError {
+    #[error("missing field '{0}'")]
+    MissingField(&'static str),
+    #[error("invalid data: {0}")]
+    InvalidData(GenericError),
+}
+
+impl ConversionError {
+    pub fn invalid_data(source: impl Into<GenericError>) -> Self {
+        ConversionError::InvalidData(source.into())
+    }
+
+    pub fn missing_field(field: &'static str) -> Self {
+        ConversionError::MissingField(field)
+    }
+}
+
+impl From<ConversionError> for StorageError {
+    fn from(value: ConversionError) -> Self {
+        StorageError::Conversion(value.into())
+    }
+}
+
 pub mod storage {
     pub mod v1 {
         #![allow(warnings)]
@@ -35,10 +63,10 @@ pub mod storage {
                 ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanContext,
                 Timer,
             };
+            use crate::ConversionError;
             use bytes::{Buf, Bytes};
             use bytestring::ByteString;
             use opentelemetry_api::trace::TraceState;
-            use restate_common::errors::ConversionError;
             use restate_common::types::MillisSinceEpoch;
             use std::collections::{HashSet, VecDeque};
             use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
