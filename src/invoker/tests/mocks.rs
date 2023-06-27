@@ -12,6 +12,8 @@ use std::vec::IntoIter;
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use prost::Message;
+use restate_common::journal::raw::{PlainRawEntry, RawEntryCodec};
+use restate_common::journal::Completion;
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, JournalMetadata, RawEntry,
     ServiceId, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
@@ -19,8 +21,6 @@ use restate_common::types::{
 use restate_invoker::{
     EagerState, Effect, EffectKind, InvokeInputJournal, JournalReader, ServiceHandle, StateReader,
 };
-use restate_journal::raw::{PlainRawEntry, RawEntryCodec};
-use restate_journal::Completion;
 use restate_service_protocol::pb::protocol::PollInputStreamEntryMessage;
 use tokio::sync::{mpsc, Mutex};
 use tracing::debug;

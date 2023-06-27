@@ -3476,6 +3476,7 @@ dependencies = [
 name = "restate_common"
 version = "0.1.5"
 dependencies = [
+ "anyhow",
  "base64 0.21.0",
  "bytes",
  "bytestring",
@@ -3618,7 +3619,6 @@ dependencies = [
  "restate_fs_util",
  "restate_futures_util",
  "restate_hyper_util",
- "restate_journal",
  "restate_queue",
  "restate_service_metadata",
  "restate_service_protocol",
@@ -3634,17 +3634,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "restate_journal"
-version = "0.1.5"
-dependencies = [
- "anyhow",
- "bytes",
- "bytestring",
- "restate_common",
- "thiserror",
 ]
 
 [[package]]
@@ -3770,7 +3759,6 @@ dependencies = [
  "restate_common",
  "restate_errors",
  "restate_hyper_util",
- "restate_journal",
  "restate_service_key_extractor",
  "restate_service_metadata",
  "restate_test_util",
@@ -3938,7 +3926,6 @@ dependencies = [
  "restate_consensus",
  "restate_ingress_grpc",
  "restate_invoker",
- "restate_journal",
  "restate_network",
  "restate_service_key_extractor",
  "restate_service_metadata",
@@ -4310,7 +4297,6 @@ dependencies = [
  "bytes",
  "mlua",
  "restate_common",
- "restate_journal",
  "restate_service_protocol",
  "thiserror",
 ]

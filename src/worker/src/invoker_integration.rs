@@ -1,11 +1,11 @@
 use assert2::let_assert;
+use restate_common::journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
+use restate_common::journal::InvokeRequest;
+use restate_common::journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
 use restate_common::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvocationId, RawEntry, ResolutionResult,
     ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
 };
-use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
-use restate_journal::InvokeRequest;
-use restate_journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone)]
@@ -68,7 +68,7 @@ where
     }
 }
 
-impl<KeyExtractor, Codec> restate_journal::EntryEnricher for EntryEnricher<KeyExtractor, Codec>
+impl<KeyExtractor, Codec> restate_invoker::EntryEnricher for EntryEnricher<KeyExtractor, Codec>
 where
     KeyExtractor: restate_service_key_extractor::KeyExtractor,
     Codec: RawEntryCodec,

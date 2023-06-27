@@ -23,7 +23,6 @@ drain = { workspace = true }
 futures = { workspace = true }
 restate_ingress_grpc = { workspace = true }
 restate_invoker = { workspace = true }
-restate_journal = { workspace = true }
 restate_network = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }

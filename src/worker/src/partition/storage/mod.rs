@@ -5,12 +5,12 @@ use bytes::{Buf, Bytes};
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
+use restate_common::journal::raw::Header;
 use restate_common::types::{
     CompletionResult, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationStatus, JournalEntry,
     MessageIndex, MillisSinceEpoch, OutboxMessage, PartitionId, PartitionKey, ServiceId,
     ServiceInvocation, ServiceInvocationId, Timer, TimerKey,
 };
-use restate_journal::raw::Header;
 use std::ops::RangeInclusive;
 
 pub mod invoker;

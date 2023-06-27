@@ -3,8 +3,8 @@ use crate::partition::effects::Effects;
 use crate::partition::state_machine::{Error, StateMachine};
 use crate::partition::storage::Transaction;
 use crate::partition::AckCommand;
+use restate_common::journal::raw::RawEntryCodec;
 use restate_common::types::{ServiceInvocationId, SpanRelation};
-use restate_journal::raw::RawEntryCodec;
 
 #[derive(Debug)]
 pub(crate) struct DeduplicatingStateMachine<Codec> {

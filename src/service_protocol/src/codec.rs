@@ -5,9 +5,9 @@ use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
+use restate_common::journal::raw::*;
+use restate_common::journal::{Entry, EntryType};
 use restate_common::types::{CompletionResult, RawEntry};
-use restate_journal::raw::*;
-use restate_journal::{Entry, EntryType};
 
 /// This macro generates the pattern matching with arms per entry.
 /// For each entry it first executes `Message#decode` and then `try_into()`.
@@ -110,7 +110,7 @@ mod tests {
     use super::*;
 
     use bytes::Bytes;
-    use restate_journal::EntryResult;
+    use restate_common::journal::EntryResult;
 
     #[test]
     fn complete_invoke() {

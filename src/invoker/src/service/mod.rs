@@ -6,10 +6,10 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
+use restate_common::journal::Completion;
 use restate_common::retry_policy::RetryPolicy;
 use restate_common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
-use restate_journal::{Completion, EntryEnricher};
 use restate_queue::SegmentQueue;
 use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;
@@ -609,7 +609,9 @@ impl<InvokerCodedError: InvokerError + CodedError> From<&InvokerCodedError>
 
 #[cfg(test)]
 mod tests {
-    use crate::{journal_reader, state_reader, InvokeInputJournal, Service, ServiceHandle};
+    use crate::{
+        entry_enricher, journal_reader, state_reader, InvokeInputJournal, Service, ServiceHandle,
+    };
     use bytes::Bytes;
     use restate_common::retry_policy::RetryPolicy;
     use restate_common::types::{InvocationId, ServiceInvocationId};
@@ -636,7 +638,7 @@ mod tests {
             tempdir.into_path(),
             journal_reader::mocks::EmptyJournalReader,
             state_reader::mocks::EmptyStateReader,
-            restate_journal::mocks::MockEntryEnricher::default(),
+            entry_enricher::mocks::MockEntryEnricher::default(),
         );
 
         let (signal, watch) = drain::channel();

@@ -1,16 +1,13 @@
 //! This crate defines the journal model.
 
+use crate::types::{CompletionResult, EntryIndex, ResponseResult};
 use bytes::Bytes;
 use bytestring::ByteString;
-use restate_common::types::{CompletionResult, EntryIndex, ResponseResult};
 
 mod enriched;
-pub mod raw;
-pub use enriched::EntryEnricher;
 mod entries;
+pub mod raw;
 pub use entries::*;
-#[cfg(feature = "mocks")]
-pub mod mocks;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {

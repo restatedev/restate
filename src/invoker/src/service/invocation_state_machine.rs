@@ -1,7 +1,7 @@
 use super::*;
 
+use restate_common::journal::Completion;
 use restate_common::retry_policy;
-use restate_journal::Completion;
 use std::fmt;
 use std::time::Duration;
 use tokio::sync::mpsc;

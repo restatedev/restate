@@ -16,6 +16,7 @@ tonic_conversions = ["dep:tonic"]
 options_schema = ["serde", "dep:schemars"]
 
 [dependencies]
+anyhow = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }

@@ -2,17 +2,17 @@ use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use restate_common::errors::{InvocationError, InvocationErrorCode, RestateErrorCode};
+use restate_common::journal::raw::{RawEntryCodec, RawEntryCodecError};
+use restate_common::journal::{
+    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, Entry,
+    GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
+};
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InboxEntry, InvocationId,
     InvocationMetadata, InvocationResponse, InvocationStatus, MessageIndex, MillisSinceEpoch,
     OutboxMessage, ResolutionResult, ResponseResult, ServiceId, ServiceInvocation,
     ServiceInvocationId, ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation,
     Timer,
-};
-use restate_journal::raw::{RawEntryCodec, RawEntryCodecError};
-use restate_journal::{
-    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, Entry,
-    GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
 };
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;

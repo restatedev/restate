@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+mocks = []
 options_schema = ["dep:schemars", "restate_common/options_schema"]
 
 [dependencies]
@@ -40,17 +41,20 @@ opentelemetry-http = { workspace = true }
 
 codederror = { workspace = true }
 restate_errors = { workspace = true }
-restate_journal = { workspace = true }
 restate_service_metadata = { workspace = true }
 restate_service_protocol = { workspace = true, features = ["message"] }
 restate_timer_queue = { workspace = true }
 restate_queue = { workspace = true }
 
 [dev-dependencies]
-restate_journal = { workspace = true, features = ["mocks"] }
+restate_common = { workspace = true }
 restate_test_util = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 
 restate_service_protocol = { workspace = true, features = ["codec"] }
+
+[[test]]
+name = "counter_test"
+required-features = ["mocks"] # We need mocks in counter_test. TODO remove this once we split the invoker in two crates.

@@ -1,12 +1,12 @@
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
+use restate_common::journal::raw::PlainRawEntry;
 use restate_common::types::{
     EnrichedRawEntry, InvocationStatus, JournalEntry, JournalMetadata, ServiceId,
     ServiceInvocationId,
 };
 use restate_invoker::EagerState;
-use restate_journal::raw::PlainRawEntry;
 use restate_storage_api::journal_table::JournalTable;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::status_table::StatusTable;

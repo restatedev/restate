@@ -1,11 +1,11 @@
 use bytes::Bytes;
+use restate_common::journal::raw::Header;
+use restate_common::journal::Completion;
 use restate_common::types::{
     CompletionResult, EnrichedRawEntry, EntryIndex, InvocationMetadata, InvocationResponse,
     JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseResult, ServiceId,
     ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation, Timer,
 };
-use restate_journal::raw::Header;
-use restate_journal::Completion;
 use std::collections::HashSet;
 use std::fmt;
 use std::vec::Drain;
