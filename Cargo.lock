@@ -3826,6 +3826,8 @@ dependencies = [
  "prost-build",
  "prost-types",
  "restate_common",
+ "restate_storage_api",
+ "thiserror",
 ]
 
 [[package]]

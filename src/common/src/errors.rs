@@ -1,27 +1,7 @@
-use crate::utils::GenericError;
 use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
 use std::fmt::Formatter;
-
-/// Error type for conversion related problems (e.g. Rust <-> Protobuf)
-#[derive(Debug, thiserror::Error)]
-pub enum ConversionError {
-    #[error("missing field '{0}'")]
-    MissingField(&'static str),
-    #[error("invalid data: {0}")]
-    InvalidData(GenericError),
-}
-
-impl ConversionError {
-    pub fn invalid_data(source: impl Into<GenericError>) -> Self {
-        ConversionError::InvalidData(source.into())
-    }
-
-    pub fn missing_field(field: &'static str) -> Self {
-        ConversionError::MissingField(field)
-    }
-}
 
 /// This error code set matches the [gRPC error code set](https://github.com/grpc/grpc/blob/master/doc/statuscodes.md#status-codes-and-their-use-in-grpc),
 /// representing all the error codes visible to the user code.
