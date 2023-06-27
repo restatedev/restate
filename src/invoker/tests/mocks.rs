@@ -12,8 +12,8 @@ use std::vec::IntoIter;
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use prost::Message;
-use restate_common::journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
-use restate_common::journal::{Completion, EntryEnricher};
+use restate_common::journal::raw::{PlainRawEntry, RawEntryCodec};
+use restate_common::journal::Completion;
 use restate_common::types::{
     CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, JournalMetadata, RawEntry,
     ServiceId, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,

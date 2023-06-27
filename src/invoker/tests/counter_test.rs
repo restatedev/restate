@@ -3,7 +3,6 @@
 
 mod mocks;
 
-use crate::mocks::MockEntryEnricher;
 use bytes::Bytes;
 use hyper::Uri;
 use mocks::{InMemoryJournalStorage, InMemoryStateStorage, SimulatorAction};
@@ -13,6 +12,7 @@ use restate_common::journal::{
     Completion, Entry, EntryResult, GetStateEntry, GetStateValue, OutputStreamEntry,
 };
 use restate_common::types::{CompletionResult, EnrichedEntryHeader, ServiceInvocationId};
+use restate_invoker::entry_enricher::mocks::MockEntryEnricher;
 use restate_invoker::{ChannelServiceHandle, Effect, EffectKind, Service};
 use restate_service_metadata::{
     DeliveryOptions, EndpointMetadata, InMemoryServiceEndpointRegistry, ProtocolType,

@@ -2,6 +2,7 @@ use super::HttpsClient;
 
 use crate::service::InvokerError;
 use crate::EagerState;
+use crate::EntryEnricher;
 use crate::{InvokeInputJournal, JournalReader, StateReader};
 use bytes::Bytes;
 use futures::future::FusedFuture;
@@ -15,8 +16,7 @@ use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
 use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
 use restate_common::journal::raw::{Header, PlainRawEntry, RawEntryHeader};
-use restate_common::journal::Completion;
-use restate_common::journal::{EntryEnricher, EntryType};
+use restate_common::journal::{Completion, EntryType};
 use restate_common::types::{
     EnrichedRawEntry, EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceInvocationId,
     ServiceInvocationSpanContext,

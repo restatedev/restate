@@ -1,14 +1,13 @@
 use crate::service::invocation_state_machine::InvocationStateMachine;
 use crate::service::*;
-use std::collections::HashSet;
-
+use crate::EntryEnricher;
 use codederror::CodedError;
 use restate_common::errors::UserErrorCode::Internal;
 use restate_common::journal::raw::Header;
-use restate_common::journal::EntryEnricher;
 use restate_common::types::EnrichedRawEntry;
 use restate_errors::warn_it;
 use restate_service_metadata::{ProtocolType, ServiceEndpointRegistry};
+use std::collections::HashSet;
 use std::time::SystemTime;
 use tracing::{instrument, warn};
 

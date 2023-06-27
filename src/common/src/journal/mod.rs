@@ -5,12 +5,9 @@ use bytes::Bytes;
 use bytestring::ByteString;
 
 mod enriched;
-pub mod raw;
-pub use enriched::EntryEnricher;
 mod entries;
+pub mod raw;
 pub use entries::*;
-#[cfg(feature = "mocks")]
-pub mod mocks;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {

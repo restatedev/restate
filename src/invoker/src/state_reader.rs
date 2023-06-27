@@ -66,7 +66,7 @@ pub trait StateReader {
     fn read_state<'a>(&'a self, service_id: &'a ServiceId) -> Self::Future<'_>;
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "mocks"))]
 pub mod mocks {
     use crate::{EagerState, StateReader};
     use bytes::Bytes;

@@ -1,15 +1,17 @@
 mod effects;
+pub mod entry_enricher;
 mod handle;
-mod journal_reader;
+pub mod journal_reader;
 mod options;
 mod service;
-mod state_reader;
+pub mod state_reader;
 mod status_handle;
 
 pub use effects::*;
+pub use entry_enricher::EntryEnricher;
 pub use handle::*;
-pub use journal_reader::*;
+pub use journal_reader::JournalReader;
 pub use options::Options;
 pub use service::*;
-pub use state_reader::*;
+pub use state_reader::{EagerState, StateReader};
 pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};

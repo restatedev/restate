@@ -68,8 +68,7 @@ where
     }
 }
 
-impl<KeyExtractor, Codec> restate_common::journal::EntryEnricher
-    for EntryEnricher<KeyExtractor, Codec>
+impl<KeyExtractor, Codec> restate_invoker::EntryEnricher for EntryEnricher<KeyExtractor, Codec>
 where
     KeyExtractor: restate_service_key_extractor::KeyExtractor,
     Codec: RawEntryCodec,
