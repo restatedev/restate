@@ -1,7 +1,6 @@
 use crate::raw::{Header, PlainRawEntry, RawEntryHeader};
 use crate::EntryType;
 use restate_common::types::ServiceInvocationSpanContext;
-use restate_common::utils::GenericError;
 
 // Re-exports that should be moved here. See https://github.com/restatedev/restate/issues/420
 pub use restate_common::types::{EnrichedEntryHeader, EnrichedRawEntry};
@@ -11,7 +10,7 @@ pub trait EntryEnricher {
         &self,
         entry: PlainRawEntry,
         invocation_span_context: &ServiceInvocationSpanContext,
-    ) -> Result<EnrichedRawEntry, GenericError>;
+    ) -> Result<EnrichedRawEntry, anyhow::Error>;
 }
 
 impl Header for EnrichedEntryHeader {

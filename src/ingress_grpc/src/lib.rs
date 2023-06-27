@@ -19,7 +19,6 @@ use restate_common::types::{
     AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation, ServiceInvocationId,
     ServiceInvocationResponseSink, SpanRelation,
 };
-use restate_common::utils::GenericError;
 use restate_futures_util::command::*;
 use tokio::sync::mpsc;
 use tonic::Status;
@@ -147,7 +146,7 @@ pub enum ServiceInvocationFactoryError {
         method_name: String,
     },
     #[error("failed extracting the key from the request payload: {0}")]
-    KeyExtraction(GenericError),
+    KeyExtraction(anyhow::Error),
 }
 
 impl ServiceInvocationFactoryError {
@@ -161,7 +160,7 @@ impl ServiceInvocationFactoryError {
         }
     }
 
-    pub fn key_extraction_error(source: impl Into<GenericError>) -> Self {
+    pub fn key_extraction_error(source: impl Into<anyhow::Error>) -> Self {
         ServiceInvocationFactoryError::KeyExtraction(source.into())
     }
 }

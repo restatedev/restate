@@ -12,6 +12,7 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+anyhow = { workspace = true }
 restate_common = {workspace = true}
 bytes = {workspace = true}
 bytestring = { workspace = true }

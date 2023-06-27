@@ -8,7 +8,6 @@ use crate::{
 };
 use restate_common::traits::PartitionedMessage;
 use restate_common::types::{PeerId, PeerTarget};
-use restate_common::utils::GenericError;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -44,7 +43,7 @@ pub enum TerminationCause {
     #[error("unexpected termination")]
     Unexpected,
     #[error("error: {0}")]
-    Error(#[from] GenericError),
+    Error(#[from] anyhow::Error),
 }
 
 /// Component which is responsible for routing messages from different components.

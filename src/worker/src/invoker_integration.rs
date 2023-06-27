@@ -3,7 +3,6 @@ use restate_common::types::{
     EnrichedEntryHeader, EnrichedRawEntry, InvocationId, RawEntry, ResolutionResult,
     ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
 };
-use restate_common::utils::GenericError;
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use restate_journal::InvokeRequest;
 use restate_journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
@@ -35,7 +34,7 @@ where
         raw_entry: &PlainRawEntry,
         request_extractor: impl Fn(Entry) -> InvokeRequest,
         span_relation: SpanRelation,
-    ) -> Result<ResolutionResult, GenericError> {
+    ) -> Result<ResolutionResult, anyhow::Error> {
         let entry = Codec::deserialize(raw_entry)?;
         let request = request_extractor(entry);
 
@@ -78,7 +77,7 @@ where
         &self,
         raw_entry: PlainRawEntry,
         invocation_span_context: &ServiceInvocationSpanContext,
-    ) -> Result<EnrichedRawEntry, GenericError> {
+    ) -> Result<EnrichedRawEntry, anyhow::Error> {
         let enriched_header = match raw_entry.header {
             RawEntryHeader::PollInputStream { is_completed } => {
                 EnrichedEntryHeader::PollInputStream { is_completed }

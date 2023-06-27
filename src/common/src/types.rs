@@ -82,7 +82,7 @@ impl Display for ServiceInvocationId {
 #[error("cannot parse the opaque id, bad format")]
 pub struct ParseError {
     #[source]
-    cause: Option<super::utils::GenericError>,
+    cause: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
 impl ParseError {

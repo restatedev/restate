@@ -12,6 +12,7 @@ default = []
 options_schema = ["dep:schemars", "restate_common/options_schema"]
 
 [dependencies]
+anyhow = { workspace = true }
 bytes = { workspace = true }
 bytes-utils = { workspace = true }
 restate_common = { workspace = true, features = ["serde"] }
