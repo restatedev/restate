@@ -9,17 +9,17 @@ publish = false
 
 [features]
 default = []
-conversion = ["dep:restate_common", "dep:bytes", "dep:bytestring", "dep:opentelemetry_api"]
+conversion = ["dep:restate_common", "dep:restate_storage_api", "dep:thiserror", "dep:bytes", "dep:bytestring", "dep:opentelemetry_api"]
 
 [dependencies]
 bytes = { workspace = true, optional = true }
 bytestring = { workspace = true, optional = true }
 restate_common = { workspace = true, optional = true }
-restate_storage_api = { workspace = true }
+restate_storage_api = { workspace = true, optional = true }
 opentelemetry_api = { workspace = true, optional = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
-thiserror = { workspace = true }
+thiserror = { workspace = true, optional = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
