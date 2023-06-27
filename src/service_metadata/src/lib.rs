@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use http::header::{HeaderName, HeaderValue};
 use http::Uri;
 use restate_common::retry_policy::RetryPolicy;
-use restate_service_key_extractor::ServiceInstanceType;
 
 mod descriptors_registry;
 mod endpoint_registry;
@@ -32,6 +31,18 @@ pub struct DeliveryOptions {
     #[cfg_attr(feature = "serde_schema", schemars(with = "HashMap<String, String>"))]
     additional_headers: HashMap<HeaderName, HeaderValue>,
     retry_policy: Option<RetryPolicy>,
+}
+
+impl DeliveryOptions {
+    pub fn new(
+        additional_headers: HashMap<HeaderName, HeaderValue>,
+        retry_policy: Option<RetryPolicy>,
+    ) -> Self {
+        Self {
+            additional_headers,
+            retry_policy,
+        }
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -67,18 +78,6 @@ mod header_map_serde {
                 .into_iter()
                 .map(|(k, v)| Ok((k.try_into()?, v.try_into()?)))
                 .collect::<Result<HashMap<_, _>, anyhow::Error>>()
-        }
-    }
-}
-
-impl DeliveryOptions {
-    pub fn new(
-        additional_headers: HashMap<HeaderName, HeaderValue>,
-        retry_policy: Option<RetryPolicy>,
-    ) -> Self {
-        Self {
-            additional_headers,
-            retry_policy,
         }
     }
 }
@@ -138,29 +137,5 @@ impl EndpointMetadata {
             self.address.path()
         );
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(authority_and_path.as_bytes())
-    }
-}
-
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ServiceMetadata {
-    name: String,
-    instance_type: ServiceInstanceType,
-}
-
-impl ServiceMetadata {
-    pub fn new(name: String, instance_type: ServiceInstanceType) -> Self {
-        Self {
-            name,
-            instance_type,
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn instance_type(&self) -> &ServiceInstanceType {
-        &self.instance_type
     }
 }

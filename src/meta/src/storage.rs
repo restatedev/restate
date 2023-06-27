@@ -5,12 +5,36 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt};
 use prost_reflect::DescriptorPool;
-use restate_service_metadata::{EndpointMetadata, ServiceMetadata};
+use restate_service_key_extractor::ServiceInstanceType;
+use restate_service_metadata::EndpointMetadata;
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio::io;
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceMetadata {
+    name: String,
+    instance_type: ServiceInstanceType,
+}
+
+impl ServiceMetadata {
+    pub fn new(name: String, instance_type: ServiceInstanceType) -> Self {
+        Self {
+            name,
+            instance_type,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn instance_type(&self) -> &ServiceInstanceType {
+        &self.instance_type
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetaStorageError {

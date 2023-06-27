@@ -1,4 +1,4 @@
-use super::storage::{MetaStorage, MetaStorageError};
+use super::storage::{MetaStorage, MetaStorageError, ServiceMetadata};
 
 use futures::StreamExt;
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ use restate_ingress_grpc::{ReflectionRegistry, RegistrationError};
 use restate_service_key_extractor::KeyExtractorsRegistry;
 use restate_service_metadata::{
     DeliveryOptions, EndpointMetadata, InMemoryMethodDescriptorRegistry,
-    InMemoryServiceEndpointRegistry, ServiceMetadata,
+    InMemoryServiceEndpointRegistry,
 };
 use restate_service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
