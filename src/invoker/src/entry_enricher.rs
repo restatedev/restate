@@ -1,13 +1,12 @@
 use restate_common::journal::raw::PlainRawEntry;
 use restate_common::types::{EnrichedRawEntry, ServiceInvocationSpanContext};
-use restate_common::utils::GenericError;
 
 pub trait EntryEnricher {
     fn enrich_entry(
         &self,
         entry: PlainRawEntry,
         invocation_span_context: &ServiceInvocationSpanContext,
-    ) -> Result<EnrichedRawEntry, GenericError>;
+    ) -> Result<EnrichedRawEntry, anyhow::Error>;
 }
 
 #[cfg(any(test, feature = "mocks"))]
@@ -19,7 +18,6 @@ pub mod mocks {
         EnrichedEntryHeader, EnrichedRawEntry, RawEntry, ResolutionResult,
         ServiceInvocationSpanContext,
     };
-    use restate_common::utils::GenericError;
 
     #[derive(Debug, Default, Clone)]
     pub struct MockEntryEnricher;
@@ -29,7 +27,7 @@ pub mod mocks {
             &self,
             raw_entry: PlainRawEntry,
             invocation_span_context: &ServiceInvocationSpanContext,
-        ) -> Result<EnrichedRawEntry, GenericError> {
+        ) -> Result<EnrichedRawEntry, anyhow::Error> {
             let enriched_header = match raw_entry.header {
                 RawEntryHeader::PollInputStream { is_completed } => {
                     EnrichedEntryHeader::PollInputStream { is_completed }
