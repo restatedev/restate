@@ -13,7 +13,7 @@ publish = false
 default = []
 serde = ["dep:serde", "dep:serde_with"]
 tonic_conversions = ["dep:tonic"]
-options_schema = ["serde", "dep:schemars"]
+serde_schema = ["serde", "dep:schemars"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -23,6 +23,7 @@ bytestring = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
+http = { workspace = true }
 humantime = { workspace = true }
 uuid = { workspace = true }
 opentelemetry_api = { workspace = true }

@@ -39,9 +39,9 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
-#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(
-    feature = "options_schema",
+    feature = "serde_schema",
     schemars(title = "Retry policy", description = "Definition of a retry policy")
 )]
 pub enum RetryPolicy {
@@ -62,7 +62,7 @@ pub enum RetryPolicy {
             feature = "serde",
             serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
         )]
-        #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
         interval: humantime::Duration,
         /// # Max attempts
         ///
@@ -82,7 +82,7 @@ pub enum RetryPolicy {
             feature = "serde",
             serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
         )]
-        #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
         initial_interval: humantime::Duration,
 
         /// # Factor
@@ -102,7 +102,7 @@ pub enum RetryPolicy {
             feature = "serde",
             serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")
         )]
-        #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
         max_interval: Option<humantime::Duration>,
     },
 }

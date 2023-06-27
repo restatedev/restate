@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 mocks = []
-options_schema = ["dep:schemars", "restate_common/options_schema"]
+options_schema = ["dep:schemars", "restate_common/serde_schema"]
 
 [dependencies]
 anyhow = { workspace = true }

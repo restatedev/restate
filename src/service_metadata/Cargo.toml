@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 serde = ["dep:serde", "dep:serde_with", "restate_common/serde", "restate_service_key_extractor/serde"]
-serde_schema = ["serde", "dep:schemars", "restate_common/options_schema"]
+serde_schema = ["serde", "dep:schemars", "restate_common/serde_schema"]
 
 [dependencies]
 anyhow = { workspace = true }
