@@ -35,11 +35,11 @@ pub mod storage {
                 ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanContext,
                 Timer,
             };
+            use anyhow::anyhow;
             use bytes::{Buf, Bytes};
             use bytestring::ByteString;
             use opentelemetry_api::trace::TraceState;
             use restate_common::types::MillisSinceEpoch;
-            use restate_common::utils::GenericError;
             use restate_storage_api::StorageError;
             use std::collections::{HashSet, VecDeque};
             use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -51,11 +51,11 @@ pub mod storage {
                 #[error("missing field '{0}'")]
                 MissingField(&'static str),
                 #[error("invalid data: {0}")]
-                InvalidData(GenericError),
+                InvalidData(anyhow::Error),
             }
 
             impl ConversionError {
-                pub fn invalid_data(source: impl Into<GenericError>) -> Self {
+                pub fn invalid_data(source: impl Into<anyhow::Error>) -> Self {
                     ConversionError::InvalidData(source.into())
                 }
 
@@ -463,9 +463,9 @@ pub mod storage {
                 mut bytes: Bytes,
             ) -> Result<opentelemetry_api::trace::TraceId, ConversionError> {
                 if bytes.len() != 16 {
-                    return Err(ConversionError::invalid_data(
-                        "trace id pb definition needs to contain exactly 16 bytes",
-                    ));
+                    return Err(ConversionError::InvalidData(anyhow!(
+                        "trace id pb definition needs to contain exactly 16 bytes"
+                    )));
                 }
 
                 let mut bytes_array = [0; 16];

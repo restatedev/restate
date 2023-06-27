@@ -9,7 +9,6 @@ use restate_common::types::{
     InvocationStatus, JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ServiceId,
     ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext, Timer,
 };
-use restate_common::utils::GenericError;
 use restate_invoker::InvokeInputJournal;
 use restate_journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader};
 use restate_journal::Completion;
@@ -181,11 +180,11 @@ pub(crate) trait StateStorage {
 #[derive(Debug, thiserror::Error)]
 #[error("failed committing results: {source:?}")]
 pub(crate) struct CommitError {
-    source: Option<GenericError>,
+    source: Option<anyhow::Error>,
 }
 
 impl CommitError {
-    pub(crate) fn with_source(source: impl Into<GenericError>) -> Self {
+    pub(crate) fn with_source(source: impl Into<anyhow::Error>) -> Self {
         CommitError {
             source: Some(source.into()),
         }

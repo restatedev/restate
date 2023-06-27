@@ -18,7 +18,6 @@ use restate_common::types::{
     EnrichedRawEntry, EntryIndex, JournalMetadata, PartitionLeaderEpoch, ServiceInvocationId,
     ServiceInvocationSpanContext,
 };
-use restate_common::utils::GenericError;
 use restate_errors::warn_it;
 use restate_journal::raw::{Header, PlainRawEntry, RawEntryHeader};
 use restate_journal::Completion;
@@ -61,9 +60,9 @@ pub(crate) enum InvocationTaskError {
         EncodingError,
     ),
     #[error("error when trying to read the journal: {0}")]
-    JournalReader(GenericError),
+    JournalReader(anyhow::Error),
     #[error("error when trying to read the service instance state: {0}")]
-    StateReader(GenericError),
+    StateReader(anyhow::Error),
     #[error("other hyper error: {0}")]
     Network(hyper::Error),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
@@ -78,7 +77,7 @@ pub(crate) enum InvocationTaskError {
     #[code(restate_errors::RT0001)]
     ResponseTimeout,
     #[error("cannot process received entry at index {0} of type {1}: {2}")]
-    EntryEnrichment(EntryIndex, EntryType, #[source] GenericError),
+    EntryEnrichment(EntryIndex, EntryType, #[source] anyhow::Error),
     #[error(transparent)]
     Invocation(#[from] InvocationError),
     #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry. This is probably an SDK bug")]
@@ -88,7 +87,7 @@ pub(crate) enum InvocationTaskError {
     #[error("Unexpected end of invocation stream, as it was closed with too many OutputStreamEntry. Only one is allowed. This is probably an SDK bug")]
     TooManyOutputStreamEntry,
     #[error(transparent)]
-    Other(#[from] GenericError),
+    Other(#[from] anyhow::Error),
 }
 
 impl InvokerError for InvocationTaskError {
@@ -322,7 +321,7 @@ where
                         .journal_reader
                         .read_journal(&self.service_invocation_id)
                         .await
-                        .map_err(|e| InvocationTaskError::JournalReader(Box::new(e)))?;
+                        .map_err(|e| InvocationTaskError::JournalReader(e.into()))?;
                     (journal_meta, future::Either::Left(journal_stream))
                 }
                 InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
@@ -339,7 +338,7 @@ where
                 self.state_reader
                     .read_state(&self.service_invocation_id.service_id)
                     .await
-                    .map_err(|e| InvocationTaskError::StateReader(Box::new(e)))
+                    .map_err(|e| InvocationTaskError::StateReader(e.into()))
                     .map(|r| r.map(itertools::Either::Left))
             }
         };

@@ -8,6 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+anyhow = { workspace = true }
 restate_common = { workspace = true}
 bytes = { workspace = true }
 futures-util = {workspace = true}

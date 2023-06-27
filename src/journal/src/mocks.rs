@@ -3,7 +3,6 @@ use crate::EntryEnricher;
 use restate_common::types::{
     EnrichedEntryHeader, EnrichedRawEntry, RawEntry, ResolutionResult, ServiceInvocationSpanContext,
 };
-use restate_common::utils::GenericError;
 
 #[derive(Debug, Default, Clone)]
 pub struct MockEntryEnricher;
@@ -13,7 +12,7 @@ impl EntryEnricher for MockEntryEnricher {
         &self,
         raw_entry: PlainRawEntry,
         invocation_span_context: &ServiceInvocationSpanContext,
-    ) -> Result<EnrichedRawEntry, GenericError> {
+    ) -> Result<EnrichedRawEntry, anyhow::Error> {
         let enriched_header = match raw_entry.header {
             RawEntryHeader::PollInputStream { is_completed } => {
                 EnrichedEntryHeader::PollInputStream { is_completed }

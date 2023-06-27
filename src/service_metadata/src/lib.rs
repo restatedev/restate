@@ -39,7 +39,6 @@ mod header_map_serde {
     use super::*;
 
     use http::header::ToStrError;
-    use restate_common::utils::GenericError;
 
     // Proxy type to implement HashMap<HeaderName, HeaderValue> ser/de
     #[derive(serde::Serialize, serde::Deserialize)]
@@ -60,14 +59,14 @@ mod header_map_serde {
     }
 
     impl TryFrom<HeaderMapSerde> for HashMap<HeaderName, HeaderValue> {
-        type Error = GenericError;
+        type Error = anyhow::Error;
 
         fn try_from(value: HeaderMapSerde) -> Result<Self, Self::Error> {
             value
                 .0
                 .into_iter()
                 .map(|(k, v)| Ok((k.try_into()?, v.try_into()?)))
-                .collect::<Result<HashMap<_, _>, GenericError>>()
+                .collect::<Result<HashMap<_, _>, anyhow::Error>>()
         }
     }
 }

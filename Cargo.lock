@@ -3556,6 +3556,7 @@ dependencies = [
 name = "restate_ingress_grpc"
 version = "0.1.5"
 dependencies = [
+ "anyhow",
  "arc-swap",
  "bytes",
  "bytestring",
@@ -3597,6 +3598,7 @@ dependencies = [
 name = "restate_invoker"
 version = "0.1.5"
 dependencies = [
+ "anyhow",
  "bytes",
  "bytes-utils",
  "codederror",
@@ -3638,6 +3640,7 @@ dependencies = [
 name = "restate_journal"
 version = "0.1.5"
 dependencies = [
+ "anyhow",
  "bytes",
  "bytestring",
  "restate_common",
@@ -3681,6 +3684,7 @@ dependencies = [
 name = "restate_network"
 version = "0.1.5"
 dependencies = [
+ "anyhow",
  "bytes",
  "drain",
  "futures",
@@ -3737,6 +3741,7 @@ dependencies = [
 name = "restate_service_metadata"
 version = "0.1.5"
 dependencies = [
+ "anyhow",
  "arc-swap",
  "base64 0.21.0",
  "http",
@@ -3781,6 +3786,7 @@ dependencies = [
 name = "restate_storage_api"
 version = "0.1.5"
 dependencies = [
+ "anyhow",
  "bytes",
  "futures-util",
  "restate_common",
@@ -3819,6 +3825,7 @@ dependencies = [
 name = "restate_storage_proto"
 version = "0.1.5"
 dependencies = [
+ "anyhow",
  "bytes",
  "bytestring",
  "opentelemetry_api",
@@ -3834,6 +3841,7 @@ dependencies = [
 name = "restate_storage_rocksdb"
 version = "0.1.5"
 dependencies = [
+ "anyhow",
  "bytes",
  "bytestring",
  "codederror",

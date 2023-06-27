@@ -47,6 +47,7 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
 # Other
+anyhow = { workspace = true }
 codederror = { workspace = true }
 drain = { workspace = true }
 arc-swap = { workspace = true }

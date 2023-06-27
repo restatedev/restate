@@ -5,7 +5,6 @@ use futures::{future, Stream, StreamExt};
 use restate_common::types::{
     LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId,
 };
-use restate_common::utils::GenericError;
 use restate_invoker::{InvokeInputJournal, ServiceNotRunning};
 use restate_network::NetworkNotRunning;
 use restate_timer::TokioClock;
@@ -343,7 +342,7 @@ where
         }
     }
 
-    fn into_task_result<E: Into<GenericError>>(
+    fn into_task_result<E: Into<anyhow::Error>>(
         name: &'static str,
         result: Result<Result<(), E>, JoinError>,
     ) -> TokioTaskResult {
@@ -392,5 +391,5 @@ pub(crate) enum TaskError {
     #[error("task was cancelled")]
     Cancelled,
     #[error(transparent)]
-    Error(#[from] GenericError),
+    Error(#[from] anyhow::Error),
 }

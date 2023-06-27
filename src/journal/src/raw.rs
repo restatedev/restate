@@ -1,6 +1,5 @@
 use super::*;
 use restate_common::types::RawEntry;
-use restate_common::utils::GenericError;
 use std::fmt::Debug;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +91,10 @@ impl RawEntryCodecError {
 #[derive(Debug, thiserror::Error)]
 pub enum ErrorKind {
     #[error("failed to decode: {source:?}")]
-    Decode { source: Option<GenericError> },
+    Decode {
+        #[source]
+        source: Option<anyhow::Error>,
+    },
     #[error("Field '{0}' is missing")]
     MissingField(&'static str),
 }

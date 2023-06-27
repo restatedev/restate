@@ -13,6 +13,7 @@ serde = ["dep:serde", "dep:serde_with", "restate_common/serde", "restate_service
 serde_schema = ["serde", "dep:schemars", "restate_common/options_schema"]
 
 [dependencies]
+anyhow = { workspace = true }
 arc-swap = { workspace = true }
 base64 = { workspace = true }
 restate_common = { workspace = true }
