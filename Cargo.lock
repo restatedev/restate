@@ -3731,16 +3731,9 @@ dependencies = [
 name = "restate_service_metadata"
 version = "0.1.5"
 dependencies = [
- "anyhow",
  "arc-swap",
- "base64 0.21.0",
- "http",
  "prost-reflect",
  "restate_common",
- "restate_service_key_extractor",
- "schemars",
- "serde",
- "serde_with",
 ]
 
 [[package]]
@@ -3761,7 +3754,6 @@ dependencies = [
  "restate_errors",
  "restate_hyper_util",
  "restate_service_key_extractor",
- "restate_service_metadata",
  "restate_test_util",
  "size",
  "thiserror",

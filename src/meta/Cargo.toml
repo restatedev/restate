@@ -32,11 +32,11 @@ restate_serde_util = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
 
 # Service discovery and metadata
-restate_common = { workspace = true, features = ["serde"] }
+restate_common = { workspace = true, features = ["serde", "serde_schema"] }
 restate_hyper_util = { workspace = true }
 restate_fs_util = { workspace = true }
-restate_service_key_extractor = { workspace = true, features = ["json"] }
-restate_service_metadata = { workspace = true, features = ["serde", "serde_schema"] }
+restate_service_key_extractor = { workspace = true, features = ["serde", "json"] }
+restate_service_metadata = { workspace = true }
 restate_service_protocol = { workspace = true, features = ["discovery"] }
 restate_worker_api = { workspace = true }
 prost-reflect = { workspace = true }

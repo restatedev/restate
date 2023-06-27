@@ -1,5 +1,5 @@
-use crate::EndpointMetadata;
 use arc_swap::ArcSwap;
+use restate_common::service_metadata::EndpointMetadata;
 use std::collections::HashMap;
 use std::sync::Arc;
 

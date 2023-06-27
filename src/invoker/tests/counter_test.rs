@@ -11,12 +11,11 @@ use restate_common::journal::raw::RawEntryCodec;
 use restate_common::journal::{
     Completion, Entry, EntryResult, GetStateEntry, GetStateValue, OutputStreamEntry,
 };
+use restate_common::service_metadata::{DeliveryOptions, EndpointMetadata, ProtocolType};
 use restate_common::types::{CompletionResult, EnrichedEntryHeader, ServiceInvocationId};
 use restate_invoker::entry_enricher::mocks::MockEntryEnricher;
 use restate_invoker::{ChannelServiceHandle, Effect, EffectKind, Service};
-use restate_service_metadata::{
-    DeliveryOptions, EndpointMetadata, InMemoryServiceEndpointRegistry, ProtocolType,
-};
+use restate_service_metadata::InMemoryServiceEndpointRegistry;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_test_util::{assert, assert_eq, let_assert, test};
 use uuid::Uuid;

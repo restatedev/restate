@@ -8,15 +8,13 @@ use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
 use prost_reflect::DescriptorPool;
 use restate_common::retry_policy::RetryPolicy;
+use restate_common::service_metadata::{DeliveryOptions, EndpointMetadata};
 use restate_errors::{error_it, warn_it};
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_ingress_grpc::{ReflectionRegistry, RegistrationError};
 use restate_service_key_extractor::KeyExtractorsRegistry;
-use restate_service_metadata::{
-    DeliveryOptions, EndpointMetadata, InMemoryMethodDescriptorRegistry,
-    InMemoryServiceEndpointRegistry,
-};
+use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
 use restate_service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
