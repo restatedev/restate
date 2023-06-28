@@ -1,6 +1,7 @@
 use crate::service::invocation_state_machine::InvocationStateMachine;
 use crate::service::*;
 
+/// Tree of [InvocationStateMachine] held by the [Service].
 #[derive(Debug, Default)]
 pub(in crate::service) struct InvocationStateMachineTree {
     partitions: HashMap<PartitionLeaderEpoch, PartitionInvocationStateMachineCoordinator>,
@@ -34,7 +35,7 @@ impl InvocationStateMachineTree {
     ) -> Option<(&mpsc::Sender<Effect>, &mut InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
-                .get_mut(&service_invocation_id)
+                .get_mut(service_invocation_id)
                 .map(|ism| (&p.output_tx, ism))
         })
     }
@@ -47,7 +48,7 @@ impl InvocationStateMachineTree {
     ) -> Option<(&mpsc::Sender<Effect>, InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
-                .remove(&service_invocation_id)
+                .remove(service_invocation_id)
                 .map(|ism| (&p.output_tx, ism))
         })
     }

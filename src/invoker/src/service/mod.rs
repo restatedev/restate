@@ -1,14 +1,10 @@
 use super::*;
 
 use crate::service::status_store::InvocationStatusStore;
-use crate::status_handle::StatusHandle;
 use codederror::CodedError;
 use drain::ReleaseShutdown;
-use futures::future::BoxFuture;
-use futures::FutureExt;
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
-use restate_common::errors::UserErrorCode::Internal;
 use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
 use restate_common::journal::Completion;
 use restate_common::retry_policy::RetryPolicy;
@@ -32,222 +28,56 @@ use tokio::task::JoinSet;
 use tracing::instrument;
 use tracing::{debug, trace};
 
+mod input_command;
 mod invocation_state_machine;
 mod invocation_task;
+mod quota;
 mod state_machine_tree;
 mod status_store;
 
-// -- Handles implementations
+pub use input_command::ChannelServiceHandle;
+pub use input_command::ChannelStatusReader;
+use input_command::{InputCommand, InvokeCommand};
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Input<I> {
-    pub(crate) partition: PartitionLeaderEpoch,
-    pub(crate) inner: I,
+// -- Errors
+
+#[derive(Debug, Clone, thiserror::Error, codederror::CodedError)]
+#[error("Cannot find service {0} in the service endpoint registry")]
+#[code(unknown)]
+pub struct CannotResolveEndpoint(String);
+
+impl InvokerError for CannotResolveEndpoint {
+    fn is_transient(&self) -> bool {
+        true
+    }
+
+    fn to_invocation_error(&self) -> InvocationError {
+        InvocationError::new(UserErrorCode::Internal, self.to_string())
+    }
 }
 
-impl<I> Input<I> {
-    fn new(partition_leader_epoch: PartitionLeaderEpoch, inner: I) -> Self {
-        Self {
-            partition: partition_leader_epoch,
-            inner,
+/// Internal error trait for the invoker errors
+trait InvokerError: std::error::Error {
+    fn is_transient(&self) -> bool;
+    fn to_invocation_error(&self) -> InvocationError;
+
+    fn as_invocation_error_code(&self) -> InvocationErrorCode {
+        UserErrorCode::Internal.into()
+    }
+}
+
+impl<InvokerCodedError: InvokerError + CodedError> From<&InvokerCodedError>
+    for InvocationErrorReport
+{
+    fn from(value: &InvokerCodedError) -> Self {
+        InvocationErrorReport {
+            err: value.to_invocation_error(),
+            doc_error_code: value.code(),
         }
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct InvokeCommand {
-    service_invocation_id: ServiceInvocationId,
-    #[serde(skip)]
-    journal: InvokeInputJournal,
-}
-
-#[derive(Debug)]
-pub(crate) enum Command {
-    Invoke(InvokeCommand),
-    Completion {
-        service_invocation_id: ServiceInvocationId,
-        completion: Completion,
-    },
-    StoredEntryAck {
-        service_invocation_id: ServiceInvocationId,
-        entry_index: EntryIndex,
-    },
-
-    /// Abort specific invocation id
-    Abort(ServiceInvocationId),
-
-    /// Command used to clean up internal state when a partition leader is going away
-    AbortAllPartition,
-
-    // needed for dynamic registration at Invoker
-    RegisterPartition(mpsc::Sender<Effect>),
-
-    // Read status
-    ReadStatus(restate_futures_util::command::Command<(), Vec<InvocationStatusReport>>),
-}
-
-#[derive(Debug, Clone)]
-pub struct ChannelServiceHandle {
-    input: mpsc::UnboundedSender<Input<Command>>,
-}
-
-impl ServiceHandle for ChannelServiceHandle {
-    type Future = futures::future::Ready<Result<(), ServiceNotRunning>>;
-
-    fn invoke(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        journal: InvokeInputJournal,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(Input {
-                    partition,
-                    inner: Command::Invoke(InvokeCommand {
-                        service_invocation_id,
-                        journal,
-                    }),
-                })
-                .map_err(|_| ServiceNotRunning),
-        )
-    }
-
-    fn resume(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        journal: InvokeInputJournal,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(Input {
-                    partition,
-                    inner: Command::Invoke(InvokeCommand {
-                        service_invocation_id,
-                        journal,
-                    }),
-                })
-                .map_err(|_| ServiceNotRunning),
-        )
-    }
-
-    fn notify_completion(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        completion: Completion,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(Input {
-                    partition,
-                    inner: Command::Completion {
-                        service_invocation_id,
-                        completion,
-                    },
-                })
-                .map_err(|_| ServiceNotRunning),
-        )
-    }
-
-    fn notify_stored_entry_ack(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-        entry_index: EntryIndex,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(Input {
-                    partition,
-                    inner: Command::StoredEntryAck {
-                        service_invocation_id,
-                        entry_index,
-                    },
-                })
-                .map_err(|_| ServiceNotRunning),
-        )
-    }
-
-    fn abort_all_partition(&mut self, partition: PartitionLeaderEpoch) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(Input {
-                    partition,
-                    inner: Command::AbortAllPartition,
-                })
-                .map_err(|_| ServiceNotRunning),
-        )
-    }
-
-    fn abort_invocation(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(Input {
-                    partition,
-                    inner: Command::Abort(service_invocation_id),
-                })
-                .map_err(|_| ServiceNotRunning),
-        )
-    }
-
-    fn register_partition(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        sender: mpsc::Sender<Effect>,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(Input {
-                    partition,
-                    inner: Command::RegisterPartition(sender),
-                })
-                .map_err(|_| ServiceNotRunning),
-        )
-    }
-}
-
-pub struct ChannelStatusReader(pub(crate) mpsc::UnboundedSender<Input<Command>>);
-
-impl StatusHandle for ChannelStatusReader {
-    type Iterator = itertools::Either<
-        std::iter::Empty<InvocationStatusReport>,
-        std::vec::IntoIter<InvocationStatusReport>,
-    >;
-    type Future = BoxFuture<'static, Self::Iterator>;
-
-    fn read_status(&self) -> Self::Future {
-        let (cmd, rx) = restate_futures_util::command::Command::prepare(());
-        if self
-            .0
-            .send(Input {
-                partition: (0, 0),
-                inner: Command::ReadStatus(cmd),
-            })
-            .is_err()
-        {
-            return std::future::ready(itertools::Either::Left(std::iter::empty::<
-                InvocationStatusReport,
-            >()))
-            .boxed();
-        }
-        async move {
-            if let Ok(status_vec) = rx.await {
-                itertools::Either::Right(status_vec.into_iter())
-            } else {
-                itertools::Either::Left(std::iter::empty::<InvocationStatusReport>())
-            }
-        }
-        .boxed()
-    }
-}
-
-pub(crate) type HttpsClient = hyper::Client<
+type HttpsClient = hyper::Client<
     ProxyConnector<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>>,
     hyper::Body,
 >;
@@ -256,10 +86,10 @@ pub(crate) type HttpsClient = hyper::Client<
 
 #[derive(Debug)]
 pub struct Service<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
-    input_rx: mpsc::UnboundedReceiver<Input<Command>>,
+    input_rx: mpsc::UnboundedReceiver<InputCommand>,
 
     // Used for constructing the invoker sender
-    input_tx: mpsc::UnboundedSender<Input<Command>>,
+    input_tx: mpsc::UnboundedSender<InputCommand>,
 
     // Service endpoints registry
     service_endpoint_registry: ServiceEndpointRegistry,
@@ -287,7 +117,7 @@ pub struct Service<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndp
     // Invoker state machine
     invocation_tasks: JoinSet<()>,
     retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
-    quota: InvokerConcurrencyQuota,
+    quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
     invocation_state_machines_tree: state_machine_tree::InvocationStateMachineTree,
 
@@ -333,7 +163,7 @@ impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER> {
             entry_enricher,
             invocation_tasks: Default::default(),
             retry_timers: Default::default(),
-            quota: InvokerConcurrencyQuota::new(concurrency_limit),
+            quota: quota::InvokerConcurrencyQuota::new(concurrency_limit),
             status_store: Default::default(),
             invocation_state_machines_tree: Default::default(),
             _codec: PhantomData::<C>::default(),
@@ -400,7 +230,7 @@ where
     // Returns true if we should execute another step, false if we should stop executing steps
     async fn step<F>(
         &mut self,
-        segmented_input_queue: &mut SegmentQueue<Input<InvokeCommand>>,
+        segmented_input_queue: &mut SegmentQueue<InvokeCommand>,
         mut shutdown: Pin<&mut F>,
     ) -> bool
     where
@@ -410,36 +240,33 @@ where
             Some(input_message) = self.input_rx.recv() => {
                 match input_message {
                     // --- Spillable queue loading/offloading
-                    Input { partition, inner: Command::Invoke(invoke_command) } => {
-                        segmented_input_queue.enqueue(Input::new(
-                            partition,
-                            invoke_command,
-                        )).await;
+                    InputCommand::Invoke(invoke_command) => {
+                        segmented_input_queue.enqueue(invoke_command).await;
                     },
                     // --- Other commands (they don't go through the segment queue)
-                    Input { partition, inner: Command::RegisterPartition(sender) } => {
+                    InputCommand::RegisterPartition { partition, sender } => {
                         self.invocation_state_machines_tree.register_partition(partition, sender);
                     },
-                    Input { partition, inner: Command::Abort(service_invocation_id) } => {
+                    InputCommand::Abort { partition, service_invocation_id } => {
                         self.handle_abort_invocation(partition, service_invocation_id);
                     }
-                    Input { partition, inner: Command::AbortAllPartition } => {
+                    InputCommand::AbortAllPartition { partition } => {
                         self.handle_abort_partition(partition);
                     }
-                    Input { partition, inner: Command::Completion { service_invocation_id, completion }} => {
+                    InputCommand::Completion { partition, service_invocation_id, completion } => {
                         self.handle_completion(partition, service_invocation_id, completion);
                     },
-                    Input { partition, inner: Command::StoredEntryAck { service_invocation_id, entry_index, .. } } => {
+                    InputCommand::StoredEntryAck { partition, service_invocation_id, entry_index } => {
                         self.handle_stored_entry_ack(partition, service_invocation_id, entry_index).await;
                     },
-                    Input { inner: Command::ReadStatus(cmd), .. } => {
+                    InputCommand::ReadStatus(cmd) => {
                         let _ = cmd.reply(self.status_store.iter().collect());
                     }
                 }
             },
 
             Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
-                self.handle_invoke(invoke_input_command.partition, invoke_input_command.inner.service_invocation_id, invoke_input_command.inner.journal).await;
+                self.handle_invoke(invoke_input_command.partition, invoke_input_command.service_invocation_id, invoke_input_command.journal).await;
             },
 
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
@@ -975,79 +802,6 @@ where
         } else {
             // If no state machine is registered, the PP will send a new invoke
             trace!("No state machine found for given retry event");
-        }
-    }
-}
-
-#[derive(Debug)]
-enum InvokerConcurrencyQuota {
-    Unlimited,
-    Limited { available_slots: usize },
-}
-
-impl InvokerConcurrencyQuota {
-    fn new(quota: Option<usize>) -> Self {
-        match quota {
-            Some(available_slots) => Self::Limited { available_slots },
-            None => Self::Unlimited,
-        }
-    }
-
-    fn is_slot_available(&self) -> bool {
-        match self {
-            Self::Unlimited => true,
-            Self::Limited { available_slots } => *available_slots > 0,
-        }
-    }
-
-    fn unreserve_slot(&mut self) {
-        match self {
-            Self::Unlimited => {}
-            Self::Limited { available_slots } => *available_slots += 1,
-        }
-    }
-
-    fn reserve_slot(&mut self) {
-        debug_assert!(self.is_slot_available());
-        match self {
-            Self::Unlimited => {}
-            Self::Limited { available_slots } => *available_slots -= 1,
-        }
-    }
-}
-
-#[derive(Debug, Clone, thiserror::Error, codederror::CodedError)]
-#[error("Cannot find service {0} in the service endpoint registry")]
-#[code(unknown)]
-pub struct CannotResolveEndpoint(String);
-
-impl InvokerError for CannotResolveEndpoint {
-    fn is_transient(&self) -> bool {
-        true
-    }
-
-    fn to_invocation_error(&self) -> InvocationError {
-        InvocationError::new(Internal, self.to_string())
-    }
-}
-
-/// Internal error trait for the invoker errors
-trait InvokerError: std::error::Error {
-    fn is_transient(&self) -> bool;
-    fn to_invocation_error(&self) -> InvocationError;
-
-    fn as_invocation_error_code(&self) -> InvocationErrorCode {
-        UserErrorCode::Internal.into()
-    }
-}
-
-impl<InvokerCodedError: InvokerError + CodedError> From<&InvokerCodedError>
-    for InvocationErrorReport
-{
-    fn from(value: &InvokerCodedError) -> Self {
-        InvocationErrorReport {
-            err: value.to_invocation_error(),
-            doc_error_code: value.code(),
         }
     }
 }
