@@ -13,7 +13,7 @@ publish = false
 default = []
 serde = ["dep:serde"]
 expand = ["prost-reflect"]
-json = ["expand", "prost-reflect/serde", "dep:serde_json", "dep:restate_serde_util"]
+json = ["expand", "dep:serde", "prost-reflect/serde", "dep:serde_json", "dep:restate_serde_util"]
 
 [dependencies]
 arc-swap = { workspace = true }

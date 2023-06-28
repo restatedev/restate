@@ -33,7 +33,7 @@ restate_futures_util = { workspace = true }
 # Tower + Hyper + Tonic + Tokio
 tower = { workspace = true, features = ["util"] }
 tower-http = { version = "0.4", default-features = false, features = ["cors"] }
-http = "0.2"
+http = { workspace = true }
 http-body = "0.4"
 hyper = { workspace = true, features = ["http1", "http2", "server", "tcp", "stream", "runtime"] }
 tokio = { workspace = true }
