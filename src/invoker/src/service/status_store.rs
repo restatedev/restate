@@ -58,3 +58,22 @@ impl InvocationStatusStore {
         report.last_retry_attempt_failure = Some(reason.into());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl InvocationStatusStore {
+        pub(in crate::service) fn resolve_invocation(
+            &self,
+            partition: PartitionLeaderEpoch,
+            sid: &ServiceInvocationId,
+        ) -> Option<InvocationStatusReport> {
+            self.0.get(&partition).and_then(|inner| {
+                inner
+                    .get(sid)
+                    .map(|report| InvocationStatusReport(sid.clone(), partition, report.clone()))
+            })
+        }
+    }
+}
