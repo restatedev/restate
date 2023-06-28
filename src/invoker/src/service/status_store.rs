@@ -3,7 +3,7 @@ use super::*;
 use crate::status_handle::InvocationStatusReportInner;
 use std::time::SystemTime;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(super) struct InvocationStatusStore(
     HashMap<PartitionLeaderEpoch, HashMap<ServiceInvocationId, InvocationStatusReportInner>>,
 );
