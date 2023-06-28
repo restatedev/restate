@@ -148,15 +148,14 @@ impl Options {
         restate_fs_util::generate_temp_dir_name("invoker")
     }
 
-    pub fn build<C, JR, JS, SR, EE, SER>(
+    pub fn build<JR, JS, SR, EE, SER>(
         self,
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
         service_endpoint_registry: SER,
-    ) -> Service<C, JR, SR, EE, SER>
+    ) -> Service<JR, SR, EE, SER>
     where
-        C: RawEntryCodec,
         JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
         EE: EntryEnricher,

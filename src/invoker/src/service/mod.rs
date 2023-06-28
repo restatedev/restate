@@ -1,8 +1,11 @@
 use super::*;
 
+use crate::service::invocation_task::InvocationTask;
 use crate::service::status_store::InvocationStatusStore;
 use codederror::CodedError;
 use drain::ReleaseShutdown;
+use futures::future::BoxFuture;
+use futures::FutureExt;
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
@@ -14,11 +17,10 @@ use restate_common::types::{
 use restate_errors::warn_it;
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_queue::SegmentQueue;
-use restate_service_metadata::{ProtocolType, ServiceEndpointRegistry};
+use restate_service_metadata::{EndpointMetadata, ProtocolType, ServiceEndpointRegistry};
 use restate_timer_queue::TimerQueue;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime};
@@ -82,49 +84,89 @@ type HttpsClient = hyper::Client<
     hyper::Body,
 >;
 
-// -- Service implementation
+// -- InvocationTask factory: we use this to mock the state machine in tests
+
+trait InvocationTaskRunner {
+    fn start_invocation_task(
+        &self,
+        partition: PartitionLeaderEpoch,
+        sid: ServiceInvocationId,
+        endpoint_metadata: EndpointMetadata,
+        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
+        input_journal: InvokeInputJournal,
+    ) -> BoxFuture<'static, ()>;
+}
 
 #[derive(Debug)]
-pub struct Service<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
-    input_rx: mpsc::UnboundedReceiver<InputCommand>,
-
-    // Used for constructing the invoker sender
-    input_tx: mpsc::UnboundedSender<InputCommand>,
-
-    // Service endpoints registry
-    service_endpoint_registry: ServiceEndpointRegistry,
-
-    // Channel to communicate with invocation tasks
-    invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-    invocation_tasks_rx: mpsc::UnboundedReceiver<InvocationTaskOutput>,
-
-    // Connection/protocol options
+struct DefaultInvocationTaskRunner<JR, SR, EE> {
     client: HttpsClient,
-    retry_policy: RetryPolicy,
     suspension_timeout: Duration,
     response_abort_timeout: Duration,
     disable_eager_state: bool,
     message_size_warning: usize,
     message_size_limit: Option<usize>,
-
-    // Invoker options
-    tmp_dir: PathBuf,
-
-    journal_reader: JournalReader,
-    state_reader: StateReader,
-    entry_enricher: EntryEnricher,
-
-    // Invoker state machine
-    invocation_tasks: JoinSet<()>,
-    retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
-    quota: quota::InvokerConcurrencyQuota,
-    status_store: InvocationStatusStore,
-    invocation_state_machines_tree: state_machine_tree::InvocationStateMachineTree,
-
-    _codec: PhantomData<Codec>,
+    journal_reader: JR,
+    state_reader: SR,
+    entry_enricher: EE,
 }
 
-impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER> {
+impl<JR, SR, EE> InvocationTaskRunner for DefaultInvocationTaskRunner<JR, SR, EE>
+where
+    JR: JournalReader + Clone + Send + Sync + 'static,
+    <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
+    SR: StateReader + Clone + Send + Sync + 'static,
+    <SR as StateReader>::StateIter: Send,
+    EE: EntryEnricher + Clone + Send + 'static,
+{
+    fn start_invocation_task(
+        &self,
+        partition: PartitionLeaderEpoch,
+        sid: ServiceInvocationId,
+        endpoint_metadata: EndpointMetadata,
+        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
+        input_journal: InvokeInputJournal,
+    ) -> BoxFuture<'static, ()> {
+        InvocationTask::new(
+            self.client.clone(),
+            partition,
+            sid,
+            0,
+            endpoint_metadata,
+            self.suspension_timeout,
+            self.response_abort_timeout,
+            self.disable_eager_state,
+            self.message_size_warning,
+            self.message_size_limit,
+            self.journal_reader.clone(),
+            self.state_reader.clone(),
+            self.entry_enricher.clone(),
+            invoker_tx,
+            invoker_rx,
+        )
+        .run(input_journal)
+        .boxed()
+    }
+}
+
+// -- Service implementation
+
+#[derive(Debug)]
+pub struct Service<JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
+    // Used for constructing the invoker sender
+    input_tx: mpsc::UnboundedSender<InputCommand>,
+    // For the segment queue
+    tmp_dir: PathBuf,
+    // We have this level of indirection to hide the InvocationTaskRunner,
+    // which is a rather internal thing we have only for mocking.
+    inner: ServiceInner<
+        ServiceEndpointRegistry,
+        DefaultInvocationTaskRunner<JournalReader, StateReader, EntryEnricher>,
+    >,
+}
+
+impl<JR, SR, EE, SER> Service<JR, SR, EE, SER> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         service_endpoint_registry: SER,
@@ -140,33 +182,36 @@ impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER> {
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
-    ) -> Service<C, JR, SR, EE, SER> {
+    ) -> Service<JR, SR, EE, SER> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
         Self {
-            input_rx,
             input_tx,
-            service_endpoint_registry,
-            invocation_tasks_tx,
-            invocation_tasks_rx,
-            client: Self::create_client(proxy),
-            retry_policy,
-            suspension_timeout,
-            response_abort_timeout,
-            disable_eager_state,
-            message_size_warning,
-            message_size_limit,
             tmp_dir,
-            journal_reader,
-            state_reader,
-            entry_enricher,
-            invocation_tasks: Default::default(),
-            retry_timers: Default::default(),
-            quota: quota::InvokerConcurrencyQuota::new(concurrency_limit),
-            status_store: Default::default(),
-            invocation_state_machines_tree: Default::default(),
-            _codec: PhantomData::<C>::default(),
+            inner: ServiceInner {
+                input_rx,
+                service_endpoint_registry,
+                invocation_tasks_tx,
+                invocation_tasks_rx,
+                invocation_task_runner: DefaultInvocationTaskRunner {
+                    client: Self::create_client(proxy),
+                    suspension_timeout,
+                    response_abort_timeout,
+                    disable_eager_state,
+                    message_size_warning,
+                    message_size_limit,
+                    journal_reader,
+                    state_reader,
+                    entry_enricher,
+                },
+                default_retry_policy: retry_policy,
+                invocation_tasks: Default::default(),
+                retry_timers: Default::default(),
+                quota: quota::InvokerConcurrencyQuota::new(concurrency_limit),
+                status_store: Default::default(),
+                invocation_state_machines_tree: Default::default(),
+            },
         }
     }
 
@@ -186,7 +231,7 @@ impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER> {
     }
 }
 
-impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER>
+impl<JR, SR, EE, SER> Service<JR, SR, EE, SER>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -205,17 +250,23 @@ where
         ChannelStatusReader(self.input_tx.clone())
     }
 
-    pub async fn run(mut self, drain: drain::Watch) {
+    pub async fn run(self, drain: drain::Watch) {
+        let Service {
+            tmp_dir,
+            inner: mut service,
+            ..
+        } = self;
+
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
 
         // Prepare the segmented queue
-        let mut segmented_input_queue = SegmentQueue::init(self.tmp_dir.clone(), 1_056_784)
+        let mut segmented_input_queue = SegmentQueue::init(tmp_dir, 1_056_784)
             .await
             .expect("Cannot initialize input spillable queue");
 
         loop {
-            if !self
+            if !service
                 .step(&mut segmented_input_queue, shutdown.as_mut())
                 .await
             {
@@ -224,9 +275,40 @@ where
         }
 
         // Wait for all the tasks to shutdown
-        self.invocation_tasks.shutdown().await;
+        service.invocation_tasks.shutdown().await;
     }
+}
 
+#[derive(Debug)]
+struct ServiceInner<ServiceEndpointRegistry, InvocationTaskRunner> {
+    input_rx: mpsc::UnboundedReceiver<InputCommand>,
+
+    // Service endpoints registry
+    service_endpoint_registry: ServiceEndpointRegistry,
+
+    // Channel to communicate with invocation tasks
+    invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+    invocation_tasks_rx: mpsc::UnboundedReceiver<InvocationTaskOutput>,
+
+    // Invocation task factory
+    invocation_task_runner: InvocationTaskRunner,
+
+    // Invoker service arguments
+    default_retry_policy: RetryPolicy,
+
+    // Invoker state machine
+    invocation_tasks: JoinSet<()>,
+    retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
+    quota: quota::InvokerConcurrencyQuota,
+    status_store: InvocationStatusStore,
+    invocation_state_machines_tree: state_machine_tree::InvocationStateMachineTree,
+}
+
+impl<SER, ITR> ServiceInner<SER, ITR>
+where
+    SER: ServiceEndpointRegistry,
+    ITR: InvocationTaskRunner,
+{
     // Returns true if we should execute another step, false if we should stop executing steps
     async fn step<F>(
         &mut self,
@@ -245,7 +327,7 @@ where
                     },
                     // --- Other commands (they don't go through the segment queue)
                     InputCommand::RegisterPartition { partition, sender } => {
-                        self.invocation_state_machines_tree.register_partition(partition, sender);
+                        self.handle_register_partition(partition, sender);
                     },
                     InputCommand::Abort { partition, service_invocation_id } => {
                         self.handle_abort_invocation(partition, service_invocation_id);
@@ -320,6 +402,21 @@ where
     }
 
     // --- Event handlers
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.invoker.partition_leader_epoch = ?partition,
+        )
+    )]
+    fn handle_register_partition(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        sender: mpsc::Sender<Effect>
+    ) {
+        self.invocation_state_machines_tree.register_partition(partition, sender);
+    }
 
     #[instrument(
         level = "trace",
@@ -706,7 +803,7 @@ where
                     partition,
                     service_invocation_id,
                     err,
-                    state_machine_factory(self.retry_policy.clone()),
+                    state_machine_factory(self.default_retry_policy.clone()),
                 )
                 .await;
                 return;
@@ -715,7 +812,7 @@ where
 
         let retry_policy = endpoint_metadata
             .retry_policy()
-            .unwrap_or(&self.retry_policy)
+            .unwrap_or(&self.default_retry_policy)
             .clone();
 
         let mut ism = state_machine_factory(retry_policy);
@@ -728,26 +825,16 @@ where
                 (Some(tx), Some(rx))
             }
         };
-        let abort_handle = self.invocation_tasks.spawn(
-            invocation_task::InvocationTask::new(
-                self.client.clone(),
-                partition,
-                service_invocation_id.clone(),
-                0,
-                endpoint_metadata,
-                self.suspension_timeout,
-                self.response_abort_timeout,
-                self.disable_eager_state,
-                self.message_size_warning,
-                self.message_size_limit,
-                self.journal_reader.clone(),
-                self.state_reader.clone(),
-                self.entry_enricher.clone(),
-                self.invocation_tasks_tx.clone(),
-                completions_rx,
-            )
-            .run(journal),
-        );
+        let abort_handle =
+            self.invocation_tasks
+                .spawn(self.invocation_task_runner.start_invocation_task(
+                    partition,
+                    service_invocation_id.clone(),
+                    endpoint_metadata,
+                    self.invocation_tasks_tx.clone(),
+                    completions_rx,
+                    journal,
+                ));
 
         // Transition the state machine, and store it
         self.status_store
@@ -808,22 +895,80 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        entry_enricher, journal_reader, state_reader, InvokeInputJournal, Service, ServiceHandle,
-    };
+    use super::*;
+
+    use std::future::pending;
     use bytes::Bytes;
-    use restate_common::retry_policy::RetryPolicy;
-    use restate_common::types::{InvocationId, ServiceInvocationId};
-    use restate_service_metadata::InMemoryServiceEndpointRegistry;
-    use restate_service_protocol::codec::ProtobufRawEntryCodec;
-    use restate_test_util::{check, test};
-    use std::time::Duration;
-    use tokio::sync::mpsc;
+    use restate_common::types::{EnrichedEntryHeader, InvocationId, RawEntry};
+    use restate_service_metadata::{DeliveryOptions, InMemoryServiceEndpointRegistry};
+    use restate_test_util::{check, let_assert, test};
+    use crate::service::invocation_task::InvocationTaskError;
+    use quota::InvokerConcurrencyQuota;
+
+    // -- Mocks
+
+    const MOCK_PARTITION: PartitionLeaderEpoch = (0, 0);
+
+    impl<SER, ITR> ServiceInner<SER, ITR> {
+        fn mock(service_endpoint_registry: SER,
+                   invocation_task_runner: ITR,
+                   default_retry_policy: RetryPolicy,
+                   concurrency_limit: Option<usize>) -> (mpsc::UnboundedSender<InputCommand>, Self) {
+            let (input_tx, input_rx) = mpsc::unbounded_channel();
+            let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
+
+            let service_inner = Self {
+                input_rx,
+                service_endpoint_registry,
+                invocation_tasks_tx,
+                invocation_tasks_rx,
+                invocation_task_runner,
+                default_retry_policy,
+                invocation_tasks: Default::default(),
+                retry_timers: Default::default(),
+                quota: InvokerConcurrencyQuota::new(concurrency_limit),
+                status_store: Default::default(),
+                invocation_state_machines_tree: Default::default(),
+            };
+            (input_tx, service_inner)
+        }
+
+        fn register_mock_partition(&mut self) -> mpsc::Receiver<Effect> where
+            SER: ServiceEndpointRegistry,
+            ITR: InvocationTaskRunner {
+            let (partition_tx, partition_rx) = mpsc::channel(1024);
+            self.handle_register_partition(MOCK_PARTITION, partition_tx);
+            partition_rx
+        }
+    }
+
+    impl<F, Fut> InvocationTaskRunner for F where F: Fn(
+        PartitionLeaderEpoch,
+        ServiceInvocationId,
+        EndpointMetadata,
+        mpsc::UnboundedSender<InvocationTaskOutput>,
+        Option<mpsc::UnboundedReceiver<Completion>>,
+        InvokeInputJournal,
+    ) -> Fut, Fut: Future<Output=()> + Send + 'static {
+        fn start_invocation_task(&self, partition: PartitionLeaderEpoch, sid: ServiceInvocationId, endpoint_metadata: EndpointMetadata, invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>, invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>, input_journal: InvokeInputJournal) -> BoxFuture<'static, ()> {
+            (*self)(partition, sid, endpoint_metadata, invoker_tx, invoker_rx, input_journal).boxed()
+        }
+    }
+
+    fn mock_sid() -> ServiceInvocationId {
+        ServiceInvocationId::new("MyService", Bytes::default(), InvocationId::now_v7())
+    }
+
+    fn mock_endpoint_registry() -> InMemoryServiceEndpointRegistry {
+        let mut in_memory_registry = InMemoryServiceEndpointRegistry::default();
+        in_memory_registry.register_service_endpoint("MyService", EndpointMetadata::new("http://localhost:8080".parse().unwrap(), ProtocolType::BidiStream, DeliveryOptions::default()));
+        in_memory_registry
+    }
 
     #[test(tokio::test)]
     async fn input_order_is_maintained() {
         let tempdir = tempfile::tempdir().unwrap();
-        let service: Service<ProtobufRawEntryCodec, _, _, _, _> = Service::new(
+        let service = Service::new(
             // all invocations are unknown leading to immediate retries
             InMemoryServiceEndpointRegistry::default(),
             // fixed amount of retries so that an invocation eventually completes with a failure
