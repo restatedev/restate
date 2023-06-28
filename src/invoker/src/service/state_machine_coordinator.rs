@@ -98,7 +98,6 @@ impl PartitionInvocationStateMachineCoordinator {
     pub(in crate::service) async fn handle_invoke<JR, SR, EE, SER>(
         &mut self,
         service_state: &mut ServiceState<JR, SR, EE, SER>,
-        status: &mut status_store::InvocationStatusStore,
         invoke_input_cmd: InvokeCommand,
     ) where
         JR: JournalReader + Clone + Send + Sync + 'static,
@@ -113,9 +112,9 @@ impl PartitionInvocationStateMachineCoordinator {
             .invocation_state_machines
             .contains_key(&service_invocation_id));
 
+        service_state.quota.reserve_slot();
         self.start_invocation_task(
             service_state,
-            status,
             service_invocation_id.clone(),
             invoke_input_cmd.journal,
             InvocationStateMachine::create,
@@ -201,7 +200,6 @@ impl PartitionInvocationStateMachineCoordinator {
     pub(in crate::service) async fn handle_retry_timer_fired<JR, SR, EE, SER>(
         &mut self,
         service_state: &mut ServiceState<JR, SR, EE, SER>,
-        status: &mut status_store::InvocationStatusStore,
         service_invocation_id: ServiceInvocationId,
     ) where
         JR: JournalReader + Clone + Send + Sync + 'static,
@@ -212,7 +210,7 @@ impl PartitionInvocationStateMachineCoordinator {
         SER: ServiceEndpointRegistry,
     {
         trace!("Retry timeout fired");
-        self.handle_retry_event(service_state, status, service_invocation_id, |sm| {
+        self.handle_retry_event(service_state, service_invocation_id, |sm| {
             sm.notify_retry_timer_fired()
         })
         .await;
@@ -231,7 +229,6 @@ impl PartitionInvocationStateMachineCoordinator {
     pub(in crate::service) async fn handle_stored_entry_ack<JR, SR, EE, SER>(
         &mut self,
         service_state: &mut ServiceState<JR, SR, EE, SER>,
-        status: &mut status_store::InvocationStatusStore,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
     ) where
@@ -243,7 +240,7 @@ impl PartitionInvocationStateMachineCoordinator {
         SER: ServiceEndpointRegistry,
     {
         trace!("Received a new stored journal entry acknowledgement");
-        self.handle_retry_event(service_state, status, service_invocation_id, |sm| {
+        self.handle_retry_event(service_state, service_invocation_id, |sm| {
             sm.notify_stored_ack(entry_index)
         })
         .await;
@@ -297,9 +294,9 @@ impl PartitionInvocationStateMachineCoordinator {
             restate.invoker.partition_leader_epoch = ?self.partition,
         )
     )]
-    pub(in crate::service) async fn handle_invocation_task_closed(
+    pub(in crate::service) async fn handle_invocation_task_closed<JR, SR, EE, SER>(
         &mut self,
-        status: &mut status_store::InvocationStatusStore,
+        service_state: &mut ServiceState<JR, SR, EE, SER>,
         service_invocation_id: ServiceInvocationId,
     ) {
         if self
@@ -308,7 +305,8 @@ impl PartitionInvocationStateMachineCoordinator {
             .is_some()
         {
             trace!("Invocation task closed correctly");
-            status.on_end(&self.partition, &service_invocation_id);
+            service_state.quota.unreserve_slot();
+            service_state.status_store.on_end(&self.partition, &service_invocation_id);
             self.send_end(service_invocation_id).await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -325,10 +323,9 @@ impl PartitionInvocationStateMachineCoordinator {
             restate.invoker.partition_leader_epoch = ?self.partition,
         )
     )]
-    pub(in crate::service) async fn handle_invocation_task_failed(
+    pub(in crate::service) async fn handle_invocation_task_failed<JR, SR, EE, SER>(
         &mut self,
-        retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
-        status: &mut status_store::InvocationStatusStore,
+        service_state: &mut ServiceState<JR, SR, EE, SER>,
         service_invocation_id: ServiceInvocationId,
         error: impl InvokerError + CodedError + Send + Sync + 'static,
     ) {
@@ -336,7 +333,7 @@ impl PartitionInvocationStateMachineCoordinator {
             .invocation_state_machines
             .remove(&service_invocation_id)
         {
-            self.handle_error_event(retry_timers, status, service_invocation_id, error, sm)
+            self.handle_error_event(service_state,  service_invocation_id, error, sm)
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -344,10 +341,9 @@ impl PartitionInvocationStateMachineCoordinator {
         }
     }
 
-    async fn handle_error_event<E: InvokerError + CodedError + Send + Sync + 'static>(
+    async fn handle_error_event<JR, SR, EE, SER, E: InvokerError + CodedError + Send + Sync + 'static>(
         &mut self,
-        retry_timers: &mut TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
-        status: &mut status_store::InvocationStatusStore,
+        service_state: &mut ServiceState<JR, SR, EE, SER>,
         service_invocation_id: ServiceInvocationId,
         error: E,
         mut sm: InvocationStateMachine,
@@ -361,17 +357,18 @@ impl PartitionInvocationStateMachineCoordinator {
                     humantime::format_duration(next_retry_timer_duration),
                     sm.invocation_state_debug()
                 );
-                status.on_failure(self.partition, service_invocation_id.clone(), &error);
+                service_state.status_store.on_failure(self.partition, service_invocation_id.clone(), &error);
                 self.invocation_state_machines
                     .insert(service_invocation_id.clone(), sm);
-                retry_timers.sleep_until(
+                service_state.retry_timers.sleep_until(
                     SystemTime::now() + next_retry_timer_duration,
                     (self.partition, service_invocation_id),
                 );
             }
             _ => {
                 trace!("Not going to retry the error");
-                status.on_end(&self.partition, &service_invocation_id);
+                service_state.quota.unreserve_slot();
+                service_state.status_store.on_end(&self.partition, &service_invocation_id);
                 self.send_error(service_invocation_id, error.to_invocation_error())
                     .await;
             }
@@ -387,9 +384,9 @@ impl PartitionInvocationStateMachineCoordinator {
             restate.invoker.partition_leader_epoch = ?self.partition,
         )
     )]
-    pub(in crate::service) async fn handle_invocation_task_suspended(
+    pub(in crate::service) async fn handle_invocation_task_suspended<JR, SR, EE, SER>(
         &mut self,
-        status: &mut status_store::InvocationStatusStore,
+        service_state: &mut ServiceState<JR, SR, EE, SER>,
         service_invocation_id: ServiceInvocationId,
         entry_indexes: HashSet<EntryIndex>,
     ) {
@@ -399,7 +396,8 @@ impl PartitionInvocationStateMachineCoordinator {
             .is_some()
         {
             trace!("Suspending invocation");
-            status.on_end(&self.partition, &service_invocation_id);
+            service_state.quota.unreserve_slot();
+            service_state.status_store.on_end(&self.partition, &service_invocation_id);
             let _ = self
                 .output_tx
                 .send(Effect {
@@ -420,7 +418,6 @@ impl PartitionInvocationStateMachineCoordinator {
     async fn start_invocation_task<JR, SR, EE, SER>(
         &mut self,
         service_state: &mut ServiceState<JR, SR, EE, SER>,
-        status: &mut status_store::InvocationStatusStore,
         service_invocation_id: ServiceInvocationId,
         journal: InvokeInputJournal,
         state_machine_factory: impl FnOnce(RetryPolicy) -> InvocationStateMachine,
@@ -446,8 +443,7 @@ impl PartitionInvocationStateMachineCoordinator {
 
                 // This method needs a state machine
                 self.handle_error_event(
-                    &mut service_state.retry_timers,
-                    status,
+                    service_state,
                     service_invocation_id,
                     err,
                     state_machine_factory(service_state.default_retry_policy.clone()),
@@ -494,7 +490,7 @@ impl PartitionInvocationStateMachineCoordinator {
         );
 
         // Transition the state machine, and store it
-        status.on_start(self.partition, service_invocation_id.clone());
+        service_state.status_store.on_start(self.partition, service_invocation_id.clone());
         invocation_state_machine.start(abort_handle, completions_tx);
         trace!(
             "Invocation task started state. Invocation state: {:?}",
@@ -507,7 +503,6 @@ impl PartitionInvocationStateMachineCoordinator {
     async fn handle_retry_event<JR, SR, EE, SER, FN>(
         &mut self,
         service_state: &mut ServiceState<JR, SR, EE, SER>,
-        status: &mut status_store::InvocationStatusStore,
         service_invocation_id: ServiceInvocationId,
         f: FN,
     ) where
@@ -528,7 +523,6 @@ impl PartitionInvocationStateMachineCoordinator {
                 trace!("Going to retry now");
                 self.start_invocation_task(
                     service_state,
-                    status,
                     service_invocation_id,
                     InvokeInputJournal::NoCachedJournal,
                     // In case we're retrying, we don't modify the retry policy

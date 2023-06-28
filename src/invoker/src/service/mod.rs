@@ -21,6 +21,7 @@ use std::{cmp, panic};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{debug, trace};
+use crate::service::status_store::InvocationStatusStore;
 
 mod invocation_state_machine;
 mod invocation_task;
@@ -269,6 +270,8 @@ pub struct Service<Codec, JournalReader, StateReader, EntryEnricher, ServiceEndp
 
     // Invoker options
     tmp_dir: PathBuf,
+    
+    concurrency_limit: Option<usize>,
 
     journal_reader: JournalReader,
     state_reader: StateReader,
@@ -289,6 +292,7 @@ impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER> {
         message_size_limit: Option<usize>,
         proxy: Option<Proxy>,
         tmp_dir: PathBuf,
+        concurrency_limit: Option<usize>,
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
@@ -311,6 +315,7 @@ impl<C, JR, SR, EE, SER> Service<C, JR, SR, EE, SER> {
             message_size_limit,
             proxy,
             tmp_dir,
+            concurrency_limit,
             journal_reader,
             state_reader,
             entry_enricher,
@@ -357,6 +362,7 @@ where
             message_size_warning,
             message_size_limit,
             tmp_dir,
+            concurrency_limit,
             ..
         } = self;
 
@@ -383,10 +389,11 @@ where
             invocation_tasks_tx,
             default_retry_policy: retry_policy,
             retry_timers: Default::default(),
+            quota: InvokerConcurrencyQuota::new(concurrency_limit),
+            status_store: InvocationStatusStore::default()
         };
         let mut state_machine_coordinator =
             state_machine_coordinator::InvocationStateMachineCoordinator::default();
-        let mut status_store = status_store::InvocationStatusStore::default();
 
         loop {
             tokio::select! {
@@ -437,7 +444,6 @@ where
                             if let Some(psm) = state_machine_coordinator.resolve_partition(partition) {
                                 psm.handle_stored_entry_ack(
                                     &mut service_state,
-                                    &mut status_store,
                                     service_invocation_id,
                                     entry_index,
                                 )
@@ -450,16 +456,15 @@ where
                             }
                         },
                         Input { inner: Command::ReadStatus(cmd), .. } => {
-                            let _ = cmd.reply(status_store.iter().collect());
+                            let _ = cmd.reply(service_state.status_store.iter().collect());
                         }
                     }
                 },
 
-                Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() => {
+                Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && service_state.quota.is_slot_available() => {
                     if let Some(psm) = state_machine_coordinator.resolve_partition(invoke_input_command.partition) {
                         psm.handle_invoke(
                             &mut service_state,
-                            &mut status_store,
                             invoke_input_command.inner,
                         ).await;
                     } else {
@@ -493,21 +498,20 @@ where
                         },
                         InvocationTaskOutputInner::Closed => {
                             partition_state_machine.handle_invocation_task_closed(
-                                &mut status_store,
+                                &mut service_state,
                                 invocation_task_msg.service_invocation_id,
                             ).await
                         },
                         InvocationTaskOutputInner::Failed(e) => {
                             partition_state_machine.handle_invocation_task_failed(
-                                &mut service_state.retry_timers,
-                                &mut status_store,
+                                &mut service_state,
                                 invocation_task_msg.service_invocation_id,
                                 e,
                             ).await
                         },
                         InvocationTaskOutputInner::Suspended(indexes) => {
                             partition_state_machine.handle_invocation_task_suspended(
-                                &mut status_store,
+                                &mut service_state,
                                 invocation_task_msg.service_invocation_id,
                                 indexes
                             ).await
@@ -520,7 +524,6 @@ where
                     if let Some(partition_state_machine) = state_machine_coordinator.resolve_partition(partition) {
                         partition_state_machine.handle_retry_timer_fired(
                             &mut service_state,
-                            &mut status_store,
                             sid
                         ).await;
                     } else {
@@ -568,6 +571,42 @@ where
     }
 }
 
+enum InvokerConcurrencyQuota {
+    Unlimited,
+    Limited { available_slots: usize },
+}
+
+impl InvokerConcurrencyQuota {
+    fn new(quota: Option<usize>) -> Self {
+        match quota {
+            Some(available_slots) => Self::Limited { available_slots },
+            None => Self::Unlimited,
+        }
+    }
+
+    fn is_slot_available(&self) -> bool {
+        match self {
+            Self::Unlimited => true,
+            Self::Limited { available_slots } => *available_slots > 0,
+        }
+    }
+
+    fn unreserve_slot(&mut self) {
+        match self {
+            Self::Unlimited => {}
+            Self::Limited { available_slots } => *available_slots += 1,
+        }
+    }
+
+    fn reserve_slot(&mut self) {
+        debug_assert!(self.is_slot_available());
+        match self {
+            Self::Unlimited => {}
+            Self::Limited { available_slots } => *available_slots -= 1,
+        }
+    }
+}
+
 /// This is a subset of Service to contain the state we need to carry around in the state machines.
 struct ServiceState<JR, SR, EE, SER> {
     client: HttpsClient,
@@ -584,6 +623,8 @@ struct ServiceState<JR, SR, EE, SER> {
     invocation_tasks: JoinSet<()>,
     invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
+    quota: InvokerConcurrencyQuota,
+    status_store: InvocationStatusStore
 }
 
 /// Internal error trait for the invoker errors
@@ -636,6 +677,7 @@ mod tests {
             None,
             None,
             tempdir.into_path(),
+            None,
             journal_reader::mocks::EmptyJournalReader,
             state_reader::mocks::EmptyStateReader,
             entry_enricher::mocks::MockEntryEnricher::default(),

@@ -97,6 +97,11 @@ pub struct Options {
     )]
     tmp_dir: PathBuf,
 
+    /// # Concurrency limit
+    ///
+    /// Number of concurrent invocations that can be processed by the invoker.
+    concurrency_limit: Option<usize>,
+
     #[cfg_attr(feature = "options_schema", schemars(skip))]
     disable_eager_state: bool,
 }
@@ -111,6 +116,7 @@ impl Default for Options {
             message_size_limit: None,
             proxy_uri: None,
             tmp_dir: Options::default_tmp_dir(),
+            concurrency_limit: None,
             disable_eager_state: false,
         }
     }
@@ -166,6 +172,7 @@ impl Options {
             self.message_size_limit,
             self.proxy_uri,
             self.tmp_dir,
+            self.concurrency_limit,
             journal_reader,
             state_reader,
             entry_enricher,
