@@ -4,8 +4,8 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use futures::FutureExt;
+use restate_common::journal::Completion;
 use restate_common::types::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
-use restate_journal::Completion;
 use tokio::sync::mpsc;
 
 // -- Input messages

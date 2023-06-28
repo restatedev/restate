@@ -6,18 +6,21 @@ use codederror::CodedError;
 use drain::ReleaseShutdown;
 use futures::future::BoxFuture;
 use futures::FutureExt;
+use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
+use restate_common::journal::raw::Header;
 use restate_common::journal::Completion;
 use restate_common::retry_policy::RetryPolicy;
+use restate_common::service_metadata::{EndpointMetadata, ProtocolType};
 use restate_common::types::{
     EnrichedRawEntry, EntryIndex, PartitionLeaderEpoch, ServiceInvocationId,
 };
 use restate_errors::warn_it;
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_queue::SegmentQueue;
-use restate_service_metadata::{EndpointMetadata, ProtocolType, ServiceEndpointRegistry};
+use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -39,7 +42,6 @@ mod status_store;
 
 pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
-use input_command::{InputCommand, InvokeCommand};
 
 // -- Errors
 
@@ -902,7 +904,7 @@ mod tests {
     use bytes::Bytes;
     use quota::InvokerConcurrencyQuota;
     use restate_common::types::{EnrichedEntryHeader, InvocationId, RawEntry};
-    use restate_service_metadata::{DeliveryOptions, InMemoryServiceEndpointRegistry};
+    use restate_service_metadata::InMemoryServiceEndpointRegistry;
     use restate_test_util::{check, let_assert, test};
     use std::future::{pending, ready};
     use tempfile::tempdir;
@@ -992,7 +994,7 @@ mod tests {
             EndpointMetadata::new(
                 "http://localhost:8080".parse().unwrap(),
                 ProtocolType::BidiStream,
-                DeliveryOptions::default(),
+                Default::default(),
             ),
         );
         in_memory_registry
