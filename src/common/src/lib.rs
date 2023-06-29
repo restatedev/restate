@@ -1,7 +1,10 @@
+//! This crate contains the core types used by various Restate components.
+
 pub mod errors;
+pub mod identifiers;
+pub mod invocation;
 pub mod journal;
-pub mod partitioner;
-pub mod retry_policy;
-pub mod service_metadata;
-pub mod traits;
-pub mod types;
+pub mod message;
+pub mod retries;
+pub mod service_endpoint;
+pub mod time;

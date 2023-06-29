@@ -1,3 +1,5 @@
+//! A core aspect of Restate it's the ability to retry invocations. This module contains the types defining retries.
+
 use std::cmp;
 use std::future::Future;
 use std::time::Duration;
@@ -10,7 +12,7 @@ use std::time::Duration;
 ///
 /// ```rust
 /// use std::time::Duration;
-/// use restate_common::retry_policy::RetryPolicy;
+/// use restate_common::retries::RetryPolicy;
 ///
 /// // Define the retry policy
 /// let retry_policy = RetryPolicy::fixed_delay(Duration::from_millis(100), 10);
@@ -158,10 +160,10 @@ impl RetryPolicy {
 
 impl IntoIterator for RetryPolicy {
     type Item = Duration;
-    type IntoIter = Iter;
+    type IntoIter = RetryIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        Iter {
+        RetryIter {
             policy: self,
             attempts: 0,
             last_retry: None,
@@ -170,13 +172,13 @@ impl IntoIterator for RetryPolicy {
 }
 
 #[derive(Debug)]
-pub struct Iter {
+pub struct RetryIter {
     policy: RetryPolicy,
     attempts: usize,
     last_retry: Option<Duration>,
 }
 
-impl Iterator for Iter {
+impl Iterator for RetryIter {
     type Item = Duration;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -229,7 +231,7 @@ impl Iterator for Iter {
     }
 }
 
-impl ExactSizeIterator for Iter {}
+impl ExactSizeIterator for RetryIter {}
 
 #[cfg(test)]
 mod tests {

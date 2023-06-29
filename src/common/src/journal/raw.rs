@@ -1,7 +1,45 @@
+//! Raw entries carry the serialized representation of entries.
+
 use super::*;
-use crate::types::RawEntry;
+
 use std::fmt::Debug;
 
+pub type PlainRawEntry = RawEntry<RawEntryHeader>;
+
+/// Defines a [RawEntry] header.
+pub trait EntryHeader {
+    fn is_completed(&self) -> Option<bool>;
+
+    fn mark_completed(&mut self);
+
+    fn to_entry_type(&self) -> EntryType;
+}
+
+/// This struct represents a serialized journal entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawEntry<H> {
+    // TODO can we get rid of these pub here?
+    pub header: H,
+    pub entry: Bytes,
+}
+
+impl<H> RawEntry<H> {
+    pub const fn new(header: H, entry: Bytes) -> Self {
+        Self { header, entry }
+    }
+
+    pub fn into_inner(self) -> (H, Bytes) {
+        (self.header, self.entry)
+    }
+}
+
+impl<H: EntryHeader> RawEntry<H> {
+    pub fn ty(&self) -> EntryType {
+        self.header.to_entry_type()
+    }
+}
+
+/// This struct represents headers as they are received from the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawEntryHeader {
     PollInputStream { is_completed: bool },
@@ -35,7 +73,7 @@ impl RawEntryHeader {
     }
 }
 
-impl Header for RawEntryHeader {
+impl EntryHeader for RawEntryHeader {
     fn is_completed(&self) -> Option<bool> {
         self.is_completed()
     }
@@ -73,7 +111,7 @@ impl Header for RawEntryHeader {
     }
 }
 
-pub type PlainRawEntry = RawEntry<RawEntryHeader>;
+// -- Codec for RawEntry
 
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot decode {ty:?}. {kind:?}")]
@@ -102,18 +140,10 @@ pub enum ErrorKind {
 pub trait RawEntryCodec {
     fn serialize_as_unary_input_entry(input_message: Bytes) -> PlainRawEntry;
 
-    fn deserialize<H: Header>(entry: &RawEntry<H>) -> Result<Entry, RawEntryCodecError>;
+    fn deserialize<H: EntryHeader>(entry: &RawEntry<H>) -> Result<Entry, RawEntryCodecError>;
 
-    fn write_completion<H: Header + Debug>(
+    fn write_completion<H: EntryHeader + Debug>(
         entry: &mut RawEntry<H>,
         completion_result: CompletionResult,
     ) -> Result<(), RawEntryCodecError>;
-}
-
-pub trait Header {
-    fn is_completed(&self) -> Option<bool>;
-
-    fn mark_completed(&mut self);
-
-    fn to_entry_type(&self) -> EntryType;
 }

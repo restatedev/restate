@@ -1,45 +1,37 @@
-//! This crate defines the journal model.
+//! To implement the Durable execution, we model the invocation state machine using a journal.
+//! This module defines the journal model.
 
-use crate::types::{CompletionResult, EntryIndex, ResponseResult};
+pub mod enriched;
+mod entries;
+pub mod raw;
+
+// Re-export all the entries
+pub use entries::*;
+
+use crate::invocation::{ResponseResult, ServiceInvocationSpanContext};
 use bytes::Bytes;
 use bytestring::ByteString;
 
-mod enriched;
-mod entries;
-pub mod raw;
-pub use entries::*;
+pub type EntryIndex = u32;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Entry {
-    // IO
-    PollInputStream(PollInputStreamEntry),
-    OutputStream(OutputStreamEntry),
-
-    // State access
-    GetState(GetStateEntry),
-    SetState(SetStateEntry),
-    ClearState(ClearStateEntry),
-
-    // Syscalls
-    Sleep(SleepEntry),
-    Invoke(InvokeEntry),
-    BackgroundInvoke(BackgroundInvokeEntry),
-    Awakeable(AwakeableEntry),
-    CompleteAwakeable(CompleteAwakeableEntry),
-    Custom(Bytes),
+/// Metadata associated with a journal
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournalMetadata {
+    pub length: EntryIndex,
+    pub method: String,
+    pub span_context: ServiceInvocationSpanContext,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Completion {
-    pub entry_index: EntryIndex,
-    pub result: CompletionResult,
-}
-
-impl Completion {
-    pub fn new(entry_index: EntryIndex, result: CompletionResult) -> Self {
+impl JournalMetadata {
+    pub fn new(
+        method: impl Into<String>,
+        span_context: ServiceInvocationSpanContext,
+        length: EntryIndex,
+    ) -> Self {
         Self {
-            entry_index,
-            result,
+            method: method.into(),
+            span_context,
+            length,
         }
     }
 }
