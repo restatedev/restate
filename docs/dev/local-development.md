@@ -46,35 +46,12 @@ CMAKE_OSX_ARCHITECTURES = "arm64"
 It is useful to enable tracing when testing the runtime. 
 To set up the runtime to publish traces to Jaeger, refer to the observability documentation in the Restate official documentation.
 
-#### Starting Jaeger on Linux
+#### Starting Jaeger on Linux and MacOS
 
 To start Jaeger, run:
 
 ```shell
-docker run -d -p16686:16686 -p6831:6831/udp --name jaeger jaegertracing/all-in-one:latest
-```
-
-#### Starting Jaeger on MacOS
-
-When using the [LimaVM](https://github.com/lima-vm/lima) for running Docker containers on MacOS, there is a [problem with forwarding UDP ports](https://github.com/lima-vm/lima/issues/366).
-As a workaround, you can [start the jaeger-agent locally](https://www.jaegertracing.io/docs/1.6/getting-started/#running-individual-jaeger-components) via
-
-```shell
-git clone git@github.com:jaegertracing/jaeger.git jaeger
-cd jaeger
-go run ./cmd/agent/main.go --reporter.grpc.host-port localhost:14250
-```
-
-Note that you have to forward the grpc port `14250` for the Jaeger container:
-
-```shell
-docker run -d -p16686:16686 -p14250:14250 jaegertracing/all-in-one:latest
-```
-
-Moreover, you have to set the maximum udp package size to 65536 via
-
-```shell
-sudo sysctl net.inet.udp.maxdgram=65536
+docker run --rm -d -p16686:16686 -p4317:4317 -e COLLECTOR_OTLP_ENABLED=true --name jaeger jaegertracing/all-in-one:latest
 ```
 
 ## Setting up Knative

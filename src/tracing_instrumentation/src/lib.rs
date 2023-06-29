@@ -3,6 +3,7 @@ mod pretty;
 use crate::pretty::PrettyFields;
 use opentelemetry::trace::TraceError;
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
+use opentelemetry_otlp::WithExportConfig;
 use pretty::Pretty;
 use std::fmt::Display;
 use tracing::Level;
@@ -29,19 +30,19 @@ fn default_filter() -> String {
     "info".to_string()
 }
 
-/// # Jaeger Options
+/// # Tracing Options
 ///
-/// Configuration for the [Jaeger Agent exporter](https://www.jaegertracing.io/docs/1.6/deployment/#agent).
+/// Configuration for the [OTLP exporter](https://opentelemetry.io/docs/specs/otel/protocol/exporter/) which can export to all OTLP compatible systems (e.g. Jaeger).
 ///
 /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-struct JaegerOptions {
+struct TracingOptions {
     /// # Endpoint
     ///
-    /// Specify the Jaeger endpoint to use to send traces.
-    /// Traces will be exported using the [Jaeger Agent UDP protocol](https://www.jaegertracing.io/docs/1.6/deployment/#agent)
-    /// through [opentelemetry_jaeger](https://docs.rs/opentelemetry-jaeger/latest/opentelemetry_jaeger/config/agent/struct.AgentPipeline.html).
+    /// Specify the tracing endpoint to send traces to.
+    /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
+    /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
     endpoint: String,
     /// # Filter
     ///
@@ -51,7 +52,7 @@ struct JaegerOptions {
     filter: String,
 }
 
-impl JaegerOptions {
+impl TracingOptions {
     pub(crate) fn build_layer<S>(
         &self,
         service_name: String,
@@ -79,20 +80,21 @@ impl JaegerOptions {
             .into_iter(),
         );
 
-        let mut jaeger_pipeline = opentelemetry_jaeger::new_agent_pipeline()
-            .with_trace_config(opentelemetry::sdk::trace::config().with_resource(resource));
+        let exporter = opentelemetry_otlp::new_exporter()
+            .tonic()
+            .with_endpoint(&self.endpoint);
 
-        jaeger_pipeline = jaeger_pipeline
-            .with_endpoint(&self.endpoint)
-            .with_auto_split_batch(true);
-
-        let jaeger_tracer = jaeger_pipeline.install_batch(opentelemetry::runtime::Tokio)?;
+        let tracer = opentelemetry_otlp::new_pipeline()
+            .tracing()
+            .with_trace_config(opentelemetry::sdk::trace::config().with_resource(resource))
+            .with_exporter(exporter)
+            .install_batch(opentelemetry::runtime::Tokio)?;
 
         Ok(tracing_opentelemetry::layer()
             .with_location(false)
             .with_threads(false)
             .with_tracked_inactivity(false)
-            .with_tracer(jaeger_tracer)
+            .with_tracer(tracer)
             .with_filter(EnvFilter::try_new(&self.filter)?))
     }
 }
@@ -250,8 +252,8 @@ impl LogOptions {
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "ObservabilityOptions"))]
 pub struct Options {
-    /// # Jaeger options
-    jaeger: Option<JaegerOptions>,
+    /// # Tracing options
+    tracing: Option<TracingOptions>,
 
     /// # Jaeger file exporter options
     jaeger_file: Option<JaegerFileOptions>,
@@ -281,11 +283,13 @@ impl Options {
         #[cfg(feature = "console-subscriber")]
         let layers = layers.with(console_subscriber::spawn());
 
-        // Jaeger layer
+        // Tracing layer
         let layers = layers.with(
-            self.jaeger
+            self.tracing
                 .as_ref()
-                .map(|jaeger| jaeger.build_layer(restate_service_name.clone(), instance_id))
+                .map(|tracing_options| {
+                    tracing_options.build_layer(restate_service_name.clone(), instance_id)
+                })
                 .transpose()?,
         );
 

@@ -123,6 +123,9 @@ skip = [
 
     # Clash between rocksdb bindgen and prost-build
     { name = "prettyplease"},
+
+    # Clash between our own and opentelemetry-otlp's Tonic dependency :-(
+    { name = "tonic" },
 ]
 deny = [
     # Each entry the name of a crate and a version range. If version is
