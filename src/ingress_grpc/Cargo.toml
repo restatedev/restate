@@ -13,7 +13,7 @@ options_schema = ["dep:schemars"]
 
 [dependencies]
 # Restate
-restate_common = { workspace = true, features = ["tonic_conversions"] }
+restate_types = { workspace = true, features = ["tonic_conversions"] }
 restate_errors = { workspace = true }
 restate_service_metadata = { workspace = true }
 

@@ -5,8 +5,7 @@ use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
-use restate_common::journal::raw::RawEntryHeader;
-use restate_common::types::RawEntry;
+use restate_types::journal::raw::{RawEntry, RawEntryHeader};
 use size::Size;
 use tracing::warn;
 
@@ -319,7 +318,7 @@ mod tests {
     use super::*;
 
     use crate::pb;
-    use restate_common::journal::raw::RawEntryHeader;
+    use restate_types::journal::raw::RawEntryHeader;
 
     use restate_test_util::{assert, assert_eq, let_assert};
 

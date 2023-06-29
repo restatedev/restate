@@ -1,11 +1,11 @@
 use crate::{assert_stream_eq, uuid_str};
-use restate_common::types::{
-    InvocationId, JournalMetadata, MillisSinceEpoch, ServiceId, ServiceInvocationId,
-    ServiceInvocationSpanContext,
-};
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, StatusTable};
 use restate_storage_api::{Storage, Transaction};
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::invocation::{ServiceInvocationId, ServiceInvocationSpanContext};
+use restate_types::journal::JournalMetadata;
+use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 
 fn invoked_status(invocation_id: InvocationId) -> InvocationStatus {

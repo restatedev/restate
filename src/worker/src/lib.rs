@@ -11,7 +11,6 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use partition::ack::AckCommand;
 use partition::shuffle;
-use restate_common::types::{IngressId, PartitionKey, PeerId, PeerTarget};
 use restate_consensus::Consensus;
 use restate_ingress_grpc::ReflectionRegistry;
 use restate_invoker::{
@@ -23,6 +22,8 @@ use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryService
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_grpc::StorageService;
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::identifiers::{IngressId, PartitionKey, PeerId};
+use restate_types::message::PeerTarget;
 use std::ops::RangeInclusive;
 use tokio::join;
 use tokio::sync::mpsc;

@@ -1,5 +1,7 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use restate_common::types::{CompletionResult, EnrichedRawEntry, EntryIndex, ServiceId};
+use restate_types::identifiers::{EntryIndex, ServiceId};
+use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::CompletionResult;
 
 /// Different types of journal entries persisted by the runtime
 #[derive(Debug)]

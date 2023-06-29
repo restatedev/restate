@@ -1,6 +1,5 @@
 use bytes::Bytes;
 use futures::StreamExt;
-use restate_common::types::ServiceId;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::{Storage, Transaction};
 use restate_storage_grpc::storage::v1::{
@@ -9,6 +8,7 @@ use restate_storage_grpc::storage::v1::{
 use restate_storage_grpc::Options;
 use restate_test_util::assert_eq;
 use restate_test_util::test;
+use restate_types::identifiers::ServiceId;
 use tempfile::tempdir;
 use tonic::transport::Channel;
 

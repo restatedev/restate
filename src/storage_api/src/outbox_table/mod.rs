@@ -1,7 +1,7 @@
 use crate::{GetFuture, PutFuture};
-use restate_common::types::{
-    IngressId, InvocationResponse, PartitionId, ResponseResult, ServiceInvocation,
-    ServiceInvocationId,
+use restate_types::identifiers::{IngressId, PartitionId};
+use restate_types::invocation::{
+    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationId,
 };
 use std::ops::Range;
 

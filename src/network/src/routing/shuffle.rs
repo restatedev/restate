@@ -2,8 +2,8 @@ use crate::routing::lookup_target_peer;
 use crate::{
     ConsensusOrIngressTarget, PartitionTable, PartitionTableError, TargetConsensusOrIngress,
 };
-use restate_common::traits::PartitionedMessage;
-use restate_common::types::PeerTarget;
+use restate_types::message::PartitionedMessage;
+use restate_types::message::PeerTarget;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use tokio::sync::mpsc;

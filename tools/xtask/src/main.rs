@@ -1,6 +1,6 @@
 use anyhow::bail;
-use restate_common::retry_policy::RetryPolicy;
-use restate_common::types::ServiceInvocationId;
+use restate_types::invocation::ServiceInvocationId;
+use restate_types::retries::RetryPolicy;
 use schemars::gen::SchemaSettings;
 use std::env;
 use std::time::Duration;

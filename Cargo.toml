@@ -62,7 +62,6 @@ uuid = { version = "1.3.0", features = ["v7", "serde"] }
 codederror = { path = "src/codederror" }
 restate = { path = "src/restate" }
 restate_cli = { path = "src/cli" }
-restate_common = { path = "src/common" }
 restate_consensus = { path = "src/consensus" }
 restate_errors = { path = "src/errors" }
 restate_fs_util = { path = "src/fs_util" }
@@ -85,6 +84,7 @@ restate_test_util = { path = "src/test_util" }
 restate_timer = { path = "src/timer" }
 restate_timer_queue = { path = "src/timer_queue" }
 restate_tracing_instrumentation = { path = "src/tracing_instrumentation" }
+restate_types = { path = "src/types" }
 restate_worker = { path = "src/worker" }
 restate_worker_api = { path = "src/worker_api" }
 

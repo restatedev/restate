@@ -39,8 +39,8 @@ pub mod storage {
             use bytes::{Buf, Bytes};
             use bytestring::ByteString;
             use opentelemetry_api::trace::TraceState;
-            use restate_common::types::MillisSinceEpoch;
             use restate_storage_api::StorageError;
+            use restate_types::time::MillisSinceEpoch;
             use std::collections::{HashSet, VecDeque};
             use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
             use std::str::FromStr;
@@ -132,17 +132,18 @@ pub mod storage {
 
                 fn try_from(value: Invoked) -> Result<Self, Self::Error> {
                     let invocation_id = try_bytes_into_invocation_id(value.invocation_id)?;
-                    let journal_metadata = restate_common::types::JournalMetadata::try_from(
+                    let journal_metadata = restate_types::journal::JournalMetadata::try_from(
                         value
                             .journal_meta
                             .ok_or(ConversionError::missing_field("journal_meta"))?,
                     )?;
-                    let response_sink =
-                        Option::<restate_common::types::ServiceInvocationResponseSink>::try_from(
-                            value
-                                .response_sink
-                                .ok_or(ConversionError::missing_field("response_sink"))?,
-                        )?;
+                    let response_sink = Option::<
+                        restate_types::invocation::ServiceInvocationResponseSink,
+                    >::try_from(
+                        value
+                            .response_sink
+                            .ok_or(ConversionError::missing_field("response_sink"))?,
+                    )?;
 
                     Ok(restate_storage_api::status_table::InvocationMetadata::new(
                         invocation_id,
@@ -177,24 +178,25 @@ pub mod storage {
             impl TryFrom<Suspended>
                 for (
                     restate_storage_api::status_table::InvocationMetadata,
-                    HashSet<restate_common::types::EntryIndex>,
+                    HashSet<restate_types::identifiers::EntryIndex>,
                 )
             {
                 type Error = ConversionError;
 
                 fn try_from(value: Suspended) -> Result<Self, Self::Error> {
                     let invocation_id = try_bytes_into_invocation_id(value.invocation_id)?;
-                    let journal_metadata = restate_common::types::JournalMetadata::try_from(
+                    let journal_metadata = restate_types::journal::JournalMetadata::try_from(
                         value
                             .journal_meta
                             .ok_or(ConversionError::missing_field("journal_meta"))?,
                     )?;
-                    let response_sink =
-                        Option::<restate_common::types::ServiceInvocationResponseSink>::try_from(
-                            value
-                                .response_sink
-                                .ok_or(ConversionError::missing_field("response_sink"))?,
-                        )?;
+                    let response_sink = Option::<
+                        restate_types::invocation::ServiceInvocationResponseSink,
+                    >::try_from(
+                        value
+                            .response_sink
+                            .ok_or(ConversionError::missing_field("response_sink"))?,
+                    )?;
 
                     let waiting_for_completed_entries =
                         value.waiting_for_completed_entries.into_iter().collect();
@@ -215,13 +217,13 @@ pub mod storage {
             impl
                 From<(
                     restate_storage_api::status_table::InvocationMetadata,
-                    HashSet<restate_common::types::EntryIndex>,
+                    HashSet<restate_types::identifiers::EntryIndex>,
                 )> for Suspended
             {
                 fn from(
                     (metadata, waiting_for_completed_entries): (
                         restate_storage_api::status_table::InvocationMetadata,
-                        HashSet<restate_common::types::EntryIndex>,
+                        HashSet<restate_types::identifiers::EntryIndex>,
                     ),
                 ) -> Self {
                     let invocation_id = invocation_id_to_bytes(&metadata.invocation_id);
@@ -241,7 +243,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<JournalMeta> for restate_common::types::JournalMetadata {
+            impl TryFrom<JournalMeta> for restate_types::journal::JournalMetadata {
                 type Error = ConversionError;
 
                 fn try_from(value: JournalMeta) -> Result<Self, Self::Error> {
@@ -249,14 +251,14 @@ pub mod storage {
                     // TODO: replace with ByteString to avoid allocation of String
                     let method = String::from_utf8(value.method_name.to_vec())
                         .map_err(ConversionError::invalid_data)?;
-                    let span_context = restate_common::types::ServiceInvocationSpanContext::new(
+                    let span_context = restate_types::invocation::ServiceInvocationSpanContext::new(
                         opentelemetry_api::trace::SpanContext::try_from(
                             value
                                 .span_context
                                 .ok_or(ConversionError::missing_field("span_context"))?,
                         )?,
                     );
-                    Ok(restate_common::types::JournalMetadata {
+                    Ok(restate_types::journal::JournalMetadata {
                         length,
                         method,
                         span_context,
@@ -264,9 +266,9 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::JournalMetadata> for JournalMeta {
-                fn from(value: restate_common::types::JournalMetadata) -> Self {
-                    let restate_common::types::JournalMetadata {
+            impl From<restate_types::journal::JournalMetadata> for JournalMeta {
+                fn from(value: restate_types::journal::JournalMetadata) -> Self {
+                    let restate_types::journal::JournalMetadata {
                         span_context,
                         length,
                         method,
@@ -282,22 +284,23 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<InboxEntry> for restate_common::types::ServiceInvocation {
+            impl TryFrom<InboxEntry> for restate_types::invocation::ServiceInvocation {
                 type Error = ConversionError;
 
                 fn try_from(value: InboxEntry) -> Result<Self, Self::Error> {
-                    let service_invocation = restate_common::types::ServiceInvocation::try_from(
-                        value
-                            .service_invocation
-                            .ok_or(ConversionError::missing_field("service_invocation"))?,
-                    )?;
+                    let service_invocation =
+                        restate_types::invocation::ServiceInvocation::try_from(
+                            value
+                                .service_invocation
+                                .ok_or(ConversionError::missing_field("service_invocation"))?,
+                        )?;
 
                     Ok(service_invocation)
                 }
             }
 
-            impl From<restate_common::types::ServiceInvocation> for InboxEntry {
-                fn from(value: restate_common::types::ServiceInvocation) -> Self {
+            impl From<restate_types::invocation::ServiceInvocation> for InboxEntry {
+                fn from(value: restate_types::invocation::ServiceInvocation) -> Self {
                     let service_invocation = ServiceInvocation::from(value);
 
                     InboxEntry {
@@ -306,7 +309,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<ServiceInvocation> for restate_common::types::ServiceInvocation {
+            impl TryFrom<ServiceInvocation> for restate_types::invocation::ServiceInvocation {
                 type Error = ConversionError;
 
                 fn try_from(value: ServiceInvocation) -> Result<Self, Self::Error> {
@@ -318,7 +321,7 @@ pub mod storage {
                         argument,
                     } = value;
 
-                    let id = restate_common::types::ServiceInvocationId::try_from(
+                    let id = restate_types::invocation::ServiceInvocationId::try_from(
                         id.ok_or(ConversionError::missing_field("id"))?,
                     )?;
 
@@ -326,28 +329,29 @@ pub mod storage {
                         span_context.ok_or(ConversionError::missing_field("span_context"))?,
                     )?;
 
-                    let response_sink =
-                        Option::<restate_common::types::ServiceInvocationResponseSink>::try_from(
-                            response_sink.ok_or(ConversionError::missing_field("response_sink"))?,
-                        )?;
+                    let response_sink = Option::<
+                        restate_types::invocation::ServiceInvocationResponseSink,
+                    >::try_from(
+                        response_sink.ok_or(ConversionError::missing_field("response_sink"))?,
+                    )?;
 
                     let method_name =
                         ByteString::try_from(method_name).map_err(ConversionError::invalid_data)?;
 
-                    Ok(restate_common::types::ServiceInvocation {
+                    Ok(restate_types::invocation::ServiceInvocation {
                         id,
                         method_name,
                         argument,
                         response_sink,
-                        span_context: restate_common::types::ServiceInvocationSpanContext::new(
+                        span_context: restate_types::invocation::ServiceInvocationSpanContext::new(
                             span_context,
                         ),
                     })
                 }
             }
 
-            impl From<restate_common::types::ServiceInvocation> for ServiceInvocation {
-                fn from(value: restate_common::types::ServiceInvocation) -> Self {
+            impl From<restate_types::invocation::ServiceInvocation> for ServiceInvocation {
+                fn from(value: restate_types::invocation::ServiceInvocation) -> Self {
                     let id = ServiceInvocationId::from(value.id);
                     let span_context = SpanContext::from(
                         opentelemetry_api::trace::SpanContext::from(value.span_context),
@@ -365,7 +369,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<ServiceInvocationId> for restate_common::types::ServiceInvocationId {
+            impl TryFrom<ServiceInvocationId> for restate_types::invocation::ServiceInvocationId {
                 type Error = ConversionError;
 
                 fn try_from(value: ServiceInvocationId) -> Result<Self, Self::Error> {
@@ -379,7 +383,7 @@ pub mod storage {
                         .map_err(ConversionError::invalid_data)?;
                     let invocation_id = try_bytes_into_invocation_id(invocation_id)?;
 
-                    Ok(restate_common::types::ServiceInvocationId::new(
+                    Ok(restate_types::invocation::ServiceInvocationId::new(
                         service_name,
                         service_key,
                         invocation_id,
@@ -387,8 +391,8 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::ServiceInvocationId> for ServiceInvocationId {
-                fn from(value: restate_common::types::ServiceInvocationId) -> Self {
+            impl From<restate_types::invocation::ServiceInvocationId> for ServiceInvocationId {
+                fn from(value: restate_types::invocation::ServiceInvocationId) -> Self {
                     let invocation_id = invocation_id_to_bytes(&value.invocation_id);
                     let service_key = value.service_id.key;
                     let service_name = value.service_id.service_name.into_bytes();
@@ -403,13 +407,13 @@ pub mod storage {
 
             fn try_bytes_into_invocation_id(
                 bytes: Bytes,
-            ) -> Result<restate_common::types::InvocationId, ConversionError> {
-                restate_common::types::InvocationId::from_slice(bytes.as_ref())
+            ) -> Result<restate_types::identifiers::InvocationId, ConversionError> {
+                restate_types::identifiers::InvocationId::from_slice(bytes.as_ref())
                     .map_err(ConversionError::invalid_data)
             }
 
             fn invocation_id_to_bytes(
-                invocation_id: &restate_common::types::InvocationId,
+                invocation_id: &restate_types::identifiers::InvocationId,
             ) -> Bytes {
                 Bytes::copy_from_slice(invocation_id.as_bytes())
             }
@@ -479,7 +483,7 @@ pub mod storage {
             }
 
             impl TryFrom<ServiceInvocationResponseSink>
-                for Option<restate_common::types::ServiceInvocationResponseSink>
+                for Option<restate_types::invocation::ServiceInvocationResponseSink>
             {
                 type Error = ConversionError;
 
@@ -489,13 +493,13 @@ pub mod storage {
                         .ok_or(ConversionError::missing_field("response_sink"))?
                     {
                         ResponseSink::PartitionProcessor(partition_processor) => {
-                            let caller = restate_common::types::ServiceInvocationId::try_from(
+                            let caller = restate_types::invocation::ServiceInvocationId::try_from(
                                 partition_processor
                                     .caller
                                     .ok_or(ConversionError::missing_field("caller"))?,
                             )?;
                             Some(
-                                restate_common::types::ServiceInvocationResponseSink::PartitionProcessor {
+                                restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor {
                                     caller,
                                     entry_index: partition_processor.entry_index,
                                 },
@@ -505,7 +509,7 @@ pub mod storage {
                             let ingress_id = try_string_into_ingress_id(ingress.ingress_id)?;
 
                             Some(
-                                restate_common::types::ServiceInvocationResponseSink::Ingress(
+                                restate_types::invocation::ServiceInvocationResponseSink::Ingress(
                                     ingress_id,
                                 ),
                             )
@@ -517,15 +521,15 @@ pub mod storage {
                 }
             }
 
-            impl From<Option<restate_common::types::ServiceInvocationResponseSink>>
+            impl From<Option<restate_types::invocation::ServiceInvocationResponseSink>>
                 for ServiceInvocationResponseSink
             {
                 fn from(
-                    value: Option<restate_common::types::ServiceInvocationResponseSink>,
+                    value: Option<restate_types::invocation::ServiceInvocationResponseSink>,
                 ) -> Self {
                     let response_sink = match value {
                         Some(
-                            restate_common::types::ServiceInvocationResponseSink::PartitionProcessor {
+                            restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor {
                                 caller,
                                 entry_index,
                             },
@@ -533,7 +537,7 @@ pub mod storage {
                             entry_index,
                             caller: Some(ServiceInvocationId::from(caller)),
                         }),
-                        Some(restate_common::types::ServiceInvocationResponseSink::Ingress(ingress_id)) => {
+                        Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress(ingress_id)) => {
                             ResponseSink::Ingress(Ingress {
                                 ingress_id: ingress_id_to_string(ingress_id),
                             })
@@ -549,13 +553,13 @@ pub mod storage {
 
             fn try_string_into_ingress_id(
                 value: String,
-            ) -> Result<restate_common::types::IngressId, ConversionError> {
-                Ok(restate_common::types::IngressId(
+            ) -> Result<restate_types::identifiers::IngressId, ConversionError> {
+                Ok(restate_types::identifiers::IngressId(
                     value.parse().map_err(ConversionError::invalid_data)?,
                 ))
             }
 
-            fn ingress_id_to_string(ingress_id: restate_common::types::IngressId) -> String {
+            fn ingress_id_to_string(ingress_id: restate_types::identifiers::IngressId) -> String {
                 ingress_id.0.to_string()
             }
 
@@ -563,23 +567,23 @@ pub mod storage {
                 type Error = ConversionError;
 
                 fn try_from(value: JournalEntry) -> Result<Self, Self::Error> {
-                    let journal_entry = match value
-                        .kind
-                        .ok_or(ConversionError::missing_field("kind"))?
-                    {
-                        Kind::Entry(journal_entry) => {
-                            restate_storage_api::journal_table::JournalEntry::Entry(
-                                restate_common::types::EnrichedRawEntry::try_from(journal_entry)?,
-                            )
-                        }
-                        Kind::CompletionResult(completion_result) => {
-                            restate_storage_api::journal_table::JournalEntry::Completion(
-                                restate_common::types::CompletionResult::try_from(
-                                    completion_result,
-                                )?,
-                            )
-                        }
-                    };
+                    let journal_entry =
+                        match value.kind.ok_or(ConversionError::missing_field("kind"))? {
+                            Kind::Entry(journal_entry) => {
+                                restate_storage_api::journal_table::JournalEntry::Entry(
+                                    restate_types::journal::enriched::EnrichedRawEntry::try_from(
+                                        journal_entry,
+                                    )?,
+                                )
+                            }
+                            Kind::CompletionResult(completion_result) => {
+                                restate_storage_api::journal_table::JournalEntry::Completion(
+                                    restate_types::journal::CompletionResult::try_from(
+                                        completion_result,
+                                    )?,
+                                )
+                            }
+                        };
 
                     Ok(journal_entry)
                 }
@@ -598,8 +602,8 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::EnrichedRawEntry> for JournalEntry {
-                fn from(value: restate_common::types::EnrichedRawEntry) -> Self {
+            impl From<restate_types::journal::enriched::EnrichedRawEntry> for JournalEntry {
+                fn from(value: restate_types::journal::enriched::EnrichedRawEntry) -> Self {
                     let entry = Entry::from(value);
 
                     JournalEntry {
@@ -608,8 +612,8 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::CompletionResult> for JournalEntry {
-                fn from(value: restate_common::types::CompletionResult) -> Self {
+            impl From<restate_types::journal::CompletionResult> for JournalEntry {
+                fn from(value: restate_types::journal::CompletionResult) -> Self {
                     let completion_result = CompletionResult::from(value);
 
                     JournalEntry {
@@ -618,24 +622,24 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<Entry> for restate_common::types::EnrichedRawEntry {
+            impl TryFrom<Entry> for restate_types::journal::enriched::EnrichedRawEntry {
                 type Error = ConversionError;
 
                 fn try_from(value: Entry) -> Result<Self, Self::Error> {
                     let Entry { header, raw_entry } = value;
 
-                    let header = restate_common::types::EnrichedEntryHeader::try_from(
+                    let header = restate_types::journal::enriched::EnrichedEntryHeader::try_from(
                         header.ok_or(ConversionError::missing_field("header"))?,
                     )?;
 
-                    Ok(restate_common::types::EnrichedRawEntry::new(
+                    Ok(restate_types::journal::enriched::EnrichedRawEntry::new(
                         header, raw_entry,
                     ))
                 }
             }
 
-            impl From<restate_common::types::EnrichedRawEntry> for Entry {
-                fn from(value: restate_common::types::EnrichedRawEntry) -> Self {
+            impl From<restate_types::journal::enriched::EnrichedRawEntry> for Entry {
+                fn from(value: restate_types::journal::enriched::EnrichedRawEntry) -> Self {
                     Entry {
                         header: Some(EnrichedEntryHeader::from(value.header)),
                         raw_entry: value.entry,
@@ -643,7 +647,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<CompletionResult> for restate_common::types::CompletionResult {
+            impl TryFrom<CompletionResult> for restate_types::journal::CompletionResult {
                 type Error = ConversionError;
 
                 fn try_from(value: CompletionResult) -> Result<Self, Self::Error> {
@@ -652,19 +656,19 @@ pub mod storage {
                         .ok_or(ConversionError::missing_field("result"))?
                     {
                         completion_result::Result::Ack(_) => {
-                            restate_common::types::CompletionResult::Ack
+                            restate_types::journal::CompletionResult::Ack
                         }
                         completion_result::Result::Empty(_) => {
-                            restate_common::types::CompletionResult::Empty
+                            restate_types::journal::CompletionResult::Empty
                         }
                         completion_result::Result::Success(success) => {
-                            restate_common::types::CompletionResult::Success(success.value)
+                            restate_types::journal::CompletionResult::Success(success.value)
                         }
                         completion_result::Result::Failure(failure) => {
                             let failure_message = ByteString::try_from(failure.message)
                                 .map_err(ConversionError::invalid_data);
 
-                            restate_common::types::CompletionResult::Failure(
+                            restate_types::journal::CompletionResult::Failure(
                                 failure.error_code.into(),
                                 failure_message?,
                             )
@@ -675,19 +679,19 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::CompletionResult> for CompletionResult {
-                fn from(value: restate_common::types::CompletionResult) -> Self {
+            impl From<restate_types::journal::CompletionResult> for CompletionResult {
+                fn from(value: restate_types::journal::CompletionResult) -> Self {
                     let result = match value {
-                        restate_common::types::CompletionResult::Ack => {
+                        restate_types::journal::CompletionResult::Ack => {
                             completion_result::Result::Ack(Ack {})
                         }
-                        restate_common::types::CompletionResult::Empty => {
+                        restate_types::journal::CompletionResult::Empty => {
                             completion_result::Result::Empty(Empty {})
                         }
-                        restate_common::types::CompletionResult::Success(value) => {
+                        restate_types::journal::CompletionResult::Success(value) => {
                             completion_result::Result::Success(Success { value })
                         }
-                        restate_common::types::CompletionResult::Failure(error_code, message) => {
+                        restate_types::journal::CompletionResult::Failure(error_code, message) => {
                             completion_result::Result::Failure(Failure {
                                 error_code: error_code.into(),
                                 message: message.into_bytes(),
@@ -701,106 +705,109 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<EnrichedEntryHeader> for restate_common::types::EnrichedEntryHeader {
+            impl TryFrom<EnrichedEntryHeader> for restate_types::journal::enriched::EnrichedEntryHeader {
                 type Error = ConversionError;
 
                 fn try_from(value: EnrichedEntryHeader) -> Result<Self, Self::Error> {
-                    let enriched_header =
-                        match value.kind.ok_or(ConversionError::missing_field("kind"))? {
-                            enriched_entry_header::Kind::PollInputStream(poll_input_stream) => {
-                                restate_common::types::EnrichedEntryHeader::PollInputStream {
-                                    is_completed: poll_input_stream.is_completed,
-                                }
+                    let enriched_header = match value
+                        .kind
+                        .ok_or(ConversionError::missing_field("kind"))?
+                    {
+                        enriched_entry_header::Kind::PollInputStream(poll_input_stream) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::PollInputStream {
+                                is_completed: poll_input_stream.is_completed,
                             }
-                            enriched_entry_header::Kind::OutputStream(_) => {
-                                restate_common::types::EnrichedEntryHeader::OutputStream
+                        }
+                        enriched_entry_header::Kind::OutputStream(_) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::OutputStream
+                        }
+                        enriched_entry_header::Kind::GetState(get_state) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::GetState {
+                                is_completed: get_state.is_completed,
                             }
-                            enriched_entry_header::Kind::GetState(get_state) => {
-                                restate_common::types::EnrichedEntryHeader::GetState {
-                                    is_completed: get_state.is_completed,
-                                }
+                        }
+                        enriched_entry_header::Kind::SetState(_) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::SetState
+                        }
+                        enriched_entry_header::Kind::ClearState(_) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::ClearState
+                        }
+                        enriched_entry_header::Kind::Sleep(sleep) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::Sleep {
+                                is_completed: sleep.is_completed,
                             }
-                            enriched_entry_header::Kind::SetState(_) => {
-                                restate_common::types::EnrichedEntryHeader::SetState
-                            }
-                            enriched_entry_header::Kind::ClearState(_) => {
-                                restate_common::types::EnrichedEntryHeader::ClearState
-                            }
-                            enriched_entry_header::Kind::Sleep(sleep) => {
-                                restate_common::types::EnrichedEntryHeader::Sleep {
-                                    is_completed: sleep.is_completed,
-                                }
-                            }
-                            enriched_entry_header::Kind::Invoke(invoke) => {
-                                let resolution_result =
-                                    Option::<restate_common::types::ResolutionResult>::try_from(
-                                        invoke.resolution_result.ok_or(
-                                            ConversionError::missing_field("resolution_result"),
-                                        )?,
-                                    )?;
+                        }
+                        enriched_entry_header::Kind::Invoke(invoke) => {
+                            let resolution_result = Option::<
+                                restate_types::journal::enriched::ResolutionResult,
+                            >::try_from(
+                                invoke
+                                    .resolution_result
+                                    .ok_or(ConversionError::missing_field("resolution_result"))?,
+                            )?;
 
-                                restate_common::types::EnrichedEntryHeader::Invoke {
-                                    is_completed: invoke.is_completed,
+                            restate_types::journal::enriched::EnrichedEntryHeader::Invoke {
+                                is_completed: invoke.is_completed,
+                                resolution_result,
+                            }
+                        }
+                        enriched_entry_header::Kind::BackgroundCall(background_call) => {
+                            let resolution_result =
+                                restate_types::journal::enriched::ResolutionResult::try_from(
+                                    background_call.resolution_result.ok_or(
+                                        ConversionError::missing_field("resolution_result"),
+                                    )?,
+                                )?;
+
+                            restate_types::journal::enriched::EnrichedEntryHeader::BackgroundInvoke {
                                     resolution_result,
                                 }
+                        }
+                        enriched_entry_header::Kind::Awakeable(awakeable) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::Awakeable {
+                                is_completed: awakeable.is_completed,
                             }
-                            enriched_entry_header::Kind::BackgroundCall(background_call) => {
-                                let resolution_result =
-                                    restate_common::types::ResolutionResult::try_from(
-                                        background_call.resolution_result.ok_or(
-                                            ConversionError::missing_field("resolution_result"),
-                                        )?,
-                                    )?;
-
-                                restate_common::types::EnrichedEntryHeader::BackgroundInvoke {
-                                    resolution_result,
-                                }
+                        }
+                        enriched_entry_header::Kind::CompleteAwakeable(_) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable
+                        }
+                        enriched_entry_header::Kind::Custom(custom) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::Custom {
+                                code: u16::try_from(custom.code)
+                                    .map_err(ConversionError::invalid_data)?,
+                                requires_ack: custom.requires_ack,
                             }
-                            enriched_entry_header::Kind::Awakeable(awakeable) => {
-                                restate_common::types::EnrichedEntryHeader::Awakeable {
-                                    is_completed: awakeable.is_completed,
-                                }
-                            }
-                            enriched_entry_header::Kind::CompleteAwakeable(_) => {
-                                restate_common::types::EnrichedEntryHeader::CompleteAwakeable
-                            }
-                            enriched_entry_header::Kind::Custom(custom) => {
-                                restate_common::types::EnrichedEntryHeader::Custom {
-                                    code: u16::try_from(custom.code)
-                                        .map_err(ConversionError::invalid_data)?,
-                                    requires_ack: custom.requires_ack,
-                                }
-                            }
-                        };
+                        }
+                    };
 
                     Ok(enriched_header)
                 }
             }
 
-            impl From<restate_common::types::EnrichedEntryHeader> for EnrichedEntryHeader {
-                fn from(value: restate_common::types::EnrichedEntryHeader) -> Self {
+            impl From<restate_types::journal::enriched::EnrichedEntryHeader> for EnrichedEntryHeader {
+                fn from(value: restate_types::journal::enriched::EnrichedEntryHeader) -> Self {
                     let kind = match value {
-                        restate_common::types::EnrichedEntryHeader::PollInputStream {
+                        restate_types::journal::enriched::EnrichedEntryHeader::PollInputStream {
                             is_completed,
                         } => enriched_entry_header::Kind::PollInputStream(PollInputStream {
                             is_completed,
                         }),
-                        restate_common::types::EnrichedEntryHeader::OutputStream => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::OutputStream => {
                             enriched_entry_header::Kind::OutputStream(OutputStream {})
                         }
-                        restate_common::types::EnrichedEntryHeader::GetState { is_completed } => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::GetState { is_completed } => {
                             enriched_entry_header::Kind::GetState(GetState { is_completed })
                         }
-                        restate_common::types::EnrichedEntryHeader::SetState => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::SetState => {
                             enriched_entry_header::Kind::SetState(SetState {})
                         }
-                        restate_common::types::EnrichedEntryHeader::ClearState => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::ClearState => {
                             enriched_entry_header::Kind::ClearState(ClearState {})
                         }
-                        restate_common::types::EnrichedEntryHeader::Sleep { is_completed } => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::Sleep { is_completed } => {
                             enriched_entry_header::Kind::Sleep(Sleep { is_completed })
                         }
-                        restate_common::types::EnrichedEntryHeader::Invoke {
+                        restate_types::journal::enriched::EnrichedEntryHeader::Invoke {
                             is_completed,
                             resolution_result,
                         } => enriched_entry_header::Kind::Invoke(Invoke {
@@ -809,20 +816,20 @@ pub mod storage {
                                 resolution_result,
                             )),
                         }),
-                        restate_common::types::EnrichedEntryHeader::BackgroundInvoke {
+                        restate_types::journal::enriched::EnrichedEntryHeader::BackgroundInvoke {
                             resolution_result,
                         } => enriched_entry_header::Kind::BackgroundCall(BackgroundCall {
                             resolution_result: Some(BackgroundCallResolutionResult::from(
                                 resolution_result,
                             )),
                         }),
-                        restate_common::types::EnrichedEntryHeader::Awakeable { is_completed } => {
-                            enriched_entry_header::Kind::Awakeable(Awakeable { is_completed })
-                        }
-                        restate_common::types::EnrichedEntryHeader::CompleteAwakeable => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::Awakeable {
+                            is_completed,
+                        } => enriched_entry_header::Kind::Awakeable(Awakeable { is_completed }),
+                        restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable => {
                             enriched_entry_header::Kind::CompleteAwakeable(CompleteAwakeable {})
                         }
-                        restate_common::types::EnrichedEntryHeader::Custom {
+                        restate_types::journal::enriched::EnrichedEntryHeader::Custom {
                             requires_ack,
                             code,
                         } => enriched_entry_header::Kind::Custom(Custom {
@@ -835,7 +842,9 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<InvocationResolutionResult> for Option<restate_common::types::ResolutionResult> {
+            impl TryFrom<InvocationResolutionResult>
+                for Option<restate_types::journal::enriched::ResolutionResult>
+            {
                 type Error = ConversionError;
 
                 fn try_from(value: InvocationResolutionResult) -> Result<Self, Self::Error> {
@@ -854,9 +863,9 @@ pub mod storage {
                                 try_bytes_into_invocation_id(success.invocation_id)?;
                             let service_key = success.service_key;
 
-                            Some(restate_common::types::ResolutionResult {
+                            Some(restate_types::journal::enriched::ResolutionResult {
                                 span_context:
-                                    restate_common::types::ServiceInvocationSpanContext::new(
+                                    restate_types::invocation::ServiceInvocationSpanContext::new(
                                         span_context,
                                     ),
                                 invocation_id,
@@ -869,12 +878,14 @@ pub mod storage {
                 }
             }
 
-            impl From<Option<restate_common::types::ResolutionResult>> for InvocationResolutionResult {
-                fn from(value: Option<restate_common::types::ResolutionResult>) -> Self {
+            impl From<Option<restate_types::journal::enriched::ResolutionResult>>
+                for InvocationResolutionResult
+            {
+                fn from(value: Option<restate_types::journal::enriched::ResolutionResult>) -> Self {
                     let result = match value {
                         None => invocation_resolution_result::Result::None(Default::default()),
                         Some(resolution_result) => match resolution_result {
-                            restate_common::types::ResolutionResult {
+                            restate_types::journal::enriched::ResolutionResult {
                                 invocation_id,
                                 service_key,
                                 span_context,
@@ -896,7 +907,9 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<BackgroundCallResolutionResult> for restate_common::types::ResolutionResult {
+            impl TryFrom<BackgroundCallResolutionResult>
+                for restate_types::journal::enriched::ResolutionResult
+            {
                 type Error = ConversionError;
 
                 fn try_from(value: BackgroundCallResolutionResult) -> Result<Self, Self::Error> {
@@ -908,8 +921,8 @@ pub mod storage {
                     let invocation_id = try_bytes_into_invocation_id(value.invocation_id)?;
                     let service_key = value.service_key;
 
-                    Ok(restate_common::types::ResolutionResult {
-                        span_context: restate_common::types::ServiceInvocationSpanContext::new(
+                    Ok(restate_types::journal::enriched::ResolutionResult {
+                        span_context: restate_types::invocation::ServiceInvocationSpanContext::new(
                             span_context,
                         ),
                         invocation_id,
@@ -918,8 +931,8 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::ResolutionResult> for BackgroundCallResolutionResult {
-                fn from(value: restate_common::types::ResolutionResult) -> Self {
+            impl From<restate_types::journal::enriched::ResolutionResult> for BackgroundCallResolutionResult {
+                fn from(value: restate_types::journal::enriched::ResolutionResult) -> Self {
                     BackgroundCallResolutionResult {
                         invocation_id: invocation_id_to_bytes(&value.invocation_id),
                         service_key: value.service_key,
@@ -941,7 +954,7 @@ pub mod storage {
                         outbox_message::OutboxMessage::ServiceInvocationCase(
                             service_invocation,
                         ) => restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(
-                            restate_common::types::ServiceInvocation::try_from(
+                            restate_types::invocation::ServiceInvocation::try_from(
                                 service_invocation
                                     .service_invocation
                                     .ok_or(ConversionError::missing_field("service_invocation"))?,
@@ -950,14 +963,14 @@ pub mod storage {
                         outbox_message::OutboxMessage::ServiceInvocationResponse(
                             invocation_response,
                         ) => restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
-                            restate_common::types::InvocationResponse {
+                            restate_types::invocation::InvocationResponse {
                                 entry_index: invocation_response.entry_index,
-                                id: restate_common::types::ServiceInvocationId::try_from(
+                                id: restate_types::invocation::ServiceInvocationId::try_from(
                                     invocation_response.service_invocation_id.ok_or(
                                         ConversionError::missing_field("service_invocation_id"),
                                     )?,
                                 )?,
-                                result: restate_common::types::ResponseResult::try_from(
+                                result: restate_types::invocation::ResponseResult::try_from(
                                     invocation_response
                                         .response_result
                                         .ok_or(ConversionError::missing_field("response_result"))?,
@@ -967,7 +980,7 @@ pub mod storage {
                         outbox_message::OutboxMessage::IngressResponse(ingress_response) => {
                             restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
                                 service_invocation_id:
-                                    restate_common::types::ServiceInvocationId::try_from(
+                                    restate_types::invocation::ServiceInvocationId::try_from(
                                         ingress_response.service_invocation_id.ok_or(
                                             ConversionError::missing_field("service_invocation_id"),
                                         )?,
@@ -975,7 +988,7 @@ pub mod storage {
                                 ingress_id: try_string_into_ingress_id(
                                     ingress_response.ingress_id,
                                 )?,
-                                response: restate_common::types::ResponseResult::try_from(
+                                response: restate_types::invocation::ResponseResult::try_from(
                                     ingress_response
                                         .response_result
                                         .ok_or(ConversionError::missing_field("response_result"))?,
@@ -1034,7 +1047,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<ResponseResult> for restate_common::types::ResponseResult {
+            impl TryFrom<ResponseResult> for restate_types::invocation::ResponseResult {
                 type Error = ConversionError;
 
                 fn try_from(value: ResponseResult) -> Result<Self, Self::Error> {
@@ -1043,10 +1056,10 @@ pub mod storage {
                         .ok_or(ConversionError::missing_field("response_result"))?
                     {
                         response_result::ResponseResult::ResponseSuccess(success) => {
-                            restate_common::types::ResponseResult::Success(success.value)
+                            restate_types::invocation::ResponseResult::Success(success.value)
                         }
                         response_result::ResponseResult::ResponseFailure(failure) => {
-                            restate_common::types::ResponseResult::Failure(
+                            restate_types::invocation::ResponseResult::Failure(
                                 failure.failure_code.into(),
                                 ByteString::try_from(failure.failure_message)
                                     .map_err(ConversionError::invalid_data)?,
@@ -1058,15 +1071,15 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_common::types::ResponseResult> for ResponseResult {
-                fn from(value: restate_common::types::ResponseResult) -> Self {
+            impl From<restate_types::invocation::ResponseResult> for ResponseResult {
+                fn from(value: restate_types::invocation::ResponseResult) -> Self {
                     let response_result = match value {
-                        restate_common::types::ResponseResult::Success(value) => {
+                        restate_types::invocation::ResponseResult::Success(value) => {
                             response_result::ResponseResult::ResponseSuccess(
                                 response_result::ResponseSuccess { value },
                             )
                         }
-                        restate_common::types::ResponseResult::Failure(error_code, error) => {
+                        restate_types::invocation::ResponseResult::Failure(error_code, error) => {
                             response_result::ResponseResult::ResponseFailure(
                                 response_result::ResponseFailure {
                                     failure_code: error_code.into(),
@@ -1093,7 +1106,7 @@ pub mod storage {
                             }
                             timer::Value::Invoke(si) => {
                                 restate_storage_api::timer_table::Timer::Invoke(
-                                    restate_common::types::ServiceInvocation::try_from(si)?,
+                                    restate_types::invocation::ServiceInvocation::try_from(si)?,
                                 )
                             }
                         },

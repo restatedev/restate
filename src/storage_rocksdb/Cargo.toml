@@ -13,7 +13,7 @@ options_schema = ["dep:schemars"]
 
 [dependencies]
 anyhow = { workspace = true }
-restate_common = {workspace = true}
+restate_types = {workspace = true}
 bytes = {workspace = true}
 bytestring = { workspace = true }
 codederror = { workspace = true }

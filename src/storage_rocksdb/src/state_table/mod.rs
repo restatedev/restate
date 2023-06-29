@@ -4,9 +4,9 @@ use crate::{GetFuture, PutFuture, RocksDBTransaction};
 use crate::{Result, TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
-use restate_common::types::{PartitionKey, ServiceId};
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::{ready, GetStream, StorageError};
+use restate_types::identifiers::{PartitionKey, ServiceId};
 
 define_table_key!(
     State,
@@ -91,7 +91,7 @@ mod tests {
     use crate::keys::TableKey;
     use crate::state_table::{user_state_key_from_slice, write_state_entry_key};
     use bytes::{Bytes, BytesMut};
-    use restate_common::types::ServiceId;
+    use restate_types::identifiers::ServiceId;
 
     static EMPTY: Bytes = Bytes::from_static(b"");
 

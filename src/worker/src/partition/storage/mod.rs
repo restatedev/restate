@@ -5,11 +5,13 @@ use bytes::{Buf, Bytes};
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
-use restate_common::journal::raw::Header;
-use restate_common::types::{
-    CompletionResult, EnrichedRawEntry, EntryIndex, MessageIndex, MillisSinceEpoch, PartitionId,
-    PartitionKey, ServiceId, ServiceInvocation, ServiceInvocationId,
-};
+use restate_types::identifiers::{EntryIndex, PartitionId, PartitionKey, ServiceId};
+use restate_types::invocation::{ServiceInvocation, ServiceInvocationId};
+use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::raw::EntryHeader;
+use restate_types::journal::CompletionResult;
+use restate_types::message::MessageIndex;
+use restate_types::time::MillisSinceEpoch;
 use std::ops::RangeInclusive;
 
 pub mod invoker;

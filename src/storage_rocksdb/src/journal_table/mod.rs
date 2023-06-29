@@ -7,10 +7,10 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
 use prost::Message;
-use restate_common::types::{EntryIndex, PartitionKey, ServiceId};
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
+use restate_types::identifiers::{EntryIndex, PartitionKey, ServiceId};
 
 define_table_key!(
     Journal,
@@ -111,7 +111,7 @@ mod tests {
     use crate::journal_table::write_journal_entry_key;
     use crate::keys::TableKey;
     use bytes::Bytes;
-    use restate_common::types::ServiceId;
+    use restate_types::identifiers::ServiceId;
 
     fn journal_entry_key(service_id: &ServiceId, journal_index: u32) -> Bytes {
         write_journal_entry_key(service_id, journal_index)

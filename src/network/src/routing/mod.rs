@@ -6,8 +6,9 @@ use crate::{
     NetworkCommand, PartitionTable, PartitionTableError, TargetConsensusOrIngress,
     TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress, UnboundedNetworkHandle,
 };
-use restate_common::traits::PartitionedMessage;
-use restate_common::types::{PeerId, PeerTarget};
+use restate_types::identifiers::PeerId;
+use restate_types::message::PartitionedMessage;
+use restate_types::message::PeerTarget;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;

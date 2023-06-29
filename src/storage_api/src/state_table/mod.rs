@@ -1,6 +1,6 @@
 use crate::{GetFuture, GetStream, PutFuture};
 use bytes::Bytes;
-use restate_common::types::ServiceId;
+use restate_types::identifiers::ServiceId;
 
 pub trait StateTable {
     fn put_user_state(

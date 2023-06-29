@@ -1,6 +1,7 @@
 use futures::Stream;
-use restate_common::journal::raw::PlainRawEntry;
-use restate_common::types::{JournalMetadata, ServiceInvocationId};
+use restate_types::invocation::ServiceInvocationId;
+use restate_types::journal::raw::PlainRawEntry;
+use restate_types::journal::JournalMetadata;
 use std::future::Future;
 
 pub trait JournalReader {
@@ -17,7 +18,7 @@ pub trait JournalReader {
 #[cfg(any(test, feature = "mocks"))]
 pub mod mocks {
     use super::*;
-    use restate_common::types::ServiceInvocationSpanContext;
+    use restate_types::invocation::ServiceInvocationSpanContext;
     use std::convert::Infallible;
 
     #[derive(Debug, Clone)]

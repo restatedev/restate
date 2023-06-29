@@ -3,20 +3,22 @@ use crate::partition::{AckResponse, TimerValue};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use restate_common::errors::InvocationErrorCode;
-use restate_common::journal::raw::{
-    PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
-};
-use restate_common::journal::Completion;
-use restate_common::types::{
-    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, JournalMetadata,
-    MessageIndex, MillisSinceEpoch, ServiceId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationSpanContext,
-};
 use restate_invoker::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
+use restate_types::errors::InvocationErrorCode;
+use restate_types::identifiers::{EntryIndex, ServiceId};
+use restate_types::invocation::{
+    ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
+};
+use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
+use restate_types::journal::raw::{
+    PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
+};
+use restate_types::journal::{Completion, CompletionResult, JournalMetadata};
+use restate_types::message::MessageIndex;
+use restate_types::time::MillisSinceEpoch;
 use std::marker::PhantomData;
 
 #[derive(Debug, thiserror::Error)]
@@ -632,7 +634,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             .await?;
 
         let_assert!(
-            restate_common::types::RawEntry {
+            restate_types::journal::raw::RawEntry {
                 header: RawEntryHeader::PollInputStream { is_completed },
                 entry
             } = Codec::serialize_as_unary_input_entry(service_invocation.argument)

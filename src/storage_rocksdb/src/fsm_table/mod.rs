@@ -4,9 +4,9 @@ use crate::{
     GetFuture, GetStream, PutFuture, RocksDBTransaction, TableScan, TableScanIterationDecision,
 };
 use bytes::Bytes;
-use restate_common::types::PartitionId;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::ready;
+use restate_types::identifiers::PartitionId;
 use std::io::Cursor;
 
 define_table_key!(

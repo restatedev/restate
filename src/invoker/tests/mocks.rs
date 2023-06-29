@@ -12,16 +12,15 @@ use std::vec::IntoIter;
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use prost::Message;
-use restate_common::journal::raw::{PlainRawEntry, RawEntryCodec};
-use restate_common::journal::Completion;
-use restate_common::types::{
-    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, JournalMetadata, RawEntry,
-    ServiceId, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
-};
 use restate_invoker::{
     EagerState, Effect, EffectKind, InvokeInputJournal, JournalReader, ServiceHandle, StateReader,
 };
 use restate_service_protocol::pb::protocol::PollInputStreamEntryMessage;
+use restate_types::identifiers::{EntryIndex, ServiceId};
+use restate_types::invocation::{ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation};
+use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
+use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec};
+use restate_types::journal::{Completion, CompletionResult, JournalMetadata};
 use tokio::sync::{mpsc, Mutex};
 use tracing::debug;
 

@@ -11,11 +11,11 @@ use prost_reflect::{
     DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind, MethodDescriptor,
     ServiceDescriptor,
 };
-use restate_common::retry_policy::RetryPolicy;
-use restate_common::service_metadata::ProtocolType;
 use restate_errors::{META0001, META0002, META0003};
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_service_key_extractor::{KeyStructure, ServiceInstanceType};
+use restate_types::retries::RetryPolicy;
+use restate_types::service_endpoint::ProtocolType;
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256

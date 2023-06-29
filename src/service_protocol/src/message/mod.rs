@@ -5,10 +5,10 @@ use super::pb;
 
 use bytes::Bytes;
 use prost::Message;
-use restate_common::errors::InvocationError;
-use restate_common::journal::raw::PlainRawEntry;
-use restate_common::journal::Completion;
-use restate_common::types::CompletionResult;
+use restate_types::errors::InvocationError;
+use restate_types::journal::raw::PlainRawEntry;
+use restate_types::journal::Completion;
+use restate_types::journal::CompletionResult;
 
 mod encoding;
 mod header;

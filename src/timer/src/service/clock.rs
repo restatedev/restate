@@ -1,4 +1,4 @@
-use restate_common::types::MillisSinceEpoch;
+use restate_types::time::MillisSinceEpoch;
 use std::future::Future;
 use std::ops::Add;
 use std::time::{Duration, SystemTime};
@@ -34,7 +34,7 @@ impl Clock for TokioClock {
 pub mod tests {
     use crate::service::clock::Clock;
     use futures_util::future::{BoxFuture, FutureExt};
-    use restate_common::types::MillisSinceEpoch;
+    use restate_types::time::MillisSinceEpoch;
     use std::cmp::{Ordering, Reverse};
     use std::collections::BinaryHeap;
     use std::sync::{Arc, Mutex};

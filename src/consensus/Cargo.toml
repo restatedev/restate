@@ -11,7 +11,7 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
-restate_common = { workspace = true }
+restate_types = { workspace = true }
 futures = { workspace = true }
 futures-sink = { workspace = true }
 pin-project = { workspace = true }

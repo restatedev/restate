@@ -3,9 +3,9 @@ use crate::TableKind::Deduplication;
 use crate::{
     GetFuture, GetStream, PutFuture, RocksDBTransaction, TableScan, TableScanIterationDecision,
 };
-use restate_common::types::PartitionId;
 use restate_storage_api::deduplication_table::DeduplicationTable;
 use restate_storage_api::{ready, StorageError};
+use restate_types::identifiers::PartitionId;
 use std::io::Cursor;
 
 define_table_key!(

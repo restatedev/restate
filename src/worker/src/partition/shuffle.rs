@@ -1,10 +1,11 @@
 use crate::partition::shuffle::state_machine::StateMachine;
 use futures::future::BoxFuture;
-use restate_common::types::{
-    AckKind, IngressId, InvocationResponse, MessageIndex, PartitionId, PeerId, ResponseResult,
-    ServiceInvocation, ServiceInvocationId,
-};
 use restate_storage_api::outbox_table::OutboxMessage;
+use restate_types::identifiers::{IngressId, PartitionId, PeerId};
+use restate_types::invocation::{
+    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationId,
+};
+use restate_types::message::{AckKind, MessageIndex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -253,8 +254,9 @@ where
 mod state_machine {
     use crate::partition::shuffle::{NewOutboxMessage, ShuffleInput, ShuffleOutput};
     use pin_project::pin_project;
-    use restate_common::types::{AckKind, MessageIndex, PartitionId, PeerId};
     use restate_storage_api::outbox_table::OutboxMessage;
+    use restate_types::identifiers::{PartitionId, PeerId};
+    use restate_types::message::{AckKind, MessageIndex};
     use std::future::Future;
     use std::marker::PhantomData;
     use std::pin::Pin;

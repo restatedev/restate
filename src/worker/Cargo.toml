@@ -17,7 +17,7 @@ assert2 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
-restate_common = { workspace = true }
+restate_types = { workspace = true }
 restate_consensus = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }

@@ -2,9 +2,6 @@ use crate::partition::effects::ActuatorMessage;
 use crate::partition::shuffle::Shuffle;
 use crate::partition::{shuffle, storage, AckResponse, TimerValue};
 use futures::{future, Stream, StreamExt};
-use restate_common::types::{
-    LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId, ServiceInvocationId,
-};
 use restate_invoker::{InvokeInputJournal, ServiceNotRunning};
 use restate_network::NetworkNotRunning;
 use restate_timer::TokioClock;
@@ -19,6 +16,8 @@ mod actuator;
 
 pub(crate) use actuator::{ActuatorMessageCollector, ActuatorOutput, ActuatorStream};
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
+use restate_types::invocation::ServiceInvocationId;
 
 pub(crate) trait InvocationReader {
     type InvokedInvocationStream<'a>: Stream<
