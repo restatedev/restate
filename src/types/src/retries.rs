@@ -12,7 +12,7 @@ use std::time::Duration;
 ///
 /// ```rust
 /// use std::time::Duration;
-/// use restate_common::retries::RetryPolicy;
+/// use restate_types::retries::RetryPolicy;
 ///
 /// // Define the retry policy
 /// let retry_policy = RetryPolicy::fixed_delay(Duration::from_millis(100), 10);
