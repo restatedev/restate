@@ -13,20 +13,20 @@ serde = ["dep:serde"]
 key_extraction = ["dep:bytes", "dep:uuid", "dep:prost"]
 key_expansion = ["dep:bytes", "dep:prost", "prost-reflect"]
 json_key_conversion = ["key_expansion", "prost-reflect/serde", "dep:serde_json", "dep:restate_serde_util", "dep:uuid"]
-endpoint = ["dep:restate_service_metadata"]
-json_conversion = ["dep:bytes", "restate_common", "dep:serde_json", "prost-reflect/serde"]
+endpoint = ["restate_types"]
+json_conversion = ["dep:bytes", "restate_types", "dep:serde_json", "prost-reflect/serde"]
 proto_symbol = ["prost-reflect"]
 
 [dependencies]
+anyhow = { workspace = true }
 bytes = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }
-restate_common = { workspace = true, optional = true }
+restate_types = { workspace = true, optional = true }
 restate_serde_util = { workspace = true, optional = true }
-restate_service_metadata = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
+thiserror = { workspace = true }
 uuid = { workspace = true, optional = true }
 
 [dev-dependencies]

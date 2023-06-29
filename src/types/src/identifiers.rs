@@ -25,6 +25,9 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 // Just an alias
 pub type EntryIndex = u32;
 
+// Just an alias
+pub use crate::service_endpoint::EndpointId;
+
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.
 pub type PartitionKey = u32;

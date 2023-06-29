@@ -31,9 +31,9 @@ pub trait KeyExpander {
         &self,
         service_name: impl AsRef<str>,
         service_method: impl AsRef<str>,
-        descriptor: prost_reflect::MessageDescriptor,
+        descriptor: MessageDescriptor,
         key: Bytes,
-    ) -> Result<prost_reflect::DynamicMessage, Error>;
+    ) -> Result<DynamicMessage, Error>;
 }
 
 impl KeyExpander for Schemas {

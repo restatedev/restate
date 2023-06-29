@@ -1,17 +1,13 @@
 use super::Schemas;
 
 use bytes::Bytes;
-use restate_common::utils::GenericError;
 
 pub trait JsonToProtobufMapper {
-    // TODO replace GenericError with anyhow::Error,
-    //  or another error type which we can downcast to ErrorNotFound in lib.rs
-    //  See https://github.com/restatedev/restate/issues/471
-    fn convert_to_protobuf(self, json: Bytes) -> Result<Bytes, GenericError>;
+    fn convert_to_protobuf(self, json: Bytes) -> Result<Bytes, anyhow::Error>;
 }
 
 pub trait ProtobufToJsonMapper {
-    fn convert_to_json(self, protobuf: Bytes) -> Result<Bytes, GenericError>;
+    fn convert_to_json(self, protobuf: Bytes) -> Result<Bytes, anyhow::Error>;
 }
 
 pub trait JsonMapperResolver {
@@ -29,13 +25,13 @@ pub trait JsonMapperResolver {
 pub struct SampleConverter;
 
 impl JsonToProtobufMapper for SampleConverter {
-    fn convert_to_protobuf(self, json: Bytes) -> Result<Bytes, GenericError> {
+    fn convert_to_protobuf(self, json: Bytes) -> Result<Bytes, anyhow::Error> {
         todo!()
     }
 }
 
 impl ProtobufToJsonMapper for SampleConverter {
-    fn convert_to_json(self, protobuf: Bytes) -> Result<Bytes, GenericError> {
+    fn convert_to_json(self, protobuf: Bytes) -> Result<Bytes, anyhow::Error> {
         todo!()
     }
 }

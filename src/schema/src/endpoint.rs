@@ -1,10 +1,6 @@
 use super::Schemas;
 
-// TODO we should move this type to restate_types
-use restate_service_metadata::EndpointMetadata;
-
-// TODO Perhaps to modify and move to restate_types
-pub type EndpointId = String;
+use restate_types::service_endpoint::{EndpointId, EndpointMetadata};
 
 pub trait EndpointMetadataResolver {
     fn resolve_latest_endpoint_for_service(

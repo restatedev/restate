@@ -3724,15 +3724,15 @@ dependencies = [
 
 [[package]]
 name = "restate_schema"
-version = "0.1.3"
+version = "0.1.5"
 dependencies = [
+ "anyhow",
  "bytes",
  "prost",
  "prost-build",
  "prost-reflect",
- "restate_common",
  "restate_serde_util",
- "restate_service_metadata",
+ "restate_types",
  "serde",
  "serde_json",
  "thiserror",

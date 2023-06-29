@@ -5,6 +5,8 @@ use http::header::{HeaderName, HeaderValue};
 use http::Uri;
 use std::collections::HashMap;
 
+pub type EndpointId = String;
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
@@ -121,7 +123,7 @@ impl EndpointMetadata {
         &self.delivery_options.additional_headers
     }
 
-    pub fn id(&self) -> String {
+    pub fn id(&self) -> EndpointId {
         use base64::Engine;
 
         // For the time being we generate this from the URI
