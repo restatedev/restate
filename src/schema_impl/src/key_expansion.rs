@@ -2,21 +2,8 @@ use super::*;
 
 use crate::Schemas;
 use bytes::Bytes;
-use prost_reflect::{DynamicMessage, MessageDescriptor};
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("unexpected end of buffer when decoding")]
-    UnexpectedEndOfBuffer,
-    #[error("unexpected value when parsing the payload. It looks like the message schema and the parser directives don't match")]
-    UnexpectedValue,
-    #[error("error when decoding the payload to extract the message: {0}")]
-    Decode(#[from] prost::DecodeError),
-    #[error("cannot resolve key extractor")]
-    NotFound,
-    #[error("unexpected service instance type to expand the key. Only keys of keyed services can be expanded")]
-    UnexpectedServiceInstanceType,
-}
+use prost_reflect::DynamicMessage;
+use restate_schema_api::key::expansion::Error;
 
 /// A key expander provides the inverse function of a [`KeyExtractor`].
 pub trait KeyExpander {
@@ -31,7 +18,6 @@ pub trait KeyExpander {
         &self,
         service_name: impl AsRef<str>,
         service_method: impl AsRef<str>,
-        descriptor: MessageDescriptor,
         key: Bytes,
     ) -> Result<DynamicMessage, Error>;
 }
@@ -41,10 +27,19 @@ impl KeyExpander for Schemas {
         &self,
         service_name: impl AsRef<str>,
         service_method: impl AsRef<str>,
-        descriptor: MessageDescriptor,
         key: Bytes,
     ) -> Result<DynamicMessage, Error> {
-        todo!()
+        self.use_service_schema(service_name, move |service_schema| {
+            let input_descriptor = service_schema
+                .methods
+                .get(service_method.as_ref())
+                .ok_or(Error::NotFound)?
+                .input();
+            service_schema
+                .instance_type
+                .expand(service_method, input_descriptor, key)
+        })
+        .ok_or(Error::NotFound)?
     }
 }
 
@@ -55,10 +50,9 @@ mod expand_impls {
     use prost::encoding::{encode_key, key_len};
     use prost_reflect::{DynamicMessage, MessageDescriptor};
 
-    impl KeyExpander for ServiceInstanceType {
-        fn expand(
+    impl ServiceInstanceType {
+        pub(crate) fn expand(
             &self,
-            _service_name: impl AsRef<str>,
             service_method: impl AsRef<str>,
             descriptor: MessageDescriptor,
             restate_key: Bytes,
@@ -112,7 +106,7 @@ mod expand_impls {
         use pb::*;
 
         static DESCRIPTOR: &[u8] =
-            include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin"));
+            include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set_test.bin"));
         static METHOD_NAME: &str = "test";
 
         fn test_descriptor_message() -> MessageDescriptor {
@@ -196,12 +190,12 @@ mod expand_impls {
 
                         // Extract the restate key
                         let restate_key = service_instance_type
-                            .extract("", METHOD_NAME, test_message.encode_to_vec().into())
+                            .extract(METHOD_NAME, test_message.encode_to_vec().into())
                             .expect("successful key extraction");
 
                         // Now expand the key again into a message
                         let expanded_message = service_instance_type
-                            .expand("", METHOD_NAME, test_descriptor_message, restate_key)
+                            .expand(METHOD_NAME, test_descriptor_message, restate_key)
                             .expect("successful key expansion");
 
                         // Transcode back to original message

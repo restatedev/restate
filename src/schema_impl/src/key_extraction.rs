@@ -2,18 +2,7 @@ use super::*;
 
 use crate::Schemas;
 use bytes::Bytes;
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("unexpected end of buffer when decoding")]
-    UnexpectedEndOfBuffer,
-    #[error("unexpected value when parsing the payload. It looks like the message schema and the parser directives don't match")]
-    UnexpectedValue,
-    #[error("error when decoding the payload to extract the message: {0}")]
-    Decode(#[from] prost::DecodeError),
-    #[error("cannot resolve key extractor")]
-    NotFound,
-}
+use restate_schema_api::key::extraction::Error;
 
 /// A key extractor provides the logic to extract a key out of a request payload.
 pub trait KeyExtractor {
@@ -34,8 +23,11 @@ impl KeyExtractor for Schemas {
         service_name: impl AsRef<str>,
         service_method: impl AsRef<str>,
         payload: Bytes,
-    ) -> Result<Bytes, KeyExtractorError> {
-        todo!()
+    ) -> Result<Bytes, Error> {
+        self.use_service_schema(service_name, |schemas| {
+            schemas.instance_type.extract(service_method, payload)
+        })
+        .ok_or(Error::NotFound)?
     }
 }
 
@@ -53,10 +45,9 @@ mod extract_impls {
         Bytes::copy_from_slice(Uuid::now_v7().as_bytes())
     }
 
-    impl KeyExtractor for ServiceInstanceType {
-        fn extract(
+    impl ServiceInstanceType {
+        pub(crate) fn extract(
             &self,
-            _service_name: impl AsRef<str>,
             service_method: impl AsRef<str>,
             payload: Bytes,
         ) -> Result<Bytes, Error> {
