@@ -3,7 +3,7 @@ use crate::service::*;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
 #[derive(Debug, Default)]
-pub(in crate::service) struct InvocationStateMachineTree {
+pub(in crate::service) struct InvocationStateMachineManager {
     partitions: HashMap<PartitionLeaderEpoch, PartitionInvocationStateMachineCoordinator>,
 }
 
@@ -13,7 +13,7 @@ struct PartitionInvocationStateMachineCoordinator {
     invocation_state_machines: HashMap<ServiceInvocationId, InvocationStateMachine>,
 }
 
-impl InvocationStateMachineTree {
+impl InvocationStateMachineManager {
     #[inline]
     pub(in crate::service) fn has_partition(&self, partition: PartitionLeaderEpoch) -> bool {
         self.partitions.contains_key(&partition)

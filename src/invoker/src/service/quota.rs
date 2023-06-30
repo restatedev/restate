@@ -27,7 +27,7 @@ impl InvokerConcurrencyQuota {
     }
 
     pub(in crate::service) fn reserve_slot(&mut self) {
-        debug_assert!(self.is_slot_available());
+        assert!(self.is_slot_available());
         match self {
             Self::Unlimited => {}
             Self::Limited { available_slots } => *available_slots -= 1,
