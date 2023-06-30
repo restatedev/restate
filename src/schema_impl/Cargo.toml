@@ -1,0 +1,30 @@
+[package]
+name = "restate_schema_impl"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+bytes = { workspace = true }
+once_cell = "1.18"
+prost = { workspace = true }
+prost-reflect = { workspace = true }
+restate_types = { workspace = true }
+restate_schema_api = { workspace = true, features = ["key_extraction", "key_expansion", "json_key_conversion", "endpoint", "json_conversion", "proto_symbol"] }
+restate_serde_util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+prost-reflect = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
