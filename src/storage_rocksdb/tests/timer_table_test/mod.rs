@@ -2,8 +2,8 @@ use futures_util::StreamExt;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::{Storage, Transaction};
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::ServiceId;
-use restate_types::invocation::{ServiceInvocation, ServiceInvocationId, SpanRelation};
+use restate_types::identifiers::{ServiceId, ServiceInvocationId};
+use restate_types::invocation::{ServiceInvocation, SpanRelation};
 
 async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(

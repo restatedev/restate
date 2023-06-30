@@ -1,7 +1,8 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_storage_api::GetStream;
-use restate_types::invocation::{ServiceInvocation, ServiceInvocationId, SpanRelation};
+use restate_types::identifiers::ServiceInvocationId;
+use restate_types::invocation::{ServiceInvocation, SpanRelation};
 use std::fmt::Debug;
 use std::str::FromStr;
 use tempfile::tempdir;

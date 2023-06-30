@@ -1,10 +1,8 @@
 use crate::partition::shuffle::state_machine::StateMachine;
 use futures::future::BoxFuture;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::{IngressId, PartitionId, PeerId};
-use restate_types::invocation::{
-    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationId,
-};
+use restate_types::identifiers::{IngressId, PartitionId, PeerId, ServiceInvocationId};
+use restate_types::invocation::{InvocationResponse, ResponseResult, ServiceInvocation};
 use restate_types::message::{AckKind, MessageIndex};
 use std::time::Duration;
 use tokio::sync::mpsc;

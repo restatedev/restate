@@ -5,8 +5,10 @@ use bytes::{Buf, Bytes};
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
-use restate_types::identifiers::{EntryIndex, PartitionId, PartitionKey, ServiceId};
-use restate_types::invocation::{ServiceInvocation, ServiceInvocationId};
+use restate_types::identifiers::{
+    EntryIndex, PartitionId, PartitionKey, ServiceId, ServiceInvocationId,
+};
+use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::CompletionResult;

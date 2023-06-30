@@ -5,7 +5,7 @@ use axum::Json;
 use okapi_operation::*;
 use restate_service_key_extractor::json::RestateKeyConverter;
 use restate_service_metadata::MethodDescriptorRegistry;
-use restate_types::invocation;
+use restate_types::identifiers;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -39,10 +39,10 @@ impl ServiceInvocationId {
         self,
         method_descriptors: &M,
         key_converter: &K,
-    ) -> Result<invocation::ServiceInvocationId, MetaApiError> {
+    ) -> Result<identifiers::ServiceInvocationId, MetaApiError> {
         match self {
             ServiceInvocationId::Token(opaque_sid) => opaque_sid
-                .parse::<invocation::ServiceInvocationId>()
+                .parse::<identifiers::ServiceInvocationId>()
                 .map_err(|e| MetaApiError::InvalidField("sid", e.to_string())),
             ServiceInvocationId::Structured {
                 service,
@@ -66,7 +66,7 @@ impl ServiceInvocationId {
                     .json_to_key(service_descriptor, key.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| MetaApiError::InvalidField("sid", e.to_string()))?;
 
-                Ok(invocation::ServiceInvocationId::new(
+                Ok(identifiers::ServiceInvocationId::new(
                     service,
                     restate_key,
                     invocation_id,

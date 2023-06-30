@@ -1,6 +1,6 @@
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::EntryIndex;
-use restate_types::invocation::ServiceInvocationId;
+use restate_types::identifiers::ServiceInvocationId;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use std::collections::HashSet;
 

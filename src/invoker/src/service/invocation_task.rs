@@ -19,8 +19,8 @@ use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
 use restate_types::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
-use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
-use restate_types::invocation::{ServiceInvocationId, ServiceInvocationSpanContext};
+use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
+use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryHeader};
 use restate_types::journal::{Completion, EntryType, JournalMetadata};

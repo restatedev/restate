@@ -81,7 +81,7 @@ fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
     let invocation_uuid = Uuid::from_slice(key.invocation_id_ok_or()?.as_ref())
         .map_err(|error| StorageError::Generic(error.into()))?;
     let timer_key = TimerKey {
-        service_invocation_id: restate_types::invocation::ServiceInvocationId::new(
+        service_invocation_id: restate_types::identifiers::ServiceInvocationId::new(
             key.service_name.unwrap(),
             key.service_key.unwrap(),
             invocation_uuid,
@@ -144,7 +144,7 @@ fn decode_seq_timer_key_value(k: &[u8], v: &[u8]) -> Result<(TimerKey, Timer)> {
 mod tests {
     use super::*;
 
-    use restate_types::invocation::ServiceInvocationId;
+    use restate_types::identifiers::ServiceInvocationId;
 
     #[test]
     fn round_trip() {

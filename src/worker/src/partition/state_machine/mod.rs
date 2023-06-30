@@ -21,10 +21,10 @@ use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
-use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
+use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId, ServiceInvocationId};
 use restate_types::invocation::{
-    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation,
+    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext, SpanRelation,
 };
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::message::MessageIndex;

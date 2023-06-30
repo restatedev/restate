@@ -1,6 +1,8 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, ServiceId};
-use restate_types::invocation::{ServiceInvocationId, ServiceInvocationResponseSink};
+use restate_types::identifiers::{
+    EntryIndex, InvocationId, PartitionKey, ServiceId, ServiceInvocationId,
+};
+use restate_types::invocation::ServiceInvocationResponseSink;
 use restate_types::journal::JournalMetadata;
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;

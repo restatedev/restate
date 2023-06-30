@@ -7,7 +7,7 @@ use restate_storage_api::state_table::StateTable;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::Transaction;
 use restate_types::identifiers::ServiceId;
-use restate_types::invocation::ServiceInvocationId;
+use restate_types::identifiers::ServiceInvocationId;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::JournalMetadata;

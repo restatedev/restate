@@ -1,6 +1,6 @@
 use assert2::let_assert;
-use restate_types::identifiers::InvocationId;
-use restate_types::invocation::{ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation};
+use restate_types::identifiers::{InvocationId, ServiceInvocationId};
+use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
 use restate_types::journal::InvokeRequest;

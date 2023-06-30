@@ -16,8 +16,8 @@ use restate_invoker::{
     EagerState, Effect, EffectKind, InvokeInputJournal, JournalReader, ServiceHandle, StateReader,
 };
 use restate_service_protocol::pb::protocol::PollInputStreamEntryMessage;
-use restate_types::identifiers::{EntryIndex, ServiceId};
-use restate_types::invocation::{ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation};
+use restate_types::identifiers::{EntryIndex, ServiceId, ServiceInvocationId};
+use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec};
 use restate_types::journal::{Completion, CompletionResult, JournalMetadata};

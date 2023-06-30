@@ -1,7 +1,7 @@
 use super::Effect;
 
+use restate_types::identifiers::ServiceInvocationId;
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
-use restate_types::invocation::ServiceInvocationId;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
 use restate_types::journal::JournalMetadata;

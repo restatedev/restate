@@ -1,7 +1,7 @@
 use crate::{GetStream, PutFuture};
 use restate_types::identifiers::PartitionId;
+use restate_types::identifiers::ServiceInvocationId;
 use restate_types::invocation::ServiceInvocation;
-use restate_types::invocation::ServiceInvocationId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimerKey {

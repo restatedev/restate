@@ -8,7 +8,7 @@ use restate_futures_util::pipe::{
     UnboundedReceiverPipeInput,
 };
 use restate_types::identifiers::IngressId;
-use restate_types::invocation::ServiceInvocationId;
+use restate_types::identifiers::ServiceInvocationId;
 use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};

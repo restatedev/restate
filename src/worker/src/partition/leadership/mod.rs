@@ -16,8 +16,8 @@ mod actuator;
 
 pub(crate) use actuator::{ActuatorMessageCollector, ActuatorOutput, ActuatorStream};
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::identifiers::ServiceInvocationId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
-use restate_types::invocation::ServiceInvocationId;
 
 pub(crate) trait InvocationReader {
     type InvokedInvocationStream<'a>: Stream<

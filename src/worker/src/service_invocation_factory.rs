@@ -1,10 +1,8 @@
 use bytes::Bytes;
 use restate_ingress_grpc::{ServiceInvocationFactory, ServiceInvocationFactoryError};
 use restate_service_key_extractor::{KeyExtractor, KeyExtractorsRegistry};
-use restate_types::identifiers::InvocationId;
-use restate_types::invocation::{
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation,
-};
+use restate_types::identifiers::{InvocationId, ServiceInvocationId};
+use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink, SpanRelation};
 use tracing::Span;
 
 #[derive(Debug, Clone)]

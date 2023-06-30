@@ -12,8 +12,8 @@ use restate_queue::SegmentQueue;
 use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;
 use restate_types::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
+use restate_types::identifiers::ServiceInvocationId;
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
-use restate_types::invocation::ServiceInvocationId;
 use restate_types::journal::Completion;
 use restate_types::retries::RetryPolicy;
 use std::collections::{HashMap, HashSet};
@@ -909,7 +909,7 @@ mod tests {
     use std::future::{pending, ready};
     use tempfile::tempdir;
     use restate_types::identifiers::InvocationId;
-    use restate_types::invocation::ServiceInvocationId;
+    use restate_types::identifiers::ServiceInvocationId;
     use restate_types::retries::RetryPolicy;
     use std::time::Duration;
     use tokio::sync::mpsc;

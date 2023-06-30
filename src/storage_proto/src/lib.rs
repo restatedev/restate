@@ -321,7 +321,7 @@ pub mod storage {
                         argument,
                     } = value;
 
-                    let id = restate_types::invocation::ServiceInvocationId::try_from(
+                    let id = restate_types::identifiers::ServiceInvocationId::try_from(
                         id.ok_or(ConversionError::missing_field("id"))?,
                     )?;
 
@@ -369,7 +369,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<ServiceInvocationId> for restate_types::invocation::ServiceInvocationId {
+            impl TryFrom<ServiceInvocationId> for restate_types::identifiers::ServiceInvocationId {
                 type Error = ConversionError;
 
                 fn try_from(value: ServiceInvocationId) -> Result<Self, Self::Error> {
@@ -383,7 +383,7 @@ pub mod storage {
                         .map_err(ConversionError::invalid_data)?;
                     let invocation_id = try_bytes_into_invocation_id(invocation_id)?;
 
-                    Ok(restate_types::invocation::ServiceInvocationId::new(
+                    Ok(restate_types::identifiers::ServiceInvocationId::new(
                         service_name,
                         service_key,
                         invocation_id,
@@ -391,8 +391,8 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_types::invocation::ServiceInvocationId> for ServiceInvocationId {
-                fn from(value: restate_types::invocation::ServiceInvocationId) -> Self {
+            impl From<restate_types::identifiers::ServiceInvocationId> for ServiceInvocationId {
+                fn from(value: restate_types::identifiers::ServiceInvocationId) -> Self {
                     let invocation_id = invocation_id_to_bytes(&value.invocation_id);
                     let service_key = value.service_id.key;
                     let service_name = value.service_id.service_name.into_bytes();
@@ -493,7 +493,7 @@ pub mod storage {
                         .ok_or(ConversionError::missing_field("response_sink"))?
                     {
                         ResponseSink::PartitionProcessor(partition_processor) => {
-                            let caller = restate_types::invocation::ServiceInvocationId::try_from(
+                            let caller = restate_types::identifiers::ServiceInvocationId::try_from(
                                 partition_processor
                                     .caller
                                     .ok_or(ConversionError::missing_field("caller"))?,
@@ -965,7 +965,7 @@ pub mod storage {
                         ) => restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
                             restate_types::invocation::InvocationResponse {
                                 entry_index: invocation_response.entry_index,
-                                id: restate_types::invocation::ServiceInvocationId::try_from(
+                                id: restate_types::identifiers::ServiceInvocationId::try_from(
                                     invocation_response.service_invocation_id.ok_or(
                                         ConversionError::missing_field("service_invocation_id"),
                                     )?,
@@ -980,7 +980,7 @@ pub mod storage {
                         outbox_message::OutboxMessage::IngressResponse(ingress_response) => {
                             restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
                                 service_invocation_id:
-                                    restate_types::invocation::ServiceInvocationId::try_from(
+                                    restate_types::identifiers::ServiceInvocationId::try_from(
                                         ingress_response.service_invocation_id.ok_or(
                                             ConversionError::missing_field("service_invocation_id"),
                                         )?,

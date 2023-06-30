@@ -1,7 +1,7 @@
 use codederror::Code;
 use restate_types::errors::{InvocationError, InvocationErrorCode};
+use restate_types::identifiers::ServiceInvocationId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
-use restate_types::invocation::ServiceInvocationId;
 use std::fmt;
 use std::future::Future;
 use std::time::SystemTime;

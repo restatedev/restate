@@ -16,10 +16,8 @@ use bytes::Bytes;
 use opentelemetry::Context;
 use restate_futures_util::command::*;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{IngressId, PeerId};
-use restate_types::invocation::{
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanRelation,
-};
+use restate_types::identifiers::{IngressId, PeerId, ServiceInvocationId};
+use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink, SpanRelation};
 use restate_types::message::{AckKind, MessageIndex};
 use tokio::sync::mpsc;
 use tonic::Status;

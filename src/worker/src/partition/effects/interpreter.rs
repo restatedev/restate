@@ -8,10 +8,8 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
 use restate_types::errors::InvocationErrorCode;
-use restate_types::identifiers::{EntryIndex, ServiceId};
-use restate_types::invocation::{
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext,
-};
+use restate_types::identifiers::{EntryIndex, ServiceId, ServiceInvocationId};
+use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{
     PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,

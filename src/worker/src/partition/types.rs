@@ -1,7 +1,7 @@
 use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::EntryIndex;
+use restate_types::identifiers::ServiceInvocationId;
 use restate_types::invocation::ServiceInvocation;
-use restate_types::invocation::ServiceInvocationId;
 use restate_types::time::MillisSinceEpoch;
 use std::cmp::Ordering;
 use std::fmt;

@@ -150,7 +150,7 @@ mod tests {
     use http::StatusCode;
     use hyper::Body;
     use prost::Message;
-    use restate_types::invocation::ServiceInvocationId;
+    use restate_types::identifiers::ServiceInvocationId;
     use restate_types::invocation::ServiceInvocationResponseSink;
     use serde_json::json;
     use tokio::sync::mpsc;

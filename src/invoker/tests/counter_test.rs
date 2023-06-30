@@ -12,7 +12,7 @@ use restate_invoker::{ChannelServiceHandle, Effect, EffectKind, Service};
 use restate_service_metadata::InMemoryServiceEndpointRegistry;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_test_util::{assert, assert_eq, let_assert, test};
-use restate_types::invocation::ServiceInvocationId;
+use restate_types::identifiers::ServiceInvocationId;
 use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::{

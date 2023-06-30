@@ -10,8 +10,8 @@ use prost::Message;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
+use restate_types::identifiers::ServiceInvocationId;
 use restate_types::identifiers::{PartitionKey, ServiceId};
-use restate_types::invocation::ServiceInvocationId;
 use std::ops::RangeInclusive;
 use uuid::Uuid;
 
