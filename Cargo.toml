@@ -72,7 +72,8 @@ restate_queue = { path = "src/queue"}
 restate_invoker = { path = "src/invoker" }
 restate_meta = { path = "src/meta" }
 restate_network = { path = "src/network" }
-restate_schema = { path = "src/schema" }
+restate_schema_api = { path = "src/schema_api" }
+restate_schema_impl = { path = "src/schema_impl" }
 restate_serde_util = { path = "src/serde_util" }
 restate_service_key_extractor = { path = "src/service_key_extractor" }
 restate_service_metadata = { path = "src/service_metadata" }

@@ -3723,19 +3723,36 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_schema"
+name = "restate_schema_api"
 version = "0.1.5"
 dependencies = [
  "anyhow",
  "bytes",
  "prost",
+ "prost-reflect",
+ "restate_types",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "restate_schema_impl"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "bytes",
+ "once_cell",
+ "prost",
  "prost-build",
  "prost-reflect",
+ "restate_schema_api",
  "restate_serde_util",
  "restate_types",
  "serde",
  "serde_json",
  "thiserror",
+ "tracing",
  "uuid",
 ]
 
