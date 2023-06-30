@@ -51,8 +51,8 @@ impl Default for ProtoSymbols {
             .register_new_services(
                 "self_ingress".to_string(),
                 vec![
-                    "grpc.reflection.v1alpha.ServerReflection".to_string(),
-                    "dev.restate.Ingress".to_string(),
+                    crate::pb::REFLECTION_SERVICE_NAME.to_string(),
+                    crate::pb::INGRESS_SERVICE_NAME.to_string(),
                 ],
                 crate::pb::DEV_RESTATE_DESCRIPTOR_POOL.clone(),
             )
@@ -89,7 +89,7 @@ impl ProtoSymbols {
             for file in &files {
                 // We rename files prepending them with the endpoint id
                 // to avoid collision between file names of unrelated endpoints
-                // TODO this should probably go in https://github.com/restatedev/restate/issues/43
+                // TODO with schema checks in place, should we move this or remove this?
                 let file_name = normalize_file_name(&endpoint_id, file.name());
                 let file_arc = discovered_files
                     .entry(file_name.clone())

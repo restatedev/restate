@@ -74,7 +74,7 @@ pub enum RegistrationError {
 }
 
 /// The schema registry
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Schemas(Arc<ArcSwap<schemas_impl::SchemasInner>>);
 
 impl Schemas {
@@ -96,7 +96,7 @@ impl Schemas {
 pub(crate) mod schemas_impl {
     use super::*;
 
-    use prost_reflect::{DescriptorPool, MethodDescriptor};
+    use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
     use proto_symbol::ProtoSymbols;
     use restate_types::identifiers::EndpointId;
     use restate_types::service_endpoint::EndpointMetadata;
@@ -130,9 +130,46 @@ pub(crate) mod schemas_impl {
 
     #[derive(Debug, Clone)]
     pub(crate) struct ServiceSchemas {
-        pub(crate) instance_type: ServiceInstanceType,
         pub(crate) methods: HashMap<String, MethodDescriptor>,
-        pub(crate) latest_endpoint: EndpointId,
+        pub(crate) instance_type: ServiceInstanceType,
+        pub(crate) location: ServiceLocation,
+    }
+
+    impl ServiceSchemas {
+        fn new(
+            svc_desc: ServiceDescriptor,
+            instance_type: ServiceInstanceType,
+            latest_endpoint: EndpointId,
+        ) -> Self {
+            Self {
+                methods: svc_desc
+                    .methods()
+                    .map(|f| (f.name().to_string(), f))
+                    .collect(),
+                instance_type,
+                location: ServiceLocation::ServiceEndpoint { latest_endpoint },
+            }
+        }
+
+        fn new_ingress_only(svc_desc: ServiceDescriptor) -> Self {
+            Self {
+                methods: svc_desc
+                    .methods()
+                    .map(|f| (f.name().to_string(), f))
+                    .collect(),
+                instance_type: ServiceInstanceType::Singleton,
+                location: ServiceLocation::IngressOnly,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub(crate) enum ServiceLocation {
+        IngressOnly,
+        ServiceEndpoint {
+            // None if this is a built-in service
+            latest_endpoint: EndpointId,
+        },
     }
 
     #[derive(Debug, Clone)]
@@ -142,15 +179,33 @@ pub(crate) mod schemas_impl {
         pub(crate) services: Vec<String>,
     }
 
-    #[allow(clippy::derivable_impls)] // Remove once we implement the logic for the built-in services
     impl Default for SchemasInner {
         fn default() -> Self {
-            // TODO implement the logic to register the built-in services (dev.restate.Ingress in particular!)
-            Self {
+            let mut inner = Self {
                 services: Default::default(),
                 endpoints: Default::default(),
                 proto_symbols: Default::default(),
-            }
+            };
+
+            // Insert built-in services
+            inner.services.insert(
+                pb::REFLECTION_SERVICE_NAME.to_string(),
+                ServiceSchemas::new_ingress_only(
+                    pb::DEV_RESTATE_DESCRIPTOR_POOL
+                        .get_service_by_name(pb::REFLECTION_SERVICE_NAME)
+                        .unwrap(),
+                ),
+            );
+            inner.services.insert(
+                pb::INGRESS_SERVICE_NAME.to_string(),
+                ServiceSchemas::new_ingress_only(
+                    pb::DEV_RESTATE_DESCRIPTOR_POOL
+                        .get_service_by_name(pb::INGRESS_SERVICE_NAME)
+                        .unwrap(),
+                ),
+            );
+
+            inner
         }
     }
 
@@ -213,14 +268,11 @@ pub(crate) mod schemas_impl {
 
                 self.services.insert(
                     service_meta.name,
-                    ServiceSchemas {
-                        instance_type: service_meta.instance_type,
-                        methods: service_descriptor
-                            .methods()
-                            .map(|f| (f.name().to_string(), f))
-                            .collect(),
-                        latest_endpoint: endpoint_id.clone(),
-                    },
+                    ServiceSchemas::new(
+                        service_descriptor,
+                        service_meta.instance_type,
+                        endpoint_id.clone(),
+                    ),
                 );
             }
 

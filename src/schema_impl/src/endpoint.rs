@@ -1,5 +1,6 @@
 use super::Schemas;
 
+use crate::schemas_impl::ServiceLocation;
 use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_types::service_endpoint::{EndpointId, EndpointMetadata};
 
@@ -10,10 +11,13 @@ impl EndpointMetadataResolver for Schemas {
     ) -> Option<EndpointMetadata> {
         let schemas = self.0.load();
         let service = schemas.services.get(service_name.as_ref())?;
-        schemas
-            .endpoints
-            .get(&service.latest_endpoint)
-            .map(|schemas| schemas.metadata.clone())
+        match &service.location {
+            ServiceLocation::IngressOnly => None,
+            ServiceLocation::ServiceEndpoint { latest_endpoint } => schemas
+                .endpoints
+                .get(latest_endpoint)
+                .map(|schemas| schemas.metadata.clone()),
+        }
     }
 
     fn get_endpoint(&self, endpoint_id: &EndpointId) -> Option<EndpointMetadata> {

@@ -25,3 +25,6 @@ pub(crate) static DEV_RESTATE_DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(
     )
     .expect("The built-in descriptor pool should be valid")
 });
+
+pub const INGRESS_SERVICE_NAME: &str = "dev.restate.Ingress";
+pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1alpha.ServerReflection";
