@@ -144,7 +144,7 @@ pub(crate) mod schemas_impl {
             Self {
                 methods: svc_desc
                     .methods()
-                    .map(|f| (f.name().to_string(), f))
+                    .map(|method_desc| (method_desc.name().to_string(), method_desc))
                     .collect(),
                 instance_type,
                 location: ServiceLocation::ServiceEndpoint { latest_endpoint },
@@ -155,7 +155,7 @@ pub(crate) mod schemas_impl {
             Self {
                 methods: svc_desc
                     .methods()
-                    .map(|f| (f.name().to_string(), f))
+                    .map(|method_desc| (method_desc.name().to_string(), method_desc))
                     .collect(),
                 instance_type: ServiceInstanceType::Singleton,
                 location: ServiceLocation::IngressOnly,
@@ -193,7 +193,9 @@ pub(crate) mod schemas_impl {
                 ServiceSchemas::new_ingress_only(
                     pb::DEV_RESTATE_DESCRIPTOR_POOL
                         .get_service_by_name(pb::REFLECTION_SERVICE_NAME)
-                        .unwrap(),
+                        .expect(
+                            "The built-in descriptor pool should contain the reflection service",
+                        ),
                 ),
             );
             inner.services.insert(
@@ -201,7 +203,7 @@ pub(crate) mod schemas_impl {
                 ServiceSchemas::new_ingress_only(
                     pb::DEV_RESTATE_DESCRIPTOR_POOL
                         .get_service_by_name(pb::INGRESS_SERVICE_NAME)
-                        .unwrap(),
+                        .expect("The built-in descriptor pool should contain the ingress service"),
                 ),
             );
 
@@ -226,14 +228,20 @@ pub(crate) mod schemas_impl {
 
             self.proto_symbols.register_new_services(
                 endpoint_id.clone(),
-                services.iter().map(|s| s.name().to_string()).collect(),
+                services
+                    .iter()
+                    .map(|service_meta| service_meta.name().to_string())
+                    .collect(),
                 descriptor_pool.clone(),
             )?;
             self.endpoints.insert(
                 endpoint_id.clone(),
                 EndpointSchemas {
                     metadata: endpoint_metadata,
-                    services: services.iter().map(|m| m.name.clone()).collect(),
+                    services: services
+                        .iter()
+                        .map(|service_meta| service_meta.name.clone())
+                        .collect(),
                 },
             );
             for service_meta in services {

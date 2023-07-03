@@ -89,7 +89,8 @@ impl ProtoSymbols {
             for file in &files {
                 // We rename files prepending them with the endpoint id
                 // to avoid collision between file names of unrelated endpoints
-                // TODO with schema checks in place, should we move this or remove this?
+                // TODO with schema checks in place,
+                //  should we move this or remove this normalization of the file name?
                 let file_name = normalize_file_name(&endpoint_id, file.name());
                 let file_arc = discovered_files
                     .entry(file_name.clone())
@@ -177,7 +178,10 @@ impl ProtoSymbols {
                         which is fine as long as the type definitions are equal/compatible with each other.", service_name, symbol_name);
                     }
                 } else {
-                    let file_to_insert = maybe_files_to_add.get(related_file).unwrap().clone();
+                    let file_to_insert = maybe_files_to_add
+                        .get(related_file)
+                        .expect("maybe_files_to_add must be a superset of symbols_index values")
+                        .clone();
                     files_to_insert.insert(related_file.clone(), (1, file_to_insert));
                 }
             }
