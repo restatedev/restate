@@ -179,7 +179,6 @@ pub struct Worker {
     network: network_integration::Network,
     storage_grpc: StorageService,
     invoker: InvokerService<
-        ProtobufRawEntryCodec,
         InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,
         EntryEnricher<KeyExtractorsRegistry, ProtobufRawEntryCodec>,

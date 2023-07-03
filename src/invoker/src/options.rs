@@ -4,7 +4,7 @@ use futures::Stream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use restate_common::journal::raw::{PlainRawEntry, RawEntryCodec};
+use restate_common::journal::raw::PlainRawEntry;
 use restate_common::retry_policy::RetryPolicy;
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_service_metadata::ServiceEndpointRegistry;
@@ -97,6 +97,11 @@ pub struct Options {
     )]
     tmp_dir: PathBuf,
 
+    /// # Concurrency limit
+    ///
+    /// Number of concurrent invocations that can be processed by the invoker.
+    concurrency_limit: Option<usize>,
+
     #[cfg_attr(feature = "options_schema", schemars(skip))]
     disable_eager_state: bool,
 }
@@ -111,6 +116,7 @@ impl Default for Options {
             message_size_limit: None,
             proxy_uri: None,
             tmp_dir: Options::default_tmp_dir(),
+            concurrency_limit: None,
             disable_eager_state: false,
         }
     }
@@ -142,15 +148,14 @@ impl Options {
         restate_fs_util::generate_temp_dir_name("invoker")
     }
 
-    pub fn build<C, JR, JS, SR, EE, SER>(
+    pub fn build<JR, JS, SR, EE, SER>(
         self,
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
         service_endpoint_registry: SER,
-    ) -> Service<C, JR, SR, EE, SER>
+    ) -> Service<JR, SR, EE, SER>
     where
-        C: RawEntryCodec,
         JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
         EE: EntryEnricher,
@@ -166,6 +171,7 @@ impl Options {
             self.message_size_limit,
             self.proxy_uri,
             self.tmp_dir,
+            self.concurrency_limit,
             journal_reader,
             state_reader,
             entry_enricher,

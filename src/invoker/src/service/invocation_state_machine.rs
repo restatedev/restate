@@ -20,7 +20,7 @@ pub(super) struct InvocationStateMachine {
 ///
 /// Every time the invocation task generates a new entry, the index is notified to this struct with
 /// [`JournalTracker::notify_entry_sent_to_partition_processor`], and every time the invoker receives
-/// [`Command::StoredEntryAck`], the index is notified to this struct with [`JournalTracker::notify_acked_entry_from_partition_processor`].
+/// [`InputCommand::StoredEntryAck`], the index is notified to this struct with [`JournalTracker::notify_acked_entry_from_partition_processor`].
 ///
 /// After the retry timer is fired, we can check whether we can retry immediately or not with [`JournalTracker::can_retry`].
 #[derive(Default, Debug, Copy, Clone)]
@@ -241,7 +241,7 @@ impl InvocationStateMachine {
 
 #[cfg(test)]
 mod tests {
-    use crate::service::invocation_state_machine::{InvocationState, InvocationStateMachine};
+    use super::*;
     use restate_common::retry_policy::RetryPolicy;
     use restate_test_util::{check, test};
     use std::time::Duration;

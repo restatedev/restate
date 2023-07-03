@@ -138,7 +138,6 @@ async fn bidi_stream() {
     // Start invoker
     let options = restate_invoker::Options::default();
     let remote_invoker: Service<
-        ProtobufRawEntryCodec,
         InMemoryJournalStorage,
         InMemoryStateStorage,
         MockEntryEnricher,
