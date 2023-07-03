@@ -1,3 +1,4 @@
+use crate::schemas_impl::SchemasInner;
 use arc_swap::ArcSwap;
 use prost_reflect::DescriptorPool;
 use restate_types::service_endpoint::EndpointMetadata;
@@ -84,10 +85,9 @@ impl Schemas {
         services: Vec<ServiceMetadata>,
         descriptor_pool: DescriptorPool,
     ) -> Result<(), RegistrationError> {
-        let mut arc_schemas_inner = self.0.load_full();
-        let schemas_inner = Arc::make_mut(&mut arc_schemas_inner);
+        let mut schemas_inner = SchemasInner::clone(self.0.load().as_ref());
         schemas_inner.register_new_endpoint(endpoint_metadata, services, descriptor_pool)?;
-        self.0.store(arc_schemas_inner);
+        self.0.store(Arc::new(schemas_inner));
 
         Ok(())
     }
