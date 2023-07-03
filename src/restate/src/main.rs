@@ -1,4 +1,4 @@
-use app::Application;
+use restate::Application;
 use clap::Parser;
 use codederror::CodedError;
 use restate::Configuration;
@@ -8,10 +8,6 @@ use std::path::PathBuf;
 use tokio::io;
 use tracing::{info, warn};
 
-mod app;
-mod config;
-mod future_util;
-mod rt;
 mod signal;
 
 #[derive(Debug, clap::Parser)]
