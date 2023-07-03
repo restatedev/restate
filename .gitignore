@@ -10,3 +10,7 @@
 **/target
 
 **/.idea
+
+# Tracing files
+**/*.trace
+**/flamegraph.svg
