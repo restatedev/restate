@@ -197,7 +197,7 @@ mod tests {
 
         // Ask for a response, then drop the receiver=
         let method_name = ByteString::from_static("pippo");
-        let (service_invocation, _) = ServiceInvocation::new(
+        let service_invocation = ServiceInvocation::new(
             ServiceInvocationId::new("MySvc", "MyMethod", uuid::Uuid::now_v7()),
             method_name,
             Default::default(),

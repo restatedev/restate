@@ -50,6 +50,7 @@ pub(crate) enum ActuatorMessage {
     },
     CommitEndSpan {
         service_invocation_id: ServiceInvocationId,
+        creation_time: MillisSinceEpoch,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (InvocationErrorCode, String)>,
@@ -398,7 +399,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     },
                 })
             }
-            Effect::RegisterTimer { timer_value } => {
+            Effect::RegisterTimer { timer_value, .. } => {
                 state_storage
                     .store_timer(
                         timer_value.service_invocation_id.clone(),
@@ -604,11 +605,13 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             }
             Effect::NotifyInvocationResult {
                 service_invocation_id,
+                creation_time,
                 service_method,
                 span_context,
                 result,
             } => collector.collect(ActuatorMessage::CommitEndSpan {
                 service_invocation_id,
+                creation_time,
                 service_method,
                 span_context,
                 result,

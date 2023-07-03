@@ -17,7 +17,7 @@ use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServ
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_types::identifiers::IngressId;
-use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
+use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation, SpanRelationType};
 use tokio::sync::Semaphore;
 use tonic_web::{GrpcWebLayer, GrpcWebService};
 use tower::{BoxError, Layer, Service};
@@ -214,12 +214,12 @@ where
                 }
 
                 // Create the service_invocation
-                let (service_invocation, service_invocation_span) = match invocation_factory.create(
+                let service_invocation = match invocation_factory.create(
                     &service_name,
                     &method_name,
                     req_payload,
                     response_sink,
-                    SpanRelation::Parent(ingress_span_context)
+                    SpanRelation::Cause(SpanRelationType::Invoke(ingress_span_context.span_id()), ingress_span_context)
                 ) {
                     Ok(i) => i,
                     Err(e) => {
@@ -233,10 +233,6 @@ where
                         return Err(status);
                     }
                 };
-
-                // Be aware that between this enter and the drop later there must not be any .await
-                // https://docs.rs/tracing/latest/tracing/struct.Span.html#in-asynchronous-code
-                let enter_service_invocation_span = service_invocation_span.enter();
 
                 // Ingress built-in service just sends a fire and forget and closes
                 if !wait_response {
@@ -262,9 +258,6 @@ where
                     debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                     return Err(Status::unavailable("Unavailable"));
                 }
-
-                // Drop the service invocation span to commit it
-                drop(enter_service_invocation_span);
 
                 // Wait on response
                 return match response_rx.await {
@@ -308,7 +301,10 @@ where
 
 fn span_relation(request_span: &SpanContext) -> SpanRelation {
     if request_span.is_valid() {
-        SpanRelation::Parent(request_span.clone())
+        SpanRelation::Cause(
+            SpanRelationType::Invoke(request_span.span_id()),
+            request_span.clone(),
+        )
     } else {
         SpanRelation::None
     }

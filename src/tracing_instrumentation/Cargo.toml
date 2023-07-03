@@ -20,7 +20,6 @@ schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 console-subscriber = { version = "0.1.10", optional = true }
 opentelemetry = { workspace = true, features = ["rt-tokio"] }
-opentelemetry-jaeger = { version = "0.18", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.12" }
 opentelemetry-semantic-conventions = "0.11"
 opentelemetry-contrib = { version = "0.11", features = ["jaeger_json_exporter", "rt-tokio"] }

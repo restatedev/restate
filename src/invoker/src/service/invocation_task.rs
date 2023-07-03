@@ -273,7 +273,7 @@ where
     }
 
     /// Loop opening the request to service endpoint and consuming the stream
-    #[instrument(level = "info", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.service_invocation_id.service_id.service_name, restate.invocation.sid = %self.service_invocation_id), skip_all)]
+    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.service_invocation_id.service_id.service_name, restate.invocation.sid = %self.service_invocation_id), skip_all)]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
         // Execute the task
         let terminal_state = self.run_internal(input_journal).await;
@@ -388,7 +388,7 @@ where
         let invocation_task_span = Span::current();
         journal_metadata
             .span_context
-            .as_parent()
+            .as_invoke()
             .attach_to_span(&invocation_task_span);
         info!(http.url = %uri, "Executing invocation at service endpoint");
 

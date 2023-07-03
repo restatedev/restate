@@ -34,7 +34,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     )
     .await;
 
-    let (service_invocation, _) = ServiceInvocation::new(
+    let service_invocation = ServiceInvocation::new(
         ServiceInvocationId {
             service_id: ServiceId::new("svc-2", "key-2"),
             invocation_id: Default::default(),

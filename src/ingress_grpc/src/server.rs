@@ -174,7 +174,7 @@ mod tests {
             request_payload: Bytes,
             response_sink: Option<ServiceInvocationResponseSink>,
             related_span: SpanRelation,
-        ) -> Result<(ServiceInvocation, Span), ServiceInvocationFactoryError> {
+        ) -> Result<ServiceInvocation, ServiceInvocationFactoryError> {
             Ok(ServiceInvocation::new(
                 ServiceInvocationId::new(service_name, Bytes::new(), uuid::Uuid::now_v7()),
                 method_name.to_string().into(),

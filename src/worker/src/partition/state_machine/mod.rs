@@ -215,7 +215,7 @@ where
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(ServiceInvocationId, SpanRelation), Error> {
-        let related_span = metadata.journal_metadata.span_context.as_parent();
+        let related_span = metadata.journal_metadata.span_context.as_invoke();
 
         self.fail_invocation(
             effects,
@@ -306,7 +306,7 @@ where
         let span_relation = invocation_metadata
             .journal_metadata
             .span_context
-            .as_parent();
+            .as_invoke();
 
         match kind {
             InvokerEffectKind::SelectedEndpoint(endpoint_id) => {
@@ -383,20 +383,10 @@ where
         service_invocation_id: ServiceInvocationId,
         invocation_metadata: InvocationMetadata,
     ) -> Result<(), Error> {
-        self.notify_invocation_result(
-            &service_invocation_id,
-            invocation_metadata.journal_metadata.method,
-            invocation_metadata.journal_metadata.span_context,
-            effects,
-            Ok(()),
-        );
-        self.complete_invocation(
-            service_invocation_id,
-            state,
-            invocation_metadata.journal_metadata.length,
-            effects,
-        )
-        .await
+        let length = invocation_metadata.journal_metadata.length;
+        self.notify_invocation_result(&service_invocation_id, invocation_metadata, effects, Ok(()));
+        self.complete_invocation(service_invocation_id, state, length, effects)
+            .await
     }
 
     async fn fail_invocation<State: StateReader>(
@@ -408,30 +398,25 @@ where
         error: InvocationError,
     ) -> Result<(), Error> {
         let code = error.code();
-        if let Some(response_sink) = invocation_metadata.response_sink {
+        if let Some(response_sink) = &invocation_metadata.response_sink {
             let outbox_message = Self::create_response(
                 &service_invocation_id,
-                response_sink,
+                response_sink.clone(),
                 ResponseResult::Failure(code.into(), error.message().into()),
             );
             // TODO: We probably only need to send the response if we haven't send a response before
             self.send_message(outbox_message, effects);
         }
 
+        let length = invocation_metadata.journal_metadata.length;
         self.notify_invocation_result(
             &service_invocation_id,
-            invocation_metadata.journal_metadata.method,
-            invocation_metadata.journal_metadata.span_context,
+            invocation_metadata,
             effects,
             Err((code, error.to_string())),
         );
-        self.complete_invocation(
-            service_invocation_id,
-            state,
-            invocation_metadata.journal_metadata.length,
-            effects,
-        )
-        .await
+        self.complete_invocation(service_invocation_id, state, length, effects)
+            .await
     }
 
     async fn handle_journal_entry(
@@ -527,14 +512,17 @@ where
                     Entry::Sleep(SleepEntry { wake_up_time, .. }) =
                         Codec::deserialize(&journal_entry)?
                 );
-                effects.register_timer(TimerValue::new_sleep(
-                    // Registering a timer generates multiple effects: timer registration and
-                    // journal append which each generate actuator messages for the timer service
-                    // and the invoker --> Cloning required
-                    service_invocation_id.clone(),
-                    MillisSinceEpoch::new(wake_up_time),
-                    entry_index,
-                ));
+                effects.register_timer(
+                    TimerValue::new_sleep(
+                        // Registering a timer generates multiple effects: timer registration and
+                        // journal append which each generate actuator messages for the timer service
+                        // and the invoker --> Cloning required
+                        service_invocation_id.clone(),
+                        MillisSinceEpoch::new(wake_up_time),
+                        entry_index,
+                    ),
+                    invocation_metadata.journal_metadata.span_context.clone(),
+                );
             }
             EnrichedEntryHeader::Invoke {
                 ref resolution_result,
@@ -597,12 +585,15 @@ where
                         effects,
                     );
                 } else {
-                    effects.register_timer(TimerValue::new_invoke(
-                        service_invocation_id.clone(),
-                        MillisSinceEpoch::new(invoke_time),
-                        entry_index,
-                        service_invocation,
-                    ));
+                    effects.register_timer(
+                        TimerValue::new_invoke(
+                            service_invocation_id.clone(),
+                            MillisSinceEpoch::new(invoke_time),
+                            entry_index,
+                            service_invocation,
+                        ),
+                        invocation_metadata.journal_metadata.span_context.clone(),
+                    );
                 }
             }
             // special handling because we can have a completion present
@@ -665,7 +656,7 @@ where
                 if metadata.invocation_id == service_invocation_id.invocation_id {
                     effects.store_and_forward_completion(service_invocation_id.clone(), completion);
                     related_sid = Some(service_invocation_id);
-                    span_relation = metadata.journal_metadata.span_context.as_parent();
+                    span_relation = metadata.journal_metadata.span_context.as_invoke();
                 } else {
                     debug!(
                         rpc.service = %service_invocation_id.service_id.service_name,
@@ -680,7 +671,7 @@ where
                 waiting_for_completed_entries,
             } => {
                 if metadata.invocation_id == service_invocation_id.invocation_id {
-                    span_relation = metadata.journal_metadata.span_context.as_parent();
+                    span_relation = metadata.journal_metadata.span_context.as_invoke();
 
                     if waiting_for_completed_entries.contains(&completion.entry_index) {
                         effects.store_completion_and_resume(
@@ -717,15 +708,13 @@ where
     fn notify_invocation_result(
         &mut self,
         service_invocation_id: &ServiceInvocationId,
-        service_method: String,
-        span_context: ServiceInvocationSpanContext,
+        invocation_metadata: InvocationMetadata,
         effects: &mut Effects,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {
         effects.notify_invocation_result(
             service_invocation_id.clone(),
-            service_method,
-            span_context,
+            invocation_metadata,
             result,
         );
     }
@@ -836,9 +825,9 @@ where
 
 fn extract_span_relation(status: &InvocationStatus) -> SpanRelation {
     match status {
-        InvocationStatus::Invoked(metadata) => metadata.journal_metadata.span_context.as_parent(),
+        InvocationStatus::Invoked(metadata) => metadata.journal_metadata.span_context.as_invoke(),
         InvocationStatus::Suspended { metadata, .. } => {
-            metadata.journal_metadata.span_context.as_parent()
+            metadata.journal_metadata.span_context.as_invoke()
         }
         InvocationStatus::Free => SpanRelation::None,
     }

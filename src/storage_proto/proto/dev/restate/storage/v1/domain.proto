@@ -84,6 +84,23 @@ message SpanContext {
     uint32 trace_flags = 3;
     bool is_remote = 4;
     string trace_state = 5;
+    optional SpanRelation span_relation = 6;
+}
+
+message SpanRelation {
+    message Invoke {
+        uint64 span_id = 1;
+    }
+
+    message BackgroundInvoke {
+        bytes trace_id = 1;
+        uint64 span_id = 2;
+    }
+
+    oneof kind {
+        Invoke invoke = 1;
+        BackgroundInvoke background_invoke = 2;
+    }
 }
 
 message ServiceInvocation {

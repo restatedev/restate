@@ -3,7 +3,6 @@ use restate_ingress_grpc::{ServiceInvocationFactory, ServiceInvocationFactoryErr
 use restate_schema_api::key::KeyExtractor;
 use restate_types::identifiers::{InvocationId, ServiceInvocationId};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink, SpanRelation};
-use tracing::Span;
 
 #[derive(Debug, Clone)]
 pub(super) struct DefaultServiceInvocationFactory<K> {
@@ -44,7 +43,7 @@ impl<K: KeyExtractor> ServiceInvocationFactory for DefaultServiceInvocationFacto
         request_payload: Bytes,
         response_sink: Option<ServiceInvocationResponseSink>,
         span_relation: SpanRelation,
-    ) -> Result<(ServiceInvocation, Span), ServiceInvocationFactoryError> {
+    ) -> Result<ServiceInvocation, ServiceInvocationFactoryError> {
         let key = self.extract_key(service_name, method_name, request_payload.clone())?;
 
         Ok(ServiceInvocation::new(

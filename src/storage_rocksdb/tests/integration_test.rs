@@ -52,7 +52,7 @@ pub(crate) fn uuid_str(uuid: &str) -> Uuid {
 }
 
 pub(crate) fn mock_service_invocation() -> ServiceInvocation {
-    let (service_invocation, _) = ServiceInvocation::new(
+    ServiceInvocation::new(
         ServiceInvocationId::new(
             ByteString::from_static("service"),
             Bytes::new(),
@@ -62,9 +62,7 @@ pub(crate) fn mock_service_invocation() -> ServiceInvocation {
         Bytes::new(),
         None,
         SpanRelation::None,
-    );
-
-    service_invocation
+    )
 }
 
 pub(crate) async fn assert_stream_eq<T: Send + Debug + PartialEq + 'static>(

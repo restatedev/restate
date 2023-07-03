@@ -46,7 +46,7 @@ where
         let invocation_id = InvocationId::now_v7();
 
         // Create the span context
-        let (span_context, span) = ServiceInvocationSpanContext::start(
+        let span_context = ServiceInvocationSpanContext::start(
             &ServiceInvocationId::new(
                 request.service_name.clone(),
                 service_key.clone(),
@@ -55,9 +55,6 @@ where
             &request.method_name,
             span_relation,
         );
-
-        // Enter the span to commit it
-        let _ = span.enter();
 
         Ok(ResolutionResult {
             invocation_id,
@@ -96,7 +93,7 @@ where
                             let_assert!(Entry::Invoke(InvokeEntry { request, .. }) = entry);
                             request
                         },
-                        invocation_span_context.as_parent(),
+                        invocation_span_context.as_background_invoke(),
                     )?;
 
                     EnrichedEntryHeader::Invoke {
@@ -120,7 +117,7 @@ where
                         );
                         request
                     },
-                    invocation_span_context.as_cause(),
+                    invocation_span_context.as_background_invoke(),
                 )?;
 
                 EnrichedEntryHeader::BackgroundInvoke { resolution_result }

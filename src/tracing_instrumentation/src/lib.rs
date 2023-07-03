@@ -1,9 +1,15 @@
+// mod multi_service_tracer;
 mod pretty;
+mod processor;
+mod tracer;
 
 use crate::pretty::PrettyFields;
-use opentelemetry::trace::TraceError;
+use crate::processor::ResourceModifyingSpanProcessor;
+use crate::tracer::SpanModifyingTracer;
+use opentelemetry::sdk::trace::BatchSpanProcessor;
+use opentelemetry::trace::{TraceError, TracerProvider};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
-use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_otlp::{SpanExporterBuilder, WithExportConfig};
 use pretty::Pretty;
 use std::fmt::Display;
 use tracing::{warn, Level};
@@ -59,11 +65,7 @@ impl TracingOptions {
         service_name: String,
         instance_id: impl Display,
     ) -> Result<
-        Filtered<
-            tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry::sdk::trace::Tracer>,
-            EnvFilter,
-            S,
-        >,
+        Filtered<tracing_opentelemetry::OpenTelemetryLayer<S, SpanModifyingTracer>, EnvFilter, S>,
         Error,
     >
     where
@@ -81,15 +83,29 @@ impl TracingOptions {
             .into_iter(),
         );
 
-        let exporter = opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_endpoint(&self.endpoint);
+        // the following logic is based on `opentelemetry_otlp::span::build_batch_with_exporter`
+        // but also injecting ResourceModifyingSpanProcessor around the BatchSpanProcessor
 
-        let tracer = opentelemetry_otlp::new_pipeline()
-            .tracing()
-            .with_trace_config(opentelemetry::sdk::trace::config().with_resource(resource))
-            .with_exporter(exporter)
-            .install_batch(opentelemetry::runtime::Tokio)?;
+        let exporter = SpanExporterBuilder::from(
+            opentelemetry_otlp::new_exporter()
+                .tonic()
+                .with_endpoint(&self.endpoint),
+        )
+        .build_span_exporter()?;
+
+        let provider = opentelemetry::sdk::trace::TracerProvider::builder()
+            .with_span_processor(ResourceModifyingSpanProcessor::new(
+                BatchSpanProcessor::builder(exporter, opentelemetry::runtime::Tokio).build(),
+            ))
+            .with_config(opentelemetry::sdk::trace::config().with_resource(resource))
+            .build();
+
+        let tracer = SpanModifyingTracer::new(provider.versioned_tracer(
+            "opentelemetry-otlp",
+            Some(env!("CARGO_PKG_VERSION")),
+            None,
+        ));
+        let _ = opentelemetry::global::set_tracer_provider(provider);
 
         Ok(tracing_opentelemetry::layer()
             .with_location(false)
