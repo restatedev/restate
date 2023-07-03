@@ -214,7 +214,7 @@ impl<JR, SR, EE, SER> Service<JR, SR, EE, SER> {
                 retry_timers: Default::default(),
                 quota: quota::InvokerConcurrencyQuota::new(concurrency_limit),
                 status_store: Default::default(),
-                ism_manager: Default::default(),
+                invocation_state_machine_manager: Default::default(),
             },
         }
     }
@@ -305,7 +305,7 @@ struct ServiceInner<ServiceEndpointRegistry, InvocationTaskRunner> {
     retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
     quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
-    ism_manager: state_machine_manager::InvocationStateMachineManager,
+    invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager,
 }
 
 impl<SER, ITR> ServiceInner<SER, ITR>
@@ -419,7 +419,8 @@ where
         partition: PartitionLeaderEpoch,
         sender: mpsc::Sender<Effect>,
     ) {
-        self.ism_manager.register_partition(partition, sender);
+        self.invocation_state_machine_manager
+            .register_partition(partition, sender);
     }
 
     #[instrument(
@@ -437,9 +438,11 @@ where
         service_invocation_id: ServiceInvocationId,
         journal: InvokeInputJournal,
     ) {
-        debug_assert!(self.ism_manager.has_partition(partition));
         debug_assert!(self
-            .ism_manager
+            .invocation_state_machine_manager
+            .has_partition(partition));
+        debug_assert!(self
+            .invocation_state_machine_manager
             .resolve_invocation(partition, &service_invocation_id)
             .is_none());
 
@@ -516,7 +519,7 @@ where
         entry: EnrichedRawEntry,
     ) {
         if let Some((output_tx, ism)) = self
-            .ism_manager
+            .invocation_state_machine_manager
             .resolve_invocation(partition, &service_invocation_id)
         {
             ism.notify_new_entry(entry_index);
@@ -552,7 +555,7 @@ where
         completion: Completion,
     ) {
         if let Some((_, ism)) = self
-            .ism_manager
+            .invocation_state_machine_manager
             .resolve_invocation(partition, &service_invocation_id)
         {
             trace!(
@@ -581,7 +584,7 @@ where
         service_invocation_id: ServiceInvocationId,
     ) {
         if let Some((sender, _)) = self
-            .ism_manager
+            .invocation_state_machine_manager
             .remove_invocation(partition, &service_invocation_id)
         {
             trace!("Invocation task closed correctly");
@@ -615,7 +618,7 @@ where
         entry_indexes: HashSet<EntryIndex>,
     ) {
         if let Some((sender, _)) = self
-            .ism_manager
+            .invocation_state_machine_manager
             .remove_invocation(partition, &service_invocation_id)
         {
             trace!("Suspending invocation");
@@ -651,7 +654,7 @@ where
         error: impl InvokerError + CodedError + Send + Sync + 'static,
     ) {
         if let Some((_, ism)) = self
-            .ism_manager
+            .invocation_state_machine_manager
             .remove_invocation(partition, &service_invocation_id)
         {
             self.handle_error_event(partition, service_invocation_id, error, ism)
@@ -677,7 +680,7 @@ where
         service_invocation_id: ServiceInvocationId,
     ) {
         if let Some((_, mut ism)) = self
-            .ism_manager
+            .invocation_state_machine_manager
             .remove_invocation(partition, &service_invocation_id)
         {
             trace!(
@@ -706,7 +709,10 @@ where
         )
     )]
     fn handle_abort_partition(&mut self, partition: PartitionLeaderEpoch) {
-        if let Some(invocation_state_machines) = self.ism_manager.remove_partition(partition) {
+        if let Some(invocation_state_machines) = self
+            .invocation_state_machine_manager
+            .remove_partition(partition)
+        {
             for (sid, mut ism) in invocation_state_machines.into_iter() {
                 trace!(
                     rpc.service = %sid.service_id.service_name,
@@ -727,7 +733,9 @@ where
 
     #[instrument(level = "trace", skip_all)]
     fn handle_shutdown(&mut self) {
-        let partitions = self.ism_manager.registered_partitions();
+        let partitions = self
+            .invocation_state_machine_manager
+            .registered_partitions();
         for partition in partitions {
             self.handle_abort_partition(partition);
         }
@@ -753,8 +761,11 @@ where
                 );
                 self.status_store
                     .on_failure(partition, service_invocation_id.clone(), &error);
-                self.ism_manager
-                    .register_invocation(partition, service_invocation_id.clone(), ism);
+                self.invocation_state_machine_manager.register_invocation(
+                    partition,
+                    service_invocation_id.clone(),
+                    ism,
+                );
                 self.retry_timers.sleep_until(
                     SystemTime::now() + next_retry_timer_duration,
                     (partition, service_invocation_id),
@@ -765,7 +776,7 @@ where
                 self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &service_invocation_id);
                 let _ = self
-                    .ism_manager
+                    .invocation_state_machine_manager
                     .resolve_partition_sender(partition)
                     .expect("Partition should be registered")
                     .send(Effect {
@@ -841,8 +852,11 @@ where
             "Invocation task started state. Invocation state: {:?}",
             ism.invocation_state_debug()
         );
-        self.ism_manager
-            .register_invocation(partition, service_invocation_id, ism);
+        self.invocation_state_machine_manager.register_invocation(
+            partition,
+            service_invocation_id,
+            ism,
+        );
     }
 
     async fn handle_retry_event<FN>(
@@ -854,7 +868,7 @@ where
         FN: FnOnce(&mut InvocationStateMachine),
     {
         if let Some((_, mut ism)) = self
-            .ism_manager
+            .invocation_state_machine_manager
             .remove_invocation(partition, &service_invocation_id)
         {
             f(&mut ism);
@@ -874,8 +888,11 @@ where
                     ism.invocation_state_debug()
                 );
                 // Not ready for retrying yet
-                self.ism_manager
-                    .register_invocation(partition, service_invocation_id, ism);
+                self.invocation_state_machine_manager.register_invocation(
+                    partition,
+                    service_invocation_id,
+                    ism,
+                );
             }
         } else {
             // If no state machine is registered, the PP will send a new invoke
@@ -922,7 +939,7 @@ mod tests {
                 retry_timers: Default::default(),
                 quota: InvokerConcurrencyQuota::new(concurrency_limit),
                 status_store: Default::default(),
-                ism_manager: Default::default(),
+                invocation_state_machine_manager: Default::default(),
             };
             (input_tx, service_inner)
         }
