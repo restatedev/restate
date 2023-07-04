@@ -49,8 +49,3 @@ thiserror = { workspace = true }
 codederror = { workspace = true }
 restate_errors = { workspace = true, features = ["include_doc"] }
 uuid = { workspace = true }
-
-# TODO remove this once we have meta-registry
-#  used for reflections registry
-#  see https://github.com/restatedev/restate/issues/43
-restate_ingress_grpc = { workspace = true }

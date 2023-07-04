@@ -78,8 +78,6 @@ restate_network = { path = "src/network" }
 restate_schema_api = { path = "src/schema_api" }
 restate_schema_impl = { path = "src/schema_impl" }
 restate_serde_util = { path = "src/serde_util" }
-restate_service_key_extractor = { path = "src/service_key_extractor" }
-restate_service_metadata = { path = "src/service_metadata" }
 restate_service_protocol = { path = "src/service_protocol" }
 restate_storage_api = {path = "src/storage_api"}
 restate_storage_grpc = {path = "src/storage_grpc"}
