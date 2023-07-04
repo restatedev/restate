@@ -22,7 +22,7 @@ futures = { workspace = true }
 hex = "0.4.3"
 prost = { workspace = true }
 prost-types = { workspace = true }
-prost-reflect = { workspace = true, features = ["derive", "serde", "text-format"] }
+prost-reflect = { workspace = true, features = ["derive", "serde"] }
 restate_tracing_instrumentation = { workspace = true }
 rustyline = "11.0"
 serde = { workspace = true, features = ["derive"] }
