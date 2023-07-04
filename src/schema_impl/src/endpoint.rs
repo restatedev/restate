@@ -1,9 +1,8 @@
 use super::Schemas;
 
 use crate::schemas_impl::ServiceLocation;
-use restate_schema_api::endpoint::EndpointMetadataResolver;
+use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver};
 use restate_types::identifiers::EndpointId;
-use restate_types::service_endpoint::EndpointMetadata;
 
 impl EndpointMetadataResolver for Schemas {
     fn resolve_latest_endpoint_for_service(

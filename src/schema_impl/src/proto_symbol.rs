@@ -51,10 +51,10 @@ impl Default for ProtoSymbols {
             .register_new_services(
                 "self_ingress".to_string(),
                 vec![
-                    crate::pb::REFLECTION_SERVICE_NAME.to_string(),
-                    crate::pb::INGRESS_SERVICE_NAME.to_string(),
+                    restate_schema_api::pb::REFLECTION_SERVICE_NAME.to_string(),
+                    restate_schema_api::pb::INGRESS_SERVICE_NAME.to_string(),
                 ],
-                crate::pb::DEV_RESTATE_DESCRIPTOR_POOL.clone(),
+                restate_schema_api::pb::DESCRIPTOR_POOL.clone(),
             )
             .expect("Registering self_ingress in the reflections must not fail");
 

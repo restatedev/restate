@@ -1,8 +1,8 @@
-use crate::schemas_impl::SchemasInner;
 use arc_swap::ArcSwap;
 use prost_reflect::DescriptorPool;
-use restate_types::service_endpoint::EndpointMetadata;
-use std::collections::{BTreeMap, HashMap};
+use restate_schema_api::endpoint::EndpointMetadata;
+use restate_schema_api::key::ServiceInstanceType;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 mod endpoint;
@@ -10,16 +10,16 @@ mod json;
 mod json_key_conversion;
 mod key_expansion;
 mod key_extraction;
-mod pb;
 mod proto_symbol;
+mod service;
 
-#[derive(Debug, Clone)]
-pub struct ServiceMetadata {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceRegistrationRequest {
     name: String,
     instance_type: ServiceInstanceType,
 }
 
-impl ServiceMetadata {
+impl ServiceRegistrationRequest {
     pub fn new(name: String, instance_type: ServiceInstanceType) -> Self {
         Self {
             name,
@@ -34,36 +34,6 @@ impl ServiceMetadata {
     pub fn instance_type(&self) -> &ServiceInstanceType {
         &self.instance_type
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServiceInstanceType {
-    Keyed {
-        /// The `key_structure` of the key field. Every method in a keyed service MUST have the same key type,
-        /// hence the key structure is the same.
-        key_structure: KeyStructure,
-        /// Each method request message might represent the key with a different field number. E.g.
-        ///
-        /// ```protobuf
-        /// message SayHelloRequest {
-        ///   Person person = 1 [(dev.restate.ext.field) = KEY];
-        /// }
-        ///
-        /// message SayByeRequest {
-        ///   Person person = 2 [(dev.restate.ext.field) = KEY];
-        /// }
-        /// ```
-        service_methods_key_field_root_number: HashMap<String, u32>,
-    },
-    Unkeyed,
-    Singleton,
-}
-
-/// This structure provides the directives to the key parser to parse nested messages.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KeyStructure {
-    Scalar,
-    Nested(BTreeMap<u32, KeyStructure>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -82,10 +52,10 @@ impl Schemas {
     pub fn register_new_endpoint(
         &self,
         endpoint_metadata: EndpointMetadata,
-        services: Vec<ServiceMetadata>,
+        services: Vec<ServiceRegistrationRequest>,
         descriptor_pool: DescriptorPool,
     ) -> Result<(), RegistrationError> {
-        let mut schemas_inner = SchemasInner::clone(self.0.load().as_ref());
+        let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
         schemas_inner.register_new_endpoint(endpoint_metadata, services, descriptor_pool)?;
         self.0.store(Arc::new(schemas_inner));
 
@@ -98,8 +68,8 @@ pub(crate) mod schemas_impl {
 
     use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
     use proto_symbol::ProtoSymbols;
+    use restate_schema_api::pb;
     use restate_types::identifiers::EndpointId;
-    use restate_types::service_endpoint::EndpointMetadata;
     use std::collections::HashMap;
     use tracing::{debug, info};
 
@@ -191,7 +161,7 @@ pub(crate) mod schemas_impl {
             inner.services.insert(
                 pb::REFLECTION_SERVICE_NAME.to_string(),
                 ServiceSchemas::new_ingress_only(
-                    pb::DEV_RESTATE_DESCRIPTOR_POOL
+                    pb::DESCRIPTOR_POOL
                         .get_service_by_name(pb::REFLECTION_SERVICE_NAME)
                         .expect(
                             "The built-in descriptor pool should contain the reflection service",
@@ -201,7 +171,7 @@ pub(crate) mod schemas_impl {
             inner.services.insert(
                 pb::INGRESS_SERVICE_NAME.to_string(),
                 ServiceSchemas::new_ingress_only(
-                    pb::DEV_RESTATE_DESCRIPTOR_POOL
+                    pb::DESCRIPTOR_POOL
                         .get_service_by_name(pb::INGRESS_SERVICE_NAME)
                         .expect("The built-in descriptor pool should contain the ingress service"),
                 ),
@@ -215,7 +185,7 @@ pub(crate) mod schemas_impl {
         pub(crate) fn register_new_endpoint(
             &mut self,
             endpoint_metadata: EndpointMetadata,
-            services: Vec<ServiceMetadata>,
+            services: Vec<ServiceRegistrationRequest>,
             descriptor_pool: DescriptorPool,
         ) -> Result<(), RegistrationError> {
             let endpoint_id = endpoint_metadata.id();
@@ -285,6 +255,25 @@ pub(crate) mod schemas_impl {
             }
 
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl Schemas {
+        pub(crate) fn add_mock_service(
+            &self,
+            service_name: &str,
+            service_schemas: schemas_impl::ServiceSchemas,
+        ) {
+            let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
+            schemas_inner
+                .services
+                .insert(service_name.to_string(), service_schemas);
+            self.0.store(Arc::new(schemas_inner));
         }
     }
 }

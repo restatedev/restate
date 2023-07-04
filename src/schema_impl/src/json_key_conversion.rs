@@ -19,7 +19,7 @@ impl RestateKeyConverter for Schemas {
                 .next()
                 .expect("Must have at least one method. This should have been checked in service discovery. This is a bug, please contact the developers");
 
-            service_schemas.instance_type.key_to_json(method_desc.clone(), key)
+            key_to_json(&service_schemas.instance_type, method_desc.clone(), key)
         }).ok_or(Error::NotFound)?
     }
 
@@ -30,83 +30,99 @@ impl RestateKeyConverter for Schemas {
                 .next()
                 .expect("Must have at least one method. This should have been checked in service discovery. This is a bug, please contact the developers");
 
-            service_schemas.instance_type.json_to_key(method_desc.clone(), key)
+            json_to_key(&service_schemas.instance_type,method_desc.clone(), key)
         }).ok_or(Error::NotFound)?
     }
 }
 
-impl ServiceInstanceType {
-    fn key_to_json(&self, method_descriptor: MethodDescriptor, key: Bytes) -> Result<Value, Error> {
-        Ok(match self {
-            keyed @ ServiceInstanceType::Keyed {
-                service_methods_key_field_root_number,
-                ..
-            } => {
-                let key_field = method_descriptor
-                    .input()
-                    .get_field(
-                        *service_methods_key_field_root_number
-                            .get(method_descriptor.name())
-                            .expect("Method must exist in the descriptor"),
-                    )
-                    .expect("Method must exist in the descriptor");
-                let extracted_key =
-                    keyed.expand(method_descriptor.name(), method_descriptor.input(), key)?;
+fn key_to_json(
+    service_instance_type: &ServiceInstanceType,
+    method_descriptor: MethodDescriptor,
+    key: Bytes,
+) -> Result<Value, Error> {
+    Ok(match service_instance_type {
+        keyed @ ServiceInstanceType::Keyed {
+            service_methods_key_field_root_number,
+            ..
+        } => {
+            let key_field = method_descriptor
+                .input()
+                .get_field(
+                    *service_methods_key_field_root_number
+                        .get(method_descriptor.name())
+                        .expect("Method must exist in the descriptor"),
+                )
+                .expect("Method must exist in the descriptor");
+            let extracted_key = key_expansion::expand_impls::expand(
+                keyed,
+                method_descriptor.name(),
+                method_descriptor.input(),
+                key,
+            )?;
 
-                let json_message = extracted_key.serialize(serde_json::value::Serializer)
-                    .expect("Protobuf -> JSON should never fail! This is a bug, please contact the developers");
+            let json_message = extracted_key
+                .serialize(serde_json::value::Serializer)
+                .expect(
+                "Protobuf -> JSON should never fail! This is a bug, please contact the developers",
+            );
 
-                match json_message {
+            match json_message {
                     Value::Object(mut m) => {
                         m.remove(key_field.json_name()).expect("The json serialized message must contain the key field")
                     },
                     _ => panic!("This must be a map because the input schema of the protobuf conversion is always a message! This is a bug, please contact the developers")
                 }
-            }
-            ServiceInstanceType::Unkeyed => Value::String(
-                uuid::Builder::from_slice(&key)
-                    .unwrap()
-                    .into_uuid()
-                    .to_string(),
-            ),
-            ServiceInstanceType::Singleton => Value::Object(Map::new()),
-        })
-    }
-
-    fn json_to_key(&self, method_descriptor: MethodDescriptor, key: Value) -> Result<Bytes, Error> {
-        match self {
-            keyed @ ServiceInstanceType::Keyed {
-                service_methods_key_field_root_number,
-                ..
-            } => {
-                let key_field = method_descriptor
-                    .input()
-                    .get_field(
-                        *service_methods_key_field_root_number
-                            .get(method_descriptor.name())
-                            .expect("Method must exist in the parsed service methods"),
-                    )
-                    .expect("Input key field must exist in the descriptor");
-
-                let mut input_map = serde_json::Map::new();
-                input_map.insert(key_field.json_name().to_string(), key);
-
-                let key_message = DynamicMessage::deserialize(
-                    method_descriptor.input(),
-                    Value::Object(input_map).into_deserializer(),
-                )?;
-
-                Ok(keyed.extract(method_descriptor.name(), key_message.encode_to_vec().into())?)
-            }
-            ServiceInstanceType::Unkeyed => {
-                let parse_result: Uuid =
-                    SerdeableUuid::deserialize(key.into_deserializer())?.into();
-
-                Ok(parse_result.as_bytes().to_vec().into())
-            }
-            ServiceInstanceType::Singleton if key.is_null() => Ok(Bytes::default()),
-            ServiceInstanceType::Singleton => Err(Error::UnexpectedNonNullSingletonKey),
         }
+        ServiceInstanceType::Unkeyed => Value::String(
+            uuid::Builder::from_slice(&key)
+                .unwrap()
+                .into_uuid()
+                .to_string(),
+        ),
+        ServiceInstanceType::Singleton => Value::Object(Map::new()),
+    })
+}
+
+fn json_to_key(
+    service_instance_type: &ServiceInstanceType,
+    method_descriptor: MethodDescriptor,
+    key: Value,
+) -> Result<Bytes, Error> {
+    match service_instance_type {
+        keyed @ ServiceInstanceType::Keyed {
+            service_methods_key_field_root_number,
+            ..
+        } => {
+            let key_field = method_descriptor
+                .input()
+                .get_field(
+                    *service_methods_key_field_root_number
+                        .get(method_descriptor.name())
+                        .expect("Method must exist in the parsed service methods"),
+                )
+                .expect("Input key field must exist in the descriptor");
+
+            let mut input_map = serde_json::Map::new();
+            input_map.insert(key_field.json_name().to_string(), key);
+
+            let key_message = DynamicMessage::deserialize(
+                method_descriptor.input(),
+                Value::Object(input_map).into_deserializer(),
+            )?;
+
+            Ok(key_extraction::extract_impls::extract(
+                keyed,
+                method_descriptor.name(),
+                key_message.encode_to_vec().into(),
+            )?)
+        }
+        ServiceInstanceType::Unkeyed => {
+            let parse_result: Uuid = SerdeableUuid::deserialize(key.into_deserializer())?.into();
+
+            Ok(parse_result.as_bytes().to_vec().into())
+        }
+        ServiceInstanceType::Singleton if key.is_null() => Ok(Bytes::default()),
+        ServiceInstanceType::Singleton => Err(Error::UnexpectedNonNullSingletonKey),
     }
 }
 
@@ -114,9 +130,12 @@ impl ServiceInstanceType {
 mod tests {
     use super::*;
 
+    use key_extraction::extract_impls::extract;
     use prost::Message;
     use prost_reflect::{DescriptorPool, MessageDescriptor, ServiceDescriptor};
+    use restate_schema_api::key::KeyStructure;
     use serde::Serialize;
+    use std::collections::{BTreeMap, HashMap};
     use uuid::Uuid;
 
     mod pb {
@@ -206,7 +225,7 @@ mod tests {
                 use super::*;
 
                 #[test]
-                fn key_to_json() {
+                fn test_key_to_json() {
                     let test_descriptor_message = test_descriptor_message();
                     let key_field = test_descriptor_message
                         .get_field_by_name(stringify!($field_name))
@@ -231,21 +250,27 @@ mod tests {
                         .clone();
 
                     // Extract the restate key
-                    let restate_key = service_instance_type
-                        .extract(METHOD_NAME, test_message.encode_to_vec().into())
-                        .expect("successful key extraction");
+                    let restate_key = extract(
+                        &service_instance_type,
+                        METHOD_NAME,
+                        test_message.encode_to_vec().into(),
+                    )
+                    .expect("successful key extraction");
 
                     // Now convert the key to json
-                    let actual_json_key = service_instance_type
-                        .key_to_json(test_method_descriptor(), restate_key)
-                        .unwrap();
+                    let actual_json_key = key_to_json(
+                        &service_instance_type,
+                        test_method_descriptor(),
+                        restate_key,
+                    )
+                    .unwrap();
 
                     // Assert expanded field is equal to the one from the original message
                     assert_eq!(actual_json_key, expected_json_key);
                 }
 
                 #[test]
-                fn json_to_key() {
+                fn test_json_to_key() {
                     let test_descriptor_message = test_descriptor_message();
                     let key_field = test_descriptor_message
                         .get_field_by_name(stringify!($field_name))
@@ -258,9 +283,12 @@ mod tests {
                         mock_keyed_service_instance_type($key_structure, field_number);
 
                     // Build the expected restate key
-                    let expected_restate_key = service_instance_type
-                        .extract(METHOD_NAME, test_message.encode_to_vec().into())
-                        .expect("successful key extraction");
+                    let expected_restate_key = extract(
+                        &service_instance_type,
+                        METHOD_NAME,
+                        test_message.encode_to_vec().into(),
+                    )
+                    .expect("successful key extraction");
 
                     // Convert the message to json and get the key field
                     let mut dynamic_test_message = DynamicMessage::new(test_descriptor_message);
@@ -275,9 +303,12 @@ mod tests {
                         .clone();
 
                     // Now convert the key from json
-                    let actual_restate_key = service_instance_type
-                        .json_to_key(test_method_descriptor(), input_json_key)
-                        .unwrap();
+                    let actual_restate_key = json_to_key(
+                        &service_instance_type,
+                        test_method_descriptor(),
+                        input_json_key,
+                    )
+                    .unwrap();
 
                     // Assert extracted field is equal to the one from the original message
                     assert_eq!(actual_restate_key, expected_restate_key);
@@ -323,14 +354,16 @@ mod tests {
         let service_instance_type = ServiceInstanceType::Unkeyed;
 
         // Extract the restate key
-        let restate_key = service_instance_type
-            .extract(METHOD_NAME, Bytes::new())
+        let restate_key = extract(&service_instance_type, METHOD_NAME, Bytes::new())
             .expect("successful key extraction");
 
         // Now convert the key to json
-        let extracted_json_key = service_instance_type
-            .key_to_json(test_method_descriptor(), restate_key)
-            .unwrap();
+        let extracted_json_key = key_to_json(
+            &service_instance_type,
+            test_method_descriptor(),
+            restate_key,
+        )
+        .unwrap();
 
         // Parsing uuid as string should work fine
         extracted_json_key
@@ -345,14 +378,16 @@ mod tests {
         let service_instance_type = ServiceInstanceType::Singleton;
 
         // Extract the restate key
-        let restate_key = service_instance_type
-            .extract(METHOD_NAME, Bytes::new())
+        let restate_key = extract(&service_instance_type, METHOD_NAME, Bytes::new())
             .expect("successful key extraction");
 
         // Now convert the key to json
-        let actual_json_key = service_instance_type
-            .key_to_json(test_method_descriptor(), restate_key)
-            .unwrap();
+        let actual_json_key = key_to_json(
+            &service_instance_type,
+            test_method_descriptor(),
+            restate_key,
+        )
+        .unwrap();
 
         // Should be an empty object
         assert!(actual_json_key.as_object().unwrap().is_empty());
@@ -363,20 +398,19 @@ mod tests {
         let service_instance_type = ServiceInstanceType::Unkeyed;
 
         // Extract the restate key
-        let expected_restate_key = service_instance_type
-            .extract(METHOD_NAME, Bytes::new())
+        let expected_restate_key = extract(&service_instance_type, METHOD_NAME, Bytes::new())
             .expect("successful key extraction");
 
         // Parse this as uuid
         let uuid = Uuid::from_slice(&expected_restate_key).unwrap();
 
         // Now convert the key to json
-        let actual_restate_key = service_instance_type
-            .json_to_key(
-                test_method_descriptor(),
-                Value::String(uuid.as_simple().to_string()),
-            )
-            .unwrap();
+        let actual_restate_key = json_to_key(
+            &service_instance_type,
+            test_method_descriptor(),
+            Value::String(uuid.as_simple().to_string()),
+        )
+        .unwrap();
 
         assert_eq!(actual_restate_key, expected_restate_key);
     }
@@ -386,9 +420,12 @@ mod tests {
         let service_instance_type = ServiceInstanceType::Singleton;
 
         // Now convert the key to json
-        let actual_json_key = service_instance_type
-            .json_to_key(test_method_descriptor(), Value::Null)
-            .unwrap();
+        let actual_json_key = json_to_key(
+            &service_instance_type,
+            test_method_descriptor(),
+            Value::Null,
+        )
+        .unwrap();
 
         // Should be an empty object
         assert!(actual_json_key.is_empty());
