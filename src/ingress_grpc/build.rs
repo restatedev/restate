@@ -9,17 +9,5 @@ fn main() -> std::io::Result<()> {
                 .join("file_descriptor_set.bin"),
         )
         .service_generator(tonic_build::configure().service_generator())
-        .compile_protos(
-            &[
-                "proto/grpc/reflection/v1alpha/reflection.proto",
-                "proto/dev/restate/services.proto",
-                "tests/proto/greeter.proto",
-            ],
-            &[
-                "proto/grpc/reflection/v1alpha",
-                "proto/dev/restate",
-                "tests/proto",
-            ],
-        )?;
-    Ok(())
+        .compile_protos(&["tests/proto/greeter.proto"], &["tests/proto"])
 }

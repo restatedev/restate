@@ -15,7 +15,7 @@ options_schema = ["dep:schemars"]
 # Restate
 restate_types = { workspace = true, features = ["tonic_conversions"] }
 restate_errors = { workspace = true }
-restate_service_metadata = { workspace = true }
+restate_schema_api = { workspace = true, features = ["json_conversion", "key_extraction" ,"proto_symbol", "pb"]}
 
 # Encoding/Decoding
 bytes = { workspace = true }
@@ -37,7 +37,7 @@ http = { workspace = true }
 http-body = "0.4"
 hyper = { workspace = true, features = ["http1", "http2", "server", "tcp", "stream", "runtime"] }
 tokio = { workspace = true }
-tonic = { workspace = true, features = ["codegen", "prost"] }
+tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
 tonic-web = "0.9.2"
 
 # Tracing
@@ -62,6 +62,7 @@ restate_test_util = { workspace = true }
 tonic = { workspace = true, features = ["default"] }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
+restate_schema_impl = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
