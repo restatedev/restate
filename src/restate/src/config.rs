@@ -5,6 +5,23 @@ use serde_with::serde_as;
 use std::path::Path;
 use std::time::Duration;
 
+pub use crate::rt::{
+    Options as TokioOptions, OptionsBuilder as TokioOptionsBuilder,
+    OptionsBuilderError as TokioOptionsBuilderError,
+};
+pub use restate_meta::{
+    Options as MetaOptions, OptionsBuilder as MetaOptionsBuilder,
+    OptionsBuilderError as MetaOptionsBuilderError,
+};
+pub use restate_worker::{
+    IngressOptions, IngressOptionsBuilder, IngressOptionsBuilderError, InvokerOptions,
+    InvokerOptionsBuilder, InvokerOptionsBuilderError, Options as WorkerOptions,
+    OptionsBuilder as WorkerOptionsBuilder, OptionsBuilderError as WorkerOptionsBuilderError,
+    RocksdbOptions, RocksdbOptionsBuilder, RocksdbOptionsBuilderError, StorageGrpcOptions,
+    StorageGrpcOptionsBuilder, StorageGrpcOptionsBuilderError, TimerOptions, TimerOptionsBuilder,
+    TimerOptionsBuilderError,
+};
+
 /// # Restate configuration file
 ///
 /// Configuration for the Restate single binary deployment.
@@ -16,8 +33,9 @@ use std::time::Duration;
 /// prefixing them with `RESTATE_` and separating nested structs with `__` (double underscore).
 /// For example, to configure `meta.rest_address`, the corresponding environment variable is `RESTATE_META__REST_ADDRESS`.
 #[serde_as]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[builder(default)]
 pub struct Configuration {
     /// # Shutdown grace timeout
     ///
@@ -38,7 +56,7 @@ pub struct Configuration {
     #[cfg_attr(feature = "options_schema", schemars(default))]
     pub meta: restate_meta::Options,
     #[cfg_attr(feature = "options_schema", schemars(default))]
-    pub worker: restate_worker::Options,
+    pub worker: WorkerOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
     pub tokio_runtime: crate::rt::Options,
 }

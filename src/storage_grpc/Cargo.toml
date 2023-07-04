@@ -14,6 +14,7 @@ options_schema = ["dep:schemars"]
 [dependencies]
 bytes = { workspace = true }
 codederror = { workspace = true }
+derive_builder = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 prost = { workspace = true }

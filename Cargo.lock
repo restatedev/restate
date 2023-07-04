@@ -1522,6 +1522,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive_builder"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d67778784b508018359cbc8696edb3db78160bab2c2a28ba7f56ef6932997f8"
+dependencies = [
+ "derive_builder_macro",
+]
+
+[[package]]
+name = "derive_builder_core"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c11bdc11a0c47bc7d37d582b5285da6849c96681023680b906673c5707af7b0f"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "derive_builder_macro"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebcda35c7a396850a55ffeac740804b40ffec779b98fffbb1738f4033f0ee79e"
+dependencies = [
+ "derive_builder_core",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "diff"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3626,6 +3657,7 @@ version = "0.1.5"
 dependencies = [
  "clap 4.2.1",
  "codederror",
+ "derive_builder",
  "drain",
  "figment",
  "futures-util",
@@ -3763,6 +3795,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "codederror",
+ "derive_builder",
  "drain",
  "futures",
  "http",
@@ -3804,6 +3837,7 @@ dependencies = [
  "bytes",
  "bytes-utils",
  "codederror",
+ "derive_builder",
  "drain",
  "futures",
  "h2",
@@ -3843,6 +3877,7 @@ version = "0.1.5"
 dependencies = [
  "axum",
  "codederror",
+ "derive_builder",
  "drain",
  "futures",
  "hyper",
@@ -3980,6 +4015,7 @@ version = "0.1.5"
 dependencies = [
  "bytes",
  "codederror",
+ "derive_builder",
  "drain",
  "futures",
  "prost",
@@ -4027,6 +4063,7 @@ dependencies = [
  "bytestring",
  "codederror",
  "criterion",
+ "derive_builder",
  "futures",
  "futures-util",
  "num-bigint",
@@ -4060,6 +4097,7 @@ name = "restate_timer"
 version = "0.1.5"
 dependencies = [
  "ahash",
+ "derive_builder",
  "drain",
  "futures-util",
  "pin-project",
@@ -4088,6 +4126,7 @@ name = "restate_tracing_instrumentation"
 version = "0.1.5"
 dependencies = [
  "console-subscriber",
+ "derive_builder",
  "nu-ansi-term",
  "opentelemetry",
  "opentelemetry-contrib",
@@ -4135,6 +4174,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "codederror",
+ "derive_builder",
  "drain",
  "futures",
  "opentelemetry_api",

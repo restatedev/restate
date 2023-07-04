@@ -6,8 +6,9 @@ use tokio::runtime::{Builder, Runtime};
 ///
 /// Configuration for the Tokio runtime used by Restate.
 #[serde_as]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[builder(default)]
 pub struct Options {
     /// # Worker threads
     ///

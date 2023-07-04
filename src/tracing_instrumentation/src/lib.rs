@@ -35,9 +35,9 @@ fn default_filter() -> String {
 /// Configuration for the [OTLP exporter](https://opentelemetry.io/docs/specs/otel/protocol/exporter/) which can export to all OTLP compatible systems (e.g. Jaeger).
 ///
 /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-struct TracingOptions {
+pub struct TracingOptions {
     /// # Endpoint
     ///
     /// Specify the tracing endpoint to send traces to.
@@ -107,9 +107,9 @@ impl TracingOptions {
 /// To inspect the traces, open the Jaeger UI and use the Upload JSON feature to load and inspect them.
 ///
 /// All spans will be sampled.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-struct JaegerFileOptions {
+pub struct JaegerFileOptions {
     /// # Path
     ///
     /// Specify the path where all the traces will be exported. Each trace file will start with the `trace` prefix.
@@ -152,7 +152,7 @@ impl JaegerFileOptions {
 }
 
 /// # Log format
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 pub enum LogFormat {
     /// # Pretty
@@ -171,9 +171,10 @@ pub enum LogFormat {
 }
 
 /// # Log options
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-struct LogOptions {
+#[builder(default)]
+pub struct LogOptions {
     /// # Filter
     ///
     /// Log filter configuration. Can be overridden by the `RUST_LOG` environment variable.
@@ -248,7 +249,7 @@ impl LogOptions {
 }
 
 /// # Observability options
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "ObservabilityOptions"))]
 pub struct Options {

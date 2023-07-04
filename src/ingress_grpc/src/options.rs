@@ -115,9 +115,10 @@ impl JsonOptions {
 }
 
 /// # Ingress options
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "IngressOptions"))]
+#[builder(default)]
 pub struct Options {
     /// # Bind address
     ///

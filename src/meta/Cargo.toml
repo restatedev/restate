@@ -42,6 +42,7 @@ restate_worker_api = { workspace = true }
 prost-reflect = { workspace = true }
 
 # Others
+derive_builder = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 codederror = { workspace = true }

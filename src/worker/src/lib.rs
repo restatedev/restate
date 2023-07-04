@@ -39,6 +39,27 @@ mod service_invocation_factory;
 mod services;
 mod util;
 
+pub use restate_ingress_grpc::{
+    Options as IngressOptions, OptionsBuilder as IngressOptionsBuilder,
+    OptionsBuilderError as IngressOptionsBuilderError,
+};
+pub use restate_invoker::{
+    Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
+    OptionsBuilderError as InvokerOptionsBuilderError,
+};
+pub use restate_storage_grpc::{
+    Options as StorageGrpcOptions, OptionsBuilder as StorageGrpcOptionsBuilder,
+    OptionsBuilderError as StorageGrpcOptionsBuilderError,
+};
+pub use restate_storage_rocksdb::{
+    Options as RocksdbOptions, OptionsBuilder as RocksdbOptionsBuilder,
+    OptionsBuilderError as RocksdbOptionsBuilderError,
+};
+pub use restate_timer::{
+    Options as TimerOptions, OptionsBuilder as TimerOptionsBuilder,
+    OptionsBuilderError as TimerOptionsBuilderError,
+};
+
 type PartitionProcessorCommand = AckCommand;
 type ConsensusCommand = restate_consensus::Command<PartitionProcessorCommand>;
 type ConsensusMsg = PeerTarget<PartitionProcessorCommand>;
@@ -49,9 +70,10 @@ type PartitionProcessor = partition::PartitionProcessor<
 >;
 
 /// # Worker options
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "WorkerOptions"))]
+#[builder(default)]
 pub struct Options {
     /// # Bounded channel size
     #[cfg_attr(
@@ -60,15 +82,15 @@ pub struct Options {
     )]
     channel_size: usize,
     #[cfg_attr(feature = "options_schema", schemars(default))]
-    timers: restate_timer::Options,
+    timers: TimerOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
-    storage_grpc: restate_storage_grpc::Options,
+    storage_grpc: StorageGrpcOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
-    storage_rocksdb: restate_storage_rocksdb::Options,
+    storage_rocksdb: RocksdbOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
-    ingress_grpc: restate_ingress_grpc::Options,
+    ingress_grpc: IngressOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
-    invoker: restate_invoker::Options,
+    invoker: InvokerOptions,
     /// # Partitions
     ///
     /// Number of partitions to be used to process messages.

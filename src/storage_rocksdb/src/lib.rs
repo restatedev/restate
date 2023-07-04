@@ -79,9 +79,10 @@ pub enum TableKind {
 }
 
 /// # Storage options
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "StorageOptions"))]
+#[builder(default)]
 pub struct Options {
     /// # Storage path
     ///

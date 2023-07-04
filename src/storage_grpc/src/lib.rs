@@ -10,7 +10,7 @@ use tonic::{Request, Response, Status};
 use KeyWrapper::{Dedup, Fsm, Inbox, Journal, Outbox, State};
 
 use crate::scanner_proto::KeyWrapper;
-pub use options::Options;
+pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 use restate_storage_api::{GetStream, Storage, StorageError};
 use restate_storage_rocksdb::keys::TableKey;
 use restate_storage_rocksdb::{

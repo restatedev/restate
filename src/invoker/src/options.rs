@@ -12,9 +12,10 @@ use serde_with::serde_as;
 
 /// # Invoker options
 #[serde_as]
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "InvokerOptions"))]
+#[builder(default)]
 pub struct Options {
     /// # Retry policy
     ///

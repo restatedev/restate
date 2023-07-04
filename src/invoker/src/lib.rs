@@ -11,7 +11,7 @@ pub use effects::*;
 pub use entry_enricher::EntryEnricher;
 pub use handle::*;
 pub use journal_reader::JournalReader;
-pub use options::Options;
+pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use service::*;
 pub use state_reader::{EagerState, StateReader};
 pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};

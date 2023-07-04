@@ -8,7 +8,7 @@ use tokio_stream::Stream;
 mod options;
 mod service;
 
-pub use options::Options;
+pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use service::clock::{Clock, TokioClock};
 pub use service::TimerService;
 

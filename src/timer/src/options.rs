@@ -2,9 +2,10 @@ use crate::service::TimerService;
 use std::fmt::Debug;
 
 /// # Timer options
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "TimerOptions"))]
+#[builder(default)]
 pub struct Options {
     /// # Num timers in memory limit
     ///

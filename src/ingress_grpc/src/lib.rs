@@ -7,7 +7,7 @@ mod reflection;
 mod server;
 
 pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
-pub use options::Options;
+pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use pb::MethodDescriptorRegistryWithIngressService;
 pub use reflection::{ReflectionRegistry, RegistrationError};
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
