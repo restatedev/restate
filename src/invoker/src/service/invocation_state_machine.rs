@@ -243,9 +243,7 @@ impl InvocationStateMachine {
 mod tests {
     use super::*;
 
-    use restate_types::retry_policy::RetryPolicy;
     use restate_test_util::{check, test};
-    use restate_types::retries::RetryPolicy;
     use std::time::Duration;
 
     #[test]

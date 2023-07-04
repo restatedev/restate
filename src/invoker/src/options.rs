@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_service_metadata::ServiceEndpointRegistry;
-use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
+use restate_types::journal::raw::PlainRawEntry;
 use restate_types::retries::RetryPolicy;
 use serde_with::serde_as;
 
