@@ -5,22 +5,18 @@ mod tower_utils;
 use super::options::JsonOptions;
 use super::*;
 
-use std::future::Future;
-
 use bytes::Bytes;
 use http::{HeaderMap, HeaderValue, Request, Response};
 use http_body::combinators::UnsyncBoxBody;
 use http_body::Body;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
-use prost::Message;
-use prost_reflect::MethodDescriptor;
-use restate_service_metadata::MethodDescriptorRegistry;
+use restate_schema_api::json::JsonMapperResolver;
+use std::future::Future;
 use tonic::server::Grpc;
 use tonic::Status;
 use tower::{BoxError, Layer, Service};
 use tower_utils::service_fn_once;
-use tracing::debug;
 
 pub(crate) enum Protocol {
     // Use tonic (gRPC or gRPC-Web)
@@ -52,32 +48,20 @@ impl Protocol {
         }
     }
 
-    pub(crate) async fn handle_request<MethodRegistry, Handler, HandlerFut>(
+    pub(crate) async fn handle_request<MapperResolver, Handler, HandlerFut>(
         self,
         service_name: String,
         method_name: String,
-        method_registry: MethodRegistry,
+        mapper_resolver: MapperResolver,
         json: JsonOptions,
         req: Request<hyper::Body>,
         handler_fn: Handler,
     ) -> Result<Response<BoxBody>, BoxError>
     where
-        MethodRegistry: MethodDescriptorRegistry,
+        MapperResolver: JsonMapperResolver,
         Handler: FnOnce(IngressRequest) -> HandlerFut + Send + 'static,
         HandlerFut: Future<Output = Result<IngressResponse, Status>> + Send,
     {
-        // Find the service method descriptor
-        let descriptor = if let Some(desc) =
-            method_registry.resolve_method_descriptor(&service_name, &method_name)
-        {
-            desc
-        } else {
-            debug!("{}/{} not found", service_name, method_name);
-            return Ok(self.encode_status(Status::not_found(format!(
-                "{service_name}/{method_name} not found"
-            ))));
-        };
-
         // Extract tracing context if any
         let tracing_context = TraceContextPropagator::new()
             .extract(&opentelemetry_http::HeaderExtractor(req.headers()));
@@ -92,13 +76,13 @@ impl Protocol {
             }
             Protocol::Connect => Ok(Self::handle_connect_request(
                 ingress_request_headers,
-                descriptor,
-                method_registry,
+                mapper_resolver,
                 json,
                 req,
                 handler_fn,
             )
-            .await),
+            .await
+            .map(to_box_body)),
         }
     }
 
@@ -143,44 +127,40 @@ impl Protocol {
             .map(|res| res.map(to_box_body))
     }
 
-    async fn handle_connect_request<MethodRegistry, Handler, HandlerFut>(
+    async fn handle_connect_request<MapperResolver, Handler, HandlerFut>(
         ingress_request_headers: IngressRequestHeaders,
-        descriptor: MethodDescriptor,
-        method_registry: MethodRegistry,
+        mapper_resolver: MapperResolver,
         json: JsonOptions,
-        req: Request<hyper::Body>,
+        mut req: Request<hyper::Body>,
         handler_fn: Handler,
-    ) -> Response<BoxBody>
+    ) -> Response<hyper::Body>
     where
-        MethodRegistry: MethodDescriptorRegistry,
+        MapperResolver: JsonMapperResolver,
         Handler: FnOnce(IngressRequest) -> HandlerFut + Send + 'static,
         HandlerFut: Future<Output = Result<IngressResponse, Status>> + Send,
     {
-        let (content_type, request_message) = match connect_adapter::decode_request(
-            req,
-            &descriptor,
-            method_registry,
-            json.to_deserialize_options(),
-        )
-        .await
-        {
-            Ok(req) => req,
-            Err(error_res) => return error_res.map(to_box_body),
+        let content_type = match connect_adapter::verify_headers_and_infer_body_type(&mut req) {
+            Ok(c) => c,
+            Err(res) => return res,
         };
 
-        let ingress_request_body = Bytes::from(request_message.encode_to_vec());
+        let (decoder, encoder) = match content_type
+            .infer_encoder_and_decoder(&ingress_request_headers, mapper_resolver)
+        {
+            Ok(c) => c,
+            Err(res) => return res,
+        };
+
+        let ingress_request_body = match decoder.decode(req, &json.to_deserialize_options()).await {
+            Ok(c) => c,
+            Err(res) => return res,
+        };
         let response = match handler_fn((ingress_request_headers, ingress_request_body)).await {
             Ok(ingress_response_body) => ingress_response_body,
-            Err(error) => return connect_adapter::status::status_response(error).map(to_box_body),
+            Err(error) => return connect_adapter::status::status_response(error),
         };
 
-        connect_adapter::encode_response(
-            response,
-            &descriptor,
-            json.to_serialize_options(),
-            content_type,
-        )
-        .map(to_box_body)
+        encoder.encode_response(response, &json.to_serialize_options())
     }
 }
 
@@ -199,11 +179,11 @@ where
 mod tests {
     use super::*;
 
-    use crate::mocks::*;
     use futures::future::{ok, Ready};
     use http::header::CONTENT_TYPE;
     use http::{Method, Request, StatusCode};
     use hyper::body::HttpBody;
+    use prost::Message;
     use restate_test_util::{assert_eq, test};
     use serde_json::json;
 
@@ -219,7 +199,7 @@ mod tests {
     }
 
     #[test(tokio::test)]
-    async fn handle_connect_request_works() {
+    async fn handle_json_connect_request() {
         let request = Request::builder()
             .uri("http://localhost/greeter.Greeter/Greet")
             .method(Method::POST)
@@ -239,8 +219,7 @@ mod tests {
                 "Greet".to_string(),
                 Context::default(),
             ),
-            greeter_greet_method_descriptor(),
-            test_descriptor_registry(),
+            mocks::test_schemas(),
             JsonOptions::default(),
             request,
             greeter_service_fn,
@@ -255,5 +234,71 @@ mod tests {
             json_body.get("greeting").unwrap().as_str().unwrap(),
             "Hello Francesco"
         );
+    }
+
+    #[test(tokio::test)]
+    async fn handle_connect_request_with_empty_body() {
+        let request = Request::builder()
+            .uri("http://localhost/greeter.Greeter/Greet")
+            .method(Method::GET)
+            .body(hyper::Body::empty())
+            .unwrap();
+
+        let mut res = Protocol::handle_connect_request(
+            IngressRequestHeaders::new(
+                "greeter.Greeter".to_string(),
+                "Greet".to_string(),
+                Context::default(),
+            ),
+            mocks::test_schemas(),
+            JsonOptions::default(),
+            request,
+            greeter_service_fn,
+        )
+        .await;
+
+        let body = res.data().await.unwrap().unwrap();
+        let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            json_body.get("greeting").unwrap().as_str().unwrap(),
+            "Hello "
+        );
+    }
+
+    #[test(tokio::test)]
+    async fn handle_protobuf_connect_request() {
+        let request = Request::builder()
+            .uri("http://localhost/greeter.Greeter/Greet")
+            .method(Method::POST)
+            .header(CONTENT_TYPE, "application/protobuf")
+            .body(
+                mocks::pb::GreetingRequest {
+                    person: "Francesco".to_string(),
+                }
+                .encode_to_vec()
+                .into(),
+            )
+            .unwrap();
+
+        let mut res = Protocol::handle_connect_request(
+            IngressRequestHeaders::new(
+                "greeter.Greeter".to_string(),
+                "Greet".to_string(),
+                Context::default(),
+            ),
+            mocks::test_schemas(),
+            JsonOptions::default(),
+            request,
+            greeter_service_fn,
+        )
+        .await;
+
+        let body = res.data().await.unwrap().unwrap();
+        let pb_body: mocks::pb::GreetingResponse = Message::decode(body).unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(pb_body.greeting.as_str(), "Hello Francesco");
     }
 }
