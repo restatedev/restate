@@ -23,9 +23,10 @@ Each Restate internal "component" is usually composed by the following building 
   and `schemars::JsonSchema` in order to generate the configuration schema. The `Options` type has a method `build()` that returns the `Service`.
 * A `Service` struct, that is a struct implementing the component logic. 
   The `Service` type has a method `run(self, {...}, drain: drain::Watch)` executing the event loop, where the `drain` is used to listen on the shutdown signal.
-* A `Handle` struct, that is the struct used to interact with the `Service`. 
-  Usually, under the hood, it contains a channel to interact with the `Service` event loop. 
+* A `Handle` trait, used to interact with the `Service`. 
+  Usually the implementation of this trait, under the hood, contains a channel to send messages to the `Service` event loop. 
   `Handle` instances should be provided by the `Service`, for example with methods such as `Service::handle(&self) -> Handle`. 
+  `Handle` implementations should be cheap to `Clone`.
 * One or more `Error` types, implemented with `thiserror` and possibly defining error codes with `CodedError`.
 
 When possible, split the component between `_api` and `_impl` crate, where `_api` should contain all the necessary types to interact with the component without executing it (e.g. `Handle` and `Error` types)
