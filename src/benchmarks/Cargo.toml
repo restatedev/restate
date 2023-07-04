@@ -18,6 +18,7 @@ pprof = { version = "0.12", features = ["criterion", "flamegraph", "frame-pointe
 prost = { workspace = true }
 restate_types = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true }
 

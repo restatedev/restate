@@ -7,14 +7,13 @@ use futures_util::StreamExt;
 use hyper::Uri;
 use pprof::criterion::{Output, PProfProfiler};
 use rand::distributions::{Alphanumeric, DistString};
-use restate::Configuration;
 use restate_benchmarks::counter::counter_client::CounterClient;
 use restate_benchmarks::counter::CounterAddRequest;
 use tokio::runtime::Builder;
 use tonic::transport::Channel;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
-    let config = Configuration::default();
+    let config = restate_benchmarks::restate_configuration();
     let (_rt, signal, app_handle) = restate_benchmarks::spawn_restate(config);
 
     let current_thread_rt = Builder::new_current_thread()

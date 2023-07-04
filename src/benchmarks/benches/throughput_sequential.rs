@@ -4,13 +4,12 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use hyper::Uri;
 use pprof::criterion::{Output, PProfProfiler};
-use restate::Configuration;
 use restate_benchmarks::counter::counter_client::CounterClient;
 use restate_benchmarks::counter::CounterAddRequest;
 use tokio::runtime::Builder;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
-    let config = Configuration::default();
+    let config = restate_benchmarks::restate_configuration();
     let (_rt, signal, app_handle) = restate_benchmarks::spawn_restate(config);
 
     let current_thread_rt = Builder::new_current_thread()

@@ -4,6 +4,9 @@ use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Body, StatusCode, Uri};
 use pprof::flamegraph::Options;
+use restate::config::{
+    ConfigurationBuilder, MetaOptionsBuilder, RocksdbOptionsBuilder, WorkerOptionsBuilder,
+};
 use restate::{Application, ApplicationError, Configuration};
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
@@ -68,4 +71,44 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
     // ignore different thread origins to merge traces
     options.base = vec!["__pthread_joiner_wake".to_string(), "_main".to_string()];
     options
+}
+
+pub fn restate_configuration() -> Configuration {
+    let meta_options = MetaOptionsBuilder::default()
+        .storage_path(
+            tempfile::tempdir()
+                .expect("tempdir failed")
+                .into_path()
+                .into_os_string()
+                .into_string()
+                .unwrap(),
+        )
+        .build()
+        .expect("building meta options should work");
+
+    let rocksdb_options = RocksdbOptionsBuilder::default()
+        .path(
+            tempfile::tempdir()
+                .expect("tempdir failed")
+                .into_path()
+                .into_os_string()
+                .into_string()
+                .unwrap(),
+        )
+        .build()
+        .expect("building rocksdb options should work");
+
+    let worker_options = WorkerOptionsBuilder::default()
+        .partitions(10)
+        .storage_rocksdb(rocksdb_options)
+        .build()
+        .expect("building worker options should work");
+
+    let config = ConfigurationBuilder::default()
+        .worker(worker_options)
+        .meta(meta_options)
+        .build()
+        .expect("building the configuration should work");
+
+    config
 }
