@@ -135,6 +135,12 @@ skip = [
 
     # Clash between our own and opentelemetry-otlp's Tonic dependency :-(
     { name = "tonic" },
+
+    # Clash between tracing-subscriber and datafusion :-(
+    { name = "regex-syntax" },
+
+    # Clash between pprof and datafusion :-(
+    { name = "quick-xml" },
 ]
 deny = [
     # Each entry the name of a crate and a version range. If version is

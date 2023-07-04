@@ -83,7 +83,7 @@ impl ExecutionPlan for EncoderExec {
 
             for field in &decoded_schema.fields {
                 let name = field.name();
-                let field: ExtendedField = field.clone().into();
+                let field: ExtendedField = (**field).clone().into();
                 columns.push(field.encode(
                     descriptor_pool.clone(),
                     batch.column_by_name(name).unwrap().clone(),

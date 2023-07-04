@@ -475,7 +475,7 @@ fn batch_to_record_batch(
 
     let columns = schema.fields.iter().map(|field| -> ArrayRef {
         let name = field.name();
-        let field: ExtendedField = field.clone().into();
+        let field: ExtendedField = (**field).clone().into();
 
         if field.is_value() {
             return Arc::new(BinaryArray::from_iter_values(values.iter()));

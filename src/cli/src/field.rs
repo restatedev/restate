@@ -1,6 +1,7 @@
 use std::ascii;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -133,7 +134,7 @@ impl ExtendedField {
                 Ok(ScalarValue::UInt64(Some(
                     temporal_conversions::as_datetime_with_timezone::<TimestampMillisecondType>(
                         millis,
-                        arrow_array::timezone::Tz::from_str(tz.as_str())?,
+                        arrow_array::timezone::Tz::from_str(tz.deref())?,
                     )
                         .unwrap()
                         .timestamp_millis() as u64,
