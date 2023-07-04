@@ -8,7 +8,7 @@ All the guidelines available in https://rust-lang.github.io/api-guidelines/check
 
 * Avoid repeating the module name in struct/traits definitions. When consuming, use module qualified names or re-exports. 
   For example, the error struct representing an `invoker` error should be defined as `Error`, not `InvokerError`. 
-  When consuming it, it should be referred as `invoker::Error` or imported as `use invoker::Error as Error`.
+  When consuming it, it should be referred as `invoker::Error` or imported as `use invoker::Error as InvokerError`.
 * Avoid defining the struct field's visibility as `pub` or even `pub(crate)`, but rather use getters/setters. There are two notable exceptions to this rule:
   * When a type needs to be deconstructed, to take ownership of the single fields, which would be rather heavy to `Clone`. In these cases, either make the field `pub` or provide a [`into_inner(self)` deconstructor](https://users.rust-lang.org/t/explanation-of-into-inner/13872) method. 
   * When defining [Passive data structures](https://en.wikipedia.org/wiki/Passive_data_structure), such as Restate domain types in `restate_types` crate. In these cases, it is fine to declare the field as `pub` for ease to use.
@@ -18,17 +18,17 @@ All the guidelines available in https://rust-lang.github.io/api-guidelines/check
 
 Each Restate internal "component" is usually composed by the following building blocks:
 
-* A `Options` type, a serdeable struct defining the different configuration options. 
+* An `Options` type, a serdeable struct defining the different configuration options. 
   The `Options` struct should derive `serde::{Serialize, Deserialize}` in order to read/write it from user's configuration file, 
   and `schemars::JsonSchema` in order to generate the configuration schema. The `Options` type has a method `build()` that returns the `Service`.
 * A `Service` struct, that is a struct implementing the component logic. 
   The `Service` type has a method `run(self, {...}, drain: drain::Watch)` executing the event loop, where the `drain` is used to listen on the shutdown signal.
 * A `Handle` struct, that is the struct used to interact with the `Service`. 
-  Usually, down the hood, it contains a channel to interact with the `Service` event loop. 
+  Usually, under the hood, it contains a channel to interact with the `Service` event loop. 
   `Handle` instances should be provided by the `Service`, for example with methods such as `Service::handle(&self) -> Handle`. 
 * One or more `Error` types, implemented with `thiserror` and possibly defining error codes with `CodedError`.
 
-When possible, split the component between `_api` and `_impl` crate, where `_impl` should contain all the necessary types to interact with the component without executing it (e.g. `Handle` and `Error` types)
+When possible, split the component between `_api` and `_impl` crate, where `_api` should contain all the necessary types to interact with the component without executing it (e.g. `Handle` and `Error` types)
 
 ### Event loops
 
