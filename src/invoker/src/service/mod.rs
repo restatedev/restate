@@ -10,7 +10,7 @@ use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use restate_errors::warn_it;
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_queue::SegmentQueue;
-use restate_service_metadata::ServiceEndpointRegistry;
+use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
 use restate_timer_queue::TimerQueue;
 use restate_types::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
 use restate_types::identifiers::ServiceInvocationId;
@@ -18,7 +18,6 @@ use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::Completion;
 use restate_types::retries::RetryPolicy;
-use restate_types::service_endpoint::{EndpointMetadata, ProtocolType};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
@@ -169,10 +168,10 @@ pub struct Service<JournalReader, StateReader, EntryEnricher, ServiceEndpointReg
     >,
 }
 
-impl<JR, SR, EE, SER> Service<JR, SR, EE, SER> {
+impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        service_endpoint_registry: SER,
+        endpoint_metadata_registry: EMR,
         retry_policy: RetryPolicy,
         suspension_timeout: Duration,
         response_abort_timeout: Duration,
@@ -185,7 +184,7 @@ impl<JR, SR, EE, SER> Service<JR, SR, EE, SER> {
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
-    ) -> Service<JR, SR, EE, SER> {
+    ) -> Service<JR, SR, EE, EMR> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
@@ -194,7 +193,7 @@ impl<JR, SR, EE, SER> Service<JR, SR, EE, SER> {
             tmp_dir,
             inner: ServiceInner {
                 input_rx,
-                service_endpoint_registry,
+                endpoint_metadata_registry,
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
@@ -234,14 +233,14 @@ impl<JR, SR, EE, SER> Service<JR, SR, EE, SER> {
     }
 }
 
-impl<JR, SR, EE, SER> Service<JR, SR, EE, SER>
+impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
-    SER: ServiceEndpointRegistry,
+    EMR: EndpointMetadataResolver,
 {
     pub fn handle(&self) -> ChannelServiceHandle {
         ChannelServiceHandle {
@@ -283,11 +282,11 @@ where
 }
 
 #[derive(Debug)]
-struct ServiceInner<ServiceEndpointRegistry, InvocationTaskRunner> {
+struct ServiceInner<EndpointMetadataRegistry, InvocationTaskRunner> {
     input_rx: mpsc::UnboundedReceiver<InputCommand>,
 
     // Service endpoints registry
-    service_endpoint_registry: ServiceEndpointRegistry,
+    endpoint_metadata_registry: EndpointMetadataRegistry,
 
     // Channel to communicate with invocation tasks
     invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -307,9 +306,9 @@ struct ServiceInner<ServiceEndpointRegistry, InvocationTaskRunner> {
     invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager,
 }
 
-impl<SER, ITR> ServiceInner<SER, ITR>
+impl<EMR, ITR> ServiceInner<EMR, ITR>
 where
-    SER: ServiceEndpointRegistry,
+    EMR: EndpointMetadataResolver,
     ITR: InvocationTaskRunner,
 {
     // Returns true if we should execute another step, false if we should stop executing steps
@@ -796,8 +795,8 @@ where
     ) {
         // Resolve metadata
         let endpoint_metadata = match self
-            .service_endpoint_registry
-            .resolve_endpoint(&service_invocation_id.service_id.service_name)
+            .endpoint_metadata_registry
+            .resolve_latest_endpoint_for_service(&service_invocation_id.service_id.service_name)
         {
             Some(m) => m,
             None => {
@@ -907,14 +906,14 @@ mod tests {
     use crate::service::invocation_task::InvocationTaskError;
     use bytes::Bytes;
     use quota::InvokerConcurrencyQuota;
-    use restate_service_metadata::InMemoryServiceEndpointRegistry;
+    use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
+    use restate_schema_api::endpoint::EndpointMetadata;
     use restate_test_util::{check, let_assert, test};
     use restate_types::identifiers::InvocationId;
     use restate_types::identifiers::ServiceInvocationId;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::retries::RetryPolicy;
-    use restate_types::service_endpoint::{EndpointMetadata, ProtocolType};
     use std::future::{pending, ready};
     use std::time::Duration;
     use tempfile::tempdir;
@@ -924,9 +923,9 @@ mod tests {
 
     const MOCK_PARTITION: PartitionLeaderEpoch = (0, 0);
 
-    impl<SER, ITR> ServiceInner<SER, ITR> {
+    impl<EMR, ITR> ServiceInner<EMR, ITR> {
         fn mock(
-            service_endpoint_registry: SER,
+            service_endpoint_registry: EMR,
             invocation_task_runner: ITR,
             default_retry_policy: RetryPolicy,
             concurrency_limit: Option<usize>,
@@ -936,7 +935,7 @@ mod tests {
 
             let service_inner = Self {
                 input_rx,
-                service_endpoint_registry,
+                endpoint_metadata_registry: service_endpoint_registry,
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner,
@@ -952,7 +951,7 @@ mod tests {
 
         fn register_mock_partition(&mut self) -> mpsc::Receiver<Effect>
         where
-            SER: ServiceEndpointRegistry,
+            EMR: EndpointMetadataResolver,
             ITR: InvocationTaskRunner,
         {
             let (partition_tx, partition_rx) = mpsc::channel(1024);
@@ -998,16 +997,9 @@ mod tests {
         ServiceInvocationId::new("MyService", Bytes::default(), InvocationId::now_v7())
     }
 
-    fn mock_endpoint_registry() -> InMemoryServiceEndpointRegistry {
-        let mut in_memory_registry = InMemoryServiceEndpointRegistry::default();
-        in_memory_registry.register_service_endpoint(
-            "MyService",
-            EndpointMetadata::new(
-                "http://localhost:8080".parse().unwrap(),
-                ProtocolType::BidiStream,
-                Default::default(),
-            ),
-        );
+    fn mock_endpoint_registry() -> MockEndpointMetadataRegistry {
+        let mut in_memory_registry = MockEndpointMetadataRegistry::default();
+        in_memory_registry.mock_service("MyService");
         in_memory_registry
     }
 
@@ -1016,7 +1008,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let service = Service::new(
             // all invocations are unknown leading to immediate retries
-            InMemoryServiceEndpointRegistry::default(),
+            MockEndpointMetadataRegistry::default(),
             // fixed amount of retries so that an invocation eventually completes with a failure
             RetryPolicy::fixed_delay(Duration::ZERO, 1),
             Duration::ZERO,

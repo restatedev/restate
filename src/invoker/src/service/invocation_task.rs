@@ -15,6 +15,7 @@ use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
 use restate_errors::warn_it;
+use restate_schema_api::endpoint::{EndpointMetadata, ProtocolType};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
@@ -24,7 +25,6 @@ use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryHeader};
 use restate_types::journal::{Completion, EntryType, JournalMetadata};
-use restate_types::service_endpoint::{EndpointMetadata, ProtocolType};
 use std::collections::HashSet;
 use std::error::Error;
 use std::future::{poll_fn, Future};

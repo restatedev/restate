@@ -42,12 +42,13 @@ opentelemetry-http = { workspace = true }
 
 codederror = { workspace = true }
 restate_errors = { workspace = true }
-restate_service_metadata = { workspace = true }
+restate_schema_api = { workspace = true, features = ["endpoint"] }
 restate_service_protocol = { workspace = true, features = ["message"] }
 restate_timer_queue = { workspace = true }
 restate_queue = { workspace = true }
 
 [dev-dependencies]
+restate_schema_api = { workspace = true, features = ["mocks"] }
 restate_types = { workspace = true }
 restate_test_util = { workspace = true }
 tempfile = { workspace = true }
