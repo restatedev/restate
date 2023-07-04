@@ -1,0 +1,39 @@
+[package]
+name = "restate_benchmarks"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+drain = { workspace = true }
+restate = { workspace = true }
+hyper = { workspace = true, features = ["client"] }
+futures = { workspace = true }
+futures-util = { workspace = true }
+pprof = { version = "0.12", features = ["criterion", "flamegraph", "frame-pointer"] }
+prost = { workspace = true }
+restate_types = { workspace = true }
+serde_json = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+criterion = { workspace = true, features = ["async_tokio"] }
+rand = "0.8.5"
+
+[build-dependencies]
+prost-build = { workspace = true }
+tonic-build = { workspace = true }
+
+[[bench]]
+name = "throughput_parallel"
+harness = false
+
+[[bench]]
+name = "throughput_sequential"
+harness = false

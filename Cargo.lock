@@ -3624,21 +3624,13 @@ dependencies = [
 name = "restate"
 version = "0.1.5"
 dependencies = [
- "anyhow",
  "clap 4.2.1",
  "codederror",
- "criterion",
  "drain",
  "figment",
- "futures",
  "futures-util",
  "humantime",
- "hyper",
  "pin-project",
- "pprof",
- "prost",
- "prost-build",
- "restate_common",
  "restate_errors",
  "restate_fs_util",
  "restate_meta",
@@ -3651,9 +3643,29 @@ dependencies = [
  "serde_yaml",
  "thiserror",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "restate_benchmarks"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "criterion",
+ "drain",
+ "futures",
+ "futures-util",
+ "hyper",
+ "pprof",
+ "prost",
+ "prost-build",
+ "rand",
+ "restate",
+ "restate_types",
+ "serde_json",
+ "tokio",
  "tonic 0.9.2",
  "tonic-build",
- "tracing",
 ]
 
 [[package]]

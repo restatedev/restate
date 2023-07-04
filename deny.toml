@@ -42,6 +42,15 @@ allow = ["Unicode-DFS-2016"]
 name = "unicode-ident"
 version = "1.0.6"
 
+[[licenses.exceptions]]
+# We are using inferno as part of the benchmarks crate that does not get released.
+# Only modifications to inferno would have to made available under the CDDL:
+# See https://fossa.com/blog/open-source-licenses-101-cddl-common-development-distribution-license/ and
+# https://opensource.stackexchange.com/questions/8265/cddl-library-and-closed-source-application.
+allow = ["CDDL-1.0"]
+name = "inferno"
+version = "0.11"
+
 [[licenses.clarify]]
 name = "ring"
 # SPDX considers OpenSSL to encompass both the OpenSSL and SSLeay licenses
