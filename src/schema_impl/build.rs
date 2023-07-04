@@ -8,7 +8,8 @@ fn main() -> std::io::Result<()> {
                 .join("file_descriptor_set_test.bin"),
         )
         .bytes(["."])
-        .compile_protos(&["tests/proto/test.proto"], &["tests/proto"])?;
-
-    Ok(())
+        .compile_protos(
+            &["tests/proto/test.proto", "tests/proto/greeter.proto"],
+            &["tests/proto"],
+        )
 }
