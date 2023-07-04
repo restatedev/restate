@@ -5,9 +5,7 @@ mod storage;
 use codederror::CodedError;
 use rest_api::MetaRestEndpoint;
 use restate_hyper_util::proxy_connector::Proxy;
-use restate_ingress_grpc::ReflectionRegistry;
-use restate_service_key_extractor::KeyExtractorsRegistry;
-use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
+use restate_schema_impl::Schemas;
 use restate_types::retries::RetryPolicy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -95,15 +93,10 @@ impl Options {
     }
 
     pub fn build(self) -> Meta {
-        let key_extractors_registry = KeyExtractorsRegistry::default();
-        let method_descriptors_registry = InMemoryMethodDescriptorRegistry::default();
-        let reflections_registry = ReflectionRegistry::default();
-        let service_endpoint_registry = InMemoryServiceEndpointRegistry::default();
+        let schemas = Schemas::default();
+
         let service = MetaService::new(
-            key_extractors_registry.clone(),
-            method_descriptors_registry.clone(),
-            service_endpoint_registry.clone(),
-            reflections_registry.clone(),
+            schemas.clone(),
             FileMetaStorage::new(self.storage_path.into()),
             // Total duration roughly 102 seconds
             RetryPolicy::exponential(Duration::from_millis(100), 2.0, 9, None),
@@ -111,10 +104,7 @@ impl Options {
         );
 
         Meta {
-            key_extractors_registry,
-            method_descriptors_registry,
-            reflections_registry,
-            service_endpoint_registry,
+            schemas,
             rest_endpoint: MetaRestEndpoint::new(self.rest_address, self.rest_concurrency_limit),
             service,
         }
@@ -135,30 +125,14 @@ pub enum Error {
 }
 
 pub struct Meta {
-    key_extractors_registry: KeyExtractorsRegistry,
-    method_descriptors_registry: InMemoryMethodDescriptorRegistry,
-    reflections_registry: ReflectionRegistry,
-    service_endpoint_registry: InMemoryServiceEndpointRegistry,
-
+    schemas: Schemas,
     rest_endpoint: MetaRestEndpoint,
     service: MetaService<FileMetaStorage>,
 }
 
 impl Meta {
-    pub fn key_extractors_registry(&self) -> KeyExtractorsRegistry {
-        self.key_extractors_registry.clone()
-    }
-
-    pub fn method_descriptor_registry(&self) -> InMemoryMethodDescriptorRegistry {
-        self.method_descriptors_registry.clone()
-    }
-
-    pub fn reflections_registry(&self) -> ReflectionRegistry {
-        self.reflections_registry.clone()
-    }
-
-    pub fn service_endpoint_registry(&self) -> InMemoryServiceEndpointRegistry {
-        self.service_endpoint_registry.clone()
+    pub fn schemas(&self) -> Schemas {
+        self.schemas.clone()
     }
 
     pub async fn init(&mut self) -> Result<(), Error> {
@@ -174,19 +148,12 @@ impl Meta {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         let meta_handle = self.service.meta_handle();
-        let service_endpoint_registry = self.service_endpoint_registry();
-        let method_descriptor_registry = self.method_descriptor_registry();
-        let key_extractors_registry = self.key_extractors_registry();
+        let schemas = self.schemas();
 
         let service_fut = self.service.run(shutdown_watch.clone());
-        let rest_endpoint_fut = self.rest_endpoint.run(
-            meta_handle,
-            service_endpoint_registry,
-            method_descriptor_registry,
-            key_extractors_registry,
-            worker_handle,
-            shutdown_watch,
-        );
+        let rest_endpoint_fut =
+            self.rest_endpoint
+                .run(meta_handle, schemas, worker_handle, shutdown_watch);
         tokio::pin!(service_fut, rest_endpoint_fut);
 
         let shutdown = drain.signaled();

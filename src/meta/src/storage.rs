@@ -5,36 +5,13 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt};
 use prost_reflect::DescriptorPool;
-use restate_service_key_extractor::ServiceInstanceType;
-use restate_types::service_endpoint::EndpointMetadata;
+use restate_schema_api::endpoint::EndpointMetadata;
+use restate_schema_impl::ServiceRegistrationRequest;
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio::io;
 use tokio::io::AsyncWriteExt;
 use tracing::trace;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceMetadata {
-    name: String,
-    instance_type: ServiceInstanceType,
-}
-
-impl ServiceMetadata {
-    pub fn new(name: String, instance_type: ServiceInstanceType) -> Self {
-        Self {
-            name,
-            instance_type,
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn instance_type(&self) -> &ServiceInstanceType {
-        &self.instance_type
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetaStorageError {
@@ -51,7 +28,7 @@ pub trait MetaStorage {
     fn register_endpoint(
         &self,
         endpoint_metadata: &EndpointMetadata,
-        exposed_services: &[ServiceMetadata],
+        exposed_services: &[ServiceRegistrationRequest],
         descriptor_pool: DescriptorPool,
     ) -> BoxFuture<Result<(), MetaStorageError>>;
 
@@ -66,7 +43,14 @@ pub trait MetaStorage {
         Result<
             BoxStream<
                 'static,
-                Result<(EndpointMetadata, Vec<ServiceMetadata>, DescriptorPool), MetaStorageError>,
+                Result<
+                    (
+                        EndpointMetadata,
+                        Vec<ServiceRegistrationRequest>,
+                        DescriptorPool,
+                    ),
+                    MetaStorageError,
+                >,
             >,
             MetaStorageError,
         >,
@@ -82,7 +66,7 @@ impl MetaStorage for InMemoryMetaStorage {
     fn register_endpoint(
         &self,
         _service_metadata: &EndpointMetadata,
-        _exposed_services: &[ServiceMetadata],
+        _exposed_services: &[ServiceRegistrationRequest],
         _descriptor_pool: DescriptorPool,
     ) -> BoxFuture<Result<(), MetaStorageError>> {
         async { Ok(()) }.boxed()
@@ -95,7 +79,14 @@ impl MetaStorage for InMemoryMetaStorage {
         Result<
             BoxStream<
                 'static,
-                Result<(EndpointMetadata, Vec<ServiceMetadata>, DescriptorPool), MetaStorageError>,
+                Result<
+                    (
+                        EndpointMetadata,
+                        Vec<ServiceRegistrationRequest>,
+                        DescriptorPool,
+                    ),
+                    MetaStorageError,
+                >,
             >,
             MetaStorageError,
         >,
@@ -123,14 +114,14 @@ impl FileMetaStorage {
 #[derive(Serialize, Deserialize)]
 struct MetadataFile {
     endpoint_metadata: EndpointMetadata,
-    exposed_services: Vec<ServiceMetadata>,
+    exposed_services: Vec<ServiceRegistrationRequest>,
 }
 
 impl MetaStorage for FileMetaStorage {
     fn register_endpoint(
         &self,
         endpoint_metadata: &EndpointMetadata,
-        exposed_services: &[ServiceMetadata],
+        exposed_services: &[ServiceRegistrationRequest],
         descriptor_pool: DescriptorPool,
     ) -> BoxFuture<Result<(), MetaStorageError>> {
         let endpoint_id = endpoint_metadata.id();
@@ -176,7 +167,14 @@ impl MetaStorage for FileMetaStorage {
         Result<
             BoxStream<
                 'static,
-                Result<(EndpointMetadata, Vec<ServiceMetadata>, DescriptorPool), MetaStorageError>,
+                Result<
+                    (
+                        EndpointMetadata,
+                        Vec<ServiceRegistrationRequest>,
+                        DescriptorPool,
+                    ),
+                    MetaStorageError,
+                >,
             >,
             MetaStorageError,
         >,
