@@ -1,14 +1,10 @@
 //! Restate interacts with Service endpoints to process invocations. This module contains entities defining service endpoints.
 
+use crate::identifiers::EndpointId;
 use crate::retries::RetryPolicy;
 use http::header::{HeaderName, HeaderValue};
 use http::Uri;
 use std::collections::HashMap;
-
-/// Unique Id of an endpoint.
-///
-/// Currently this will contain the endpoint url authority and path base64 encoded, but this might change in future.
-pub type EndpointId = String;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

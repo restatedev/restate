@@ -2,7 +2,8 @@
 
 #[cfg(feature = "endpoint")]
 pub mod endpoint {
-    use restate_types::service_endpoint::{EndpointId, EndpointMetadata};
+    use restate_types::identifiers::EndpointId;
+    use restate_types::service_endpoint::EndpointMetadata;
 
     pub trait EndpointMetadataResolver {
         fn resolve_latest_endpoint_for_service(
