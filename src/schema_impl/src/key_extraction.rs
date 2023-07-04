@@ -3,19 +3,7 @@ use super::*;
 use crate::Schemas;
 use bytes::Bytes;
 use restate_schema_api::key::extraction::Error;
-
-/// A key extractor provides the logic to extract a key out of a request payload.
-pub trait KeyExtractor {
-    /// Extract performs key extraction from a request payload, returning the key in a Restate internal format.
-    ///
-    /// To perform the inverse operation, check the [`KeyExpander`] trait.
-    fn extract(
-        &self,
-        service_name: impl AsRef<str>,
-        service_method: impl AsRef<str>,
-        payload: Bytes,
-    ) -> Result<Bytes, Error>;
-}
+use restate_schema_api::key::KeyExtractor;
 
 impl KeyExtractor for Schemas {
     fn extract(

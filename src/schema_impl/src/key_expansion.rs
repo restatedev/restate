@@ -4,23 +4,7 @@ use crate::Schemas;
 use bytes::Bytes;
 use prost_reflect::DynamicMessage;
 use restate_schema_api::key::expansion::Error;
-
-/// A key expander provides the inverse function of a [`KeyExtractor`].
-pub trait KeyExpander {
-    /// Expand takes a Restate key and assigns it to the key field of a [`prost_reflect::DynamicMessage`] generated from the given `descriptor`.
-    ///
-    /// The provided [`descriptor`] MUST be the same descriptor of the request message of the given `service_name` and `service_method`.
-    ///
-    /// The result of this method is a message matching the provided `descriptor` with only the key field filled.
-    ///
-    /// This message can be mapped back and forth to JSON using `prost-reflect` `serde` feature.
-    fn expand(
-        &self,
-        service_name: impl AsRef<str>,
-        service_method: impl AsRef<str>,
-        key: Bytes,
-    ) -> Result<DynamicMessage, Error>;
-}
+use restate_schema_api::key::KeyExpander;
 
 impl KeyExpander for Schemas {
     fn expand(
