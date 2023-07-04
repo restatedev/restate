@@ -105,3 +105,7 @@ panic = "abort"
 [profile.release.package.service_protocol_wireshark_dissector]
 opt-level = "z"  # Optimize for size.
 strip = true  # Automatically strip symbols from the binary.
+
+[profile.bench]
+# Should be enabled for benchmarking runs; increases binary size
+debug = true
