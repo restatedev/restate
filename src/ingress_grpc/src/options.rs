@@ -1,10 +1,9 @@
-use super::pb::grpc::reflection::server_reflection_server::ServerReflection;
 use super::HyperServerIngress;
 use super::*;
 
-use crate::pb::MethodDescriptorRegistryWithIngressService;
 use prost_reflect::{DeserializeOptions, SerializeOptions};
-use restate_service_metadata::MethodDescriptorRegistry;
+use restate_schema_api::json::JsonMapperResolver;
+use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_types::identifiers::IngressId;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -162,25 +161,28 @@ impl Options {
         1000
     }
 
-    pub fn build<DescriptorRegistry, InvocationFactory, ReflectionService>(
+    pub fn build<Schemas, JsonDecoder, JsonEncoder, InvocationFactory>(
         self,
         ingress_id: IngressId,
-        descriptor_registry: DescriptorRegistry,
+        schemas: Schemas,
         invocation_factory: InvocationFactory,
-        reflection_service: ReflectionService,
         channel_size: usize,
     ) -> (
         IngressDispatcherLoop,
-        HyperServerIngress<
-            MethodDescriptorRegistryWithIngressService<DescriptorRegistry>,
-            InvocationFactory,
-            ReflectionService,
-        >,
+        HyperServerIngress<Schemas, InvocationFactory>,
     )
     where
-        DescriptorRegistry: MethodDescriptorRegistry + Clone + Send + 'static,
+        Schemas: JsonMapperResolver<
+                JsonToProtobufMapper = JsonDecoder,
+                ProtobufToJsonMapper = JsonEncoder,
+            > + ProtoSymbolResolver
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        JsonDecoder: Send,
+        JsonEncoder: Send,
         InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
-        ReflectionService: ServerReflection,
     {
         let Options {
             bind_address,
@@ -195,9 +197,8 @@ impl Options {
             concurrency_limit,
             json,
             ingress_id,
-            MethodDescriptorRegistryWithIngressService::new(descriptor_registry),
+            schemas,
             invocation_factory,
-            reflection_service,
             ingress_dispatcher_loop.create_command_sender(),
         );
 

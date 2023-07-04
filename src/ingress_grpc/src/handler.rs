@@ -1,13 +1,11 @@
 use super::options::JsonOptions;
-use super::pb::grpc::reflection::{
-    server_reflection_server::ServerReflection, server_reflection_server::ServerReflectionServer,
-};
 use super::protocol::{BoxBody, Protocol};
 use super::*;
 
 use std::sync::Arc;
 use std::task::Poll;
 
+use crate::reflection::ServerReflectionService;
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
 use http::{Request, Response, StatusCode};
@@ -15,42 +13,44 @@ use http_body::Body;
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
-use restate_service_metadata::MethodDescriptorRegistry;
+use restate_schema_api::json::JsonMapperResolver;
+use restate_schema_api::pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
+use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_types::identifiers::IngressId;
 use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
 use tokio::sync::Semaphore;
-use tonic::server::NamedService;
 use tonic_web::{GrpcWebLayer, GrpcWebService};
 use tower::{BoxError, Layer, Service};
 use tracing::{debug, info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-pub struct Handler<InvocationFactory, MethodRegistry, ReflectionService>
+pub struct Handler<InvocationFactory, MapperResolver, ProtoSymbols>
 where
-    ReflectionService: ServerReflection,
+    ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     ingress_id: IngressId,
     json: JsonOptions,
     invocation_factory: InvocationFactory,
-    method_registry: MethodRegistry,
-    reflection_server: GrpcWebService<ServerReflectionServer<ReflectionService>>,
+    mapper_resolver: MapperResolver,
+    reflection_server:
+        GrpcWebService<ServerReflectionServer<ServerReflectionService<ProtoSymbols>>>,
     dispatcher_command_sender: DispatcherCommandSender,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
 
-impl<InvocationFactory, MethodRegistry, ReflectionService> Clone
-    for Handler<InvocationFactory, MethodRegistry, ReflectionService>
+impl<InvocationFactory, MapperResolver, ProtoSymbols> Clone
+    for Handler<InvocationFactory, MapperResolver, ProtoSymbols>
 where
     InvocationFactory: Clone,
-    MethodRegistry: Clone,
-    ReflectionService: ServerReflection,
+    MapperResolver: Clone,
+    ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
             ingress_id: self.ingress_id,
             json: self.json.clone(),
             invocation_factory: self.invocation_factory.clone(),
-            method_registry: self.method_registry.clone(),
+            mapper_resolver: self.mapper_resolver.clone(),
             reflection_server: self.reflection_server.clone(),
             dispatcher_command_sender: self.dispatcher_command_sender.clone(),
             global_concurrency_semaphore: self.global_concurrency_semaphore.clone(),
@@ -58,17 +58,17 @@ where
     }
 }
 
-impl<InvocationFactory, MethodRegistry, ReflectionService>
-    Handler<InvocationFactory, MethodRegistry, ReflectionService>
+impl<InvocationFactory, MapperResolver, ProtoSymbols>
+    Handler<InvocationFactory, MapperResolver, ProtoSymbols>
 where
-    ReflectionService: ServerReflection,
+    ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     pub fn new(
         ingress_id: IngressId,
         json: JsonOptions,
         invocation_factory: InvocationFactory,
-        method_registry: MethodRegistry,
-        reflection_service: ReflectionService,
+        mapper_resolver: MapperResolver,
+        proto_symbols: ProtoSymbols,
         dispatcher_command_sender: DispatcherCommandSender,
         global_concurrency_semaphore: Arc<Semaphore>,
     ) -> Self {
@@ -76,9 +76,10 @@ where
             ingress_id,
             json,
             invocation_factory,
-            method_registry,
-            reflection_server: GrpcWebLayer::new()
-                .layer(ServerReflectionServer::new(reflection_service)),
+            mapper_resolver,
+            reflection_server: GrpcWebLayer::new().layer(ServerReflectionServer::new(
+                ServerReflectionService(proto_symbols),
+            )),
             dispatcher_command_sender,
             global_concurrency_semaphore,
         }
@@ -87,12 +88,17 @@ where
 
 // TODO When porting to hyper 1.0 https://github.com/restatedev/restate/issues/96
 //  replace this impl with hyper::Service impl
-impl<InvocationFactory, MethodRegistry, ReflectionService> Service<Request<HyperBody>>
-    for Handler<InvocationFactory, MethodRegistry, ReflectionService>
+impl<InvocationFactory, MapperResolver, JsonDecoder, JsonEncoder, ProtoSymbols>
+    Service<Request<HyperBody>> for Handler<InvocationFactory, MapperResolver, ProtoSymbols>
 where
     InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
-    MethodRegistry: MethodDescriptorRegistry + Clone + Send + 'static,
-    ReflectionService: ServerReflection,
+    MapperResolver: JsonMapperResolver<JsonToProtobufMapper = JsonDecoder, ProtobufToJsonMapper = JsonEncoder>
+        + Clone
+        + Send
+        + 'static,
+    JsonDecoder: Send,
+    JsonEncoder: Send,
+    ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     type Response = Response<BoxBody>;
     type Error = BoxError;
@@ -150,7 +156,7 @@ where
 
         // --- Special Restate services
         // Reflections
-        if ServerReflectionServer::<ReflectionService>::NAME == service_name {
+        if restate_schema_api::pb::REFLECTION_SERVICE_NAME == service_name {
             return self
                 .reflection_server
                 .call(req)
@@ -197,7 +203,7 @@ where
 
                 // Ingress built-in service
                 if is_ingress_invoke(&service_name, &method_name) {
-                    let invoke_request = pb::restate::services::InvokeRequest::decode(req_payload)
+                    let invoke_request = restate_schema_api::pb::restate::services::InvokeRequest::decode(req_payload)
                         .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
                     service_name = invoke_request.service;
@@ -243,7 +249,7 @@ where
                         return Err(Status::unavailable("Unavailable"));
                     }
                     return Ok(
-                        pb::restate::services::InvokeResponse {
+                        restate_schema_api::pb::restate::services::InvokeResponse {
                             sid,
                         }.encode_to_vec().into()
                     )
@@ -283,7 +289,7 @@ where
         let result_fut = protocol.handle_request(
             service_name,
             method_name,
-            self.method_registry.clone(),
+            self.mapper_resolver.clone(),
             self.json.clone(),
             req,
             ingress_request_handler,

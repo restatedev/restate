@@ -1,10 +1,10 @@
 use super::options::JsonOptions;
-use super::pb::grpc::reflection::server_reflection_server::ServerReflection;
 use super::*;
 
 use codederror::CodedError;
 use futures::FutureExt;
-use restate_service_metadata::MethodDescriptorRegistry;
+use restate_schema_api::json::JsonMapperResolver;
+use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_types::identifiers::IngressId;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -33,28 +33,33 @@ pub enum IngressServerError {
     Running(#[from] hyper::Error),
 }
 
-pub struct HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionService> {
+pub struct HyperServerIngress<Schemas, InvocationFactory> {
     listening_addr: SocketAddr,
     concurrency_limit: usize,
 
     // Parameters to build the layers
     ingress_id: IngressId,
     json: JsonOptions,
-    method_descriptor_registry: DescriptorRegistry,
+    schemas: Schemas,
     invocation_factory: InvocationFactory,
-    reflection_service: ReflectionService,
     dispatcher_command_sender: DispatcherCommandSender,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
 }
 
-impl<DescriptorRegistry, InvocationFactory, ReflectionService>
-    HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionService>
+impl<Schemas, JsonDecoder, JsonEncoder, InvocationFactory>
+    HyperServerIngress<Schemas, InvocationFactory>
 where
-    DescriptorRegistry: MethodDescriptorRegistry + Clone + Send + 'static,
+    Schemas: JsonMapperResolver<JsonToProtobufMapper = JsonDecoder, ProtobufToJsonMapper = JsonEncoder>
+        + ProtoSymbolResolver
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    JsonDecoder: Send,
+    JsonEncoder: Send,
     InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
-    ReflectionService: ServerReflection,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -62,9 +67,8 @@ where
         concurrency_limit: usize,
         json: JsonOptions,
         ingress_id: IngressId,
-        method_descriptor_registry: DescriptorRegistry,
+        schemas: Schemas,
         invocation_factory: InvocationFactory,
-        reflection_service: ReflectionService,
         dispatcher_command_sender: DispatcherCommandSender,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
@@ -74,9 +78,8 @@ where
             concurrency_limit,
             json,
             ingress_id,
-            method_descriptor_registry,
+            schemas,
             invocation_factory,
-            reflection_service,
             dispatcher_command_sender,
             start_signal_tx,
         };
@@ -90,9 +93,8 @@ where
             concurrency_limit,
             ingress_id,
             json,
-            method_descriptor_registry,
+            schemas,
             invocation_factory,
-            reflection_service,
             dispatcher_command_sender,
             start_signal_tx,
         } = self;
@@ -113,8 +115,8 @@ where
                     ingress_id,
                     json,
                     invocation_factory,
-                    method_descriptor_registry,
-                    reflection_service,
+                    schemas.clone(),
+                    schemas,
                     dispatcher_command_sender,
                     global_concurrency_limit_semaphore,
                 )),
@@ -159,7 +161,6 @@ mod tests {
     use restate_test_util::{assert_eq, test};
 
     use crate::mocks::*;
-    use crate::reflection::ReflectionRegistry;
 
     // Could be shipped by the restate_types crate with feature "mocks" enabled
     #[derive(Clone)]
@@ -358,9 +359,8 @@ mod tests {
             Semaphore::MAX_PERMITS,
             JsonOptions::default(),
             IngressId("0.0.0.0:0".parse().unwrap()),
-            test_descriptor_registry(),
+            test_schemas(),
             MockServiceInvocationFactory,
-            ReflectionRegistry::default(),
             dispatcher_command_tx,
         );
         let ingress_handle = tokio::spawn(ingress.run(watch));
