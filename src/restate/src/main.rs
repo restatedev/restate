@@ -1,6 +1,6 @@
-use restate::Application;
 use clap::Parser;
 use codederror::CodedError;
+use restate::Application;
 use restate::Configuration;
 use restate_errors::fmt::RestateCode;
 use std::error::Error;
