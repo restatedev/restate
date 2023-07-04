@@ -13,8 +13,8 @@ use futures::FutureExt;
 use hyper::Server;
 use okapi_operation::axum_integration::{delete, get, post};
 use okapi_operation::*;
-use restate_service_key_extractor::json::RestateKeyConverter;
-use restate_service_metadata::{MethodDescriptorRegistry, ServiceEndpointRegistry};
+use restate_schema_api::key::RestateKeyConverter;
+use restate_schema_api::service::ServiceMetadataResolver;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceBuilder;
@@ -50,24 +50,18 @@ impl MetaRestEndpoint {
     }
 
     pub async fn run<
-        S: ServiceEndpointRegistry + Send + Sync + 'static,
-        M: MethodDescriptorRegistry + Send + Sync + 'static,
-        K: RestateKeyConverter + Send + Sync + 'static,
+        S: ServiceMetadataResolver + RestateKeyConverter + Send + Sync + 'static,
         W: restate_worker_api::Handle + Send + Sync + 'static,
     >(
         self,
         meta_handle: MetaHandle,
-        service_endpoint_registry: S,
-        method_descriptor_registry: M,
-        key_converter: K,
+        schemas: S,
         worker_handle: W,
         drain: drain::Watch,
     ) -> Result<(), MetaRestServerError> {
         let shared_state = Arc::new(state::RestEndpointState::new(
             meta_handle,
-            service_endpoint_registry,
-            method_descriptor_registry,
-            key_converter,
+            schemas,
             worker_handle,
         ));
 
