@@ -1,5 +1,8 @@
 //! This crate contains all the different APIs for accessing schemas.
 
+#[cfg(feature = "pb")]
+pub mod pb;
+
 #[cfg(feature = "endpoint")]
 pub mod endpoint {
     use restate_types::identifiers::EndpointId;

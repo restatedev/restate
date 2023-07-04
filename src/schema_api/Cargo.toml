@@ -15,6 +15,8 @@ json_key_conversion = ["key_extraction", "key_expansion", "dep:serde_json", "dep
 endpoint = ["dep:restate_types"]
 json_conversion = ["prost-reflect/serde", "dep:anyhow"]
 proto_symbol = ["dep:bytes"]
+pb = ["prost-reflect", "dep:once_cell", "dep:tonic"]
+mocks = []
 
 [dependencies]
 anyhow = { workspace = true, optional = true }
@@ -24,3 +26,8 @@ prost-reflect = { workspace = true, optional = true }
 restate_types = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true, features = ["codegen", "prost"] }
+
+[build-dependencies]
+prost-build = { workspace = true }
+tonic-build = { workspace = true }
