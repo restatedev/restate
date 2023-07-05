@@ -4263,11 +4263,13 @@ dependencies = [
  "restate_pb",
  "restate_schema_api",
  "restate_serde_util",
+ "restate_test_util",
  "restate_types",
  "serde",
  "serde_json",
  "thiserror",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

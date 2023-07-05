@@ -141,6 +141,16 @@ pub mod endpoint {
 
         use std::collections::HashMap;
 
+        impl EndpointMetadata {
+            pub fn mock_with_uri(uri: &str) -> EndpointMetadata {
+                EndpointMetadata::new(
+                    uri.parse().unwrap(),
+                    ProtocolType::BidiStream,
+                    Default::default(),
+                )
+            }
+        }
+
         #[derive(Default)]
         pub struct MockEndpointMetadataRegistry {
             pub endpoints: HashMap<EndpointId, EndpointMetadata>,

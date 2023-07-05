@@ -17,6 +17,7 @@ impl ServiceMetadataResolver for Schemas {
                     methods: service_schemas.methods.keys().cloned().collect(),
                     instance_type: (&service_schemas.instance_type).into(),
                     endpoint: latest_endpoint.clone(),
+                    revision: service_schemas.revision,
                 }),
             },
         )
@@ -36,6 +37,7 @@ impl ServiceMetadataResolver for Schemas {
                         methods: service_schemas.methods.keys().cloned().collect(),
                         instance_type: (&service_schemas.instance_type).into(),
                         endpoint: latest_endpoint.clone(),
+                        revision: service_schemas.revision,
                     }),
                 },
             )

@@ -27,3 +27,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 prost-reflect = { workspace = true }
 restate_pb = { workspace = true, features = ["mocks"] }
+restate_schema_api = { workspace = true, features = ["mocks"] }
+restate_test_util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

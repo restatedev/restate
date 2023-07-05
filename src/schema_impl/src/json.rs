@@ -183,6 +183,7 @@ mod tests {
         schemas.add_mock_service(
             "greeter.Greeter",
             ServiceSchemas {
+                revision: 1,
                 methods: [("Greet".to_string(), greeter_greet_method_descriptor())]
                     .into_iter()
                     .collect(),
