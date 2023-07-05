@@ -37,15 +37,19 @@ impl ServiceRegistrationRequest {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+#[code(unknown)]
 pub enum RegistrationError {
     #[error("an endpoint with the same id {0} already exists in the registry")]
+    #[code(restate_errors::META0004)]
     OverrideEndpoint(EndpointId),
     #[error("missing expected field {0} in descriptor")]
     MissingFieldInDescriptor(&'static str),
     #[error("missing service {0} in descriptor")]
+    #[code(restate_errors::META0005)]
     MissingServiceInDescriptor(String),
     #[error("unexpected endpoint id {0}")]
+    #[code(restate_errors::META0005)]
     UnexpectedEndpointId(EndpointId),
 }
 

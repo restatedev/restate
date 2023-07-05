@@ -11,9 +11,11 @@ publish = false
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 bytes = { workspace = true }
+codederror = { workspace = true }
 once_cell = "1.18"
 prost = { workspace = true }
 prost-reflect = { workspace = true }
+restate_errors = { workspace = true }
 restate_pb = { workspace = true }
 restate_types = { workspace = true }
 restate_schema_api = { workspace = true, features = ["key_extraction", "key_expansion", "json_key_conversion", "endpoint", "service", "json_conversion", "proto_symbol", "serde"] }
