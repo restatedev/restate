@@ -1,6 +1,5 @@
 use super::storage::{MetaStorage, MetaStorageError};
 
-use futures::StreamExt;
 use std::collections::HashMap;
 use std::future::Future;
 
@@ -10,8 +9,11 @@ use restate_errors::{error_it, warn_it};
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
-use restate_schema_impl::{RegistrationError, Schemas, ServiceRegistrationRequest};
+use restate_schema_impl::{
+    RegistrationError, Schemas, SchemasUpdateCommand, ServiceRegistrationRequest,
+};
 use restate_service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
+use restate_types::identifiers::{EndpointId, ServiceRevision};
 use restate_types::retries::RetryPolicy;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
@@ -48,16 +50,21 @@ enum MetaHandleRequest {
     },
 }
 
+pub(crate) struct DiscoverEndpointResponse {
+    pub(crate) endpoint: EndpointId,
+    pub(crate) services: Vec<(String, ServiceRevision)>,
+}
+
 enum MetaHandleResponse {
-    DiscoverEndpoint(Result<Vec<String>, MetaError>),
+    DiscoverEndpoint(Result<DiscoverEndpointResponse, MetaError>),
 }
 
 impl MetaHandle {
-    pub async fn register(
+    pub(crate) async fn register(
         &self,
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
-    ) -> Result<Vec<String>, MetaError> {
+    ) -> Result<DiscoverEndpointResponse, MetaError> {
         let (cmd, response_tx) = Command::prepare(MetaHandleRequest::DiscoverEndpoint {
             uri,
             additional_headers,
@@ -157,14 +164,8 @@ where
     }
 
     async fn reload(&mut self) -> Result<(), MetaError> {
-        let mut endpoints_stream = self.storage.reload().await?;
-
-        while let Some(res) = endpoints_stream.next().await {
-            let (endpoint_metadata, services, descriptor_pool) = res?;
-            self.schemas
-                .register_new_endpoint(endpoint_metadata, services, descriptor_pool)?;
-        }
-
+        let update_commands = self.storage.reload().await?;
+        self.schemas.apply_updates(update_commands)?;
         self.reloaded = true;
         Ok(())
     }
@@ -174,7 +175,7 @@ where
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
         abort_signal: impl Future<Output = ()>,
-    ) -> Result<Vec<String>, MetaError> {
+    ) -> Result<DiscoverEndpointResponse, MetaError> {
         debug!(http.url = %uri, "Discovering Service endpoint");
 
         let discovered_metadata = tokio::select! {
@@ -182,36 +183,52 @@ where
             _ = abort_signal => return Err(MetaError::RequestAborted),
         }?;
 
-        // Store the new endpoint in storage
-        let endpoint_metadata = EndpointMetadata::new(
-            uri.clone(),
-            discovered_metadata.protocol_type,
-            DeliveryOptions::new(additional_headers),
-        );
-        let services = discovered_metadata
-            .services
-            .into_iter()
-            .map(|(svc_name, instance_type)| {
-                ServiceRegistrationRequest::new(svc_name, instance_type)
-            })
-            .collect::<Vec<_>>();
-        self.storage
-            .register_endpoint(
-                &endpoint_metadata,
-                &services,
-                discovered_metadata.descriptor_pool.clone(),
-            )
-            .await?;
-
-        let registered_services = services.iter().map(|sm| sm.name().to_string()).collect();
-
-        // Propagate changes
-        self.schemas.register_new_endpoint(
-            endpoint_metadata,
-            services,
+        // Compute the diff with the current state of Schemas
+        let schemas_update_commands = self.schemas.compute_new_endpoint_commands(
+            EndpointMetadata::new(
+                uri.clone(),
+                discovered_metadata.protocol_type,
+                DeliveryOptions::new(additional_headers),
+            ),
+            discovered_metadata
+                .services
+                .into_iter()
+                .map(|(svc_name, instance_type)| {
+                    ServiceRegistrationRequest::new(svc_name, instance_type)
+                })
+                .collect::<Vec<_>>(),
             discovered_metadata.descriptor_pool,
+            false,
         )?;
 
-        Ok(registered_services)
+        // Compute the response
+        let discovery_response =
+            Self::infer_discovery_response_from_update_commands(&schemas_update_commands);
+
+        // Store update commands to disk
+        self.storage.store(schemas_update_commands.clone()).await?;
+
+        // Propagate updates in memory
+        self.schemas.apply_updates(schemas_update_commands)?;
+
+        Ok(discovery_response)
+    }
+
+    fn infer_discovery_response_from_update_commands(
+        commands: &[SchemasUpdateCommand],
+    ) -> DiscoverEndpointResponse {
+        for schema_update_command in commands {
+            if let SchemasUpdateCommand::InsertEndpoint {
+                metadata, services, ..
+            } = schema_update_command
+            {
+                return DiscoverEndpointResponse {
+                    endpoint: metadata.id(),
+                    services: services.clone(),
+                };
+            }
+        }
+
+        panic!("Expecting a SchemasUpdateCommand::InsertEndpoint command. This looks like a bug");
     }
 }

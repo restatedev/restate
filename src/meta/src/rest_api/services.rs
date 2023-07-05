@@ -6,6 +6,7 @@ use axum::Json;
 use hyper::http::{HeaderName, HeaderValue};
 use okapi_operation::*;
 use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
+use restate_types::identifiers::{EndpointId, ServiceRevision};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -28,8 +29,15 @@ pub struct RegisterServiceEndpointRequest {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+pub struct RegisterServiceResponse {
+    name: String,
+    revision: ServiceRevision,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct RegisterServiceEndpointResponse {
-    services: Vec<String>,
+    id: EndpointId,
+    services: Vec<RegisterServiceResponse>,
 }
 
 /// Discover endpoint and return discovered endpoints.
@@ -56,10 +64,20 @@ pub async fn discover_service_endpoint<S, W>(
         })
         .collect::<Result<HashMap<_, _>, MetaApiError>>()?;
 
-    let registration_result = state.meta_handle().register(payload.uri, headers).await;
-    Ok(registration_result
-        .map(|services| RegisterServiceEndpointResponse { services })?
-        .into())
+    let registration_result = state
+        .meta_handle()
+        .register(payload.uri, headers)
+        .await?;
+
+    Ok(RegisterServiceEndpointResponse {
+        id: registration_result.endpoint,
+        services: registration_result
+            .services
+            .into_iter()
+            .map(|(name, revision)| RegisterServiceResponse { name, revision })
+            .collect(),
+    }
+    .into())
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

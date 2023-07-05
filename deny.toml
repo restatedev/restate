@@ -141,6 +141,9 @@ skip = [
 
     # Clash between pprof and datafusion :-(
     { name = "quick-xml" },
+
+    # We need to update bincode in restate_queue
+    { name = "bincode" },
 ]
 deny = [
     # Each entry the name of a crate and a version range. If version is

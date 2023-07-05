@@ -30,6 +30,7 @@ serde_with = { workspace = true }
 serde_json = { workspace = true }
 restate_serde_util = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
+bincode = { version = "2.0.0-rc", default-features = false, features = ["std", "serde"] }
 
 # Service discovery and metadata
 restate_types = { workspace = true, features = ["serde", "serde_schema"] }
@@ -49,3 +50,11 @@ thiserror = { workspace = true }
 codederror = { workspace = true }
 restate_errors = { workspace = true, features = ["include_doc"] }
 uuid = { workspace = true }
+
+[dev-dependencies]
+restate_pb = { workspace = true, features = ["mocks"] }
+restate_schema_api = { workspace = true, features = ["mocks"] }
+restate_test_util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tempfile = { workspace = true }
