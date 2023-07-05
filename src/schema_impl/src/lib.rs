@@ -68,7 +68,6 @@ pub(crate) mod schemas_impl {
 
     use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
     use proto_symbol::ProtoSymbols;
-    use restate_schema_api::pb;
     use restate_types::identifiers::EndpointId;
     use std::collections::HashMap;
     use tracing::{debug, info};
@@ -159,20 +158,20 @@ pub(crate) mod schemas_impl {
 
             // Insert built-in services
             inner.services.insert(
-                pb::REFLECTION_SERVICE_NAME.to_string(),
+                restate_pb::REFLECTION_SERVICE_NAME.to_string(),
                 ServiceSchemas::new_ingress_only(
-                    pb::DESCRIPTOR_POOL
-                        .get_service_by_name(pb::REFLECTION_SERVICE_NAME)
+                    restate_pb::DESCRIPTOR_POOL
+                        .get_service_by_name(restate_pb::REFLECTION_SERVICE_NAME)
                         .expect(
                             "The built-in descriptor pool should contain the reflection service",
                         ),
                 ),
             );
             inner.services.insert(
-                pb::INGRESS_SERVICE_NAME.to_string(),
+                restate_pb::INGRESS_SERVICE_NAME.to_string(),
                 ServiceSchemas::new_ingress_only(
-                    pb::DESCRIPTOR_POOL
-                        .get_service_by_name(pb::INGRESS_SERVICE_NAME)
+                    restate_pb::DESCRIPTOR_POOL
+                        .get_service_by_name(restate_pb::INGRESS_SERVICE_NAME)
                         .expect("The built-in descriptor pool should contain the ingress service"),
                 ),
             );

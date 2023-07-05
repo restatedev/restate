@@ -181,23 +181,9 @@ pub trait ServiceInvocationFactory {
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
-    pub(super) mod pb {
-        #![allow(warnings)]
-        #![allow(clippy::all)]
-        #![allow(unknown_lints)]
-        include!(concat!(env!("OUT_DIR"), "/greeter.rs"));
-    }
-
-    use prost_reflect::DescriptorPool;
     use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
     use restate_schema_api::key::ServiceInstanceType;
     use restate_schema_impl::{Schemas, ServiceRegistrationRequest};
-
-    static DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin"));
-
-    pub(super) fn test_descriptor_pool() -> DescriptorPool {
-        DescriptorPool::decode(DESCRIPTOR).unwrap()
-    }
 
     pub(super) fn test_schemas() -> Schemas {
         let schemas = Schemas::default();
@@ -213,7 +199,7 @@ mod mocks {
                     "greeter.Greeter".to_string(),
                     ServiceInstanceType::Singleton,
                 )],
-                test_descriptor_pool(),
+                restate_pb::mocks::DESCRIPTOR_POOL.clone(),
             )
             .unwrap();
 

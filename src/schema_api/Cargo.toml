@@ -18,7 +18,6 @@ endpoint = ["dep:restate_types", "dep:http", "dep:base64"]
 service = ["dep:restate_types"]
 json_conversion = ["prost-reflect/serde", "dep:anyhow"]
 proto_symbol = ["dep:bytes"]
-pb = ["prost-reflect", "dep:once_cell", "dep:tonic"]
 mocks = []
 
 [dependencies]
@@ -26,7 +25,6 @@ anyhow = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
-once_cell = { version = "1.18", optional = true }
 prost = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }
 restate_types = { workspace = true, optional = true }
@@ -35,8 +33,3 @@ serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
-tonic = { workspace = true, optional = true, features = ["codegen", "prost"] }
-
-[build-dependencies]
-prost-build = { workspace = true }
-tonic-build = { workspace = true }

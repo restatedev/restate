@@ -15,7 +15,8 @@ options_schema = ["dep:schemars"]
 # Restate
 restate_types = { workspace = true, features = ["tonic_conversions"] }
 restate_errors = { workspace = true }
-restate_schema_api = { workspace = true, features = ["json_conversion", "key_extraction" ,"proto_symbol", "pb"]}
+restate_schema_api = { workspace = true, features = ["json_conversion", "key_extraction" ,"proto_symbol"]}
+restate_pb = { workspace = true }
 
 # Encoding/Decoding
 bytes = { workspace = true }
@@ -63,7 +64,4 @@ tonic = { workspace = true, features = ["default"] }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 restate_schema_impl = { workspace = true }
-
-[build-dependencies]
-prost-build = { workspace = true }
-tonic-build = { workspace = true }
+restate_pb = { workspace = true, features = ["mocks"] }

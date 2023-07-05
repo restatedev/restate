@@ -160,26 +160,12 @@ mod tests {
     use super::*;
 
     use crate::schemas_impl::{ServiceLocation, ServiceSchemas};
-    use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
+    use prost_reflect::{MethodDescriptor, ServiceDescriptor};
     use restate_schema_api::key::ServiceInstanceType;
     use serde_json::json;
 
-    mod pb {
-        #![allow(warnings)]
-        #![allow(clippy::all)]
-        #![allow(unknown_lints)]
-        include!(concat!(env!("OUT_DIR"), "/greeter.rs"));
-    }
-
-    static DESCRIPTOR: &[u8] =
-        include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set_test.bin"));
-
-    pub(super) fn test_descriptor_pool() -> DescriptorPool {
-        DescriptorPool::decode(DESCRIPTOR).unwrap()
-    }
-
     fn greeter_service_descriptor() -> ServiceDescriptor {
-        test_descriptor_pool()
+        restate_pb::mocks::DESCRIPTOR_POOL
             .services()
             .find(|svc| svc.full_name() == "greeter.Greeter")
             .unwrap()
@@ -228,9 +214,9 @@ mod tests {
             DynamicMessage::decode(greeter_greet_method_descriptor().input(), protobuf).unwrap();
         assert_eq!(
             dynamic_message
-                .transcode_to::<pb::GreetingRequest>()
+                .transcode_to::<restate_pb::mocks::greeter::GreetingRequest>()
                 .unwrap(),
-            pb::GreetingRequest {
+            restate_pb::mocks::greeter::GreetingRequest {
                 person: "Francesco".to_string()
             }
         );
@@ -262,12 +248,12 @@ mod tests {
             DynamicMessage::decode(greeter_greet_method_descriptor().input(), protobuf).unwrap();
         assert_eq!(
             dynamic_message
-                .transcode_to::<restate_schema_api::pb::restate::services::InvokeRequest>()
+                .transcode_to::<restate_pb::restate::services::InvokeRequest>()
                 .unwrap(),
-            restate_schema_api::pb::restate::services::InvokeRequest {
+            restate_pb::restate::services::InvokeRequest {
                 service: "greeter.Greeter".to_string(),
                 method: "Greet".to_string(),
-                argument: pb::GreetingRequest {
+                argument: restate_pb::mocks::greeter::GreetingRequest {
                     person: "Francesco".to_string(),
                 }
                 .encode_to_vec()
@@ -281,7 +267,7 @@ mod tests {
         let schemas = schemas_mock();
 
         let pb_response = Bytes::from(
-            pb::GreetingResponse {
+            restate_pb::mocks::greeter::GreetingResponse {
                 greeting: "Hello Francesco".to_string(),
             }
             .encode_to_vec(),

@@ -188,10 +188,10 @@ mod tests {
     use serde_json::json;
 
     fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<Result<IngressResponse, Status>> {
-        let person = mocks::pb::GreetingRequest::decode(ingress_req.1)
+        let person = restate_pb::mocks::greeter::GreetingRequest::decode(ingress_req.1)
             .unwrap()
             .person;
-        ok(mocks::pb::GreetingResponse {
+        ok(restate_pb::mocks::greeter::GreetingResponse {
             greeting: format!("Hello {person}"),
         }
         .encode_to_vec()
@@ -274,7 +274,7 @@ mod tests {
             .method(Method::POST)
             .header(CONTENT_TYPE, "application/protobuf")
             .body(
-                mocks::pb::GreetingRequest {
+                restate_pb::mocks::greeter::GreetingRequest {
                     person: "Francesco".to_string(),
                 }
                 .encode_to_vec()
@@ -296,7 +296,7 @@ mod tests {
         .await;
 
         let body = res.data().await.unwrap().unwrap();
-        let pb_body: mocks::pb::GreetingResponse = Message::decode(body).unwrap();
+        let pb_body: restate_pb::mocks::greeter::GreetingResponse = Message::decode(body).unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(pb_body.greeting.as_str(), "Hello Francesco");

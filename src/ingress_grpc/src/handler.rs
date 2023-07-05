@@ -13,8 +13,8 @@ use http_body::Body;
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
+use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
 use restate_schema_api::json::JsonMapperResolver;
-use restate_schema_api::pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_types::identifiers::IngressId;
 use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
@@ -156,7 +156,7 @@ where
 
         // --- Special Restate services
         // Reflections
-        if restate_schema_api::pb::REFLECTION_SERVICE_NAME == service_name {
+        if restate_pb::REFLECTION_SERVICE_NAME == service_name {
             return self
                 .reflection_server
                 .call(req)
@@ -203,7 +203,7 @@ where
 
                 // Ingress built-in service
                 if is_ingress_invoke(&service_name, &method_name) {
-                    let invoke_request = restate_schema_api::pb::restate::services::InvokeRequest::decode(req_payload)
+                    let invoke_request = restate_pb::restate::services::InvokeRequest::decode(req_payload)
                         .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
                     service_name = invoke_request.service;
@@ -249,7 +249,7 @@ where
                         return Err(Status::unavailable("Unavailable"));
                     }
                     return Ok(
-                        restate_schema_api::pb::restate::services::InvokeResponse {
+                        restate_pb::restate::services::InvokeResponse {
                             sid,
                         }.encode_to_vec().into()
                     )

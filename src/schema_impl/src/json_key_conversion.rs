@@ -132,27 +132,17 @@ mod tests {
 
     use key_extraction::extract_impls::extract;
     use prost::Message;
-    use prost_reflect::{DescriptorPool, MessageDescriptor, ServiceDescriptor};
+    use prost_reflect::{MessageDescriptor, ServiceDescriptor};
+    use restate_pb::mocks::test::*;
     use restate_schema_api::key::KeyStructure;
     use serde::Serialize;
     use std::collections::{BTreeMap, HashMap};
     use uuid::Uuid;
 
-    mod pb {
-        #![allow(warnings)]
-        #![allow(clippy::all)]
-        #![allow(unknown_lints)]
-        include!(concat!(env!("OUT_DIR"), "/test.rs"));
-    }
-    use pb::*;
-
-    static DESCRIPTOR: &[u8] =
-        include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set_test.bin"));
     static METHOD_NAME: &str = "Test";
 
     fn test_service_descriptor() -> ServiceDescriptor {
-        DescriptorPool::decode(DESCRIPTOR)
-            .unwrap()
+        restate_pb::mocks::DESCRIPTOR_POOL
             .get_service_by_name("test.TestService")
             .unwrap()
     }

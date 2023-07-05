@@ -1,3 +1,5 @@
+//! This module contains Restate public protobuf definitions
+
 use once_cell::sync::Lazy;
 use prost_reflect::DescriptorPool;
 use std::convert::AsRef;
@@ -28,3 +30,6 @@ pub static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
 
 pub const INGRESS_SERVICE_NAME: &str = "dev.restate.Ingress";
 pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1alpha.ServerReflection";
+
+#[cfg(feature = "mocks")]
+pub mod mocks;

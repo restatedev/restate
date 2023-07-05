@@ -191,7 +191,7 @@ mod tests {
         let cmd_fut = tokio::spawn(async move {
             let (service_invocation, response_tx) = cmd_fut.await.unwrap().unwrap().into_inner();
             response_tx
-                .send(Ok(mocks::pb::GreetingResponse {
+                .send(Ok(restate_pb::mocks::greeter::GreetingResponse {
                     greeting: "Igal".to_string(),
                 }
                 .encode_to_vec()
@@ -221,7 +221,8 @@ mod tests {
         );
         assert_eq!(service_invocation.method_name, "Greet");
         let greeting_req =
-            mocks::pb::GreetingRequest::decode(&mut service_invocation.argument).unwrap();
+            restate_pb::mocks::greeter::GreetingRequest::decode(&mut service_invocation.argument)
+                .unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
 
         // Read the http_response_future
@@ -278,7 +279,8 @@ mod tests {
         );
         assert_eq!(service_invocation.method_name, "Greet");
         let greeting_req =
-            mocks::pb::GreetingRequest::decode(&mut service_invocation.argument).unwrap();
+            restate_pb::mocks::greeter::GreetingRequest::decode(&mut service_invocation.argument)
+                .unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
         assert!(service_invocation.response_sink.is_none());
 
@@ -302,7 +304,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn test_grpc_call() {
-        let expected_greeting_response = mocks::pb::GreetingResponse {
+        let expected_greeting_response = restate_pb::mocks::greeter::GreetingResponse {
             greeting: "Igal".to_string(),
         };
         let encoded_greeting_response = Bytes::from(expected_greeting_response.encode_to_vec());
@@ -314,13 +316,14 @@ mod tests {
             service_invocation
         });
 
-        let mut client =
-            mocks::pb::greeter_client::GreeterClient::connect(format!("http://{address}"))
-                .await
-                .unwrap();
+        let mut client = restate_pb::mocks::greeter::greeter_client::GreeterClient::connect(
+            format!("http://{address}"),
+        )
+        .await
+        .unwrap();
 
         let response = client
-            .greet(mocks::pb::GreetingRequest {
+            .greet(restate_pb::mocks::greeter::GreetingRequest {
                 person: "Francesco".to_string(),
             })
             .await
@@ -333,7 +336,8 @@ mod tests {
         );
         assert_eq!(service_invocation.method_name, "Greet");
         let greeting_req =
-            mocks::pb::GreetingRequest::decode(&mut service_invocation.argument).unwrap();
+            restate_pb::mocks::greeter::GreetingRequest::decode(&mut service_invocation.argument)
+                .unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
 
         // Read the http_response_future

@@ -81,25 +81,15 @@ pub(crate) mod expand_impls {
 
         use key_extraction::extract_impls::extract;
         use prost::Message;
-        use prost_reflect::DescriptorPool;
+        use restate_pb::mocks::test::*;
+        use restate_pb::mocks::DESCRIPTOR_POOL;
         use restate_schema_api::key::KeyStructure;
         use std::collections::{BTreeMap, HashMap};
 
-        mod pb {
-            #![allow(warnings)]
-            #![allow(clippy::all)]
-            #![allow(unknown_lints)]
-            include!(concat!(env!("OUT_DIR"), "/test.rs"));
-        }
-        use pb::*;
-
-        static DESCRIPTOR: &[u8] =
-            include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set_test.bin"));
         static METHOD_NAME: &str = "test";
 
         fn test_descriptor_message() -> MessageDescriptor {
-            DescriptorPool::decode(DESCRIPTOR)
-                .unwrap()
+            DESCRIPTOR_POOL
                 .get_message_by_name("test.TestMessage")
                 .unwrap()
         }

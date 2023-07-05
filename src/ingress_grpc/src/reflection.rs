@@ -6,10 +6,10 @@
 
 use futures::Stream;
 use pin_project::pin_project;
-use restate_schema_api::pb::grpc::reflection::server_reflection_request::MessageRequest;
-use restate_schema_api::pb::grpc::reflection::server_reflection_response::MessageResponse;
-use restate_schema_api::pb::grpc::reflection::server_reflection_server::*;
-use restate_schema_api::pb::grpc::reflection::*;
+use restate_pb::grpc::reflection::server_reflection_request::MessageRequest;
+use restate_pb::grpc::reflection::server_reflection_response::MessageResponse;
+use restate_pb::grpc::reflection::server_reflection_server::*;
+use restate_pb::grpc::reflection::*;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
@@ -27,7 +27,7 @@ fn handle_request<ProtoSymbols: ProtoSymbolResolver>(
     proto_symbols: &ProtoSymbols,
     request: &MessageRequest,
 ) -> Result<MessageResponse, Status> {
-    use restate_schema_api::pb::grpc::reflection::*;
+    use restate_pb::grpc::reflection::*;
 
     Ok(match request {
         MessageRequest::FileByFilename(f) => proto_symbols
@@ -60,11 +60,7 @@ fn handle_request<ProtoSymbols: ProtoSymbolResolver>(
                 service: proto_symbols
                     .list_services()
                     .into_iter()
-                    .map(
-                        |svc| restate_schema_api::pb::grpc::reflection::ServiceResponse {
-                            name: svc,
-                        },
-                    )
+                    .map(|svc| restate_pb::grpc::reflection::ServiceResponse { name: svc })
                     .collect(),
             })
         }
