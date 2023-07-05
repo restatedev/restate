@@ -47,6 +47,7 @@ enum MetaHandleRequest {
     DiscoverEndpoint {
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
+        force: bool,
     },
 }
 
@@ -64,10 +65,12 @@ impl MetaHandle {
         &self,
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
+        force: bool,
     ) -> Result<DiscoverEndpointResponse, MetaError> {
         let (cmd, response_tx) = Command::prepare(MetaHandleRequest::DiscoverEndpoint {
             uri,
             additional_headers,
+            force,
         });
         self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
         response_tx
@@ -144,8 +147,8 @@ where
                     let (req, mut replier) = cmd.expect("This channel should never be closed").into_inner();
 
                     let res = match req {
-                        MetaHandleRequest::DiscoverEndpoint { uri, additional_headers } => MetaHandleResponse::DiscoverEndpoint(
-                            self.discover_endpoint(uri, additional_headers, replier.aborted()).await
+                        MetaHandleRequest::DiscoverEndpoint { uri, additional_headers, force } => MetaHandleResponse::DiscoverEndpoint(
+                            self.discover_endpoint(uri, additional_headers, force, replier.aborted()).await
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
@@ -174,6 +177,7 @@ where
         &mut self,
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
+        force: bool,
         abort_signal: impl Future<Output = ()>,
     ) -> Result<DiscoverEndpointResponse, MetaError> {
         debug!(http.url = %uri, "Discovering Service endpoint");
@@ -198,7 +202,7 @@ where
                 })
                 .collect::<Vec<_>>(),
             discovered_metadata.descriptor_pool,
-            false,
+            force,
         )?;
 
         // Compute the response

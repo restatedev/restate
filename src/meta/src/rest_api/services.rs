@@ -26,6 +26,14 @@ pub struct RegisterServiceEndpointRequest {
     ///
     /// Additional headers added to the discover/invoke requests to the service endpoint.
     pub additional_headers: Option<HashMap<String, String>>,
+    /// # Force
+    ///
+    /// If `true`, it will override, if existing, any endpoint using the same `uri`.
+    /// Beware that this can lead in-flight invocations to an unrecoverable error state.
+    ///
+    /// See the [versioning documentation](http://restate.dev/docs/deployment-operations/versioning) for more information.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -66,7 +74,7 @@ pub async fn discover_service_endpoint<S, W>(
 
     let registration_result = state
         .meta_handle()
-        .register(payload.uri, headers)
+        .register(payload.uri, headers, payload.force)
         .await?;
 
     Ok(RegisterServiceEndpointResponse {
