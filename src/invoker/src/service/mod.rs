@@ -207,7 +207,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
                     state_reader,
                     entry_enricher,
                 },
-                default_retry_policy: retry_policy,
+                retry_policy,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
                 quota: quota::InvokerConcurrencyQuota::new(concurrency_limit),
@@ -296,7 +296,7 @@ struct ServiceInner<EndpointMetadataRegistry, InvocationTaskRunner> {
     invocation_task_runner: InvocationTaskRunner,
 
     // Invoker service arguments
-    default_retry_policy: RetryPolicy,
+    retry_policy: RetryPolicy,
 
     // Invoker state machine
     invocation_tasks: JoinSet<()>,
@@ -449,7 +449,7 @@ where
             partition,
             service_invocation_id,
             journal,
-            InvocationStateMachine::create,
+            InvocationStateMachine::create(self.retry_policy.clone()),
         )
         .await
     }
@@ -791,7 +791,7 @@ where
         partition: PartitionLeaderEpoch,
         service_invocation_id: ServiceInvocationId,
         journal: InvokeInputJournal,
-        state_machine_factory: impl FnOnce(RetryPolicy) -> InvocationStateMachine,
+        mut ism: InvocationStateMachine,
     ) {
         // Resolve metadata
         let endpoint_metadata = match self
@@ -806,23 +806,11 @@ where
                 );
 
                 // This method needs a state machine
-                self.handle_error_event(
-                    partition,
-                    service_invocation_id,
-                    err,
-                    state_machine_factory(self.default_retry_policy.clone()),
-                )
-                .await;
+                self.handle_error_event(partition, service_invocation_id, err, ism)
+                    .await;
                 return;
             }
         };
-
-        let retry_policy = endpoint_metadata
-            .retry_policy()
-            .unwrap_or(&self.default_retry_policy)
-            .clone();
-
-        let mut ism = state_machine_factory(retry_policy);
 
         // Start the InvocationTask
         let (completions_tx, completions_rx) = match endpoint_metadata.protocol_type() {
@@ -876,8 +864,7 @@ where
                     partition,
                     service_invocation_id,
                     InvokeInputJournal::NoCachedJournal,
-                    // In case we're retrying, we don't modify the retry policy
-                    |_| ism,
+                    ism,
                 )
                 .await;
             } else {
@@ -939,7 +926,7 @@ mod tests {
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner,
-                default_retry_policy,
+                retry_policy: default_retry_policy,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
                 quota: InvokerConcurrencyQuota::new(concurrency_limit),
