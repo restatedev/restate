@@ -53,6 +53,7 @@ impl FileMetaStorage {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(transparent)]
 struct CommandsFile(Vec<SchemasUpdateCommand>);
 
 impl MetaStorage for FileMetaStorage {
