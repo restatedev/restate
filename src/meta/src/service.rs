@@ -127,7 +127,7 @@ where
 
     pub async fn init(&mut self) -> Result<(), MetaError> {
         self.reload().await.map_err(|e| {
-            error_it!(e);
+            error_it!(e, "Error when reloading the Meta Storage");
             e
         })
     }
