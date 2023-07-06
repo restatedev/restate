@@ -25,6 +25,11 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 // Just an alias
 pub type EntryIndex = u32;
 
+/// Unique Id of an endpoint.
+///
+/// Currently this will contain the endpoint url authority and path base64 encoded, but this might change in future.
+pub type EndpointId = String;
+
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.
 pub type PartitionKey = u32;

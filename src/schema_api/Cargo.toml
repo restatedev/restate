@@ -1,0 +1,26 @@
+[package]
+name = "restate_schema_api"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+key_extraction = ["dep:bytes", "dep:thiserror", "dep:anyhow", "dep:prost"]
+key_expansion = ["dep:bytes", "dep:thiserror", "dep:prost", "prost-reflect", "dep:anyhow"]
+json_key_conversion = ["key_extraction", "key_expansion", "dep:serde_json", "dep:thiserror"]
+endpoint = ["dep:restate_types"]
+json_conversion = ["prost-reflect/serde", "dep:anyhow"]
+proto_symbol = ["dep:bytes"]
+
+[dependencies]
+anyhow = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+prost-reflect = { workspace = true, optional = true }
+restate_types = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }

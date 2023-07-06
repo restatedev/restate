@@ -1,5 +1,6 @@
 //! Restate interacts with Service endpoints to process invocations. This module contains entities defining service endpoints.
 
+use crate::identifiers::EndpointId;
 use crate::retries::RetryPolicy;
 use http::header::{HeaderName, HeaderValue};
 use http::Uri;
@@ -121,7 +122,7 @@ impl EndpointMetadata {
         &self.delivery_options.additional_headers
     }
 
-    pub fn id(&self) -> String {
+    pub fn id(&self) -> EndpointId {
         use base64::Engine;
 
         // For the time being we generate this from the URI
