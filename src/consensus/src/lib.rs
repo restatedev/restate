@@ -104,8 +104,7 @@ where
         loop {
             tokio::select! {
                 proposal = proposal_rx.recv() => {
-                    let fmt = format!("{proposal:?}");
-                    trace!(proposal = fmt, "Received proposal");
+                    trace!(?proposal, "Received proposal");
 
                     let (target_peer_id, proposal) = proposal.expect("Consensus owns the proposal sender, that's why the receiver should never be closed");
 
@@ -114,21 +113,16 @@ where
                     if let Some(sender) = cmd_log.append_cmd(Command::Apply(proposal)) {
                         waiting_for_send_capacity.push(sender.reserve_owned())
                     }
-
-                    trace!(proposal = fmt, "Processed proposal")
                 },
                 raft_msg = raft_rx.recv() => {
                     if let Some((target_peer_id, raft_msg)) = raft_msg {
-                        let fmt = format!("{raft_msg:?}");
-                        trace!(raft_msg = fmt, "Received raft message");
+                        trace!(?raft_msg, "Received raft message");
 
                         let cmd_log = cmd_logs.get_mut(&target_peer_id).expect("Peer id '{target}' is not known. This is a bug.");
 
                         if let Some(sender) = cmd_log.append_cmd(Command::Apply(raft_msg)) {
                             waiting_for_send_capacity.push(sender.reserve_owned())
                         }
-
-                        trace!(raft_msg = fmt, "Processed raft message");
                     } else {
                         debug!("Shutting consensus down.");
                         break;
