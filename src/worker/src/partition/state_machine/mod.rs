@@ -1,17 +1,11 @@
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use restate_common::errors::{InvocationError, InvocationErrorCode, RestateErrorCode};
-use restate_common::journal::raw::{RawEntryCodec, RawEntryCodecError};
-use restate_common::journal::{
-    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, Entry,
-    GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
-};
-use restate_common::types::{
-    CompletionResult, EnrichedEntryHeader, EnrichedRawEntry, EntryIndex, InvocationId,
-    InvocationResponse, MessageIndex, MillisSinceEpoch, ResolutionResult, ResponseResult,
-    ServiceId, ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, SpanRelation,
+use restate_types::errors::{InvocationError, InvocationErrorCode, RestateErrorCode};
+use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
+use restate_types::journal::{
+    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
+    Entry, GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
 };
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
@@ -27,6 +21,14 @@ use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
+use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId, ServiceInvocationId};
+use restate_types::invocation::{
+    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext, SpanRelation,
+};
+use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
+use restate_types::message::MessageIndex;
+use restate_types::time::MillisSinceEpoch;
 
 const KILLED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
     InvocationErrorCode::Restate(RestateErrorCode::Killed),

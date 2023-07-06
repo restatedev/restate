@@ -2,7 +2,7 @@ use crate::keys::TableKey;
 use crate::scan::TableScan::{KeyPrefix, KeyRangeInclusive, Partition, PartitionKeyRange};
 use crate::TableKind;
 use bytes::BytesMut;
-use restate_common::types::{PartitionId, PartitionKey};
+use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::ops::RangeInclusive;
 
 pub enum TableScan<K> {

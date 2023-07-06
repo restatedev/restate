@@ -7,10 +7,10 @@ use crate::{Result, TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
-use restate_common::types::PartitionId;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
+use restate_types::identifiers::PartitionId;
 use uuid::Uuid;
 
 define_table_key!(
@@ -81,7 +81,7 @@ fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
     let invocation_uuid = Uuid::from_slice(key.invocation_id_ok_or()?.as_ref())
         .map_err(|error| StorageError::Generic(error.into()))?;
     let timer_key = TimerKey {
-        service_invocation_id: restate_common::types::ServiceInvocationId::new(
+        service_invocation_id: restate_types::identifiers::ServiceInvocationId::new(
             key.service_name.unwrap(),
             key.service_key.unwrap(),
             invocation_uuid,
@@ -144,7 +144,7 @@ fn decode_seq_timer_key_value(k: &[u8], v: &[u8]) -> Result<(TimerKey, Timer)> {
 mod tests {
     use super::*;
 
-    use restate_common::types::ServiceInvocationId;
+    use restate_types::identifiers::ServiceInvocationId;
 
     #[test]
     fn round_trip() {

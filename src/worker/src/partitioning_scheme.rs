@@ -1,6 +1,6 @@
 use futures::future;
-use restate_common::types::{PartitionId, PartitionKey, PeerId};
 use restate_network::{PartitionTable, PartitionTableError};
+use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
 use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone)]
@@ -108,9 +108,9 @@ impl Iterator for Partitioner {
 #[cfg(test)]
 mod tests {
     use crate::partitioning_scheme::{FixedConsecutivePartitions, Partitioner};
-    use restate_common::types::{PartitionKey, PeerId};
     use restate_network::PartitionTable;
     use restate_test_util::test;
+    use restate_types::identifiers::{PartitionKey, PeerId};
 
     #[test]
     fn partitioner_produces_consecutive_ranges() {

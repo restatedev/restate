@@ -2,10 +2,10 @@ use bytes::Bytes;
 use mlua::prelude::*;
 use mlua::{Table, Value};
 
-use restate_common::errors::InvocationError;
-use restate_common::journal::raw::RawEntryCodec;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{Decoder, MessageType, ProtocolMessage};
+use restate_types::errors::InvocationError;
+use restate_types::journal::raw::RawEntryCodec;
 
 #[derive(Debug, thiserror::Error)]
 #[error("unexpected lua value received")]

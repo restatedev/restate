@@ -7,17 +7,19 @@ use bytes::Bytes;
 use hyper::Uri;
 use mocks::{InMemoryJournalStorage, InMemoryStateStorage, SimulatorAction};
 use prost::Message;
-use restate_common::journal::raw::RawEntryCodec;
-use restate_common::journal::{
-    Completion, Entry, EntryResult, GetStateEntry, GetStateValue, OutputStreamEntry,
-};
-use restate_common::service_metadata::{DeliveryOptions, EndpointMetadata, ProtocolType};
-use restate_common::types::{CompletionResult, EnrichedEntryHeader, ServiceInvocationId};
 use restate_invoker::entry_enricher::mocks::MockEntryEnricher;
 use restate_invoker::{ChannelServiceHandle, Effect, EffectKind, Service};
 use restate_service_metadata::InMemoryServiceEndpointRegistry;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_test_util::{assert, assert_eq, let_assert, test};
+use restate_types::identifiers::ServiceInvocationId;
+use restate_types::journal::enriched::EnrichedEntryHeader;
+use restate_types::journal::raw::RawEntryCodec;
+use restate_types::journal::{
+    Completion, CompletionResult, Entry, EntryResult, GetStateEntry, GetStateValue,
+    OutputStreamEntry,
+};
+use restate_types::service_endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
 use uuid::Uuid;
 
 type PartitionProcessorSimulator =

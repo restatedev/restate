@@ -1,6 +1,6 @@
 use crate::routing::send_to_shuffle;
 use crate::{ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress};
-use restate_common::types::PeerId;
+use restate_types::identifiers::PeerId;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;

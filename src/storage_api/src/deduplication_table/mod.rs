@@ -1,5 +1,5 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use restate_common::types::PartitionId;
+use restate_types::identifiers::PartitionId;
 
 pub trait DeduplicationTable {
     fn get_sequence_number(

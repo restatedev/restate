@@ -1,6 +1,6 @@
 extern crate core;
 
-use restate_common::types::MillisSinceEpoch;
+use restate_types::time::MillisSinceEpoch;
 use std::fmt::Debug;
 use std::hash::Hash;
 use tokio_stream::Stream;

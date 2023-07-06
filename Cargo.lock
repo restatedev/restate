@@ -1897,9 +1897,9 @@ dependencies = [
 
 [[package]]
 name = "hermit-abi"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fed44880c466736ef9a5c5b5facefb5ed0785676d0c02d612db14e54f0d84286"
+checksum = "443144c8cdadd93ebf52ddb4056d257f5b52c04d3c804e657d19eb73fc33668b"
 
 [[package]]
 name = "hex"
@@ -2082,7 +2082,7 @@ version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c66c74d2ae7e79a5a8f7ac924adbe38ee42a859c6539ad869eb51f0b52dc220"
 dependencies = [
- "hermit-abi 0.3.1",
+ "hermit-abi 0.3.2",
  "libc",
  "windows-sys 0.48.0",
 ]
@@ -2099,7 +2099,7 @@ version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adcf93614601c8129ddf72e2d5633df827ba6551541c6d8c59520a371475be1f"
 dependencies = [
- "hermit-abi 0.3.1",
+ "hermit-abi 0.3.2",
  "io-lifetimes",
  "rustix",
  "windows-sys 0.48.0",
@@ -3476,11 +3476,11 @@ dependencies = [
  "futures-util",
  "humantime",
  "pin-project",
- "restate_common",
  "restate_errors",
  "restate_fs_util",
  "restate_meta",
  "restate_tracing_instrumentation",
+ "restate_types",
  "restate_worker",
  "schemars",
  "serde",
@@ -3519,29 +3519,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_common"
-version = "0.1.5"
-dependencies = [
- "anyhow",
- "base64 0.21.0",
- "bytes",
- "bytestring",
- "http",
- "humantime",
- "opentelemetry_api",
- "schemars",
- "serde",
- "serde_with",
- "thiserror",
- "tokio",
- "tonic 0.9.2",
- "tracing",
- "tracing-opentelemetry",
- "uuid",
- "xxhash-rust",
-]
-
-[[package]]
 name = "restate_consensus"
 version = "0.1.5"
 dependencies = [
@@ -3549,8 +3526,8 @@ dependencies = [
  "futures",
  "futures-sink",
  "pin-project",
- "restate_common",
  "restate_test_util",
+ "restate_types",
  "thiserror",
  "tokio",
  "tracing",
@@ -3621,11 +3598,11 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-reflect",
- "restate_common",
  "restate_errors",
  "restate_futures_util",
  "restate_service_metadata",
  "restate_test_util",
+ "restate_types",
  "schemars",
  "serde",
  "serde_json",
@@ -3661,7 +3638,6 @@ dependencies = [
  "opentelemetry-http",
  "paste",
  "prost",
- "restate_common",
  "restate_errors",
  "restate_fs_util",
  "restate_futures_util",
@@ -3671,6 +3647,7 @@ dependencies = [
  "restate_service_protocol",
  "restate_test_util",
  "restate_timer_queue",
+ "restate_types",
  "schemars",
  "serde",
  "serde_with",
@@ -3694,7 +3671,6 @@ dependencies = [
  "hyper",
  "okapi-operation",
  "prost-reflect",
- "restate_common",
  "restate_errors",
  "restate_fs_util",
  "restate_futures_util",
@@ -3704,6 +3680,7 @@ dependencies = [
  "restate_service_key_extractor",
  "restate_service_metadata",
  "restate_service_protocol",
+ "restate_types",
  "restate_worker_api",
  "schemars",
  "serde",
@@ -3725,8 +3702,8 @@ dependencies = [
  "drain",
  "futures",
  "pin-project",
- "restate_common",
  "restate_test_util",
+ "restate_types",
  "thiserror",
  "tokio",
  "tracing",
@@ -3779,7 +3756,7 @@ version = "0.1.5"
 dependencies = [
  "arc-swap",
  "prost-reflect",
- "restate_common",
+ "restate_types",
 ]
 
 [[package]]
@@ -3796,11 +3773,11 @@ dependencies = [
  "prost-build",
  "prost-reflect",
  "prost-types",
- "restate_common",
  "restate_errors",
  "restate_hyper_util",
  "restate_service_key_extractor",
  "restate_test_util",
+ "restate_types",
  "size",
  "thiserror",
  "tokio",
@@ -3816,7 +3793,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "futures-util",
- "restate_common",
+ "restate_types",
  "thiserror",
 ]
 
@@ -3830,11 +3807,11 @@ dependencies = [
  "futures",
  "prost",
  "prost-build",
- "restate_common",
  "restate_errors",
  "restate_storage_api",
  "restate_storage_rocksdb",
  "restate_test_util",
+ "restate_types",
  "rocksdb",
  "schemars",
  "semver",
@@ -3859,8 +3836,8 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
- "restate_common",
  "restate_storage_api",
+ "restate_types",
  "thiserror",
 ]
 
@@ -3878,10 +3855,10 @@ dependencies = [
  "num-bigint",
  "paste",
  "prost",
- "restate_common",
  "restate_errors",
  "restate_storage_api",
  "restate_storage_proto",
+ "restate_types",
  "rocksdb",
  "schemars",
  "serde",
@@ -3910,8 +3887,8 @@ dependencies = [
  "futures-util",
  "pin-project",
  "priority-queue",
- "restate_common",
  "restate_test_util",
+ "restate_types",
  "schemars",
  "serde",
  "thiserror",
@@ -3950,6 +3927,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate_types"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "base64 0.21.0",
+ "bytes",
+ "bytestring",
+ "http",
+ "humantime",
+ "opentelemetry_api",
+ "schemars",
+ "serde",
+ "serde_with",
+ "thiserror",
+ "tokio",
+ "tonic 0.9.2",
+ "tracing",
+ "tracing-opentelemetry",
+ "uuid",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "restate_worker"
 version = "0.1.5"
 dependencies = [
@@ -3962,7 +3962,6 @@ dependencies = [
  "futures",
  "opentelemetry_api",
  "pin-project",
- "restate_common",
  "restate_consensus",
  "restate_ingress_grpc",
  "restate_invoker",
@@ -3975,6 +3974,7 @@ dependencies = [
  "restate_storage_rocksdb",
  "restate_test_util",
  "restate_timer",
+ "restate_types",
  "restate_worker_api",
  "schemars",
  "serde",
@@ -3989,7 +3989,7 @@ dependencies = [
 name = "restate_worker_api"
 version = "0.1.5"
 dependencies = [
- "restate_common",
+ "restate_types",
  "thiserror",
 ]
 
@@ -4336,8 +4336,8 @@ version = "0.1.5"
 dependencies = [
  "bytes",
  "mlua",
- "restate_common",
  "restate_service_protocol",
+ "restate_types",
  "thiserror",
 ]
 
@@ -5524,8 +5524,8 @@ dependencies = [
  "drain",
  "reqwest",
  "restate",
- "restate_common",
  "restate_meta",
+ "restate_types",
  "restate_worker_api",
  "schemars",
  "serde_json",

@@ -4,10 +4,10 @@ use futures::Stream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use restate_common::journal::raw::PlainRawEntry;
-use restate_common::retry_policy::RetryPolicy;
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_service_metadata::ServiceEndpointRegistry;
+use restate_types::journal::raw::PlainRawEntry;
+use restate_types::retries::RetryPolicy;
 use serde_with::serde_as;
 
 /// # Invoker options

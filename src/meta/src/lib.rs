@@ -4,11 +4,11 @@ mod storage;
 
 use codederror::CodedError;
 use rest_api::MetaRestEndpoint;
-use restate_common::retry_policy::RetryPolicy;
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_ingress_grpc::ReflectionRegistry;
 use restate_service_key_extractor::KeyExtractorsRegistry;
 use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
+use restate_types::retries::RetryPolicy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use service::MetaService;

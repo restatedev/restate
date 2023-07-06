@@ -1,5 +1,6 @@
-use restate_common::journal::raw::PlainRawEntry;
-use restate_common::types::{EnrichedRawEntry, ServiceInvocationSpanContext};
+use restate_types::invocation::ServiceInvocationSpanContext;
+use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::raw::PlainRawEntry;
 
 pub trait EntryEnricher {
     fn enrich_entry(
@@ -12,12 +13,11 @@ pub trait EntryEnricher {
 #[cfg(any(test, feature = "mocks"))]
 pub mod mocks {
     use super::*;
-
-    use restate_common::journal::raw::RawEntryHeader;
-    use restate_common::types::{
-        EnrichedEntryHeader, EnrichedRawEntry, RawEntry, ResolutionResult,
-        ServiceInvocationSpanContext,
+    use restate_types::invocation::ServiceInvocationSpanContext;
+    use restate_types::journal::enriched::{
+        EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult,
     };
+    use restate_types::journal::raw::{RawEntry, RawEntryHeader};
 
     #[derive(Debug, Default, Clone)]
     pub struct MockEntryEnricher;

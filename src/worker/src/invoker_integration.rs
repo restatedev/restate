@@ -1,11 +1,10 @@
 use assert2::let_assert;
-use restate_common::journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
-use restate_common::journal::InvokeRequest;
-use restate_common::journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
-use restate_common::types::{
-    EnrichedEntryHeader, EnrichedRawEntry, InvocationId, RawEntry, ResolutionResult,
-    ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
-};
+use restate_types::identifiers::{InvocationId, ServiceInvocationId};
+use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
+use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
+use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
+use restate_types::journal::InvokeRequest;
+use restate_types::journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone)]

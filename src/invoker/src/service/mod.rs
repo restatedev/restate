@@ -7,19 +7,18 @@ use drain::ReleaseShutdown;
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
-use restate_common::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
-use restate_common::journal::raw::Header;
-use restate_common::journal::Completion;
-use restate_common::retry_policy::RetryPolicy;
-use restate_common::service_metadata::{EndpointMetadata, ProtocolType};
-use restate_common::types::{
-    EnrichedRawEntry, EntryIndex, PartitionLeaderEpoch, ServiceInvocationId,
-};
 use restate_errors::warn_it;
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_queue::SegmentQueue;
 use restate_service_metadata::ServiceEndpointRegistry;
 use restate_timer_queue::TimerQueue;
+use restate_types::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
+use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
+use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::Completion;
+use restate_types::retries::RetryPolicy;
+use restate_types::service_endpoint::{EndpointMetadata, ProtocolType};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
@@ -508,7 +507,7 @@ where
             restate.invocation.sid = %service_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.index = entry_index,
-            restate.journal.entry_type = ?entry.header.to_entry_type(),
+            restate.journal.entry_type = ?entry.ty(),
         )
     )]
     async fn handle_new_entry(
@@ -908,11 +907,18 @@ mod tests {
     use crate::service::invocation_task::InvocationTaskError;
     use bytes::Bytes;
     use quota::InvokerConcurrencyQuota;
-    use restate_common::types::{EnrichedEntryHeader, InvocationId, RawEntry};
     use restate_service_metadata::InMemoryServiceEndpointRegistry;
     use restate_test_util::{check, let_assert, test};
+    use restate_types::identifiers::InvocationId;
+    use restate_types::identifiers::ServiceInvocationId;
+    use restate_types::journal::enriched::EnrichedEntryHeader;
+    use restate_types::journal::raw::RawEntry;
+    use restate_types::retries::RetryPolicy;
+    use restate_types::service_endpoint::{EndpointMetadata, ProtocolType};
     use std::future::{pending, ready};
+    use std::time::Duration;
     use tempfile::tempdir;
+    use tokio::sync::mpsc;
 
     // -- Mocks
 

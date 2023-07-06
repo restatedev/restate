@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use restate_common::types::{PartitionId, PartitionKey, PeerId};
+use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
@@ -55,7 +55,7 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
 impl<RawEntryCodec, InvokerInputSender, NetworkHandle>
     PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle>
 where
-    RawEntryCodec: restate_common::journal::raw::RawEntryCodec + Default + Debug,
+    RawEntryCodec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: restate_invoker::ServiceHandle + Clone,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
@@ -207,7 +207,7 @@ where
         partition_storage: &PartitionStorage<Storage>,
     ) -> Result<DeduplicatingStateMachine<Codec>, restate_storage_api::StorageError>
     where
-        Codec: restate_common::journal::raw::RawEntryCodec + Default + Debug,
+        Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
         Storage: restate_storage_api::Storage,
     {
         let mut transaction = partition_storage.create_transaction();

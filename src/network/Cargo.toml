@@ -12,7 +12,7 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 bytes = { workspace = true }
-restate_common = { workspace = true }
+restate_types = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 pin-project = { workspace = true }

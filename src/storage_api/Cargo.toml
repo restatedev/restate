@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
-restate_common = { workspace = true}
+restate_types = { workspace = true}
 bytes = { workspace = true }
 futures-util = {workspace = true}
 thiserror = { workspace = true }

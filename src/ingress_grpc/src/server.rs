@@ -4,8 +4,8 @@ use super::*;
 
 use codederror::CodedError;
 use futures::FutureExt;
-use restate_common::types::IngressId;
 use restate_service_metadata::MethodDescriptorRegistry;
+use restate_types::identifiers::IngressId;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -150,7 +150,8 @@ mod tests {
     use http::StatusCode;
     use hyper::Body;
     use prost::Message;
-    use restate_common::types::{ServiceInvocationId, ServiceInvocationResponseSink};
+    use restate_types::identifiers::ServiceInvocationId;
+    use restate_types::invocation::ServiceInvocationResponseSink;
     use serde_json::json;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
@@ -160,7 +161,7 @@ mod tests {
     use crate::mocks::*;
     use crate::reflection::ReflectionRegistry;
 
-    // Could be shipped by the restate_common crate with feature "mocks" enabled
+    // Could be shipped by the restate_types crate with feature "mocks" enabled
     #[derive(Clone)]
     struct MockServiceInvocationFactory;
 

@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+//! Restate interacts with Service endpoints to process invocations. This module contains entities defining service endpoints.
 
-use crate::retry_policy::RetryPolicy;
+use crate::retries::RetryPolicy;
 use http::header::{HeaderName, HeaderValue};
 use http::Uri;
+use std::collections::HashMap;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

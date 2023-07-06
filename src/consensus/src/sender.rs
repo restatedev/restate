@@ -1,6 +1,6 @@
 use futures::ready;
 use pin_project::pin_project;
-use restate_common::types::PeerId;
+use restate_types::identifiers::PeerId;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;

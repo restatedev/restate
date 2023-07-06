@@ -10,13 +10,13 @@ publish = false
 [features]
 default = []
 mocks = []
-options_schema = ["dep:schemars", "restate_common/serde_schema"]
+options_schema = ["dep:schemars", "restate_types/serde_schema"]
 
 [dependencies]
 anyhow = { workspace = true }
 bytes = { workspace = true }
 bytes-utils = { workspace = true }
-restate_common = { workspace = true, features = ["serde"] }
+restate_types = { workspace = true, features = ["serde"] }
 restate_hyper_util = { workspace = true }
 restate_fs_util = { workspace = true }
 restate_futures_util = { workspace = true }
@@ -47,7 +47,7 @@ restate_timer_queue = { workspace = true }
 restate_queue = { workspace = true }
 
 [dev-dependencies]
-restate_common = { workspace = true }
+restate_types = { workspace = true }
 restate_test_util = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }

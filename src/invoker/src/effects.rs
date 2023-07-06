@@ -1,5 +1,7 @@
-use restate_common::errors::InvocationError;
-use restate_common::types::{EnrichedRawEntry, EntryIndex, ServiceInvocationId};
+use restate_types::errors::InvocationError;
+use restate_types::identifiers::EntryIndex;
+use restate_types::identifiers::ServiceInvocationId;
+use restate_types::journal::enriched::EnrichedRawEntry;
 use std::collections::HashSet;
 
 #[derive(Debug)]

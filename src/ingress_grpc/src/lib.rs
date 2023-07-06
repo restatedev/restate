@@ -14,12 +14,11 @@ pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
 use opentelemetry::Context;
-use restate_common::errors::InvocationError;
-use restate_common::types::{
-    AckKind, IngressId, MessageIndex, PeerId, ServiceInvocation, ServiceInvocationId,
-    ServiceInvocationResponseSink, SpanRelation,
-};
 use restate_futures_util::command::*;
+use restate_types::errors::InvocationError;
+use restate_types::identifiers::{IngressId, PeerId, ServiceInvocationId};
+use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink, SpanRelation};
+use restate_types::message::{AckKind, MessageIndex};
 use tokio::sync::mpsc;
 use tonic::Status;
 use tracing::Span;

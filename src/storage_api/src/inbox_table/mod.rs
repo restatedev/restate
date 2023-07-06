@@ -1,5 +1,7 @@
 use crate::{GetFuture, GetStream, PutFuture};
-use restate_common::types::{MessageIndex, ServiceId, ServiceInvocation};
+use restate_types::identifiers::ServiceId;
+use restate_types::invocation::ServiceInvocation;
+use restate_types::message::MessageIndex;
 
 /// Entry of the inbox
 #[derive(Debug, Clone, PartialEq)]

@@ -1,11 +1,6 @@
 use bytes::Bytes;
-use restate_common::journal::raw::Header;
-use restate_common::journal::Completion;
-use restate_common::types::{
-    CompletionResult, EnrichedRawEntry, EntryIndex, InvocationResponse, JournalMetadata,
-    MessageIndex, MillisSinceEpoch, ResponseResult, ServiceId, ServiceInvocation,
-    ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
-};
+use restate_types::journal::raw::EntryHeader;
+use restate_types::journal::{Completion, CompletionResult, JournalMetadata};
 use std::collections::HashSet;
 use std::fmt;
 use std::vec::Drain;
@@ -19,10 +14,18 @@ pub(crate) use interpreter::{
     ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
     StateStorageError,
 };
-use restate_common::errors::InvocationErrorCode;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::InvocationMetadata;
 use restate_storage_api::timer_table::Timer;
+use restate_types::errors::InvocationErrorCode;
+use restate_types::identifiers::{EntryIndex, ServiceId, ServiceInvocationId};
+use restate_types::invocation::{
+    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext,
+    SpanRelation,
+};
+use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::message::MessageIndex;
+use restate_types::time::MillisSinceEpoch;
 
 #[derive(Debug)]
 pub(crate) enum Effect {

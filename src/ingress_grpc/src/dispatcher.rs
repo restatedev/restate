@@ -3,11 +3,12 @@ use super::*;
 use std::collections::HashMap;
 use std::future::poll_fn;
 
-use restate_common::types::{IngressId, ServiceInvocationId};
 use restate_futures_util::pipe::{
     new_sender_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
     UnboundedReceiverPipeInput,
 };
+use restate_types::identifiers::IngressId;
+use restate_types::identifiers::ServiceInvocationId;
 use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
@@ -178,8 +179,8 @@ mod tests {
     use super::*;
 
     use bytestring::ByteString;
-    use restate_common::types::IngressId;
     use restate_test_util::test;
+    use restate_types::identifiers::IngressId;
 
     #[test(tokio::test)]
     async fn test_closed_handler() {

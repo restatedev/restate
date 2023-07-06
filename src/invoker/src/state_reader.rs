@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use restate_common::types::ServiceId;
+use restate_types::identifiers::ServiceId;
 use std::future::Future;
 
 /// Container for the eager state returned by [`StateReader`]
@@ -70,7 +70,7 @@ pub trait StateReader {
 pub mod mocks {
     use crate::{EagerState, StateReader};
     use bytes::Bytes;
-    use restate_common::types::ServiceId;
+    use restate_types::identifiers::ServiceId;
     use std::convert::Infallible;
     use std::iter::empty;
 

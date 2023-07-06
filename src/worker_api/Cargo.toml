@@ -8,5 +8,5 @@ license.workspace = true
 publish = false
 
 [dependencies]
-restate_common = { workspace = true }
+restate_types = { workspace = true }
 thiserror = { workspace = true }

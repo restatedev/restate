@@ -1,4 +1,4 @@
-use restate_common::types::ServiceInvocationId;
+use restate_types::identifiers::ServiceInvocationId;
 use std::future::Future;
 
 #[derive(Debug, thiserror::Error)]

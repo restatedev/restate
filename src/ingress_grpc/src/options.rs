@@ -4,8 +4,8 @@ use super::*;
 
 use crate::pb::MethodDescriptorRegistryWithIngressService;
 use prost_reflect::{DeserializeOptions, SerializeOptions};
-use restate_common::types::IngressId;
 use restate_service_metadata::MethodDescriptorRegistry;
+use restate_types::identifiers::IngressId;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 

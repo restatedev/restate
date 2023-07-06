@@ -3,9 +3,10 @@ use crate::{
     PartitionTableError, ShuffleOrIngressTarget, TargetConsensusOrIngress,
     TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress,
 };
-use restate_common::traits::PartitionedMessage;
-use restate_common::types::{PartitionKey, PeerId, PeerTarget};
 use restate_test_util::test;
+use restate_types::identifiers::{PartitionKey, PeerId};
+use restate_types::message::PartitionedMessage;
+use restate_types::message::PeerTarget;
 use std::fmt::Debug;
 use std::future;
 use tokio::sync::mpsc;

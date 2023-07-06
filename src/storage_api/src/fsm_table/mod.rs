@@ -1,6 +1,6 @@
 use crate::{GetFuture, GetStream, PutFuture};
 use bytes::Bytes;
-use restate_common::types::PartitionId;
+use restate_types::identifiers::PartitionId;
 
 pub trait FsmTable {
     fn get(&mut self, partition_id: PartitionId, state_id: u64) -> GetFuture<Option<Bytes>>;

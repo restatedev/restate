@@ -9,5 +9,5 @@ publish = false
 
 [dependencies]
 arc-swap = { workspace = true }
-restate_common = { workspace = true }
+restate_types = { workspace = true }
 prost-reflect = { workspace = true }

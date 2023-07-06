@@ -1,21 +1,63 @@
+//! A Restate journal is represented by Restate entries, each of them recording a specific action taken by the user code.
+
 use super::*;
 
 use crate::errors::UserErrorCode;
-use crate::types::EntryIndex;
+use crate::identifiers::EntryIndex;
 use std::fmt;
 
-pub trait CompletableEntry: private::Sealed {
-    fn is_completed(&self) -> bool;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    // IO
+    PollInputStream(PollInputStreamEntry),
+    OutputStream(OutputStreamEntry),
+
+    // State access
+    GetState(GetStateEntry),
+    SetState(SetStateEntry),
+    ClearState(ClearStateEntry),
+
+    // Syscalls
+    Sleep(SleepEntry),
+    Invoke(InvokeEntry),
+    BackgroundInvoke(BackgroundInvokeEntry),
+    Awakeable(AwakeableEntry),
+    CompleteAwakeable(CompleteAwakeableEntry),
+    Custom(Bytes),
 }
 
-mod private {
-    use super::*;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    pub entry_index: EntryIndex,
+    pub result: CompletionResult,
+}
 
-    pub trait Sealed {}
-    impl Sealed for GetStateEntry {}
-    impl Sealed for SleepEntry {}
-    impl Sealed for InvokeEntry {}
-    impl Sealed for AwakeableEntry {}
+impl Completion {
+    pub fn new(entry_index: EntryIndex, result: CompletionResult) -> Self {
+        Self {
+            entry_index,
+            result,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionResult {
+    Ack,
+    Empty,
+    Success(Bytes),
+    Failure(UserErrorCode, ByteString),
+}
+
+impl From<ResponseResult> for CompletionResult {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(bytes) => CompletionResult::Success(bytes),
+            ResponseResult::Failure(error_code, error_msg) => {
+                CompletionResult::Failure(error_code, error_msg)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +94,21 @@ impl From<EntryResult> for ResponseResult {
             EntryResult::Failure(code, error_msg) => ResponseResult::Failure(code, error_msg),
         }
     }
+}
+
+pub trait CompletableEntry: private::Sealed {
+    /// Returns true if the entry is completed.
+    fn is_completed(&self) -> bool;
+}
+
+mod private {
+    use super::*;
+
+    pub trait Sealed {}
+    impl Sealed for GetStateEntry {}
+    impl Sealed for SleepEntry {}
+    impl Sealed for InvokeEntry {}
+    impl Sealed for AwakeableEntry {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

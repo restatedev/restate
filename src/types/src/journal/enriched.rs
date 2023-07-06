@@ -1,10 +1,56 @@
-use super::raw::{Header, RawEntryHeader};
-use super::EntryType;
+use super::raw::*;
+use super::*;
 
-// Re-exports that should be moved here. See https://github.com/restatedev/restate/issues/420
-pub use crate::types::{EnrichedEntryHeader, EnrichedRawEntry};
+use crate::identifiers::InvocationId;
+use crate::invocation::ServiceInvocationSpanContext;
+use bytes::Bytes;
 
-impl Header for EnrichedEntryHeader {
+pub type EnrichedRawEntry = RawEntry<EnrichedEntryHeader>;
+
+/// Result of the target service resolution
+#[derive(Debug, Clone)]
+pub struct ResolutionResult {
+    pub invocation_id: InvocationId,
+    pub service_key: Bytes,
+    // When resolving the service and generating its id, we also generate the associated span
+    pub span_context: ServiceInvocationSpanContext,
+}
+
+/// Enriched variant of the journal headers to store additional runtime specific information
+/// for the journal entries.
+#[derive(Debug, Clone)]
+pub enum EnrichedEntryHeader {
+    PollInputStream {
+        is_completed: bool,
+    },
+    OutputStream,
+    GetState {
+        is_completed: bool,
+    },
+    SetState,
+    ClearState,
+    Sleep {
+        is_completed: bool,
+    },
+    Invoke {
+        is_completed: bool,
+        // None if invoke entry is completed by service endpoint
+        resolution_result: Option<ResolutionResult>,
+    },
+    BackgroundInvoke {
+        resolution_result: ResolutionResult,
+    },
+    Awakeable {
+        is_completed: bool,
+    },
+    CompleteAwakeable,
+    Custom {
+        code: u16,
+        requires_ack: bool,
+    },
+}
+
+impl EntryHeader for EnrichedEntryHeader {
     fn is_completed(&self) -> Option<bool> {
         match self {
             EnrichedEntryHeader::PollInputStream { is_completed } => Some(*is_completed),
@@ -79,5 +125,12 @@ impl From<EnrichedEntryHeader> for RawEntryHeader {
                 RawEntryHeader::Custom { code, requires_ack }
             }
         }
+    }
+}
+
+impl From<EnrichedRawEntry> for PlainRawEntry {
+    fn from(value: EnrichedRawEntry) -> Self {
+        let (h, b) = value.into_inner();
+        PlainRawEntry::new(h.into(), b)
     }
 }

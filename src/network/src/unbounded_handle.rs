@@ -1,5 +1,5 @@
 use crate::{NetworkCommand, NetworkHandle, NetworkNotRunning, ShuffleSender};
-use restate_common::types::PeerId;
+use restate_types::identifiers::PeerId;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]

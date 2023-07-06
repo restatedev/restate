@@ -1,7 +1,7 @@
 use super::*;
 
-use restate_common::journal::Completion;
-use restate_common::retry_policy;
+use restate_types::journal::Completion;
+use restate_types::retries;
 use std::fmt;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -11,7 +11,7 @@ use tokio::task::AbortHandle;
 #[derive(Debug)]
 pub(super) struct InvocationStateMachine {
     invocation_state: InvocationState,
-    retry_iter: retry_policy::Iter,
+    retry_iter: retries::RetryIter,
 }
 
 /// This struct tracks which entries the invocation task generates,
@@ -242,7 +242,7 @@ impl InvocationStateMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use restate_common::retry_policy::RetryPolicy;
+
     use restate_test_util::{check, test};
     use std::time::Duration;
 
