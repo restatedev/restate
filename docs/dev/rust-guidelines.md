@@ -14,6 +14,14 @@ All the guidelines available in https://rust-lang.github.io/api-guidelines/check
   * When defining [Passive data structures](https://en.wikipedia.org/wiki/Passive_data_structure), such as Restate domain types in `restate_types` crate. In these cases, it is fine to declare the field as `pub` for ease to use.
 * The crate entrypoint (`lib.rs`) file should contain `pub` (re-)exports to the crate public types.
 
+### `restate-types`
+
+The `restate-types` module contains the Restate "core" domain types that should be shared among all/most of Restate components,
+such as IDs, etc. It should not contain types belonging to specific components interfaces.
+
+As a rule of thumb, when defining a new component's interface, define its types as close as possible to the interface itself and,
+if multiple interfaces needs the same type, move it to `restate-types` afterward.
+
 ### Util modules
 
 When implementing a utility method/type to interact with 3rd party library, that should be shared by different Restate components, 
