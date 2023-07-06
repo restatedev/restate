@@ -7,8 +7,8 @@ use crate::{Result, TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
-use restate_common::types::{PartitionId, Timer, TimerKey};
-use restate_storage_api::timer_table::TimerTable;
+use restate_common::types::PartitionId;
+use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 use uuid::Uuid;
@@ -142,14 +142,9 @@ fn decode_seq_timer_key_value(k: &[u8], v: &[u8]) -> Result<(TimerKey, Timer)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::timer_table::{
-        exclusive_start_key_range, timer_key_from_key_slice, write_timer_key,
-    };
-    use crate::TableScan;
+    use super::*;
 
-    use crate::keys::TableKey;
-    use restate_common::types::{ServiceInvocationId, TimerKey};
-    use uuid::Uuid;
+    use restate_common::types::ServiceInvocationId;
 
     #[test]
     fn round_trip() {

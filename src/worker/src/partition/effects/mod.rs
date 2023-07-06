@@ -2,9 +2,9 @@ use bytes::Bytes;
 use restate_common::journal::raw::Header;
 use restate_common::journal::Completion;
 use restate_common::types::{
-    CompletionResult, EnrichedRawEntry, EntryIndex, InvocationMetadata, InvocationResponse,
-    JournalMetadata, MessageIndex, MillisSinceEpoch, OutboxMessage, ResponseResult, ServiceId,
-    ServiceInvocation, ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation, Timer,
+    CompletionResult, EnrichedRawEntry, EntryIndex, InvocationResponse, JournalMetadata,
+    MessageIndex, MillisSinceEpoch, ResponseResult, ServiceId, ServiceInvocation,
+    ServiceInvocationId, ServiceInvocationSpanContext, SpanRelation,
 };
 use std::collections::HashSet;
 use std::fmt;
@@ -20,6 +20,9 @@ pub(crate) use interpreter::{
     StateStorageError,
 };
 use restate_common::errors::InvocationErrorCode;
+use restate_storage_api::outbox_table::OutboxMessage;
+use restate_storage_api::status_table::InvocationMetadata;
+use restate_storage_api::timer_table::Timer;
 
 #[derive(Debug)]
 pub(crate) enum Effect {

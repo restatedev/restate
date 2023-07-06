@@ -1,5 +1,18 @@
 use crate::{GetStream, PutFuture};
-use restate_common::types::{PartitionId, Timer, TimerKey};
+use restate_common::types::{PartitionId, ServiceInvocation, ServiceInvocationId};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimerKey {
+    pub service_invocation_id: ServiceInvocationId,
+    pub journal_index: u32,
+    pub timestamp: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Timer {
+    CompleteSleepEntry,
+    Invoke(ServiceInvocation),
+}
 
 pub trait TimerTable {
     fn add_timer(

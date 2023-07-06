@@ -1,8 +1,6 @@
 use futures_util::StreamExt;
-use restate_common::types::{
-    ServiceId, ServiceInvocation, ServiceInvocationId, SpanRelation, Timer, TimerKey,
-};
-use restate_storage_api::timer_table::TimerTable;
+use restate_common::types::{ServiceId, ServiceInvocation, ServiceInvocationId, SpanRelation};
+use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::{Storage, Transaction};
 use restate_storage_rocksdb::RocksDBStorage;
 

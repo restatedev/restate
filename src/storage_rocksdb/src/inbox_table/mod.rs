@@ -7,8 +7,8 @@ use bytes::Bytes;
 use bytestring::ByteString;
 
 use prost::Message;
-use restate_common::types::{InboxEntry, PartitionKey, ServiceId, ServiceInvocation};
-use restate_storage_api::inbox_table::InboxTable;
+use restate_common::types::{PartitionKey, ServiceId, ServiceInvocation};
+use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 use std::io::Cursor;

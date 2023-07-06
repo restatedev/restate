@@ -1,9 +1,9 @@
 use crate::{assert_stream_eq, uuid_str};
 use restate_common::types::{
-    InvocationId, InvocationMetadata, InvocationStatus, JournalMetadata, MillisSinceEpoch,
-    ServiceId, ServiceInvocationId, ServiceInvocationSpanContext,
+    InvocationId, JournalMetadata, MillisSinceEpoch, ServiceId, ServiceInvocationId,
+    ServiceInvocationSpanContext,
 };
-use restate_storage_api::status_table::StatusTable;
+use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, StatusTable};
 use restate_storage_api::{Storage, Transaction};
 use restate_storage_rocksdb::RocksDBStorage;
 use std::collections::HashSet;

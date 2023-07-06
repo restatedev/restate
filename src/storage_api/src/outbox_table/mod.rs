@@ -1,6 +1,26 @@
 use crate::{GetFuture, PutFuture};
-use restate_common::types::{OutboxMessage, PartitionId};
+use restate_common::types::{
+    IngressId, InvocationResponse, PartitionId, ResponseResult, ServiceInvocation,
+    ServiceInvocationId,
+};
 use std::ops::Range;
+
+/// Types of outbox messages.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutboxMessage {
+    /// Service invocation to send to another partition processor
+    ServiceInvocation(ServiceInvocation),
+
+    /// Service response to sent to another partition processor
+    ServiceResponse(InvocationResponse),
+
+    /// Service response to send to an ingress as a response to an external client request
+    IngressResponse {
+        ingress_id: IngressId,
+        service_invocation_id: ServiceInvocationId,
+        response: ResponseResult,
+    },
+}
 
 pub trait OutboxTable {
     fn add_message(
