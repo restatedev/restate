@@ -11,5 +11,9 @@ rustflags = [
 
 [target.aarch64-unknown-linux-gnu]
 rustflags = [
+    "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
+    "-C" , "debug-assertions", # Enable debug assertions in release builds to have more safeguards in place
+    "--cfg", "uuid_unstable", # Enable unstable Uuid
+    "--cfg", "tokio_unstable", # Enable unstable tokio
     "-C" , "force-frame-pointers=yes", # Enable frame pointers to support Parca (https://github.com/parca-dev/parca-agent/pull/1805)
 ]
