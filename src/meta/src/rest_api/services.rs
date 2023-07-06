@@ -1,92 +1,13 @@
 use super::error::*;
 use super::state::*;
+
 use axum::extract::{Path, State};
-use axum::http::Uri;
 use axum::Json;
-use hyper::http::{HeaderName, HeaderValue};
 use okapi_operation::*;
 use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
-use restate_types::identifiers::{EndpointId, ServiceRevision};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-use std::collections::HashMap;
+use serde::Serialize;
 use std::sync::Arc;
-
-#[serde_as]
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct RegisterServiceEndpointRequest {
-    /// # Uri
-    ///
-    /// Uri to use to discover/invoke the service endpoint.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[schemars(with = "String")]
-    pub uri: Uri,
-    /// # Additional headers
-    ///
-    /// Additional headers added to the discover/invoke requests to the service endpoint.
-    pub additional_headers: Option<HashMap<String, String>>,
-    /// # Force
-    ///
-    /// If `true`, it will overwrite, if existing, any endpoint using the same `uri`.
-    /// Beware that this can lead for in-flight invocations to an unrecoverable error state.
-    ///
-    /// See the [versioning documentation](http://restate.dev/docs/deployment-operations/versioning) for more information.
-    #[serde(default)]
-    pub force: bool,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct RegisterServiceResponse {
-    name: String,
-    revision: ServiceRevision,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct RegisterServiceEndpointResponse {
-    id: EndpointId,
-    services: Vec<RegisterServiceResponse>,
-}
-
-/// Discover endpoint and return discovered endpoints.
-#[openapi(
-    summary = "Discover service endpoint",
-    description = "Discover service endpoint and register it in the meta information storage. If the service endpoint is already registered, it will be re-discovered and will override the previous stored metadata.",
-    operation_id = "discover_service_endpoint",
-    tags = "service_endpoint"
-)]
-pub async fn discover_service_endpoint<S, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
-    #[request_body(required = true)] Json(payload): Json<RegisterServiceEndpointRequest>,
-) -> Result<Json<RegisterServiceEndpointResponse>, MetaApiError> {
-    let headers = payload
-        .additional_headers
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(k, v)| {
-            let header_name = HeaderName::try_from(k)
-                .map_err(|e| MetaApiError::InvalidField("additional_headers", e.to_string()))?;
-            let header_value = HeaderValue::try_from(v)
-                .map_err(|e| MetaApiError::InvalidField("additional_headers", e.to_string()))?;
-            Ok((header_name, header_value))
-        })
-        .collect::<Result<HashMap<_, _>, MetaApiError>>()?;
-
-    let registration_result = state
-        .meta_handle()
-        .register(payload.uri, headers, payload.force)
-        .await?;
-
-    Ok(RegisterServiceEndpointResponse {
-        id: registration_result.endpoint,
-        services: registration_result
-            .services
-            .into_iter()
-            .map(|(name, revision)| RegisterServiceResponse { name, revision })
-            .collect(),
-    }
-    .into())
-}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListServicesResponse {

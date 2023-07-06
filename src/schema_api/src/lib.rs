@@ -4,7 +4,7 @@
 pub mod endpoint {
     use http::header::{HeaderName, HeaderValue};
     use http::Uri;
-    use restate_types::identifiers::EndpointId;
+    use restate_types::identifiers::{EndpointId, ServiceRevision};
     use std::collections::HashMap;
 
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -96,6 +96,11 @@ pub mod endpoint {
         ) -> Option<EndpointMetadata>;
 
         fn get_endpoint(&self, endpoint_id: &EndpointId) -> Option<EndpointMetadata>;
+
+        fn get_endpoint_and_services(
+            &self,
+            endpoint_id: &EndpointId,
+        ) -> Option<(EndpointMetadata, Vec<(String, ServiceRevision)>)>;
     }
 
     #[cfg(feature = "mocks")]
@@ -155,7 +160,7 @@ pub mod endpoint {
             fn get_endpoint_and_services(
                 &self,
                 endpoint_id: &EndpointId,
-            ) -> Option<(EndpointMetadata, Vec<(String, usize)>)> {
+            ) -> Option<(EndpointMetadata, Vec<(String, ServiceRevision)>)> {
                 self.endpoints
                     .get(endpoint_id)
                     .cloned()

@@ -2,7 +2,7 @@ use super::Schemas;
 
 use crate::schemas_impl::ServiceLocation;
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver};
-use restate_types::identifiers::EndpointId;
+use restate_types::identifiers::{EndpointId, ServiceRevision};
 
 impl EndpointMetadataResolver for Schemas {
     fn resolve_latest_endpoint_for_service(
@@ -26,5 +26,16 @@ impl EndpointMetadataResolver for Schemas {
             .endpoints
             .get(endpoint_id)
             .map(|schemas| schemas.metadata.clone())
+    }
+
+    fn get_endpoint_and_services(
+        &self,
+        endpoint_id: &EndpointId,
+    ) -> Option<(EndpointMetadata, Vec<(String, ServiceRevision)>)> {
+        let schemas = self.0.load();
+        schemas
+            .endpoints
+            .get(endpoint_id)
+            .map(|schemas| (schemas.metadata.clone(), schemas.services.clone()))
     }
 }

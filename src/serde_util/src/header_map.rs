@@ -66,14 +66,14 @@ impl<'de> Visitor<'de> for SerdeableHeaderHashMapVisitor {
     }
 }
 
-// This is the trait that informs Serde how to deserialize MyMap.
+// This is the trait that informs Serde how to deserialize SerdeableHeaderHashMap.
 impl<'de> Deserialize<'de> for SerdeableHeaderHashMap {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         // Instantiate our Visitor and ask the Deserializer to drive
-        // it over the input data, resulting in an instance of MyMap.
+        // it over the input data, resulting in an instance of SerdeableHeaderHashMap.
         deserializer.deserialize_map(SerdeableHeaderHashMapVisitor)
     }
 }
