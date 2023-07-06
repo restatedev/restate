@@ -22,7 +22,7 @@ pub mod endpoint {
         #[cfg_attr(
             feature = "serde",
             serde(
-                with = "serde_with::As::<serde_with::TryFromInto<header_map_serde::HeaderMapSerde>>"
+                with = "serde_with::As::<serde_with::FromInto<restate_serde_util::SerdeableHeaderHashMap>>"
             )
         )]
         #[cfg_attr(feature = "serde_schema", schemars(with = "HashMap<String, String>"))]
@@ -32,43 +32,6 @@ pub mod endpoint {
     impl DeliveryOptions {
         pub fn new(additional_headers: HashMap<HeaderName, HeaderValue>) -> Self {
             Self { additional_headers }
-        }
-    }
-
-    #[cfg(feature = "serde")]
-    mod header_map_serde {
-        use super::*;
-
-        use http::header::ToStrError;
-
-        // Proxy type to implement HashMap<HeaderName, HeaderValue> ser/de
-        #[derive(serde::Serialize, serde::Deserialize)]
-        #[serde(transparent)]
-        pub struct HeaderMapSerde(HashMap<String, String>);
-
-        impl TryFrom<HashMap<HeaderName, HeaderValue>> for HeaderMapSerde {
-            type Error = ToStrError;
-
-            fn try_from(value: HashMap<HeaderName, HeaderValue>) -> Result<Self, Self::Error> {
-                Ok(HeaderMapSerde(
-                    value
-                        .into_iter()
-                        .map(|(k, v)| Ok((k.to_string(), v.to_str()?.to_string())))
-                        .collect::<Result<HashMap<_, _>, _>>()?,
-                ))
-            }
-        }
-
-        impl TryFrom<HeaderMapSerde> for HashMap<HeaderName, HeaderValue> {
-            type Error = anyhow::Error;
-
-            fn try_from(value: HeaderMapSerde) -> Result<Self, Self::Error> {
-                value
-                    .0
-                    .into_iter()
-                    .map(|(k, v)| Ok((k.try_into()?, v.try_into()?)))
-                    .collect::<Result<HashMap<_, _>, anyhow::Error>>()
-            }
         }
     }
 
@@ -187,6 +150,16 @@ pub mod endpoint {
 
             fn get_endpoint(&self, endpoint_id: &EndpointId) -> Option<EndpointMetadata> {
                 self.endpoints.get(endpoint_id).cloned()
+            }
+
+            fn get_endpoint_and_services(
+                &self,
+                endpoint_id: &EndpointId,
+            ) -> Option<(EndpointMetadata, Vec<(String, usize)>)> {
+                self.endpoints
+                    .get(endpoint_id)
+                    .cloned()
+                    .map(|e| (e, vec![]))
             }
         }
     }

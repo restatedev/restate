@@ -9,8 +9,8 @@ publish = false
 
 [features]
 default = []
-serde = ["dep:serde", "dep:serde_with", "restate_types?/serde"]
-serde_schema = ["serde", "dep:schemars", "restate_types?/serde_schema"]
+serde = ["dep:serde", "dep:serde_with", "restate_types?/serde", "dep:restate_serde_util"]
+serde_schema = ["serde", "dep:schemars", "restate_types?/serde_schema", "restate_serde_util?/schema"]
 key_extraction = ["dep:bytes", "dep:thiserror", "dep:anyhow", "dep:prost"]
 key_expansion = ["dep:bytes", "dep:thiserror", "dep:prost", "dep:prost-reflect", "dep:anyhow"]
 json_key_conversion = ["key_extraction", "key_expansion", "dep:serde_json", "dep:thiserror"]
@@ -28,6 +28,7 @@ http = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }
 restate_types = { workspace = true, optional = true }
+restate_serde_util = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
