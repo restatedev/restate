@@ -12,13 +12,11 @@ use futures::StreamExt;
 use partition::ack::AckCommand;
 use partition::shuffle;
 use restate_consensus::Consensus;
-use restate_ingress_grpc::ReflectionRegistry;
 use restate_invoker::{
     ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
 use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
-use restate_service_key_extractor::KeyExtractorsRegistry;
-use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
+use restate_schema_impl::Schemas;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_grpc::StorageService;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -139,20 +137,8 @@ impl Options {
         &self.storage_rocksdb.path
     }
 
-    pub fn build(
-        self,
-        method_descriptor_registry: InMemoryMethodDescriptorRegistry,
-        key_extractor_registry: KeyExtractorsRegistry,
-        reflections_registry: ReflectionRegistry,
-        service_endpoint_registry: InMemoryServiceEndpointRegistry,
-    ) -> Result<Worker, BuildError> {
-        Worker::new(
-            self,
-            method_descriptor_registry,
-            key_extractor_registry,
-            reflections_registry,
-            service_endpoint_registry,
-        )
+    pub fn build(self, schemas: Schemas) -> Result<Worker, BuildError> {
+        Worker::new(self, schemas)
     }
 }
 
@@ -204,21 +190,15 @@ pub struct Worker {
     invoker: InvokerService<
         InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,
-        EntryEnricher<KeyExtractorsRegistry, ProtobufRawEntryCodec>,
-        InMemoryServiceEndpointRegistry,
+        EntryEnricher<Schemas, ProtobufRawEntryCodec>,
+        Schemas,
     >,
     external_client_ingress_runner: ExternalClientIngressRunner,
     services: Services<FixedConsecutivePartitions>,
 }
 
 impl Worker {
-    pub fn new(
-        opts: Options,
-        method_descriptor_registry: InMemoryMethodDescriptorRegistry,
-        key_extractor_registry: KeyExtractorsRegistry,
-        reflections_registry: ReflectionRegistry,
-        service_endpoint_registry: InMemoryServiceEndpointRegistry,
-    ) -> Result<Self, BuildError> {
+    pub fn new(opts: Options, schemas: Schemas) -> Result<Self, BuildError> {
         let Options {
             channel_size,
             ingress_grpc,
@@ -237,15 +217,13 @@ impl Worker {
                 .expect("Loopback address needs to be valid."),
         );
 
-        let invocation_factory =
-            DefaultServiceInvocationFactory::new(key_extractor_registry.clone());
+        let invocation_factory = DefaultServiceInvocationFactory::new(schemas.clone());
 
         let (ingress_dispatcher_loop, external_client_ingress) = ingress_grpc.build(
             // TODO replace with proper network address once we have a distributed runtime
             external_client_ingress_id,
-            method_descriptor_registry,
+            schemas.clone(),
             invocation_factory,
-            reflections_registry,
             channel_size,
         );
 
@@ -272,8 +250,8 @@ impl Worker {
         let invoker = opts.invoker.build(
             invoker_storage_reader.clone(),
             invoker_storage_reader,
-            EntryEnricher::new(key_extractor_registry),
-            service_endpoint_registry,
+            EntryEnricher::new(schemas.clone()),
+            schemas,
         );
 
         let partitioner = partition_table.partitioner();

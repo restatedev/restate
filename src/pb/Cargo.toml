@@ -1,0 +1,22 @@
+[package]
+name = "restate_pb"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+mocks = []
+
+[dependencies]
+once_cell = { version = "1.18" }
+prost = { workspace = true }
+prost-reflect = { workspace = true }
+tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
+
+[build-dependencies]
+prost-build = { workspace = true }
+tonic-build = { workspace = true }

@@ -1,15 +1,12 @@
 mod dispatcher;
 mod handler;
 mod options;
-mod pb;
 mod protocol;
 mod reflection;
 mod server;
 
 pub use dispatcher::{IngressDispatcherLoop, IngressDispatcherLoopError};
 pub use options::{Options, OptionsBuilder, OptionsBuilderError};
-pub use pb::MethodDescriptorRegistryWithIngressService;
-pub use reflection::{ReflectionRegistry, RegistrationError};
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
@@ -164,13 +161,13 @@ impl ServiceInvocationFactoryError {
     }
 }
 
+// TODO is this interface still useful?
 /// Trait to create a new [`ServiceInvocation`].
 ///
 /// This trait can be used by ingresses and partition processors to
 /// abstract the logic to perform key extraction and id generation.
 pub trait ServiceInvocationFactory {
     /// Create a new service invocation.
-    // TODO: Probably needs to be asynchronous: https://github.com/restatedev/restate/issues/91
     fn create(
         &self,
         service_name: &str,
@@ -184,60 +181,28 @@ pub trait ServiceInvocationFactory {
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
-    pub(super) mod pb {
-        #![allow(warnings)]
-        #![allow(clippy::all)]
-        #![allow(unknown_lints)]
-        include!(concat!(env!("OUT_DIR"), "/greeter.rs"));
-    }
+    use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
+    use restate_schema_api::key::ServiceInstanceType;
+    use restate_schema_impl::{Schemas, ServiceRegistrationRequest};
 
-    use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
-    use restate_service_metadata::InMemoryMethodDescriptorRegistry;
+    pub(super) fn test_schemas() -> Schemas {
+        let schemas = Schemas::default();
 
-    static DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin"));
+        schemas
+            .register_new_endpoint(
+                EndpointMetadata::new(
+                    "http://localhost:8080".parse().unwrap(),
+                    ProtocolType::BidiStream,
+                    DeliveryOptions::default(),
+                ),
+                vec![ServiceRegistrationRequest::new(
+                    "greeter.Greeter".to_string(),
+                    ServiceInstanceType::Singleton,
+                )],
+                restate_pb::mocks::DESCRIPTOR_POOL.clone(),
+            )
+            .unwrap();
 
-    pub(super) fn test_descriptor_pool() -> DescriptorPool {
-        DescriptorPool::decode(DESCRIPTOR).unwrap()
-    }
-
-    pub(super) fn test_descriptor_registry() -> InMemoryMethodDescriptorRegistry {
-        let registry = InMemoryMethodDescriptorRegistry::default();
-        registry.register(greeter_service_descriptor());
-        registry.register(ingress_service_descriptor());
-        registry
-    }
-
-    pub(super) fn ingress_service_descriptor() -> ServiceDescriptor {
-        crate::pb::DEV_RESTATE_DESCRIPTOR_POOL
-            .get_service_by_name("dev.restate.Ingress")
-            .unwrap()
-    }
-
-    pub(super) fn ingress_invoke_method_descriptor() -> MethodDescriptor {
-        ingress_service_descriptor()
-            .methods()
-            .find(|m| m.name() == "Invoke")
-            .unwrap()
-    }
-
-    pub(super) fn greeter_service_descriptor() -> ServiceDescriptor {
-        test_descriptor_pool()
-            .services()
-            .find(|svc| svc.full_name() == "greeter.Greeter")
-            .unwrap()
-    }
-
-    pub(super) fn greeter_greet_method_descriptor() -> MethodDescriptor {
-        greeter_service_descriptor()
-            .methods()
-            .find(|m| m.name() == "Greet")
-            .unwrap()
-    }
-
-    pub(super) fn greeter_get_count_method_descriptor() -> MethodDescriptor {
-        greeter_service_descriptor()
-            .methods()
-            .find(|m| m.name() == "GetCount")
-            .unwrap()
+        schemas
     }
 }

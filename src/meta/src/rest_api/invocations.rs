@@ -3,8 +3,8 @@ use super::state::*;
 use axum::extract::State;
 use axum::Json;
 use okapi_operation::*;
-use restate_service_key_extractor::json::RestateKeyConverter;
-use restate_service_metadata::MethodDescriptorRegistry;
+use restate_schema_api::key::json_conversion::Error;
+use restate_schema_api::key::RestateKeyConverter;
 use restate_types::identifiers;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -35,9 +35,8 @@ pub enum ServiceInvocationId {
 }
 
 impl ServiceInvocationId {
-    fn into_service_invocation_id<M: MethodDescriptorRegistry, K: RestateKeyConverter>(
+    fn into_service_invocation_id<K: RestateKeyConverter>(
         self,
-        method_descriptors: &M,
         key_converter: &K,
     ) -> Result<identifiers::ServiceInvocationId, MetaApiError> {
         match self {
@@ -49,22 +48,13 @@ impl ServiceInvocationId {
                 key,
                 invocation_id,
             } => {
-                // TODO improve this with https://github.com/restatedev/restate/issues/43 in place
-                let service_descriptor = method_descriptors
-                    .list_methods(&service)
-                    .map(|m| {
-                        m.into_values()
-                            .next()
-                            .expect("A service descriptor must contain at least one method")
-                            .parent_service()
-                            .clone()
-                    })
-                    .ok_or_else(|| MetaApiError::ServiceNotFound(service.clone()))?;
-
                 // Convert the json key to restate key
                 let restate_key = key_converter
-                    .json_to_key(service_descriptor, key.unwrap_or(serde_json::Value::Null))
-                    .map_err(|e| MetaApiError::InvalidField("sid", e.to_string()))?;
+                    .json_to_key(&service, key.unwrap_or(serde_json::Value::Null))
+                    .map_err(|e| match e {
+                        Error::NotFound => MetaApiError::ServiceNotFound(service.clone()),
+                        e => MetaApiError::InvalidField("sid", e.to_string()),
+                    })?;
 
                 Ok(identifiers::ServiceInvocationId::new(
                     service,
@@ -92,22 +82,18 @@ pub struct CancelInvocationRequest {
     operation_id = "cancel_invocation",
     tags = "invocation"
 )]
-pub async fn cancel_invocation<S, M, K, W>(
-    State(state): State<Arc<RestEndpointState<S, M, K, W>>>,
+pub async fn cancel_invocation<S, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
     #[request_body(required = true)] Json(req): Json<CancelInvocationRequest>,
 ) -> Result<(), MetaApiError>
 where
-    M: MethodDescriptorRegistry,
-    K: RestateKeyConverter,
+    S: RestateKeyConverter,
     W: restate_worker_api::Handle + Send,
     W::Future: Send,
 {
     state
         .worker_handle()
-        .kill_invocation(req.sid.into_service_invocation_id(
-            state.method_descriptor_registry(),
-            state.key_converter(),
-        )?)
+        .kill_invocation(req.sid.into_service_invocation_id(state.schemas())?)
         .await?;
     Ok(())
 }

@@ -35,11 +35,12 @@ schemars = { workspace = true }
 restate_types = { workspace = true, features = ["serde", "serde_schema"] }
 restate_hyper_util = { workspace = true }
 restate_fs_util = { workspace = true }
-restate_service_key_extractor = { workspace = true, features = ["serde", "json"] }
-restate_service_metadata = { workspace = true }
+
 restate_service_protocol = { workspace = true, features = ["discovery"] }
 restate_worker_api = { workspace = true }
 prost-reflect = { workspace = true }
+restate_schema_api = { workspace = true, features = ["service", "serde", "serde_schema"] }
+restate_schema_impl = { workspace = true }
 
 # Others
 derive_builder = { workspace = true }
@@ -48,8 +49,3 @@ thiserror = { workspace = true }
 codederror = { workspace = true }
 restate_errors = { workspace = true, features = ["include_doc"] }
 uuid = { workspace = true }
-
-# TODO remove this once we have meta-registry
-#  used for reflections registry
-#  see https://github.com/restatedev/restate/issues/43
-restate_ingress_grpc = { workspace = true }

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use restate_hyper_util::proxy_connector::Proxy;
-use restate_service_metadata::ServiceEndpointRegistry;
+use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::retries::RetryPolicy;
 use serde_with::serde_as;
@@ -149,18 +149,18 @@ impl Options {
         restate_fs_util::generate_temp_dir_name("invoker")
     }
 
-    pub fn build<JR, JS, SR, EE, SER>(
+    pub fn build<JR, JS, SR, EE, EMR>(
         self,
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
-        service_endpoint_registry: SER,
-    ) -> Service<JR, SR, EE, SER>
+        service_endpoint_registry: EMR,
+    ) -> Service<JR, SR, EE, EMR>
     where
         JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
         EE: EntryEnricher,
-        SER: ServiceEndpointRegistry,
+        EMR: EndpointMetadataResolver,
     {
         Service::new(
             service_endpoint_registry,

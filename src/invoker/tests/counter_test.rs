@@ -9,7 +9,8 @@ use mocks::{InMemoryJournalStorage, InMemoryStateStorage, SimulatorAction};
 use prost::Message;
 use restate_invoker::entry_enricher::mocks::MockEntryEnricher;
 use restate_invoker::{ChannelServiceHandle, Effect, EffectKind, Service};
-use restate_service_metadata::InMemoryServiceEndpointRegistry;
+use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
+use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_test_util::{assert, assert_eq, let_assert, test};
 use restate_types::identifiers::ServiceInvocationId;
@@ -19,7 +20,6 @@ use restate_types::journal::{
     Completion, CompletionResult, Entry, EntryResult, GetStateEntry, GetStateValue,
     OutputStreamEntry,
 };
-use restate_types::service_endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
 use uuid::Uuid;
 
 type PartitionProcessorSimulator =
@@ -127,9 +127,9 @@ async fn bidi_stream() {
     // Mock journal reader
     let journal_reader = InMemoryJournalStorage::default();
 
-    let mut service_endpoint_registry = InMemoryServiceEndpointRegistry::default();
-    service_endpoint_registry.register_service_endpoint(
-        sid.service_id.service_name.to_string(),
+    let mut endpoint_metadata_registry = MockEndpointMetadataRegistry::default();
+    endpoint_metadata_registry.mock_service_with_metadata(
+        &sid.service_id.service_name,
         EndpointMetadata::new(
             Uri::from_static("http://localhost:8080"),
             ProtocolType::BidiStream,
@@ -143,12 +143,12 @@ async fn bidi_stream() {
         InMemoryJournalStorage,
         InMemoryStateStorage,
         MockEntryEnricher,
-        InMemoryServiceEndpointRegistry,
+        MockEndpointMetadataRegistry,
     > = options.build(
         journal_reader.clone(),
         InMemoryStateStorage::default(),
         MockEntryEnricher::default(),
-        service_endpoint_registry,
+        endpoint_metadata_registry,
     );
 
     // Build the partition processor simulator

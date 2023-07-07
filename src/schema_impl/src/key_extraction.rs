@@ -13,13 +13,13 @@ impl KeyExtractor for Schemas {
         payload: Bytes,
     ) -> Result<Bytes, Error> {
         self.use_service_schema(service_name, |schemas| {
-            schemas.instance_type.extract(service_method, payload)
+            extract_impls::extract(&schemas.instance_type, service_method, payload)
         })
         .ok_or(Error::NotFound)?
     }
 }
 
-mod extract_impls {
+pub(crate) mod extract_impls {
     use super::*;
 
     use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -27,32 +27,31 @@ mod extract_impls {
     use prost::encoding::{
         decode_key, decode_varint, encode_key, encode_varint, skip_field, DecodeContext, WireType,
     };
+    use restate_schema_api::key::KeyStructure;
     use uuid::Uuid;
 
     fn generate_random_key() -> Bytes {
         Bytes::copy_from_slice(Uuid::now_v7().as_bytes())
     }
 
-    impl ServiceInstanceType {
-        pub(crate) fn extract(
-            &self,
-            service_method: impl AsRef<str>,
-            payload: Bytes,
-        ) -> Result<Bytes, Error> {
-            match self {
-                ServiceInstanceType::Unkeyed => Ok(generate_random_key()),
-                ServiceInstanceType::Singleton => Ok(Bytes::default()),
-                ServiceInstanceType::Keyed {
-                    key_structure,
-                    service_methods_key_field_root_number,
-                } => root_extract(
-                    payload,
-                    *service_methods_key_field_root_number
-                        .get(service_method.as_ref())
-                        .ok_or_else(|| Error::NotFound)?,
-                    key_structure,
-                ),
-            }
+    pub(crate) fn extract(
+        service_instance_type: &ServiceInstanceType,
+        service_method: impl AsRef<str>,
+        payload: Bytes,
+    ) -> Result<Bytes, Error> {
+        match service_instance_type {
+            ServiceInstanceType::Unkeyed => Ok(generate_random_key()),
+            ServiceInstanceType::Singleton => Ok(Bytes::default()),
+            ServiceInstanceType::Keyed {
+                key_structure,
+                service_methods_key_field_root_number,
+            } => root_extract(
+                payload,
+                *service_methods_key_field_root_number
+                    .get(service_method.as_ref())
+                    .ok_or_else(|| Error::NotFound)?,
+                key_structure,
+            ),
         }
     }
 

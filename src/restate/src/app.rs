@@ -43,12 +43,7 @@ impl Application {
         worker: restate_worker::Options,
     ) -> Result<Self, BuildError> {
         let meta = meta.build();
-        let worker = worker.build(
-            meta.method_descriptor_registry(),
-            meta.key_extractors_registry(),
-            meta.reflections_registry(),
-            meta.service_endpoint_registry(),
-        )?;
+        let worker = worker.build(meta.schemas())?;
 
         Ok(Self { meta, worker })
     }

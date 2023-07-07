@@ -1,32 +1,31 @@
 use bytes::Bytes;
 use restate_ingress_grpc::{ServiceInvocationFactory, ServiceInvocationFactoryError};
-use restate_service_key_extractor::{KeyExtractor, KeyExtractorsRegistry};
+use restate_schema_api::key::KeyExtractor;
 use restate_types::identifiers::{InvocationId, ServiceInvocationId};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink, SpanRelation};
 use tracing::Span;
 
 #[derive(Debug, Clone)]
-pub(super) struct DefaultServiceInvocationFactory {
-    key_extractor_registry: KeyExtractorsRegistry,
+pub(super) struct DefaultServiceInvocationFactory<K> {
+    key_extractor: K,
+}
+impl<K> DefaultServiceInvocationFactory<K> {
+    pub(super) fn new(key_extractor: K) -> Self {
+        Self { key_extractor }
+    }
 }
 
-impl DefaultServiceInvocationFactory {
-    pub(super) fn new(key_extractor_registry: KeyExtractorsRegistry) -> Self {
-        Self {
-            key_extractor_registry,
-        }
-    }
-
+impl<K: KeyExtractor> DefaultServiceInvocationFactory<K> {
     fn extract_key(
         &self,
         service_name: impl AsRef<str>,
         method_name: impl AsRef<str>,
         request_payload: Bytes,
     ) -> Result<Bytes, ServiceInvocationFactoryError> {
-        self.key_extractor_registry
+        self.key_extractor
             .extract(service_name.as_ref(), method_name.as_ref(), request_payload)
             .map_err(|err| match err {
-                restate_service_key_extractor::Error::NotFound => {
+                restate_schema_api::key::KeyExtractorError::NotFound => {
                     ServiceInvocationFactoryError::unknown_service_method(
                         service_name.as_ref(),
                         method_name.as_ref(),
@@ -37,7 +36,7 @@ impl DefaultServiceInvocationFactory {
     }
 }
 
-impl ServiceInvocationFactory for DefaultServiceInvocationFactory {
+impl<K: KeyExtractor> ServiceInvocationFactory for DefaultServiceInvocationFactory<K> {
     fn create(
         &self,
         service_name: &str,

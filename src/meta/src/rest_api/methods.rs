@@ -3,14 +3,14 @@ use super::state::*;
 use axum::extract::{Path, State};
 use axum::Json;
 use okapi_operation::*;
-use restate_service_metadata::MethodDescriptorRegistry;
+use restate_schema_api::service::ServiceMetadataResolver;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::sync::Arc;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListServiceMethodsResponse {
-    methods: Vec<GetServiceMethodResponse>,
+    methods: Vec<String>,
 }
 
 /// List discovered methods for service
@@ -25,22 +25,16 @@ pub struct ListServiceMethodsResponse {
         schema = "std::string::String"
     ))
 )]
-pub async fn list_service_methods<S, M: MethodDescriptorRegistry, K, W>(
-    State(state): State<Arc<RestEndpointState<S, M, K, W>>>,
+pub async fn list_service_methods<S: ServiceMetadataResolver, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ListServiceMethodsResponse>, MetaApiError> {
     match state
-        .method_descriptor_registry()
-        .list_methods(service_name.as_str())
+        .schemas()
+        .resolve_latest_service_metadata(&service_name)
     {
-        Some(methods) => Ok(ListServiceMethodsResponse {
-            methods: methods
-                .keys()
-                .map(|method_name| GetServiceMethodResponse {
-                    service_name: service_name.clone(),
-                    method_name: method_name.clone(),
-                })
-                .collect(),
+        Some(metadata) => Ok(ListServiceMethodsResponse {
+            methods: metadata.methods,
         }
         .into()),
         None => Err(MetaApiError::ServiceNotFound(service_name)),
@@ -72,20 +66,20 @@ pub struct GetServiceMethodResponse {
         )
     )
 )]
-pub async fn get_service_method<S, M: MethodDescriptorRegistry, K, W>(
-    State(state): State<Arc<RestEndpointState<S, M, K, W>>>,
+pub async fn get_service_method<S: ServiceMetadataResolver, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
     Path((service_name, method_name)): Path<(String, String)>,
 ) -> Result<Json<GetServiceMethodResponse>, MetaApiError> {
-    let endpoint = state
-        .method_descriptor_registry()
-        .resolve_method_descriptor(service_name.as_str(), method_name.as_str());
-    match endpoint {
-        Some(_) => Ok(GetServiceMethodResponse {
+    match state
+        .schemas()
+        .resolve_latest_service_metadata(&service_name)
+    {
+        Some(metadata) if metadata.methods.contains(&method_name) => Ok(GetServiceMethodResponse {
             service_name,
             method_name,
         }
         .into()),
-        None => Err(MetaApiError::MethodNotFound {
+        _ => Err(MetaApiError::MethodNotFound {
             service_name,
             method_name,
         }),

@@ -1,4 +1,4 @@
-use super::storage::{MetaStorage, MetaStorageError, ServiceMetadata};
+use super::storage::{MetaStorage, MetaStorageError};
 
 use futures::StreamExt;
 use std::collections::HashMap;
@@ -6,18 +6,15 @@ use std::future::Future;
 
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
-use prost_reflect::DescriptorPool;
 use restate_errors::{error_it, warn_it};
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use restate_hyper_util::proxy_connector::Proxy;
-use restate_ingress_grpc::{ReflectionRegistry, RegistrationError};
-use restate_service_key_extractor::KeyExtractorsRegistry;
-use restate_service_metadata::{InMemoryMethodDescriptorRegistry, InMemoryServiceEndpointRegistry};
+use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
+use restate_schema_impl::{RegistrationError, Schemas, ServiceRegistrationRequest};
 use restate_service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use restate_types::retries::RetryPolicy;
-use restate_types::service_endpoint::{DeliveryOptions, EndpointMetadata};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum MetaError {
@@ -83,10 +80,8 @@ impl MetaHandle {
 // -- Service implementation
 
 pub struct MetaService<Storage> {
-    key_extractors_registry: KeyExtractorsRegistry,
-    method_descriptors_registry: InMemoryMethodDescriptorRegistry,
-    service_endpoint_registry: InMemoryServiceEndpointRegistry,
-    reflections_registry: ReflectionRegistry,
+    schemas: Schemas,
+
     service_discovery: ServiceDiscovery,
 
     storage: Storage,
@@ -102,10 +97,7 @@ where
     Storage: MetaStorage,
 {
     pub fn new(
-        key_extractors_registry: KeyExtractorsRegistry,
-        method_descriptors_registry: InMemoryMethodDescriptorRegistry,
-        service_endpoint_registry: InMemoryServiceEndpointRegistry,
-        reflections_registry: ReflectionRegistry,
+        schemas: Schemas,
         storage: Storage,
         service_discovery_retry_policy: RetryPolicy,
         proxy: Option<Proxy>,
@@ -113,10 +105,7 @@ where
         let (api_cmd_tx, api_cmd_rx) = mpsc::unbounded_channel();
 
         Self {
-            key_extractors_registry,
-            method_descriptors_registry,
-            service_endpoint_registry,
-            reflections_registry,
+            schemas,
             service_discovery: ServiceDiscovery::new(service_discovery_retry_policy, proxy),
             storage,
             handle: MetaHandle(api_cmd_tx),
@@ -175,23 +164,8 @@ where
 
         while let Some(res) = endpoints_stream.next().await {
             let (endpoint_metadata, services, descriptor_pool) = res?;
-            self.reflections_registry.register_new_services(
-                endpoint_metadata.id(),
-                services.iter().map(|s| s.name().to_string()).collect(),
-                descriptor_pool.clone(),
-            )?;
-            for service_meta in services {
-                info!(
-                    rpc.service = service_meta.name(),
-                    restate.service_endpoint.url = %endpoint_metadata.address(),
-                    "Reloading service"
-                );
-                self.propagate_service_registration(
-                    service_meta,
-                    endpoint_metadata.clone(),
-                    &descriptor_pool,
-                );
-            }
+            self.schemas
+                .register_new_endpoint(endpoint_metadata, services, descriptor_pool)?;
         }
 
         self.reloaded = true;
@@ -221,7 +195,9 @@ where
         let services = discovered_metadata
             .services
             .into_iter()
-            .map(|(svc_name, instance_type)| ServiceMetadata::new(svc_name, instance_type))
+            .map(|(svc_name, instance_type)| {
+                ServiceRegistrationRequest::new(svc_name, instance_type)
+            })
             .collect::<Vec<_>>();
         self.storage
             .register_endpoint(
@@ -231,58 +207,15 @@ where
             )
             .await?;
 
-        // Propagate changes
-        let mut registered_services = Vec::with_capacity(services.len());
-        for service_meta in services {
-            registered_services.push(service_meta.name().to_string());
-            info!(
-                rpc.service = service_meta.name(),
-                restate.service_endpoint.url = %uri,
-                "Discovered service"
-            );
+        let registered_services = services.iter().map(|sm| sm.name().to_string()).collect();
 
-            self.propagate_service_registration(
-                service_meta,
-                endpoint_metadata.clone(),
-                &discovered_metadata.descriptor_pool,
-            );
-        }
-        self.reflections_registry.register_new_services(
-            endpoint_metadata.id(),
-            registered_services.clone(),
+        // Propagate changes
+        self.schemas.register_new_endpoint(
+            endpoint_metadata,
+            services,
             discovered_metadata.descriptor_pool,
         )?;
 
         Ok(registered_services)
-    }
-
-    fn propagate_service_registration(
-        &mut self,
-        service_meta: ServiceMetadata,
-        endpoint_metadata: EndpointMetadata,
-        descriptor_pool: &DescriptorPool,
-    ) {
-        let service_descriptor = descriptor_pool
-            .get_service_by_name(service_meta.name())
-            .expect("Service mut be available in the descriptor pool. This is a runtime bug.");
-
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            service_descriptor.methods().for_each(|method| {
-                debug!(
-                    rpc.service = service_meta.name(),
-                    rpc.method = method.name(),
-                    "Registering method"
-                )
-            });
-        }
-
-        self.method_descriptors_registry
-            .register(service_descriptor);
-        self.key_extractors_registry.register(
-            service_meta.name().to_string(),
-            service_meta.instance_type().clone(),
-        );
-        self.service_endpoint_registry
-            .register_service_endpoint(service_meta.name().to_string(), endpoint_metadata);
     }
 }

@@ -1,10 +1,10 @@
 use super::options::JsonOptions;
-use super::pb::grpc::reflection::server_reflection_server::ServerReflection;
 use super::*;
 
 use codederror::CodedError;
 use futures::FutureExt;
-use restate_service_metadata::MethodDescriptorRegistry;
+use restate_schema_api::json::JsonMapperResolver;
+use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_types::identifiers::IngressId;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -33,28 +33,33 @@ pub enum IngressServerError {
     Running(#[from] hyper::Error),
 }
 
-pub struct HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionService> {
+pub struct HyperServerIngress<Schemas, InvocationFactory> {
     listening_addr: SocketAddr,
     concurrency_limit: usize,
 
     // Parameters to build the layers
     ingress_id: IngressId,
     json: JsonOptions,
-    method_descriptor_registry: DescriptorRegistry,
+    schemas: Schemas,
     invocation_factory: InvocationFactory,
-    reflection_service: ReflectionService,
     dispatcher_command_sender: DispatcherCommandSender,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
 }
 
-impl<DescriptorRegistry, InvocationFactory, ReflectionService>
-    HyperServerIngress<DescriptorRegistry, InvocationFactory, ReflectionService>
+impl<Schemas, JsonDecoder, JsonEncoder, InvocationFactory>
+    HyperServerIngress<Schemas, InvocationFactory>
 where
-    DescriptorRegistry: MethodDescriptorRegistry + Clone + Send + 'static,
+    Schemas: JsonMapperResolver<JsonToProtobufMapper = JsonDecoder, ProtobufToJsonMapper = JsonEncoder>
+        + ProtoSymbolResolver
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    JsonDecoder: Send,
+    JsonEncoder: Send,
     InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
-    ReflectionService: ServerReflection,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -62,9 +67,8 @@ where
         concurrency_limit: usize,
         json: JsonOptions,
         ingress_id: IngressId,
-        method_descriptor_registry: DescriptorRegistry,
+        schemas: Schemas,
         invocation_factory: InvocationFactory,
-        reflection_service: ReflectionService,
         dispatcher_command_sender: DispatcherCommandSender,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
@@ -74,9 +78,8 @@ where
             concurrency_limit,
             json,
             ingress_id,
-            method_descriptor_registry,
+            schemas,
             invocation_factory,
-            reflection_service,
             dispatcher_command_sender,
             start_signal_tx,
         };
@@ -90,9 +93,8 @@ where
             concurrency_limit,
             ingress_id,
             json,
-            method_descriptor_registry,
+            schemas,
             invocation_factory,
-            reflection_service,
             dispatcher_command_sender,
             start_signal_tx,
         } = self;
@@ -113,8 +115,8 @@ where
                     ingress_id,
                     json,
                     invocation_factory,
-                    method_descriptor_registry,
-                    reflection_service,
+                    schemas.clone(),
+                    schemas,
                     dispatcher_command_sender,
                     global_concurrency_limit_semaphore,
                 )),
@@ -159,7 +161,6 @@ mod tests {
     use restate_test_util::{assert_eq, test};
 
     use crate::mocks::*;
-    use crate::reflection::ReflectionRegistry;
 
     // Could be shipped by the restate_types crate with feature "mocks" enabled
     #[derive(Clone)]
@@ -190,7 +191,7 @@ mod tests {
         let cmd_fut = tokio::spawn(async move {
             let (service_invocation, response_tx) = cmd_fut.await.unwrap().unwrap().into_inner();
             response_tx
-                .send(Ok(mocks::pb::GreetingResponse {
+                .send(Ok(restate_pb::mocks::greeter::GreetingResponse {
                     greeting: "Igal".to_string(),
                 }
                 .encode_to_vec()
@@ -220,7 +221,8 @@ mod tests {
         );
         assert_eq!(service_invocation.method_name, "Greet");
         let greeting_req =
-            mocks::pb::GreetingRequest::decode(&mut service_invocation.argument).unwrap();
+            restate_pb::mocks::greeter::GreetingRequest::decode(&mut service_invocation.argument)
+                .unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
 
         // Read the http_response_future
@@ -277,7 +279,8 @@ mod tests {
         );
         assert_eq!(service_invocation.method_name, "Greet");
         let greeting_req =
-            mocks::pb::GreetingRequest::decode(&mut service_invocation.argument).unwrap();
+            restate_pb::mocks::greeter::GreetingRequest::decode(&mut service_invocation.argument)
+                .unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
         assert!(service_invocation.response_sink.is_none());
 
@@ -301,7 +304,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn test_grpc_call() {
-        let expected_greeting_response = mocks::pb::GreetingResponse {
+        let expected_greeting_response = restate_pb::mocks::greeter::GreetingResponse {
             greeting: "Igal".to_string(),
         };
         let encoded_greeting_response = Bytes::from(expected_greeting_response.encode_to_vec());
@@ -313,13 +316,14 @@ mod tests {
             service_invocation
         });
 
-        let mut client =
-            mocks::pb::greeter_client::GreeterClient::connect(format!("http://{address}"))
-                .await
-                .unwrap();
+        let mut client = restate_pb::mocks::greeter::greeter_client::GreeterClient::connect(
+            format!("http://{address}"),
+        )
+        .await
+        .unwrap();
 
         let response = client
-            .greet(mocks::pb::GreetingRequest {
+            .greet(restate_pb::mocks::greeter::GreetingRequest {
                 person: "Francesco".to_string(),
             })
             .await
@@ -332,7 +336,8 @@ mod tests {
         );
         assert_eq!(service_invocation.method_name, "Greet");
         let greeting_req =
-            mocks::pb::GreetingRequest::decode(&mut service_invocation.argument).unwrap();
+            restate_pb::mocks::greeter::GreetingRequest::decode(&mut service_invocation.argument)
+                .unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
 
         // Read the http_response_future
@@ -358,9 +363,8 @@ mod tests {
             Semaphore::MAX_PERMITS,
             JsonOptions::default(),
             IngressId("0.0.0.0:0".parse().unwrap()),
-            test_descriptor_registry(),
+            test_schemas(),
             MockServiceInvocationFactory,
-            ReflectionRegistry::default(),
             dispatcher_command_tx,
         );
         let ingress_handle = tokio::spawn(ingress.run(watch));

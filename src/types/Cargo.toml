@@ -23,7 +23,6 @@ bytestring = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
-http = { workspace = true }
 humantime = { workspace = true }
 uuid = { workspace = true }
 opentelemetry_api = { workspace = true }

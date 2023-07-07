@@ -6,5 +6,4 @@ pub mod invocation;
 pub mod journal;
 pub mod message;
 pub mod retries;
-pub mod service_endpoint;
 pub mod time;

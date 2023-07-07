@@ -19,58 +19,59 @@ impl KeyExpander for Schemas {
                 .get(service_method.as_ref())
                 .ok_or(Error::NotFound)?
                 .input();
-            service_schema
-                .instance_type
-                .expand(service_method, input_descriptor, key)
+            expand_impls::expand(
+                &service_schema.instance_type,
+                service_method,
+                input_descriptor,
+                key,
+            )
         })
         .ok_or(Error::NotFound)?
     }
 }
 
-mod expand_impls {
+pub(crate) mod expand_impls {
     use super::*;
     use bytes::{BufMut, BytesMut};
 
     use prost::encoding::{encode_key, key_len};
     use prost_reflect::{DynamicMessage, MessageDescriptor};
 
-    impl ServiceInstanceType {
-        pub(crate) fn expand(
-            &self,
-            service_method: impl AsRef<str>,
-            descriptor: MessageDescriptor,
-            restate_key: Bytes,
-        ) -> Result<DynamicMessage, Error> {
-            if let ServiceInstanceType::Keyed {
-                service_methods_key_field_root_number,
-                ..
-            } = self
-            {
-                // Find out the root field number and kind
-                let root_number = *service_methods_key_field_root_number
-                    .get(service_method.as_ref())
-                    .ok_or(Error::NotFound)?;
-                let field_descriptor_kind = descriptor
-                    .get_field(root_number)
-                    .ok_or(Error::NotFound)?
-                    .kind();
+    pub(crate) fn expand(
+        service_instance_type: &ServiceInstanceType,
+        service_method: impl AsRef<str>,
+        descriptor: MessageDescriptor,
+        restate_key: Bytes,
+    ) -> Result<DynamicMessage, Error> {
+        if let ServiceInstanceType::Keyed {
+            service_methods_key_field_root_number,
+            ..
+        } = service_instance_type
+        {
+            // Find out the root field number and kind
+            let root_number = *service_methods_key_field_root_number
+                .get(service_method.as_ref())
+                .ok_or(Error::NotFound)?;
+            let field_descriptor_kind = descriptor
+                .get_field(root_number)
+                .ok_or(Error::NotFound)?
+                .kind();
 
-                // Prepare the buffer for the protobuf
-                let mut b = BytesMut::with_capacity(key_len(root_number) + restate_key.len());
+            // Prepare the buffer for the protobuf
+            let mut b = BytesMut::with_capacity(key_len(root_number) + restate_key.len());
 
-                // Encode the key of the protobuf field
-                // Note: this assumes the root wire type is never a group, per extract algorithm above
-                //  which converts groups to nested messages.
-                encode_key(root_number, field_descriptor_kind.wire_type(), &mut b);
+            // Encode the key of the protobuf field
+            // Note: this assumes the root wire type is never a group, per extract algorithm above
+            //  which converts groups to nested messages.
+            encode_key(root_number, field_descriptor_kind.wire_type(), &mut b);
 
-                // Append the restate key buffer
-                b.put(restate_key);
+            // Append the restate key buffer
+            b.put(restate_key);
 
-                // Now this message should be a well formed protobuf message, we can create the DynamicMessage
-                Ok(DynamicMessage::decode(descriptor, b.freeze())?)
-            } else {
-                Err(Error::UnexpectedServiceInstanceType)
-            }
+            // Now this message should be a well formed protobuf message, we can create the DynamicMessage
+            Ok(DynamicMessage::decode(descriptor, b.freeze())?)
+        } else {
+            Err(Error::UnexpectedServiceInstanceType)
         }
     }
 
@@ -78,24 +79,17 @@ mod expand_impls {
     mod tests {
         use super::*;
 
+        use key_extraction::extract_impls::extract;
         use prost::Message;
-        use prost_reflect::DescriptorPool;
+        use restate_pb::mocks::test::*;
+        use restate_pb::mocks::DESCRIPTOR_POOL;
+        use restate_schema_api::key::KeyStructure;
+        use std::collections::{BTreeMap, HashMap};
 
-        mod pb {
-            #![allow(warnings)]
-            #![allow(clippy::all)]
-            #![allow(unknown_lints)]
-            include!(concat!(env!("OUT_DIR"), "/test.rs"));
-        }
-        use pb::*;
-
-        static DESCRIPTOR: &[u8] =
-            include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set_test.bin"));
         static METHOD_NAME: &str = "test";
 
         fn test_descriptor_message() -> MessageDescriptor {
-            DescriptorPool::decode(DESCRIPTOR)
-                .unwrap()
+            DESCRIPTOR_POOL
                 .get_message_by_name("test.TestMessage")
                 .unwrap()
         }
@@ -160,7 +154,7 @@ mod expand_impls {
                     use super::*;
 
                     #[test]
-                    fn expand() {
+                    fn test_expand() {
                         let test_descriptor_message = test_descriptor_message();
                         let field_number = test_descriptor_message
                             .get_field_by_name(stringify!($field_name))
@@ -173,14 +167,21 @@ mod expand_impls {
                             mock_keyed_service_instance_type($key_structure, field_number);
 
                         // Extract the restate key
-                        let restate_key = service_instance_type
-                            .extract(METHOD_NAME, test_message.encode_to_vec().into())
-                            .expect("successful key extraction");
+                        let restate_key = extract(
+                            &service_instance_type,
+                            METHOD_NAME,
+                            test_message.encode_to_vec().into(),
+                        )
+                        .expect("successful key extraction");
 
                         // Now expand the key again into a message
-                        let expanded_message = service_instance_type
-                            .expand(METHOD_NAME, test_descriptor_message, restate_key)
-                            .expect("successful key expansion");
+                        let expanded_message = expand(
+                            &service_instance_type,
+                            METHOD_NAME,
+                            test_descriptor_message,
+                            restate_key,
+                        )
+                        .expect("successful key expansion");
 
                         // Transcode back to original message
                         let test_message_expanded = expanded_message

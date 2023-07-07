@@ -1,17 +1,19 @@
+//! This module contains Restate public protobuf definitions
+
 use once_cell::sync::Lazy;
 use prost_reflect::DescriptorPool;
 use std::convert::AsRef;
 
-pub(crate) mod grpc {
-    pub(crate) mod reflection {
+pub mod grpc {
+    pub mod reflection {
         #![allow(warnings)]
         #![allow(clippy::all)]
         #![allow(unknown_lints)]
         include!(concat!(env!("OUT_DIR"), "/grpc.reflection.v1alpha.rs"));
     }
 }
-pub(crate) mod restate {
-    pub(crate) mod services {
+pub mod restate {
+    pub mod services {
         #![allow(warnings)]
         #![allow(clippy::all)]
         #![allow(unknown_lints)]
@@ -19,7 +21,7 @@ pub(crate) mod restate {
     }
 }
 
-pub(crate) static DEV_RESTATE_DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
+pub static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
     DescriptorPool::decode(
         include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin")).as_ref(),
     )
@@ -28,3 +30,6 @@ pub(crate) static DEV_RESTATE_DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(
 
 pub const INGRESS_SERVICE_NAME: &str = "dev.restate.Ingress";
 pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1alpha.ServerReflection";
+
+#[cfg(feature = "mocks")]
+pub mod mocks;

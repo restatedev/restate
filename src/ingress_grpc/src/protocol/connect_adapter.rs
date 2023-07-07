@@ -1,164 +1,62 @@
-use bytes::Buf;
-use content_type::ConnectContentType;
+use crate::IngressRequestHeaders;
+use bytes::Bytes;
 use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
-use http::request::Parts;
-use http::{Method, Request, Response, StatusCode};
+use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
-use prost_reflect::{DeserializeOptions, DynamicMessage, MethodDescriptor, SerializeOptions};
-use restate_service_metadata::MethodDescriptorRegistry;
-use serde::Serialize;
+use prost_reflect::{DeserializeOptions, SerializeOptions};
+use restate_schema_api::json::{JsonMapperResolver, JsonToProtobufMapper, ProtobufToJsonMapper};
 use tonic::{Code, Status};
 use tracing::warn;
 
-pub(super) async fn decode_request<MethodRegistry: MethodDescriptorRegistry>(
-    request: Request<Body>,
-    method_descriptor: &MethodDescriptor,
-    method_registry: MethodRegistry,
-    deserialize_options: DeserializeOptions,
-) -> Result<(ConnectContentType, DynamicMessage), Response<Body>> {
-    let (mut parts, body) = request.into_parts();
+const APPLICATION_JSON: &str = "application/json";
+const APPLICATION_PROTO: &str = "application/proto";
 
+// Clippy false positive, might be caused by Bytes contained within HeaderValue.
+// https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
+#[allow(clippy::declare_interior_mutable_const)]
+const APPLICATION_JSON_HEADER: HeaderValue = HeaderValue::from_static(APPLICATION_JSON);
+#[allow(clippy::declare_interior_mutable_const)]
+const APPLICATION_PROTO_HEADER: HeaderValue = HeaderValue::from_static(APPLICATION_PROTO);
+
+pub(super) fn verify_headers_and_infer_body_type<B: http_body::Body>(
+    request: &mut Request<B>,
+) -> Result<ConnectBodyType, Response<Body>> {
     // Check content encoding
-    if !is_content_encoding_identity(&parts) {
+    if !is_content_encoding_identity(request.headers()) {
         return Err(status::not_implemented());
     }
 
-    return if parts.method == Method::GET && is_get_allowed(method_descriptor) {
-        Ok((
-            ConnectContentType::Json,
-            DynamicMessage::new(method_descriptor.input()),
-        ))
-    } else if parts.method == Method::POST {
-        // Read content type
-        let content_type = match parts
-            .headers
-            .remove(CONTENT_TYPE)
-            .and_then(|hv| content_type::resolve_content_type(&hv))
-        {
-            Some(ct) => ct,
-            None => return Err(status::unsupported_media_type()),
-        };
-
-        // Read the body
-        let body = match hyper::body::to_bytes(body).await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!("Error when reading the body: {}", e);
-                return Err(status::internal_server_error());
+    return match *request.method() {
+        Method::GET => Ok(ConnectBodyType::OnlyJsonResponse),
+        Method::POST => {
+            // Read content type
+            match request
+                .headers_mut()
+                .remove(CONTENT_TYPE)
+                .and_then(|hv| ConnectBodyType::parse_from_header(&hv))
+            {
+                Some(ct) => Ok(ct),
+                None => Err(status::unsupported_media_type()),
             }
-        };
-
-        // Transcode the message
-        let msg = match content_type::read_message(
-            content_type,
-            method_descriptor.input(),
-            method_registry,
-            deserialize_options,
-            body,
-        ) {
-            Ok(msg) => msg,
-            Err(e) => {
-                warn!(
-                    "Error when parsing request {}: {}",
-                    method_descriptor.full_name(),
-                    e
-                );
-                return Err(status::status_response(Status::invalid_argument(format!(
-                    "Error when parsing request {}: {}",
-                    method_descriptor.full_name(),
-                    e
-                ))));
-            }
-        };
-
-        Ok((content_type, msg))
-    } else {
-        Err(status::method_not_allowed())
-    };
-}
-
-pub(super) fn encode_response<B: Buf>(
-    response_body: B,
-    method_descriptor: &MethodDescriptor,
-    serialize_options: SerializeOptions,
-    request_content_type: ConnectContentType,
-) -> Response<Body> {
-    let dynamic_message = match DynamicMessage::decode(method_descriptor.output(), response_body) {
-        Ok(msg) => msg,
-        Err(err) => {
-            warn!("The response payload cannot be decoded: {}", err);
-            return status::status_response(Status::internal(format!(
-                "The response payload cannot be decoded: {err}",
-            )));
         }
+        _ => Err(status::method_not_allowed()),
     };
-
-    let (content_type_header, body) =
-        match content_type::write_message(request_content_type, serialize_options, dynamic_message)
-        {
-            Ok(r) => r,
-            Err(err) => {
-                warn!("The response payload cannot be serialized: {}", err);
-                return status::status_response(Status::internal(format!(
-                    "The response payload cannot be serialized: {err}",
-                )));
-            }
-        };
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, content_type_header)
-        .body(body)
-        .unwrap()
 }
 
-#[inline]
-fn is_content_encoding_identity(parts: &Parts) -> bool {
-    return parts
-        .headers
-        .get(CONTENT_ENCODING)
-        .and_then(|hv| hv.to_str().ok().map(|s| s.contains("identity")))
-        .unwrap_or(true);
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ConnectBodyType {
+    Protobuf,
+    Json,
+    OnlyJsonResponse,
 }
 
-#[inline]
-fn is_get_allowed(desc: &MethodDescriptor) -> bool {
-    return desc.input().full_name() == "google.protobuf.Empty";
-}
-
-pub(super) mod content_type {
-    use super::*;
-
-    use bytes::{Buf, BufMut, BytesMut};
-    use http::HeaderValue;
-    use prost::Message;
-    use prost_reflect::{MessageDescriptor, Value};
-    use serde::de::IntoDeserializer;
-    use serde::Deserialize;
-    use tower::BoxError;
-
-    const APPLICATION_JSON: &str = "application/json";
-    const APPLICATION_PROTO: &str = "application/proto";
-
-    // Clippy false positive, might be caused by Bytes contained within HeaderValue.
-    // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
-    #[allow(clippy::declare_interior_mutable_const)]
-    const APPLICATION_JSON_HEADER: HeaderValue = HeaderValue::from_static(APPLICATION_JSON);
-    #[allow(clippy::declare_interior_mutable_const)]
-    const APPLICATION_PROTO_HEADER: HeaderValue = HeaderValue::from_static(APPLICATION_PROTO);
-
-    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-    pub enum ConnectContentType {
-        Protobuf,
-        Json,
-    }
-
-    pub(super) fn resolve_content_type(content_type: &HeaderValue) -> Option<ConnectContentType> {
+impl ConnectBodyType {
+    fn parse_from_header(content_type: &HeaderValue) -> Option<Self> {
         if let Ok(ct) = content_type.to_str() {
             return if ct.starts_with(APPLICATION_JSON) {
-                Some(ConnectContentType::Json)
+                Some(ConnectBodyType::Json)
             } else if ct.starts_with(APPLICATION_PROTO) {
-                Some(ConnectContentType::Protobuf)
+                Some(ConnectBodyType::Protobuf)
             } else {
                 None
             };
@@ -166,156 +64,130 @@ pub(super) mod content_type {
         None
     }
 
-    pub(super) fn read_message<MethodRegistry: MethodDescriptorRegistry>(
-        content_type: ConnectContentType,
-        msg_desc: MessageDescriptor,
-        method_registry: MethodRegistry,
-        deserialize_options: DeserializeOptions,
-        payload_buf: impl Buf + Sized,
-    ) -> Result<DynamicMessage, BoxError> {
-        match content_type {
-            ConnectContentType::Json if msg_desc.full_name() == "dev.restate.InvokeRequest" => {
-                read_json_invoke_request(
-                    msg_desc,
-                    method_registry,
-                    deserialize_options,
-                    payload_buf,
-                )
+    pub(super) fn infer_encoder_and_decoder<MapperResolver, JsonDecoder, JsonEncoder>(
+        &self,
+        ingress_request_header: &IngressRequestHeaders,
+        mapper_resolver: MapperResolver,
+    ) -> Result<(Decoder<JsonDecoder>, Encoder<JsonEncoder>), Response<Body>>
+    where
+        MapperResolver: JsonMapperResolver<
+            JsonToProtobufMapper = JsonDecoder,
+            ProtobufToJsonMapper = JsonEncoder,
+        >,
+    {
+        match self {
+            ConnectBodyType::Protobuf => Ok((Decoder::Protobuf, Encoder::Protobuf)),
+            ConnectBodyType::Json => {
+                let (json_decoder, json_encoder) = mapper_resolver
+                    .resolve_json_mapper_for_service(
+                        &ingress_request_header.service_name,
+                        &ingress_request_header.method_name,
+                    )
+                    .ok_or_else(|| status::code_response(Code::NotFound))?;
+
+                Ok((Decoder::Json(json_decoder), Encoder::Json(json_encoder)))
             }
-            ConnectContentType::Json => {
-                let mut deser = serde_json::Deserializer::from_reader(payload_buf.reader());
-                let dynamic_message = DynamicMessage::deserialize_with_options(
-                    msg_desc,
-                    &mut deser,
-                    &deserialize_options,
-                )?;
-                deser.end()?;
-                Ok(dynamic_message)
+            ConnectBodyType::OnlyJsonResponse => {
+                let (_, json_encoder) = mapper_resolver
+                    .resolve_json_mapper_for_service(
+                        &ingress_request_header.service_name,
+                        &ingress_request_header.method_name,
+                    )
+                    .ok_or_else(|| status::code_response(Code::NotFound))?;
+
+                Ok((Decoder::Empty, Encoder::Json(json_encoder)))
             }
-            ConnectContentType::Protobuf => Ok(DynamicMessage::decode(msg_desc, payload_buf)?),
-        }
-    }
-
-    // TODO this is a bit of a awful hack to parse the InvokeRequest.argument as json object.
-    //  We'll improve this with a JsonMapper interface, as described here:
-    //  https://github.com/restatedev/restate/issues/43
-    pub(super) fn read_json_invoke_request<MethodRegistry: MethodDescriptorRegistry>(
-        invoke_request_msg_desc: MessageDescriptor,
-        method_registry: MethodRegistry,
-        deserialize_options: DeserializeOptions,
-        payload_buf: impl Buf + Sized,
-    ) -> Result<DynamicMessage, BoxError> {
-        #[derive(Deserialize)]
-        struct InvokeRequestAdapter {
-            service: String,
-            method: String,
-            argument: serde_json::Value,
-        }
-
-        let adapter: InvokeRequestAdapter = serde_json::from_reader(payload_buf.reader())?;
-
-        let descriptor = method_registry
-            .resolve_method_descriptor(&adapter.service, &adapter.method)
-            // TODO this error propagation is not great
-            .ok_or_else(|| {
-                Status::not_found(format!("{}/{} not found", adapter.service, adapter.method))
-            })?;
-
-        let argument_dynamic_message = DynamicMessage::deserialize_with_options(
-            descriptor.input(),
-            adapter.argument.into_deserializer(),
-            &deserialize_options,
-        )?;
-
-        let mut invoke_req_msg = DynamicMessage::new(invoke_request_msg_desc);
-        invoke_req_msg.set_field_by_name("service", Value::String(adapter.service));
-        invoke_req_msg.set_field_by_name("method", Value::String(adapter.method));
-        // TODO can skip this serialization by implementing prost::Message on InvokeRequestAdapter
-        invoke_req_msg.set_field_by_name(
-            "argument",
-            Value::Bytes(argument_dynamic_message.encode_to_vec().into()),
-        );
-
-        Ok(invoke_req_msg)
-    }
-
-    pub(super) fn write_message(
-        content_type: ConnectContentType,
-        serialize_options: SerializeOptions,
-        msg: DynamicMessage,
-    ) -> Result<(HeaderValue, Body), BoxError> {
-        match content_type {
-            ConnectContentType::Json => {
-                let mut ser = serde_json::Serializer::new(BytesMut::new().writer());
-
-                msg.serialize_with_options(&mut ser, &serialize_options)?;
-
-                Ok((
-                    APPLICATION_JSON_HEADER,
-                    ser.into_inner().into_inner().freeze().into(),
-                ))
-            }
-            ConnectContentType::Protobuf => {
-                Ok((APPLICATION_PROTO_HEADER, msg.encode_to_vec().into()))
-            }
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use crate::mocks::{greeter_get_count_method_descriptor, test_descriptor_registry};
-
-        use bytes::Bytes;
-        use http::HeaderValue;
-        use restate_test_util::assert_eq;
-
-        #[test]
-        fn resolve_json() {
-            assert_eq!(
-                resolve_content_type(&HeaderValue::from_static("application/json")).unwrap(),
-                ConnectContentType::Json
-            );
-            assert_eq!(
-                resolve_content_type(&HeaderValue::from_static("application/json; encoding=utf8"))
-                    .unwrap(),
-                ConnectContentType::Json
-            );
-        }
-
-        #[test]
-        fn read_google_protobuf_empty() {
-            read_message(
-                ConnectContentType::Json,
-                greeter_get_count_method_descriptor().input(),
-                test_descriptor_registry(),
-                DeserializeOptions::default(),
-                Bytes::from("{}"),
-            )
-            .unwrap()
-            .transcode_to::<()>()
-            .unwrap();
-        }
-
-        #[tokio::test]
-        async fn write_google_protobuf_empty() {
-            let (_, b) = write_message(
-                ConnectContentType::Json,
-                SerializeOptions::default(),
-                DynamicMessage::new(greeter_get_count_method_descriptor().input()),
-            )
-            .unwrap();
-
-            assert_eq!(
-                hyper::body::to_bytes(b).await.unwrap(),
-                Bytes::from_static(b"{}")
-            )
         }
     }
 }
 
+pub(super) enum Decoder<JsonDecoder> {
+    Protobuf,
+    Empty,
+    Json(JsonDecoder),
+}
+
+impl<JsonDecoder: JsonToProtobufMapper> Decoder<JsonDecoder> {
+    pub(super) async fn decode(
+        self,
+        req: Request<Body>,
+        json_deserialize_options: &DeserializeOptions,
+    ) -> Result<Bytes, Response<Body>> {
+        if matches!(&self, Decoder::Empty) {
+            return Ok(Bytes::default());
+        }
+
+        let collected_body = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
+            warn!("Error when reading the body: {}", e);
+            status::internal_server_error()
+        })?;
+
+        match self {
+            Decoder::Empty => {
+                unreachable!()
+            }
+            Decoder::Protobuf => Ok(collected_body),
+            Decoder::Json(mapper) => mapper
+                .convert_to_protobuf(collected_body, json_deserialize_options)
+                .map_err(|e| {
+                    warn!("Error when parsing request: {}", e);
+                    status::status_response(Status::invalid_argument(format!(
+                        "Error when parsing request: {}",
+                        e
+                    )))
+                }),
+        }
+    }
+}
+
+pub(super) enum Encoder<JsonEncoder> {
+    Protobuf,
+    Json(JsonEncoder),
+}
+
+impl<JsonEncoder: ProtobufToJsonMapper> Encoder<JsonEncoder> {
+    pub(super) fn encode_response(
+        self,
+        response_body: Bytes,
+        json_serialize_options: &SerializeOptions,
+    ) -> Response<Body> {
+        match self {
+            Encoder::Protobuf => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, APPLICATION_PROTO_HEADER)
+                .body(response_body.into())
+                .unwrap(),
+            Encoder::Json(encoder) => {
+                match encoder.convert_to_json(response_body, json_serialize_options) {
+                    Ok(b) => Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, APPLICATION_JSON_HEADER)
+                        .body(b.into())
+                        .unwrap(),
+                    Err(err) => {
+                        warn!("The response payload cannot be serialized: {}", err);
+                        return status::status_response(Status::internal(format!(
+                            "The response payload cannot be serialized: {err}",
+                        )));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[inline]
+fn is_content_encoding_identity(headers: &HeaderMap<HeaderValue>) -> bool {
+    return headers
+        .get(CONTENT_ENCODING)
+        .and_then(|hv| hv.to_str().ok().map(|s| s.contains("identity")))
+        .unwrap_or(true);
+}
+
 pub(super) mod status {
     use super::*;
+
+    use serde::Serialize;
 
     pub(super) fn method_not_allowed() -> Response<Body> {
         http_code_response(StatusCode::METHOD_NOT_ALLOWED)
@@ -434,250 +306,65 @@ pub(super) mod status {
 mod tests {
     use super::*;
 
-    use crate::mocks::{
-        greeter_greet_method_descriptor, ingress_invoke_method_descriptor, pb,
-        test_descriptor_registry,
-    };
-    use bytes::Bytes;
     use http::StatusCode;
-    use http_body::Body;
-    use prost::Message;
     use restate_test_util::{assert_eq, test};
     use serde_json::json;
 
-    #[test(tokio::test)]
-    async fn decode_greet_json() {
-        let (ct, request_payload) = decode_request(
-            Request::builder()
-                .uri("http://localhost/greeter.Greeter/Greet")
-                .method(Method::POST)
-                .header(CONTENT_TYPE, "application/json")
-                .body(json!({"person": "Francesco"}).to_string().into())
-                .unwrap(),
-            &greeter_greet_method_descriptor(),
-            test_descriptor_registry(),
-            DeserializeOptions::default(),
-        )
-        .await
-        .unwrap();
-
+    #[test]
+    fn resolve_content_type() {
         assert_eq!(
-            request_payload
-                .transcode_to::<pb::GreetingRequest>()
+            ConnectBodyType::parse_from_header(&HeaderValue::from_static("application/json"))
                 .unwrap(),
-            pb::GreetingRequest {
-                person: "Francesco".to_string()
-            }
+            ConnectBodyType::Json
         );
-        assert_eq!(ct, ConnectContentType::Json);
+        assert_eq!(
+            ConnectBodyType::parse_from_header(&HeaderValue::from_static(
+                "application/json; encoding=utf8"
+            ))
+            .unwrap(),
+            ConnectBodyType::Json
+        );
     }
 
-    #[test(tokio::test)]
-    async fn decode_greet_protobuf() {
-        let (ct, request_payload) = decode_request(
-            Request::builder()
-                .uri("http://localhost/greeter.Greeter/Greet")
-                .method(Method::POST)
-                .header(CONTENT_TYPE, "application/protobuf")
-                .body(
-                    pb::GreetingRequest {
-                        person: "Francesco".to_string(),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                )
+    #[test]
+    fn get_requests_are_valid() {
+        let content_type = verify_headers_and_infer_body_type(
+            &mut Request::get("http://localhost/greeter.Greeter/Greet")
+                .body(hyper::Body::empty())
                 .unwrap(),
-            &greeter_greet_method_descriptor(),
-            test_descriptor_registry(),
-            DeserializeOptions::default(),
         )
-        .await
         .unwrap();
 
-        assert_eq!(
-            request_payload
-                .transcode_to::<pb::GreetingRequest>()
-                .unwrap(),
-            pb::GreetingRequest {
-                person: "Francesco".to_string()
-            }
-        );
-        assert_eq!(ct, ConnectContentType::Protobuf);
+        assert_eq!(ConnectBodyType::OnlyJsonResponse, content_type);
     }
 
-    #[test(tokio::test)]
-    async fn decode_invoke_json() {
-        let json_payload = json!({
-            "service": "greeter.Greeter",
-            "method": "Greet",
-            "argument": {
-                "person": "Francesco"
-            }
-        });
-
-        let (ct, request_payload) = decode_request(
-            Request::builder()
-                .uri("http://localhost/dev.restate.Ingress/Invoke")
-                .method(Method::POST)
-                .header(CONTENT_TYPE, "application/json")
-                .body(json_payload.to_string().into())
-                .unwrap(),
-            &ingress_invoke_method_descriptor(),
-            test_descriptor_registry(),
-            DeserializeOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            request_payload
-                .transcode_to::<crate::pb::restate::services::InvokeRequest>()
-                .unwrap(),
-            crate::pb::restate::services::InvokeRequest {
-                service: "greeter.Greeter".to_string(),
-                method: "Greet".to_string(),
-                argument: pb::GreetingRequest {
-                    person: "Francesco".to_string(),
-                }
-                .encode_to_vec()
-                .into(),
-            }
-        );
-        assert_eq!(ct, ConnectContentType::Json);
-    }
-
-    #[test(tokio::test)]
-    async fn decode_invoke_protobuf() {
-        let invoke_request = crate::pb::restate::services::InvokeRequest {
-            service: "greeter.Greeter".to_string(),
-            method: "Greet".to_string(),
-            argument: pb::GreetingRequest {
-                person: "Francesco".to_string(),
-            }
-            .encode_to_vec()
-            .into(),
-        };
-
-        let (ct, request_payload) = decode_request(
-            Request::builder()
-                .uri("http://localhost/dev.restate.Ingress/Invoke")
-                .method(Method::POST)
-                .header(CONTENT_TYPE, "application/protobuf")
-                .body(invoke_request.encode_to_vec().into())
-                .unwrap(),
-            &greeter_greet_method_descriptor(),
-            test_descriptor_registry(),
-            DeserializeOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            request_payload
-                .transcode_to::<crate::pb::restate::services::InvokeRequest>()
-                .unwrap(),
-            invoke_request
-        );
-        assert_eq!(ct, ConnectContentType::Protobuf);
-    }
-
-    #[test(tokio::test)]
-    async fn decode_wrong_http_method() {
-        let err_response = decode_request(
-            Request::builder()
+    #[test]
+    fn wrong_http_method() {
+        let err_response = verify_headers_and_infer_body_type(
+            &mut Request::builder()
                 .uri("http://localhost/greeter.Greeter/Greet")
                 .method(Method::PUT)
                 .header(CONTENT_TYPE, "application/json")
-                .body(json!({"person": "Francesco"}).to_string().into())
+                .body::<Body>(json!({"person": "Francesco"}).to_string().into())
                 .unwrap(),
-            &greeter_greet_method_descriptor(),
-            test_descriptor_registry(),
-            DeserializeOptions::default(),
         )
-        .await
         .unwrap_err();
 
         assert_eq!(err_response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[test(tokio::test)]
-    async fn decode_unknown_content_type() {
-        let err_response = decode_request(
-            Request::builder()
+    async fn unknown_content_type() {
+        let err_response = verify_headers_and_infer_body_type(
+            &mut Request::builder()
                 .uri("http://localhost/greeter.Greeter/Greet")
                 .method(Method::POST)
                 .header(CONTENT_TYPE, "application/yaml")
-                .body("person: Francesco".to_string().into())
+                .body::<Body>("person: Francesco".to_string().into())
                 .unwrap(),
-            &greeter_greet_method_descriptor(),
-            test_descriptor_registry(),
-            DeserializeOptions::default(),
         )
-        .await
         .unwrap_err();
 
         assert_eq!(err_response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    }
-
-    #[test(tokio::test)]
-    async fn encode_greet_json() {
-        let pb_response = Bytes::from(
-            pb::GreetingResponse {
-                greeting: "Hello Francesco".to_string(),
-            }
-            .encode_to_vec(),
-        );
-
-        let mut res = encode_response(
-            pb_response,
-            &greeter_greet_method_descriptor(),
-            SerializeOptions::default(),
-            ConnectContentType::Json,
-        );
-
-        let body = res.data().await.unwrap().unwrap();
-        let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(
-            json_body.get("greeting").unwrap().as_str().unwrap(),
-            "Hello Francesco"
-        );
-    }
-
-    #[test(tokio::test)]
-    async fn encode_empty_message() {
-        let pb_response = Bytes::from(pb::GreetingResponse::default().encode_to_vec());
-
-        let mut res = encode_response(
-            pb_response,
-            &greeter_greet_method_descriptor(),
-            SerializeOptions::default(),
-            ConnectContentType::Json,
-        );
-
-        let body = res.data().await.unwrap().unwrap();
-        let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(res.status(), StatusCode::OK);
-        assert!(json_body.as_object().unwrap().is_empty())
-    }
-
-    #[test(tokio::test)]
-    async fn encode_empty_message_with_defaults_encoding() {
-        let pb_response = Bytes::from(pb::GreetingResponse::default().encode_to_vec());
-
-        let mut res = encode_response(
-            pb_response,
-            &greeter_greet_method_descriptor(),
-            SerializeOptions::new().skip_default_fields(false),
-            ConnectContentType::Json,
-        );
-
-        let body = res.data().await.unwrap().unwrap();
-        let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(json_body.get("greeting").unwrap().as_str().unwrap(), "");
     }
 }

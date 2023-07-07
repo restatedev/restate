@@ -5,9 +5,8 @@ use axum::http::Uri;
 use axum::Json;
 use hyper::http::{HeaderName, HeaderValue};
 use okapi_operation::*;
-use restate_service_metadata::ServiceEndpointRegistry;
+use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::retries::RetryPolicy;
-use restate_types::service_endpoint::EndpointMetadata;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -46,8 +45,8 @@ pub struct RegisterServiceEndpointResponse {
     operation_id = "discover_service_endpoint",
     tags = "service_endpoint"
 )]
-pub async fn discover_service_endpoint<S: ServiceEndpointRegistry, M, K, W>(
-    State(state): State<Arc<RestEndpointState<S, M, K, W>>>,
+pub async fn discover_service_endpoint<S, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
     #[request_body(required = true)] Json(payload): Json<RegisterServiceEndpointRequest>,
 ) -> Result<Json<RegisterServiceEndpointResponse>, MetaApiError> {
     let headers = payload
@@ -74,7 +73,7 @@ pub async fn discover_service_endpoint<S: ServiceEndpointRegistry, M, K, W>(
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListServicesResponse {
-    endpoints: Vec<GetServiceResponse>,
+    services: Vec<ServiceMetadata>,
 }
 
 /// List services
@@ -84,27 +83,13 @@ pub struct ListServicesResponse {
     operation_id = "list_services",
     tags = "service"
 )]
-pub async fn list_services<S: ServiceEndpointRegistry, M, K, W>(
-    State(state): State<Arc<RestEndpointState<S, M, K, W>>>,
+pub async fn list_services<S: ServiceMetadataResolver, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
 ) -> Result<Json<ListServicesResponse>, MetaApiError> {
     Ok(ListServicesResponse {
-        endpoints: state
-            .service_endpoint_registry()
-            .list_endpoints()
-            .iter()
-            .map(|(service_name, metadata)| GetServiceResponse {
-                service_name: service_name.clone(),
-                endpoint_metadata: metadata.clone(),
-            })
-            .collect(),
+        services: state.schemas().list_services(),
     }
     .into())
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct GetServiceResponse {
-    service_name: String,
-    endpoint_metadata: EndpointMetadata,
 }
 
 /// Get a service
@@ -119,19 +104,13 @@ pub struct GetServiceResponse {
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service<S: ServiceEndpointRegistry, M, K, W>(
-    State(state): State<Arc<RestEndpointState<S, M, K, W>>>,
+pub async fn get_service<S: ServiceMetadataResolver, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
     Path(service_name): Path<String>,
-) -> Result<Json<GetServiceResponse>, MetaApiError> {
-    match state
-        .service_endpoint_registry()
-        .resolve_endpoint(service_name.clone())
-    {
-        Some(endpoint_metadata) => Ok(GetServiceResponse {
-            service_name,
-            endpoint_metadata,
-        }
-        .into()),
-        None => Err(MetaApiError::ServiceNotFound(service_name)),
-    }
+) -> Result<Json<ServiceMetadata>, MetaApiError> {
+    state
+        .schemas()
+        .resolve_latest_service_metadata(&service_name)
+        .map(Into::into)
+        .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
 }
