@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 serde = ["dep:serde", "dep:serde_with", "restate_types?/serde"]
-serde_schema = ["serde", "dep:schemars"]
+serde_schema = ["serde", "dep:schemars", "restate_types?/serde_schema"]
 key_extraction = ["dep:bytes", "dep:thiserror", "dep:anyhow", "dep:prost"]
 key_expansion = ["dep:bytes", "dep:thiserror", "dep:prost", "dep:prost-reflect", "dep:anyhow"]
 json_key_conversion = ["key_extraction", "key_expansion", "dep:serde_json", "dep:thiserror"]
