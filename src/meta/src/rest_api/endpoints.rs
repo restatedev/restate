@@ -2,8 +2,9 @@ use super::error::*;
 use super::state::*;
 
 use axum::extract::{Path, State};
-use axum::http::Uri;
-use axum::Json;
+use axum::http::{StatusCode, Uri};
+use axum::response::IntoResponse;
+use axum::{http, Json};
 use okapi_operation::*;
 use restate_schema_api::endpoint::{EndpointMetadataResolver, ProtocolType};
 use restate_serde_util::SerdeableHeaderHashMap;
@@ -47,17 +48,26 @@ pub struct RegisterServiceEndpointResponse {
     services: Vec<RegisterServiceResponse>,
 }
 
-/// Discover endpoint and return discovered endpoints.
+/// Create service endpoint and return discovered services.
 #[openapi(
-    summary = "Discover service endpoint",
-    description = "Discover service endpoint and register it in the meta information storage. If the service endpoint is already registered, it will be re-discovered and will override the previous stored metadata.",
-    operation_id = "discover_service_endpoint",
-    tags = "service_endpoint"
+    summary = "Create service endpoint",
+    description = "Create service endpoint. Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the service endpoint and their Protobuf descriptor. If the service endpoint is already registered, this method will fail unless `force` is set to `true`.",
+    operation_id = "create_service_endpoint",
+    tags = "service_endpoint",
+    responses(
+        ignore_return_type = true,
+        response(
+            status = "201",
+            description = "Created",
+            content = "Json<RegisterServiceEndpointResponse>",
+        ),
+        from_type = "MetaApiError",
+    )
 )]
-pub async fn discover_service_endpoint<S, W>(
+pub async fn create_service_endpoint<S, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
     #[request_body(required = true)] Json(payload): Json<RegisterServiceEndpointRequest>,
-) -> Result<Json<RegisterServiceEndpointResponse>, MetaApiError> {
+) -> Result<impl IntoResponse, MetaApiError> {
     let registration_result = state
         .meta_handle()
         .register(
@@ -67,15 +77,23 @@ pub async fn discover_service_endpoint<S, W>(
         )
         .await?;
 
-    Ok(RegisterServiceEndpointResponse {
+    let response_body = RegisterServiceEndpointResponse {
         id: registration_result.endpoint,
         services: registration_result
             .services
             .into_iter()
             .map(|(name, revision)| RegisterServiceResponse { name, revision })
             .collect(),
-    }
-    .into())
+    };
+
+    Ok((
+        StatusCode::CREATED,
+        [(
+            http::header::LOCATION,
+            format!("/endpoints/{}", response_body.id),
+        )],
+        Json(response_body),
+    ))
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

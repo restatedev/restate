@@ -20,7 +20,7 @@ tokio = { workspace = true, features = ["full"] }
 
 # Rest API
 hyper = { workspace = true, features = ["full"] }
-axum = "0.6.2"
+axum = "0.6.18"
 tower = { workspace = true, features = ["load-shed", "limit"] }
 okapi-operation = { version = "0.2.1", features = ["axum-integration"] }
 

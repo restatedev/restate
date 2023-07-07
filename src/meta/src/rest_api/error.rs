@@ -6,6 +6,7 @@ use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
+use restate_schema_impl::RegistrationError;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -47,12 +48,15 @@ struct ErrorDescriptionResponse {
 impl IntoResponse for MetaApiError {
     fn into_response(self) -> Response {
         let status_code = match &self {
-            MetaApiError::ServiceNotFound(_) | MetaApiError::MethodNotFound { .. } => {
-                StatusCode::NOT_FOUND
-            }
+            MetaApiError::ServiceNotFound(_)
+            | MetaApiError::MethodNotFound { .. }
+            | MetaApiError::ServiceEndpointNotFound(_) => StatusCode::NOT_FOUND,
             MetaApiError::Meta(MetaError::Discovery(desc_error)) if desc_error.is_user_error() => {
                 StatusCode::BAD_REQUEST
             }
+            MetaApiError::Meta(MetaError::SchemaRegistry(RegistrationError::OverrideEndpoint(
+                _,
+            ))) => StatusCode::CONFLICT,
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
             MetaApiError::Worker(_) => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -82,6 +86,9 @@ impl ToResponses for MetaApiError {
                     okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
                 ),
                 "404".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
+                ),
+                "409".into() => okapi::openapi3::RefOr::Object(
                     okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
                 ),
                 "500".into() => okapi::openapi3::RefOr::Object(
