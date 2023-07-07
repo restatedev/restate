@@ -119,7 +119,7 @@ pub mod endpoint {
             }
         }
 
-        #[derive(Default)]
+        #[derive(Default, Clone)]
         pub struct MockEndpointMetadataRegistry {
             pub endpoints: HashMap<EndpointId, EndpointMetadata>,
             pub latest_endpoint: HashMap<String, EndpointId>,

@@ -1,6 +1,6 @@
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::EntryIndex;
 use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::{EndpointId, EntryIndex};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use std::collections::HashSet;
 
@@ -12,6 +12,8 @@ pub struct Effect {
 
 #[derive(Debug)]
 pub enum EffectKind {
+    /// This is sent before any new entry is created by the invoker. This won't be sent if the endpoint_id is already set.
+    SelectedEndpoint(EndpointId),
     JournalEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
