@@ -309,6 +309,13 @@ where
             .as_parent();
 
         match kind {
+            InvokerEffectKind::SelectedEndpoint(endpoint_id) => {
+                effects.store_chosen_endpoint(
+                    service_invocation_id.service_id,
+                    endpoint_id,
+                    invocation_metadata,
+                );
+            }
             InvokerEffectKind::JournalEntry { entry_index, entry } => {
                 self.handle_journal_entry(
                     effects,

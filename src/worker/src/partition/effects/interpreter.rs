@@ -419,6 +419,16 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .delete_timer(service_invocation_id, wake_up_time, entry_index)
                     .await?;
             }
+            Effect::StoreInvocationStatus {
+                service_id,
+                endpoint_id,
+                mut metadata,
+            } => {
+                metadata.journal_metadata.endpoint_id = Some(endpoint_id);
+                state_storage
+                    .store_invocation_status(&service_id, InvocationStatus::Invoked(metadata))
+                    .await?;
+            }
             Effect::AppendJournalEntry {
                 service_id,
                 metadata,
@@ -651,6 +661,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             service_invocation_id: service_invocation.id,
             invoke_input_journal: InvokeInputJournal::CachedJournal(
                 JournalMetadata {
+                    endpoint_id: None,
                     method: service_invocation.method_name.to_string(),
                     length: 1,
                     span_context: service_invocation.span_context,

@@ -18,7 +18,7 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::InvocationMetadata;
 use restate_storage_api::timer_table::Timer;
 use restate_types::errors::InvocationErrorCode;
-use restate_types::identifiers::{EntryIndex, ServiceId, ServiceInvocationId};
+use restate_types::identifiers::{EndpointId, EntryIndex, ServiceId, ServiceInvocationId};
 use restate_types::invocation::{
     InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext,
     SpanRelation,
@@ -97,6 +97,11 @@ pub(crate) enum Effect {
     },
 
     // Journal operations
+    StoreInvocationStatus {
+        service_id: ServiceId,
+        endpoint_id: EndpointId,
+        metadata: InvocationMetadata,
+    },
     AppendJournalEntry {
         service_id: ServiceId,
         metadata: InvocationMetadata,
@@ -354,6 +359,11 @@ impl Effect {
                 restate.timer.wake_up_time = %wake_up_time,
                 "Effect: Delete timer"
             ),
+            Effect::StoreInvocationStatus { endpoint_id, .. } => debug_if_leader!(
+                is_leader,
+                restate.service_endpoint.id = %endpoint_id,
+                "Effect: Store endpoint id to storage"
+            ),
             Effect::AppendJournalEntry {
                 journal_entry,
                 entry_index,
@@ -594,6 +604,19 @@ impl Effects {
             wake_up_time,
             entry_index,
         });
+    }
+
+    pub(crate) fn store_chosen_endpoint(
+        &mut self,
+        service_id: ServiceId,
+        endpoint_id: EndpointId,
+        metadata: InvocationMetadata,
+    ) {
+        self.effects.push(Effect::StoreInvocationStatus {
+            service_id,
+            endpoint_id,
+            metadata,
+        })
     }
 
     pub(crate) fn append_journal_entry(
