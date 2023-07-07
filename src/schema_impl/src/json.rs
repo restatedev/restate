@@ -210,12 +210,8 @@ mod tests {
             )
             .unwrap();
 
-        let dynamic_message =
-            DynamicMessage::decode(greeter_greet_method_descriptor().input(), protobuf).unwrap();
         assert_eq!(
-            dynamic_message
-                .transcode_to::<restate_pb::mocks::greeter::GreetingRequest>()
-                .unwrap(),
+            restate_pb::mocks::greeter::GreetingRequest::decode(protobuf).unwrap(),
             restate_pb::mocks::greeter::GreetingRequest {
                 person: "Francesco".to_string()
             }
@@ -244,12 +240,8 @@ mod tests {
             )
             .unwrap();
 
-        let dynamic_message =
-            DynamicMessage::decode(greeter_greet_method_descriptor().input(), protobuf).unwrap();
         assert_eq!(
-            dynamic_message
-                .transcode_to::<restate_pb::restate::services::InvokeRequest>()
-                .unwrap(),
+            restate_pb::restate::services::InvokeRequest::decode(protobuf).unwrap(),
             restate_pb::restate::services::InvokeRequest {
                 service: "greeter.Greeter".to_string(),
                 method: "Greet".to_string(),
