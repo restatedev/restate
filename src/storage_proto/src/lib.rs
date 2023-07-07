@@ -21,6 +21,7 @@ pub mod storage {
             use crate::storage::v1::journal_entry::{
                 completion_result, CompletionResult, Entry, Kind,
             };
+            use crate::storage::v1::journal_meta::EndpointId;
             use crate::storage::v1::outbox_message::{
                 OutboxIngressResponse, OutboxServiceInvocation, OutboxServiceInvocationResponse,
             };
@@ -258,7 +259,15 @@ pub mod storage {
                                 .ok_or(ConversionError::missing_field("span_context"))?,
                         )?,
                     );
+                    let endpoint_id =
+                        value
+                            .endpoint_id
+                            .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
+                                EndpointId::None(_) => None,
+                                EndpointId::Value(id) => Some(id),
+                            });
                     Ok(restate_types::journal::JournalMetadata {
+                        endpoint_id,
                         length,
                         method,
                         span_context,
@@ -272,6 +281,7 @@ pub mod storage {
                         span_context,
                         length,
                         method,
+                        endpoint_id,
                     } = value;
 
                     JournalMeta {
@@ -280,6 +290,10 @@ pub mod storage {
                         span_context: Some(SpanContext::from(
                             opentelemetry_api::trace::SpanContext::from(span_context),
                         )),
+                        endpoint_id: Some(match endpoint_id {
+                            None => EndpointId::None(()),
+                            Some(endpoint_id) => EndpointId::Value(endpoint_id),
+                        }),
                     }
                 }
             }
