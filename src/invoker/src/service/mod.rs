@@ -914,7 +914,7 @@ mod tests {
         fn mock(
             service_endpoint_registry: EMR,
             invocation_task_runner: ITR,
-            default_retry_policy: RetryPolicy,
+            retry_policy: RetryPolicy,
             concurrency_limit: Option<usize>,
         ) -> (mpsc::UnboundedSender<InputCommand>, Self) {
             let (input_tx, input_rx) = mpsc::unbounded_channel();
@@ -926,7 +926,7 @@ mod tests {
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner,
-                retry_policy: default_retry_policy,
+                retry_policy,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
                 quota: InvokerConcurrencyQuota::new(concurrency_limit),
