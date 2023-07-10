@@ -245,25 +245,6 @@ mod tests {
                     },
                 ) => self_metadata.id() == other_metadata.id() && self_services == other_services,
                 (
-                    SchemasUpdateCommand::InsertService {
-                        name: self_name,
-                        revision: self_revision,
-                        endpoint_id: self_endpoint_id,
-                        instance_type: self_instance_type,
-                    },
-                    SchemasUpdateCommand::InsertService {
-                        name: other_name,
-                        revision: other_revision,
-                        endpoint_id: other_endpoint_id,
-                        instance_type: other_instance_type,
-                    },
-                ) => {
-                    self_name == other_name
-                        && self_revision == other_revision
-                        && self_endpoint_id == other_endpoint_id
-                        && self_instance_type == other_instance_type
-                }
-                (
                     SchemasUpdateCommand::RemoveService {
                         name: self_name,
                         revision: self_revision,

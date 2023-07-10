@@ -10,7 +10,8 @@ use restate_futures_util::command::{Command, UnboundedCommandReceiver, Unbounded
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
 use restate_schema_impl::{
-    RegistrationError, Schemas, SchemasUpdateCommand, ServiceRegistrationRequest,
+    InsertServiceUpdateCommand, RegistrationError, Schemas, SchemasUpdateCommand,
+    ServiceRegistrationRequest,
 };
 use restate_service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use restate_types::identifiers::{EndpointId, ServiceRevision};
@@ -225,7 +226,12 @@ where
             {
                 return DiscoverEndpointResponse {
                     endpoint: metadata.id(),
-                    services: services.clone(),
+                    services: services
+                        .iter()
+                        .map(|InsertServiceUpdateCommand { name, revision, .. }| {
+                            (name.clone(), *revision)
+                        })
+                        .collect(),
                 };
             }
         }
