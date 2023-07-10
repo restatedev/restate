@@ -64,6 +64,9 @@ pub enum SchemasUpdateCommand {
         descriptor_pool: DescriptorPool,
     },
     /// Insert (or replace) service
+    ///
+    /// Note: The `endpoint_id` MUST already exist in the `Schemas` instance,
+    /// otherwise [`RegistrationError::UnexpectedEndpointId`] will be returned when applying the update.
     InsertService {
         name: String,
         revision: ServiceRevision,
