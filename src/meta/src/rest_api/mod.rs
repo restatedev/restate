@@ -78,22 +78,17 @@ impl MetaRestEndpoint {
                 "/endpoints/:endpoint",
                 get(openapi_handler!(endpoints::get_service_endpoint)),
             )
-            // deprecated url
             .route(
-                "/endpoint/discover",
-                post(openapi_handler!(endpoints::discover_service_endpoint)),
+                "/endpoints",
+                post(openapi_handler!(endpoints::create_service_endpoint)),
             )
-            .route(
-                "/services/discover",
-                post(openapi_handler!(endpoints::discover_service_endpoint)),
-            )
-            .route("/services/", get(openapi_handler!(services::list_services)))
+            .route("/services", get(openapi_handler!(services::list_services)))
             .route(
                 "/services/:service",
                 get(openapi_handler!(services::get_service)),
             )
             .route(
-                "/services/:service/methods/",
+                "/services/:service/methods",
                 get(openapi_handler!(methods::list_service_methods)),
             )
             .route(
