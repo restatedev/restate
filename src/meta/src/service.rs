@@ -5,7 +5,7 @@ use std::future::Future;
 
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
-use restate_errors::{error_it, warn_it};
+use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
@@ -126,10 +126,7 @@ where
     }
 
     pub async fn init(&mut self) -> Result<(), MetaError> {
-        self.reload().await.map_err(|e| {
-            error_it!(e, "Error when reloading the Meta Storage");
-            e
-        })
+        self.reload().await
     }
 
     pub async fn run(mut self, drain: drain::Watch) -> Result<(), MetaError> {
@@ -188,7 +185,7 @@ where
         }?;
 
         // Compute the diff with the current state of Schemas
-        let schemas_update_commands = self.schemas.compute_new_endpoint_commands(
+        let schemas_update_commands = self.schemas.compute_new_endpoint_updates(
             EndpointMetadata::new(
                 uri.clone(),
                 discovered_metadata.protocol_type,

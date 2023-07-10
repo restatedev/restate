@@ -28,8 +28,8 @@ pub struct RegisterServiceEndpointRequest {
     pub additional_headers: Option<HashMap<String, String>>,
     /// # Force
     ///
-    /// If `true`, it will override, if existing, any endpoint using the same `uri`.
-    /// Beware that this can lead in-flight invocations to an unrecoverable error state.
+    /// If `true`, it will overwrite, if existing, any endpoint using the same `uri`.
+    /// Beware that this can lead for in-flight invocations to an unrecoverable error state.
     ///
     /// See the [versioning documentation](http://restate.dev/docs/deployment-operations/versioning) for more information.
     #[serde(default)]

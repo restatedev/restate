@@ -107,22 +107,23 @@ impl Schemas {
     /// This method doesn't execute any in-memory update of the registry.
     /// To update the registry, compute the commands and apply them with [`Self::apply_updates`].
     ///
-    /// If allow_override is true, an Endpo
+    /// If `allow_override` is true, this method compares the endpoint registered services with the given `services`,
+    /// and generates remove commands for services no longer available at that endpoint.
     ///
     /// IMPORTANT: It is not safe to consecutively call this method several times and apply the updates all-together with a single [`Self::apply_updates`],
     /// as one change set might depend on the previously computed change set.
-    pub fn compute_new_endpoint_commands(
+    pub fn compute_new_endpoint_updates(
         &self,
         endpoint_metadata: EndpointMetadata,
         services: Vec<ServiceRegistrationRequest>,
         descriptor_pool: DescriptorPool,
-        allow_override: bool,
+        allow_overwrite: bool,
     ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
-        self.0.load().compute_new_endpoint_commands(
+        self.0.load().compute_new_endpoint_updates(
             endpoint_metadata,
             services,
             descriptor_pool,
-            allow_override,
+            allow_overwrite,
         )
     }
 
@@ -133,10 +134,10 @@ impl Schemas {
     /// IMPORTANT: This method is not thread safe! This method should be called only by a single thread.
     pub fn apply_updates(
         &self,
-        iter: impl IntoIterator<Item = SchemasUpdateCommand>,
+        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
     ) -> Result<(), RegistrationError> {
         let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
-        for cmd in iter {
+        for cmd in updates {
             schemas_inner.apply_update(cmd)?;
         }
         self.0.store(Arc::new(schemas_inner));
@@ -265,19 +266,19 @@ pub(crate) mod schemas_impl {
     }
 
     impl SchemasInner {
-        pub(crate) fn compute_new_endpoint_commands(
+        pub(crate) fn compute_new_endpoint_updates(
             &self,
             endpoint_metadata: EndpointMetadata,
             services: Vec<ServiceRegistrationRequest>,
             descriptor_pool: DescriptorPool,
-            allow_override: bool,
+            allow_overwrite: bool,
         ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
             let endpoint_id = endpoint_metadata.id();
 
             let mut result_commands = Vec::with_capacity(1 + services.len());
 
             if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
-                if allow_override {
+                if allow_overwrite {
                     // If we need to override the endpoint we need to remove old services
                     for (svc_name, revision) in &existing_endpoint.services {
                         result_commands.push(SchemasUpdateCommand::RemoveService {
@@ -287,18 +288,6 @@ pub(crate) mod schemas_impl {
                     }
                 } else {
                     return Err(RegistrationError::OverrideEndpoint(endpoint_id));
-                }
-            }
-
-            if allow_override {
-                // If we need to override the endpoint we need to remove old services
-                if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
-                    for (svc_name, revision) in &existing_endpoint.services {
-                        result_commands.push(SchemasUpdateCommand::RemoveService {
-                            name: svc_name.to_string(),
-                            revision: *revision,
-                        });
-                    }
                 }
             }
 
@@ -370,14 +359,12 @@ pub(crate) mod schemas_impl {
                 SchemasUpdateCommand::InsertService {
                     name,
                     revision,
-                    endpoint_id: endpoint,
+                    endpoint_id,
                     instance_type,
                 } => {
-                    let endpoint_schemas = self
-                        .endpoints
-                        .get(&endpoint)
-                        .ok_or(RegistrationError::UnexpectedEndpointId(endpoint))?;
-                    let endpoint_id = endpoint_schemas.metadata.id();
+                    let endpoint_schemas = self.endpoints.get(&endpoint_id).ok_or_else(|| {
+                        RegistrationError::UnexpectedEndpointId(endpoint_id.clone())
+                    })?;
                     let endpoint_address = endpoint_schemas.metadata.address().clone();
 
                     info!(
@@ -415,7 +402,7 @@ pub(crate) mod schemas_impl {
                         )
                         .is_some()
                     {
-                        info!(rpc.service = name, "Overriding existing service schemas");
+                        info!(rpc.service = name, "Overwriting existing service schemas");
                     }
 
                     // TODO if this works, just simplify register_new_services
@@ -475,7 +462,7 @@ pub(crate) mod schemas_impl {
 
             let endpoint = EndpointMetadata::mock_with_uri("http://localhost:8080");
             let commands = schemas
-                .compute_new_endpoint_commands(
+                .compute_new_endpoint_updates(
                     endpoint.clone(),
                     vec![ServiceRegistrationRequest::new(
                         mocks::GREETER_SERVICE_NAME.to_string(),
@@ -503,7 +490,7 @@ pub(crate) mod schemas_impl {
             let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:8081");
 
             let commands = schemas
-                .compute_new_endpoint_commands(
+                .compute_new_endpoint_updates(
                     endpoint_1.clone(),
                     vec![ServiceRegistrationRequest::new(
                         mocks::GREETER_SERVICE_NAME.to_string(),
@@ -522,7 +509,7 @@ pub(crate) mod schemas_impl {
             schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_1.id());
 
             let commands = schemas
-                .compute_new_endpoint_commands(
+                .compute_new_endpoint_updates(
                     endpoint_2.clone(),
                     vec![
                         ServiceRegistrationRequest::new(
@@ -557,7 +544,7 @@ pub(crate) mod schemas_impl {
 
             let endpoint = EndpointMetadata::mock_with_uri("http://localhost:8080");
             let commands = schemas
-                .compute_new_endpoint_commands(
+                .compute_new_endpoint_updates(
                     endpoint.clone(),
                     vec![
                         ServiceRegistrationRequest::new(
@@ -579,7 +566,7 @@ pub(crate) mod schemas_impl {
             schemas.assert_resolves_endpoint(mocks::ANOTHER_GREETER_SERVICE_NAME, endpoint.id());
 
             let commands = schemas
-                .compute_new_endpoint_commands(
+                .compute_new_endpoint_updates(
                     endpoint.clone(),
                     vec![ServiceRegistrationRequest::new(
                         mocks::GREETER_SERVICE_NAME.to_string(),
@@ -608,7 +595,7 @@ pub(crate) mod schemas_impl {
             )];
 
             let commands = schemas
-                .compute_new_endpoint_commands(
+                .compute_new_endpoint_updates(
                     endpoint.clone(),
                     services.clone(),
                     mocks::DESCRIPTOR_POOL.clone(),
@@ -617,7 +604,7 @@ pub(crate) mod schemas_impl {
                 .unwrap();
             schemas.apply_updates(commands).unwrap();
 
-            assert!(let Err(RegistrationError::OverrideEndpoint(_)) = schemas.compute_new_endpoint_commands(endpoint, services, mocks::DESCRIPTOR_POOL.clone(), false));
+            assert!(let Err(RegistrationError::OverrideEndpoint(_)) = schemas.compute_new_endpoint_updates(endpoint, services, mocks::DESCRIPTOR_POOL.clone(), false));
         }
     }
 }
