@@ -32,14 +32,6 @@ impl SpanModifyingTracer {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-enum SpanModifyingTracerError {
-    #[error("{0} must be valid hex: {1}")]
-    Hex(Key, std::num::ParseIntError),
-    #[error("{0} must be an integer")]
-    Integer(Key),
-}
-
 impl opentelemetry::trace::Tracer for SpanModifyingTracer {
     type Span = opentelemetry::sdk::trace::Span;
 
@@ -72,34 +64,34 @@ impl opentelemetry::trace::Tracer for SpanModifyingTracer {
         builder.trace_id = trace_id
             .map(|(_, trace_id)| {
                 TraceId::from_hex(trace_id.as_str().as_ref())
-                    .map_err(|err| SpanModifyingTracerError::Hex(TRACE_ID, err))
-                    .unwrap()
+                    .expect("restate.internal.trace_id must be a valid hex string")
             })
             .or(builder.trace_id);
 
         builder.span_id = span_id
             .map(|(_, span_id)| {
                 SpanId::from_hex(span_id.as_str().as_ref())
-                    .map_err(|err| SpanModifyingTracerError::Hex(SPAN_ID, err))
-                    .unwrap()
+                    .expect("restate.internal.span_id must be a valid hex string")
             })
             .or(builder.span_id);
 
         let time = |kv: Option<(&Key, &Value)>| {
-            kv.map(
-                |(key, value)| -> Result<SystemTime, SpanModifyingTracerError> {
-                    let duration = match value {
-                        Value::I64(value) => Duration::from_millis(*value as u64),
-                        _ => return Err(SpanModifyingTracerError::Integer(key.clone())),
-                    };
-                    Ok(SystemTime::UNIX_EPOCH.add(duration))
-                },
-            )
-            .transpose()
+            kv.map(|(key, value)| -> SystemTime {
+                match value {
+                    Value::I64(value) => {
+                        SystemTime::UNIX_EPOCH.add(Duration::from_millis(*value as u64))
+                    }
+                    other => panic!(
+                        "expected {} to be an i64, instead found {:?}",
+                        key.as_str(),
+                        other
+                    ),
+                }
+            })
         };
 
-        builder.start_time = time(start_time).unwrap().or(builder.start_time);
-        builder.end_time = time(end_time).unwrap().or(builder.end_time);
+        builder.start_time = time(start_time).or(builder.start_time);
+        builder.end_time = time(end_time).or(builder.end_time);
 
         // now that we no longer hold references to the values, we can remove all the keys we used from attributes
         // by using retain, we can do this in a single O(n) scan, which is better than calling delete 1-4 times,

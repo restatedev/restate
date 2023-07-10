@@ -430,7 +430,9 @@ impl Effect {
                         restate.invocation.sid = %timer_value.service_invocation_id,
                         restate.timer.key = %timer_value.display_key(),
                         restate.timer.wake_up_time = %timer_value.wake_up_time,
-                        restate.internal.end_time = timer_value.wake_up_time.as_u64(),
+                        // without 'as i64' this field will encode as a string
+                        // however, overflowing i64 seems unlikely
+                        restate.internal.end_time = timer_value.wake_up_time.as_u64() as i64,
                     );
 
                     debug_if_leader!(
@@ -569,7 +571,9 @@ impl Effect {
                         rpc.method = service_method,
                         restate.invocation.sid = %service_invocation_id,
                         restate.invocation.result = "Success",
-                        restate.internal.start_time = creation_time.as_u64(),
+                        // without 'as i64' this field will encode as a string
+                        // however, overflowing i64 seems unlikely
+                        restate.internal.start_time = creation_time.as_u64() as i64,
                         restate.internal.span_id = %span_context.span_context().span_id(),
                         restate.internal.trace_id = %span_context.span_context().trace_id()
                     ),
@@ -585,7 +589,9 @@ impl Effect {
                         restate.invocation.sid = %service_invocation_id,
                         restate.invocation.result = "Failure",
                         error = true, // jaeger uses this tag to show an error icon
-                        restate.internal.start_time = creation_time.as_u64(),
+                        // without 'as i64' this field will encode as a string
+                        // however, overflowing i64 seems unlikely
+                        restate.internal.start_time = creation_time.as_u64() as i64,
                         restate.internal.span_id = %span_context.span_context().span_id(),
                         restate.internal.trace_id = %span_context.span_context().trace_id()
                     ),
