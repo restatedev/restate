@@ -6,6 +6,7 @@ use prost::Message;
 use prost_reflect::prost_types::{DescriptorProto, EnumDescriptorProto, FileDescriptorProto};
 use prost_reflect::{DescriptorPool, FileDescriptor, ServiceDescriptor};
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
+use restate_types::identifiers::EndpointId;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{debug, trace};
@@ -48,12 +49,16 @@ impl Default for ProtoSymbols {
             symbols_index: Default::default(),
         };
         symbols
-            .register_new_services(
+            .register_new_service(
                 "self_ingress".to_string(),
-                vec![
-                    restate_pb::REFLECTION_SERVICE_NAME.to_string(),
-                    restate_pb::INGRESS_SERVICE_NAME.to_string(),
-                ],
+                restate_pb::REFLECTION_SERVICE_NAME.to_string(),
+                restate_pb::DESCRIPTOR_POOL.clone(),
+            )
+            .expect("Registering self_ingress in the reflections must not fail");
+        symbols
+            .register_new_service(
+                "self_ingress".to_string(),
+                restate_pb::INGRESS_SERVICE_NAME.to_string(),
                 restate_pb::DESCRIPTOR_POOL.clone(),
             )
             .expect("Registering self_ingress in the reflections must not fail");
@@ -63,66 +68,60 @@ impl Default for ProtoSymbols {
 }
 
 impl ProtoSymbols {
-    pub(super) fn register_new_services(
+    pub(super) fn register_new_service(
         &mut self,
-        endpoint_id: String,
-        services: Vec<String>,
+        endpoint_id: EndpointId,
+        service_name: String,
         descriptor_pool: DescriptorPool,
     ) -> Result<(), RegistrationError> {
         let mut discovered_files = HashMap::new();
-        let mut discovered_services = vec![];
 
-        for service_name in services {
-            // Let's find the service first
-            let service_desc = descriptor_pool
-                .get_service_by_name(&service_name)
-                .ok_or_else(|| {
-                    RegistrationError::MissingServiceInDescriptor(service_name.clone())
-                })?;
+        // Let's find the service first
+        let service_desc = descriptor_pool
+            .get_service_by_name(&service_name)
+            .ok_or_else(|| RegistrationError::MissingServiceInDescriptor(service_name.clone()))?;
 
-            // Collect all the files belonging to this service
-            let files = collect_service_related_file_descriptors(service_desc);
+        // Collect all the files belonging to this service
+        let files = collect_service_related_file_descriptors(service_desc);
 
-            let mut service_symbols = HashMap::new();
+        let mut service_symbols = HashMap::new();
 
-            // Process files
-            for file in &files {
-                // We rename files prepending them with the endpoint id
-                // to avoid collision between file names of unrelated endpoints
-                // TODO with schema checks in place,
-                //  should we move this or remove this normalization of the file name?
-                let file_name = normalize_file_name(&endpoint_id, file.name());
-                let file_arc = discovered_files
-                    .entry(file_name.clone())
-                    .or_insert_with(|| Arc::new(file.clone()));
+        // Process files
+        for file in &files {
+            // We rename files prepending them with the endpoint id
+            // to avoid collision between file names of unrelated endpoints
+            // TODO with schema checks in place,
+            //  should we move this or remove this normalization of the file name?
+            let file_name = normalize_file_name(&endpoint_id, file.name());
+            let file_arc = discovered_files
+                .entry(file_name.clone())
+                .or_insert_with(|| Arc::new(file.clone()));
 
-                // Discover all symbols in this file
-                let mut file_symbols = HashSet::new();
-                process_file(&mut file_symbols, file_arc.as_ref().file_descriptor_proto())?;
+            // Discover all symbols in this file
+            let mut file_symbols = HashSet::new();
+            process_file(&mut file_symbols, file_arc.as_ref().file_descriptor_proto())?;
 
-                // Copy the file_symbols in service_symbols
-                for symbol in file_symbols {
-                    service_symbols.insert(symbol, vec![file_name.clone()]);
-                }
+            // Copy the file_symbols in service_symbols
+            for symbol in file_symbols {
+                service_symbols.insert(symbol, vec![file_name.clone()]);
             }
-
-            // Service also needs to include itself in the symbols map. We include it with all the dependencies,
-            // so when querying we'll include all the transitive dependencies.
-            service_symbols.insert(
-                service_name.clone(),
-                files
-                    .iter()
-                    .map(|fd| normalize_file_name(&endpoint_id, fd.name()))
-                    .collect::<Vec<_>>(),
-            );
-
-            trace!(
-                "Symbols associated to service '{}': {:?}",
-                service_name,
-                service_symbols.keys()
-            );
-            discovered_services.push((service_name, service_symbols));
         }
+
+        // Service also needs to include itself in the symbols map. We include it with all the dependencies,
+        // so when querying we'll include all the transitive dependencies.
+        service_symbols.insert(
+            service_name.clone(),
+            files
+                .iter()
+                .map(|fd| normalize_file_name(&endpoint_id, fd.name()))
+                .collect::<Vec<_>>(),
+        );
+
+        trace!(
+            "Symbols associated to service '{}': {:?}",
+            service_name,
+            service_symbols.keys()
+        );
 
         // Now serialize the discovered files
         let serialized_files = discovered_files
@@ -142,9 +141,7 @@ impl ProtoSymbols {
             .collect::<HashMap<_, _>>();
 
         // Now finally update the shared state
-        for (service_name, symbols_to_file_names) in discovered_services {
-            self.add_service(service_name, symbols_to_file_names, &serialized_files)
-        }
+        self.add_service(service_name, service_symbols, &serialized_files);
 
         Ok(())
     }

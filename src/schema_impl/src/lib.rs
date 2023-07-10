@@ -405,10 +405,9 @@ pub(crate) mod schemas_impl {
                         info!(rpc.service = name, "Overwriting existing service schemas");
                     }
 
-                    // TODO if this works, just simplify register_new_services
-                    self.proto_symbols.register_new_services(
+                    self.proto_symbols.register_new_service(
                         endpoint_id,
-                        vec![name],
+                        name,
                         endpoint_schemas.descriptor_pool.clone(),
                     )?;
                 }
