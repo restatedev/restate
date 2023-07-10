@@ -166,7 +166,7 @@ impl ServiceId {
 }
 
 /// Incremental id defining the service revision.
-pub type ServiceRevision = usize;
+pub type ServiceRevision = u32;
 
 mod partitioner {
     use super::PartitionKey;

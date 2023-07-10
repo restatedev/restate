@@ -59,7 +59,7 @@ pub enum SchemasUpdateCommand {
     /// Insert (or replace) service
     InsertEndpoint {
         metadata: EndpointMetadata,
-        services: Vec<(String, usize)>,
+        services: Vec<(String, ServiceRevision)>,
         #[serde(with = "descriptor_pool_serde")]
         descriptor_pool: DescriptorPool,
     },
@@ -187,7 +187,7 @@ pub(crate) mod schemas_impl {
 
     impl ServiceSchemas {
         fn new(
-            revision: usize,
+            revision: ServiceRevision,
             svc_desc: ServiceDescriptor,
             instance_type: ServiceInstanceType,
             latest_endpoint: EndpointId,
@@ -228,7 +228,7 @@ pub(crate) mod schemas_impl {
     #[derive(Debug, Clone)]
     pub(crate) struct EndpointSchemas {
         pub(crate) metadata: EndpointMetadata,
-        pub(crate) services: Vec<(String, usize)>,
+        pub(crate) services: Vec<(String, ServiceRevision)>,
         pub(crate) descriptor_pool: DescriptorPool,
     }
 
