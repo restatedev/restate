@@ -1,5 +1,6 @@
 //! This module implements the Meta API endpoint.
 
+mod endpoints;
 mod error;
 mod invocations;
 mod methods;
@@ -13,6 +14,7 @@ use futures::FutureExt;
 use hyper::Server;
 use okapi_operation::axum_integration::{delete, get, post};
 use okapi_operation::*;
+use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_schema_api::key::RestateKeyConverter;
 use restate_schema_api::service::ServiceMetadataResolver;
 use std::net::SocketAddr;
@@ -50,7 +52,12 @@ impl MetaRestEndpoint {
     }
 
     pub async fn run<
-        S: ServiceMetadataResolver + RestateKeyConverter + Send + Sync + 'static,
+        S: ServiceMetadataResolver
+            + EndpointMetadataResolver
+            + RestateKeyConverter
+            + Send
+            + Sync
+            + 'static,
         W: restate_worker_api::Handle + Send + Sync + 'static,
     >(
         self,
@@ -67,14 +74,18 @@ impl MetaRestEndpoint {
 
         // Setup the router
         let meta_api = axum_integration::Router::new()
+            .route(
+                "/endpoints/:endpoint",
+                get(openapi_handler!(endpoints::get_service_endpoint)),
+            )
             // deprecated url
             .route(
                 "/endpoint/discover",
-                post(openapi_handler!(services::discover_service_endpoint)),
+                post(openapi_handler!(endpoints::discover_service_endpoint)),
             )
             .route(
                 "/services/discover",
-                post(openapi_handler!(services::discover_service_endpoint)),
+                post(openapi_handler!(endpoints::discover_service_endpoint)),
             )
             .route("/services/", get(openapi_handler!(services::list_services)))
             .route(

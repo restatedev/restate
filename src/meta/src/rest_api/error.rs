@@ -17,6 +17,8 @@ use crate::service::MetaError;
 pub enum MetaApiError {
     #[error("The request field '{0}' is invalid. Reason: {1}")]
     InvalidField(&'static str, String),
+    #[error("The requested service endpoint '{0}' does not exist")]
+    ServiceEndpointNotFound(String),
     #[error("The requested service '{0}' does not exist")]
     ServiceNotFound(String),
     #[error("The requested method '{method_name}' on service '{service_name}' does not exist")]
