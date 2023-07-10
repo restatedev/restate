@@ -6,7 +6,6 @@ use axum::Json;
 use hyper::http::{HeaderName, HeaderValue};
 use okapi_operation::*;
 use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
-use restate_types::retries::RetryPolicy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -26,11 +25,6 @@ pub struct RegisterServiceEndpointRequest {
     ///
     /// Additional headers added to the discover/invoke requests to the service endpoint.
     pub additional_headers: Option<HashMap<String, String>>,
-    /// # Retry policy
-    ///
-    /// Custom retry policy to use when executing invoke requests to the service endpoint.
-    /// If not set, the one configured in the worker will be used as default.
-    pub retry_policy: Option<RetryPolicy>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -62,10 +56,7 @@ pub async fn discover_service_endpoint<S, W>(
         })
         .collect::<Result<HashMap<_, _>, MetaApiError>>()?;
 
-    let registration_result = state
-        .meta_handle()
-        .register(payload.uri, headers, payload.retry_policy)
-        .await;
+    let registration_result = state.meta_handle().register(payload.uri, headers).await;
     Ok(registration_result
         .map(|services| RegisterServiceEndpointResponse { services })?
         .into())

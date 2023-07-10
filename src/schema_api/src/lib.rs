@@ -5,7 +5,6 @@ pub mod endpoint {
     use http::header::{HeaderName, HeaderValue};
     use http::Uri;
     use restate_types::identifiers::EndpointId;
-    use restate_types::retries::RetryPolicy;
     use std::collections::HashMap;
 
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -28,18 +27,11 @@ pub mod endpoint {
         )]
         #[cfg_attr(feature = "serde_schema", schemars(with = "HashMap<String, String>"))]
         additional_headers: HashMap<HeaderName, HeaderValue>,
-        retry_policy: Option<RetryPolicy>,
     }
 
     impl DeliveryOptions {
-        pub fn new(
-            additional_headers: HashMap<HeaderName, HeaderValue>,
-            retry_policy: Option<RetryPolicy>,
-        ) -> Self {
-            Self {
-                additional_headers,
-                retry_policy,
-            }
+        pub fn new(additional_headers: HashMap<HeaderName, HeaderValue>) -> Self {
+            Self { additional_headers }
         }
     }
 
@@ -114,10 +106,6 @@ pub mod endpoint {
 
         pub fn protocol_type(&self) -> ProtocolType {
             self.protocol_type
-        }
-
-        pub fn retry_policy(&self) -> Option<&RetryPolicy> {
-            self.delivery_options.retry_policy.as_ref()
         }
 
         pub fn additional_headers(&self) -> &HashMap<HeaderName, HeaderValue> {
