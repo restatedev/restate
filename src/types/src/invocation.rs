@@ -105,66 +105,82 @@ impl ServiceInvocationSpanContext {
         related_span_context: SpanRelation,
     ) -> ServiceInvocationSpanContext {
         let (span_relation, span_context) = match &related_span_context {
-            SpanRelation::Cause(SpanRelationType::BackgroundInvoke(trace_id, _), cause) => {
-                // create an instantaneous 'pointer span' which lives in the calling trace at the
-                // time of background call, and exists only to be linked to by the new trace that
-                // will be created for the background invocation
-                let pointer_span = info_span!(
-                    "background_invoke",
-                    otel.name = format!("background_invoke {method_name}"),
-                    rpc.system = "restate",
-                    rpc.service = %service_invocation_id.service_id.service_name,
-                    rpc.method = method_name,
-                    restate.invocation.sid = %service_invocation_id,
-                );
+            SpanRelation::Cause(span_relation, cause) => {
+                if !cause.is_sampled() {
+                    // don't waste any time or storage space on unsampled traces
+                    // sampling based on parent is default otel behaviour; we do the same for the
+                    // non-parent background invoke relationship
+                    return ServiceInvocationSpanContext {
+                        span_context: SpanContext::empty_context(),
+                        span_relation: None,
+                    };
+                }
+                match span_relation {
+                    SpanRelationType::BackgroundInvoke(trace_id, _) => {
+                        // create an instantaneous 'pointer span' which lives in the calling trace at the
+                        // time of background call, and exists only to be linked to by the new trace that
+                        // will be created for the background invocation
+                        let pointer_span = info_span!(
+                            "background_invoke",
+                            otel.name = format!("background_invoke {method_name}"),
+                            rpc.system = "restate",
+                            rpc.service = %service_invocation_id.service_id.service_name,
+                            rpc.method = method_name,
+                            restate.invocation.sid = %service_invocation_id,
+                        );
 
-                // set parent so that this goes in the calling trace
-                pointer_span.set_parent(Context::new().with_remote_span_context(cause.clone()));
-                // instantaneous span
-                let _ = pointer_span.enter();
+                        // set parent so that this goes in the calling trace
+                        pointer_span
+                            .set_parent(Context::new().with_remote_span_context(cause.clone()));
+                        // instantaneous span
+                        let _ = pointer_span.enter();
 
-                // create a span context with a new trace that will be used for any actions as part of the background invocation
-                // a span will be emitted using these details when its finished (so we know how long the invocation took)
-                let span_context = SpanContext::new(
-                    // use invocation id as the new trace id; this allows you to follow cause -> new trace in jaeger
-                    // trace ids are 128 bits and must be globally unique
-                    TraceId::from_bytes(*service_invocation_id.invocation_id.as_bytes()),
-                    // use part of the invocation id as the new span id; this just needs to be 64 bits
-                    // and unique within the trace
-                    SpanId::from_bytes({
-                        let (_, _, _, span_id) = service_invocation_id.invocation_id.as_fields();
-                        *span_id
-                    }),
-                    // use sampling decision of the causing trace; this is NOT default otel behaviour but
-                    // is useful for users
-                    cause.trace_flags(),
-                    // this would never be set to true for a span created in this binary
-                    false,
-                    TraceState::default(),
-                );
-                let span_relation = SpanRelationType::BackgroundInvoke(
-                    *trace_id,
-                    pointer_span.context().span().span_context().span_id(),
-                );
-                (Some(span_relation), span_context)
-            }
-            SpanRelation::Cause(SpanRelationType::Invoke(span_id), parent) => {
-                // create a span context as part of the existing trace, which will be used for any actions
-                // of the invocation. a span will be emitted with these details when its finished
-                let span_context = SpanContext::new(
-                    // use parent trace id
-                    parent.trace_id(),
-                    SpanId::from_bytes({
-                        let (_, _, _, span_id) = service_invocation_id.invocation_id.as_fields();
-                        *span_id
-                    }),
-                    // use sampling decision of parent trace; this is default otel behaviour
-                    parent.trace_flags(),
-                    false,
-                    parent.trace_state().clone(),
-                );
-                let span_relation = SpanRelationType::Invoke(*span_id);
-                (Some(span_relation), span_context)
+                        // create a span context with a new trace that will be used for any actions as part of the background invocation
+                        // a span will be emitted using these details when its finished (so we know how long the invocation took)
+                        let span_context = SpanContext::new(
+                            // use invocation id as the new trace id; this allows you to follow cause -> new trace in jaeger
+                            // trace ids are 128 bits and must be globally unique
+                            TraceId::from_bytes(*service_invocation_id.invocation_id.as_bytes()),
+                            // use part of the invocation id as the new span id; this just needs to be 64 bits
+                            // and unique within the trace
+                            SpanId::from_bytes({
+                                let (_, _, _, span_id) =
+                                    service_invocation_id.invocation_id.as_fields();
+                                *span_id
+                            }),
+                            // use sampling decision of the causing trace; this is NOT default otel behaviour but
+                            // is useful for users
+                            cause.trace_flags(),
+                            // this would never be set to true for a span created in this binary
+                            false,
+                            TraceState::default(),
+                        );
+                        let span_relation = SpanRelationType::BackgroundInvoke(
+                            *trace_id,
+                            pointer_span.context().span().span_context().span_id(),
+                        );
+                        (Some(span_relation), span_context)
+                    }
+                    SpanRelationType::Invoke(span_id) => {
+                        // create a span context as part of the existing trace, which will be used for any actions
+                        // of the invocation. a span will be emitted with these details when its finished
+                        let span_context = SpanContext::new(
+                            // use parent trace id
+                            cause.trace_id(),
+                            SpanId::from_bytes({
+                                let (_, _, _, span_id) =
+                                    service_invocation_id.invocation_id.as_fields();
+                                *span_id
+                            }),
+                            // use sampling decision of parent trace; this is default otel behaviour
+                            cause.trace_flags(),
+                            false,
+                            cause.trace_state().clone(),
+                        );
+                        let span_relation = SpanRelationType::Invoke(*span_id);
+                        (Some(span_relation), span_context)
+                    }
+                }
             }
             SpanRelation::None => {
                 // we would only expect this in tests as there should always be either another invocation
@@ -259,6 +275,10 @@ impl ServiceInvocationSpanContext {
             SpanRelationType::Invoke(self.span_context.span_id()),
             self.span_context.clone(),
         )
+    }
+
+    pub fn is_sampled(&self) -> bool {
+        self.span_context.trace_flags().is_sampled()
     }
 }
 

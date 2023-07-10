@@ -163,8 +163,8 @@ macro_rules! debug_if_leader {
 }
 
 macro_rules! span_if_leader {
-    ($level:expr, $i_am_leader:expr, $span_relation:expr, $($args:tt)*) => {{
-        if $i_am_leader {
+    ($level:expr, $i_am_leader:expr, $sampled:expr, $span_relation:expr, $($args:tt)*) => {{
+        if $i_am_leader && $sampled {
             let span = ::tracing::span!($level, $($args)*);
             $span_relation
                 .attach_to_span(&span);
@@ -174,9 +174,9 @@ macro_rules! span_if_leader {
 }
 
 macro_rules! info_span_if_leader {
-    ($i_am_leader:expr, $span_relation:expr, $($args:tt)*) => {{
+    ($i_am_leader:expr, $sampled:expr, $span_relation:expr, $($args:tt)*) => {{
         use ::tracing::Level;
-        span_if_leader!(Level::INFO, $i_am_leader, $span_relation, $($args)*)
+        span_if_leader!(Level::INFO, $i_am_leader, $sampled, $span_relation, $($args)*)
     }};
 }
 
@@ -209,6 +209,7 @@ impl Effect {
             } => {
                 info_span_if_leader!(
                     is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
                     metadata.journal_metadata.span_context.as_invoke(),
                     "suspend",
                     restate.journal.length = metadata.journal_metadata.length,
@@ -344,6 +345,7 @@ impl Effect {
             } => {
                 info_span_if_leader!(
                     is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
                     metadata.journal_metadata.span_context.as_invoke(),
                     "set_state",
                     otel.name = format!("set_state {key:?}"),
@@ -369,6 +371,7 @@ impl Effect {
             } => {
                 info_span_if_leader!(
                     is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
                     metadata.journal_metadata.span_context.as_invoke(),
                     "clear_state",
                     otel.name = format!("clear_state {key:?}"),
@@ -394,6 +397,7 @@ impl Effect {
             } => {
                 info_span_if_leader!(
                     is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
                     metadata.journal_metadata.span_context.as_invoke(),
                     "get_state",
                     otel.name = format!("get_state {key:?}"),
@@ -418,6 +422,7 @@ impl Effect {
                 Timer::CompleteSleepEntry => {
                     info_span_if_leader!(
                         is_leader,
+                        span_context.is_sampled(),
                         span_context.as_invoke(),
                         "sleep",
                         rpc.service = %timer_value.service_invocation_id.service_id.service_name,
@@ -529,6 +534,7 @@ impl Effect {
             } => {
                 info_span_if_leader!(
                     is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
                     metadata.journal_metadata.span_context.as_invoke(),
                     "resume",
                     restate.journal.index = entry_index,
