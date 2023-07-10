@@ -1,7 +1,7 @@
 //! This module contains all the core types representing a service invocation.
 
 use crate::errors::UserErrorCode;
-use crate::identifiers::{EntryIndex, IngressId, ServiceInvocationId};
+use crate::identifiers::{EntryIndex, IngressId, InvocationId, ServiceInvocationId};
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::{
@@ -10,6 +10,7 @@ use opentelemetry_api::trace::{
 use opentelemetry_api::Context;
 use tracing::{info_span, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use uuid::Uuid;
 
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,14 +141,10 @@ impl ServiceInvocationSpanContext {
                         let span_context = SpanContext::new(
                             // use invocation id as the new trace id; this allows you to follow cause -> new trace in jaeger
                             // trace ids are 128 bits and must be globally unique
-                            TraceId::from_bytes(*service_invocation_id.invocation_id.as_bytes()),
+                            service_invocation_id.invocation_id.into(),
                             // use part of the invocation id as the new span id; this just needs to be 64 bits
                             // and unique within the trace
-                            SpanId::from_bytes({
-                                let (_, _, _, span_id) =
-                                    service_invocation_id.invocation_id.as_fields();
-                                *span_id
-                            }),
+                            service_invocation_id.invocation_id.into(),
                             // use sampling decision of the causing trace; this is NOT default otel behaviour but
                             // is useful for users
                             cause.trace_flags(),
@@ -167,11 +164,9 @@ impl ServiceInvocationSpanContext {
                         let span_context = SpanContext::new(
                             // use parent trace id
                             cause.trace_id(),
-                            SpanId::from_bytes({
-                                let (_, _, _, span_id) =
-                                    service_invocation_id.invocation_id.as_fields();
-                                *span_id
-                            }),
+                            // use part of the invocation id as the new span id; this just needs to be 64 bits
+                            // and unique within the trace
+                            service_invocation_id.invocation_id.into(),
                             // use sampling decision of parent trace; this is default otel behaviour
                             cause.trace_flags(),
                             false,
@@ -188,12 +183,9 @@ impl ServiceInvocationSpanContext {
 
                 // create a span context with a new trace
                 let span_context = SpanContext::new(
-                    // use invocation id as the new trace id
-                    TraceId::from_bytes(*service_invocation_id.invocation_id.as_bytes()),
-                    SpanId::from_bytes({
-                        let (_, _, _, span_id) = service_invocation_id.invocation_id.as_fields();
-                        *span_id
-                    }),
+                    // use invocation id as the new trace id and span id
+                    service_invocation_id.invocation_id.into(),
+                    service_invocation_id.invocation_id.into(),
                     // we don't have the means to actually sample here; just hardcode a sampled trace
                     // as this should only happen in tests anyway
                     TraceFlags::SAMPLED,
@@ -285,6 +277,21 @@ impl ServiceInvocationSpanContext {
 impl From<ServiceInvocationSpanContext> for SpanContext {
     fn from(value: ServiceInvocationSpanContext) -> Self {
         value.span_context
+    }
+}
+
+impl From<InvocationId> for TraceId {
+    fn from(value: InvocationId) -> Self {
+        let uuid: Uuid = value.into();
+        Self::from_bytes(uuid.into_bytes())
+    }
+}
+
+impl From<InvocationId> for SpanId {
+    fn from(value: InvocationId) -> Self {
+        let uuid: Uuid = value.into();
+        let last8: [u8; 8] = std::convert::TryInto::try_into(&uuid.as_bytes()[8..16]).unwrap();
+        Self::from_bytes(last8)
     }
 }
 

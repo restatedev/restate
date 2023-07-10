@@ -9,6 +9,7 @@ use restate_types::identifiers;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// # Service invocation id
 ///
@@ -56,10 +57,12 @@ impl ServiceInvocationId {
                         e => MetaApiError::InvalidField("sid", e.to_string()),
                     })?;
 
+                let uuid: Uuid = invocation_id.into();
+
                 Ok(identifiers::ServiceInvocationId::new(
                     service,
                     restate_key,
-                    invocation_id,
+                    uuid,
                 ))
             }
         }
