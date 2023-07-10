@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{info_span, trace, warn_span};
+use tracing::trace;
 
 pub(crate) enum ActuatorMessageCollector<'a, I, N> {
     Leader {
@@ -119,45 +119,6 @@ where
                             completion,
                         )
                         .await?
-                }
-                ActuatorMessage::CommitEndSpan {
-                    service_invocation_id,
-                    creation_time,
-                    service_method,
-                    span_context,
-                    result,
-                } => {
-                    if span_context.is_sampled() {
-                        let span = match result {
-                            Ok(_) => info_span!(
-                                "invoke",
-                                // the otel library overrides span name with this dynamically
-                                otel.name = format!("invoke {service_method}"),
-                                rpc.service = %service_invocation_id.service_id.service_name,
-                                rpc.method = service_method,
-                                restate.invocation.sid = %service_invocation_id,
-                                restate.invocation.result = "Success",
-                                restate.internal.start_time = creation_time.as_u64(),
-                                restate.internal.span_id = %span_context.span_context().span_id(),
-                                restate.internal.trace_id = %span_context.span_context().trace_id()
-                            ),
-                            Err(_) => warn_span!(
-                                "invoke",
-                                otel.name = format!("invoke {service_method}"),
-                                rpc.service = %service_invocation_id.service_id.service_name,
-                                rpc.method = service_method,
-                                restate.invocation.sid = %service_invocation_id,
-                                restate.invocation.result = "Failure",
-                                error = true, // jaeger uses this tag
-                                restate.internal.start_time = creation_time.as_u64(),
-                                restate.internal.span_id = %span_context.span_context().span_id(),
-                                restate.internal.trace_id = %span_context.span_context().trace_id()
-                            ),
-                        };
-                        span_context.cause().attach_to_span(&span);
-
-                        _ = span.enter();
-                    }
                 }
                 ActuatorMessage::SendAckResponse(ack_response) => ack_tx.send(ack_response).await?,
                 ActuatorMessage::AbortInvocation(service_invocation_id) => {

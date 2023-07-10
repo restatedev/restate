@@ -202,7 +202,7 @@ impl ServiceInvocationSpanContext {
         }
     }
 
-    pub fn cause(self) -> SpanRelation {
+    pub fn cause(&self) -> SpanRelation {
         match self.span_relation {
             None => SpanRelation::None,
             Some(SpanRelationType::Invoke(span_id)) => {

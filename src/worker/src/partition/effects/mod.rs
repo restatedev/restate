@@ -1,4 +1,5 @@
 use bytes::Bytes;
+
 use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::{Completion, CompletionResult, JournalMetadata};
 use std::collections::HashSet;
@@ -549,7 +550,46 @@ impl Effect {
                     CompletionResultFmt(result)
                 )
             }
-            Effect::NotifyInvocationResult { .. } => {
+            Effect::NotifyInvocationResult {
+                service_invocation_id,
+                creation_time,
+                service_method,
+                span_context,
+                result,
+            } => {
+                match result {
+                    Ok(_) => info_span_if_leader!(
+                        is_leader,
+                        span_context.is_sampled(),
+                        span_context.cause(),
+                        "invoke",
+                        // the otel library overrides span name with this dynamically
+                        otel.name = format!("invoke {service_method}"),
+                        rpc.service = %service_invocation_id.service_id.service_name,
+                        rpc.method = service_method,
+                        restate.invocation.sid = %service_invocation_id,
+                        restate.invocation.result = "Success",
+                        restate.internal.start_time = creation_time.as_u64(),
+                        restate.internal.span_id = %span_context.span_context().span_id(),
+                        restate.internal.trace_id = %span_context.span_context().trace_id()
+                    ),
+                    Err(_) => span_if_leader!(
+                        Level::WARN,
+                        is_leader,
+                        span_context.is_sampled(),
+                        span_context.cause(),
+                        "invoke",
+                        otel.name = format!("invoke {service_method}"),
+                        rpc.service = %service_invocation_id.service_id.service_name,
+                        rpc.method = service_method,
+                        restate.invocation.sid = %service_invocation_id,
+                        restate.invocation.result = "Failure",
+                        error = true, // jaeger uses this tag to show an error icon
+                        restate.internal.start_time = creation_time.as_u64(),
+                        restate.internal.span_id = %span_context.span_context().span_id(),
+                        restate.internal.trace_id = %span_context.span_context().trace_id()
+                    ),
+                }
                 // No need to log this
             }
             Effect::SendAckResponse(ack_response) => {
