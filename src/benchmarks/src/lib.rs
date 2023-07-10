@@ -24,17 +24,17 @@ pub fn discover_endpoint(current_thread_rt: &Runtime, address: Uri) {
             .retry_operation(|| {
                 hyper::Client::new()
                     .request(
-                        hyper::Request::post("http://localhost:8081/endpoint/discover")
+                        hyper::Request::post("http://localhost:8081/endpoints")
                             .header(CONTENT_TYPE, "application/json")
                             .body(Body::from(discovery_payload.clone()))
                             .expect("building discovery request should not fail"),
                     )
                     .map_err(anyhow::Error::from)
                     .and_then(|response| {
-                        if response.status() != StatusCode::OK {
-                            future::ready(Err(anyhow::anyhow!("Discovery was unsuccessful.")))
-                        } else {
+                        if response.status().is_success() {
                             future::ready(Ok(response))
+                        } else {
+                            future::ready(Err(anyhow::anyhow!("Discovery was unsuccessful.")))
                         }
                     })
             })
