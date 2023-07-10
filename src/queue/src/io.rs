@@ -1,8 +1,6 @@
-use bincode::{DefaultOptions, Options};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::io::Cursor;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
@@ -46,10 +44,11 @@ pub(crate) async fn consume_segment_infallible<T: DeserializeOwned + Send + 'sta
         if frame_len <= buffer.len() {
             // avoid copying the data to our internal frame if the underlying BufReader has
             // buffered enough data in its internal buffer.
-            let value = DefaultOptions::new()
-                .with_varint_encoding()
-                .deserialize_from(Cursor::new(&buffer[0..frame_len]))
-                .expect(READ_ERR_MSG);
+            let (value, _) = bincode::serde::decode_from_slice(
+                &buffer[0..frame_len],
+                bincode::config::standard().with_variable_int_encoding(),
+            )
+            .expect(READ_ERR_MSG);
             reader.consume(frame_len);
             values.push_back(value);
         } else {
@@ -68,10 +67,11 @@ pub(crate) async fn consume_segment_infallible<T: DeserializeOwned + Send + 'sta
                 .await
                 .expect(READ_ERR_MSG);
 
-            let value = DefaultOptions::new()
-                .with_varint_encoding()
-                .deserialize_from(Cursor::new(&frame[0..frame_len]))
-                .expect(READ_ERR_MSG);
+            let (value, _) = bincode::serde::decode_from_slice(
+                &frame[0..frame_len],
+                bincode::config::standard().with_variable_int_encoding(),
+            )
+            .expect(READ_ERR_MSG);
             values.push_back(value);
         };
     }
@@ -108,10 +108,12 @@ pub(crate) async fn create_segment_infallible<T: Serialize + Send + 'static>(
     for value in values {
         frame.clear();
 
-        DefaultOptions::new()
-            .with_varint_encoding()
-            .serialize_into(&mut frame, &value)
-            .expect(ENCODE_ERR_MSG);
+        bincode::serde::encode_into_std_write(
+            value,
+            &mut frame,
+            bincode::config::standard().with_variable_int_encoding(),
+        )
+        .expect(ENCODE_ERR_MSG);
 
         //
         // write down the frame length and the frame body

@@ -6,6 +6,8 @@ pub use segmented_queue::SegmentQueue;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use restate_types::identifiers::ServiceInvocationId;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -22,6 +24,24 @@ mod tests {
         assert_eq!(queue.dequeue().await, Some(2));
         assert_eq!(queue.dequeue().await, Some(3));
         assert_eq!(queue.dequeue().await, Some(4));
+
+        assert_eq!(queue.dequeue().await, None);
+    }
+
+    #[tokio::test]
+    async fn serde_sid() {
+        let temp_dir = tempdir().unwrap();
+        let mut queue = SegmentQueue::new(temp_dir.path(), 1);
+
+        queue.enqueue(ServiceInvocationId::mock_random()).await;
+        queue.enqueue(ServiceInvocationId::mock_random()).await;
+        queue.enqueue(ServiceInvocationId::mock_random()).await;
+        queue.enqueue(ServiceInvocationId::mock_random()).await;
+
+        assert!(queue.dequeue().await.is_some());
+        assert!(queue.dequeue().await.is_some());
+        assert!(queue.dequeue().await.is_some());
+        assert!(queue.dequeue().await.is_some());
 
         assert_eq!(queue.dequeue().await, None);
     }

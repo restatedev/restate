@@ -186,6 +186,26 @@ mod partitioner {
     }
 }
 
+#[cfg(any(test, feature = "mocks"))]
+mod mocks {
+    use super::*;
+
+    use rand::distributions::{Alphanumeric, DistString};
+    use rand::Rng;
+
+    impl ServiceInvocationId {
+        pub fn mock_random() -> Self {
+            Self::new(
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
+                Bytes::copy_from_slice(
+                    &rand::thread_rng().sample::<[u8; 32], _>(rand::distributions::Standard),
+                ),
+                Uuid::now_v7(),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
