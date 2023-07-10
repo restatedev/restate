@@ -97,7 +97,7 @@ pub(crate) enum Effect {
     },
 
     // Journal operations
-    StoreInvocationStatus {
+    StoreEndpointId {
         service_id: ServiceId,
         endpoint_id: EndpointId,
         metadata: InvocationMetadata,
@@ -359,7 +359,7 @@ impl Effect {
                 restate.timer.wake_up_time = %wake_up_time,
                 "Effect: Delete timer"
             ),
-            Effect::StoreInvocationStatus { endpoint_id, .. } => debug_if_leader!(
+            Effect::StoreEndpointId { endpoint_id, .. } => debug_if_leader!(
                 is_leader,
                 restate.service_endpoint.id = %endpoint_id,
                 "Effect: Store endpoint id to storage"
@@ -612,7 +612,7 @@ impl Effects {
         endpoint_id: EndpointId,
         metadata: InvocationMetadata,
     ) {
-        self.effects.push(Effect::StoreInvocationStatus {
+        self.effects.push(Effect::StoreEndpointId {
             service_id,
             endpoint_id,
             metadata,
