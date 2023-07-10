@@ -189,17 +189,22 @@ mod mocks {
         let schemas = Schemas::default();
 
         schemas
-            .register_new_endpoint(
-                EndpointMetadata::new(
-                    "http://localhost:8080".parse().unwrap(),
-                    ProtocolType::BidiStream,
-                    DeliveryOptions::default(),
-                ),
-                vec![ServiceRegistrationRequest::new(
-                    "greeter.Greeter".to_string(),
-                    ServiceInstanceType::Singleton,
-                )],
-                restate_pb::mocks::DESCRIPTOR_POOL.clone(),
+            .apply_updates(
+                schemas
+                    .compute_new_endpoint_updates(
+                        EndpointMetadata::new(
+                            "http://localhost:8080".parse().unwrap(),
+                            ProtocolType::BidiStream,
+                            DeliveryOptions::default(),
+                        ),
+                        vec![ServiceRegistrationRequest::new(
+                            "greeter.Greeter".to_string(),
+                            ServiceInstanceType::Singleton,
+                        )],
+                        restate_pb::mocks::DESCRIPTOR_POOL.clone(),
+                        false,
+                    )
+                    .unwrap(),
             )
             .unwrap();
 

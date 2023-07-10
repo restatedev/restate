@@ -2,6 +2,7 @@ use arc_swap::ArcSwap;
 use prost_reflect::DescriptorPool;
 use restate_schema_api::endpoint::EndpointMetadata;
 use restate_schema_api::key::ServiceInstanceType;
+use restate_types::identifiers::{EndpointId, ServiceRevision};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -36,12 +37,63 @@ impl ServiceRegistrationRequest {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+#[code(unknown)]
 pub enum RegistrationError {
+    #[error("an endpoint with the same id {0} already exists in the registry")]
+    #[code(restate_errors::META0004)]
+    OverrideEndpoint(EndpointId),
     #[error("missing expected field {0} in descriptor")]
     MissingFieldInDescriptor(&'static str),
     #[error("missing service {0} in descriptor")]
+    #[code(restate_errors::META0005)]
     MissingServiceInDescriptor(String),
+}
+
+/// Insert (or replace) service
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InsertServiceUpdateCommand {
+    pub name: String,
+    pub revision: ServiceRevision,
+    pub instance_type: ServiceInstanceType,
+}
+
+/// Represents an update command to update the [`Schemas`] object. See [`Schemas::apply_updates`] for more info.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SchemasUpdateCommand {
+    /// Insert (or replace) endpoint
+    InsertEndpoint {
+        metadata: EndpointMetadata,
+        services: Vec<InsertServiceUpdateCommand>,
+        #[serde(with = "descriptor_pool_serde")]
+        descriptor_pool: DescriptorPool,
+    },
+    /// Remove only if the revision is matching
+    RemoveService {
+        name: String,
+        revision: ServiceRevision,
+    },
+}
+
+mod descriptor_pool_serde {
+    use bytes::Bytes;
+    use prost_reflect::DescriptorPool;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(descriptor_pool: &DescriptorPool, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(&descriptor_pool.encode_to_vec())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<DescriptorPool, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let b = Bytes::deserialize(deserializer)?;
+        DescriptorPool::decode(b).map_err(serde::de::Error::custom)
+    }
 }
 
 /// The schema registry
@@ -49,14 +101,43 @@ pub enum RegistrationError {
 pub struct Schemas(Arc<ArcSwap<schemas_impl::SchemasInner>>);
 
 impl Schemas {
-    pub fn register_new_endpoint(
+    /// Compute the commands to update the schema registry with a new endpoint.
+    /// This method doesn't execute any in-memory update of the registry.
+    /// To update the registry, compute the commands and apply them with [`Self::apply_updates`].
+    ///
+    /// If `allow_override` is true, this method compares the endpoint registered services with the given `services`,
+    /// and generates remove commands for services no longer available at that endpoint.
+    ///
+    /// IMPORTANT: It is not safe to consecutively call this method several times and apply the updates all-together with a single [`Self::apply_updates`],
+    /// as one change set might depend on the previously computed change set.
+    pub fn compute_new_endpoint_updates(
         &self,
         endpoint_metadata: EndpointMetadata,
         services: Vec<ServiceRegistrationRequest>,
         descriptor_pool: DescriptorPool,
+        allow_overwrite: bool,
+    ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
+        self.0.load().compute_new_endpoint_updates(
+            endpoint_metadata,
+            services,
+            descriptor_pool,
+            allow_overwrite,
+        )
+    }
+
+    /// Apply the updates to the schema registry.
+    /// This method will update the internal pointer to the in-memory schema registry,
+    /// propagating the changes to every component consuming it.
+    ///
+    /// IMPORTANT: This method is not thread safe! This method should be called only by a single thread.
+    pub fn apply_updates(
+        &self,
+        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
     ) -> Result<(), RegistrationError> {
         let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
-        schemas_inner.register_new_endpoint(endpoint_metadata, services, descriptor_pool)?;
+        for cmd in updates {
+            schemas_inner.apply_update(cmd)?;
+        }
         self.0.store(Arc::new(schemas_inner));
 
         Ok(())
@@ -65,10 +146,11 @@ impl Schemas {
 
 pub(crate) mod schemas_impl {
     use super::*;
+    use std::collections::hash_map::Entry;
 
     use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
     use proto_symbol::ProtoSymbols;
-    use restate_types::identifiers::EndpointId;
+    use restate_types::identifiers::{EndpointId, ServiceRevision};
     use std::collections::HashMap;
     use tracing::{debug, info};
 
@@ -87,9 +169,6 @@ pub(crate) mod schemas_impl {
     }
 
     /// This struct contains the actual data held by Schemas.
-    ///
-    /// When we'll need to distribute schemas across meta/worker, we can just ser/de this data structure and pass it around.
-    /// See https://github.com/restatedev/restate/issues/91
     #[derive(Debug, Clone)]
     pub(crate) struct SchemasInner {
         pub(crate) services: HashMap<String, ServiceSchemas>,
@@ -99,6 +178,7 @@ pub(crate) mod schemas_impl {
 
     #[derive(Debug, Clone)]
     pub(crate) struct ServiceSchemas {
+        pub(crate) revision: ServiceRevision,
         pub(crate) methods: HashMap<String, MethodDescriptor>,
         pub(crate) instance_type: ServiceInstanceType,
         pub(crate) location: ServiceLocation,
@@ -106,11 +186,13 @@ pub(crate) mod schemas_impl {
 
     impl ServiceSchemas {
         fn new(
+            revision: ServiceRevision,
             svc_desc: ServiceDescriptor,
             instance_type: ServiceInstanceType,
             latest_endpoint: EndpointId,
         ) -> Self {
             Self {
+                revision,
                 methods: svc_desc
                     .methods()
                     .map(|method_desc| (method_desc.name().to_string(), method_desc))
@@ -122,6 +204,7 @@ pub(crate) mod schemas_impl {
 
         fn new_ingress_only(svc_desc: ServiceDescriptor) -> Self {
             Self {
+                revision: 0,
                 methods: svc_desc
                     .methods()
                     .map(|method_desc| (method_desc.name().to_string(), method_desc))
@@ -144,8 +227,7 @@ pub(crate) mod schemas_impl {
     #[derive(Debug, Clone)]
     pub(crate) struct EndpointSchemas {
         pub(crate) metadata: EndpointMetadata,
-        #[allow(dead_code)]
-        pub(crate) services: Vec<String>,
+        pub(crate) services: Vec<(String, ServiceRevision)>,
     }
 
     impl Default for SchemasInner {
@@ -181,79 +263,344 @@ pub(crate) mod schemas_impl {
     }
 
     impl SchemasInner {
-        pub(crate) fn register_new_endpoint(
-            &mut self,
+        pub(crate) fn compute_new_endpoint_updates(
+            &self,
             endpoint_metadata: EndpointMetadata,
             services: Vec<ServiceRegistrationRequest>,
             descriptor_pool: DescriptorPool,
-        ) -> Result<(), RegistrationError> {
+            allow_overwrite: bool,
+        ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
             let endpoint_id = endpoint_metadata.id();
-            let endpoint_address = endpoint_metadata.address().clone();
-            info!(
-                restate.service_endpoint.id = %endpoint_id,
-                restate.service_endpoint.url = %endpoint_address,
-                "Registering endpoint"
-            );
 
-            self.proto_symbols.register_new_services(
-                endpoint_id.clone(),
-                services
-                    .iter()
-                    .map(|service_meta| service_meta.name().to_string())
-                    .collect(),
-                descriptor_pool.clone(),
-            )?;
-            self.endpoints.insert(
-                endpoint_id.clone(),
-                EndpointSchemas {
-                    metadata: endpoint_metadata,
-                    services: services
-                        .iter()
-                        .map(|service_meta| service_meta.name.clone())
-                        .collect(),
-                },
-            );
-            for service_meta in services {
-                info!(
-                    rpc.service = service_meta.name(),
-                    restate.service_endpoint.url = %endpoint_address,
-                    "Registering service"
-                );
-                let service_descriptor = descriptor_pool
-                    .get_service_by_name(service_meta.name())
-                    .expect(
-                        "Service mut be available in the descriptor pool. This is a runtime bug.",
-                    );
+            let mut result_commands = Vec::with_capacity(1 + services.len());
 
-                if tracing::enabled!(tracing::Level::DEBUG) {
-                    service_descriptor.methods().for_each(|method| {
-                        debug!(
-                            rpc.service = service_meta.name(),
-                            rpc.method = method.name(),
-                            "Registering method"
-                        )
-                    });
+            if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
+                if allow_overwrite {
+                    // If we need to override the endpoint we need to remove old services
+                    for (svc_name, revision) in &existing_endpoint.services {
+                        result_commands.push(SchemasUpdateCommand::RemoveService {
+                            name: svc_name.to_string(),
+                            revision: *revision,
+                        });
+                    }
+                } else {
+                    return Err(RegistrationError::OverrideEndpoint(endpoint_id));
                 }
+            }
 
+            // Compute service revision numbers
+            let mut computed_revisions = HashMap::with_capacity(services.len());
+            for service_meta in &services {
                 // For the time being when updating we overwrite existing data
-                if self.services.remove(service_meta.name()).is_some() {
+                let revision = if let Some(service_schemas) = self.services.get(service_meta.name())
+                {
+                    service_schemas.revision + 1
+                } else {
+                    1
+                };
+                computed_revisions.insert(service_meta.name().to_string(), revision);
+            }
+
+            // Create the InsertEndpoint command
+            result_commands.push(SchemasUpdateCommand::InsertEndpoint {
+                metadata: endpoint_metadata,
+                services: services
+                    .into_iter()
+                    .map(|service_meta| {
+                        let revision = *computed_revisions.get(service_meta.name()).unwrap();
+
+                        InsertServiceUpdateCommand {
+                            name: service_meta.name,
+                            revision,
+                            instance_type: service_meta.instance_type,
+                        }
+                    })
+                    .collect(),
+                descriptor_pool,
+            });
+
+            Ok(result_commands)
+        }
+
+        pub(crate) fn apply_update(
+            &mut self,
+            update_cmd: SchemasUpdateCommand,
+        ) -> Result<(), RegistrationError> {
+            match update_cmd {
+                SchemasUpdateCommand::InsertEndpoint {
+                    metadata,
+                    services,
+                    descriptor_pool,
+                } => {
+                    let endpoint_id = metadata.id();
+                    let endpoint_address = metadata.address().clone();
                     info!(
-                        rpc.service = service_meta.name(),
-                        "Overriding existing service schemas"
+                        restate.service_endpoint.id = %endpoint_id,
+                        restate.service_endpoint.url = %endpoint_address,
+                        "Registering endpoint"
+                    );
+
+                    let mut endpoint_services = vec![];
+
+                    for InsertServiceUpdateCommand {
+                        name,
+                        revision,
+                        instance_type,
+                    } in services
+                    {
+                        let endpoint_address = metadata.address().clone();
+
+                        info!(
+                            rpc.service = name,
+                            restate.service_endpoint.url = %endpoint_address,
+                            "Registering service"
+                        );
+                        let service_descriptor =
+                            descriptor_pool.get_service_by_name(&name).ok_or_else(|| {
+                                RegistrationError::MissingServiceInDescriptor(name.clone())
+                            })?;
+
+                        if tracing::enabled!(tracing::Level::DEBUG) {
+                            service_descriptor.methods().for_each(|method| {
+                                debug!(
+                                    rpc.service = name,
+                                    rpc.method = method.name(),
+                                    "Registering method"
+                                )
+                            });
+                        }
+
+                        if self
+                            .services
+                            .insert(
+                                name.clone(),
+                                ServiceSchemas::new(
+                                    revision,
+                                    service_descriptor,
+                                    instance_type,
+                                    endpoint_id.clone(),
+                                ),
+                            )
+                            .is_some()
+                        {
+                            info!(rpc.service = name, "Overwriting existing service schemas");
+                        }
+
+                        self.proto_symbols.register_new_service(
+                            endpoint_id.clone(),
+                            name.clone(),
+                            descriptor_pool.clone(),
+                        )?;
+
+                        endpoint_services.push((name, revision));
+                    }
+
+                    self.endpoints.insert(
+                        endpoint_id,
+                        EndpointSchemas {
+                            metadata,
+                            services: endpoint_services,
+                        },
                     );
                 }
-
-                self.services.insert(
-                    service_meta.name,
-                    ServiceSchemas::new(
-                        service_descriptor,
-                        service_meta.instance_type,
-                        endpoint_id.clone(),
-                    ),
-                );
+                SchemasUpdateCommand::RemoveService { name, revision } => {
+                    let entry = self.services.entry(name);
+                    match entry {
+                        Entry::Occupied(e) if e.get().revision == revision => {
+                            e.remove();
+                        }
+                        _ => {}
+                    }
+                }
             }
 
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        use restate_pb::mocks;
+        use restate_schema_api::endpoint::EndpointMetadataResolver;
+        use restate_schema_api::service::ServiceMetadataResolver;
+        use restate_test_util::{assert, assert_eq, let_assert, test};
+
+        impl Schemas {
+            fn assert_service_revision(&self, svc_name: &str, revision: ServiceRevision) {
+                assert_eq!(
+                    self.resolve_latest_service_metadata(svc_name)
+                        .unwrap()
+                        .revision,
+                    revision
+                );
+            }
+
+            fn assert_resolves_endpoint(&self, svc_name: &str, endpoint_id: EndpointId) {
+                assert_eq!(
+                    self.resolve_latest_endpoint_for_service(svc_name)
+                        .unwrap()
+                        .id(),
+                    endpoint_id
+                );
+            }
+        }
+
+        #[test]
+        fn register_new_endpoint_empty_registry() {
+            let schemas = Schemas::default();
+
+            let endpoint = EndpointMetadata::mock_with_uri("http://localhost:8080");
+            let commands = schemas
+                .compute_new_endpoint_updates(
+                    endpoint.clone(),
+                    vec![ServiceRegistrationRequest::new(
+                        mocks::GREETER_SERVICE_NAME.to_string(),
+                        ServiceInstanceType::Unkeyed,
+                    )],
+                    mocks::DESCRIPTOR_POOL.clone(),
+                    false,
+                )
+                .unwrap();
+
+            let_assert!(
+                Some(SchemasUpdateCommand::InsertEndpoint { services, .. }) = commands.get(0)
+            );
+            assert_eq!(services.len(), 1);
+
+            schemas.apply_updates(commands).unwrap();
+
+            schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 1);
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint.id());
+        }
+
+        #[test]
+        fn register_new_endpoint_updating_old_service() {
+            let schemas = Schemas::default();
+
+            let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:8080");
+            let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:8081");
+
+            let commands = schemas
+                .compute_new_endpoint_updates(
+                    endpoint_1.clone(),
+                    vec![ServiceRegistrationRequest::new(
+                        mocks::GREETER_SERVICE_NAME.to_string(),
+                        ServiceInstanceType::Unkeyed,
+                    )],
+                    mocks::DESCRIPTOR_POOL.clone(),
+                    false,
+                )
+                .unwrap();
+
+            let_assert!(
+                Some(SchemasUpdateCommand::InsertEndpoint { services, .. }) = commands.get(0)
+            );
+            assert_eq!(services.len(), 1);
+
+            schemas.apply_updates(commands).unwrap();
+
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_1.id());
+
+            let commands = schemas
+                .compute_new_endpoint_updates(
+                    endpoint_2.clone(),
+                    vec![
+                        ServiceRegistrationRequest::new(
+                            mocks::GREETER_SERVICE_NAME.to_string(),
+                            ServiceInstanceType::Unkeyed,
+                        ),
+                        ServiceRegistrationRequest::new(
+                            mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
+                            ServiceInstanceType::Unkeyed,
+                        ),
+                    ],
+                    mocks::DESCRIPTOR_POOL.clone(),
+                    false,
+                )
+                .unwrap();
+
+            let_assert!(
+                Some(SchemasUpdateCommand::InsertEndpoint { services, .. }) = commands.get(0)
+            );
+            assert_eq!(services.len(), 2);
+
+            schemas.apply_updates(commands).unwrap();
+
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_2.id());
+            schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 2);
+            schemas.assert_resolves_endpoint(mocks::ANOTHER_GREETER_SERVICE_NAME, endpoint_2.id());
+            schemas.assert_service_revision(mocks::ANOTHER_GREETER_SERVICE_NAME, 1);
+        }
+
+        #[test]
+        fn override_existing_endpoint() {
+            let schemas = Schemas::default();
+
+            let endpoint = EndpointMetadata::mock_with_uri("http://localhost:8080");
+            let commands = schemas
+                .compute_new_endpoint_updates(
+                    endpoint.clone(),
+                    vec![
+                        ServiceRegistrationRequest::new(
+                            mocks::GREETER_SERVICE_NAME.to_string(),
+                            ServiceInstanceType::Unkeyed,
+                        ),
+                        ServiceRegistrationRequest::new(
+                            mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
+                            ServiceInstanceType::Unkeyed,
+                        ),
+                    ],
+                    mocks::DESCRIPTOR_POOL.clone(),
+                    false,
+                )
+                .unwrap();
+            schemas.apply_updates(commands).unwrap();
+
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint.id());
+            schemas.assert_resolves_endpoint(mocks::ANOTHER_GREETER_SERVICE_NAME, endpoint.id());
+
+            let commands = schemas
+                .compute_new_endpoint_updates(
+                    endpoint.clone(),
+                    vec![ServiceRegistrationRequest::new(
+                        mocks::GREETER_SERVICE_NAME.to_string(),
+                        ServiceInstanceType::Unkeyed,
+                    )],
+                    mocks::DESCRIPTOR_POOL.clone(),
+                    true,
+                )
+                .unwrap();
+            schemas.apply_updates(commands).unwrap();
+
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint.id());
+            assert!(schemas
+                .resolve_latest_endpoint_for_service(mocks::ANOTHER_GREETER_SERVICE_NAME)
+                .is_none());
+        }
+
+        #[test]
+        fn cannot_override_existing_endpoint() {
+            let schemas = Schemas::default();
+
+            let endpoint = EndpointMetadata::mock_with_uri("http://localhost:8080");
+            let services = vec![ServiceRegistrationRequest::new(
+                mocks::GREETER_SERVICE_NAME.to_string(),
+                ServiceInstanceType::Unkeyed,
+            )];
+
+            let commands = schemas
+                .compute_new_endpoint_updates(
+                    endpoint.clone(),
+                    services.clone(),
+                    mocks::DESCRIPTOR_POOL.clone(),
+                    false,
+                )
+                .unwrap();
+            schemas.apply_updates(commands).unwrap();
+
+            assert!(let Err(RegistrationError::OverrideEndpoint(_)) = schemas.compute_new_endpoint_updates(endpoint, services, mocks::DESCRIPTOR_POOL.clone(), false));
         }
     }
 }

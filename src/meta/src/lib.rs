@@ -120,8 +120,17 @@ pub enum Error {
         rest_api::MetaRestServerError,
     ),
     #[error(transparent)]
-    #[code(unknown)]
-    MetaService(#[from] service::MetaError),
+    MetaService(
+        #[from]
+        #[code]
+        service::MetaError,
+    ),
+    #[error("error when reloading the Meta storage: {0}")]
+    MetaServiceInit(
+        #[source]
+        #[code]
+        service::MetaError,
+    ),
 }
 
 pub struct Meta {
@@ -136,8 +145,7 @@ impl Meta {
     }
 
     pub async fn init(&mut self) -> Result<(), Error> {
-        self.service.init().await?;
-        Ok(())
+        self.service.init().await.map_err(Error::MetaServiceInit)
     }
 
     pub async fn run(

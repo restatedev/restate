@@ -141,6 +141,16 @@ pub mod endpoint {
 
         use std::collections::HashMap;
 
+        impl EndpointMetadata {
+            pub fn mock_with_uri(uri: &str) -> EndpointMetadata {
+                EndpointMetadata::new(
+                    uri.parse().unwrap(),
+                    ProtocolType::BidiStream,
+                    Default::default(),
+                )
+            }
+        }
+
         #[derive(Default)]
         pub struct MockEndpointMetadataRegistry {
             pub endpoints: HashMap<EndpointId, EndpointMetadata>,
@@ -184,7 +194,7 @@ pub mod endpoint {
 
 #[cfg(feature = "service")]
 pub mod service {
-    use restate_types::identifiers::EndpointId;
+    use restate_types::identifiers::{EndpointId, ServiceRevision};
 
     #[derive(Debug, Clone)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -219,6 +229,7 @@ pub mod service {
         pub instance_type: InstanceType,
         #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
         pub endpoint: EndpointId,
+        pub revision: ServiceRevision,
     }
 
     /// This API will return services registered by the user. It won't include built-in services.

@@ -6,6 +6,7 @@ use axum::Json;
 use hyper::http::{HeaderName, HeaderValue};
 use okapi_operation::*;
 use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
+use restate_types::identifiers::{EndpointId, ServiceRevision};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -25,11 +26,26 @@ pub struct RegisterServiceEndpointRequest {
     ///
     /// Additional headers added to the discover/invoke requests to the service endpoint.
     pub additional_headers: Option<HashMap<String, String>>,
+    /// # Force
+    ///
+    /// If `true`, it will overwrite, if existing, any endpoint using the same `uri`.
+    /// Beware that this can lead for in-flight invocations to an unrecoverable error state.
+    ///
+    /// See the [versioning documentation](http://restate.dev/docs/deployment-operations/versioning) for more information.
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RegisterServiceResponse {
+    name: String,
+    revision: ServiceRevision,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct RegisterServiceEndpointResponse {
-    services: Vec<String>,
+    id: EndpointId,
+    services: Vec<RegisterServiceResponse>,
 }
 
 /// Discover endpoint and return discovered endpoints.
@@ -56,10 +72,20 @@ pub async fn discover_service_endpoint<S, W>(
         })
         .collect::<Result<HashMap<_, _>, MetaApiError>>()?;
 
-    let registration_result = state.meta_handle().register(payload.uri, headers).await;
-    Ok(registration_result
-        .map(|services| RegisterServiceEndpointResponse { services })?
-        .into())
+    let registration_result = state
+        .meta_handle()
+        .register(payload.uri, headers, payload.force)
+        .await?;
+
+    Ok(RegisterServiceEndpointResponse {
+        id: registration_result.endpoint,
+        services: registration_result
+            .services
+            .into_iter()
+            .map(|(name, revision)| RegisterServiceResponse { name, revision })
+            .collect(),
+    }
+    .into())
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

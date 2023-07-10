@@ -825,6 +825,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bincode"
+version = "2.0.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f11ea1a0346b94ef188834a65c068a03aec181c94896d481d7a0a40d85b0ce95"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.65.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4163,6 +4172,7 @@ name = "restate_meta"
 version = "0.1.5"
 dependencies = [
  "axum",
+ "bincode 2.0.0-rc.3",
  "codederror",
  "derive_builder",
  "drain",
@@ -4174,20 +4184,24 @@ dependencies = [
  "restate_fs_util",
  "restate_futures_util",
  "restate_hyper_util",
+ "restate_pb",
  "restate_schema_api",
  "restate_schema_impl",
  "restate_serde_util",
  "restate_service_protocol",
+ "restate_test_util",
  "restate_types",
  "restate_worker_api",
  "schemars",
  "serde",
  "serde_json",
  "serde_with",
+ "tempfile",
  "thiserror",
  "tokio",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -4224,7 +4238,7 @@ dependencies = [
 name = "restate_queue"
 version = "0.1.5"
 dependencies = [
- "bincode",
+ "bincode 1.3.3",
  "criterion",
  "restate_fs_util",
  "serde",
@@ -4257,17 +4271,21 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "bytes",
+ "codederror",
  "once_cell",
  "prost",
  "prost-reflect",
+ "restate_errors",
  "restate_pb",
  "restate_schema_api",
  "restate_serde_util",
+ "restate_test_util",
  "restate_types",
  "serde",
  "serde_json",
  "thiserror",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
