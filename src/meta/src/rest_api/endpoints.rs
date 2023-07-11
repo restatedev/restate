@@ -98,12 +98,15 @@ pub async fn create_service_endpoint<S, W>(
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ServiceEndpointResponse {
-    endpoint_id: EndpointId,
+    id: EndpointId,
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     #[schemars(with = "String")]
-    address: Uri,
+    uri: Uri,
     protocol_type: ProtocolType,
     additional_headers: SerdeableHeaderHashMap,
+    /// # Services
+    ///
+    /// List of services exposed by this service endpoint.
     services: Vec<RegisterServiceResponse>,
 }
 
@@ -129,8 +132,8 @@ pub async fn get_service_endpoint<S: EndpointMetadataResolver, W>(
         .ok_or_else(|| MetaApiError::ServiceEndpointNotFound(endpoint_id.clone()))?;
 
     Ok(ServiceEndpointResponse {
-        endpoint_id,
-        address: endpoint_meta.address().clone(),
+        id: endpoint_id,
+        uri: endpoint_meta.address().clone(),
         protocol_type: endpoint_meta.protocol_type(),
         additional_headers: endpoint_meta.additional_headers().clone().into(),
         services: services
