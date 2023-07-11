@@ -205,8 +205,14 @@ pub mod service {
         pub name: String,
         pub methods: Vec<String>,
         pub instance_type: InstanceType,
+        /// # Endpoint Id
+        ///
+        /// Endpoint exposing the latest revision of the service.
         #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
-        pub endpoint: EndpointId,
+        pub endpoint_id: EndpointId,
+        /// # Revision
+        ///
+        /// Latest revision of the service.
         pub revision: ServiceRevision,
     }
 
