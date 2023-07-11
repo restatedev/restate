@@ -8,7 +8,7 @@ use opentelemetry_api::trace::{
     SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
 };
 use opentelemetry_api::Context;
-use tracing::{info_span, Span};
+use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
@@ -36,7 +36,7 @@ impl ServiceInvocation {
         response_sink: Option<ServiceInvocationResponseSink>,
         related_span: SpanRelation,
     ) -> Self {
-        let span_context = ServiceInvocationSpanContext::start(&id, &method_name, related_span);
+        let span_context = ServiceInvocationSpanContext::start(&id, related_span);
         Self {
             id,
             method_name,
@@ -98,11 +98,9 @@ impl ServiceInvocationSpanContext {
     }
 
     /// Create a [`SpanContext`] for this invocation, a [`Span`] for which will be created
-    /// when the invocation completes. In the background invoke case, a 'pointer' [`Span`]
-    /// with no duration is created for the purpose of linking back to in the background trace.
+    /// when the invocation completes.
     pub fn start(
         service_invocation_id: &ServiceInvocationId,
-        method_name: &str,
         related_span_context: SpanRelation,
     ) -> ServiceInvocationSpanContext {
         let (span_relation, span_context) = match &related_span_context {
@@ -118,33 +116,22 @@ impl ServiceInvocationSpanContext {
                 }
                 match span_relation {
                     SpanRelationType::BackgroundInvoke(trace_id, _) => {
-                        // create an instantaneous 'pointer span' which lives in the calling trace at the
-                        // time of background call, and exists only to be linked to by the new trace that
-                        // will be created for the background invocation
-                        let pointer_span = info_span!(
-                            "background_invoke",
-                            otel.name = format!("background_invoke {method_name}"),
-                            rpc.system = "restate",
-                            rpc.service = %service_invocation_id.service_id.service_name,
-                            rpc.method = method_name,
-                            restate.invocation.sid = %service_invocation_id,
-                        );
+                        // use part of the invocation id as the span id of the new trace root
+                        let span_id: SpanId = service_invocation_id.invocation_id.into();
 
-                        // set parent so that this goes in the calling trace
-                        pointer_span
-                            .set_parent(Context::new().with_remote_span_context(cause.clone()));
-                        // instantaneous span
-                        let _ = pointer_span.enter();
+                        // use its reverse as the span id of the background_invoke 'pointer' span in the previous trace
+                        // as we cannot use the same span id for both spans
+                        let mut pointer_span_id = span_id.to_bytes();
+                        pointer_span_id.reverse();
 
                         // create a span context with a new trace that will be used for any actions as part of the background invocation
                         // a span will be emitted using these details when its finished (so we know how long the invocation took)
                         let span_context = SpanContext::new(
                             // use invocation id as the new trace id; this allows you to follow cause -> new trace in jaeger
-                            // trace ids are 128 bits and must be globally unique
+                            // trace ids are 128 bits and 'worldwide unique'
                             service_invocation_id.invocation_id.into(),
-                            // use part of the invocation id as the new span id; this just needs to be 64 bits
-                            // and unique within the trace
-                            service_invocation_id.invocation_id.into(),
+                            // use part of the invocation id as the new span id; this is 64 bits and best-effort 'globally unique'
+                            span_id,
                             // use sampling decision of the causing trace; this is NOT default otel behaviour but
                             // is useful for users
                             cause.trace_flags(),
@@ -154,7 +141,7 @@ impl ServiceInvocationSpanContext {
                         );
                         let span_relation = SpanRelationType::BackgroundInvoke(
                             *trace_id,
-                            pointer_span.context().span().span_context().span_id(),
+                            SpanId::from_bytes(pointer_span_id),
                         );
                         (Some(span_relation), span_context)
                     }
@@ -164,8 +151,7 @@ impl ServiceInvocationSpanContext {
                         let span_context = SpanContext::new(
                             // use parent trace id
                             cause.trace_id(),
-                            // use part of the invocation id as the new span id; this just needs to be 64 bits
-                            // and unique within the trace
+                            // use part of the invocation id as the new span id
                             service_invocation_id.invocation_id.into(),
                             // use sampling decision of parent trace; this is default otel behaviour
                             cause.trace_flags(),

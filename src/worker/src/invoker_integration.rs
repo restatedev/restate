@@ -47,12 +47,7 @@ where
 
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(
-            &ServiceInvocationId::new(
-                request.service_name.clone(),
-                service_key.clone(),
-                invocation_id,
-            ),
-            &request.method_name,
+            &ServiceInvocationId::new(request.service_name, service_key.clone(), invocation_id),
             span_relation,
         );
 
@@ -93,7 +88,7 @@ where
                             let_assert!(Entry::Invoke(InvokeEntry { request, .. }) = entry);
                             request
                         },
-                        invocation_span_context.as_background_invoke(),
+                        invocation_span_context.as_invoke(),
                     )?;
 
                     EnrichedEntryHeader::Invoke {

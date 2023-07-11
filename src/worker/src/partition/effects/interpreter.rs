@@ -596,8 +596,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .await?;
                 Self::invoke_service(state_storage, collector, service_invocation).await?;
             }
-            Effect::NotifyInvocationResult { .. } => {
-                // this effect is only needed for span creation
+            Effect::NotifyInvocationResult { .. } | Effect::BackgroundInvoke { .. } => {
+                // these effects are only needed for span creation
             }
             Effect::SendAckResponse(ack_response) => {
                 collector.collect(ActuatorMessage::SendAckResponse(ack_response))

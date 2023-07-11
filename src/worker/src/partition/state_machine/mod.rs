@@ -570,12 +570,20 @@ where
                     }) = Codec::deserialize(&journal_entry)?
                 );
 
+                let method = request.method_name.to_string();
+
                 let service_invocation = Self::create_service_invocation(
                     *invocation_id,
                     service_key.clone(),
                     request,
                     None,
                     span_context.clone(),
+                );
+
+                effects.background_invoke(
+                    service_invocation.id.clone(),
+                    method,
+                    invocation_metadata.journal_metadata.span_context.clone(),
                 );
 
                 // 0 is equal to not set, meaning execute now

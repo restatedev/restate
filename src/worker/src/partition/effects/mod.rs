@@ -1,5 +1,6 @@
 use bytes::Bytes;
 
+use opentelemetry_api::trace::SpanId;
 use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::{Completion, CompletionResult, JournalMetadata};
 use std::collections::HashSet;
@@ -137,6 +138,11 @@ pub(crate) enum Effect {
     },
 
     // Tracing
+    BackgroundInvoke {
+        service_invocation_id: ServiceInvocationId,
+        service_method: String,
+        span_context: ServiceInvocationSpanContext,
+    },
     NotifyInvocationResult {
         service_invocation_id: ServiceInvocationId,
         creation_time: MillisSinceEpoch,
@@ -552,6 +558,33 @@ impl Effect {
                     CompletionResultFmt(result)
                 )
             }
+            Effect::BackgroundInvoke {
+                service_invocation_id,
+                service_method,
+                span_context,
+            } => {
+                // create an instantaneous 'pointer span' which lives in the calling trace at the
+                // time of background call, and exists only to be linked to by the new trace that
+                // will be created for the background invocation
+
+                // use the reverse of the last 8 bytes of the invocation id as the span id;
+                // the new trace for the background invoke will point to this span, so we need a
+                // predictable span id, but we can't just use the last 8 bytes, as spans ids are unique
+                let mut pointer_span_id =
+                    Into::<SpanId>::into(service_invocation_id.invocation_id).to_bytes();
+                pointer_span_id.reverse();
+                info_span_if_leader!(
+                    is_leader,
+                    span_context.is_sampled(),
+                    span_context.as_invoke(),
+                    "background_invoke",
+                    otel.name = format!("background_invoke {service_method}"),
+                    rpc.service = %service_invocation_id.service_id.service_name,
+                    rpc.method = service_method,
+                    restate.invocation.sid = %service_invocation_id,
+                    restate.internal.span_id = %SpanId::from_bytes(pointer_span_id),
+                );
+            }
             Effect::NotifyInvocationResult {
                 service_invocation_id,
                 creation_time,
@@ -886,6 +919,19 @@ impl Effects {
             journal_length,
             service_invocation,
         });
+    }
+
+    pub(crate) fn background_invoke(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        service_method: String,
+        span_context: ServiceInvocationSpanContext,
+    ) {
+        self.effects.push(Effect::BackgroundInvoke {
+            service_invocation_id,
+            service_method,
+            span_context,
+        })
     }
 
     pub(crate) fn notify_invocation_result(
