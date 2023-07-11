@@ -69,7 +69,8 @@ jobs:
         with:
           context: .
           file: "docker/Dockerfile"
-          push: ${{ inputs.artifactInsteadOfPush != true }}
+          # We may as well always push main commits, even if artifactInsteadOfPush == true
+          push: ${{ inputs.artifactInsteadOfPush != true || github.ref == 'refs/heads/main' }}
           tags: ${{ steps.meta.outputs.tags }}
           load: ${{ inputs.artifactInsteadOfPush == true }}
           labels: ${{ steps.meta.outputs.labels }}
