@@ -78,7 +78,7 @@ pub async fn create_service_endpoint<S, W>(
 ) -> Result<impl IntoResponse, MetaApiError> {
     let registration_result = state
         .meta_handle()
-        .register(
+        .register_endpoint(
             payload.uri,
             payload.additional_headers.unwrap_or_default().into(),
             payload.force,

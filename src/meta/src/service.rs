@@ -50,6 +50,10 @@ enum MetaHandleRequest {
         additional_headers: HashMap<HeaderName, HeaderValue>,
         force: bool,
     },
+    ModifyService {
+        service_name: String,
+        public: bool,
+    },
 }
 
 pub(crate) struct DiscoverEndpointResponse {
@@ -59,10 +63,11 @@ pub(crate) struct DiscoverEndpointResponse {
 
 enum MetaHandleResponse {
     DiscoverEndpoint(Result<DiscoverEndpointResponse, MetaError>),
+    ModifyService(Result<(), MetaError>),
 }
 
 impl MetaHandle {
-    pub(crate) async fn register(
+    pub(crate) async fn register_endpoint(
         &self,
         uri: Uri,
         additional_headers: HashMap<HeaderName, HeaderValue>,
@@ -78,6 +83,26 @@ impl MetaHandle {
             .await
             .map(|res| match res {
                 MetaHandleResponse::DiscoverEndpoint(res) => res,
+                #[allow(unreachable_patterns)]
+                _ => panic!("Unexpected response message, this is a bug"),
+            })
+            .map_err(|_e| MetaError::MetaClosed)?
+    }
+
+    pub(crate) async fn modify_service(
+        &self,
+        service_name: String,
+        public: bool,
+    ) -> Result<(), MetaError> {
+        let (cmd, response_tx) = Command::prepare(MetaHandleRequest::ModifyService {
+            service_name,
+            public,
+        });
+        self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
+        response_tx
+            .await
+            .map(|res| match res {
+                MetaHandleResponse::ModifyService(res) => res,
                 #[allow(unreachable_patterns)]
                 _ => panic!("Unexpected response message, this is a bug"),
             })
@@ -150,6 +175,12 @@ where
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
+                        ),
+                        MetaHandleRequest::ModifyService { service_name, public } => MetaHandleResponse::ModifyService(
+                            self.modify_service(service_name, public).await
+                                .map_err(|e| {
+                                    warn_it!(e); e
+                                })
                         )
                     };
 
@@ -207,13 +238,40 @@ where
         let discovery_response =
             Self::infer_discovery_response_from_update_commands(&schemas_update_commands);
 
-        // Store update commands to disk
-        self.storage.store(schemas_update_commands.clone()).await?;
-
-        // Propagate updates in memory
-        self.schemas.apply_updates(schemas_update_commands)?;
+        // Propagate updates
+        self.store_and_propagate_updates(schemas_update_commands)
+            .await?;
 
         Ok(discovery_response)
+    }
+
+    async fn modify_service(
+        &mut self,
+        service_name: String,
+        public: bool,
+    ) -> Result<(), MetaError> {
+        debug!(rpc.service = service_name, "Modify service");
+
+        // Compute the diff and propagate updates
+        let update_commands = vec![self
+            .schemas
+            .compute_modify_service_updates(service_name, public)?];
+        self.store_and_propagate_updates(update_commands).await?;
+
+        Ok(())
+    }
+
+    async fn store_and_propagate_updates(
+        &mut self,
+        commands: Vec<SchemasUpdateCommand>,
+    ) -> Result<(), MetaError> {
+        // Store update commands to disk
+        self.storage.store(commands.clone()).await?;
+
+        // Propagate updates in memory
+        self.schemas.apply_updates(commands)?;
+
+        Ok(())
     }
 
     fn infer_discovery_response_from_update_commands(

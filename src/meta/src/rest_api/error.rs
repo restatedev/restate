@@ -57,6 +57,12 @@ impl IntoResponse for MetaApiError {
             MetaApiError::Meta(MetaError::SchemaRegistry(RegistrationError::OverrideEndpoint(
                 _,
             ))) => StatusCode::CONFLICT,
+            MetaApiError::Meta(MetaError::SchemaRegistry(RegistrationError::UnknownService(_))) => {
+                StatusCode::NOT_FOUND
+            }
+            MetaApiError::Meta(MetaError::SchemaRegistry(
+                RegistrationError::ModifyInternalService(_),
+            )) => StatusCode::FORBIDDEN,
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
             MetaApiError::Worker(_) => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -83,6 +89,9 @@ impl ToResponses for MetaApiError {
         Ok(Responses {
             responses: map! {
                 "400".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
+                ),
+                "403".into() => okapi::openapi3::RefOr::Object(
                     okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
                 ),
                 "404".into() => okapi::openapi3::RefOr::Object(
