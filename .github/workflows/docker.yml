@@ -13,6 +13,11 @@ on:
         required: false
         default: ''
         type: string
+      debug:
+        description: 'include debug symbols in built image'
+        required: false
+        default: false
+        type: boolean
 
   workflow_dispatch:
 
@@ -59,6 +64,7 @@ jobs:
           # Check https://github.com/docker/metadata-action/issues/34
           flavor: |
             latest=true
+            ${{ inputs.debug && 'prefix=debug-,onlatest=true' || '' }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -74,6 +80,8 @@ jobs:
           load: ${{ inputs.artifactInsteadOfPush == true }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
+          build-args: |
+            CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
           cache-from: type=gha,scope=${{ github.workflow }}
           cache-to: type=gha,mode=max,scope=${{ github.workflow }}
 
@@ -104,5 +112,7 @@ jobs:
           load: false
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
+          build-args: |
+            CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
           cache-from: type=gha,scope=${{ github.workflow }}
           cache-to: type=gha,mode=max,scope=${{ github.workflow }}
