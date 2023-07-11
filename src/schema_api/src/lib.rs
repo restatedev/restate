@@ -214,6 +214,11 @@ pub mod service {
         ///
         /// Latest revision of the service.
         pub revision: ServiceRevision,
+        /// # Public
+        ///
+        /// If true, the service can be invoked through the ingress.
+        /// If false, the service can be invoked only from another Restate service.
+        pub public: bool,
     }
 
     /// This API will return services registered by the user. It won't include built-in services.
@@ -224,6 +229,8 @@ pub mod service {
         ) -> Option<ServiceMetadata>;
 
         fn list_services(&self) -> Vec<ServiceMetadata>;
+
+        fn is_service_public(&self, service_name: impl AsRef<str>) -> bool;
     }
 }
 

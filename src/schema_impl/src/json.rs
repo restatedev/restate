@@ -190,6 +190,7 @@ mod tests {
                 instance_type: ServiceInstanceType::Unkeyed,
                 location: ServiceLocation::ServiceEndpoint {
                     latest_endpoint: "".to_string(),
+                    public: true,
                 },
             },
         );

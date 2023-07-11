@@ -48,6 +48,12 @@ pub enum RegistrationError {
     #[error("missing service {0} in descriptor")]
     #[code(restate_errors::META0005)]
     MissingServiceInDescriptor(String),
+    #[error("service {0} does not exist in the registry")]
+    #[code(restate_errors::META0005)]
+    UnknownService(String),
+    #[error("cannot insert/modify service {0} as it's a reserved name")]
+    #[code(restate_errors::META0005)]
+    ModifyInternalService(String),
 }
 
 /// Insert (or replace) service
@@ -72,6 +78,10 @@ pub enum SchemasUpdateCommand {
     RemoveService {
         name: String,
         revision: ServiceRevision,
+    },
+    ModifyService {
+        name: String,
+        public: bool,
     },
 }
 
@@ -125,6 +135,16 @@ impl Schemas {
         )
     }
 
+    pub fn compute_modify_service_updates(
+        &self,
+        service_name: String,
+        public: bool,
+    ) -> Result<SchemasUpdateCommand, RegistrationError> {
+        self.0
+            .load()
+            .compute_modify_service_updates(service_name, public)
+    }
+
     /// Apply the updates to the schema registry.
     /// This method will update the internal pointer to the in-memory schema registry,
     /// propagating the changes to every component consuming it.
@@ -146,13 +166,16 @@ impl Schemas {
 
 pub(crate) mod schemas_impl {
     use super::*;
-    use std::collections::hash_map::Entry;
 
     use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
     use proto_symbol::ProtoSymbols;
     use restate_types::identifiers::{EndpointId, ServiceRevision};
+    use std::collections::hash_map::Entry;
     use std::collections::HashMap;
     use tracing::{debug, info};
+
+    const RESTATE_SERVICE_NAME_PREFIX: &str = "dev.restate.";
+    const GRPC_SERVICE_NAME_PREFIX: &str = "grpc.";
 
     impl Schemas {
         pub(crate) fn use_service_schema<F, R>(
@@ -193,25 +216,31 @@ pub(crate) mod schemas_impl {
         ) -> Self {
             Self {
                 revision,
-                methods: svc_desc
-                    .methods()
-                    .map(|method_desc| (method_desc.name().to_string(), method_desc))
-                    .collect(),
+                methods: Self::compute_service_methods(&svc_desc),
                 instance_type,
-                location: ServiceLocation::ServiceEndpoint { latest_endpoint },
+                location: ServiceLocation::ServiceEndpoint {
+                    latest_endpoint,
+                    public: true,
+                },
             }
         }
 
         fn new_ingress_only(svc_desc: ServiceDescriptor) -> Self {
             Self {
                 revision: 0,
-                methods: svc_desc
-                    .methods()
-                    .map(|method_desc| (method_desc.name().to_string(), method_desc))
-                    .collect(),
+                methods: Self::compute_service_methods(&svc_desc),
                 instance_type: ServiceInstanceType::Singleton,
                 location: ServiceLocation::IngressOnly,
             }
+        }
+
+        fn compute_service_methods(
+            svc_desc: &ServiceDescriptor,
+        ) -> HashMap<String, MethodDescriptor> {
+            svc_desc
+                .methods()
+                .map(|method_desc| (method_desc.name().to_string(), method_desc))
+                .collect()
         }
     }
 
@@ -221,6 +250,7 @@ pub(crate) mod schemas_impl {
         ServiceEndpoint {
             // None if this is a built-in service
             latest_endpoint: EndpointId,
+            public: bool,
         },
     }
 
@@ -291,6 +321,8 @@ pub(crate) mod schemas_impl {
             // Compute service revision numbers
             let mut computed_revisions = HashMap::with_capacity(services.len());
             for service_meta in &services {
+                check_is_reserved(&service_meta.name)?;
+
                 // For the time being when updating we overwrite existing data
                 let revision = if let Some(service_schemas) = self.services.get(service_meta.name())
                 {
@@ -320,6 +352,19 @@ pub(crate) mod schemas_impl {
             });
 
             Ok(result_commands)
+        }
+
+        pub(crate) fn compute_modify_service_updates(
+            &self,
+            name: String,
+            public: bool,
+        ) -> Result<SchemasUpdateCommand, RegistrationError> {
+            check_is_reserved(&name)?;
+            if !self.services.contains_key(&name) {
+                return Err(RegistrationError::UnknownService(name));
+            }
+
+            Ok(SchemasUpdateCommand::ModifyService { name, public })
         }
 
         pub(crate) fn apply_update(
@@ -370,21 +415,31 @@ pub(crate) mod schemas_impl {
                             });
                         }
 
-                        if self
-                            .services
-                            .insert(
-                                name.clone(),
+                        // We need to retain the `public` field from previous registrations
+                        self.services
+                            .entry(name.clone())
+                            .and_modify(|service_schemas| {
+                                info!(rpc.service = name, "Overwriting existing service schemas");
+
+                                service_schemas.revision = revision;
+                                service_schemas.instance_type = instance_type.clone();
+                                service_schemas.methods =
+                                    ServiceSchemas::compute_service_methods(&service_descriptor);
+                                if let ServiceLocation::ServiceEndpoint {
+                                    latest_endpoint, ..
+                                } = &mut service_schemas.location
+                                {
+                                    *latest_endpoint = endpoint_id.clone();
+                                }
+                            })
+                            .or_insert_with(|| {
                                 ServiceSchemas::new(
                                     revision,
-                                    service_descriptor,
-                                    instance_type,
+                                    service_descriptor.clone(),
+                                    instance_type.clone(),
                                     endpoint_id.clone(),
-                                ),
-                            )
-                            .is_some()
-                        {
-                            info!(rpc.service = name, "Overwriting existing service schemas");
-                        }
+                                )
+                            });
 
                         self.proto_symbols.register_new_service(
                             endpoint_id.clone(),
@@ -412,10 +467,33 @@ pub(crate) mod schemas_impl {
                         _ => {}
                     }
                 }
+                SchemasUpdateCommand::ModifyService {
+                    name,
+                    public: new_public_value,
+                } => {
+                    let schemas = self
+                        .services
+                        .get_mut(&name)
+                        .ok_or_else(|| RegistrationError::UnknownService(name.clone()))?;
+                    if let ServiceLocation::ServiceEndpoint { public, .. } = &mut schemas.location {
+                        *public = new_public_value;
+                    }
+                }
             }
 
             Ok(())
         }
+    }
+
+    fn check_is_reserved(svc_name: &str) -> Result<(), RegistrationError> {
+        if svc_name.starts_with(GRPC_SERVICE_NAME_PREFIX)
+            || svc_name.starts_with(RESTATE_SERVICE_NAME_PREFIX)
+        {
+            return Err(RegistrationError::ModifyInternalService(
+                svc_name.to_string(),
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(test)]

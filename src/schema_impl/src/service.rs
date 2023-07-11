@@ -1,6 +1,6 @@
 use super::Schemas;
 
-use crate::schemas_impl::ServiceLocation;
+use crate::schemas_impl::{ServiceLocation, ServiceSchemas};
 use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
 
 impl ServiceMetadataResolver for Schemas {
@@ -8,19 +8,9 @@ impl ServiceMetadataResolver for Schemas {
         &self,
         service_name: impl AsRef<str>,
     ) -> Option<ServiceMetadata> {
-        self.use_service_schema(
-            service_name.as_ref(),
-            |service_schemas| match &service_schemas.location {
-                ServiceLocation::IngressOnly => None,
-                ServiceLocation::ServiceEndpoint { latest_endpoint } => Some(ServiceMetadata {
-                    name: service_name.as_ref().to_string(),
-                    methods: service_schemas.methods.keys().cloned().collect(),
-                    instance_type: (&service_schemas.instance_type).into(),
-                    endpoint_id: latest_endpoint.clone(),
-                    revision: service_schemas.revision,
-                }),
-            },
-        )
+        self.use_service_schema(service_name.as_ref(), |service_schemas| {
+            map_to_service_metadata(service_name.as_ref(), service_schemas)
+        })
         .flatten()
     }
 
@@ -29,18 +19,40 @@ impl ServiceMetadataResolver for Schemas {
         schemas
             .services
             .iter()
-            .filter_map(
-                |(service_name, service_schemas)| match &service_schemas.location {
-                    ServiceLocation::IngressOnly => None,
-                    ServiceLocation::ServiceEndpoint { latest_endpoint } => Some(ServiceMetadata {
-                        name: service_name.clone(),
-                        methods: service_schemas.methods.keys().cloned().collect(),
-                        instance_type: (&service_schemas.instance_type).into(),
-                        endpoint_id: latest_endpoint.clone(),
-                        revision: service_schemas.revision,
-                    }),
-                },
-            )
+            .filter_map(|(service_name, service_schemas)| {
+                map_to_service_metadata(service_name, service_schemas)
+            })
             .collect()
+    }
+
+    fn is_service_public(&self, service_name: impl AsRef<str>) -> bool {
+        self.use_service_schema(
+            service_name.as_ref(),
+            |service_schemas| match service_schemas.location {
+                ServiceLocation::IngressOnly => true,
+                ServiceLocation::ServiceEndpoint { public, .. } => public,
+            },
+        )
+        .unwrap_or(false)
+    }
+}
+
+fn map_to_service_metadata(
+    service_name: &str,
+    service_schemas: &ServiceSchemas,
+) -> Option<ServiceMetadata> {
+    match &service_schemas.location {
+        ServiceLocation::IngressOnly => None, // We filter out from this interface ingress only services
+        ServiceLocation::ServiceEndpoint {
+            latest_endpoint,
+            public,
+        } => Some(ServiceMetadata {
+            name: service_name.to_string(),
+            methods: service_schemas.methods.keys().cloned().collect(),
+            instance_type: (&service_schemas.instance_type).into(),
+            endpoint_id: latest_endpoint.clone(),
+            revision: service_schemas.revision,
+            public: *public,
+        }),
     }
 }
