@@ -294,7 +294,7 @@ pub(crate) mod schemas_impl {
                 // For the time being when updating we overwrite existing data
                 let revision = if let Some(service_schemas) = self.services.get(service_meta.name())
                 {
-                    service_schemas.revision + 1
+                    service_schemas.revision.wrapping_add(1)
                 } else {
                     1
                 };

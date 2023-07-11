@@ -15,16 +15,18 @@ use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
 use restate_errors::warn_it;
-use restate_schema_api::endpoint::{EndpointMetadata, ProtocolType};
+use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
-use restate_types::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
-use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
+use restate_types::errors::{InvocationError, UserErrorCode};
+use restate_types::identifiers::{
+    EndpointId, EntryIndex, PartitionLeaderEpoch, ServiceInvocationId,
+};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryHeader};
-use restate_types::journal::{Completion, EntryType, JournalMetadata};
+use restate_types::journal::{Completion, EntryType};
 use std::collections::HashSet;
 use std::error::Error;
 use std::future::{poll_fn, Future};
@@ -46,6 +48,10 @@ const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/r
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(restate_errors::RT0006)]
 pub(crate) enum InvocationTaskError {
+    #[error("no endpoint was found to process the invocation")]
+    NoEndpointForService,
+    #[error("the invocation has an endpoint id associated, but it was not found in the registry. This might indicate that an endpoint was forcefully removed from the registry, but there are still in-flight invocations for that endpoint")]
+    UnknownEndpoint(EndpointId),
     #[error("unexpected http status code: {0}")]
     UnexpectedResponse(http::StatusCode),
     #[error("unexpected content type: {0:?}")]
@@ -100,13 +106,6 @@ impl InvokerError for InvocationTaskError {
             e => InvocationError::new(UserErrorCode::Internal, e.to_string()),
         }
     }
-
-    fn as_invocation_error_code(&self) -> InvocationErrorCode {
-        match self {
-            InvocationTaskError::Invocation(e) => e.code(),
-            _ => UserErrorCode::Internal.into(),
-        }
-    }
 }
 
 // Copy pasted from hyper::Error
@@ -142,6 +141,7 @@ pub(super) struct InvocationTaskOutput {
 }
 
 pub(super) enum InvocationTaskOutputInner {
+    SelectedEndpoint(EndpointId),
     NewEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
@@ -158,14 +158,13 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 }
 
 /// Represents an open invocation stream
-pub(super) struct InvocationTask<JR, SR, EE> {
+pub(super) struct InvocationTask<JR, SR, EE, EMR> {
     // Shared client
     client: HttpsClient,
 
     // Connection params
     partition: PartitionLeaderEpoch,
     service_invocation_id: ServiceInvocationId,
-    endpoint_metadata: EndpointMetadata,
     suspension_timeout: Duration,
     response_abort_timeout: Duration,
     disable_eager_state: bool,
@@ -174,8 +173,9 @@ pub(super) struct InvocationTask<JR, SR, EE> {
     journal_reader: JR,
     state_reader: SR,
     entry_enricher: EE,
+    endpoint_metadata_resolver: EMR,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-    invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
+    invoker_rx: mpsc::UnboundedReceiver<Completion>,
 
     // Encoder/Decoder
     encoder: Encoder,
@@ -225,13 +225,14 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<JR, SR, EE> InvocationTask<JR, SR, EE>
+impl<JR, SR, EE, EMR> InvocationTask<JR, SR, EE, EMR>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher,
+    EMR: EndpointMetadataResolver,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -239,7 +240,6 @@ where
         partition: PartitionLeaderEpoch,
         sid: ServiceInvocationId,
         protocol_version: u16,
-        endpoint_metadata: EndpointMetadata,
         suspension_timeout: Duration,
         response_abort_timeout: Duration,
         disable_eager_state: bool,
@@ -248,14 +248,14 @@ where
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
+        endpoint_metadata_resolver: EMR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-        invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
+        invoker_rx: mpsc::UnboundedReceiver<Completion>,
     ) -> Self {
         Self {
             client,
             partition,
             service_invocation_id: sid,
-            endpoint_metadata,
             suspension_timeout,
             response_abort_timeout,
             disable_eager_state,
@@ -263,6 +263,7 @@ where
             journal_reader,
             state_reader,
             entry_enricher,
+            endpoint_metadata_resolver,
             invoker_tx,
             invoker_rx,
             encoder: Encoder::new(protocol_version),
@@ -346,8 +347,41 @@ where
         let ((journal_metadata, journal_stream), state_iter) =
             shortcircuit!(tokio::try_join!(read_journal_future, read_state_future));
 
+        // Resolve the endpoint metadata
+        let endpoint_metadata = if let Some(endpoint_id) = journal_metadata.endpoint_id {
+            shortcircuit!(self
+                .endpoint_metadata_resolver
+                .get_endpoint(&endpoint_id)
+                .ok_or_else(|| InvocationTaskError::UnknownEndpoint(endpoint_id.clone())))
+        } else {
+            let endpoint_meta = shortcircuit!(self
+                .endpoint_metadata_resolver
+                .resolve_latest_endpoint_for_service(
+                    &self.service_invocation_id.service_id.service_name
+                )
+                .ok_or(InvocationTaskError::NoEndpointForService));
+            let _ = self.invoker_tx.send(InvocationTaskOutput {
+                partition: self.partition,
+                service_invocation_id: self.service_invocation_id.clone(),
+                inner: InvocationTaskOutputInner::SelectedEndpoint(endpoint_meta.id()),
+            });
+            endpoint_meta
+        };
+
+        // Figure out the protocol type. Force RequestResponse if suspension_timeout is zero
+        let protocol_type = if self.suspension_timeout.is_zero() {
+            ProtocolType::RequestResponse
+        } else {
+            endpoint_metadata.protocol_type()
+        };
+
+        // Close the invoker_rx in case it's request response, this avoids further buffering of messages in this channel.
+        if protocol_type == ProtocolType::RequestResponse {
+            self.invoker_rx.close();
+        }
+
         // Resolve the uri to use for the request
-        let uri = self.prepare_uri(&journal_metadata);
+        let uri = self.prepare_uri(&journal_metadata.method, &endpoint_metadata);
         let journal_size = journal_metadata.length;
 
         // Attach parent and uri to the current span
@@ -363,7 +397,7 @@ where
         let service_invocation_span_context = journal_metadata.span_context;
 
         // Prepare the request and send start message
-        let (mut http_stream_tx, http_request) = self.prepare_request(uri);
+        let (mut http_stream_tx, http_request) = self.prepare_request(uri, endpoint_metadata);
         shortcircuit!(
             self.write_start(&mut http_stream_tx, journal_size, state_iter)
                 .await
@@ -381,24 +415,14 @@ where
         // Check all the entries have been replayed
         debug_assert_eq!(self.next_journal_index, journal_size);
 
-        // Force protocol type to RequestResponse if suspension_timeout is zero
-        let protocol_type = if self.suspension_timeout.is_zero() {
-            ProtocolType::RequestResponse
-        } else {
-            self.endpoint_metadata.protocol_type()
-        };
-
         // If we have the invoker_rx and the protocol type is bidi stream,
         // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
-        if let (Some(invoker_rx), ProtocolType::BidiStream) =
-            (self.invoker_rx.take(), protocol_type)
-        {
+        if protocol_type == ProtocolType::BidiStream {
             shortcircuit!(
                 self.bidi_stream_loop(
                     &service_invocation_span_context,
                     http_stream_tx,
-                    invoker_rx,
-                    &mut http_stream_rx
+                    &mut http_stream_rx,
                 )
                 .await
             );
@@ -461,12 +485,11 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         mut http_stream_tx: Sender,
-        mut invoker_rx: mpsc::UnboundedReceiver<Completion>,
         http_stream_rx: &mut ResponseStreamState,
     ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
-                opt_completion = invoker_rx.recv() => {
+                opt_completion = self.invoker_rx.recv() => {
                     match opt_completion {
                         Some(completion) => {
                             trace!("Sending the completion to the wire");
@@ -650,9 +673,9 @@ where
 
     // --- HTTP related methods
 
-    fn prepare_uri(&self, journal_metadata: &JournalMetadata) -> Uri {
+    fn prepare_uri(&self, method: &str, endpoint_metadata: &EndpointMetadata) -> Uri {
         Self::append_path(
-            self.endpoint_metadata.address(),
+            endpoint_metadata.address(),
             &[
                 "invoke",
                 self.service_invocation_id
@@ -660,12 +683,16 @@ where
                     .service_name
                     .chars()
                     .as_str(),
-                &journal_metadata.method,
+                method,
             ],
         )
     }
 
-    fn prepare_request(&mut self, uri: Uri) -> (Sender, Request<Body>) {
+    fn prepare_request(
+        &mut self,
+        uri: Uri,
+        endpoint_metadata: EndpointMetadata,
+    ) -> (Sender, Request<Body>) {
         let (http_stream_tx, req_body) = Body::channel();
         let mut http_request_builder = Request::builder()
             .method(http::Method::POST)
@@ -674,7 +701,7 @@ where
             .uri(uri);
 
         // In case it's bidi stream, force HTTP/2
-        if self.endpoint_metadata.protocol_type() == ProtocolType::BidiStream {
+        if endpoint_metadata.protocol_type() == ProtocolType::BidiStream {
             http_request_builder = http_request_builder.version(http::Version::HTTP_2);
         }
 
@@ -689,7 +716,7 @@ where
         );
 
         // Inject additional headers
-        for (header_name, header_value) in self.endpoint_metadata.additional_headers() {
+        for (header_name, header_value) in endpoint_metadata.additional_headers() {
             http_request_builder = http_request_builder.header(header_name, header_value);
         }
 

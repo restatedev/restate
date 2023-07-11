@@ -210,6 +210,7 @@ impl InMemoryJournalStorage {
             sid,
             (
                 JournalMetadata {
+                    endpoint_id: None,
                     method,
                     span_context,
                     length: 0,

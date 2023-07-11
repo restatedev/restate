@@ -419,6 +419,22 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .delete_timer(service_invocation_id, wake_up_time, entry_index)
                     .await?;
             }
+            Effect::StoreEndpointId {
+                service_id,
+                endpoint_id,
+                mut metadata,
+            } => {
+                debug_assert_eq!(
+                    metadata.journal_metadata.endpoint_id, None,
+                    "No endpoint_id should be fixed for the current invocation"
+                );
+                metadata.journal_metadata.endpoint_id = Some(endpoint_id);
+                // We recreate the InvocationStatus in Invoked state as the invoker can notify the
+                // chosen endpoint_id only when the invocation is in-flight.
+                state_storage
+                    .store_invocation_status(&service_id, InvocationStatus::Invoked(metadata))
+                    .await?;
+            }
             Effect::AppendJournalEntry {
                 service_id,
                 metadata,
@@ -614,16 +630,18 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         service_invocation: ServiceInvocation,
     ) -> Result<(), Error> {
         let creation_time = MillisSinceEpoch::now();
+        let journal_metadata = JournalMetadata::new(
+            service_invocation.method_name.clone(),
+            service_invocation.span_context.clone(),
+            1, // initial length is 1, because we store the poll input stream entry
+        );
+
         state_storage
             .store_invocation_status(
                 &service_invocation.id.service_id,
                 InvocationStatus::Invoked(InvocationMetadata::new(
                     service_invocation.id.invocation_id,
-                    JournalMetadata::new(
-                        service_invocation.method_name.clone(),
-                        service_invocation.span_context.clone(),
-                        1, // initial length is 1, because we store the poll input stream entry
-                    ),
+                    journal_metadata.clone(),
                     service_invocation.response_sink,
                     creation_time,
                     creation_time,
@@ -650,11 +668,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         collector.collect(ActuatorMessage::Invoke {
             service_invocation_id: service_invocation.id,
             invoke_input_journal: InvokeInputJournal::CachedJournal(
-                JournalMetadata {
-                    method: service_invocation.method_name.to_string(),
-                    length: 1,
-                    span_context: service_invocation.span_context,
-                },
+                journal_metadata,
                 vec![PlainRawEntry::new(
                     RawEntryHeader::PollInputStream { is_completed },
                     raw_bytes,

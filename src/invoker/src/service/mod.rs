@@ -10,10 +10,10 @@ use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use restate_errors::warn_it;
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_queue::SegmentQueue;
-use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
+use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_timer_queue::TimerQueue;
-use restate_types::errors::{InvocationError, InvocationErrorCode, UserErrorCode};
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::errors::InvocationError;
+use restate_types::identifiers::{EndpointId, ServiceInvocationId};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::Completion;
@@ -39,31 +39,10 @@ mod status_store;
 pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
 
-// -- Errors
-
-#[derive(Debug, Clone, thiserror::Error, codederror::CodedError)]
-#[error("Cannot find service {0} in the service endpoint registry")]
-#[code(unknown)]
-pub struct CannotResolveEndpoint(String);
-
-impl InvokerError for CannotResolveEndpoint {
-    fn is_transient(&self) -> bool {
-        true
-    }
-
-    fn to_invocation_error(&self) -> InvocationError {
-        InvocationError::new(UserErrorCode::Internal, self.to_string())
-    }
-}
-
 /// Internal error trait for the invoker errors
 trait InvokerError: std::error::Error {
     fn is_transient(&self) -> bool;
     fn to_invocation_error(&self) -> InvocationError;
-
-    fn as_invocation_error_code(&self) -> InvocationErrorCode {
-        UserErrorCode::Internal.into()
-    }
 }
 
 impl<InvokerCodedError: InvokerError + CodedError> From<&InvokerCodedError>
@@ -90,16 +69,15 @@ trait InvocationTaskRunner {
         &self,
         partition: PartitionLeaderEpoch,
         sid: ServiceInvocationId,
-        endpoint_metadata: EndpointMetadata,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-        invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
+        invoker_rx: mpsc::UnboundedReceiver<Completion>,
         input_journal: InvokeInputJournal,
         task_pool: &mut JoinSet<()>,
     ) -> AbortHandle;
 }
 
 #[derive(Debug)]
-struct DefaultInvocationTaskRunner<JR, SR, EE> {
+struct DefaultInvocationTaskRunner<JR, SR, EE, EMR> {
     client: HttpsClient,
     suspension_timeout: Duration,
     response_abort_timeout: Duration,
@@ -109,23 +87,24 @@ struct DefaultInvocationTaskRunner<JR, SR, EE> {
     journal_reader: JR,
     state_reader: SR,
     entry_enricher: EE,
+    endpoint_metadata_resolver: EMR,
 }
 
-impl<JR, SR, EE> InvocationTaskRunner for DefaultInvocationTaskRunner<JR, SR, EE>
+impl<JR, SR, EE, EMR> InvocationTaskRunner for DefaultInvocationTaskRunner<JR, SR, EE, EMR>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
+    EMR: EndpointMetadataResolver + Clone + Send + 'static,
 {
     fn start_invocation_task(
         &self,
         partition: PartitionLeaderEpoch,
         sid: ServiceInvocationId,
-        endpoint_metadata: EndpointMetadata,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-        invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
+        invoker_rx: mpsc::UnboundedReceiver<Completion>,
         input_journal: InvokeInputJournal,
         task_pool: &mut JoinSet<()>,
     ) -> AbortHandle {
@@ -135,7 +114,6 @@ where
                 partition,
                 sid,
                 0,
-                endpoint_metadata,
                 self.suspension_timeout,
                 self.response_abort_timeout,
                 self.disable_eager_state,
@@ -144,6 +122,7 @@ where
                 self.journal_reader.clone(),
                 self.state_reader.clone(),
                 self.entry_enricher.clone(),
+                self.endpoint_metadata_resolver.clone(),
                 invoker_tx,
                 invoker_rx,
             )
@@ -163,15 +142,19 @@ pub struct Service<JournalReader, StateReader, EntryEnricher, ServiceEndpointReg
     // We have this level of indirection to hide the InvocationTaskRunner,
     // which is a rather internal thing we have only for mocking.
     inner: ServiceInner<
-        ServiceEndpointRegistry,
-        DefaultInvocationTaskRunner<JournalReader, StateReader, EntryEnricher>,
+        DefaultInvocationTaskRunner<
+            JournalReader,
+            StateReader,
+            EntryEnricher,
+            ServiceEndpointRegistry,
+        >,
     >,
 }
 
 impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        endpoint_metadata_registry: EMR,
+        endpoint_metadata_resolver: EMR,
         retry_policy: RetryPolicy,
         suspension_timeout: Duration,
         response_abort_timeout: Duration,
@@ -193,7 +176,6 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
             tmp_dir,
             inner: ServiceInner {
                 input_rx,
-                endpoint_metadata_registry,
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
@@ -206,6 +188,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
                     journal_reader,
                     state_reader,
                     entry_enricher,
+                    endpoint_metadata_resolver,
                 },
                 retry_policy,
                 invocation_tasks: Default::default(),
@@ -240,7 +223,7 @@ where
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
-    EMR: EndpointMetadataResolver,
+    EMR: EndpointMetadataResolver + Clone + Send + 'static,
 {
     pub fn handle(&self) -> ChannelServiceHandle {
         ChannelServiceHandle {
@@ -282,11 +265,8 @@ where
 }
 
 #[derive(Debug)]
-struct ServiceInner<EndpointMetadataRegistry, InvocationTaskRunner> {
+struct ServiceInner<InvocationTaskRunner> {
     input_rx: mpsc::UnboundedReceiver<InputCommand>,
-
-    // Service endpoints registry
-    endpoint_metadata_registry: EndpointMetadataRegistry,
 
     // Channel to communicate with invocation tasks
     invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -306,9 +286,8 @@ struct ServiceInner<EndpointMetadataRegistry, InvocationTaskRunner> {
     invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager,
 }
 
-impl<EMR, ITR> ServiceInner<EMR, ITR>
+impl<ITR> ServiceInner<ITR>
 where
-    EMR: EndpointMetadataResolver,
     ITR: InvocationTaskRunner,
 {
     // Returns true if we should execute another step, false if we should stop executing steps
@@ -360,6 +339,13 @@ where
                     inner
                 } = invocation_task_msg;
                 match inner {
+                    InvocationTaskOutputInner::SelectedEndpoint(endpoint_id) => {
+                        self.handle_selected_endpoint(
+                            partition,
+                            service_invocation_id,
+                            endpoint_id
+                        ).await
+                    }
                     InvocationTaskOutputInner::NewEntry {entry_index, entry} => {
                         self.handle_new_entry(
                             partition,
@@ -505,6 +491,38 @@ where
             rpc.service = %service_invocation_id.service_id.service_name,
             restate.invocation.sid = %service_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
+            restate.service_endpoint.id = %endpoint_id,
+        )
+    )]
+    async fn handle_selected_endpoint(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        service_invocation_id: ServiceInvocationId,
+        endpoint_id: EndpointId,
+    ) {
+        if let Some((_, ism)) = self
+            .invocation_state_machine_manager
+            .resolve_invocation(partition, &service_invocation_id)
+        {
+            trace!(
+                "Chosen endpoint {}. Invocation state: {:?}",
+                endpoint_id,
+                ism.invocation_state_debug()
+            );
+            ism.notify_chosen_endpoint(endpoint_id);
+        } else {
+            // If no state machine, this might be an event for an aborted invocation.
+            trace!("No state machine found for selected endpoint id");
+        }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            rpc.service = %service_invocation_id.service_id.service_name,
+            restate.invocation.sid = %service_invocation_id,
+            restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.index = entry_index,
             restate.journal.entry_type = ?entry.ty(),
         )
@@ -525,6 +543,14 @@ where
                 "Received a new entry. Invocation state: {:?}",
                 ism.invocation_state_debug()
             );
+            if let Some(endpoint_id) = ism.chosen_endpoint_to_notify() {
+                let _ = output_tx
+                    .send(Effect {
+                        service_invocation_id: service_invocation_id.clone(),
+                        kind: EffectKind::SelectedEndpoint(endpoint_id),
+                    })
+                    .await;
+            }
             let _ = output_tx
                 .send(Effect {
                     service_invocation_id,
@@ -793,37 +819,11 @@ where
         journal: InvokeInputJournal,
         mut ism: InvocationStateMachine,
     ) {
-        // Resolve metadata
-        let endpoint_metadata = match self
-            .endpoint_metadata_registry
-            .resolve_latest_endpoint_for_service(&service_invocation_id.service_id.service_name)
-        {
-            Some(m) => m,
-            None => {
-                // No endpoint metadata can be resolved, we just fail it.
-                let err = CannotResolveEndpoint(
-                    service_invocation_id.service_id.service_name.to_string(),
-                );
-
-                // This method needs a state machine
-                self.handle_error_event(partition, service_invocation_id, err, ism)
-                    .await;
-                return;
-            }
-        };
-
         // Start the InvocationTask
-        let (completions_tx, completions_rx) = match endpoint_metadata.protocol_type() {
-            ProtocolType::RequestResponse => (None, None),
-            ProtocolType::BidiStream => {
-                let (tx, rx) = mpsc::unbounded_channel();
-                (Some(tx), Some(rx))
-            }
-        };
+        let (completions_tx, completions_rx) = mpsc::unbounded_channel();
         let abort_handle = self.invocation_task_runner.start_invocation_task(
             partition,
             service_invocation_id.clone(),
-            endpoint_metadata,
             self.invocation_tasks_tx.clone(),
             completions_rx,
             journal,
@@ -894,7 +894,6 @@ mod tests {
     use bytes::Bytes;
     use quota::InvokerConcurrencyQuota;
     use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
-    use restate_schema_api::endpoint::EndpointMetadata;
     use restate_test_util::{check, let_assert, test};
     use restate_types::identifiers::InvocationId;
     use restate_types::identifiers::ServiceInvocationId;
@@ -910,9 +909,8 @@ mod tests {
 
     const MOCK_PARTITION: PartitionLeaderEpoch = (0, 0);
 
-    impl<EMR, ITR> ServiceInner<EMR, ITR> {
+    impl<ITR> ServiceInner<ITR> {
         fn mock(
-            service_endpoint_registry: EMR,
             invocation_task_runner: ITR,
             retry_policy: RetryPolicy,
             concurrency_limit: Option<usize>,
@@ -922,7 +920,6 @@ mod tests {
 
             let service_inner = Self {
                 input_rx,
-                endpoint_metadata_registry: service_endpoint_registry,
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner,
@@ -938,7 +935,6 @@ mod tests {
 
         fn register_mock_partition(&mut self) -> mpsc::Receiver<Effect>
         where
-            EMR: EndpointMetadataResolver,
             ITR: InvocationTaskRunner,
         {
             let (partition_tx, partition_rx) = mpsc::channel(1024);
@@ -952,9 +948,8 @@ mod tests {
         F: Fn(
             PartitionLeaderEpoch,
             ServiceInvocationId,
-            EndpointMetadata,
             mpsc::UnboundedSender<InvocationTaskOutput>,
-            Option<mpsc::UnboundedReceiver<Completion>>,
+            mpsc::UnboundedReceiver<Completion>,
             InvokeInputJournal,
         ) -> Fut,
         Fut: Future<Output = ()> + Send + 'static,
@@ -963,16 +958,14 @@ mod tests {
             &self,
             partition: PartitionLeaderEpoch,
             sid: ServiceInvocationId,
-            endpoint_metadata: EndpointMetadata,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-            invoker_rx: Option<mpsc::UnboundedReceiver<Completion>>,
+            invoker_rx: mpsc::UnboundedReceiver<Completion>,
             input_journal: InvokeInputJournal,
             task_pool: &mut JoinSet<()>,
         ) -> AbortHandle {
             task_pool.spawn((*self)(
                 partition,
                 sid,
-                endpoint_metadata,
                 invoker_tx,
                 invoker_rx,
                 input_journal,
@@ -982,12 +975,6 @@ mod tests {
 
     fn mock_sid() -> ServiceInvocationId {
         ServiceInvocationId::new("MyService", Bytes::default(), InvocationId::now_v7())
-    }
-
-    fn mock_endpoint_registry() -> MockEndpointMetadataRegistry {
-        let mut in_memory_registry = MockEndpointMetadataRegistry::default();
-        in_memory_registry.mock_service("MyService");
-        in_memory_registry
     }
 
     #[test(tokio::test)]
@@ -1055,12 +1042,8 @@ mod tests {
         let sid_1 = mock_sid();
         let sid_2 = mock_sid();
 
-        let (_invoker_tx, mut service_inner) = ServiceInner::mock(
-            mock_endpoint_registry(),
-            |_, _, _, _, _, _| ready(()),
-            Default::default(),
-            Some(1),
-        );
+        let (_invoker_tx, mut service_inner) =
+            ServiceInner::mock(|_, _, _, _, _| ready(()), Default::default(), Some(1));
         let _ = service_inner.register_mock_partition();
 
         // Enqueue sid_1 and sid_2
@@ -1137,10 +1120,8 @@ mod tests {
         let sid = mock_sid();
 
         let (_, mut service_inner) = ServiceInner::mock(
-            mock_endpoint_registry(),
             |partition,
              service_invocation_id,
-             _,
              invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
              _,
              _| {

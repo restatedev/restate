@@ -1,5 +1,6 @@
 use super::*;
 
+use restate_types::identifiers::EndpointId;
 use restate_types::journal::Completion;
 use restate_types::retries;
 use std::fmt;
@@ -69,6 +70,9 @@ enum InvocationState {
         completions_tx: Option<mpsc::UnboundedSender<Completion>>,
         journal_tracker: JournalTracker,
         abort_handle: AbortHandle,
+
+        // If Some, we need to notify the endpoint id to the partition processor
+        chosen_endpoint: Option<EndpointId>,
     },
 
     WaitingRetry {
@@ -85,6 +89,7 @@ impl fmt::Debug for InvocationState {
                 journal_tracker,
                 abort_handle,
                 completions_tx,
+                ..
             } => f
                 .debug_struct("InFlight")
                 .field("journal_tracker", journal_tracker)
@@ -120,7 +125,7 @@ impl InvocationStateMachine {
     pub(super) fn start(
         &mut self,
         abort_handle: AbortHandle,
-        completions_tx: Option<mpsc::UnboundedSender<Completion>>,
+        completions_tx: mpsc::UnboundedSender<Completion>,
     ) {
         debug_assert!(matches!(
             &self.invocation_state,
@@ -128,15 +133,49 @@ impl InvocationStateMachine {
         ));
 
         self.invocation_state = InvocationState::InFlight {
-            completions_tx,
+            completions_tx: Some(completions_tx),
             journal_tracker: Default::default(),
             abort_handle,
+            chosen_endpoint: None,
         };
     }
 
     pub(super) fn abort(&mut self) {
         if let InvocationState::InFlight { abort_handle, .. } = &mut self.invocation_state {
             abort_handle.abort();
+        }
+    }
+
+    pub(super) fn notify_chosen_endpoint(&mut self, endpoint_id: EndpointId) {
+        debug_assert!(matches!(
+            &self.invocation_state,
+            InvocationState::InFlight {
+                chosen_endpoint: None,
+                ..
+            }
+        ));
+
+        if let InvocationState::InFlight {
+            chosen_endpoint, ..
+        } = &mut self.invocation_state
+        {
+            *chosen_endpoint = Some(endpoint_id);
+        }
+    }
+
+    pub(super) fn chosen_endpoint_to_notify(&mut self) -> Option<EndpointId> {
+        debug_assert!(matches!(
+            &self.invocation_state,
+            InvocationState::InFlight { .. }
+        ));
+
+        if let InvocationState::InFlight {
+            chosen_endpoint, ..
+        } = &mut self.invocation_state
+        {
+            chosen_endpoint.take()
+        } else {
+            None
         }
     }
 
@@ -171,12 +210,14 @@ impl InvocationStateMachine {
     }
 
     pub(super) fn notify_completion(&mut self, completion: Completion) {
-        if let InvocationState::InFlight {
-            completions_tx: Some(sender),
-            ..
-        } = &mut self.invocation_state
-        {
-            let _ = sender.send(completion);
+        if let InvocationState::InFlight { completions_tx, .. } = &mut self.invocation_state {
+            *completions_tx = completions_tx.take().and_then(move |sender| {
+                if sender.send(completion).is_ok() {
+                    Some(sender)
+                } else {
+                    None
+                }
+            });
         }
     }
 
