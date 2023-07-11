@@ -424,6 +424,10 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 endpoint_id,
                 mut metadata,
             } => {
+                debug_assert_eq!(
+                    metadata.journal_metadata.endpoint_id, None,
+                    "No endpoint_id should be fixed for the current invocation"
+                );
                 metadata.journal_metadata.endpoint_id = Some(endpoint_id);
                 // We recreate the InvocationStatus in Invoked state as the invoker can notify the
                 // chosen endpoint_id only when the invocation is in-flight.
