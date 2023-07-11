@@ -594,7 +594,7 @@ where
     }
 
     #[instrument(
-        level = "warn",
+        level = "debug",
         skip_all,
         fields(
             rpc.service = %service_invocation_id.service_id.service_name,
@@ -663,7 +663,7 @@ where
     }
 
     #[instrument(
-        level = "warn",
+        level = "debug",
         skip_all,
         fields(
             rpc.service = %service_invocation_id.service_id.service_name,
