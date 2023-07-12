@@ -331,6 +331,12 @@ impl TracingGuard {
         opentelemetry::global::shutdown_tracer_provider();
         self.is_dropped = true;
     }
+
+    /// Shuts down the tracing instrumentation by running [`shutdown`] on a blocking Tokio thread.
+    #[cfg(feature = "rt-tokio")]
+    pub async fn async_shutdown(self) {
+        tokio::task::spawn_blocking(|| self.shutdown());
+    }
 }
 
 impl Drop for TracingGuard {

@@ -12,6 +12,7 @@ publish = false
 [features]
 default = []
 options_schema = ["dep:schemars"]
+rt-tokio = ["dep:tokio"]
 
 [dependencies]
 derive_builder = { workspace = true }
@@ -28,6 +29,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
 tracing-opentelemetry = { workspace = true }
 nu-ansi-term = "0.46.0"
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

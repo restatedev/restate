@@ -124,7 +124,7 @@ fn main() {
             _ = signal::shutdown() => {
                 info!("Received shutdown signal.");
 
-                let tracing_shutdown = tokio::task::spawn_blocking(|| tracing_guard.shutdown());
+                let tracing_shutdown = tracing_guard.async_shutdown();
                 let shutdown_tasks = futures_util::future::join3(shutdown_signal.drain(), tracing_shutdown, application);
 
                 let shutdown_with_timeout = tokio::time::timeout(config.shutdown_grace_period.into(), shutdown_tasks);

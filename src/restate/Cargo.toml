@@ -34,5 +34,5 @@ restate_types = { workspace = true }
 restate_errors = { workspace = true, features = ["include_doc"] }
 restate_fs_util = { workspace = true }
 restate_meta = { workspace = true }
-restate_tracing_instrumentation = { workspace = true }
+restate_tracing_instrumentation = { workspace = true, features = ["tokio"] }
 restate_worker = { workspace = true }
