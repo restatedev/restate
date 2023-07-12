@@ -97,7 +97,7 @@ impl ServiceInvocationSpanContext {
         }
     }
 
-    /// Create a [`SpanContext`] for this invocation, a [`Span`] for which will be created
+    /// Create a [`SpanContext`] for this invocation, a [`Span`] which will be created
     /// when the invocation completes.
     pub fn start(
         service_invocation_id: &ServiceInvocationId,
