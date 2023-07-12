@@ -2,7 +2,7 @@
 use drain::Signal;
 use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
-use hyper::{Body, StatusCode, Uri};
+use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
 use restate::config::{
     ConfigurationBuilder, MetaOptionsBuilder, RocksdbOptionsBuilder, WorkerOptionsBuilder,
@@ -43,12 +43,10 @@ pub fn discover_endpoint(current_thread_rt: &Runtime, address: Uri) {
         result
     });
 
-    assert_eq!(
-        discovery_result
-            .expect("Discovery must be successful")
-            .status(),
-        StatusCode::OK
-    );
+    assert!(discovery_result
+        .expect("Discovery must be successful")
+        .status()
+        .is_success(),);
 }
 
 pub fn spawn_restate(
