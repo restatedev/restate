@@ -4,13 +4,16 @@ RUN just chef-prepare
 
 FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS builder
 ARG TARGETARCH
+# Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
+# Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
+ARG CARGO_PROFILE_RELEASE_DEBUG=false
 COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
 # Caching layer if nothing has changed
 # Only build restate binary to avoid compiling unneeded crates
 RUN just arch=$TARGETARCH chef-cook --release --bin restate
 COPY . .
-RUN just arch=$TARGETARCH build --release --bin restate && \
+RUN CARGO_PROFILE_RELEASE_DEBUG=$CARGO_PROFILE_RELEASE_DEBUG just arch=$TARGETARCH build --release --bin restate && \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH print-target)/release/restate target/restate
 
