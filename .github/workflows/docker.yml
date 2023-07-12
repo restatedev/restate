@@ -94,7 +94,6 @@ jobs:
       # Even if artifactInsteadOfPush, push main images
       # This won't actually build again, it'll just use cache
       - name: Push Docker image
-        id: build
         if: ${{ inputs.artifactInsteadOfPush && github.ref == 'refs/heads/main' }}
         uses: docker/build-push-action@v3
         with:
