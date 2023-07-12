@@ -125,14 +125,14 @@ fn main() {
                 info!("Received shutdown signal.");
 
                 let tracing_shutdown = tokio::task::spawn_blocking(|| tracing_guard.shutdown());
-                let shutdown_tasks = futures_util::future::join(shutdown_signal.drain(), tracing_shutdown);
+                let shutdown_tasks = futures_util::future::join3(shutdown_signal.drain(), tracing_shutdown, application);
 
                 let shutdown_with_timeout = tokio::time::timeout(config.shutdown_grace_period.into(), shutdown_tasks);
 
                 // ignore the result because we are shutting down
-                let (shutdown_result, _) = tokio::join!(shutdown_with_timeout, application);
+                let shutdown_result = shutdown_with_timeout.await;
 
-                if  shutdown_result.is_err() {
+                if shutdown_result.is_err() {
                     warn!("Could not gracefully shut down Restate, terminating now.");
                 } else {
                     info!("Restate has been gracefully shut down.");
