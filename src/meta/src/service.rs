@@ -54,6 +54,9 @@ enum MetaHandleRequest {
         service_name: String,
         public: bool,
     },
+    RemoveEndpoint {
+        endpoint_id: EndpointId,
+    },
 }
 
 pub(crate) struct DiscoverEndpointResponse {
@@ -64,6 +67,7 @@ pub(crate) struct DiscoverEndpointResponse {
 enum MetaHandleResponse {
     DiscoverEndpoint(Result<DiscoverEndpointResponse, MetaError>),
     ModifyService(Result<(), MetaError>),
+    RemoveEndpoint(Result<(), MetaError>),
 }
 
 impl MetaHandle {
@@ -103,6 +107,20 @@ impl MetaHandle {
             .await
             .map(|res| match res {
                 MetaHandleResponse::ModifyService(res) => res,
+                #[allow(unreachable_patterns)]
+                _ => panic!("Unexpected response message, this is a bug"),
+            })
+            .map_err(|_e| MetaError::MetaClosed)?
+    }
+
+    pub(crate) async fn remove_endpoint(&self, endpoint_id: EndpointId) -> Result<(), MetaError> {
+        let (cmd, response_tx) =
+            Command::prepare(MetaHandleRequest::RemoveEndpoint { endpoint_id });
+        self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
+        response_tx
+            .await
+            .map(|res| match res {
+                MetaHandleResponse::RemoveEndpoint(res) => res,
                 #[allow(unreachable_patterns)]
                 _ => panic!("Unexpected response message, this is a bug"),
             })
@@ -181,6 +199,12 @@ where
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
+                        ),
+                        MetaHandleRequest::RemoveEndpoint { endpoint_id } => MetaHandleResponse::RemoveEndpoint(
+                            self.remove_endpoint(endpoint_id).await
+                                .map_err(|e| {
+                                    warn_it!(e); e
+                                })
                         )
                     };
 
@@ -256,6 +280,16 @@ where
         let update_commands = vec![self
             .schemas
             .compute_modify_service_updates(service_name, public)?];
+        self.store_and_apply_updates(update_commands).await?;
+
+        Ok(())
+    }
+
+    async fn remove_endpoint(&mut self, endpoint_id: EndpointId) -> Result<(), MetaError> {
+        debug!(restate.service_endpoint.id = %endpoint_id, "Remove endpoint");
+
+        // Compute the diff and propagate updates
+        let update_commands = self.schemas.compute_remove_endpoint(endpoint_id)?;
         self.store_and_apply_updates(update_commands).await?;
 
         Ok(())

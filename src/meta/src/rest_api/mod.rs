@@ -82,6 +82,10 @@ impl MetaRestEndpoint {
                 "/endpoints/:endpoint",
                 get(openapi_handler!(endpoints::get_service_endpoint)),
             )
+            .route(
+                "/endpoints/:endpoint",
+                delete(openapi_handler!(endpoints::delete_service_endpoint)),
+            )
             .route("/services", get(openapi_handler!(services::list_services)))
             .route(
                 "/services/:service",
