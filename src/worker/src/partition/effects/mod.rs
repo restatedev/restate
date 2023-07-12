@@ -6,7 +6,7 @@ use restate_types::journal::{Completion, CompletionResult, JournalMetadata};
 use std::collections::HashSet;
 use std::fmt;
 use std::vec::Drain;
-use tracing::{debug_span, event_enabled, trace, trace_span, Level};
+use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
 use types::TimerKeyDisplay;
 
 mod interpreter;
@@ -588,43 +588,28 @@ impl Effect {
                 span_context,
                 result,
             } => {
-                match result {
-                    Ok(_) => info_span_if_leader!(
-                        is_leader,
-                        span_context.is_sampled(),
-                        span_context.cause(),
-                        "invoke",
-                        // the otel library overrides span name with this dynamically
-                        otel.name = format!("invoke {service_method}"),
-                        rpc.service = %service_invocation_id.service_id.service_name,
-                        rpc.method = service_method,
-                        restate.invocation.sid = %service_invocation_id,
-                        restate.invocation.result = "Success",
-                        // without converting to i64 this field will encode as a string
-                        // however, overflowing i64 seems unlikely
-                        restate.internal.start_time = i64::try_from(creation_time.as_u64()).expect("creation time should fit into i64"),
-                        restate.internal.span_id = %span_context.span_context().span_id(),
-                        restate.internal.trace_id = %span_context.span_context().trace_id()
-                    ),
-                    Err(_) => span_if_leader!(
-                        Level::WARN,
-                        is_leader,
-                        span_context.is_sampled(),
-                        span_context.cause(),
-                        "invoke",
-                        otel.name = format!("invoke {service_method}"),
-                        rpc.service = %service_invocation_id.service_id.service_name,
-                        rpc.method = service_method,
-                        restate.invocation.sid = %service_invocation_id,
-                        restate.invocation.result = "Failure",
-                        error = true, // jaeger uses this tag to show an error icon
-                        // without converting to i64 this field will encode as a string
-                        // however, overflowing i64 seems unlikely
-                        restate.internal.start_time = i64::try_from(creation_time.as_u64()).expect("creation time should fit into i64"),
-                        restate.internal.span_id = %span_context.span_context().span_id(),
-                        restate.internal.trace_id = %span_context.span_context().trace_id()
-                    ),
-                }
+                let (result, error) = match result {
+                    Ok(_) => ("Success", false),
+                    Err(_) => ("Failure", true),
+                };
+
+                info_span_if_leader!(
+                    is_leader,
+                    span_context.is_sampled(),
+                    span_context.cause(),
+                    "invoke",
+                    otel.name = format!("invoke {service_method}"),
+                    rpc.service = %service_invocation_id.service_id.service_name,
+                    rpc.method = service_method,
+                    restate.invocation.sid = %service_invocation_id,
+                    restate.invocation.result = result,
+                    error = error, // jaeger uses this tag to show an error icon
+                    // without converting to i64 this field will encode as a string
+                    // however, overflowing i64 seems unlikely
+                    restate.internal.start_time = i64::try_from(creation_time.as_u64()).expect("creation time should fit into i64"),
+                    restate.internal.span_id = %span_context.span_context().span_id(),
+                    restate.internal.trace_id = %span_context.span_context().trace_id()
+                );
                 // No need to log this
             }
             Effect::SendAckResponse(ack_response) => {
@@ -956,7 +941,8 @@ impl Effects {
             .push(Effect::AbortInvocation(service_invocation_id));
     }
 
-    /// We log only if the level is TRACE, or if the level is DEBUG and we're the leader.
+    /// We log only if the log level is TRACE, or if the log level is DEBUG and we're the leader,
+    /// or if the span level is INFO and we're the leader.
     pub(crate) fn log(
         &self,
         is_leader: bool,
@@ -964,7 +950,9 @@ impl Effects {
         related_span: SpanRelation,
     ) {
         // Skip this method altogether if logging is disabled
-        if !((event_enabled!(Level::DEBUG) && is_leader) || event_enabled!(Level::TRACE)) {
+        if !(((event_enabled!(Level::DEBUG) || span_enabled!(Level::INFO)) && is_leader)
+            || event_enabled!(Level::TRACE))
+        {
             return;
         }
 
