@@ -2,3 +2,4 @@
 docker/Dockerfile
 **/target
 target
+restate.tar
