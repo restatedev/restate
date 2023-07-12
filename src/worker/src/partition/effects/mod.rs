@@ -137,7 +137,7 @@ pub(crate) enum Effect {
         completion: Completion,
     },
 
-    // Tracing
+    // Effects used only for tracing purposes
     BackgroundInvoke {
         service_invocation_id: ServiceInvocationId,
         service_method: String,
