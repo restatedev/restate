@@ -34,3 +34,8 @@ cargo bench --bench throughput_parallel -- --profile-time=30
 
 This will profile the *throughput_parallel* benchmark for *30 s*.
 The profiler will generate a flamegraph under `target/criterion/<name_of_benchmark>/profile/flamegraph.svg`.
+
+## Changing Restate's configuration
+
+The benchmarks spawn Restate with a default configuration.
+You can [overwrite this configuration by specifying environment variables](http://restate.dev/docs/deployment-operations/configuration) of the form `RESTATE_WORKER__PARTITIONS=1337`.

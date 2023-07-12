@@ -102,11 +102,12 @@ pub fn restate_configuration() -> Configuration {
         .build()
         .expect("building worker options should work");
 
-    let config = ConfigurationBuilder::default()
+    let default_config = ConfigurationBuilder::default()
         .worker(worker_options)
         .meta(meta_options)
         .build()
         .expect("building the configuration should work");
 
-    config
+    Configuration::load_with_default(default_config, None)
+        .expect("configuration loading should not fail")
 }
