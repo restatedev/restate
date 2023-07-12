@@ -117,7 +117,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           load: false
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
+          # ignore inputs.platforms as we always need to push both arm64 and amd64 docker images
+          platforms: 'linux/arm64,linux/amd64'
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
           cache-from: type=gha,scope=${{ github.workflow }}
