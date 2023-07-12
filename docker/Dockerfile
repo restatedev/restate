@@ -11,7 +11,7 @@ COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
 # Caching layer if nothing has changed
 # Only build restate binary to avoid compiling unneeded crates
-RUN just arch=$TARGETARCH chef-cook --release --bin restate
+RUN CARGO_PROFILE_RELEASE_DEBUG=$CARGO_PROFILE_RELEASE_DEBUG just arch=$TARGETARCH chef-cook --release --bin restate
 COPY . .
 RUN CARGO_PROFILE_RELEASE_DEBUG=$CARGO_PROFILE_RELEASE_DEBUG just arch=$TARGETARCH build --release --bin restate && \
     just notice-file && \
