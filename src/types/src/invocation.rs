@@ -75,7 +75,7 @@ pub enum ServiceInvocationResponseSink {
 
 /// This struct contains the relevant span information for a [`ServiceInvocation`].
 /// It can be used to create related spans, such as child spans,
-/// using [`ServiceInvocationSpanContext::as_background_invoke`] or [`ServiceInvocationSpanContext::as_invoke`].
+/// using [`ServiceInvocationSpanContext::as_linked`] or [`ServiceInvocationSpanContext::as_parent`].
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ServiceInvocationSpanContext {
     span_context: SpanContext,
@@ -115,7 +115,7 @@ impl ServiceInvocationSpanContext {
                     };
                 }
                 match span_relation {
-                    SpanRelationType::BackgroundInvoke(trace_id, _) => {
+                    SpanRelationType::Linked(trace_id, _) => {
                         // use part of the invocation id as the span id of the new trace root
                         let span_id: SpanId = service_invocation_id.invocation_id.into();
 
@@ -139,13 +139,13 @@ impl ServiceInvocationSpanContext {
                             false,
                             TraceState::default(),
                         );
-                        let span_relation = SpanRelationType::BackgroundInvoke(
+                        let span_relation = SpanRelationType::Linked(
                             *trace_id,
                             SpanId::from_bytes(pointer_span_id),
                         );
                         (Some(span_relation), span_context)
                     }
-                    SpanRelationType::Invoke(span_id) => {
+                    SpanRelationType::Parent(span_id) => {
                         // create a span context as part of the existing trace, which will be used for any actions
                         // of the invocation. a span will be emitted with these details when its finished
                         let span_context = SpanContext::new(
@@ -158,7 +158,7 @@ impl ServiceInvocationSpanContext {
                             false,
                             cause.trace_state().clone(),
                         );
-                        let span_relation = SpanRelationType::Invoke(*span_id);
+                        let span_relation = SpanRelationType::Parent(*span_id);
                         (Some(span_relation), span_context)
                     }
                 }
@@ -191,9 +191,9 @@ impl ServiceInvocationSpanContext {
     pub fn cause(&self) -> SpanRelation {
         match self.span_relation {
             None => SpanRelation::None,
-            Some(SpanRelationType::Invoke(span_id)) => {
+            Some(SpanRelationType::Parent(span_id)) => {
                 SpanRelation::Cause(
-                    SpanRelationType::Invoke(span_id),
+                    SpanRelationType::Parent(span_id),
                     SpanContext::new(
                         // in invoke case, trace id of cause matches that of child
                         self.span_context.trace_id(),
@@ -210,9 +210,9 @@ impl ServiceInvocationSpanContext {
                     ),
                 )
             }
-            Some(SpanRelationType::BackgroundInvoke(trace_id, span_id)) => {
+            Some(SpanRelationType::Linked(trace_id, span_id)) => {
                 SpanRelation::Cause(
-                    SpanRelationType::BackgroundInvoke(trace_id, span_id),
+                    SpanRelationType::Linked(trace_id, span_id),
                     SpanContext::new(
                         // use stored trace id
                         trace_id,
@@ -238,19 +238,16 @@ impl ServiceInvocationSpanContext {
         self.span_relation.as_ref()
     }
 
-    pub fn as_background_invoke(&self) -> SpanRelation {
+    pub fn as_linked(&self) -> SpanRelation {
         SpanRelation::Cause(
-            SpanRelationType::BackgroundInvoke(
-                self.span_context.trace_id(),
-                self.span_context.span_id(),
-            ),
+            SpanRelationType::Linked(self.span_context.trace_id(), self.span_context.span_id()),
             self.span_context.clone(),
         )
     }
 
-    pub fn as_invoke(&self) -> SpanRelation {
+    pub fn as_parent(&self) -> SpanRelation {
         SpanRelation::Cause(
-            SpanRelationType::Invoke(self.span_context.span_id()),
+            SpanRelationType::Parent(self.span_context.span_id()),
             self.span_context.clone(),
         )
     }
@@ -284,8 +281,8 @@ impl From<InvocationId> for SpanId {
 /// Span relation, used to propagate tracing contexts.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SpanRelationType {
-    Invoke(SpanId),
-    BackgroundInvoke(TraceId, SpanId),
+    Parent(SpanId),
+    Linked(TraceId, SpanId),
 }
 
 pub enum SpanRelation {
@@ -311,10 +308,10 @@ impl SpanRelation {
         };
 
         match span_relation {
-            SpanRelationType::Invoke(_) => {
+            SpanRelationType::Parent(_) => {
                 span.set_parent(Context::new().with_remote_span_context(span_context))
             }
-            SpanRelationType::BackgroundInvoke(_, _) => span.add_link(span_context),
+            SpanRelationType::Linked(_, _) => span.add_link(span_context),
         };
     }
 }

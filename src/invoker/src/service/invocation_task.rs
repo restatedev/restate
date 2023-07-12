@@ -388,7 +388,7 @@ where
         let invocation_task_span = Span::current();
         journal_metadata
             .span_context
-            .as_invoke()
+            .as_parent()
             .attach_to_span(&invocation_task_span);
         info!(http.url = %uri, "Executing invocation at service endpoint");
 

@@ -498,18 +498,19 @@ pub mod storage {
 
                 fn try_from(value: SpanRelation) -> Result<Self, Self::Error> {
                     match value.kind.ok_or(ConversionError::missing_field("kind"))? {
-                        span_relation::Kind::Invoke(span_relation::Invoke { span_id }) => {
+                        span_relation::Kind::Parent(span_relation::Parent { span_id }) => {
                             let span_id =
                                 opentelemetry_api::trace::SpanId::from_bytes(span_id.to_be_bytes());
-                            Ok(Self::Invoke(span_id))
+                            Ok(Self::Parent(span_id))
                         }
-                        span_relation::Kind::BackgroundInvoke(
-                            span_relation::BackgroundInvoke { trace_id, span_id },
-                        ) => {
+                        span_relation::Kind::Linked(span_relation::Linked {
+                            trace_id,
+                            span_id,
+                        }) => {
                             let trace_id = try_bytes_into_trace_id(trace_id)?;
                             let span_id =
                                 opentelemetry_api::trace::SpanId::from_bytes(span_id.to_be_bytes());
-                            Ok(Self::BackgroundInvoke(trace_id, span_id))
+                            Ok(Self::Linked(trace_id, span_id))
                         }
                     }
                 }
@@ -518,20 +519,14 @@ pub mod storage {
             impl From<restate_types::invocation::SpanRelationType> for SpanRelation {
                 fn from(value: restate_types::invocation::SpanRelationType) -> Self {
                     let kind = match value {
-                        restate_types::invocation::SpanRelationType::Invoke(span_id) => {
+                        restate_types::invocation::SpanRelationType::Parent(span_id) => {
                             let span_id = u64::from_be_bytes(span_id.to_bytes());
-                            span_relation::Kind::Invoke(span_relation::Invoke { span_id })
+                            span_relation::Kind::Parent(span_relation::Parent { span_id })
                         }
-                        restate_types::invocation::SpanRelationType::BackgroundInvoke(
-                            trace_id,
-                            span_id,
-                        ) => {
+                        restate_types::invocation::SpanRelationType::Linked(trace_id, span_id) => {
                             let span_id = u64::from_be_bytes(span_id.to_bytes());
                             let trace_id = Bytes::copy_from_slice(&trace_id.to_bytes());
-                            span_relation::Kind::BackgroundInvoke(span_relation::BackgroundInvoke {
-                                trace_id,
-                                span_id,
-                            })
+                            span_relation::Kind::Linked(span_relation::Linked { trace_id, span_id })
                         }
                     };
 

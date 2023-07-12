@@ -215,7 +215,7 @@ where
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(ServiceInvocationId, SpanRelation), Error> {
-        let related_span = metadata.journal_metadata.span_context.as_invoke();
+        let related_span = metadata.journal_metadata.span_context.as_parent();
 
         self.fail_invocation(
             effects,
@@ -306,7 +306,7 @@ where
         let span_relation = invocation_metadata
             .journal_metadata
             .span_context
-            .as_invoke();
+            .as_parent();
 
         match kind {
             InvokerEffectKind::SelectedEndpoint(endpoint_id) => {
@@ -664,7 +664,7 @@ where
                 if metadata.invocation_id == service_invocation_id.invocation_id {
                     effects.store_and_forward_completion(service_invocation_id.clone(), completion);
                     related_sid = Some(service_invocation_id);
-                    span_relation = metadata.journal_metadata.span_context.as_invoke();
+                    span_relation = metadata.journal_metadata.span_context.as_parent();
                 } else {
                     debug!(
                         rpc.service = %service_invocation_id.service_id.service_name,
@@ -679,7 +679,7 @@ where
                 waiting_for_completed_entries,
             } => {
                 if metadata.invocation_id == service_invocation_id.invocation_id {
-                    span_relation = metadata.journal_metadata.span_context.as_invoke();
+                    span_relation = metadata.journal_metadata.span_context.as_parent();
 
                     if waiting_for_completed_entries.contains(&completion.entry_index) {
                         effects.store_completion_and_resume(
@@ -833,9 +833,9 @@ where
 
 fn extract_span_relation(status: &InvocationStatus) -> SpanRelation {
     match status {
-        InvocationStatus::Invoked(metadata) => metadata.journal_metadata.span_context.as_invoke(),
+        InvocationStatus::Invoked(metadata) => metadata.journal_metadata.span_context.as_parent(),
         InvocationStatus::Suspended { metadata, .. } => {
-            metadata.journal_metadata.span_context.as_invoke()
+            metadata.journal_metadata.span_context.as_parent()
         }
         InvocationStatus::Free => SpanRelation::None,
     }

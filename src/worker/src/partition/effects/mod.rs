@@ -217,7 +217,7 @@ impl Effect {
                 info_span_if_leader!(
                     is_leader,
                     metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_invoke(),
+                    metadata.journal_metadata.span_context.as_parent(),
                     "suspend",
                     restate.journal.length = metadata.journal_metadata.length,
                     rpc.service = %service_id.service_name,
@@ -353,7 +353,7 @@ impl Effect {
                 info_span_if_leader!(
                     is_leader,
                     metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_invoke(),
+                    metadata.journal_metadata.span_context.as_parent(),
                     "set_state",
                     otel.name = format!("set_state {key:?}"),
                     restate.journal.index = entry_index,
@@ -379,7 +379,7 @@ impl Effect {
                 info_span_if_leader!(
                     is_leader,
                     metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_invoke(),
+                    metadata.journal_metadata.span_context.as_parent(),
                     "clear_state",
                     otel.name = format!("clear_state {key:?}"),
                     restate.journal.index = entry_index,
@@ -405,7 +405,7 @@ impl Effect {
                 info_span_if_leader!(
                     is_leader,
                     metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_invoke(),
+                    metadata.journal_metadata.span_context.as_parent(),
                     "get_state",
                     otel.name = format!("get_state {key:?}"),
                     restate.state.key = ?key,
@@ -430,7 +430,7 @@ impl Effect {
                     info_span_if_leader!(
                         is_leader,
                         span_context.is_sampled(),
-                        span_context.as_invoke(),
+                        span_context.as_parent(),
                         "sleep",
                         rpc.service = %timer_value.service_invocation_id.service_id.service_name,
                         restate.invocation.sid = %timer_value.service_invocation_id,
@@ -544,7 +544,7 @@ impl Effect {
                 info_span_if_leader!(
                     is_leader,
                     metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_invoke(),
+                    metadata.journal_metadata.span_context.as_parent(),
                     "resume",
                     restate.journal.index = entry_index,
                     rpc.service = %service_id.service_name,
@@ -576,7 +576,7 @@ impl Effect {
                 info_span_if_leader!(
                     is_leader,
                     span_context.is_sampled(),
-                    span_context.as_invoke(),
+                    span_context.as_parent(),
                     "background_invoke",
                     otel.name = format!("background_invoke {service_method}"),
                     rpc.service = %service_invocation_id.service_id.service_name,

@@ -88,18 +88,18 @@ message SpanContext {
 }
 
 message SpanRelation {
-    message Invoke {
+    message Parent {
         uint64 span_id = 1;
     }
 
-    message BackgroundInvoke {
+    message Linked {
         bytes trace_id = 1;
         uint64 span_id = 2;
     }
 
     oneof kind {
-        Invoke invoke = 1;
-        BackgroundInvoke background_invoke = 2;
+        Parent parent = 1;
+        Linked linked = 2;
     }
 }
 

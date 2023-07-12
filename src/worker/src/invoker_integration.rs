@@ -88,7 +88,7 @@ where
                             let_assert!(Entry::Invoke(InvokeEntry { request, .. }) = entry);
                             request
                         },
-                        invocation_span_context.as_invoke(),
+                        invocation_span_context.as_parent(),
                     )?;
 
                     EnrichedEntryHeader::Invoke {
@@ -112,7 +112,7 @@ where
                         );
                         request
                     },
-                    invocation_span_context.as_background_invoke(),
+                    invocation_span_context.as_linked(),
                 )?;
 
                 EnrichedEntryHeader::BackgroundInvoke { resolution_result }

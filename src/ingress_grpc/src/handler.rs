@@ -219,7 +219,7 @@ where
                     &method_name,
                     req_payload,
                     response_sink,
-                    SpanRelation::Cause(SpanRelationType::Invoke(ingress_span_context.span_id()), ingress_span_context)
+                    SpanRelation::Cause(SpanRelationType::Parent(ingress_span_context.span_id()), ingress_span_context)
                 ) {
                     Ok(i) => i,
                     Err(e) => {
@@ -302,7 +302,7 @@ where
 fn span_relation(request_span: &SpanContext) -> SpanRelation {
     if request_span.is_valid() {
         SpanRelation::Cause(
-            SpanRelationType::Invoke(request_span.span_id()),
+            SpanRelationType::Parent(request_span.span_id()),
             request_span.clone(),
         )
     } else {
