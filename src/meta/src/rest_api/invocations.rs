@@ -6,6 +6,7 @@ use okapi_operation::*;
 use restate_schema_api::key::json_conversion::Error;
 use restate_schema_api::key::RestateKeyConverter;
 use restate_types::identifiers;
+
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -57,12 +58,10 @@ impl ServiceInvocationId {
                         e => MetaApiError::InvalidField("sid", e.to_string()),
                     })?;
 
-                let uuid: Uuid = invocation_id.into();
-
                 Ok(identifiers::ServiceInvocationId::new(
                     service,
                     restate_key,
-                    uuid,
+                    Uuid::from(invocation_id),
                 ))
             }
         }

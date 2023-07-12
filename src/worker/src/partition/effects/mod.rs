@@ -142,6 +142,7 @@ pub(crate) enum Effect {
         service_invocation_id: ServiceInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
+        pointer_span_id: SpanId,
     },
     NotifyInvocationResult {
         service_invocation_id: ServiceInvocationId,
@@ -436,9 +437,9 @@ impl Effect {
                         restate.invocation.sid = %timer_value.service_invocation_id,
                         restate.timer.key = %timer_value.display_key(),
                         restate.timer.wake_up_time = %timer_value.wake_up_time,
-                        // without 'as i64' this field will encode as a string
+                        // without converting to i64 this field will encode as a string
                         // however, overflowing i64 seems unlikely
-                        restate.internal.end_time = timer_value.wake_up_time.as_u64() as i64,
+                        restate.internal.end_time = i64::try_from(timer_value.wake_up_time.as_u64()).expect("wake up time should fit into i64"),
                     );
 
                     debug_if_leader!(
@@ -562,17 +563,12 @@ impl Effect {
                 service_invocation_id,
                 service_method,
                 span_context,
+                pointer_span_id,
             } => {
                 // create an instantaneous 'pointer span' which lives in the calling trace at the
                 // time of background call, and exists only to be linked to by the new trace that
                 // will be created for the background invocation
 
-                // use the reverse of the last 8 bytes of the invocation id as the span id;
-                // the new trace for the background invoke will point to this span, so we need a
-                // predictable span id, but we can't just use the last 8 bytes, as spans ids are unique
-                let mut pointer_span_id =
-                    Into::<SpanId>::into(service_invocation_id.invocation_id).to_bytes();
-                pointer_span_id.reverse();
                 info_span_if_leader!(
                     is_leader,
                     span_context.is_sampled(),
@@ -582,7 +578,7 @@ impl Effect {
                     rpc.service = %service_invocation_id.service_id.service_name,
                     rpc.method = service_method,
                     restate.invocation.sid = %service_invocation_id,
-                    restate.internal.span_id = %SpanId::from_bytes(pointer_span_id),
+                    restate.internal.span_id = %pointer_span_id,
                 );
             }
             Effect::NotifyInvocationResult {
@@ -604,9 +600,9 @@ impl Effect {
                         rpc.method = service_method,
                         restate.invocation.sid = %service_invocation_id,
                         restate.invocation.result = "Success",
-                        // without 'as i64' this field will encode as a string
+                        // without converting to i64 this field will encode as a string
                         // however, overflowing i64 seems unlikely
-                        restate.internal.start_time = creation_time.as_u64() as i64,
+                        restate.internal.start_time = i64::try_from(creation_time.as_u64()).expect("creation time should fit into i64"),
                         restate.internal.span_id = %span_context.span_context().span_id(),
                         restate.internal.trace_id = %span_context.span_context().trace_id()
                     ),
@@ -622,9 +618,9 @@ impl Effect {
                         restate.invocation.sid = %service_invocation_id,
                         restate.invocation.result = "Failure",
                         error = true, // jaeger uses this tag to show an error icon
-                        // without 'as i64' this field will encode as a string
+                        // without converting to i64 this field will encode as a string
                         // however, overflowing i64 seems unlikely
-                        restate.internal.start_time = creation_time.as_u64() as i64,
+                        restate.internal.start_time = i64::try_from(creation_time.as_u64()).expect("creation time should fit into i64"),
                         restate.internal.span_id = %span_context.span_context().span_id(),
                         restate.internal.trace_id = %span_context.span_context().trace_id()
                     ),
@@ -926,11 +922,13 @@ impl Effects {
         service_invocation_id: ServiceInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
+        pointer_span_id: SpanId,
     ) {
         self.effects.push(Effect::BackgroundInvoke {
             service_invocation_id,
             service_method,
             span_context,
+            pointer_span_id,
         })
     }
 

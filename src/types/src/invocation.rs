@@ -1,7 +1,7 @@
 //! This module contains all the core types representing a service invocation.
 
 use crate::errors::UserErrorCode;
-use crate::identifiers::{EntryIndex, IngressId, InvocationId, ServiceInvocationId};
+use crate::identifiers::{EntryIndex, IngressId, ServiceInvocationId};
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::{
@@ -10,7 +10,6 @@ use opentelemetry_api::trace::{
 use opentelemetry_api::Context;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use uuid::Uuid;
 
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,21 +259,6 @@ impl ServiceInvocationSpanContext {
 impl From<ServiceInvocationSpanContext> for SpanContext {
     fn from(value: ServiceInvocationSpanContext) -> Self {
         value.span_context
-    }
-}
-
-impl From<InvocationId> for TraceId {
-    fn from(value: InvocationId) -> Self {
-        let uuid: Uuid = value.into();
-        Self::from_bytes(uuid.into_bytes())
-    }
-}
-
-impl From<InvocationId> for SpanId {
-    fn from(value: InvocationId) -> Self {
-        let uuid: Uuid = value.into();
-        let last8: [u8; 8] = std::convert::TryInto::try_into(&uuid.as_bytes()[8..16]).unwrap();
-        Self::from_bytes(last8)
     }
 }
 

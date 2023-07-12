@@ -1,9 +1,10 @@
-use opentelemetry::trace::TraceId;
+use opentelemetry::trace::{OrderMap, TraceId};
 use opentelemetry::trace::{SpanBuilder, SpanId};
 use opentelemetry::{Context, Key, Value};
 use std::collections::HashSet;
 use std::ops::Add;
 
+use once_cell::sync::Lazy;
 use std::time::{Duration, SystemTime};
 
 use tracing_opentelemetry::{OtelData, PreSampledTracer};
@@ -18,6 +19,12 @@ const START_TIME: Key = Key::from_static_str("restate.internal.start_time");
 /// `START_TIME` is used to override `start_time` on the `SpanBuilder`. It must be the number of
 /// millis since epoch written as a string
 const END_TIME: Key = Key::from_static_str("restate.internal.end_time");
+
+static KEYS: Lazy<HashSet<Key>> = Lazy::new(|| {
+    vec![TRACE_ID, SPAN_ID, START_TIME, END_TIME]
+        .into_iter()
+        .collect()
+});
 
 // Tracer wraps the opentelemetry Tracer struct, in order to allow certain span fields to be overridden
 // using attribute fields when spans are created.
@@ -42,41 +49,24 @@ impl opentelemetry::trace::Tracer for SpanModifyingTracer {
             return self.inner.build_with_context(builder, parent_cx);
         };
 
-        let trace_id = attributes.get_key_value(&TRACE_ID);
-        let span_id = attributes.get_key_value(&SPAN_ID);
-        let start_time = attributes.get_key_value(&START_TIME);
-        let end_time = attributes.get_key_value(&END_TIME);
-
-        // store a set of which keys were actually present
-        let keys: HashSet<Key> = trace_id
-            .iter()
-            .chain(span_id.iter())
-            .chain(start_time.iter())
-            .chain(end_time.iter())
-            .map(|&(k, _)| k.clone())
-            .collect();
-
-        if keys.is_empty() {
-            // nothing to do
-            return self.inner.build_with_context(builder, parent_cx);
-        }
-
-        builder.trace_id = trace_id
-            .map(|(_, trace_id)| {
+        builder.trace_id = attributes
+            .get(&TRACE_ID)
+            .map(|trace_id| {
                 TraceId::from_hex(trace_id.as_str().as_ref())
                     .expect("restate.internal.trace_id must be a valid hex string")
             })
             .or(builder.trace_id);
 
-        builder.span_id = span_id
-            .map(|(_, span_id)| {
+        builder.span_id = attributes
+            .get(&SPAN_ID)
+            .map(|span_id| {
                 SpanId::from_hex(span_id.as_str().as_ref())
                     .expect("restate.internal.span_id must be a valid hex string")
             })
             .or(builder.span_id);
 
-        let time = |kv: Option<(&Key, &Value)>| {
-            kv.map(|(key, value)| -> SystemTime {
+        fn time(key: Key, attributes: &mut OrderMap<Key, Value>) -> Option<SystemTime> {
+            attributes.get(&key).map(|value| -> SystemTime {
                 match value {
                     Value::I64(value) => {
                         SystemTime::UNIX_EPOCH.add(Duration::from_millis(*value as u64))
@@ -88,15 +78,15 @@ impl opentelemetry::trace::Tracer for SpanModifyingTracer {
                     ),
                 }
             })
-        };
+        }
 
-        builder.start_time = time(start_time).or(builder.start_time);
-        builder.end_time = time(end_time).or(builder.end_time);
+        builder.start_time = time(START_TIME, attributes).or(builder.start_time);
+        builder.end_time = time(END_TIME, attributes).or(builder.end_time);
 
         // now that we no longer hold references to the values, we can remove all the keys we used from attributes
         // by using retain, we can do this in a single O(n) scan, which is better than calling delete 1-4 times,
         // as a delete is also O(n)
-        attributes.retain(|k, _| !keys.contains(k));
+        attributes.retain(|k, _| !KEYS.contains(k));
 
         self.inner.build_with_context(builder, parent_cx)
     }

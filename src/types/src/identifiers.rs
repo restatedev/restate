@@ -55,7 +55,7 @@ impl InvocationId {
 
 impl Display for InvocationId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.0.as_simple().fmt(f)
     }
 }
 
@@ -75,6 +75,21 @@ impl From<Uuid> for InvocationId {
 impl From<InvocationId> for Uuid {
     fn from(value: InvocationId) -> Self {
         value.0
+    }
+}
+
+impl From<InvocationId> for opentelemetry_api::trace::TraceId {
+    fn from(value: InvocationId) -> Self {
+        let uuid: Uuid = value.into();
+        Self::from_bytes(uuid.into_bytes())
+    }
+}
+
+impl From<InvocationId> for opentelemetry_api::trace::SpanId {
+    fn from(value: InvocationId) -> Self {
+        let uuid: Uuid = value.into();
+        let last8: [u8; 8] = std::convert::TryInto::try_into(&uuid.as_bytes()[8..16]).unwrap();
+        Self::from_bytes(last8)
     }
 }
 
@@ -118,7 +133,7 @@ impl Display for ServiceInvocationId {
             "{}-{}-{}",
             self.service_id.service_name,
             Base64Display::new(&self.service_id.key, &BASE64_STANDARD),
-            self.invocation_id.0.as_simple()
+            self.invocation_id
         )
     }
 }

@@ -24,7 +24,7 @@ use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId, ServiceInvocationId};
 use restate_types::invocation::{
     InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, SpanRelation,
+    ServiceInvocationSpanContext, SpanRelation, SpanRelationType,
 };
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::message::MessageIndex;
@@ -570,6 +570,11 @@ where
                     }) = Codec::deserialize(&journal_entry)?
                 );
 
+                let_assert!(
+                    Some(SpanRelationType::Linked(_, pointer_span_id)) =
+                        span_context.span_relation()
+                );
+
                 let method = request.method_name.to_string();
 
                 let service_invocation = Self::create_service_invocation(
@@ -584,6 +589,7 @@ where
                     service_invocation.id.clone(),
                     method,
                     invocation_metadata.journal_metadata.span_context.clone(),
+                    *pointer_span_id,
                 );
 
                 // 0 is equal to not set, meaning execute now

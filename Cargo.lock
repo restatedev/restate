@@ -4436,6 +4436,7 @@ dependencies = [
  "console-subscriber",
  "derive_builder",
  "nu-ansi-term",
+ "once_cell",
  "opentelemetry",
  "opentelemetry-contrib",
  "opentelemetry-otlp",
