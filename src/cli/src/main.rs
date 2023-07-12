@@ -54,10 +54,6 @@ struct Args {
 }
 
 pub fn main() -> Result<()> {
-    let opt: restate_tracing_instrumentation::Options = Default::default();
-    opt.init("Restate CLI", std::process::id())
-        .expect("failed to set up tracing and logging");
-
     let args = Args::parse();
 
     if !args.quiet {
@@ -71,6 +67,11 @@ pub fn main() -> Result<()> {
         .expect("failed to build Tokio runtime!");
 
     runtime.block_on(async move {
+        let opt: restate_tracing_instrumentation::Options = Default::default();
+        let tracing_guard = opt
+            .init("Restate CLI", std::process::id())
+            .expect("failed to set up tracing and logging");
+
         let mut ctx = SessionContext::with_config_rt(
             SessionConfig::from_env()?
                 .with_information_schema(true)
@@ -130,14 +131,17 @@ pub fn main() -> Result<()> {
 
         let files = args.file;
 
-        if !files.is_empty() {
+        let result = if !files.is_empty() {
             exec::exec_from_files(files, &mut ctx, &print_options).await;
             Ok(())
         } else {
             exec::exec_from_repl(&mut ctx, &mut print_options)
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))
-        }
+        };
+
+        tracing_guard.async_shutdown().await;
+        result
     })
 }
 
