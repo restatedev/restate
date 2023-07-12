@@ -57,6 +57,8 @@ pub enum RegistrationError {
     #[error("cannot insert/modify service {0} as it's a reserved name")]
     #[code(restate_errors::META0005)]
     ModifyInternalService(String),
+    #[error("unknown endpoint id {0}")]
+    UnknownEndpoint(EndpointId),
 }
 
 /// Insert (or replace) service
@@ -76,6 +78,9 @@ pub enum SchemasUpdateCommand {
         services: Vec<InsertServiceUpdateCommand>,
         #[serde(with = "descriptor_pool_serde")]
         descriptor_pool: DescriptorPool,
+    },
+    RemoveEndpoint {
+        endpoint_id: EndpointId,
     },
     /// Remove only if the revision is matching
     RemoveService {
@@ -146,6 +151,13 @@ impl Schemas {
         self.0
             .load()
             .compute_modify_service_updates(service_name, public)
+    }
+
+    pub fn compute_remove_endpoint(
+        &self,
+        endpoint_id: EndpointId,
+    ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
+        self.0.load().compute_remove_endpoint(endpoint_id)
     }
 
     /// Apply the updates to the schema registry.
@@ -411,6 +423,24 @@ pub(crate) mod schemas_impl {
             Ok(SchemasUpdateCommand::ModifyService { name, public })
         }
 
+        pub(crate) fn compute_remove_endpoint(
+            &self,
+            endpoint_id: EndpointId,
+        ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
+            if !self.endpoints.contains_key(&endpoint_id) {
+                return Err(RegistrationError::UnknownEndpoint(endpoint_id));
+            }
+            let endpoint_schemas = self.endpoints.get(&endpoint_id).unwrap();
+
+            let mut commands = Vec::with_capacity(1 + endpoint_schemas.services.len());
+            for (name, revision) in endpoint_schemas.services.clone() {
+                commands.push(SchemasUpdateCommand::RemoveService { name, revision });
+            }
+            commands.push(SchemasUpdateCommand::RemoveEndpoint { endpoint_id });
+
+            Ok(commands)
+        }
+
         pub(crate) fn apply_update(
             &mut self,
             update_cmd: SchemasUpdateCommand,
@@ -502,6 +532,9 @@ pub(crate) mod schemas_impl {
                             services: endpoint_services,
                         },
                     );
+                }
+                SchemasUpdateCommand::RemoveEndpoint { endpoint_id } => {
+                    self.endpoints.remove(&endpoint_id);
                 }
                 SchemasUpdateCommand::RemoveService { name, revision } => {
                     let entry = self.services.entry(name);
