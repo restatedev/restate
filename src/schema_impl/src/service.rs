@@ -26,13 +26,9 @@ impl ServiceMetadataResolver for Schemas {
     }
 
     fn is_service_public(&self, service_name: impl AsRef<str>) -> bool {
-        self.use_service_schema(
-            service_name.as_ref(),
-            |service_schemas| match service_schemas.location {
-                ServiceLocation::IngressOnly => true,
-                ServiceLocation::ServiceEndpoint { public, .. } => public,
-            },
-        )
+        self.use_service_schema(service_name.as_ref(), |service_schemas| {
+            service_schemas.location.is_ingress_available()
+        })
         .unwrap_or(false)
     }
 }

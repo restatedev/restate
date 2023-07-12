@@ -210,13 +210,13 @@ pub(crate) mod schemas_impl {
     impl ServiceSchemas {
         fn new(
             revision: ServiceRevision,
-            svc_desc: ServiceDescriptor,
+            svc_desc: &ServiceDescriptor,
             instance_type: ServiceInstanceType,
             latest_endpoint: EndpointId,
         ) -> Self {
             Self {
                 revision,
-                methods: Self::compute_service_methods(&svc_desc),
+                methods: Self::compute_service_methods(svc_desc),
                 instance_type,
                 location: ServiceLocation::ServiceEndpoint {
                     latest_endpoint,
@@ -225,10 +225,10 @@ pub(crate) mod schemas_impl {
             }
         }
 
-        fn new_ingress_only(svc_desc: ServiceDescriptor) -> Self {
+        fn new_ingress_only(svc_desc: &ServiceDescriptor) -> Self {
             Self {
                 revision: 0,
-                methods: Self::compute_service_methods(&svc_desc),
+                methods: Self::compute_service_methods(svc_desc),
                 instance_type: ServiceInstanceType::Singleton,
                 location: ServiceLocation::IngressOnly,
             }
@@ -242,6 +242,14 @@ pub(crate) mod schemas_impl {
                 .map(|method_desc| (method_desc.name().to_string(), method_desc))
                 .collect()
         }
+
+        fn service_descriptor(&self) -> &ServiceDescriptor {
+            self.methods
+                .values()
+                .next()
+                .expect("A service should have at least one method")
+                .parent_service()
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -252,6 +260,15 @@ pub(crate) mod schemas_impl {
             latest_endpoint: EndpointId,
             public: bool,
         },
+    }
+
+    impl ServiceLocation {
+        pub(crate) fn is_ingress_available(&self) -> bool {
+            match self {
+                ServiceLocation::IngressOnly => true,
+                ServiceLocation::ServiceEndpoint { public, .. } => *public,
+            }
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -272,7 +289,7 @@ pub(crate) mod schemas_impl {
             inner.services.insert(
                 restate_pb::REFLECTION_SERVICE_NAME.to_string(),
                 ServiceSchemas::new_ingress_only(
-                    restate_pb::DESCRIPTOR_POOL
+                    &restate_pb::DESCRIPTOR_POOL
                         .get_service_by_name(restate_pb::REFLECTION_SERVICE_NAME)
                         .expect(
                             "The built-in descriptor pool should contain the reflection service",
@@ -282,7 +299,7 @@ pub(crate) mod schemas_impl {
             inner.services.insert(
                 restate_pb::INGRESS_SERVICE_NAME.to_string(),
                 ServiceSchemas::new_ingress_only(
-                    restate_pb::DESCRIPTOR_POOL
+                    &restate_pb::DESCRIPTOR_POOL
                         .get_service_by_name(restate_pb::INGRESS_SERVICE_NAME)
                         .expect("The built-in descriptor pool should contain the ingress service"),
                 ),
@@ -429,23 +446,25 @@ pub(crate) mod schemas_impl {
                                     latest_endpoint, ..
                                 } = &mut service_schemas.location
                                 {
+                                    // We need to remove the service from the proto_symbols.
+                                    // We re-insert it later with the new endpoint id
+                                    self.proto_symbols
+                                        .remove_service(latest_endpoint, &service_descriptor);
+
                                     *latest_endpoint = endpoint_id.clone();
                                 }
                             })
                             .or_insert_with(|| {
                                 ServiceSchemas::new(
                                     revision,
-                                    service_descriptor.clone(),
+                                    &service_descriptor,
                                     instance_type.clone(),
                                     endpoint_id.clone(),
                                 )
                             });
 
-                        self.proto_symbols.register_new_service(
-                            endpoint_id.clone(),
-                            name.clone(),
-                            descriptor_pool.clone(),
-                        )?;
+                        self.proto_symbols
+                            .add_service(&endpoint_id, &service_descriptor);
 
                         endpoint_services.push((name, revision));
                     }
@@ -462,7 +481,14 @@ pub(crate) mod schemas_impl {
                     let entry = self.services.entry(name);
                     match entry {
                         Entry::Occupied(e) if e.get().revision == revision => {
-                            e.remove();
+                            let schemas = e.remove();
+                            if let ServiceLocation::ServiceEndpoint {
+                                latest_endpoint, ..
+                            } = &schemas.location
+                            {
+                                self.proto_symbols
+                                    .remove_service(latest_endpoint, schemas.service_descriptor());
+                            }
                         }
                         _ => {}
                     }
@@ -475,8 +501,33 @@ pub(crate) mod schemas_impl {
                         .services
                         .get_mut(&name)
                         .ok_or_else(|| RegistrationError::UnknownService(name.clone()))?;
-                    if let ServiceLocation::ServiceEndpoint { public, .. } = &mut schemas.location {
-                        *public = new_public_value;
+
+                    // Update proto_symbols
+                    if let ServiceLocation::ServiceEndpoint {
+                        public: old_public_value,
+                        latest_endpoint,
+                    } = &schemas.location
+                    {
+                        match (*old_public_value, new_public_value) {
+                            (true, false) => {
+                                self.proto_symbols
+                                    .remove_service(latest_endpoint, schemas.service_descriptor());
+                            }
+                            (false, true) => {
+                                self.proto_symbols
+                                    .add_service(latest_endpoint, schemas.service_descriptor());
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Update the public field
+                    if let ServiceLocation::ServiceEndpoint {
+                        public: old_public_value,
+                        ..
+                    } = &mut schemas.location
+                    {
+                        *old_public_value = new_public_value;
                     }
                 }
             }
