@@ -146,7 +146,7 @@ where
                 Allowed format is '/Service-Name/Method-Name'",
                 req.uri().path()
             );
-            return ok(protocol.encode_status(Status::not_found(format!(
+            return ok(protocol.encode_status(Status::invalid_argument(format!(
                 "Request path {} invalid",
                 req.uri().path()
             ))))
@@ -156,13 +156,23 @@ where
         let service_name = path_parts.remove(1).to_string();
 
         // Check if the service is public
-        if !self.schemas.is_service_public(&service_name) {
-            return ok(protocol.encode_status(Status::not_found(format!(
-                "Service {} not found",
-                service_name
-            ))))
-            .boxed();
-        }
+        match self.schemas.is_service_public(&service_name) {
+            None => {
+                return ok(protocol.encode_status(Status::not_found(format!(
+                    "Service {} not found",
+                    service_name
+                ))))
+                .boxed();
+            }
+            Some(false) => {
+                return ok(protocol.encode_status(Status::permission_denied(format!(
+                    "Service {} is not accessible",
+                    service_name
+                ))))
+                .boxed();
+            }
+            _ => {}
+        };
 
         // --- Special Restate services
         // Reflections

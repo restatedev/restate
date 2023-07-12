@@ -25,11 +25,10 @@ impl ServiceMetadataResolver for Schemas {
             .collect()
     }
 
-    fn is_service_public(&self, service_name: impl AsRef<str>) -> bool {
+    fn is_service_public(&self, service_name: impl AsRef<str>) -> Option<bool> {
         self.use_service_schema(service_name.as_ref(), |service_schemas| {
             service_schemas.location.is_ingress_available()
         })
-        .unwrap_or(false)
     }
 }
 

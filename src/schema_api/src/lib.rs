@@ -230,7 +230,8 @@ pub mod service {
 
         fn list_services(&self) -> Vec<ServiceMetadata>;
 
-        fn is_service_public(&self, service_name: impl AsRef<str>) -> bool;
+        /// Returns None if the service doesn't exists, Some(is_public) otherwise.
+        fn is_service_public(&self, service_name: impl AsRef<str>) -> Option<bool>;
     }
 }
 
