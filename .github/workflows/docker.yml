@@ -20,6 +20,12 @@ on:
         type: boolean
 
   workflow_dispatch:
+    inputs:
+      debug:
+        description: 'include debug symbols in built image'
+        required: false
+        default: false
+        type: boolean
 
 env:
   REGISTRY: 'ghcr.io'
