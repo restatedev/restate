@@ -6,7 +6,7 @@ use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
 use opentelemetry_otlp::WithExportConfig;
 use pretty::Pretty;
 use std::fmt::Display;
-use tracing::Level;
+use tracing::{warn, Level};
 use tracing_subscriber::filter::{Filtered, ParseError};
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -270,14 +270,17 @@ pub struct Options {
 }
 
 impl Options {
-    /// Instruments the process with logging and tracing.
-    ///
-    /// The opentelemetry tracer provider is automatically shut down when this struct is being dropped.
+    /// Instruments the process with logging and tracing. The method returns [`TracingGuard`] which
+    /// unregisters the tracing when being shut down or dropped.
     ///
     /// # Panics
     /// This method will panic if there is already a global subscriber configured. Moreover, it will
     /// panic if it is executed outside of a Tokio runtime.
-    pub fn init(&self, service_name: impl Display, instance_id: impl Display) -> Result<(), Error> {
+    pub fn init(
+        &self,
+        service_name: impl Display,
+        instance_id: impl Display,
+    ) -> Result<TracingGuard, Error> {
         let restate_service_name = format!("Restate service: {service_name}");
 
         let layers = tracing_subscriber::registry();
@@ -309,12 +312,36 @@ impl Options {
 
         layers.init();
 
-        Ok(())
+        Ok(TracingGuard::default())
     }
 }
 
-impl Drop for Options {
-    fn drop(&mut self) {
+#[derive(Debug, Default)]
+pub struct TracingGuard {
+    is_dropped: bool,
+}
+
+impl TracingGuard {
+    /// Shuts down the tracing instrumentation.
+    ///
+    /// IMPORTANT: This operation is blocking and should not be run from a Tokio thread when
+    /// using the multi thread runtime because it can block tasks that are required for the shut
+    /// down to complete.
+    pub fn shutdown(mut self) {
         opentelemetry::global::shutdown_tracer_provider();
+        self.is_dropped = true;
+    }
+}
+
+impl Drop for TracingGuard {
+    fn drop(&mut self) {
+        if !self.is_dropped {
+            warn!(
+                "Shutting down the tracer provider from the drop implementation. \
+            This is a blocking operation and should not be executed from a Tokio thread, \
+            because it can block tasks that are required for the shut down to complete!"
+            );
+            opentelemetry::global::shutdown_tracer_provider();
+        }
     }
 }

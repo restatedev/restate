@@ -88,7 +88,7 @@ fn main() {
     runtime.block_on(async move {
         // Apply tracing config globally
         // We need to apply this first to log correctly
-        config
+        let tracing_guard = config
             .observability
             .init("Restate binary", std::process::id())
             .expect("failed to instrument logging and tracing!");
@@ -124,7 +124,10 @@ fn main() {
             _ = signal::shutdown() => {
                 info!("Received shutdown signal.");
 
-                let shutdown_with_timeout = tokio::time::timeout(config.shutdown_grace_period.into(), shutdown_signal.drain());
+                let tracing_shutdown = tokio::task::spawn_blocking(|| tracing_guard.shutdown());
+                let shutdown_tasks = futures_util::future::join(shutdown_signal.drain(), tracing_shutdown);
+
+                let shutdown_with_timeout = tokio::time::timeout(config.shutdown_grace_period.into(), shutdown_tasks);
 
                 // ignore the result because we are shutting down
                 let (shutdown_result, _) = tokio::join!(shutdown_with_timeout, application);
