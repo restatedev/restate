@@ -49,6 +49,7 @@ pub struct TracingOptions {
     /// Exporter filter configuration.
     /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
     #[serde(default = "default_filter")]
+    #[builder(default = "default_filter()")]
     filter: String,
 }
 
@@ -119,6 +120,7 @@ pub struct JaegerFileOptions {
     /// Exporter filter configuration.
     /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
     #[serde(default = "default_filter")]
+    #[builder(default = "default_filter()")]
     filter: String,
 }
 
@@ -254,13 +256,16 @@ impl LogOptions {
 #[cfg_attr(feature = "options_schema", schemars(rename = "ObservabilityOptions"))]
 pub struct Options {
     /// # Tracing options
+    #[builder(default)]
     tracing: Option<TracingOptions>,
 
     /// # Jaeger file exporter options
+    #[builder(default)]
     jaeger_file: Option<JaegerFileOptions>,
 
     /// # Logging options
     #[cfg_attr(feature = "options_schema", schemars(default))]
+    #[builder(default)]
     log: LogOptions,
 }
 

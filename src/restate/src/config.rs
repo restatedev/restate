@@ -13,6 +13,13 @@ pub use restate_meta::{
     Options as MetaOptions, OptionsBuilder as MetaOptionsBuilder,
     OptionsBuilderError as MetaOptionsBuilderError,
 };
+pub use restate_tracing_instrumentation::{
+    JaegerFileOptions, JaegerFileOptionsBuilder, JaegerFileOptionsBuilderError, LogOptions,
+    LogOptionsBuilder, LogOptionsBuilderError, Options as ObservabilityOptions,
+    OptionsBuilder as ObservabilityOptionsBuilder,
+    OptionsBuilderError as ObservabilityOptionsBuilderError, TracingOptions, TracingOptionsBuilder,
+    TracingOptionsBuilderError,
+};
 pub use restate_worker::{
     IngressOptions, IngressOptionsBuilder, IngressOptionsBuilderError, InvokerOptions,
     InvokerOptionsBuilder, InvokerOptionsBuilderError, Options as WorkerOptions,
