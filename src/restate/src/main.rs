@@ -3,10 +3,13 @@ use codederror::CodedError;
 use restate::Application;
 use restate::Configuration;
 use restate_errors::fmt::RestateCode;
+use restate_tracing_instrumentation::TracingGuard;
 use std::error::Error;
+use std::ops::Div;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::io;
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
 mod signal;
 
@@ -124,9 +127,7 @@ fn main() {
             _ = signal::shutdown() => {
                 info!("Received shutdown signal.");
 
-                let tracing_shutdown = tracing_guard.async_shutdown();
-                let shutdown_tasks = futures_util::future::join3(shutdown_signal.drain(), tracing_shutdown, application);
-
+                let shutdown_tasks = futures_util::future::join(shutdown_signal.drain(), application);
                 let shutdown_with_timeout = tokio::time::timeout(config.shutdown_grace_period.into(), shutdown_tasks);
 
                 // ignore the result because we are shutting down
@@ -146,7 +147,22 @@ fn main() {
                 }
             }
         }
+
+        shutdown_tracing(config.shutdown_grace_period.div(2), tracing_guard).await;
     });
+}
+
+async fn shutdown_tracing(grace_period: Duration, tracing_guard: TracingGuard) {
+    trace!("Shutting down tracing to flush pending spans");
+
+    // Make sure that all pending spans are flushed
+    let shutdown_tracing_with_timeout =
+        tokio::time::timeout(grace_period, tracing_guard.async_shutdown());
+    let shutdown_result = shutdown_tracing_with_timeout.await;
+
+    if shutdown_result.is_err() {
+        trace!("Failed to fully flush pending spans, terminating now.");
+    }
 }
 
 fn handle_error<E: Error + CodedError>(err: E) -> ! {
