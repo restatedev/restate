@@ -347,6 +347,20 @@ impl Drop for TracingGuard {
             This is a blocking operation and should not be executed from a Tokio thread, \
             because it can block tasks that are required for the shut down to complete!"
             );
+
+            #[cfg(feature = "rt-tokio")]
+            {
+                if tokio::runtime::Handle::try_current().is_ok() {
+                    // we are running within the Tokio runtime, try to unblock other tasks
+                    tokio::task::block_in_place(|| {
+                        opentelemetry::global::shutdown_tracer_provider()
+                    });
+                } else {
+                    opentelemetry::global::shutdown_tracer_provider();
+                }
+            }
+
+            #[cfg(not(feature = "rt-tokio"))]
             opentelemetry::global::shutdown_tracer_provider();
         }
     }
