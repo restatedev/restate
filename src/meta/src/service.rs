@@ -239,7 +239,7 @@ where
             Self::infer_discovery_response_from_update_commands(&schemas_update_commands);
 
         // Propagate updates
-        self.store_and_propagate_updates(schemas_update_commands)
+        self.store_and_apply_updates(schemas_update_commands)
             .await?;
 
         Ok(discovery_response)
@@ -256,12 +256,12 @@ where
         let update_commands = vec![self
             .schemas
             .compute_modify_service_updates(service_name, public)?];
-        self.store_and_propagate_updates(update_commands).await?;
+        self.store_and_apply_updates(update_commands).await?;
 
         Ok(())
     }
 
-    async fn store_and_propagate_updates(
+    async fn store_and_apply_updates(
         &mut self,
         commands: Vec<SchemasUpdateCommand>,
     ) -> Result<(), MetaError> {
