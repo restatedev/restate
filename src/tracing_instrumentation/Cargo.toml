@@ -17,7 +17,7 @@ options_schema = ["dep:schemars"]
 derive_builder = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
-console-subscriber = { version = "0.1.9", optional = true }
+console-subscriber = { version = "0.1.10", optional = true }
 opentelemetry = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-jaeger = { version = "0.18", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.12" }
