@@ -57,6 +57,8 @@ pub enum RegistrationError {
     #[error("cannot insert/modify service {0} as it's a reserved name")]
     #[code(restate_errors::META0005)]
     ModifyInternalService(String),
+    #[error("unknown endpoint id {0}")]
+    UnknownEndpoint(EndpointId),
 }
 
 /// Insert (or replace) service
@@ -76,6 +78,9 @@ pub enum SchemasUpdateCommand {
         services: Vec<InsertServiceUpdateCommand>,
         #[serde(with = "descriptor_pool_serde")]
         descriptor_pool: DescriptorPool,
+    },
+    RemoveEndpoint {
+        endpoint_id: EndpointId,
     },
     /// Remove only if the revision is matching
     RemoveService {
@@ -146,6 +151,13 @@ impl Schemas {
         self.0
             .load()
             .compute_modify_service_updates(service_name, public)
+    }
+
+    pub fn compute_remove_endpoint(
+        &self,
+        endpoint_id: EndpointId,
+    ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
+        self.0.load().compute_remove_endpoint(endpoint_id)
     }
 
     /// Apply the updates to the schema registry.
@@ -411,6 +423,24 @@ pub(crate) mod schemas_impl {
             Ok(SchemasUpdateCommand::ModifyService { name, public })
         }
 
+        pub(crate) fn compute_remove_endpoint(
+            &self,
+            endpoint_id: EndpointId,
+        ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
+            if !self.endpoints.contains_key(&endpoint_id) {
+                return Err(RegistrationError::UnknownEndpoint(endpoint_id));
+            }
+            let endpoint_schemas = self.endpoints.get(&endpoint_id).unwrap();
+
+            let mut commands = Vec::with_capacity(1 + endpoint_schemas.services.len());
+            for (name, revision) in endpoint_schemas.services.clone() {
+                commands.push(SchemasUpdateCommand::RemoveService { name, revision });
+            }
+            commands.push(SchemasUpdateCommand::RemoveEndpoint { endpoint_id });
+
+            Ok(commands)
+        }
+
         pub(crate) fn apply_update(
             &mut self,
             update_cmd: SchemasUpdateCommand,
@@ -502,6 +532,9 @@ pub(crate) mod schemas_impl {
                             services: endpoint_services,
                         },
                     );
+                }
+                SchemasUpdateCommand::RemoveEndpoint { endpoint_id } => {
+                    self.endpoints.remove(&endpoint_id);
                 }
                 SchemasUpdateCommand::RemoveService { name, revision } => {
                     let entry = self.services.entry(name);
@@ -789,6 +822,77 @@ pub(crate) mod schemas_impl {
             schemas.apply_updates(commands).unwrap();
 
             assert!(let Err(RegistrationError::OverrideEndpoint(_)) = schemas.compute_new_endpoint_updates(endpoint, services, mocks::DESCRIPTOR_POOL.clone(), false));
+        }
+
+        #[test]
+        fn register_two_endpoints_then_remove_first() {
+            let schemas = Schemas::default();
+
+            let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:8080");
+            let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:8081");
+
+            schemas
+                .apply_updates(
+                    schemas
+                        .compute_new_endpoint_updates(
+                            endpoint_1.clone(),
+                            vec![
+                                ServiceRegistrationRequest::new(
+                                    mocks::GREETER_SERVICE_NAME.to_string(),
+                                    ServiceInstanceType::Unkeyed,
+                                ),
+                                ServiceRegistrationRequest::new(
+                                    mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
+                                    ServiceInstanceType::Unkeyed,
+                                ),
+                            ],
+                            mocks::DESCRIPTOR_POOL.clone(),
+                            false,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
+            schemas
+                .apply_updates(
+                    schemas
+                        .compute_new_endpoint_updates(
+                            endpoint_2.clone(),
+                            vec![ServiceRegistrationRequest::new(
+                                mocks::GREETER_SERVICE_NAME.to_string(),
+                                ServiceInstanceType::Unkeyed,
+                            )],
+                            mocks::DESCRIPTOR_POOL.clone(),
+                            false,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
+
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_2.id());
+            schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 2);
+            schemas.assert_resolves_endpoint(mocks::ANOTHER_GREETER_SERVICE_NAME, endpoint_1.id());
+            schemas.assert_service_revision(mocks::ANOTHER_GREETER_SERVICE_NAME, 1);
+
+            let commands = schemas.compute_remove_endpoint(endpoint_1.id()).unwrap();
+
+            assert!(
+                let Some(SchemasUpdateCommand::RemoveService { .. }) = commands.get(0)
+            );
+            assert!(
+                let Some(SchemasUpdateCommand::RemoveService { .. }) = commands.get(1)
+            );
+            assert!(
+                let Some(SchemasUpdateCommand::RemoveEndpoint { .. }) = commands.get(2)
+            );
+
+            schemas.apply_updates(commands).unwrap();
+
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_2.id());
+            schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 2);
+            assert!(schemas
+                .resolve_latest_endpoint_for_service(mocks::ANOTHER_GREETER_SERVICE_NAME)
+                .is_none());
+            assert!(schemas.get_endpoint(&endpoint_1.id()).is_none());
         }
     }
 }

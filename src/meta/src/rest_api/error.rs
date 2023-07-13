@@ -60,6 +60,9 @@ impl IntoResponse for MetaApiError {
             MetaApiError::Meta(MetaError::SchemaRegistry(RegistrationError::UnknownService(_))) => {
                 StatusCode::NOT_FOUND
             }
+            MetaApiError::Meta(MetaError::SchemaRegistry(RegistrationError::UnknownEndpoint(
+                _,
+            ))) => StatusCode::NOT_FOUND,
             MetaApiError::Meta(MetaError::SchemaRegistry(
                 RegistrationError::ModifyInternalService(_),
             )) => StatusCode::FORBIDDEN,
