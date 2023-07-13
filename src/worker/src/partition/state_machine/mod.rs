@@ -570,10 +570,6 @@ where
                     }) = Codec::deserialize(&journal_entry)?
                 );
 
-                let_assert!(
-                    Some(SpanRelationCause::Linked(_, pointer_span_id)) = span_context.span_cause()
-                );
-
                 let method = request.method_name.to_string();
 
                 let service_invocation = Self::create_service_invocation(
@@ -584,11 +580,16 @@ where
                     span_context.clone(),
                 );
 
+                let pointer_span_id = match span_context.span_cause() {
+                    Some(SpanRelationCause::Linked(_, span_id)) => Some(*span_id),
+                    _ => None,
+                };
+
                 effects.background_invoke(
                     service_invocation.id.clone(),
                     method,
                     invocation_metadata.journal_metadata.span_context.clone(),
-                    *pointer_span_id,
+                    pointer_span_id,
                 );
 
                 // 0 is equal to not set, meaning execute now
