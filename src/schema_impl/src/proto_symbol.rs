@@ -1,10 +1,9 @@
 use super::Schemas;
 
-use crate::RegistrationError;
 use bytes::Bytes;
 use prost::Message;
-use prost_reflect::prost_types::{DescriptorProto, EnumDescriptorProto, FileDescriptorProto};
-use prost_reflect::{DescriptorPool, FileDescriptor, ServiceDescriptor};
+use prost_reflect::prost_types::FileDescriptorProto;
+use prost_reflect::{EnumDescriptor, FileDescriptor, MessageDescriptor, ServiceDescriptor};
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_types::identifiers::EndpointId;
 use std::collections::{HashMap, HashSet};
@@ -14,7 +13,17 @@ use tracing::{debug, trace};
 impl ProtoSymbolResolver for Schemas {
     fn list_services(&self) -> Vec<String> {
         let guard = self.0.load();
-        guard.services.keys().cloned().collect()
+        guard
+            .services
+            .iter()
+            .filter_map(|(service_name, service_schemas)| {
+                if service_schemas.location.is_ingress_available() {
+                    Some(service_name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn get_file_descriptors_by_symbol_name(&self, symbol: &str) -> Option<Vec<Bytes>> {
@@ -29,185 +38,304 @@ impl ProtoSymbolResolver for Schemas {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ProtoSymbols {
-    // The usize here is used for reference count
-    files: HashMap<String, (usize, Bytes)>,
+struct FileEntry {
+    reference_count: usize,
+    serialized: Bytes,
+    // This is used for removal
+    contained_message_or_enum_symbols: HashSet<String>,
+}
 
-    // Symbols contain the fully qualified names of:
-    // * Services
-    // * Methods
-    // * Message
-    // * Enum
-    // Values are the names of the files, including dependencies
-    symbols_index: HashMap<String, Vec<String>>,
+#[derive(Debug, Clone, Default)]
+struct FilesIndex(
+    /// Key is the normalized file name
+    HashMap<String, FileEntry>,
+);
+
+impl FilesIndex {
+    fn add(
+        &mut self,
+        normalized_file_name: String,
+        endpoint_id: &EndpointId,
+        file_desc: FileDescriptor,
+        message_or_enum_symbols: HashSet<String>,
+    ) {
+        self.0
+            .entry(normalized_file_name)
+            .and_modify(|file_entry| {
+                debug_assert_eq!(
+                    file_entry.contained_message_or_enum_symbols, message_or_enum_symbols,
+                    "File should have the same symbols set"
+                );
+                file_entry.reference_count += 1;
+            })
+            .or_insert_with(|| FileEntry {
+                reference_count: 1,
+                serialized: normalize_self_and_dependencies_file_names(
+                    endpoint_id,
+                    file_desc.file_descriptor_proto().clone(),
+                )
+                .encode_to_vec()
+                .into(),
+                contained_message_or_enum_symbols: message_or_enum_symbols,
+            });
+    }
+
+    /// Returns the message_or_enum symbols to remove
+    fn remove(&mut self, normalized_file_name: &str) -> Option<HashSet<String>> {
+        if let Some(FileEntry {
+            reference_count, ..
+        }) = self.0.get_mut(normalized_file_name)
+        {
+            *reference_count -= 1;
+            if *reference_count == 0 {
+                let symbols_to_remove = self
+                    .0
+                    .remove(normalized_file_name)
+                    .unwrap()
+                    .contained_message_or_enum_symbols;
+                return Some(symbols_to_remove);
+            }
+        }
+        None
+    }
+
+    fn get(&self, normalized_file_name: &str) -> Option<Bytes> {
+        self.0
+            .get(normalized_file_name)
+            .map(|entry| entry.serialized.clone())
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Symbol {
+    /// Service and methods have a vector containing all the files defining the service and its dependencies.
+    /// When removing a service, all the methods are removed as well.
+    /// File names are normalized.
+    ServiceOrMethod(Arc<Vec<String>>),
+
+    /// Message or enum have a vector specifying all the files containing this symbol.
+    /// The last entry of the vector is the file that should be served when the symbol is requested.
+    /// When removing a file, the file should be removed from this vector list as well.
+    /// File names are normalized.
+    MessageOrEnum(Vec<String>),
+}
+
+#[derive(Debug, Clone, Default)]
+struct SymbolsIndex(HashMap<String, Symbol>);
+
+impl SymbolsIndex {
+    fn add_service(
+        &mut self,
+        service_name: String,
+        methods: Vec<String>,
+        dependencies: Vec<String>,
+    ) {
+        let rc = Arc::new(dependencies);
+        for method in methods {
+            self.0
+                .insert(method, Symbol::ServiceOrMethod(Arc::clone(&rc)));
+        }
+        self.0.insert(service_name, Symbol::ServiceOrMethod(rc));
+    }
+
+    fn add_message_or_enum(&mut self, symbol_name: String, file: String) {
+        let symbol = self
+            .0
+            .entry(symbol_name.clone())
+            .or_insert_with(|| Symbol::MessageOrEnum(Vec::with_capacity(1)));
+        if symbol_name.starts_with("dev.restate") || symbol_name.starts_with("google.protobuf") {
+            trace!(
+                "Found a type collision when registering symbol '{}'. \
+                For dev.restate types and google.protobuf types, \
+                this should be fine as the definition of these types don't change.",
+                symbol_name
+            );
+        } else {
+            debug!(
+                "Found a type collision when registering symbol '{}'. \
+                This might indicate two services are sharing the same type definitions, \
+                which is fine as long as the type definitions are equal/compatible with each other.",
+                symbol_name
+            );
+        }
+
+        match symbol {
+            Symbol::MessageOrEnum(files) => {
+                files.push(file);
+            }
+            Symbol::ServiceOrMethod(_) => {
+                unreachable!(
+                    "Trying to register a message/enum symbol but the symbol is method/service"
+                );
+            }
+        };
+    }
+
+    fn remove_service(
+        &mut self,
+        service_name: &str,
+        methods: impl Iterator<Item = String>,
+    ) -> Arc<Vec<String>> {
+        let service_symbol = self.0.remove(service_name);
+        for method in methods {
+            self.0.remove(&method);
+        }
+        match service_symbol {
+            Some(Symbol::ServiceOrMethod(arc)) => arc,
+            _ => {
+                panic!("The removed symbol should be a ServiceOrMethod!")
+            }
+        }
+    }
+
+    fn remove_message_or_enum(&mut self, symbol_name: &str, file: &str) {
+        if let Some(Symbol::MessageOrEnum(files)) = self.0.get_mut(symbol_name) {
+            if let Some(pos) = files.iter().position(|x| x.as_str() == file) {
+                files.remove(pos);
+            }
+            if files.is_empty() {
+                self.0.remove(symbol_name);
+            }
+        }
+    }
+
+    fn contains(&self, symbol_name: &str) -> bool {
+        self.0.contains_key(symbol_name)
+    }
+
+    fn get_files_of_symbol(&self, symbol_name: &str) -> Option<impl Iterator<Item = &String>> {
+        self.0.get(symbol_name).map(|symbol| match symbol {
+            Symbol::ServiceOrMethod(deps) => itertools::Either::Right(deps.iter()),
+            Symbol::MessageOrEnum(files) => itertools::Either::Left(files.last().into_iter()),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ProtoSymbols {
+    files: FilesIndex,
+    symbols: SymbolsIndex,
 }
 
 impl Default for ProtoSymbols {
     fn default() -> Self {
         let mut symbols = ProtoSymbols {
             files: Default::default(),
-            symbols_index: Default::default(),
+            symbols: Default::default(),
         };
-        symbols
-            .register_new_service(
-                "self_ingress".to_string(),
-                restate_pb::REFLECTION_SERVICE_NAME.to_string(),
-                restate_pb::DESCRIPTOR_POOL.clone(),
-            )
-            .expect("Registering self_ingress in the reflections must not fail");
-        symbols
-            .register_new_service(
-                "self_ingress".to_string(),
-                restate_pb::INGRESS_SERVICE_NAME.to_string(),
-                restate_pb::DESCRIPTOR_POOL.clone(),
-            )
-            .expect("Registering self_ingress in the reflections must not fail");
+        symbols.add_service(
+            &"self_ingress".to_string(),
+            &restate_pb::DESCRIPTOR_POOL
+                .get_service_by_name(restate_pb::REFLECTION_SERVICE_NAME)
+                .expect("Service reflections should exist"),
+        );
+        symbols.add_service(
+            &"self_ingress".to_string(),
+            &restate_pb::DESCRIPTOR_POOL
+                .get_service_by_name(restate_pb::INGRESS_SERVICE_NAME)
+                .expect("Service ingress should exist"),
+        );
 
         symbols
     }
 }
 
 impl ProtoSymbols {
-    pub(super) fn register_new_service(
+    pub(super) fn add_service(
         &mut self,
-        endpoint_id: EndpointId,
-        service_name: String,
-        descriptor_pool: DescriptorPool,
-    ) -> Result<(), RegistrationError> {
-        let mut discovered_files = HashMap::new();
-
-        // Let's find the service first
-        let service_desc = descriptor_pool
-            .get_service_by_name(&service_name)
-            .ok_or_else(|| RegistrationError::MissingServiceInDescriptor(service_name.clone()))?;
+        endpoint_id: &EndpointId,
+        service_desc: &ServiceDescriptor,
+    ) {
+        debug_assert!(
+            !self.symbols.contains(service_desc.full_name()),
+            "Cannot add service '{}' because it already exists",
+            service_desc.full_name()
+        );
 
         // Collect all the files belonging to this service
-        let files = collect_service_related_file_descriptors(service_desc);
+        let files: HashMap<String, FileDescriptor> =
+            collect_service_related_file_descriptors(service_desc)
+                .into_iter()
+                .map(|file_desc| {
+                    (
+                        normalize_file_name(endpoint_id, file_desc.name()),
+                        file_desc,
+                    )
+                })
+                .collect();
 
-        let mut service_symbols = HashMap::new();
+        // Add service to symbols
+        self.symbols.add_service(
+            service_desc.full_name().to_string(),
+            service_desc
+                .methods()
+                .map(|m| m.name().to_string())
+                .collect(),
+            files.keys().cloned().collect(),
+        );
 
-        // Process files
-        for file in &files {
-            // We rename files prepending them with the endpoint id
-            // to avoid collision between file names of unrelated endpoints
-            // TODO with schema checks in place,
-            //  should we move this or remove this normalization of the file name?
-            let file_name = normalize_file_name(&endpoint_id, file.name());
-            let file_arc = discovered_files
-                .entry(file_name.clone())
-                .or_insert_with(|| Arc::new(file.clone()));
-
+        // Process files to register symbols and files
+        for (file_name, file_desc) in files {
             // Discover all symbols in this file
-            let mut file_symbols = HashSet::new();
-            process_file(&mut file_symbols, file_arc.as_ref().file_descriptor_proto())?;
+            let mut message_or_enum_symbols = HashSet::new();
+            collect_message_or_enum_symbols(&mut message_or_enum_symbols, &file_desc);
 
-            // Copy the file_symbols in service_symbols
-            for symbol in file_symbols {
-                service_symbols.insert(symbol, vec![file_name.clone()]);
+            // Copy the file_symbols in symbols_index
+            for symbol in message_or_enum_symbols.clone() {
+                self.symbols.add_message_or_enum(symbol, file_name.clone());
             }
+
+            // Add the file descriptor
+            self.files
+                .add(file_name, endpoint_id, file_desc, message_or_enum_symbols);
         }
-
-        // Service also needs to include itself in the symbols map. We include it with all the dependencies,
-        // so when querying we'll include all the transitive dependencies.
-        service_symbols.insert(
-            service_name.clone(),
-            files
-                .iter()
-                .map(|fd| normalize_file_name(&endpoint_id, fd.name()))
-                .collect::<Vec<_>>(),
-        );
-
-        trace!(
-            "Symbols associated to service '{}': {:?}",
-            service_name,
-            service_symbols.keys()
-        );
-
-        // Now serialize the discovered files
-        let serialized_files = discovered_files
-            .into_iter()
-            .map(|(file_name, file)| {
-                (
-                    file_name,
-                    Bytes::from(
-                        normalize_self_and_dependencies_file_names(
-                            &endpoint_id,
-                            file.file_descriptor_proto().clone(),
-                        )
-                        .encode_to_vec(),
-                    ),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-
-        // Now finally update the shared state
-        self.add_service(service_name, service_symbols, &serialized_files);
-
-        Ok(())
     }
 
-    fn add_service(
-        &mut self,
-        service_name: String,
-        symbols_index: HashMap<String, Vec<String>>,
-        maybe_files_to_add: &HashMap<String, Bytes>,
-    ) {
-        let mut files_to_insert = HashMap::new();
-        for (symbol_name, related_files) in &symbols_index {
-            for related_file in related_files {
-                let maybe_file = self.files.get_mut(related_file);
-                if let Some((count, _)) = maybe_file {
-                    *count += 1;
-                    if symbol_name.starts_with("dev.restate")
-                        || symbol_name.starts_with("google.protobuf")
-                    {
-                        trace!(
-                            "Found a type collision when registering service '{}' symbol '{}'. \
-                        For dev.restate types and google.protobuf types, \
-                        this should be fine as the definition of these types don't change.",
-                            service_name,
-                            symbol_name
-                        );
-                    } else {
-                        debug!(
-                        "Found a type collision when registering service '{}' symbol '{}'. \
-                        This might indicate two services are sharing the same type definitions, \
-                        which is fine as long as the type definitions are equal/compatible with each other.", service_name, symbol_name);
-                    }
-                } else {
-                    let file_to_insert = maybe_files_to_add
-                        .get(related_file)
-                        .expect("maybe_files_to_add must be a superset of symbols_index values")
-                        .clone();
-                    files_to_insert.insert(related_file.clone(), (1, file_to_insert));
+    pub(super) fn remove_service(&mut self, service_desc: &ServiceDescriptor) {
+        debug_assert!(
+            self.symbols.contains(service_desc.full_name()),
+            "Cannot remove service '{}' because it doesn't exist",
+            service_desc.full_name()
+        );
+
+        // Remove the service from the symbols index
+        let methods = service_desc.methods();
+        let service_related_files = self.symbols.remove_service(
+            service_desc.full_name(),
+            methods.map(|m| m.name().to_string()),
+        );
+
+        // For each file related to the service, remove it
+        for file_name in service_related_files.iter() {
+            // If when removing a file we free it, then we need to remove the related message and symbols as well
+            if let Some(message_or_enum_symbols_to_remove) = self.files.remove(file_name) {
+                for message_or_enum_symbol in message_or_enum_symbols_to_remove {
+                    self.symbols
+                        .remove_message_or_enum(&message_or_enum_symbol, file_name);
                 }
             }
         }
-        self.files.extend(files_to_insert);
-        self.symbols_index.extend(symbols_index);
-    }
-
-    #[allow(dead_code)]
-    fn remove_service(&mut self, _service_name: String) {
-        todo!("Start by looking for the service name, parse the file descriptor and then walk it back to remove all the symbols. Can reuse process_file below");
     }
 
     fn get_file(&self, file_name: &str) -> Option<Bytes> {
         debug!("Get file {}", file_name);
-        self.files.get(file_name).map(|(_, bytes)| bytes.clone())
+        self.files.get(file_name)
     }
 
     fn get_symbol(&self, symbol_name: &str) -> Option<Vec<Bytes>> {
         debug!("Get symbol {}", symbol_name);
-        self.symbols_index.get(symbol_name).map(|files| {
+        self.symbols.get_files_of_symbol(symbol_name).map(|files| {
             files
-                .iter()
                 .map(|file_name| self.get_file(file_name).unwrap())
                 .collect::<Vec<_>>()
         })
     }
 }
 
+// We rename files prepending them with the endpoint id
+// to avoid collision between file names of unrelated endpoints
+// TODO with schema checks in place,
+//  should we move this or remove this normalization of the file name?
 fn normalize_file_name(endpoint_id: &str, file_name: &str) -> String {
     // Because file_name is a path (either relative or absolute),
     // prepending endpoint_id/ should always be fine
@@ -227,7 +355,7 @@ fn normalize_self_and_dependencies_file_names(
     file_desc_proto
 }
 
-fn collect_service_related_file_descriptors(svc_desc: ServiceDescriptor) -> Vec<FileDescriptor> {
+fn collect_service_related_file_descriptors(svc_desc: &ServiceDescriptor) -> Vec<FileDescriptor> {
     rec_collect_dependencies(svc_desc.parent_file())
 }
 
@@ -245,75 +373,28 @@ fn rec_collect_dependencies(file_desc: FileDescriptor) -> Vec<FileDescriptor> {
 // I teared off indexing fields and enum variants, as this is not done by the Java grpc implementation
 // https://github.com/hyperium/tonic/blob/9990e6ef9d00394b5662719662062cc85e6e4700/tonic-reflection/src/server.rs
 
-fn process_file(
-    symbols: &mut HashSet<String>,
-    fd: &FileDescriptorProto,
-) -> Result<(), RegistrationError> {
-    let prefix = &fd.package.clone().unwrap_or_default();
-
-    for msg in &fd.message_type {
-        process_message(symbols, prefix, msg)?;
+fn collect_message_or_enum_symbols(symbols: &mut HashSet<String>, fd: &FileDescriptor) {
+    for msg_desc in fd.messages() {
+        process_message(symbols, msg_desc);
     }
 
-    for en in &fd.enum_type {
-        process_enum(symbols, prefix, en)?;
+    for enum_desc in fd.enums() {
+        process_enum(symbols, enum_desc);
     }
-
-    for service in &fd.service {
-        let service_name = extract_name(prefix, "service", service.name.as_ref())?;
-        symbols.insert(service_name.clone());
-
-        for method in &service.method {
-            let method_name = extract_name(&service_name, "method", method.name.as_ref())?;
-            symbols.insert(method_name);
-        }
-    }
-
-    Ok(())
 }
 
-fn process_message(
-    symbols: &mut HashSet<String>,
-    prefix: &str,
-    msg: &DescriptorProto,
-) -> Result<(), RegistrationError> {
-    let message_name = extract_name(prefix, "message", msg.name.as_ref())?;
-    symbols.insert(message_name.clone());
+fn process_message(symbols: &mut HashSet<String>, msg: MessageDescriptor) {
+    symbols.insert(msg.full_name().to_string());
 
-    for nested in &msg.nested_type {
-        process_message(symbols, &message_name, nested)?;
+    for nested_msg in msg.child_messages() {
+        process_message(symbols, nested_msg);
     }
 
-    for en in &msg.enum_type {
-        process_enum(symbols, &message_name, en)?;
+    for nested_enum in msg.child_enums() {
+        process_enum(symbols, nested_enum);
     }
-
-    Ok(())
 }
 
-fn process_enum(
-    symbols: &mut HashSet<String>,
-    prefix: &str,
-    en: &EnumDescriptorProto,
-) -> Result<(), RegistrationError> {
-    let enum_name = extract_name(prefix, "enum", en.name.as_ref())?;
-    symbols.insert(enum_name);
-    Ok(())
-}
-
-fn extract_name(
-    prefix: &str,
-    name_type: &'static str,
-    maybe_name: Option<&String>,
-) -> Result<String, RegistrationError> {
-    match maybe_name {
-        None => Err(RegistrationError::MissingFieldInDescriptor(name_type)),
-        Some(name) => {
-            if prefix.is_empty() {
-                Ok(name.to_string())
-            } else {
-                Ok(format!("{}.{}", prefix, name))
-            }
-        }
-    }
+fn process_enum(symbols: &mut HashSet<String>, en: EnumDescriptor) {
+    symbols.insert(en.full_name().to_string());
 }

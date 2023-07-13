@@ -6,7 +6,7 @@ use axum::Json;
 use okapi_operation::*;
 use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -46,6 +46,46 @@ pub async fn get_service<S: ServiceMetadataResolver, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ServiceMetadata>, MetaApiError> {
+    state
+        .schemas()
+        .resolve_latest_service_metadata(&service_name)
+        .map(Into::into)
+        .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ModifyServiceRequest {
+    /// # Public
+    ///
+    /// If true, the service can be invoked through the ingress.
+    /// If false, the service can be invoked only from another Restate service.
+    pub public: bool,
+}
+
+/// Modify a service
+#[openapi(
+    summary = "Modify a service",
+    description = "Modify a registered service.",
+    operation_id = "modify_service",
+    tags = "service",
+    parameters(path(
+        name = "service",
+        description = "Fully qualified service name.",
+        schema = "std::string::String"
+    ))
+)]
+pub async fn modify_service<S: ServiceMetadataResolver, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
+    Path(service_name): Path<String>,
+    #[request_body(required = true)] Json(ModifyServiceRequest { public }): Json<
+        ModifyServiceRequest,
+    >,
+) -> Result<Json<ServiceMetadata>, MetaApiError> {
+    state
+        .meta_handle()
+        .modify_service(service_name.clone(), public)
+        .await?;
+
     state
         .schemas()
         .resolve_latest_service_metadata(&service_name)

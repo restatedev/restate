@@ -13,7 +13,9 @@ impl EndpointMetadataResolver for Schemas {
         let service = schemas.services.get(service_name.as_ref())?;
         match &service.location {
             ServiceLocation::IngressOnly => None,
-            ServiceLocation::ServiceEndpoint { latest_endpoint } => schemas
+            ServiceLocation::ServiceEndpoint {
+                latest_endpoint, ..
+            } => schemas
                 .endpoints
                 .get(latest_endpoint)
                 .map(|schemas| schemas.metadata.clone()),

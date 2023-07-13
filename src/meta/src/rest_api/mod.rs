@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use codederror::CodedError;
 use futures::FutureExt;
 use hyper::Server;
-use okapi_operation::axum_integration::{delete, get, post};
+use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
 use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_schema_api::key::RestateKeyConverter;
@@ -86,6 +86,10 @@ impl MetaRestEndpoint {
             .route(
                 "/services/:service",
                 get(openapi_handler!(services::get_service)),
+            )
+            .route(
+                "/services/:service",
+                patch(openapi_handler!(services::modify_service)),
             )
             .route(
                 "/services/:service/methods",

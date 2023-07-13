@@ -4,6 +4,7 @@ use super::*;
 use prost_reflect::{DeserializeOptions, SerializeOptions};
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
+use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::identifiers::IngressId;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -175,7 +176,8 @@ impl Options {
         Schemas: JsonMapperResolver<
                 JsonToProtobufMapper = JsonDecoder,
                 ProtobufToJsonMapper = JsonEncoder,
-            > + ProtoSymbolResolver
+            > + ServiceMetadataResolver
+            + ProtoSymbolResolver
             + Clone
             + Send
             + Sync

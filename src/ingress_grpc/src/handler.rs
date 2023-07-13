@@ -16,6 +16,7 @@ use prost::Message;
 use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
+use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::identifiers::IngressId;
 use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
 use tokio::sync::Semaphore;
@@ -24,25 +25,25 @@ use tower::{BoxError, Layer, Service};
 use tracing::{debug, info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-pub struct Handler<InvocationFactory, MapperResolver, ProtoSymbols>
+pub struct Handler<InvocationFactory, Schemas, ProtoSymbols>
 where
     ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     ingress_id: IngressId,
     json: JsonOptions,
     invocation_factory: InvocationFactory,
-    mapper_resolver: MapperResolver,
+    schemas: Schemas,
     reflection_server:
         GrpcWebService<ServerReflectionServer<ServerReflectionService<ProtoSymbols>>>,
     dispatcher_command_sender: DispatcherCommandSender,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
 
-impl<InvocationFactory, MapperResolver, ProtoSymbols> Clone
-    for Handler<InvocationFactory, MapperResolver, ProtoSymbols>
+impl<InvocationFactory, Schemas, ProtoSymbols> Clone
+    for Handler<InvocationFactory, Schemas, ProtoSymbols>
 where
     InvocationFactory: Clone,
-    MapperResolver: Clone,
+    Schemas: Clone,
     ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
@@ -50,7 +51,7 @@ where
             ingress_id: self.ingress_id,
             json: self.json.clone(),
             invocation_factory: self.invocation_factory.clone(),
-            mapper_resolver: self.mapper_resolver.clone(),
+            schemas: self.schemas.clone(),
             reflection_server: self.reflection_server.clone(),
             dispatcher_command_sender: self.dispatcher_command_sender.clone(),
             global_concurrency_semaphore: self.global_concurrency_semaphore.clone(),
@@ -58,17 +59,15 @@ where
     }
 }
 
-impl<InvocationFactory, MapperResolver, ProtoSymbols>
-    Handler<InvocationFactory, MapperResolver, ProtoSymbols>
+impl<InvocationFactory, Schemas> Handler<InvocationFactory, Schemas, Schemas>
 where
-    ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
+    Schemas: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     pub fn new(
         ingress_id: IngressId,
         json: JsonOptions,
         invocation_factory: InvocationFactory,
-        mapper_resolver: MapperResolver,
-        proto_symbols: ProtoSymbols,
+        schemas: Schemas,
         dispatcher_command_sender: DispatcherCommandSender,
         global_concurrency_semaphore: Arc<Semaphore>,
     ) -> Self {
@@ -76,9 +75,9 @@ where
             ingress_id,
             json,
             invocation_factory,
-            mapper_resolver,
+            schemas: schemas.clone(),
             reflection_server: GrpcWebLayer::new().layer(ServerReflectionServer::new(
-                ServerReflectionService(proto_symbols),
+                ServerReflectionService(schemas),
             )),
             dispatcher_command_sender,
             global_concurrency_semaphore,
@@ -88,17 +87,19 @@ where
 
 // TODO When porting to hyper 1.0 https://github.com/restatedev/restate/issues/96
 //  replace this impl with hyper::Service impl
-impl<InvocationFactory, MapperResolver, JsonDecoder, JsonEncoder, ProtoSymbols>
-    Service<Request<HyperBody>> for Handler<InvocationFactory, MapperResolver, ProtoSymbols>
+impl<InvocationFactory, Schemas, JsonDecoder, JsonEncoder> Service<Request<HyperBody>>
+    for Handler<InvocationFactory, Schemas, Schemas>
 where
     InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
-    MapperResolver: JsonMapperResolver<JsonToProtobufMapper = JsonDecoder, ProtobufToJsonMapper = JsonEncoder>
-        + Clone
-        + Send
-        + 'static,
     JsonDecoder: Send,
     JsonEncoder: Send,
-    ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
+    Schemas: JsonMapperResolver<JsonToProtobufMapper = JsonDecoder, ProtobufToJsonMapper = JsonEncoder>
+        + ServiceMetadataResolver
+        + ProtoSymbolResolver
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     type Response = Response<BoxBody>;
     type Error = BoxError;
@@ -139,13 +140,13 @@ where
         // Parse service_name and method_name
         let mut path_parts: Vec<&str> = req.uri().path().split('/').collect();
         if path_parts.len() != 3 {
-            // Let's immediately reply with a status code not found
+            // Let's immediately reply with a status code invalid argument
             debug!(
                 "Cannot parse the request path '{}' into a valid GRPC/Connect request path. \
                 Allowed format is '/Service-Name/Method-Name'",
                 req.uri().path()
             );
-            return ok(protocol.encode_status(Status::not_found(format!(
+            return ok(protocol.encode_status(Status::invalid_argument(format!(
                 "Request path {} invalid",
                 req.uri().path()
             ))))
@@ -153,6 +154,25 @@ where
         }
         let method_name = path_parts.remove(2).to_string();
         let service_name = path_parts.remove(1).to_string();
+
+        // Check if the service is public
+        match self.schemas.is_service_public(&service_name) {
+            None => {
+                return ok(protocol.encode_status(Status::not_found(format!(
+                    "Service {} not found",
+                    service_name
+                ))))
+                .boxed();
+            }
+            Some(false) => {
+                return ok(protocol.encode_status(Status::permission_denied(format!(
+                    "Service {} is not accessible",
+                    service_name
+                ))))
+                .boxed();
+            }
+            _ => {}
+        };
 
         // --- Special Restate services
         // Reflections
@@ -282,7 +302,7 @@ where
         let result_fut = protocol.handle_request(
             service_name,
             method_name,
-            self.mapper_resolver.clone(),
+            self.schemas.clone(),
             self.json.clone(),
             req,
             ingress_request_handler,

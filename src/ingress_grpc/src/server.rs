@@ -5,6 +5,7 @@ use codederror::CodedError;
 use futures::FutureExt;
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
+use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::identifiers::IngressId;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -52,6 +53,7 @@ impl<Schemas, JsonDecoder, JsonEncoder, InvocationFactory>
     HyperServerIngress<Schemas, InvocationFactory>
 where
     Schemas: JsonMapperResolver<JsonToProtobufMapper = JsonDecoder, ProtobufToJsonMapper = JsonEncoder>
+        + ServiceMetadataResolver
         + ProtoSymbolResolver
         + Clone
         + Send
@@ -115,7 +117,6 @@ where
                     ingress_id,
                     json,
                     invocation_factory,
-                    schemas.clone(),
                     schemas,
                     dispatcher_command_sender,
                     global_concurrency_limit_semaphore,
