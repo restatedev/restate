@@ -43,6 +43,9 @@ pub enum RegistrationError {
     #[error("an endpoint with the same id {0} already exists in the registry")]
     #[code(restate_errors::META0004)]
     OverrideEndpoint(EndpointId),
+    #[error("detected a new service {0} revision with a service instance type different from the previous revision")]
+    #[code(restate_errors::META0006)]
+    DifferentServiceInstanceType(String),
     #[error("missing expected field {0} in descriptor")]
     MissingFieldInDescriptor(&'static str),
     #[error("missing service {0} in descriptor")]
@@ -152,7 +155,7 @@ pub(crate) mod schemas_impl {
     use proto_symbol::ProtoSymbols;
     use restate_types::identifiers::{EndpointId, ServiceRevision};
     use std::collections::HashMap;
-    use tracing::{debug, info};
+    use tracing::{debug, info, warn};
 
     impl Schemas {
         pub(crate) fn use_service_schema<F, R>(
@@ -278,6 +281,12 @@ pub(crate) mod schemas_impl {
                 if allow_overwrite {
                     // If we need to override the endpoint we need to remove old services
                     for (svc_name, revision) in &existing_endpoint.services {
+                        warn!(
+                            restate.service_endpoint.id = %endpoint_id,
+                            restate.service_endpoint.url = %endpoint_metadata.address(),
+                            "Going to remove service {} due to a forced service endpoint update",
+                            svc_name
+                        );
                         result_commands.push(SchemasUpdateCommand::RemoveService {
                             name: svc_name.to_string(),
                             revision: *revision,
@@ -294,6 +303,24 @@ pub(crate) mod schemas_impl {
                 // For the time being when updating we overwrite existing data
                 let revision = if let Some(service_schemas) = self.services.get(service_meta.name())
                 {
+                    // Check instance type
+                    if service_schemas.instance_type != service_meta.instance_type {
+                        if allow_overwrite {
+                            warn!(
+                                restate.service_endpoint.id = %endpoint_id,
+                                restate.service_endpoint.url = %endpoint_metadata.address(),
+                                "Going to overwrite service instance type {} due to a forced service endpoint update: {:?} != {:?}. This is a potentially dangerous operation, and might incur in data loss.",
+                                service_meta.name(),
+                                service_schemas.instance_type,
+                                service_meta.instance_type
+                            );
+                        } else {
+                            return Err(RegistrationError::DifferentServiceInstanceType(
+                                service_meta.name.clone(),
+                            ));
+                        }
+                    }
+
                     service_schemas.revision.wrapping_add(1)
                 } else {
                     1
