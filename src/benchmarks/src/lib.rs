@@ -65,9 +65,12 @@ pub fn spawn_restate(
 }
 
 pub fn flamegraph_options<'a>() -> Options<'a> {
+    #[allow(unused_mut)]
     let mut options = Options::default();
-    // ignore different thread origins to merge traces
-    options.base = vec!["__pthread_joiner_wake".to_string(), "_main".to_string()];
+    if cfg!(target_os = "macos") {
+        // Ignore different thread origins to merge traces. This seems not needed on Linux.
+        options.base = vec!["__pthread_joiner_wake".to_string(), "_main".to_string()];
+    }
     options
 }
 
