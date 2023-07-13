@@ -823,6 +823,77 @@ pub(crate) mod schemas_impl {
 
             assert!(let Err(RegistrationError::OverrideEndpoint(_)) = schemas.compute_new_endpoint_updates(endpoint, services, mocks::DESCRIPTOR_POOL.clone(), false));
         }
+
+        #[test]
+        fn register_two_endpoints_then_remove_first() {
+            let schemas = Schemas::default();
+
+            let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:8080");
+            let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:8081");
+
+            schemas
+                .apply_updates(
+                    schemas
+                        .compute_new_endpoint_updates(
+                            endpoint_1.clone(),
+                            vec![
+                                ServiceRegistrationRequest::new(
+                                    mocks::GREETER_SERVICE_NAME.to_string(),
+                                    ServiceInstanceType::Unkeyed,
+                                ),
+                                ServiceRegistrationRequest::new(
+                                    mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
+                                    ServiceInstanceType::Unkeyed,
+                                ),
+                            ],
+                            mocks::DESCRIPTOR_POOL.clone(),
+                            false,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
+            schemas
+                .apply_updates(
+                    schemas
+                        .compute_new_endpoint_updates(
+                            endpoint_2.clone(),
+                            vec![ServiceRegistrationRequest::new(
+                                mocks::GREETER_SERVICE_NAME.to_string(),
+                                ServiceInstanceType::Unkeyed,
+                            )],
+                            mocks::DESCRIPTOR_POOL.clone(),
+                            false,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
+
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_2.id());
+            schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 2);
+            schemas.assert_resolves_endpoint(mocks::ANOTHER_GREETER_SERVICE_NAME, endpoint_1.id());
+            schemas.assert_service_revision(mocks::ANOTHER_GREETER_SERVICE_NAME, 1);
+
+            let commands = schemas.compute_remove_endpoint(endpoint_1.id()).unwrap();
+
+            assert!(
+                let Some(SchemasUpdateCommand::RemoveService { .. }) = commands.get(0)
+            );
+            assert!(
+                let Some(SchemasUpdateCommand::RemoveService { .. }) = commands.get(1)
+            );
+            assert!(
+                let Some(SchemasUpdateCommand::RemoveEndpoint { .. }) = commands.get(2)
+            );
+
+            schemas.apply_updates(commands).unwrap();
+
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_2.id());
+            schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 2);
+            assert!(schemas
+                .resolve_latest_endpoint_for_service(mocks::ANOTHER_GREETER_SERVICE_NAME)
+                .is_none());
+            assert!(schemas.get_endpoint(&endpoint_1.id()).is_none());
+        }
     }
 }
 
