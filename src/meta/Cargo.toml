@@ -30,7 +30,7 @@ serde_with = { workspace = true }
 serde_json = { workspace = true }
 restate_serde_util = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
-bincode = { version = "2.0.0-rc", default-features = false, features = ["std", "serde"] }
+bincode = { workspace = true }
 
 # Service discovery and metadata
 restate_types = { workspace = true, features = ["serde", "serde_schema"] }

@@ -10,14 +10,16 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = {workspace = true, features = ["fs", "io-util"]}
-serde = {workspace = true}
-restate_fs_util = {workspace = true}
-bincode = "1.3"
+tokio = { workspace = true, features = ["fs", "io-util"] }
+serde = { workspace = true }
+restate_fs_util = { workspace = true }
+bincode = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio"] }
+restate_types = { workspace = true, features = ["serde", "mocks"] }
+uuid = { workspace = true }
 
 [[bench]]
 name = "queue_benchmark"
