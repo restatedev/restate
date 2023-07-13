@@ -4,8 +4,11 @@ use crate::errors::UserErrorCode;
 use crate::identifiers::{EntryIndex, IngressId, ServiceInvocationId};
 use bytes::Bytes;
 use bytestring::ByteString;
-use opentelemetry_api::trace::{SpanContext, TraceContextExt};
-use tracing::{info_span, Span};
+use opentelemetry_api::trace::{
+    SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+};
+use opentelemetry_api::Context;
+use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
@@ -31,19 +34,15 @@ impl ServiceInvocation {
         argument: Bytes,
         response_sink: Option<ServiceInvocationResponseSink>,
         related_span: SpanRelation,
-    ) -> (Self, Span) {
-        let (span_context, span) =
-            ServiceInvocationSpanContext::start(&id, &method_name, related_span);
-        (
-            Self {
-                id,
-                method_name,
-                argument,
-                response_sink,
-                span_context,
-            },
-            span,
-        )
+    ) -> Self {
+        let span_context = ServiceInvocationSpanContext::start(&id, related_span);
+        Self {
+            id,
+            method_name,
+            argument,
+            response_sink,
+            span_context,
+        }
     }
 }
 
@@ -75,81 +74,210 @@ pub enum ServiceInvocationResponseSink {
 
 /// This struct contains the relevant span information for a [`ServiceInvocation`].
 /// It can be used to create related spans, such as child spans,
-/// using [`ServiceInvocationSpanContext::as_cause`] or [`ServiceInvocationSpanContext::as_parent`].
+/// using [`ServiceInvocationSpanContext::as_linked`] or [`ServiceInvocationSpanContext::as_parent`].
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct ServiceInvocationSpanContext(SpanContext);
+pub struct ServiceInvocationSpanContext {
+    span_context: SpanContext,
+    cause: Option<SpanRelationCause>,
+}
 
 impl ServiceInvocationSpanContext {
-    pub fn new(span_context: SpanContext) -> Self {
-        ServiceInvocationSpanContext(span_context)
+    pub fn new(span_context: SpanContext, cause: Option<SpanRelationCause>) -> Self {
+        Self {
+            span_context,
+            cause,
+        }
     }
 
     pub fn empty() -> Self {
-        ServiceInvocationSpanContext(SpanContext::empty_context())
+        Self {
+            span_context: SpanContext::empty_context(),
+            cause: None,
+        }
     }
 
-    /// See [`ServiceInvocation::new`] for more details.
+    /// Create a [`SpanContext`] for this invocation, a [`Span`] which will be created
+    /// when the invocation completes.
     pub fn start(
         service_invocation_id: &ServiceInvocationId,
-        method_name: &str,
         related_span: SpanRelation,
-    ) -> (ServiceInvocationSpanContext, Span) {
-        // Create the span
-        let span = info_span!(
-            "service_invocation",
-            rpc.system = "restate",
-            rpc.service = %service_invocation_id.service_id.service_name,
-            rpc.method = method_name,
-            restate.invocation.sid = %service_invocation_id);
+    ) -> ServiceInvocationSpanContext {
+        if !related_span.is_sampled() {
+            // don't waste any time or storage space on unsampled traces
+            // sampling based on parent is default otel behaviour; we do the same for the
+            // non-parent background invoke relationship
+            return ServiceInvocationSpanContext {
+                span_context: SpanContext::empty_context(),
+                cause: None,
+            };
+        }
 
-        // Attach the related span.
-        // Note: As it stands with tracing_opentelemetry 0.18 there seems to be
-        // an ordering relationship between using OpenTelemetrySpanExt::context() and
-        // OpenTelemetrySpanExt::set_parent().
-        // If we invert the order, the spans won't link correctly because they'll have a different Trace ID.
-        // This is the reason why this method gets a SpanRelation, rather than letting the caller
-        // link the spans.
-        // https://github.com/tokio-rs/tracing/issues/2520
-        related_span.attach_to_span(&span);
+        let (cause, new_span_context) = match &related_span {
+            SpanRelation::Linked(linked_span_context) => {
+                // use part of the invocation id as the span id of the new trace root
+                let span_id: SpanId = service_invocation_id.invocation_id.into();
 
-        // Retrieve the OTEL SpanContext we want to propagate
-        let span_context = span.context().span().span_context().clone();
+                // use its reverse as the span id of the background_invoke 'pointer' span in the previous trace
+                // as we cannot use the same span id for both spans
+                let mut pointer_span_id = span_id.to_bytes();
+                pointer_span_id.reverse();
 
-        (ServiceInvocationSpanContext(span_context), span)
+                // create a span context with a new trace that will be used for any actions as part of the background invocation
+                // a span will be emitted using these details when its finished (so we know how long the invocation took)
+                let new_span_context = SpanContext::new(
+                    // use invocation id as the new trace id; this allows you to follow cause -> new trace in jaeger
+                    // trace ids are 128 bits and 'worldwide unique'
+                    service_invocation_id.invocation_id.into(),
+                    // use part of the invocation id as the new span id; this is 64 bits and best-effort 'globally unique'
+                    span_id,
+                    // use sampling decision of the causing trace; this is NOT default otel behaviour but
+                    // is useful for users
+                    linked_span_context.trace_flags(),
+                    // this would never be set to true for a span created in this binary
+                    false,
+                    TraceState::default(),
+                );
+                let cause = SpanRelationCause::Linked(
+                    linked_span_context.trace_id(),
+                    SpanId::from_bytes(pointer_span_id),
+                );
+                (Some(cause), new_span_context)
+            }
+            SpanRelation::Parent(parent_span_context) => {
+                // create a span context as part of the existing trace, which will be used for any actions
+                // of the invocation. a span will be emitted with these details when its finished
+                let new_span_context = SpanContext::new(
+                    // use parent trace id
+                    parent_span_context.trace_id(),
+                    // use part of the invocation id as the new span id
+                    service_invocation_id.invocation_id.into(),
+                    // use sampling decision of parent trace; this is default otel behaviour
+                    parent_span_context.trace_flags(),
+                    false,
+                    parent_span_context.trace_state().clone(),
+                );
+                let cause = SpanRelationCause::Parent(parent_span_context.span_id());
+                (Some(cause), new_span_context)
+            }
+            SpanRelation::None => {
+                // we would only expect this in tests as there should always be either another invocation
+                // or an ingress task leading to the invocation
+
+                // create a span context with a new trace
+                let new_span_context = SpanContext::new(
+                    // use invocation id as the new trace id and span id
+                    service_invocation_id.invocation_id.into(),
+                    service_invocation_id.invocation_id.into(),
+                    // we don't have the means to actually sample here; just hardcode a sampled trace
+                    // as this should only happen in tests anyway
+                    TraceFlags::SAMPLED,
+                    false,
+                    TraceState::default(),
+                );
+                (None, new_span_context)
+            }
+        };
+
+        ServiceInvocationSpanContext {
+            span_context: new_span_context,
+            cause,
+        }
     }
 
-    pub fn as_cause(&self) -> SpanRelation {
-        SpanRelation::CausedBy(self.0.clone())
+    pub fn causing_span_relation(&self) -> SpanRelation {
+        match self.cause {
+            None => SpanRelation::None,
+            Some(SpanRelationCause::Parent(span_id)) => {
+                SpanRelation::Parent(SpanContext::new(
+                    // in invoke case, trace id of cause matches that of child
+                    self.span_context.trace_id(),
+                    // use stored span id
+                    span_id,
+                    // use child trace flags as the cause trace flags; when this is set as parent
+                    // the flags will be set on the child
+                    self.span_context.trace_flags(),
+                    // this will be ignored; is_remote is not propagated
+                    false,
+                    // use child trace state as the cause trace state; when this is set as parent
+                    // the state will be set on the child
+                    self.span_context.trace_state().clone(),
+                ))
+            }
+            Some(SpanRelationCause::Linked(trace_id, span_id)) => {
+                SpanRelation::Linked(SpanContext::new(
+                    // use stored trace id
+                    trace_id,
+                    // use stored span id
+                    span_id,
+                    // this will be ignored; trace flags are not propagated to links
+                    self.span_context.trace_flags(),
+                    // this will be ignored; is_remote is not propagated
+                    false,
+                    // this will be ignored; trace state is not propagated to links
+                    TraceState::default(),
+                ))
+            }
+        }
+    }
+
+    pub fn span_context(&self) -> &SpanContext {
+        &self.span_context
+    }
+
+    pub fn span_cause(&self) -> Option<&SpanRelationCause> {
+        self.cause.as_ref()
+    }
+
+    pub fn as_linked(&self) -> SpanRelation {
+        SpanRelation::Linked(self.span_context.clone())
     }
 
     pub fn as_parent(&self) -> SpanRelation {
-        SpanRelation::Parent(self.0.clone())
+        SpanRelation::Parent(self.span_context.clone())
+    }
+
+    pub fn is_sampled(&self) -> bool {
+        self.span_context.trace_flags().is_sampled()
     }
 }
 
 impl From<ServiceInvocationSpanContext> for SpanContext {
     fn from(value: ServiceInvocationSpanContext) -> Self {
-        value.0
+        value.span_context
     }
 }
 
-/// Span relation, used to propagate tracing contexts.
+/// Span relation cause, used to propagate tracing contexts.
 #[derive(Debug, PartialEq, Eq, Clone)]
+pub enum SpanRelationCause {
+    Parent(SpanId),
+    Linked(TraceId, SpanId),
+}
+
 pub enum SpanRelation {
     None,
     Parent(SpanContext),
-    CausedBy(SpanContext),
+    Linked(SpanContext),
 }
 
 impl SpanRelation {
     /// Attach this [`SpanRelation`] to the given [`Span`]
     pub fn attach_to_span(self, span: &Span) {
         match self {
-            SpanRelation::Parent(parent) => {
-                span.set_parent(opentelemetry_api::Context::new().with_remote_span_context(parent))
+            SpanRelation::Parent(span_context) => {
+                span.set_parent(Context::new().with_remote_span_context(span_context))
             }
-            SpanRelation::CausedBy(cause) => span.add_link(cause),
-            _ => {}
+            SpanRelation::Linked(span_context) => span.add_link(span_context),
+            SpanRelation::None => (),
         };
+    }
+
+    fn is_sampled(&self) -> bool {
+        match self {
+            // we only expect this in tests where we always sample
+            SpanRelation::None => true,
+            SpanRelation::Parent(span_context) => span_context.is_sampled(),
+            SpanRelation::Linked(span_context) => span_context.is_sampled(),
+        }
     }
 }

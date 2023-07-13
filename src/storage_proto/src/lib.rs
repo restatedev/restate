@@ -30,10 +30,11 @@ pub mod storage {
             };
             use crate::storage::v1::{
                 enriched_entry_header, invocation_resolution_result, invocation_status,
-                outbox_message, response_result, timer, BackgroundCallResolutionResult,
-                EnrichedEntryHeader, InboxEntry, InvocationResolutionResult, InvocationStatus,
-                JournalEntry, JournalMeta, OutboxMessage, ResponseResult, SequencedTimer,
-                ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanContext,
+                outbox_message, response_result, span_relation, timer,
+                BackgroundCallResolutionResult, EnrichedEntryHeader, InboxEntry,
+                InvocationResolutionResult, InvocationStatus, JournalEntry, JournalMeta,
+                OutboxMessage, ResponseResult, SequencedTimer, ServiceInvocation,
+                ServiceInvocationId, ServiceInvocationResponseSink, SpanContext, SpanRelation,
                 Timer,
             };
             use anyhow::anyhow;
@@ -252,13 +253,12 @@ pub mod storage {
                     // TODO: replace with ByteString to avoid allocation of String
                     let method = String::from_utf8(value.method_name.to_vec())
                         .map_err(ConversionError::invalid_data)?;
-                    let span_context = restate_types::invocation::ServiceInvocationSpanContext::new(
-                        opentelemetry_api::trace::SpanContext::try_from(
+                    let span_context =
+                        restate_types::invocation::ServiceInvocationSpanContext::try_from(
                             value
                                 .span_context
                                 .ok_or(ConversionError::missing_field("span_context"))?,
-                        )?,
-                    );
+                        )?;
                     let endpoint_id =
                         value
                             .endpoint_id
@@ -287,9 +287,7 @@ pub mod storage {
                     JournalMeta {
                         length,
                         method_name: Bytes::from(method.into_bytes()),
-                        span_context: Some(SpanContext::from(
-                            opentelemetry_api::trace::SpanContext::from(span_context),
-                        )),
+                        span_context: Some(SpanContext::from(span_context)),
                         endpoint_id: Some(match endpoint_id {
                             None => EndpointId::None(()),
                             Some(endpoint_id) => EndpointId::Value(endpoint_id),
@@ -339,9 +337,10 @@ pub mod storage {
                         id.ok_or(ConversionError::missing_field("id"))?,
                     )?;
 
-                    let span_context = opentelemetry_api::trace::SpanContext::try_from(
-                        span_context.ok_or(ConversionError::missing_field("span_context"))?,
-                    )?;
+                    let span_context =
+                        restate_types::invocation::ServiceInvocationSpanContext::try_from(
+                            span_context.ok_or(ConversionError::missing_field("span_context"))?,
+                        )?;
 
                     let response_sink = Option::<
                         restate_types::invocation::ServiceInvocationResponseSink,
@@ -357,9 +356,7 @@ pub mod storage {
                         method_name,
                         argument,
                         response_sink,
-                        span_context: restate_types::invocation::ServiceInvocationSpanContext::new(
-                            span_context,
-                        ),
+                        span_context,
                     })
                 }
             }
@@ -367,9 +364,7 @@ pub mod storage {
             impl From<restate_types::invocation::ServiceInvocation> for ServiceInvocation {
                 fn from(value: restate_types::invocation::ServiceInvocation) -> Self {
                     let id = ServiceInvocationId::from(value.id);
-                    let span_context = SpanContext::from(
-                        opentelemetry_api::trace::SpanContext::from(value.span_context),
-                    );
+                    let span_context = SpanContext::from(value.span_context);
                     let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
                     let method_name = value.method_name.into_bytes();
 
@@ -432,7 +427,7 @@ pub mod storage {
                 Bytes::copy_from_slice(invocation_id.as_bytes())
             }
 
-            impl TryFrom<SpanContext> for opentelemetry_api::trace::SpanContext {
+            impl TryFrom<SpanContext> for restate_types::invocation::ServiceInvocationSpanContext {
                 type Error = ConversionError;
 
                 fn try_from(value: SpanContext) -> Result<Self, Self::Error> {
@@ -442,6 +437,7 @@ pub mod storage {
                         trace_flags,
                         is_remote,
                         trace_state,
+                        span_relation,
                     } = value;
 
                     let trace_id = try_bytes_into_trace_id(trace_id)?;
@@ -454,30 +450,87 @@ pub mod storage {
                     let trace_state = TraceState::from_str(&trace_state)
                         .map_err(ConversionError::invalid_data)?;
 
-                    Ok(opentelemetry_api::trace::SpanContext::new(
-                        trace_id,
-                        span_id,
-                        trace_flags,
-                        is_remote,
-                        trace_state,
-                    ))
+                    let span_relation = span_relation
+                        .map(|span_relation| span_relation.try_into())
+                        .transpose()
+                        .map_err(ConversionError::invalid_data)?;
+
+                    Ok(
+                        restate_types::invocation::ServiceInvocationSpanContext::new(
+                            opentelemetry_api::trace::SpanContext::new(
+                                trace_id,
+                                span_id,
+                                trace_flags,
+                                is_remote,
+                                trace_state,
+                            ),
+                            span_relation,
+                        ),
+                    )
                 }
             }
 
-            impl From<opentelemetry_api::trace::SpanContext> for SpanContext {
-                fn from(value: opentelemetry_api::trace::SpanContext) -> Self {
-                    let trace_state = value.trace_state().header();
-                    let span_id = u64::from_be_bytes(value.span_id().to_bytes());
-                    let trace_flags = u32::from(value.trace_flags().to_u8());
-                    let trace_id = Bytes::copy_from_slice(&value.trace_id().to_bytes());
+            impl From<restate_types::invocation::ServiceInvocationSpanContext> for SpanContext {
+                fn from(value: restate_types::invocation::ServiceInvocationSpanContext) -> Self {
+                    let span_context = value.span_context();
+                    let trace_state = span_context.trace_state().header();
+                    let span_id = u64::from_be_bytes(span_context.span_id().to_bytes());
+                    let trace_flags = u32::from(span_context.trace_flags().to_u8());
+                    let trace_id = Bytes::copy_from_slice(&span_context.trace_id().to_bytes());
+                    let is_remote = span_context.is_remote();
+                    let span_relation = value
+                        .span_cause()
+                        .map(|span_relation| SpanRelation::from(span_relation.clone()));
 
                     SpanContext {
                         trace_state,
                         span_id,
                         trace_flags,
                         trace_id,
-                        is_remote: value.is_remote(),
+                        is_remote,
+                        span_relation,
                     }
+                }
+            }
+
+            impl TryFrom<SpanRelation> for restate_types::invocation::SpanRelationCause {
+                type Error = ConversionError;
+
+                fn try_from(value: SpanRelation) -> Result<Self, Self::Error> {
+                    match value.kind.ok_or(ConversionError::missing_field("kind"))? {
+                        span_relation::Kind::Parent(span_relation::Parent { span_id }) => {
+                            let span_id =
+                                opentelemetry_api::trace::SpanId::from_bytes(span_id.to_be_bytes());
+                            Ok(Self::Parent(span_id))
+                        }
+                        span_relation::Kind::Linked(span_relation::Linked {
+                            trace_id,
+                            span_id,
+                        }) => {
+                            let trace_id = try_bytes_into_trace_id(trace_id)?;
+                            let span_id =
+                                opentelemetry_api::trace::SpanId::from_bytes(span_id.to_be_bytes());
+                            Ok(Self::Linked(trace_id, span_id))
+                        }
+                    }
+                }
+            }
+
+            impl From<restate_types::invocation::SpanRelationCause> for SpanRelation {
+                fn from(value: restate_types::invocation::SpanRelationCause) -> Self {
+                    let kind = match value {
+                        restate_types::invocation::SpanRelationCause::Parent(span_id) => {
+                            let span_id = u64::from_be_bytes(span_id.to_bytes());
+                            span_relation::Kind::Parent(span_relation::Parent { span_id })
+                        }
+                        restate_types::invocation::SpanRelationCause::Linked(trace_id, span_id) => {
+                            let span_id = u64::from_be_bytes(span_id.to_bytes());
+                            let trace_id = Bytes::copy_from_slice(&trace_id.to_bytes());
+                            span_relation::Kind::Linked(span_relation::Linked { trace_id, span_id })
+                        }
+                    };
+
+                    Self { kind: Some(kind) }
                 }
             }
 
@@ -868,20 +921,18 @@ pub mod storage {
                     {
                         invocation_resolution_result::Result::None(_) => None,
                         invocation_resolution_result::Result::Success(success) => {
-                            let span_context = opentelemetry_api::trace::SpanContext::try_from(
-                                success
-                                    .span_context
-                                    .ok_or(ConversionError::missing_field("span_context"))?,
-                            )?;
+                            let span_context =
+                                restate_types::invocation::ServiceInvocationSpanContext::try_from(
+                                    success
+                                        .span_context
+                                        .ok_or(ConversionError::missing_field("span_context"))?,
+                                )?;
                             let invocation_id =
                                 try_bytes_into_invocation_id(success.invocation_id)?;
                             let service_key = success.service_key;
 
                             Some(restate_types::journal::enriched::ResolutionResult {
-                                span_context:
-                                    restate_types::invocation::ServiceInvocationSpanContext::new(
-                                        span_context,
-                                    ),
+                                span_context,
                                 invocation_id,
                                 service_key,
                             })
@@ -907,9 +958,7 @@ pub mod storage {
                                 invocation_resolution_result::Success {
                                     invocation_id: invocation_id_to_bytes(&invocation_id),
                                     service_key,
-                                    span_context: Some(SpanContext::from(
-                                        opentelemetry_api::trace::SpanContext::from(span_context),
-                                    )),
+                                    span_context: Some(SpanContext::from(span_context)),
                                 },
                             ),
                         },
@@ -927,18 +976,17 @@ pub mod storage {
                 type Error = ConversionError;
 
                 fn try_from(value: BackgroundCallResolutionResult) -> Result<Self, Self::Error> {
-                    let span_context = opentelemetry_api::trace::SpanContext::try_from(
-                        value
-                            .span_context
-                            .ok_or(ConversionError::missing_field("span_context"))?,
-                    )?;
+                    let span_context =
+                        restate_types::invocation::ServiceInvocationSpanContext::try_from(
+                            value
+                                .span_context
+                                .ok_or(ConversionError::missing_field("span_context"))?,
+                        )?;
                     let invocation_id = try_bytes_into_invocation_id(value.invocation_id)?;
                     let service_key = value.service_key;
 
                     Ok(restate_types::journal::enriched::ResolutionResult {
-                        span_context: restate_types::invocation::ServiceInvocationSpanContext::new(
-                            span_context,
-                        ),
+                        span_context,
                         invocation_id,
                         service_key,
                     })
@@ -950,9 +998,7 @@ pub mod storage {
                     BackgroundCallResolutionResult {
                         invocation_id: invocation_id_to_bytes(&value.invocation_id),
                         service_key: value.service_key,
-                        span_context: Some(SpanContext::from(
-                            opentelemetry_api::trace::SpanContext::from(value.span_context),
-                        )),
+                        span_context: Some(SpanContext::from(value.span_context)),
                     }
                 }
             }

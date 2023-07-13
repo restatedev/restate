@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{info, info_span, trace, warn, warn_span};
+use tracing::trace;
 
 pub(crate) enum ActuatorMessageCollector<'a, I, N> {
     Leader {
@@ -119,42 +119,6 @@ where
                             completion,
                         )
                         .await?
-                }
-                ActuatorMessage::CommitEndSpan {
-                    service_invocation_id,
-                    service_method,
-                    span_context,
-                    result,
-                } => {
-                    let span = match result {
-                        Ok(_) => {
-                            let span = info_span!(
-                                "end_invocation",
-                                rpc.service = %service_invocation_id.service_id.service_name,
-                                rpc.method = %service_method,
-                                restate.invocation.sid = %service_invocation_id,
-                                restate.invocation.result = "Success"
-                            );
-                            info!(parent: &span, "Invocation succeeded");
-                            span
-                        }
-                        Err((status_code, status_message)) => {
-                            let span = warn_span!(
-                                "end_invocation",
-                                rpc.service = %service_invocation_id.service_id.service_name,
-                                rpc.method = %service_method,
-                                restate.invocation.sid = %service_invocation_id,
-                                restate.invocation.result = "Failure"
-                            );
-                            warn!(
-                                parent: &span,
-                                "Invocation failed ({}): {}", status_code, status_message
-                            );
-                            span
-                        }
-                    };
-                    span_context.as_parent().attach_to_span(&span);
-                    let _ = span.enter();
                 }
                 ActuatorMessage::SendAckResponse(ack_response) => ack_tx.send(ack_response).await?,
                 ActuatorMessage::AbortInvocation(service_invocation_id) => {

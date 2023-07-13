@@ -32,6 +32,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 opentelemetry_api = { workspace = true }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 restate_schema_api = { workspace = true, features = ["key_extraction"] }

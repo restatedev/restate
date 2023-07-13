@@ -1,10 +1,12 @@
 use bytes::Bytes;
+
+use opentelemetry_api::trace::SpanId;
 use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::{Completion, CompletionResult, JournalMetadata};
 use std::collections::HashSet;
 use std::fmt;
 use std::vec::Drain;
-use tracing::{debug_span, event_enabled, trace, trace_span, Level};
+use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
 use types::TimerKeyDisplay;
 
 mod interpreter;
@@ -89,6 +91,7 @@ pub(crate) enum Effect {
     // Timers
     RegisterTimer {
         timer_value: TimerValue,
+        span_context: ServiceInvocationSpanContext,
     },
     DeleteTimer {
         service_invocation_id: ServiceInvocationId,
@@ -134,9 +137,16 @@ pub(crate) enum Effect {
         completion: Completion,
     },
 
-    // Tracing
+    // Effects used only for tracing purposes
+    BackgroundInvoke {
+        service_invocation_id: ServiceInvocationId,
+        service_method: String,
+        span_context: ServiceInvocationSpanContext,
+        pointer_span_id: SpanId,
+    },
     NotifyInvocationResult {
         service_invocation_id: ServiceInvocationId,
+        creation_time: MillisSinceEpoch,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (InvocationErrorCode, String)>,
@@ -152,12 +162,29 @@ pub(crate) enum Effect {
 macro_rules! debug_if_leader {
     ($i_am_leader:expr, $($args:tt)*) => {{
         use ::tracing::Level;
-
         if $i_am_leader {
             ::tracing::event!(Level::DEBUG, $($args)*)
         } else {
             ::tracing::event!(Level::TRACE, $($args)*)
         }
+    }};
+}
+
+macro_rules! span_if_leader {
+    ($level:expr, $i_am_leader:expr, $sampled:expr, $span_relation:expr, $($args:tt)*) => {{
+        if $i_am_leader && $sampled {
+            let span = ::tracing::span!($level, $($args)*);
+            $span_relation
+                .attach_to_span(&span);
+            let _ = span.enter();
+        }
+    }};
+}
+
+macro_rules! info_span_if_leader {
+    ($i_am_leader:expr, $sampled:expr, $span_relation:expr, $($args:tt)*) => {{
+        use ::tracing::Level;
+        span_if_leader!(Level::INFO, $i_am_leader, $sampled, $span_relation, $($args)*)
     }};
 }
 
@@ -183,20 +210,28 @@ impl Effect {
                 "Effect: Resume service"
             ),
             Effect::SuspendService {
-                metadata:
-                    InvocationMetadata {
-                        journal_metadata: JournalMetadata { method, length, .. },
-                        ..
-                    },
+                service_id,
+                metadata,
                 waiting_for_completed_entries,
                 ..
-            } => debug_if_leader!(
+            } => {
+                info_span_if_leader!(
+                    is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
+                    metadata.journal_metadata.span_context.as_parent(),
+                    "suspend",
+                    restate.journal.length = metadata.journal_metadata.length,
+                    rpc.service = %service_id.service_name,
+                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_id),
+                );
+                debug_if_leader!(
                 is_leader,
-                rpc.method = %method,
-                restate.journal.length = length,
+                rpc.method = %metadata.journal_metadata.method,
+                restate.journal.length = metadata.journal_metadata.length,
                 "Effect: Suspend service waiting on entries {:?}",
                 waiting_for_completed_entries
-            ),
+                 )
+            }
             Effect::DropJournalAndFreeService { journal_length, .. } => debug_if_leader!(
                 is_leader,
                 restate.journal.length = journal_length,
@@ -310,44 +345,121 @@ impl Effect {
                 );
             }
             Effect::SetState {
-                key, entry_index, ..
-            } => debug_if_leader!(
-                is_leader,
-                restate.journal.index = entry_index,
-                restate.state.key = ?key,
-                "Effect: Set state"
-            ),
+                service_id,
+                metadata,
+                key,
+                entry_index,
+                ..
+            } => {
+                info_span_if_leader!(
+                    is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
+                    metadata.journal_metadata.span_context.as_parent(),
+                    "set_state",
+                    otel.name = format!("set_state {key:?}"),
+                    restate.journal.index = entry_index,
+                    restate.state.key = ?key,
+                    rpc.service = %service_id.service_name,
+                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_id),
+                );
+
+                debug_if_leader!(
+                    is_leader,
+                    restate.journal.index = entry_index,
+                    restate.state.key = ?key,
+                    "Effect: Set state"
+                )
+            }
             Effect::ClearState {
-                key, entry_index, ..
-            } => debug_if_leader!(
-                is_leader,
-                restate.journal.index = entry_index,
-                restate.state.key = ?key,
-                "Effect: Clear state"
-            ),
+                service_id,
+                metadata,
+                key,
+                entry_index,
+                ..
+            } => {
+                info_span_if_leader!(
+                    is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
+                    metadata.journal_metadata.span_context.as_parent(),
+                    "clear_state",
+                    otel.name = format!("clear_state {key:?}"),
+                    restate.journal.index = entry_index,
+                    restate.state.key = ?key,
+                    rpc.service = %service_id.service_name,
+                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_id),
+                );
+
+                debug_if_leader!(
+                    is_leader,
+                    restate.journal.index = entry_index,
+                    restate.state.key = ?key,
+                    "Effect: Clear state"
+                )
+            }
             Effect::GetStateAndAppendCompletedEntry {
-                key, entry_index, ..
-            } => debug_if_leader!(
-                is_leader,
-                restate.journal.index = entry_index,
-                restate.state.key = ?key,
-                "Effect: Get state"
-            ),
-            Effect::RegisterTimer { timer_value, .. } => match &timer_value.value {
-                Timer::CompleteSleepEntry => debug_if_leader!(
+                service_id,
+                metadata,
+                key,
+                entry_index,
+                ..
+            } => {
+                info_span_if_leader!(
                     is_leader,
-                    restate.timer.key = %timer_value.display_key(),
-                    restate.timer.wake_up_time = %timer_value.wake_up_time,
-                    "Effect: Register Sleep timer"
-                ),
-                Timer::Invoke(service_invocation) => debug_if_leader!(
+                    metadata.journal_metadata.span_context.is_sampled(),
+                    metadata.journal_metadata.span_context.as_parent(),
+                    "get_state",
+                    otel.name = format!("get_state {key:?}"),
+                    restate.state.key = ?key,
+                    restate.journal.index = entry_index,
+                    rpc.service = %service_id.service_name,
+                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_id),
+                );
+
+                debug_if_leader!(
                     is_leader,
-                    rpc.service = %service_invocation.id.service_id.service_name,
-                    restate.invocation.sid = %service_invocation.id,
-                    restate.timer.key = %timer_value.display_key(),
-                    restate.timer.wake_up_time = %timer_value.wake_up_time,
-                    "Effect: Register background invoke timer"
-                ),
+                    restate.journal.index = entry_index,
+                    restate.state.key = ?key,
+                    "Effect: Get state"
+                )
+            }
+            Effect::RegisterTimer {
+                timer_value,
+                span_context,
+                ..
+            } => match &timer_value.value {
+                Timer::CompleteSleepEntry => {
+                    info_span_if_leader!(
+                        is_leader,
+                        span_context.is_sampled(),
+                        span_context.as_parent(),
+                        "sleep",
+                        rpc.service = %timer_value.service_invocation_id.service_id.service_name,
+                        restate.invocation.sid = %timer_value.service_invocation_id,
+                        restate.timer.key = %timer_value.display_key(),
+                        restate.timer.wake_up_time = %timer_value.wake_up_time,
+                        // without converting to i64 this field will encode as a string
+                        // however, overflowing i64 seems unlikely
+                        restate.internal.end_time = i64::try_from(timer_value.wake_up_time.as_u64()).expect("wake up time should fit into i64"),
+                    );
+
+                    debug_if_leader!(
+                        is_leader,
+                        restate.timer.key = %timer_value.display_key(),
+                        restate.timer.wake_up_time = %timer_value.wake_up_time,
+                        "Effect: Register Sleep timer"
+                    )
+                }
+                Timer::Invoke(service_invocation) => {
+                    // no span necessary; there will already be a background_invoke span
+                    debug_if_leader!(
+                        is_leader,
+                        rpc.service = %service_invocation.id.service_id.service_name,
+                        restate.invocation.sid = %service_invocation.id,
+                        restate.timer.key = %timer_value.display_key(),
+                        restate.timer.wake_up_time = %timer_value.wake_up_time,
+                        "Effect: Register background invoke timer"
+                    )
+                }
             },
             Effect::DeleteTimer {
                 service_invocation_id,
@@ -421,19 +533,83 @@ impl Effect {
                 CompletionResultFmt(result)
             ),
             Effect::StoreCompletionAndResume {
+                service_id,
+                metadata,
                 completion:
                     Completion {
                         entry_index,
                         result,
                     },
                 ..
-            } => debug_if_leader!(
-                is_leader,
-                restate.journal.index = entry_index,
-                "Effect: Store completion {} and resume invocation",
-                CompletionResultFmt(result)
-            ),
-            Effect::NotifyInvocationResult { .. } => {
+            } => {
+                info_span_if_leader!(
+                    is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
+                    metadata.journal_metadata.span_context.as_parent(),
+                    "resume",
+                    restate.journal.index = entry_index,
+                    rpc.service = %service_id.service_name,
+                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_id),
+                );
+
+                debug_if_leader!(
+                    is_leader,
+                    restate.journal.index = entry_index,
+                    "Effect: Store completion {} and resume invocation",
+                    CompletionResultFmt(result)
+                )
+            }
+            Effect::BackgroundInvoke {
+                service_invocation_id,
+                service_method,
+                span_context,
+                pointer_span_id,
+            } => {
+                // create an instantaneous 'pointer span' which lives in the calling trace at the
+                // time of background call, and exists only to be linked to by the new trace that
+                // will be created for the background invocation
+
+                info_span_if_leader!(
+                    is_leader,
+                    span_context.is_sampled(),
+                    span_context.as_parent(),
+                    "background_invoke",
+                    otel.name = format!("background_invoke {service_method}"),
+                    rpc.service = %service_invocation_id.service_id.service_name,
+                    rpc.method = service_method,
+                    restate.invocation.sid = %service_invocation_id,
+                    restate.internal.span_id = %pointer_span_id,
+                );
+            }
+            Effect::NotifyInvocationResult {
+                service_invocation_id,
+                creation_time,
+                service_method,
+                span_context,
+                result,
+            } => {
+                let (result, error) = match result {
+                    Ok(_) => ("Success", false),
+                    Err(_) => ("Failure", true),
+                };
+
+                info_span_if_leader!(
+                    is_leader,
+                    span_context.is_sampled(),
+                    span_context.causing_span_relation(),
+                    "invoke",
+                    otel.name = format!("invoke {service_method}"),
+                    rpc.service = %service_invocation_id.service_id.service_name,
+                    rpc.method = service_method,
+                    restate.invocation.sid = %service_invocation_id,
+                    restate.invocation.result = result,
+                    error = error, // jaeger uses this tag to show an error icon
+                    // without converting to i64 this field will encode as a string
+                    // however, overflowing i64 seems unlikely
+                    restate.internal.start_time = i64::try_from(creation_time.as_u64()).expect("creation time should fit into i64"),
+                    restate.internal.span_id = %span_context.span_context().span_id(),
+                    restate.internal.trace_id = %span_context.span_context().trace_id()
+                );
                 // No need to log this
             }
             Effect::SendAckResponse(ack_response) => {
@@ -589,8 +765,15 @@ impl Effects {
         })
     }
 
-    pub(crate) fn register_timer(&mut self, timer_value: TimerValue) {
-        self.effects.push(Effect::RegisterTimer { timer_value })
+    pub(crate) fn register_timer(
+        &mut self,
+        timer_value: TimerValue,
+        span_context: ServiceInvocationSpanContext,
+    ) {
+        self.effects.push(Effect::RegisterTimer {
+            timer_value,
+            span_context,
+        })
     }
 
     pub(crate) fn delete_timer(
@@ -719,17 +902,32 @@ impl Effects {
         });
     }
 
-    pub(crate) fn notify_invocation_result(
+    pub(crate) fn background_invoke(
         &mut self,
         service_invocation_id: ServiceInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
+        pointer_span_id: SpanId,
+    ) {
+        self.effects.push(Effect::BackgroundInvoke {
+            service_invocation_id,
+            service_method,
+            span_context,
+            pointer_span_id,
+        })
+    }
+
+    pub(crate) fn notify_invocation_result(
+        &mut self,
+        service_invocation_id: ServiceInvocationId,
+        invocation_metadata: InvocationMetadata,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {
         self.effects.push(Effect::NotifyInvocationResult {
             service_invocation_id,
-            service_method,
-            span_context,
+            creation_time: invocation_metadata.creation_time,
+            service_method: invocation_metadata.journal_metadata.method,
+            span_context: invocation_metadata.journal_metadata.span_context,
             result,
         })
     }
@@ -743,7 +941,8 @@ impl Effects {
             .push(Effect::AbortInvocation(service_invocation_id));
     }
 
-    /// We log only if the level is TRACE, or if the level is DEBUG and we're the leader.
+    /// We log only if the log level is TRACE, or if the log level is DEBUG and we're the leader,
+    /// or if the span level is INFO and we're the leader.
     pub(crate) fn log(
         &self,
         is_leader: bool,
@@ -751,7 +950,9 @@ impl Effects {
         related_span: SpanRelation,
     ) {
         // Skip this method altogether if logging is disabled
-        if !((event_enabled!(Level::DEBUG) && is_leader) || event_enabled!(Level::TRACE)) {
+        if !(((event_enabled!(Level::DEBUG) || span_enabled!(Level::INFO)) && is_leader)
+            || event_enabled!(Level::TRACE))
+        {
             return;
         }
 

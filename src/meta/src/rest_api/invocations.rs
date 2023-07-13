@@ -6,9 +6,11 @@ use okapi_operation::*;
 use restate_schema_api::key::json_conversion::Error;
 use restate_schema_api::key::RestateKeyConverter;
 use restate_types::identifiers;
+
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// # Service invocation id
 ///
@@ -59,7 +61,7 @@ impl ServiceInvocationId {
                 Ok(identifiers::ServiceInvocationId::new(
                     service,
                     restate_key,
-                    invocation_id,
+                    Uuid::from(invocation_id),
                 ))
             }
         }

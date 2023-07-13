@@ -214,7 +214,7 @@ where
                 }
 
                 // Create the service_invocation
-                let (service_invocation, service_invocation_span) = match invocation_factory.create(
+                let service_invocation = match invocation_factory.create(
                     &service_name,
                     &method_name,
                     req_payload,
@@ -233,10 +233,6 @@ where
                         return Err(status);
                     }
                 };
-
-                // Be aware that between this enter and the drop later there must not be any .await
-                // https://docs.rs/tracing/latest/tracing/struct.Span.html#in-asynchronous-code
-                let enter_service_invocation_span = service_invocation_span.enter();
 
                 // Ingress built-in service just sends a fire and forget and closes
                 if !wait_response {
@@ -262,9 +258,6 @@ where
                     debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                     return Err(Status::unavailable("Unavailable"));
                 }
-
-                // Drop the service invocation span to commit it
-                drop(enter_service_invocation_span);
 
                 // Wait on response
                 return match response_rx.await {

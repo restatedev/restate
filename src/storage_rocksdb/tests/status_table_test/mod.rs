@@ -8,9 +8,9 @@ use restate_types::journal::JournalMetadata;
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 
-fn invoked_status(invocation_id: InvocationId) -> InvocationStatus {
+fn invoked_status(invocation_id: impl Into<InvocationId>) -> InvocationStatus {
     InvocationStatus::Invoked(InvocationMetadata::new(
-        invocation_id,
+        invocation_id.into(),
         JournalMetadata::new("service", ServiceInvocationSpanContext::empty(), 0),
         None,
         MillisSinceEpoch::new(0),
@@ -18,10 +18,10 @@ fn invoked_status(invocation_id: InvocationId) -> InvocationStatus {
     ))
 }
 
-fn suspended_status(invocation_id: InvocationId) -> InvocationStatus {
+fn suspended_status(invocation_id: impl Into<InvocationId>) -> InvocationStatus {
     InvocationStatus::Suspended {
         metadata: InvocationMetadata::new(
-            invocation_id,
+            invocation_id.into(),
             JournalMetadata::new("service", ServiceInvocationSpanContext::empty(), 0),
             None,
             MillisSinceEpoch::new(0),

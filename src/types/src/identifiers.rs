@@ -6,7 +6,7 @@ use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
 use std::fmt;
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -35,7 +35,63 @@ pub type EndpointId = String;
 pub type PartitionKey = u32;
 
 /// Discriminator for invocation instances
-pub type InvocationId = Uuid;
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, Ord, PartialOrd, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct InvocationId(Uuid);
+
+impl InvocationId {
+    pub fn from_slice(b: &[u8]) -> Result<Self, uuid::Error> {
+        Ok(Self(Uuid::from_slice(b)?))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+
+    pub fn now_v7() -> Self {
+        Self(Uuid::now_v7())
+    }
+}
+
+impl Display for InvocationId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.as_simple().fmt(f)
+    }
+}
+
+impl AsRef<[u8]> for InvocationId {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl From<Uuid> for InvocationId {
+    fn from(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
+impl From<InvocationId> for Uuid {
+    fn from(value: InvocationId) -> Self {
+        value.0
+    }
+}
+
+impl From<InvocationId> for opentelemetry_api::trace::TraceId {
+    fn from(value: InvocationId) -> Self {
+        let uuid: Uuid = value.into();
+        Self::from_bytes(uuid.into_bytes())
+    }
+}
+
+impl From<InvocationId> for opentelemetry_api::trace::SpanId {
+    fn from(value: InvocationId) -> Self {
+        let uuid: Uuid = value.into();
+        let last8: [u8; 8] = std::convert::TryInto::try_into(&uuid.as_bytes()[8..16]).unwrap();
+        Self::from_bytes(last8)
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct IngressId(pub std::net::SocketAddr);
@@ -77,7 +133,7 @@ impl Display for ServiceInvocationId {
             "{}-{}-{}",
             self.service_id.service_name,
             Base64Display::new(&self.service_id.key, &BASE64_STANDARD),
-            self.invocation_id.as_simple()
+            self.invocation_id
         )
     }
 }

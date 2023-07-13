@@ -273,7 +273,7 @@ where
     }
 
     /// Loop opening the request to service endpoint and consuming the stream
-    #[instrument(level = "info", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.service_invocation_id.service_id.service_name, restate.invocation.sid = %self.service_invocation_id), skip_all)]
+    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.service_invocation_id.service_id.service_name, restate.invocation.sid = %self.service_invocation_id), skip_all)]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
         // Execute the task
         let terminal_state = self.run_internal(input_journal).await;

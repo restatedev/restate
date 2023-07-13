@@ -7,9 +7,9 @@ use restate_invoker::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
-use restate_types::errors::InvocationErrorCode;
+
 use restate_types::identifiers::{EntryIndex, ServiceId, ServiceInvocationId};
-use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext};
+use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{
     PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
@@ -47,12 +47,6 @@ pub(crate) enum ActuatorMessage {
     ForwardCompletion {
         service_invocation_id: ServiceInvocationId,
         completion: Completion,
-    },
-    CommitEndSpan {
-        service_invocation_id: ServiceInvocationId,
-        service_method: String,
-        span_context: ServiceInvocationSpanContext,
-        result: Result<(), (InvocationErrorCode, String)>,
     },
     SendAckResponse(AckResponse),
     AbortInvocation(ServiceInvocationId),
@@ -398,7 +392,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     },
                 })
             }
-            Effect::RegisterTimer { timer_value } => {
+            Effect::RegisterTimer { timer_value, .. } => {
                 state_storage
                     .store_timer(
                         timer_value.service_invocation_id.clone(),
@@ -602,17 +596,9 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .await?;
                 Self::invoke_service(state_storage, collector, service_invocation).await?;
             }
-            Effect::NotifyInvocationResult {
-                service_invocation_id,
-                service_method,
-                span_context,
-                result,
-            } => collector.collect(ActuatorMessage::CommitEndSpan {
-                service_invocation_id,
-                service_method,
-                span_context,
-                result,
-            }),
+            Effect::NotifyInvocationResult { .. } | Effect::BackgroundInvoke { .. } => {
+                // these effects are only needed for span creation
+            }
             Effect::SendAckResponse(ack_response) => {
                 collector.collect(ActuatorMessage::SendAckResponse(ack_response))
             }

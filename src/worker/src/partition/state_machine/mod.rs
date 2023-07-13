@@ -24,7 +24,7 @@ use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId, ServiceInvocationId};
 use restate_types::invocation::{
     InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, SpanRelation,
+    ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
 };
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::message::MessageIndex;
@@ -383,20 +383,10 @@ where
         service_invocation_id: ServiceInvocationId,
         invocation_metadata: InvocationMetadata,
     ) -> Result<(), Error> {
-        self.notify_invocation_result(
-            &service_invocation_id,
-            invocation_metadata.journal_metadata.method,
-            invocation_metadata.journal_metadata.span_context,
-            effects,
-            Ok(()),
-        );
-        self.complete_invocation(
-            service_invocation_id,
-            state,
-            invocation_metadata.journal_metadata.length,
-            effects,
-        )
-        .await
+        let length = invocation_metadata.journal_metadata.length;
+        self.notify_invocation_result(&service_invocation_id, invocation_metadata, effects, Ok(()));
+        self.complete_invocation(service_invocation_id, state, length, effects)
+            .await
     }
 
     async fn fail_invocation<State: StateReader>(
@@ -408,30 +398,25 @@ where
         error: InvocationError,
     ) -> Result<(), Error> {
         let code = error.code();
-        if let Some(response_sink) = invocation_metadata.response_sink {
+        if let Some(response_sink) = &invocation_metadata.response_sink {
             let outbox_message = Self::create_response(
                 &service_invocation_id,
-                response_sink,
+                response_sink.clone(),
                 ResponseResult::Failure(code.into(), error.message().into()),
             );
             // TODO: We probably only need to send the response if we haven't send a response before
             self.send_message(outbox_message, effects);
         }
 
+        let length = invocation_metadata.journal_metadata.length;
         self.notify_invocation_result(
             &service_invocation_id,
-            invocation_metadata.journal_metadata.method,
-            invocation_metadata.journal_metadata.span_context,
+            invocation_metadata,
             effects,
             Err((code, error.to_string())),
         );
-        self.complete_invocation(
-            service_invocation_id,
-            state,
-            invocation_metadata.journal_metadata.length,
-            effects,
-        )
-        .await
+        self.complete_invocation(service_invocation_id, state, length, effects)
+            .await
     }
 
     async fn handle_journal_entry(
@@ -527,14 +512,17 @@ where
                     Entry::Sleep(SleepEntry { wake_up_time, .. }) =
                         Codec::deserialize(&journal_entry)?
                 );
-                effects.register_timer(TimerValue::new_sleep(
-                    // Registering a timer generates multiple effects: timer registration and
-                    // journal append which each generate actuator messages for the timer service
-                    // and the invoker --> Cloning required
-                    service_invocation_id.clone(),
-                    MillisSinceEpoch::new(wake_up_time),
-                    entry_index,
-                ));
+                effects.register_timer(
+                    TimerValue::new_sleep(
+                        // Registering a timer generates multiple effects: timer registration and
+                        // journal append which each generate actuator messages for the timer service
+                        // and the invoker --> Cloning required
+                        service_invocation_id.clone(),
+                        MillisSinceEpoch::new(wake_up_time),
+                        entry_index,
+                    ),
+                    invocation_metadata.journal_metadata.span_context.clone(),
+                );
             }
             EnrichedEntryHeader::Invoke {
                 ref resolution_result,
@@ -582,12 +570,25 @@ where
                     }) = Codec::deserialize(&journal_entry)?
                 );
 
+                let_assert!(
+                    Some(SpanRelationCause::Linked(_, pointer_span_id)) = span_context.span_cause()
+                );
+
+                let method = request.method_name.to_string();
+
                 let service_invocation = Self::create_service_invocation(
                     *invocation_id,
                     service_key.clone(),
                     request,
                     None,
                     span_context.clone(),
+                );
+
+                effects.background_invoke(
+                    service_invocation.id.clone(),
+                    method,
+                    invocation_metadata.journal_metadata.span_context.clone(),
+                    *pointer_span_id,
                 );
 
                 // 0 is equal to not set, meaning execute now
@@ -597,12 +598,15 @@ where
                         effects,
                     );
                 } else {
-                    effects.register_timer(TimerValue::new_invoke(
-                        service_invocation_id.clone(),
-                        MillisSinceEpoch::new(invoke_time),
-                        entry_index,
-                        service_invocation,
-                    ));
+                    effects.register_timer(
+                        TimerValue::new_invoke(
+                            service_invocation_id.clone(),
+                            MillisSinceEpoch::new(invoke_time),
+                            entry_index,
+                            service_invocation,
+                        ),
+                        invocation_metadata.journal_metadata.span_context.clone(),
+                    );
                 }
             }
             // special handling because we can have a completion present
@@ -717,15 +721,13 @@ where
     fn notify_invocation_result(
         &mut self,
         service_invocation_id: &ServiceInvocationId,
-        service_method: String,
-        span_context: ServiceInvocationSpanContext,
+        invocation_metadata: InvocationMetadata,
         effects: &mut Effects,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {
         effects.notify_invocation_result(
             service_invocation_id.clone(),
-            service_method,
-            span_context,
+            invocation_metadata,
             result,
         );
     }

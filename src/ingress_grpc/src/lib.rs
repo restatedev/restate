@@ -18,7 +18,6 @@ use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink
 use restate_types::message::{AckKind, MessageIndex};
 use tokio::sync::mpsc;
 use tonic::Status;
-use tracing::Span;
 
 // --- Data model used by handlers and protocol
 
@@ -175,7 +174,7 @@ pub trait ServiceInvocationFactory {
         request_payload: Bytes,
         response_sink: Option<ServiceInvocationResponseSink>,
         span_relation: SpanRelation,
-    ) -> Result<(ServiceInvocation, Span), ServiceInvocationFactoryError>;
+    ) -> Result<ServiceInvocation, ServiceInvocationFactoryError>;
 }
 
 // Contains some mocks we use in unit tests in this crate

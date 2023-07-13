@@ -202,16 +202,14 @@ impl InMemoryJournalStorage {
     ) {
         let mut journals = self.journals.lock().await;
 
-        let method = method.into();
-        let (span_context, _) =
-            ServiceInvocationSpanContext::start(&sid, &method, SpanRelation::None);
+        let span_context = ServiceInvocationSpanContext::start(&sid, SpanRelation::None);
 
         journals.insert(
             sid,
             (
                 JournalMetadata {
                     endpoint_id: None,
-                    method,
+                    method: method.into(),
                     span_context,
                     length: 0,
                 },
