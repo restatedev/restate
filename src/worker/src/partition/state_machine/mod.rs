@@ -571,8 +571,7 @@ where
                 );
 
                 let_assert!(
-                    Some(SpanRelationCause::Linked(_, pointer_span_id)) =
-                        span_context.span_cause()
+                    Some(SpanRelationCause::Linked(_, pointer_span_id)) = span_context.span_cause()
                 );
 
                 let method = request.method_name.to_string();
