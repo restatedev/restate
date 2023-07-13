@@ -149,11 +149,11 @@ impl Schemas {
 
 pub(crate) mod schemas_impl {
     use super::*;
-    use std::collections::hash_map::Entry;
 
     use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
     use proto_symbol::ProtoSymbols;
     use restate_types::identifiers::{EndpointId, ServiceRevision};
+    use std::collections::hash_map::Entry;
     use std::collections::HashMap;
     use tracing::{debug, info, warn};
 
@@ -279,7 +279,7 @@ pub(crate) mod schemas_impl {
 
             if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
                 if allow_overwrite {
-                    // If we need to override the endpoint we need to remove old services
+                    // If we need to overwrite the endpoint we need to remove old services
                     for (svc_name, revision) in &existing_endpoint.services {
                         warn!(
                             restate.service_endpoint.id = %endpoint_id,
@@ -309,7 +309,7 @@ pub(crate) mod schemas_impl {
                             warn!(
                                 restate.service_endpoint.id = %endpoint_id,
                                 restate.service_endpoint.url = %endpoint_metadata.address(),
-                                "Going to overwrite service instance type {} due to a forced service endpoint update: {:?} != {:?}. This is a potentially dangerous operation, and might incur in data loss.",
+                                "Going to overwrite service instance type {} due to a forced service endpoint update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
                                 service_meta.name(),
                                 service_schemas.instance_type,
                                 service_meta.instance_type
@@ -559,6 +559,44 @@ pub(crate) mod schemas_impl {
             schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 2);
             schemas.assert_resolves_endpoint(mocks::ANOTHER_GREETER_SERVICE_NAME, endpoint_2.id());
             schemas.assert_service_revision(mocks::ANOTHER_GREETER_SERVICE_NAME, 1);
+        }
+
+        #[test]
+        fn register_new_endpoint_updating_old_service_fails_with_different_instance_type() {
+            let schemas = Schemas::default();
+
+            let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:8080");
+            let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:8081");
+
+            schemas
+                .apply_updates(
+                    schemas
+                        .compute_new_endpoint_updates(
+                            endpoint_1.clone(),
+                            vec![ServiceRegistrationRequest::new(
+                                mocks::GREETER_SERVICE_NAME.to_string(),
+                                ServiceInstanceType::Unkeyed,
+                            )],
+                            mocks::DESCRIPTOR_POOL.clone(),
+                            false,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
+
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_1.id());
+
+            let compute_result = schemas.compute_new_endpoint_updates(
+                endpoint_2,
+                vec![ServiceRegistrationRequest::new(
+                    mocks::GREETER_SERVICE_NAME.to_string(),
+                    ServiceInstanceType::Singleton,
+                )],
+                mocks::DESCRIPTOR_POOL.clone(),
+                false,
+            );
+
+            assert!(let Err(RegistrationError::DifferentServiceInstanceType(_)) = compute_result);
         }
 
         #[test]
