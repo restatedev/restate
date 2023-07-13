@@ -105,6 +105,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     pub async fn dequeue(&mut self) -> Option<T> {
         match self.segments.front_mut() {
             Some(segment) => {
+                let is_mutable_segment = segment.is_mutable();
                 if segment.is_on_disk() {
                     segment
                         .load_from_disk(self.spillable_base_path.clone())
@@ -115,7 +116,9 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
                 if self.should_preload(len) {
                     self.try_preload_next_segment();
                 }
-                if len == 0 {
+                // Make sure we don't remove the only segment if it's not mutable, we can reuse it.
+                debug_assert!(!is_mutable_segment || self.segments.len() == 1);
+                if len == 0 && !is_mutable_segment {
                     self.segments.pop_front();
                 }
                 head.is_some().then(|| self.len -= 1);
