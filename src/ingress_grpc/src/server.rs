@@ -4,6 +4,7 @@ use super::*;
 use codederror::CodedError;
 use futures::FutureExt;
 use restate_schema_api::json::JsonMapperResolver;
+use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::identifiers::IngressId;
@@ -34,7 +35,7 @@ pub enum IngressServerError {
     Running(#[from] hyper::Error),
 }
 
-pub struct HyperServerIngress<Schemas, InvocationFactory> {
+pub struct HyperServerIngress<Schemas> {
     listening_addr: SocketAddr,
     concurrency_limit: usize,
 
@@ -42,18 +43,17 @@ pub struct HyperServerIngress<Schemas, InvocationFactory> {
     ingress_id: IngressId,
     json: JsonOptions,
     schemas: Schemas,
-    invocation_factory: InvocationFactory,
     dispatcher_command_sender: DispatcherCommandSender,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
 }
 
-impl<Schemas, JsonDecoder, JsonEncoder, InvocationFactory>
-    HyperServerIngress<Schemas, InvocationFactory>
+impl<Schemas, JsonDecoder, JsonEncoder> HyperServerIngress<Schemas>
 where
     Schemas: JsonMapperResolver<JsonToProtobufMapper = JsonDecoder, ProtobufToJsonMapper = JsonEncoder>
         + ServiceMetadataResolver
+        + KeyExtractor
         + ProtoSymbolResolver
         + Clone
         + Send
@@ -61,7 +61,6 @@ where
         + 'static,
     JsonDecoder: Send,
     JsonEncoder: Send,
-    InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -70,7 +69,6 @@ where
         json: JsonOptions,
         ingress_id: IngressId,
         schemas: Schemas,
-        invocation_factory: InvocationFactory,
         dispatcher_command_sender: DispatcherCommandSender,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
@@ -81,7 +79,6 @@ where
             json,
             ingress_id,
             schemas,
-            invocation_factory,
             dispatcher_command_sender,
             start_signal_tx,
         };
@@ -96,7 +93,6 @@ where
             ingress_id,
             json,
             schemas,
-            invocation_factory,
             dispatcher_command_sender,
             start_signal_tx,
         } = self;
@@ -116,7 +112,6 @@ where
                 .service(handler::Handler::new(
                     ingress_id,
                     json,
-                    invocation_factory,
                     schemas,
                     dispatcher_command_sender,
                     global_concurrency_limit_semaphore,
@@ -145,46 +140,19 @@ where
 mod tests {
     use super::*;
 
-    use std::net::SocketAddr;
-
+    use crate::mocks::*;
     use bytes::Bytes;
     use drain::Signal;
     use http::header::CONTENT_TYPE;
     use http::StatusCode;
     use hyper::Body;
     use prost::Message;
+    use restate_test_util::{assert_eq, test};
     use restate_types::identifiers::ServiceInvocationId;
-    use restate_types::invocation::ServiceInvocationResponseSink;
     use serde_json::json;
+    use std::net::SocketAddr;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
-
-    use restate_test_util::{assert_eq, test};
-
-    use crate::mocks::*;
-
-    // Could be shipped by the restate_types crate with feature "mocks" enabled
-    #[derive(Clone)]
-    struct MockServiceInvocationFactory;
-
-    impl ServiceInvocationFactory for MockServiceInvocationFactory {
-        fn create(
-            &self,
-            service_name: &str,
-            method_name: &str,
-            request_payload: Bytes,
-            response_sink: Option<ServiceInvocationResponseSink>,
-            related_span: SpanRelation,
-        ) -> Result<ServiceInvocation, ServiceInvocationFactoryError> {
-            Ok(ServiceInvocation::new(
-                ServiceInvocationId::new(service_name, Bytes::new(), uuid::Uuid::now_v7()),
-                method_name.to_string().into(),
-                request_payload,
-                response_sink,
-                related_span,
-            ))
-        }
-    }
 
     #[test(tokio::test)]
     async fn test_http_connect_call() {
@@ -365,7 +333,6 @@ mod tests {
             JsonOptions::default(),
             IngressId("0.0.0.0:0".parse().unwrap()),
             test_schemas(),
-            MockServiceInvocationFactory,
             dispatcher_command_tx,
         );
         let ingress_handle = tokio::spawn(ingress.run(watch));

@@ -181,6 +181,7 @@ mod tests {
     use bytestring::ByteString;
     use restate_test_util::test;
     use restate_types::identifiers::IngressId;
+    use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
 
     #[test(tokio::test)]
     async fn test_closed_handler() {

@@ -14,7 +14,7 @@ use opentelemetry::Context;
 use restate_futures_util::command::*;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{IngressId, PeerId, ServiceInvocationId};
-use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink, SpanRelation};
+use restate_types::invocation::ServiceInvocation;
 use restate_types::message::{AckKind, MessageIndex};
 use tokio::sync::mpsc;
 use tonic::Status;
@@ -158,23 +158,6 @@ impl ServiceInvocationFactoryError {
     pub fn key_extraction_error(source: impl Into<anyhow::Error>) -> Self {
         ServiceInvocationFactoryError::KeyExtraction(source.into())
     }
-}
-
-// TODO is this interface still useful?
-/// Trait to create a new [`ServiceInvocation`].
-///
-/// This trait can be used by ingresses and partition processors to
-/// abstract the logic to perform key extraction and id generation.
-pub trait ServiceInvocationFactory {
-    /// Create a new service invocation.
-    fn create(
-        &self,
-        service_name: &str,
-        method_name: &str,
-        request_payload: Bytes,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        span_relation: SpanRelation,
-    ) -> Result<ServiceInvocation, ServiceInvocationFactoryError>;
 }
 
 // Contains some mocks we use in unit tests in this crate

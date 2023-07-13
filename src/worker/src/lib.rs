@@ -4,7 +4,6 @@ use crate::ingress_integration::{ExternalClientIngressRunner, IngressIntegration
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::partitioning_scheme::FixedConsecutivePartitions;
-use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use crate::services::Services;
 use codederror::CodedError;
 use futures::stream::FuturesUnordered;
@@ -33,7 +32,6 @@ mod invoker_integration;
 mod network_integration;
 mod partition;
 mod partitioning_scheme;
-mod service_invocation_factory;
 mod services;
 mod util;
 
@@ -217,13 +215,10 @@ impl Worker {
                 .expect("Loopback address needs to be valid."),
         );
 
-        let invocation_factory = DefaultServiceInvocationFactory::new(schemas.clone());
-
         let (ingress_dispatcher_loop, external_client_ingress) = ingress_grpc.build(
             // TODO replace with proper network address once we have a distributed runtime
             external_client_ingress_id,
             schemas.clone(),
-            invocation_factory,
             channel_size,
         );
 
