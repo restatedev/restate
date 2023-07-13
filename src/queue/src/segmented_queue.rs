@@ -116,8 +116,11 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
                 if self.should_preload(len) {
                     self.try_preload_next_segment();
                 }
-                // Make sure we don't remove the only segment if it's not mutable, we can reuse it.
-                debug_assert!(!is_mutable_segment || self.segments.len() == 1);
+                // Make sure we don't remove the only segment if it is mutable, because we can reuse it.
+                debug_assert!(
+                    !is_mutable_segment || self.segments.len() == 1,
+                    "Expecting at most one mutable segment in the queue which is at the end."
+                );
                 if len == 0 && !is_mutable_segment {
                     self.segments.pop_front();
                 }
