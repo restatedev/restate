@@ -90,9 +90,7 @@ impl Configuration {
         Duration::from_secs(60).into()
     }
 
-
     /// Load [`Configuration`] from yaml with overwrites from environment variables.
-    #[allow(dead_code)]
     pub fn load<P: AsRef<Path>>(config_file: P) -> Result<Self, Error> {
         Self::load_with_default(Configuration::default(), Some(config_file.as_ref()))
     }
