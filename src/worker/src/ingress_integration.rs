@@ -1,4 +1,3 @@
-use crate::service_invocation_factory::DefaultServiceInvocationFactory;
 use codederror::CodedError;
 use restate_ingress_grpc::{
     HyperServerIngress, IngressDispatcherLoop, IngressDispatcherLoopError, IngressOutput,
@@ -7,7 +6,7 @@ use restate_schema_impl::Schemas;
 use tokio::select;
 use tokio::sync::mpsc;
 
-type ExternalClientIngress = HyperServerIngress<Schemas, DefaultServiceInvocationFactory<Schemas>>;
+type ExternalClientIngress = HyperServerIngress<Schemas>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum IngressIntegrationError {

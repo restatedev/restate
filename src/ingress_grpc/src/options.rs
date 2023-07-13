@@ -3,6 +3,7 @@ use super::*;
 
 use prost_reflect::{DeserializeOptions, SerializeOptions};
 use restate_schema_api::json::JsonMapperResolver;
+use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::identifiers::IngressId;
@@ -162,29 +163,25 @@ impl Options {
         1000
     }
 
-    pub fn build<Schemas, JsonDecoder, JsonEncoder, InvocationFactory>(
+    pub fn build<Schemas, JsonDecoder, JsonEncoder>(
         self,
         ingress_id: IngressId,
         schemas: Schemas,
-        invocation_factory: InvocationFactory,
         channel_size: usize,
-    ) -> (
-        IngressDispatcherLoop,
-        HyperServerIngress<Schemas, InvocationFactory>,
-    )
+    ) -> (IngressDispatcherLoop, HyperServerIngress<Schemas>)
     where
         Schemas: JsonMapperResolver<
                 JsonToProtobufMapper = JsonDecoder,
                 ProtobufToJsonMapper = JsonEncoder,
             > + ServiceMetadataResolver
             + ProtoSymbolResolver
+            + KeyExtractor
             + Clone
             + Send
             + Sync
             + 'static,
         JsonDecoder: Send,
         JsonEncoder: Send,
-        InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
     {
         let Options {
             bind_address,
@@ -200,7 +197,6 @@ impl Options {
             json,
             ingress_id,
             schemas,
-            invocation_factory,
             ingress_dispatcher_loop.create_command_sender(),
         );
 

@@ -15,9 +15,10 @@ use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
 use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
 use restate_schema_api::json::JsonMapperResolver;
+use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
-use restate_types::identifiers::IngressId;
+use restate_types::identifiers::{IngressId, InvocationId};
 use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
 use tokio::sync::Semaphore;
 use tonic_web::{GrpcWebLayer, GrpcWebService};
@@ -25,13 +26,12 @@ use tower::{BoxError, Layer, Service};
 use tracing::{debug, info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-pub struct Handler<InvocationFactory, Schemas, ProtoSymbols>
+pub struct Handler<Schemas, ProtoSymbols>
 where
     ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     ingress_id: IngressId,
     json: JsonOptions,
-    invocation_factory: InvocationFactory,
     schemas: Schemas,
     reflection_server:
         GrpcWebService<ServerReflectionServer<ServerReflectionService<ProtoSymbols>>>,
@@ -39,10 +39,8 @@ where
     global_concurrency_semaphore: Arc<Semaphore>,
 }
 
-impl<InvocationFactory, Schemas, ProtoSymbols> Clone
-    for Handler<InvocationFactory, Schemas, ProtoSymbols>
+impl<Schemas, ProtoSymbols> Clone for Handler<Schemas, ProtoSymbols>
 where
-    InvocationFactory: Clone,
     Schemas: Clone,
     ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
@@ -50,7 +48,6 @@ where
         Self {
             ingress_id: self.ingress_id,
             json: self.json.clone(),
-            invocation_factory: self.invocation_factory.clone(),
             schemas: self.schemas.clone(),
             reflection_server: self.reflection_server.clone(),
             dispatcher_command_sender: self.dispatcher_command_sender.clone(),
@@ -59,14 +56,13 @@ where
     }
 }
 
-impl<InvocationFactory, Schemas> Handler<InvocationFactory, Schemas, Schemas>
+impl<Schemas> Handler<Schemas, Schemas>
 where
     Schemas: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     pub fn new(
         ingress_id: IngressId,
         json: JsonOptions,
-        invocation_factory: InvocationFactory,
         schemas: Schemas,
         dispatcher_command_sender: DispatcherCommandSender,
         global_concurrency_semaphore: Arc<Semaphore>,
@@ -74,7 +70,6 @@ where
         Self {
             ingress_id,
             json,
-            invocation_factory,
             schemas: schemas.clone(),
             reflection_server: GrpcWebLayer::new().layer(ServerReflectionServer::new(
                 ServerReflectionService(schemas),
@@ -87,13 +82,12 @@ where
 
 // TODO When porting to hyper 1.0 https://github.com/restatedev/restate/issues/96
 //  replace this impl with hyper::Service impl
-impl<InvocationFactory, Schemas, JsonDecoder, JsonEncoder> Service<Request<HyperBody>>
-    for Handler<InvocationFactory, Schemas, Schemas>
+impl<Schemas, JsonDecoder, JsonEncoder> Service<Request<HyperBody>> for Handler<Schemas, Schemas>
 where
-    InvocationFactory: ServiceInvocationFactory + Clone + Send + 'static,
     JsonDecoder: Send,
     JsonEncoder: Send,
     Schemas: JsonMapperResolver<JsonToProtobufMapper = JsonDecoder, ProtobufToJsonMapper = JsonEncoder>
+        + KeyExtractor
         + ServiceMetadataResolver
         + ProtoSymbolResolver
         + Clone
@@ -189,7 +183,7 @@ where
 
         // Encapsulate in this closure the remaining part of the processing
         let ingress_id = self.ingress_id;
-        let invocation_factory = self.invocation_factory.clone();
+        let schemas = self.schemas.clone();
         let dispatcher_command_sender = self.dispatcher_command_sender.clone();
         let ingress_request_handler = move |ingress_request: IngressRequest| {
             let (req_headers, req_payload) = ingress_request;
@@ -233,26 +227,27 @@ where
                     wait_response = false;
                 }
 
-                // Create the service_invocation
-                let service_invocation = match invocation_factory.create(
-                    &service_name,
-                    &method_name,
+                // Extract the key
+                let key = schemas
+                    .extract(&service_name, &method_name, req_payload.clone())
+                    .map_err(|err| match err {
+                        restate_schema_api::key::KeyExtractorError::NotFound => {
+                            Status::not_found(format!(
+                                "Service method {}/{} not found",
+                                service_name,
+                                method_name
+                            ))
+                        }
+                        err => Status::internal(err.to_string())
+                    })?;
+
+                let service_invocation = ServiceInvocation::new(
+                    ServiceInvocationId::new(service_name, key, InvocationId::now_v7()),
+                    method_name.into(),
                     req_payload,
                     response_sink,
-                    SpanRelation::Parent(ingress_span_context)
-                ) {
-                    Ok(i) => i,
-                    Err(e) => {
-                        warn!("Cannot create service invocation: {:?}", e);
-                        let status = match e {
-                            err @ ServiceInvocationFactoryError::UnknownServiceMethod { .. } => {
-                                Status::not_found(err.to_string())
-                            }
-                            err @ ServiceInvocationFactoryError::KeyExtraction(_) => Status::internal(err.to_string())
-                        };
-                        return Err(status);
-                    }
-                };
+                    SpanRelation::Parent(ingress_span_context),
+                );
 
                 // Ingress built-in service just sends a fire and forget and closes
                 if !wait_response {
