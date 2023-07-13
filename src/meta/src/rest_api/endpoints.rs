@@ -31,9 +31,17 @@ pub struct RegisterServiceEndpointRequest {
     /// If `true`, it will override, if existing, any endpoint using the same `uri`.
     /// Beware that this can lead in-flight invocations to an unrecoverable error state.
     ///
+    /// By default, this is `true` but it might change in future to `false`.
+    ///
     /// See the [versioning documentation](http://restate.dev/docs/deployment-operations/versioning) for more information.
-    #[serde(default)]
+    #[serde(default = "RegisterServiceEndpointRequest::default_force")]
     pub force: bool,
+}
+
+impl RegisterServiceEndpointRequest {
+    fn default_force() -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
