@@ -446,13 +446,12 @@ pub(crate) mod schemas_impl {
                                     latest_endpoint, ..
                                 } = &mut service_schemas.location
                                 {
-                                    // We need to remove the service from the proto_symbols.
-                                    // We re-insert it later with the new endpoint id
-                                    self.proto_symbols
-                                        .remove_service(latest_endpoint, &service_descriptor);
-
                                     *latest_endpoint = endpoint_id.clone();
                                 }
+
+                                // We need to remove the service from the proto_symbols.
+                                // We re-insert it later with the new endpoint id
+                                self.proto_symbols.remove_service(&service_descriptor);
                             })
                             .or_insert_with(|| {
                                 ServiceSchemas::new(
@@ -482,13 +481,8 @@ pub(crate) mod schemas_impl {
                     match entry {
                         Entry::Occupied(e) if e.get().revision == revision => {
                             let schemas = e.remove();
-                            if let ServiceLocation::ServiceEndpoint {
-                                latest_endpoint, ..
-                            } = &schemas.location
-                            {
-                                self.proto_symbols
-                                    .remove_service(latest_endpoint, schemas.service_descriptor());
-                            }
+                            self.proto_symbols
+                                .remove_service(schemas.service_descriptor());
                         }
                         _ => {}
                     }
@@ -511,7 +505,7 @@ pub(crate) mod schemas_impl {
                         match (*old_public_value, new_public_value) {
                             (true, false) => {
                                 self.proto_symbols
-                                    .remove_service(latest_endpoint, schemas.service_descriptor());
+                                    .remove_service(schemas.service_descriptor());
                             }
                             (false, true) => {
                                 self.proto_symbols

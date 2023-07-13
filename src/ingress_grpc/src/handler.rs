@@ -140,7 +140,7 @@ where
         // Parse service_name and method_name
         let mut path_parts: Vec<&str> = req.uri().path().split('/').collect();
         if path_parts.len() != 3 {
-            // Let's immediately reply with a status code not found
+            // Let's immediately reply with a status code invalid argument
             debug!(
                 "Cannot parse the request path '{}' into a valid GRPC/Connect request path. \
                 Allowed format is '/Service-Name/Method-Name'",

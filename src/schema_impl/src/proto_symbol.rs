@@ -42,7 +42,7 @@ struct FileEntry {
     reference_count: usize,
     serialized: Bytes,
     // This is used for removal
-    message_or_enum_symbols: HashSet<String>,
+    contained_message_or_enum_symbols: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -54,8 +54,8 @@ struct FilesIndex(
 impl FilesIndex {
     fn add(
         &mut self,
-        endpoint_id: &EndpointId,
         normalized_file_name: String,
+        endpoint_id: &EndpointId,
         file_desc: FileDescriptor,
         message_or_enum_symbols: HashSet<String>,
     ) {
@@ -63,7 +63,7 @@ impl FilesIndex {
             .entry(normalized_file_name)
             .and_modify(|file_entry| {
                 debug_assert_eq!(
-                    file_entry.message_or_enum_symbols, message_or_enum_symbols,
+                    file_entry.contained_message_or_enum_symbols, message_or_enum_symbols,
                     "File should have the same symbols set"
                 );
                 file_entry.reference_count += 1;
@@ -76,24 +76,24 @@ impl FilesIndex {
                 )
                 .encode_to_vec()
                 .into(),
-                message_or_enum_symbols,
+                contained_message_or_enum_symbols: message_or_enum_symbols,
             });
     }
 
     /// Returns the message_or_enum symbols to remove
-    fn remove(&mut self, normalized_file_name: String) -> Option<(String, HashSet<String>)> {
+    fn remove(&mut self, normalized_file_name: &str) -> Option<HashSet<String>> {
         if let Some(FileEntry {
             reference_count, ..
-        }) = self.0.get_mut(&normalized_file_name)
+        }) = self.0.get_mut(normalized_file_name)
         {
             *reference_count -= 1;
             if *reference_count == 0 {
                 let symbols_to_remove = self
                     .0
-                    .remove(&normalized_file_name)
+                    .remove(normalized_file_name)
                     .unwrap()
-                    .message_or_enum_symbols;
-                return Some((normalized_file_name, symbols_to_remove));
+                    .contained_message_or_enum_symbols;
+                return Some(symbols_to_remove);
             }
         }
         None
@@ -108,14 +108,14 @@ impl FilesIndex {
 
 #[derive(Debug, Clone)]
 enum Symbol {
-    /// Service and methods have a vector containing all the service dependencies.
+    /// Service and methods have a vector containing all the files defining the service and its dependencies.
     /// When removing a service, all the methods are removed as well.
     /// File names are normalized.
     ServiceOrMethod(Arc<Vec<String>>),
 
     /// Message or enum have a vector specifying all the files containing this symbol.
     /// The last entry of the vector is the file that should be served when the symbol is requested.
-    /// When removing a file, the file should be removed by this vector list as well.
+    /// When removing a file, the file should be removed from this vector list as well.
     /// File names are normalized.
     MessageOrEnum(Vec<String>),
 }
@@ -146,15 +146,17 @@ impl SymbolsIndex {
         if symbol_name.starts_with("dev.restate") || symbol_name.starts_with("google.protobuf") {
             trace!(
                 "Found a type collision when registering symbol '{}'. \
-                        For dev.restate types and google.protobuf types, \
-                        this should be fine as the definition of these types don't change.",
+                For dev.restate types and google.protobuf types, \
+                this should be fine as the definition of these types don't change.",
                 symbol_name
             );
         } else {
             debug!(
-                        "Found a type collision when registering symbol '{}'. \
-                        This might indicate two services are sharing the same type definitions, \
-                        which is fine as long as the type definitions are equal/compatible with each other.", symbol_name);
+                "Found a type collision when registering symbol '{}'. \
+                This might indicate two services are sharing the same type definitions, \
+                which is fine as long as the type definitions are equal/compatible with each other.",
+                symbol_name
+            );
         }
 
         match symbol {
@@ -169,10 +171,20 @@ impl SymbolsIndex {
         };
     }
 
-    fn remove_service(&mut self, service_name: &str, methods: impl Iterator<Item = String>) {
-        self.0.remove(service_name);
+    fn remove_service(
+        &mut self,
+        service_name: &str,
+        methods: impl Iterator<Item = String>,
+    ) -> Arc<Vec<String>> {
+        let service_symbol = self.0.remove(service_name);
         for method in methods {
             self.0.remove(&method);
+        }
+        match service_symbol {
+            Some(Symbol::ServiceOrMethod(arc)) => arc,
+            _ => {
+                panic!("The removed symbol should be a ServiceOrMethod!")
+            }
         }
     }
 
@@ -181,6 +193,9 @@ impl SymbolsIndex {
             if let Some(pos) = files.iter().position(|x| x.as_str() == file) {
                 files.remove(pos);
             }
+            if files.is_empty() {
+                self.0.remove(symbol_name);
+            }
         }
     }
 
@@ -188,7 +203,7 @@ impl SymbolsIndex {
         self.0.contains_key(symbol_name)
     }
 
-    fn get_symbol(&self, symbol_name: &str) -> Option<impl Iterator<Item = &String>> {
+    fn get_files_of_symbol(&self, symbol_name: &str) -> Option<impl Iterator<Item = &String>> {
         self.0.get(symbol_name).map(|symbol| match symbol {
             Symbol::ServiceOrMethod(deps) => itertools::Either::Right(deps.iter()),
             Symbol::MessageOrEnum(files) => itertools::Either::Left(files.last().into_iter()),
@@ -233,7 +248,8 @@ impl ProtoSymbols {
     ) {
         debug_assert!(
             !self.symbols.contains(service_desc.full_name()),
-            "Cannot add a service if already exists"
+            "Cannot add service '{}' because it already exists",
+            service_desc.full_name()
         );
 
         // Collect all the files belonging to this service
@@ -269,43 +285,33 @@ impl ProtoSymbols {
                 self.symbols.add_message_or_enum(symbol, file_name.clone());
             }
 
-            // Add the symbol
+            // Add the file descriptor
             self.files
-                .add(endpoint_id, file_name, file_desc, message_or_enum_symbols);
+                .add(file_name, endpoint_id, file_desc, message_or_enum_symbols);
         }
     }
 
-    pub(super) fn remove_service(
-        &mut self,
-        endpoint_id: &EndpointId,
-        service_desc: &ServiceDescriptor,
-    ) {
+    pub(super) fn remove_service(&mut self, service_desc: &ServiceDescriptor) {
         debug_assert!(
             self.symbols.contains(service_desc.full_name()),
-            "Cannot remove a service that doesn't exist"
+            "Cannot remove service '{}' because it doesn't exist",
+            service_desc.full_name()
         );
 
         // Remove the service from the symbols index
         let methods = service_desc.methods();
-        self.symbols.remove_service(
+        let service_related_files = self.symbols.remove_service(
             service_desc.full_name(),
             methods.map(|m| m.name().to_string()),
         );
 
-        // Collect all the files belonging to this service
-        let files: Vec<String> = collect_service_related_file_descriptors(service_desc)
-            .into_iter()
-            .map(|file_desc| normalize_file_name(endpoint_id, file_desc.name()))
-            .collect();
-
-        // For each file, let's reference count. If we reach 0, we need to remove the file symbols
-        for file_name in files {
-            if let Some((file_name, message_or_enum_symbols_to_remove)) =
-                self.files.remove(file_name.clone())
-            {
+        // For each file related to the service, remove it
+        for file_name in service_related_files.iter() {
+            // If when removing a file we free it, then we need to remove the related message and symbols as well
+            if let Some(message_or_enum_symbols_to_remove) = self.files.remove(file_name) {
                 for message_or_enum_symbol in message_or_enum_symbols_to_remove {
                     self.symbols
-                        .remove_message_or_enum(&message_or_enum_symbol, &file_name);
+                        .remove_message_or_enum(&message_or_enum_symbol, file_name);
                 }
             }
         }
@@ -318,7 +324,7 @@ impl ProtoSymbols {
 
     fn get_symbol(&self, symbol_name: &str) -> Option<Vec<Bytes>> {
         debug!("Get symbol {}", symbol_name);
-        self.symbols.get_symbol(symbol_name).map(|files| {
+        self.symbols.get_files_of_symbol(symbol_name).map(|files| {
             files
                 .map(|file_name| self.get_file(file_name).unwrap())
                 .collect::<Vec<_>>()
@@ -368,24 +374,24 @@ fn rec_collect_dependencies(file_desc: FileDescriptor) -> Vec<FileDescriptor> {
 // https://github.com/hyperium/tonic/blob/9990e6ef9d00394b5662719662062cc85e6e4700/tonic-reflection/src/server.rs
 
 fn collect_message_or_enum_symbols(symbols: &mut HashSet<String>, fd: &FileDescriptor) {
-    for msg in fd.messages() {
-        process_message(symbols, msg);
+    for msg_desc in fd.messages() {
+        process_message(symbols, msg_desc);
     }
 
-    for en in fd.enums() {
-        process_enum(symbols, en);
+    for enum_desc in fd.enums() {
+        process_enum(symbols, enum_desc);
     }
 }
 
 fn process_message(symbols: &mut HashSet<String>, msg: MessageDescriptor) {
     symbols.insert(msg.full_name().to_string());
 
-    for nested in msg.child_messages() {
-        process_message(symbols, nested);
+    for nested_msg in msg.child_messages() {
+        process_message(symbols, nested_msg);
     }
 
-    for nested in msg.child_enums() {
-        process_enum(symbols, nested);
+    for nested_enum in msg.child_enums() {
+        process_enum(symbols, nested_enum);
     }
 }
 
