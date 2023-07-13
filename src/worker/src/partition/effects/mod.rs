@@ -142,7 +142,7 @@ pub(crate) enum Effect {
         service_invocation_id: ServiceInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
-        pointer_span_id: SpanId,
+        pointer_span_id: Option<SpanId>,
     },
     NotifyInvocationResult {
         service_invocation_id: ServiceInvocationId,
@@ -566,20 +566,34 @@ impl Effect {
                 pointer_span_id,
             } => {
                 // create an instantaneous 'pointer span' which lives in the calling trace at the
-                // time of background call, and exists only to be linked to by the new trace that
-                // will be created for the background invocation
+                // time of background call, and primarily exists to be linked to by the new trace
+                // that will be created for the background invocation, but even if that trace wasn't
+                // sampled for some reason, it's still worth producing this span
 
-                info_span_if_leader!(
-                    is_leader,
-                    span_context.is_sampled(),
-                    span_context.as_parent(),
-                    "background_invoke",
-                    otel.name = format!("background_invoke {service_method}"),
-                    rpc.service = %service_invocation_id.service_id.service_name,
-                    rpc.method = service_method,
-                    restate.invocation.sid = %service_invocation_id,
-                    restate.internal.span_id = %pointer_span_id,
-                );
+                if let Some(pointer_span_id) = pointer_span_id {
+                    info_span_if_leader!(
+                        is_leader,
+                        span_context.is_sampled(),
+                        span_context.as_parent(),
+                        "background_invoke",
+                        otel.name = format!("background_invoke {service_method}"),
+                        rpc.service = %service_invocation_id.service_id.service_name,
+                        rpc.method = service_method,
+                        restate.invocation.sid = %service_invocation_id,
+                        restate.internal.span_id = %pointer_span_id,
+                    );
+                } else {
+                    info_span_if_leader!(
+                        is_leader,
+                        span_context.is_sampled(),
+                        span_context.as_parent(),
+                        "background_invoke",
+                        otel.name = format!("background_invoke {service_method}"),
+                        rpc.service = %service_invocation_id.service_id.service_name,
+                        rpc.method = service_method,
+                        restate.invocation.sid = %service_invocation_id,
+                    );
+                }
             }
             Effect::NotifyInvocationResult {
                 service_invocation_id,
@@ -907,7 +921,7 @@ impl Effects {
         service_invocation_id: ServiceInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
-        pointer_span_id: SpanId,
+        pointer_span_id: Option<SpanId>,
     ) {
         self.effects.push(Effect::BackgroundInvoke {
             service_invocation_id,

@@ -274,8 +274,7 @@ impl SpanRelation {
 
     fn is_sampled(&self) -> bool {
         match self {
-            // we only expect this in tests where we always sample
-            SpanRelation::None => true,
+            SpanRelation::None => false,
             SpanRelation::Parent(span_context) => span_context.is_sampled(),
             SpanRelation::Linked(span_context) => span_context.is_sampled(),
         }
