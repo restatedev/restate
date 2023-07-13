@@ -43,6 +43,9 @@ pub enum RegistrationError {
     #[error("an endpoint with the same id {0} already exists in the registry")]
     #[code(restate_errors::META0004)]
     OverrideEndpoint(EndpointId),
+    #[error("detected a new service {0} revision with a service instance type different from the previous revision")]
+    #[code(restate_errors::META0006)]
+    DifferentServiceInstanceType(String),
     #[error("missing expected field {0} in descriptor")]
     MissingFieldInDescriptor(&'static str),
     #[error("missing service {0} in descriptor")]
@@ -172,7 +175,7 @@ pub(crate) mod schemas_impl {
     use restate_types::identifiers::{EndpointId, ServiceRevision};
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
-    use tracing::{debug, info};
+    use tracing::{debug, info, warn};
 
     const RESTATE_SERVICE_NAME_PREFIX: &str = "dev.restate.";
     const GRPC_SERVICE_NAME_PREFIX: &str = "grpc.";
@@ -323,8 +326,14 @@ pub(crate) mod schemas_impl {
 
             if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
                 if allow_overwrite {
-                    // If we need to override the endpoint we need to remove old services
+                    // If we need to overwrite the endpoint we need to remove old services
                     for (svc_name, revision) in &existing_endpoint.services {
+                        warn!(
+                            restate.service_endpoint.id = %endpoint_id,
+                            restate.service_endpoint.url = %endpoint_metadata.address(),
+                            "Going to remove service {} due to a forced service endpoint update",
+                            svc_name
+                        );
                         result_commands.push(SchemasUpdateCommand::RemoveService {
                             name: svc_name.to_string(),
                             revision: *revision,
@@ -343,6 +352,24 @@ pub(crate) mod schemas_impl {
                 // For the time being when updating we overwrite existing data
                 let revision = if let Some(service_schemas) = self.services.get(service_meta.name())
                 {
+                    // Check instance type
+                    if service_schemas.instance_type != service_meta.instance_type {
+                        if allow_overwrite {
+                            warn!(
+                                restate.service_endpoint.id = %endpoint_id,
+                                restate.service_endpoint.url = %endpoint_metadata.address(),
+                                "Going to overwrite service instance type {} due to a forced service endpoint update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
+                                service_meta.name(),
+                                service_schemas.instance_type,
+                                service_meta.instance_type
+                            );
+                        } else {
+                            return Err(RegistrationError::DifferentServiceInstanceType(
+                                service_meta.name.clone(),
+                            ));
+                        }
+                    }
+
                     service_schemas.revision.wrapping_add(1)
                 } else {
                     1
@@ -655,6 +682,44 @@ pub(crate) mod schemas_impl {
             schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 2);
             schemas.assert_resolves_endpoint(mocks::ANOTHER_GREETER_SERVICE_NAME, endpoint_2.id());
             schemas.assert_service_revision(mocks::ANOTHER_GREETER_SERVICE_NAME, 1);
+        }
+
+        #[test]
+        fn register_new_endpoint_updating_old_service_fails_with_different_instance_type() {
+            let schemas = Schemas::default();
+
+            let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:8080");
+            let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:8081");
+
+            schemas
+                .apply_updates(
+                    schemas
+                        .compute_new_endpoint_updates(
+                            endpoint_1.clone(),
+                            vec![ServiceRegistrationRequest::new(
+                                mocks::GREETER_SERVICE_NAME.to_string(),
+                                ServiceInstanceType::Unkeyed,
+                            )],
+                            mocks::DESCRIPTOR_POOL.clone(),
+                            false,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
+
+            schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_1.id());
+
+            let compute_result = schemas.compute_new_endpoint_updates(
+                endpoint_2,
+                vec![ServiceRegistrationRequest::new(
+                    mocks::GREETER_SERVICE_NAME.to_string(),
+                    ServiceInstanceType::Singleton,
+                )],
+                mocks::DESCRIPTOR_POOL.clone(),
+                false,
+            );
+
+            assert!(let Err(RegistrationError::DifferentServiceInstanceType(_)) = compute_result);
         }
 
         #[test]

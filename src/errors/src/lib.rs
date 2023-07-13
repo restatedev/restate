@@ -26,5 +26,5 @@ mod helper;
 
 declare_restate_error_codes!(
     RT0001, RT0002, RT0003, RT0004, RT0005, RT0006, META0001, META0002, META0003, META0004,
-    META0005
+    META0005, META0006
 );
