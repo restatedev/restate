@@ -17,7 +17,7 @@ use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServ
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_types::identifiers::IngressId;
-use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation, SpanRelationType};
+use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
 use tokio::sync::Semaphore;
 use tonic_web::{GrpcWebLayer, GrpcWebService};
 use tower::{BoxError, Layer, Service};
@@ -219,7 +219,7 @@ where
                     &method_name,
                     req_payload,
                     response_sink,
-                    SpanRelation::Cause(SpanRelationType::Parent(ingress_span_context.span_id()), ingress_span_context)
+                    SpanRelation::Parent(ingress_span_context)
                 ) {
                     Ok(i) => i,
                     Err(e) => {
@@ -301,10 +301,7 @@ where
 
 fn span_relation(request_span: &SpanContext) -> SpanRelation {
     if request_span.is_valid() {
-        SpanRelation::Cause(
-            SpanRelationType::Parent(request_span.span_id()),
-            request_span.clone(),
-        )
+        SpanRelation::Parent(request_span.clone())
     } else {
         SpanRelation::None
     }

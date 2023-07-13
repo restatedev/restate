@@ -24,7 +24,7 @@ use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId, ServiceInvocationId};
 use restate_types::invocation::{
     InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, SpanRelation, SpanRelationType,
+    ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
 };
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::message::MessageIndex;
@@ -571,8 +571,8 @@ where
                 );
 
                 let_assert!(
-                    Some(SpanRelationType::Linked(_, pointer_span_id)) =
-                        span_context.span_relation()
+                    Some(SpanRelationCause::Linked(_, pointer_span_id)) =
+                        span_context.span_cause()
                 );
 
                 let method = request.method_name.to_string();

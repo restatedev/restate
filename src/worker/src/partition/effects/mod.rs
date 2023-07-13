@@ -596,7 +596,7 @@ impl Effect {
                 info_span_if_leader!(
                     is_leader,
                     span_context.is_sampled(),
-                    span_context.cause(),
+                    span_context.causing_span_relation(),
                     "invoke",
                     otel.name = format!("invoke {service_method}"),
                     rpc.service = %service_invocation_id.service_id.service_name,

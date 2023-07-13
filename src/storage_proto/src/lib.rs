@@ -479,7 +479,7 @@ pub mod storage {
                     let trace_id = Bytes::copy_from_slice(&span_context.trace_id().to_bytes());
                     let is_remote = span_context.is_remote();
                     let span_relation = value
-                        .span_relation()
+                        .span_cause()
                         .map(|span_relation| SpanRelation::from(span_relation.clone()));
 
                     SpanContext {
@@ -493,7 +493,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<SpanRelation> for restate_types::invocation::SpanRelationType {
+            impl TryFrom<SpanRelation> for restate_types::invocation::SpanRelationCause {
                 type Error = ConversionError;
 
                 fn try_from(value: SpanRelation) -> Result<Self, Self::Error> {
@@ -516,14 +516,14 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_types::invocation::SpanRelationType> for SpanRelation {
-                fn from(value: restate_types::invocation::SpanRelationType) -> Self {
+            impl From<restate_types::invocation::SpanRelationCause> for SpanRelation {
+                fn from(value: restate_types::invocation::SpanRelationCause) -> Self {
                     let kind = match value {
-                        restate_types::invocation::SpanRelationType::Parent(span_id) => {
+                        restate_types::invocation::SpanRelationCause::Parent(span_id) => {
                             let span_id = u64::from_be_bytes(span_id.to_bytes());
                             span_relation::Kind::Parent(span_relation::Parent { span_id })
                         }
-                        restate_types::invocation::SpanRelationType::Linked(trace_id, span_id) => {
+                        restate_types::invocation::SpanRelationCause::Linked(trace_id, span_id) => {
                             let span_id = u64::from_be_bytes(span_id.to_bytes());
                             let trace_id = Bytes::copy_from_slice(&trace_id.to_bytes());
                             span_relation::Kind::Linked(span_relation::Linked { trace_id, span_id })
