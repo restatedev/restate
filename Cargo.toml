@@ -8,7 +8,7 @@ members = [
 default-members = [ "src/*", "src/codederror/impl" ]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 authors = ["restate.dev"]
 edition = "2021"
 rust-version = "1.66"
