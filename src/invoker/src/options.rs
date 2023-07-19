@@ -13,7 +13,6 @@ use serde_with::serde_as;
 /// # HTTP/2 Keep alive options
 ///
 /// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
-/// If unset, HTTP/2 keep-alive are disabled.
 ///
 /// Please note: most gateways don't propagate the HTTP/2 keep-alive between downstream and upstream hosts.
 /// In those environments, you need to make sure the gateway can detect a broken connection to the upstream service endpoint(s).
@@ -161,6 +160,9 @@ pub struct Options {
     concurrency_limit: Option<usize>,
 
     /// # HTTP/2 Keep-alive
+    ///
+    /// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
+    /// If unset, HTTP/2 keep-alive are disabled.
     #[cfg_attr(
         feature = "options_schema",
         schemars(default = "Options::default_http2_keep_alive")
