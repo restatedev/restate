@@ -10,6 +10,63 @@ use restate_types::journal::raw::PlainRawEntry;
 use restate_types::retries::RetryPolicy;
 use serde_with::serde_as;
 
+/// # HTTP/2 Keep alive options
+///
+/// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
+/// If unset, HTTP/2 keep-alive are disabled.
+///
+/// Please note: most gateways don't propagate the HTTP/2 keep-alive between downstream and upstream hosts.
+/// In those environments, you need to make sure the gateway can detect a broken connection to the upstream service endpoint(s).
+#[serde_as]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+pub struct Http2KeepAliveOptions {
+    /// # Timeout
+    ///
+    /// Sets an interval for HTTP/2 PING frames should be sent to keep a
+    /// connection alive. If unset, HTTP/2 keep-alive are disabled.
+    ///
+    /// You should set this timeout with a value lower than the `response_abort_timeout`.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(with = "String", default = "Http2KeepAliveOptions::default_timeout")
+    )]
+    pub(crate) timeout: humantime::Duration,
+
+    /// # HTTP/2 Keep-alive interval
+    ///
+    /// Sets a timeout for receiving an acknowledgement of the keep-alive ping.
+    ///
+    /// If the ping is not acknowledged within the timeout, the connection will
+    /// be closed.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(with = "String", default = "Http2KeepAliveOptions::default_interval")
+    )]
+    pub(crate) interval: humantime::Duration,
+}
+
+impl Default for Http2KeepAliveOptions {
+    fn default() -> Self {
+        Self {
+            timeout: Http2KeepAliveOptions::default_timeout(),
+            interval: Http2KeepAliveOptions::default_interval(),
+        }
+    }
+}
+
+impl Http2KeepAliveOptions {
+    fn default_timeout() -> humantime::Duration {
+        (Duration::from_secs(40)).into()
+    }
+
+    fn default_interval() -> humantime::Duration {
+        (Duration::from_secs(20)).into()
+    }
+}
+
 /// # Invoker options
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
@@ -103,6 +160,14 @@ pub struct Options {
     /// Number of concurrent invocations that can be processed by the invoker.
     concurrency_limit: Option<usize>,
 
+    /// # HTTP/2 Keep-alive
+    #[cfg_attr(
+        feature = "options_schema",
+        schemars(default = "Options::default_http2_keep_alive")
+    )]
+    http2_keep_alive: Option<Http2KeepAliveOptions>,
+
+    // -- Private config options (not exposed in the schema)
     #[cfg_attr(feature = "options_schema", schemars(skip))]
     disable_eager_state: bool,
 }
@@ -118,6 +183,7 @@ impl Default for Options {
             proxy_uri: None,
             tmp_dir: Options::default_tmp_dir(),
             concurrency_limit: None,
+            http2_keep_alive: Options::default_http2_keep_alive(),
             disable_eager_state: false,
         }
     }
@@ -149,6 +215,10 @@ impl Options {
         restate_fs_util::generate_temp_dir_name("invoker")
     }
 
+    fn default_http2_keep_alive() -> Option<Http2KeepAliveOptions> {
+        Some(Http2KeepAliveOptions::default())
+    }
+
     pub fn build<JR, JS, SR, EE, EMR>(
         self,
         journal_reader: JR,
@@ -171,6 +241,7 @@ impl Options {
             self.message_size_warning,
             self.message_size_limit,
             self.proxy_uri,
+            self.http2_keep_alive,
             self.tmp_dir,
             self.concurrency_limit,
             journal_reader,

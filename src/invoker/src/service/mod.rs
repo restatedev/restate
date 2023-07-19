@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::options::Http2KeepAliveOptions;
 use crate::service::invocation_task::InvocationTask;
 use crate::service::status_store::InvocationStatusStore;
 use codederror::CodedError;
@@ -162,6 +163,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
         message_size_warning: usize,
         message_size_limit: Option<usize>,
         proxy: Option<Proxy>,
+        keep_alive_options: Option<Http2KeepAliveOptions>,
         tmp_dir: PathBuf,
         concurrency_limit: Option<usize>,
         journal_reader: JR,
@@ -179,7 +181,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
-                    client: Self::create_client(proxy),
+                    client: Self::create_client(proxy, keep_alive_options),
                     suspension_timeout,
                     response_abort_timeout,
                     disable_eager_state,
@@ -202,17 +204,27 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
 
     // TODO a single client uses the pooling provided by hyper, but this is not enough.
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
-    fn create_client(proxy: Option<Proxy>) -> HttpsClient {
-        hyper::Client::builder()
-            .http2_only(true)
-            .build::<_, hyper::Body>(ProxyConnector::new(
-                proxy,
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http2()
-                    .build(),
-            ))
+    fn create_client(
+        proxy: Option<Proxy>,
+        keep_alive_options: Option<Http2KeepAliveOptions>,
+    ) -> HttpsClient {
+        let mut builder = hyper::Client::builder();
+        builder.http2_only(true);
+
+        if let Some(keep_alive_options) = keep_alive_options {
+            builder
+                .http2_keep_alive_timeout(keep_alive_options.timeout.into())
+                .http2_keep_alive_interval(Some(keep_alive_options.interval.into()));
+        }
+
+        builder.build::<_, hyper::Body>(ProxyConnector::new(
+            proxy,
+            hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .https_or_http()
+                .enable_http2()
+                .build(),
+        ))
     }
 }
 
@@ -989,6 +1001,7 @@ mod tests {
             Duration::ZERO,
             false,
             1024,
+            None,
             None,
             None,
             tempdir.into_path(),
