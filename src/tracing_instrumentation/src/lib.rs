@@ -23,6 +23,8 @@ use tracing_subscriber::{EnvFilter, Layer};
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
 pub enum Error {
+    #[error("could not initialize tracing: you must specify at least `endpoint` or `json_file_export_path`")]
+    InvalidTracingConfiguration,
     #[error("could not initialize tracing: {0}")]
     Tracing(#[from] TraceError),
     #[error(
@@ -40,6 +42,8 @@ fn default_filter() -> String {
 ///
 /// Configuration for the [OTLP exporter](https://opentelemetry.io/docs/specs/otel/protocol/exporter/) which can export to all OTLP compatible systems (e.g. Jaeger).
 ///
+/// At least `endpoint` or `json_file_export_path` must be configured.
+///
 /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
@@ -49,7 +53,20 @@ pub struct TracingOptions {
     /// Specify the tracing endpoint to send traces to.
     /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
     /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
-    endpoint: String,
+    endpoint: Option<String>,
+
+    /// # JSON File export path
+    ///
+    /// If set, an exporter will be configured to write traces to files using the Jaeger JSON format.
+    /// Each trace file will start with the `trace` prefix.
+    ///
+    /// If unset, no traces will be written to file.
+    ///
+    /// It can be used to export traces in a structured format without configuring a Jaeger agent.
+    ///
+    /// To inspect the traces, open the Jaeger UI and use the Upload JSON feature to load and inspect them.
+    json_file_export_path: Option<String>,
+
     /// # Filter
     ///
     /// Exporter filter configuration.
@@ -71,9 +88,14 @@ impl TracingOptions {
     where
         S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
     {
+        if self.endpoint.is_none() && self.json_file_export_path.is_none() {
+            return Err(Error::InvalidTracingConfiguration);
+        }
+
         let resource = opentelemetry::sdk::Resource::new(
             vec![
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME.string(service_name),
+                opentelemetry_semantic_conventions::resource::SERVICE_NAME
+                    .string(service_name.clone()),
                 opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE.string("Restate"),
                 opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID
                     .string(instance_id.to_string()),
@@ -86,19 +108,39 @@ impl TracingOptions {
         // the following logic is based on `opentelemetry_otlp::span::build_batch_with_exporter`
         // but also injecting ResourceModifyingSpanProcessor around the BatchSpanProcessor
 
-        let exporter = SpanExporterBuilder::from(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(&self.endpoint),
-        )
-        .build_span_exporter()?;
+        let mut tracer_provider_builder = opentelemetry::sdk::trace::TracerProvider::builder()
+            .with_config(opentelemetry::sdk::trace::config().with_resource(resource));
 
-        let provider = opentelemetry::sdk::trace::TracerProvider::builder()
-            .with_span_processor(ResourceModifyingSpanProcessor::new(
-                BatchSpanProcessor::builder(exporter, opentelemetry::runtime::Tokio).build(),
-            ))
-            .with_config(opentelemetry::sdk::trace::config().with_resource(resource))
-            .build();
+        if let Some(endpoint) = &self.endpoint {
+            let exporter = SpanExporterBuilder::from(
+                opentelemetry_otlp::new_exporter()
+                    .tonic()
+                    .with_endpoint(endpoint),
+            )
+            .build_span_exporter()?;
+            tracer_provider_builder =
+                tracer_provider_builder.with_span_processor(ResourceModifyingSpanProcessor::new(
+                    BatchSpanProcessor::builder(exporter, opentelemetry::runtime::Tokio).build(),
+                ));
+        }
+
+        if let Some(path) = &self.json_file_export_path {
+            tracer_provider_builder =
+                tracer_provider_builder.with_span_processor(ResourceModifyingSpanProcessor::new(
+                    BatchSpanProcessor::builder(
+                        JaegerJsonExporter::new(
+                            path.into(),
+                            "trace".to_string(),
+                            service_name,
+                            opentelemetry::runtime::Tokio,
+                        ),
+                        opentelemetry::runtime::Tokio,
+                    )
+                    .build(),
+                ));
+        }
+
+        let provider = tracer_provider_builder.build();
 
         let tracer = SpanModifyingTracer::new(provider.versioned_tracer(
             "opentelemetry-otlp",
@@ -112,59 +154,6 @@ impl TracingOptions {
             .with_threads(false)
             .with_tracked_inactivity(false)
             .with_tracer(tracer)
-            .with_filter(EnvFilter::try_new(&self.filter)?))
-    }
-}
-
-/// # Jaeger File Options
-///
-/// Configuration for the Jaeger file exporter. This exporter writes traces as JSON in the Jaeger format.
-///
-/// It can be used to export traces in a structured format without configuring a Jaeger agent.
-/// To inspect the traces, open the Jaeger UI and use the Upload JSON feature to load and inspect them.
-///
-/// All spans will be sampled.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-pub struct JaegerFileOptions {
-    /// # Path
-    ///
-    /// Specify the path where all the traces will be exported. Each trace file will start with the `trace` prefix.
-    path: String,
-    /// # Filter
-    ///
-    /// Exporter filter configuration.
-    /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
-    #[serde(default = "default_filter")]
-    #[builder(default = "default_filter()")]
-    filter: String,
-}
-
-impl JaegerFileOptions {
-    fn build_layer<S>(
-        &self,
-        restate_service_name: String,
-    ) -> Result<
-        Filtered<
-            tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry::sdk::trace::Tracer>,
-            EnvFilter,
-            S,
-        >,
-        Error,
-    >
-    where
-        S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
-    {
-        Ok(tracing_opentelemetry::layer()
-            .with_tracer(
-                JaegerJsonExporter::new(
-                    self.path.clone().into(),
-                    "trace".to_string(),
-                    restate_service_name,
-                    opentelemetry::runtime::Tokio,
-                )
-                .install_batch(),
-            )
             .with_filter(EnvFilter::try_new(&self.filter)?))
     }
 }
@@ -275,10 +264,6 @@ pub struct Options {
     #[builder(default)]
     tracing: Option<TracingOptions>,
 
-    /// # Jaeger file exporter options
-    #[builder(default)]
-    jaeger_file: Option<JaegerFileOptions>,
-
     /// # Logging options
     #[cfg_attr(feature = "options_schema", schemars(default))]
     #[builder(default)]
@@ -315,14 +300,6 @@ impl Options {
                 .map(|tracing_options| {
                     tracing_options.build_layer(restate_service_name.clone(), instance_id)
                 })
-                .transpose()?,
-        );
-
-        // Jaeger file layer
-        let layers = layers.with(
-            self.jaeger_file
-                .as_ref()
-                .map(|jaeger_file| jaeger_file.build_layer(restate_service_name))
                 .transpose()?,
         );
 
