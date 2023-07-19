@@ -14,8 +14,7 @@ pub use restate_meta::{
     OptionsBuilderError as MetaOptionsBuilderError,
 };
 pub use restate_tracing_instrumentation::{
-    JaegerFileOptions, JaegerFileOptionsBuilder, JaegerFileOptionsBuilderError, LogOptions,
-    LogOptionsBuilder, LogOptionsBuilderError, Options as ObservabilityOptions,
+    LogOptions, LogOptionsBuilder, LogOptionsBuilderError, Options as ObservabilityOptions,
     OptionsBuilder as ObservabilityOptionsBuilder,
     OptionsBuilderError as ObservabilityOptionsBuilderError, TracingOptions, TracingOptionsBuilder,
     TracingOptionsBuilderError,
