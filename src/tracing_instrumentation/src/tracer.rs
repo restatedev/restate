@@ -1,6 +1,7 @@
 use opentelemetry::trace::{OrderMap, TraceId};
 use opentelemetry::trace::{SpanBuilder, SpanId};
 use opentelemetry::{Context, Key, Value};
+use std::cmp;
 use std::collections::HashSet;
 use std::ops::Add;
 
@@ -81,7 +82,12 @@ impl opentelemetry::trace::Tracer for SpanModifyingTracer {
         }
 
         builder.start_time = time(START_TIME, attributes).or(builder.start_time);
-        builder.end_time = time(END_TIME, attributes).or(builder.end_time);
+        // Because we might be messing up with the start/end time due to the fact that we set some of these manually in the attributes,
+        // and not enforce them through the API, we use this additional check to make sure that we don't generate spans with negative duration.
+        builder.end_time = cmp::max(
+            time(END_TIME, attributes).or(builder.end_time),
+            builder.start_time,
+        );
 
         // now that we no longer hold references to the values, we can remove all the keys we used from attributes
         // by using retain, we can do this in a single O(n) scan, which is better than calling delete 1-4 times,
