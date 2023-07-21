@@ -12,12 +12,13 @@ use restate_types::identifiers::{EntryIndex, ServiceId, ServiceInvocationId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{
-    PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
+    EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
 };
-use restate_types::journal::{Completion, CompletionResult, JournalMetadata};
+use restate_types::journal::{Completion, CompletionResult, EntryType, JournalMetadata};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use std::marker::PhantomData;
+use tracing::{debug, warn};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -675,6 +676,20 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             .load_journal_entry(&service_invocation_id.service_id, entry_index)
             .await?
         {
+            if journal_entry.ty() == EntryType::Awakeable
+                && journal_entry.header.is_completed() == Some(true)
+            {
+                // We can ignore when we get an awakeable completion twice as they might be a result of
+                // some request being retried from the ingress to complete the awakeable.
+                // We'll use only the first completion, because changing the awakeable result
+                // after it has been completed for the first time can cause non-deterministic execution.
+                warn!(
+                    restate.invocation.sid = %service_invocation_id,
+                    restate.journal.index = entry_index,
+                    "Trying to complete an awakeable already completed. Ignoring this completion");
+                debug!("Discarded awakeable completion: {:?}", completion_result);
+                return Ok(false);
+            }
             Codec::write_completion(&mut journal_entry, completion_result)?;
             state_storage
                 .store_journal_entry(

@@ -1,12 +1,12 @@
 use super::pb::protocol;
-use std::fmt::Debug;
-
-use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
 use restate_types::journal::raw::*;
 use restate_types::journal::{CompletionResult, Entry, EntryType};
+use std::fmt::Debug;
+use std::mem;
+
 /// This macro generates the pattern matching with arms per entry.
 /// For each entry it first executes `Message#decode` and then `try_into()`.
 /// It expects that for each `{...}Entry` there is a valid `TryFrom<{...}Message>` implementation with `Error = &'static str`.
