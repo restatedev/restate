@@ -20,20 +20,20 @@ use serde_with::serde_as;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 pub struct Http2KeepAliveOptions {
-    /// # Timeout
+    /// # HTTP/2 Keep-alive interval
     ///
     /// Sets an interval for HTTP/2 PING frames should be sent to keep a
-    /// connection alive. If unset, HTTP/2 keep-alive are disabled.
+    /// connection alive.
     ///
     /// You should set this timeout with a value lower than the `response_abort_timeout`.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(
         feature = "options_schema",
-        schemars(with = "String", default = "Http2KeepAliveOptions::default_timeout")
+        schemars(with = "String", default = "Http2KeepAliveOptions::default_interval")
     )]
-    pub(crate) timeout: humantime::Duration,
+    pub(crate) interval: humantime::Duration,
 
-    /// # HTTP/2 Keep-alive interval
+    /// # Timeout
     ///
     /// Sets a timeout for receiving an acknowledgement of the keep-alive ping.
     ///
@@ -42,26 +42,26 @@ pub struct Http2KeepAliveOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(
         feature = "options_schema",
-        schemars(with = "String", default = "Http2KeepAliveOptions::default_interval")
+        schemars(with = "String", default = "Http2KeepAliveOptions::default_timeout")
     )]
-    pub(crate) interval: humantime::Duration,
+    pub(crate) timeout: humantime::Duration,
 }
 
 impl Default for Http2KeepAliveOptions {
     fn default() -> Self {
         Self {
-            timeout: Http2KeepAliveOptions::default_timeout(),
             interval: Http2KeepAliveOptions::default_interval(),
+            timeout: Http2KeepAliveOptions::default_timeout(),
         }
     }
 }
 
 impl Http2KeepAliveOptions {
-    fn default_timeout() -> humantime::Duration {
+    fn default_interval() -> humantime::Duration {
         (Duration::from_secs(40)).into()
     }
 
-    fn default_interval() -> humantime::Duration {
+    fn default_timeout() -> humantime::Duration {
         (Duration::from_secs(20)).into()
     }
 }
