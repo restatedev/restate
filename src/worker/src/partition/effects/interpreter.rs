@@ -3,7 +3,7 @@ use crate::partition::{AckResponse, TimerValue};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use restate_invoker::InvokeInputJournal;
+use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;

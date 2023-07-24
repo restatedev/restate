@@ -59,7 +59,7 @@ where
     }
 }
 
-impl<KeyExtractor, Codec> restate_invoker::EntryEnricher for EntryEnricher<KeyExtractor, Codec>
+impl<KeyExtractor, Codec> restate_invoker_api::EntryEnricher for EntryEnricher<KeyExtractor, Codec>
 where
     KeyExtractor: restate_schema_api::key::KeyExtractor,
     Codec: RawEntryCodec,

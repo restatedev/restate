@@ -3667,12 +3667,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_invoker"
+name = "restate_invoker_api"
 version = "0.1.6"
 dependencies = [
  "anyhow",
  "bytes",
- "bytes-utils",
+ "codederror",
+ "futures",
+ "restate_types",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "restate_invoker_impl"
+version = "0.1.6"
+dependencies = [
+ "anyhow",
+ "bytes",
  "codederror",
  "derive_builder",
  "drain",
@@ -3684,12 +3696,12 @@ dependencies = [
  "itertools 0.11.0",
  "opentelemetry",
  "opentelemetry-http",
- "paste",
  "prost",
  "restate_errors",
  "restate_fs_util",
  "restate_futures_util",
  "restate_hyper_util",
+ "restate_invoker_api",
  "restate_queue",
  "restate_schema_api",
  "restate_service_protocol",
@@ -3974,7 +3986,6 @@ version = "0.1.6"
 dependencies = [
  "ahash",
  "derive_builder",
- "drain",
  "futures-util",
  "pin-project",
  "priority-queue",
@@ -4057,7 +4068,8 @@ dependencies = [
  "pin-project",
  "restate_consensus",
  "restate_ingress_grpc",
- "restate_invoker",
+ "restate_invoker_api",
+ "restate_invoker_impl",
  "restate_network",
  "restate_schema_api",
  "restate_schema_impl",

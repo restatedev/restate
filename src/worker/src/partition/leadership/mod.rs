@@ -2,7 +2,7 @@ use crate::partition::effects::ActuatorMessage;
 use crate::partition::shuffle::Shuffle;
 use crate::partition::{shuffle, storage, AckResponse, TimerValue};
 use futures::{future, Stream, StreamExt};
-use restate_invoker::{InvokeInputJournal, ServiceNotRunning};
+use restate_invoker_api::{InvokeInputJournal, ServiceNotRunning};
 use restate_network::NetworkNotRunning;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
@@ -74,7 +74,7 @@ pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle> {
 
 impl<'a, InvokerInputSender, NetworkHandle> LeadershipState<'a, InvokerInputSender, NetworkHandle>
 where
-    InvokerInputSender: restate_invoker::ServiceHandle,
+    InvokerInputSender: restate_invoker_api::ServiceHandle,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
     pub(crate) fn follower(
@@ -201,7 +201,7 @@ where
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_storage: &PartitionStorage,
         channel_size: usize,
-    ) -> Result<mpsc::Receiver<restate_invoker::Effect>, Error> {
+    ) -> Result<mpsc::Receiver<restate_invoker_api::Effect>, Error> {
         let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
 
         invoker_handle

@@ -1,9 +1,10 @@
-use crate::service::invocation_state_machine::InvocationStateMachine;
-use crate::service::*;
+use super::*;
+
+use restate_invoker_api::Effect;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
 #[derive(Debug, Default)]
-pub(in crate::service) struct InvocationStateMachineManager {
+pub(super) struct InvocationStateMachineManager {
     partitions: HashMap<PartitionLeaderEpoch, PartitionInvocationStateMachineCoordinator>,
 }
 
@@ -15,12 +16,12 @@ struct PartitionInvocationStateMachineCoordinator {
 
 impl InvocationStateMachineManager {
     #[inline]
-    pub(in crate::service) fn has_partition(&self, partition: PartitionLeaderEpoch) -> bool {
+    pub(super) fn has_partition(&self, partition: PartitionLeaderEpoch) -> bool {
         self.partitions.contains_key(&partition)
     }
 
     #[inline]
-    pub(in crate::service) fn resolve_partition_sender(
+    pub(super) fn resolve_partition_sender(
         &self,
         partition: PartitionLeaderEpoch,
     ) -> Option<&mpsc::Sender<Effect>> {
@@ -28,7 +29,7 @@ impl InvocationStateMachineManager {
     }
 
     #[inline]
-    pub(in crate::service) fn resolve_invocation(
+    pub(super) fn resolve_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
         service_invocation_id: &ServiceInvocationId,
@@ -41,7 +42,7 @@ impl InvocationStateMachineManager {
     }
 
     #[inline]
-    pub(in crate::service) fn remove_invocation(
+    pub(super) fn remove_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
         service_invocation_id: &ServiceInvocationId,
@@ -54,7 +55,7 @@ impl InvocationStateMachineManager {
     }
 
     #[inline]
-    pub(in crate::service) fn remove_partition(
+    pub(super) fn remove_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
     ) -> Option<HashMap<ServiceInvocationId, InvocationStateMachine>> {
@@ -64,7 +65,7 @@ impl InvocationStateMachineManager {
     }
 
     #[inline]
-    pub(in crate::service) fn register_partition(
+    pub(super) fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
         sender: mpsc::Sender<Effect>,
@@ -79,7 +80,7 @@ impl InvocationStateMachineManager {
     }
 
     #[inline]
-    pub(in crate::service) fn register_invocation(
+    pub(super) fn register_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
         sid: ServiceInvocationId,
@@ -92,7 +93,7 @@ impl InvocationStateMachineManager {
     }
 
     #[inline]
-    pub(in crate::service) fn registered_partitions(&self) -> Vec<PartitionLeaderEpoch> {
+    pub(super) fn registered_partitions(&self) -> Vec<PartitionLeaderEpoch> {
         self.partitions.keys().cloned().collect()
     }
 

@@ -12,7 +12,7 @@ use std::vec::IntoIter;
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use prost::Message;
-use restate_invoker::{
+use restate_invoker_api::{
     EagerState, Effect, EffectKind, InvokeInputJournal, JournalReader, ServiceHandle, StateReader,
 };
 use restate_service_protocol::pb::protocol::PollInputStreamEntryMessage;

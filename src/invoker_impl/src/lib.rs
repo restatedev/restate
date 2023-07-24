@@ -1,15 +1,23 @@
-use super::*;
+mod input_command;
+mod invocation_state_machine;
+mod invocation_task;
+mod options;
+mod quota;
+mod state_machine_manager;
+mod status_store;
 
-use crate::options::Http2KeepAliveOptions;
-use crate::service::invocation_task::InvocationTask;
-use crate::service::status_store::InvocationStatusStore;
 use codederror::CodedError;
 use drain::ReleaseShutdown;
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
+use invocation_task::InvocationTask;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use restate_errors::warn_it;
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
+use restate_invoker_api::{
+    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
+    StateReader,
+};
 use restate_queue::SegmentQueue;
 use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_timer_queue::TimerQueue;
@@ -19,6 +27,7 @@ use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::Completion;
 use restate_types::retries::RetryPolicy;
+use status_store::InvocationStatusStore;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
@@ -30,31 +39,17 @@ use tokio::task::{AbortHandle, JoinSet};
 use tracing::instrument;
 use tracing::{debug, trace};
 
-mod input_command;
-mod invocation_state_machine;
-mod invocation_task;
-mod quota;
-mod state_machine_manager;
-mod status_store;
-
 pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
+pub use options::{
+    Http2KeepAliveOptions, Http2KeepAliveOptionsBuilder, Http2KeepAliveOptionsBuilderError,
+    Options, OptionsBuilder, OptionsBuilderError,
+};
 
 /// Internal error trait for the invoker errors
 trait InvokerError: std::error::Error {
     fn is_transient(&self) -> bool;
     fn to_invocation_error(&self) -> InvocationError;
-}
-
-impl<InvokerCodedError: InvokerError + CodedError> From<&InvokerCodedError>
-    for InvocationErrorReport
-{
-    fn from(value: &InvokerCodedError) -> Self {
-        InvocationErrorReport {
-            err: value.to_invocation_error(),
-            doc_error_code: value.code(),
-        }
-    }
 }
 
 type HttpsClient = hyper::Client<
@@ -795,8 +790,11 @@ where
                     humantime::format_duration(next_retry_timer_duration),
                     ism.invocation_state_debug()
                 );
-                self.status_store
-                    .on_failure(partition, service_invocation_id.clone(), &error);
+                self.status_store.on_failure(
+                    partition,
+                    service_invocation_id.clone(),
+                    InvocationErrorReport::new(error.to_invocation_error(), error.code()),
+                );
                 self.invocation_state_machine_manager.register_invocation(
                     partition,
                     service_invocation_id.clone(),
@@ -902,9 +900,10 @@ where
 mod tests {
     use super::*;
 
-    use crate::service::invocation_task::InvocationTaskError;
+    use crate::invocation_task::InvocationTaskError;
     use bytes::Bytes;
     use quota::InvokerConcurrencyQuota;
+    use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
     use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
     use restate_test_util::{check, let_assert, test};
     use restate_types::identifiers::InvocationId;

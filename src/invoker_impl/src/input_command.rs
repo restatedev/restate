@@ -1,9 +1,9 @@
-use crate::{
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use restate_invoker_api::{
     Effect, InvocationStatusReport, InvokeInputJournal, ServiceHandle, ServiceNotRunning,
     StatusHandle,
 };
-use futures::future::BoxFuture;
-use futures::FutureExt;
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch, ServiceInvocationId};
 use restate_types::journal::Completion;
 use tokio::sync::mpsc;

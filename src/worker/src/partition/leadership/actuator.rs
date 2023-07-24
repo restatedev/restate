@@ -2,7 +2,7 @@ use crate::partition::effects::{ActuatorMessage, MessageCollector};
 use crate::partition::leadership::{FollowerState, LeaderState, LeadershipState, TimerService};
 use crate::partition::{shuffle, AckResponse, TimerValue};
 use futures::{Stream, StreamExt};
-use restate_invoker::{ServiceHandle, ServiceNotRunning};
+use restate_invoker_api::{ServiceHandle, ServiceNotRunning};
 use restate_types::identifiers::PartitionLeaderEpoch;
 use std::ops::DerefMut;
 use std::pin::Pin;
@@ -150,14 +150,14 @@ impl<'a, I, N> MessageCollector for ActuatorMessageCollector<'a, I, N> {
 pub(crate) enum ActuatorStream {
     Follower,
     Leader {
-        invoker_stream: ReceiverStream<restate_invoker::Effect>,
+        invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
         shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
     },
 }
 
 impl ActuatorStream {
     pub(crate) fn leader(
-        invoker_rx: mpsc::Receiver<restate_invoker::Effect>,
+        invoker_rx: mpsc::Receiver<restate_invoker_api::Effect>,
         shuffle_rx: mpsc::Receiver<shuffle::OutboxTruncation>,
     ) -> Self {
         ActuatorStream::Leader {
@@ -169,7 +169,7 @@ impl ActuatorStream {
 
 #[derive(Debug)]
 pub(crate) enum ActuatorOutput {
-    Invoker(restate_invoker::Effect),
+    Invoker(restate_invoker_api::Effect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerValue),
 }
