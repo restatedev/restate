@@ -5,6 +5,12 @@ use prost_reflect::DescriptorPool;
 use std::convert::AsRef;
 
 pub mod grpc {
+    pub mod health {
+        #![allow(warnings)]
+        #![allow(clippy::all)]
+        #![allow(unknown_lints)]
+        include!(concat!(env!("OUT_DIR"), "/grpc.health.v1.rs"));
+    }
     pub mod reflection {
         #![allow(warnings)]
         #![allow(clippy::all)]
@@ -30,6 +36,7 @@ pub static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
 
 pub const INGRESS_SERVICE_NAME: &str = "dev.restate.Ingress";
 pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1alpha.ServerReflection";
+pub const HEALTH_SERVICE_NAME: &str = "grpc.health.v1.Health";
 
 #[cfg(feature = "mocks")]
 pub mod mocks;

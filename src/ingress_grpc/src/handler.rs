@@ -13,6 +13,7 @@ use http_body::Body;
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
+use restate_pb::grpc::health;
 use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
@@ -108,14 +109,10 @@ where
         // Don't depend on &mut self, as hyper::Service will replace this with an immutable borrow!
 
         // Discover the protocol
-        let protocol = if let Some(p) = Protocol::pick_protocol(req.headers()) {
+        let protocol = if let Some(p) = Protocol::pick_protocol(req.method(), req.headers()) {
             p
         } else {
-            return ok(Response::builder()
-                .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
-                .body(http_body::Empty::new().map_err(Into::into).boxed_unsync())
-                .unwrap())
-            .boxed();
+            return ok(encode_http_status_code(StatusCode::UNSUPPORTED_MEDIA_TYPE)).boxed();
         };
 
         // Acquire the semaphore permit to check if we have available quota
@@ -127,8 +124,10 @@ where
             p
         } else {
             warn!("No available quota to process the request");
-            return ok(protocol.encode_status(Status::resource_exhausted("Resource exhausted")))
-                .boxed();
+            return ok(
+                protocol.encode_grpc_status(Status::resource_exhausted("Resource exhausted"))
+            )
+            .boxed();
         };
 
         // Parse service_name and method_name
@@ -140,10 +139,12 @@ where
                 Allowed format is '/Service-Name/Method-Name'",
                 req.uri().path()
             );
-            return ok(protocol.encode_status(Status::invalid_argument(format!(
-                "Request path {} invalid",
-                req.uri().path()
-            ))))
+            return ok(
+                protocol.encode_grpc_status(Status::invalid_argument(format!(
+                    "Request path {} invalid",
+                    req.uri().path()
+                ))),
+            )
             .boxed();
         }
         let method_name = path_parts.remove(2).to_string();
@@ -152,17 +153,19 @@ where
         // Check if the service is public
         match self.schemas.is_service_public(&service_name) {
             None => {
-                return ok(protocol.encode_status(Status::not_found(format!(
+                return ok(protocol.encode_grpc_status(Status::not_found(format!(
                     "Service {} not found",
                     service_name
                 ))))
                 .boxed();
             }
             Some(false) => {
-                return ok(protocol.encode_status(Status::permission_denied(format!(
-                    "Service {} is not accessible",
-                    service_name
-                ))))
+                return ok(
+                    protocol.encode_grpc_status(Status::permission_denied(format!(
+                        "Service {} is not accessible",
+                        service_name
+                    ))),
+                )
                 .boxed();
             }
             _ => {}
@@ -171,6 +174,10 @@ where
         // --- Special Restate services
         // Reflections
         if restate_pb::REFLECTION_SERVICE_NAME == service_name {
+            if matches!(protocol, Protocol::Connect) {
+                // Can't process reflection requests with connect
+                return ok(encode_http_status_code(StatusCode::UNSUPPORTED_MEDIA_TYPE)).boxed();
+            }
             return self
                 .reflection_server
                 .call(req)
@@ -212,10 +219,56 @@ where
                 let mut service_name = req_headers.service_name;
                 let mut method_name = req_headers.method_name;
                 let mut req_payload = req_payload;
+
+                // --- Health built-in service
+                if restate_pb::HEALTH_SERVICE_NAME == service_name {
+                    if method_name == "Watch" {
+                        return Err(Status::unimplemented(
+                            "Watch unimplemented"
+                        ));
+                    }
+                    if method_name == "Check" {
+                        let health_check_req = health::HealthCheckRequest::decode(req_payload)
+                            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+                        if health_check_req.service.is_empty() {
+                            // If unspecified, then just return ok
+                            return Ok(
+                                health::HealthCheckResponse {
+                                    status: health::health_check_response::ServingStatus::Serving.into()
+                                }.encode_to_vec().into()
+                            )
+                        }
+                        return match schemas.is_service_public(&health_check_req.service) {
+                            None => {
+                                Err(Status::not_found(format!(
+                                    "Service {} not found",
+                                    health_check_req.service
+                                )))
+                            }
+                            Some(true) => {
+                                Ok(
+                                    health::HealthCheckResponse {
+                                        status: health::health_check_response::ServingStatus::Serving.into()
+                                    }.encode_to_vec().into()
+                                )
+                            }
+                            Some(false) => {
+                                Ok(
+                                    health::HealthCheckResponse {
+                                        status: health::health_check_response::ServingStatus::NotServing.into()
+                                    }.encode_to_vec().into()
+                                )
+                            }
+                        }
+                    }
+                    // This should not really happen because the method existence is checked before
+                    return Err(Status::not_found("Not found"))
+                }
+
                 let mut response_sink = Some(ServiceInvocationResponseSink::Ingress(ingress_id));
                 let mut wait_response = true;
 
-                // Ingress built-in service
+                // --- Ingress built-in service
                 if is_ingress_invoke(&service_name, &method_name) {
                     let invoke_request = restate_pb::restate::services::InvokeRequest::decode(req_payload)
                         .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -324,4 +377,11 @@ fn span_relation(request_span: &SpanContext) -> SpanRelation {
 
 fn is_ingress_invoke(service_name: &str, method_name: &str) -> bool {
     "dev.restate.Ingress" == service_name && "Invoke" == method_name
+}
+
+pub(crate) fn encode_http_status_code(status_code: StatusCode) -> Response<BoxBody> {
+    // In case we need to encode an http status, we just write it without considering the protocol.
+    let mut res = Response::new(hyper::Body::empty().map_err(Into::into).boxed_unsync());
+    *res.status_mut() = status_code;
+    res
 }

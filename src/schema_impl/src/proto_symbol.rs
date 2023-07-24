@@ -235,6 +235,12 @@ impl Default for ProtoSymbols {
                 .get_service_by_name(restate_pb::INGRESS_SERVICE_NAME)
                 .expect("Service ingress should exist"),
         );
+        symbols.add_service(
+            &"self_ingress".to_string(),
+            &restate_pb::DESCRIPTOR_POOL
+                .get_service_by_name(restate_pb::HEALTH_SERVICE_NAME)
+                .expect("Service ingress should exist"),
+        );
 
         symbols
     }
