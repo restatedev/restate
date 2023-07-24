@@ -43,42 +43,15 @@ jobs:
     needs: [run-tests]
     uses: ./.github/workflows/docker.yml
 
-  # Disable cli building until it is ready for our users
-#  build-cli-binaries:
-#    name: Build release cli binaries
-#    needs: [run-tests]
-#    uses: ./.github/workflows/cli.yml
-
   create-release:
     name: Create release
     runs-on: ubuntu-latest
     needs: [build-docker-image]
 
     steps:
-      - name: Download cli binaries
-        uses: actions/download-artifact@v3
-
-      - name: Package cli binaries
-        id: package-cli-binaries
-        run: |
-          binaries_exist=false
-          for cli in restate-cli-*; 
-          do
-            [ -e "$cli" ] || continue
-            zip -j ${cli}.zip ${cli}/restate-cli;
-            binaries_exist=true
-          done
-      
-          if [ "$binaries_exist" = true ]; then 
-            echo "PACKAGES<<EOF" >> $GITHUB_OUTPUT
-            ls -1 restate-cli-*.zip >> $GITHUB_OUTPUT || true
-            echo "EOF" >> $GITHUB_OUTPUT
-          fi
-
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
           # create a draft release which needs manual approval
           draft: true
-          files: ${{ steps.package-cli-binaries.outputs.PACKAGES }}
-            
+
