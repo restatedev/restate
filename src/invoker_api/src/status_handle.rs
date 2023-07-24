@@ -8,14 +8,41 @@ use std::time::SystemTime;
 
 // -- Status data structure
 
+#[derive(Debug, Clone)]
+pub struct InvocationStatusReportInner {
+    pub in_flight: bool,
+    pub start_count: usize,
+    pub last_start_at: SystemTime,
+    pub last_retry_attempt_failure: Option<InvocationErrorReport>,
+}
+
+impl Default for InvocationStatusReportInner {
+    fn default() -> Self {
+        Self {
+            in_flight: false,
+            start_count: 0,
+            last_start_at: SystemTime::now(),
+            last_retry_attempt_failure: None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct InvocationStatusReport(
-    pub(crate) ServiceInvocationId,
-    pub(crate) PartitionLeaderEpoch,
-    pub(crate) InvocationStatusReportInner,
+    ServiceInvocationId,
+    PartitionLeaderEpoch,
+    InvocationStatusReportInner,
 );
 
 impl InvocationStatusReport {
+    pub fn new(
+        sid: ServiceInvocationId,
+        partition: PartitionLeaderEpoch,
+        report: InvocationStatusReportInner,
+    ) -> Self {
+        Self(sid, partition, report)
+    }
+
     pub fn service_invocation_id(&self) -> &ServiceInvocationId {
         &self.0
     }
@@ -46,31 +73,19 @@ impl InvocationStatusReport {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct InvocationStatusReportInner {
-    pub(crate) in_flight: bool,
-    pub(crate) start_count: usize,
-    pub(crate) last_start_at: SystemTime,
-    pub(crate) last_retry_attempt_failure: Option<InvocationErrorReport>,
-}
-
-impl Default for InvocationStatusReportInner {
-    fn default() -> Self {
-        Self {
-            in_flight: false,
-            start_count: 0,
-            last_start_at: SystemTime::now(),
-            last_retry_attempt_failure: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct InvocationErrorReport {
-    pub(crate) err: InvocationError,
-    pub(crate) doc_error_code: Option<&'static Code>,
+    err: InvocationError,
+    doc_error_code: Option<&'static Code>,
 }
 
 impl InvocationErrorReport {
+    pub fn new(err: InvocationError, doc_error_code: Option<&'static Code>) -> Self {
+        InvocationErrorReport {
+            err,
+            doc_error_code,
+        }
+    }
+
     pub fn invocation_error_code(&self) -> InvocationErrorCode {
         self.err.code()
     }

@@ -7,8 +7,8 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-pub(crate) type InvokerEffect = restate_invoker::Effect;
-pub(crate) type InvokerEffectKind = restate_invoker::EffectKind;
+pub(crate) type InvokerEffect = restate_invoker_api::Effect;
+pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TimerValue {

@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
-use restate_invoker::EagerState;
+use restate_invoker_api::EagerState;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
@@ -30,7 +30,7 @@ impl<Storage> InvokerStorageReader<Storage> {
     }
 }
 
-impl<Storage> restate_invoker::JournalReader for InvokerStorageReader<Storage>
+impl<Storage> restate_invoker_api::JournalReader for InvokerStorageReader<Storage>
 where
     Storage: restate_storage_api::Storage,
 {
@@ -76,7 +76,7 @@ where
     }
 }
 
-impl<Storage> restate_invoker::StateReader for InvokerStorageReader<Storage>
+impl<Storage> restate_invoker_api::StateReader for InvokerStorageReader<Storage>
 where
     Storage: restate_storage_api::Storage,
 {

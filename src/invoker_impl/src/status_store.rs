@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::status_handle::InvocationStatusReportInner;
+use restate_invoker_api::status_handle::{InvocationStatusReport, InvocationStatusReportInner};
 use std::time::SystemTime;
 
 #[derive(Default, Debug)]
@@ -14,7 +14,11 @@ impl InvocationStatusStore {
             .iter()
             .flat_map(|(partition_leader_epoch, inner_map)| {
                 inner_map.iter().map(move |(sid, report)| {
-                    InvocationStatusReport(sid.clone(), *partition_leader_epoch, report.clone())
+                    InvocationStatusReport::new(
+                        sid.clone(),
+                        *partition_leader_epoch,
+                        report.clone(),
+                    )
                 })
             })
     }
@@ -46,7 +50,7 @@ impl InvocationStatusStore {
         &mut self,
         partition: PartitionLeaderEpoch,
         sid: ServiceInvocationId,
-        reason: impl Into<InvocationErrorReport>,
+        reason: InvocationErrorReport,
     ) {
         let report = self
             .0
@@ -55,7 +59,7 @@ impl InvocationStatusStore {
             .entry(sid)
             .or_insert_with(Default::default);
         report.in_flight = false;
-        report.last_retry_attempt_failure = Some(reason.into());
+        report.last_retry_attempt_failure = Some(reason);
     }
 }
 
@@ -64,15 +68,15 @@ mod tests {
     use super::*;
 
     impl InvocationStatusStore {
-        pub(in crate::service) fn resolve_invocation(
+        pub fn resolve_invocation(
             &self,
             partition: PartitionLeaderEpoch,
             sid: &ServiceInvocationId,
         ) -> Option<InvocationStatusReport> {
             self.0.get(&partition).and_then(|inner| {
-                inner
-                    .get(sid)
-                    .map(|report| InvocationStatusReport(sid.clone(), partition, report.clone()))
+                inner.get(sid).map(|report| {
+                    InvocationStatusReport::new(sid.clone(), partition, report.clone())
+                })
             })
         }
     }

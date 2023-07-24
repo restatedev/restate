@@ -1,9 +1,5 @@
-use super::HttpsClient;
+use super::{HttpsClient, InvokerError};
 
-use crate::service::InvokerError;
-use crate::EagerState;
-use crate::EntryEnricher;
-use crate::{InvokeInputJournal, JournalReader, StateReader};
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{future, stream, FutureExt, Stream, StreamExt};
@@ -15,6 +11,9 @@ use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
 use restate_errors::warn_it;
+use restate_invoker_api::{
+    EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
+};
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,

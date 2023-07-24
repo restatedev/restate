@@ -1,14 +1,14 @@
-use super::*;
+use super::Service;
 
 use futures::Stream;
-use std::path::PathBuf;
-use std::time::Duration;
-
 use restate_hyper_util::proxy_connector::Proxy;
+use restate_invoker_api::{EntryEnricher, JournalReader};
 use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::retries::RetryPolicy;
 use serde_with::serde_as;
+use std::path::PathBuf;
+use std::time::Duration;
 
 /// # HTTP/2 Keep alive options
 ///

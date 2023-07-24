@@ -11,7 +11,7 @@ use futures::StreamExt;
 use partition::ack::AckCommand;
 use partition::shuffle;
 use restate_consensus::Consensus;
-use restate_invoker::{
+use restate_invoker_impl::{
     ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
 use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
@@ -39,7 +39,7 @@ pub use restate_ingress_grpc::{
     Options as IngressOptions, OptionsBuilder as IngressOptionsBuilder,
     OptionsBuilderError as IngressOptionsBuilderError,
 };
-pub use restate_invoker::{
+pub use restate_invoker_impl::{
     Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
     OptionsBuilderError as InvokerOptionsBuilderError,
 };

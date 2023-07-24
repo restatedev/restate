@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars", "restate_timer/options_schema", "restate_storage_rocksdb/options_schema","restate_storage_query/options_schema", "restate_ingress_grpc/options_schema", "restate_invoker/options_schema"]
+options_schema = ["dep:schemars", "restate_timer/options_schema", "restate_storage_rocksdb/options_schema","restate_storage_query/options_schema", "restate_ingress_grpc/options_schema", "restate_invoker_impl/options_schema"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -23,7 +23,8 @@ restate_consensus = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 restate_ingress_grpc = { workspace = true }
-restate_invoker = { workspace = true }
+restate_invoker_api = { workspace = true }
+restate_invoker_impl = { workspace = true }
 restate_network = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }

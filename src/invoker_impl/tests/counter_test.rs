@@ -7,8 +7,9 @@ use bytes::Bytes;
 use hyper::Uri;
 use mocks::{InMemoryJournalStorage, InMemoryStateStorage, SimulatorAction};
 use prost::Message;
-use restate_invoker::entry_enricher::mocks::MockEntryEnricher;
-use restate_invoker::{ChannelServiceHandle, Effect, EffectKind, Service};
+use restate_invoker_api::entry_enricher::mocks::MockEntryEnricher;
+use restate_invoker_api::{Effect, EffectKind};
+use restate_invoker_impl::{ChannelServiceHandle, Service};
 use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -138,7 +139,7 @@ async fn bidi_stream() {
     );
 
     // Start invoker
-    let options = restate_invoker::Options::default();
+    let options = restate_invoker_impl::Options::default();
     let remote_invoker: Service<
         InMemoryJournalStorage,
         InMemoryStateStorage,
