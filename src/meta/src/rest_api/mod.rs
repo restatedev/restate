@@ -2,6 +2,7 @@
 
 mod endpoints;
 mod error;
+mod health;
 mod invocations;
 mod methods;
 mod services;
@@ -107,6 +108,7 @@ impl MetaRestEndpoint {
                 "/invocations",
                 delete(openapi_handler!(invocations::cancel_invocation)),
             )
+            .route("/health", get(openapi_handler!(health::health)))
             .route_openapi_specification(
                 "/openapi",
                 OpenApiBuilder::new("Meta REST Operational API", env!("CARGO_PKG_VERSION")),
