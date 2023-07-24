@@ -6,7 +6,7 @@ use super::options::JsonOptions;
 use super::*;
 
 use bytes::Bytes;
-use http::{HeaderMap, HeaderValue, Request, Response};
+use http::{HeaderMap, HeaderValue, Method, Request, Response};
 use http_body::combinators::UnsyncBoxBody;
 use http_body::Body;
 use opentelemetry::propagation::TextMapPropagator;
@@ -26,22 +26,28 @@ pub(crate) enum Protocol {
 }
 
 impl Protocol {
-    pub(crate) fn pick_protocol(headers: &HeaderMap<HeaderValue>) -> Option<Self> {
+    pub(crate) fn pick_protocol(method: &Method, headers: &HeaderMap<HeaderValue>) -> Option<Self> {
         let content_type = headers.get(http::header::CONTENT_TYPE);
-        match content_type {
-            Some(ct)
+        match (method, content_type) {
+            (&Method::POST, Some(ct))
                 if ct.as_bytes().starts_with(b"application/json")
                     || ct.as_bytes().starts_with(b"application/proto")
                     || ct.as_bytes().starts_with(b"application/protobuf") =>
             {
                 Some(Protocol::Connect)
             }
-            Some(ct) if ct.as_bytes().starts_with(b"application/grpc") => Some(Protocol::Tonic),
+            (&Method::GET, None) => {
+                // We accept requests without payload with connect, we'll just convert them to empty request objects.
+                Some(Protocol::Connect)
+            }
+            (&Method::POST, Some(ct)) if ct.as_bytes().starts_with(b"application/grpc") => {
+                Some(Protocol::Tonic)
+            }
             _ => None,
         }
     }
 
-    pub(crate) fn encode_status(&self, status: Status) -> Response<BoxBody> {
+    pub(crate) fn encode_grpc_status(&self, status: Status) -> Response<BoxBody> {
         match self {
             Protocol::Tonic => status.to_http().map(to_box_body),
             Protocol::Connect => connect_adapter::status::status_response(status).map(to_box_body),
@@ -184,7 +190,7 @@ mod tests {
     use http::{Method, Request, StatusCode};
     use hyper::body::HttpBody;
     use prost::Message;
-    use restate_test_util::{assert_eq, test};
+    use restate_test_util::{assert, assert_eq, test};
     use serde_json::json;
 
     fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<Result<IngressResponse, Status>> {
@@ -243,6 +249,8 @@ mod tests {
             .method(Method::GET)
             .body(hyper::Body::empty())
             .unwrap();
+
+        assert!(let Some(Protocol::Connect) = Protocol::pick_protocol(request.method(), request.headers()));
 
         let mut res = Protocol::handle_connect_request(
             IngressRequestHeaders::new(

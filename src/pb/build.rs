@@ -16,10 +16,15 @@ fn main() -> std::io::Result<()> {
         )
         .compile_protos(
             &[
+                "proto/grpc/health/v1/health.proto",
                 "proto/grpc/reflection/v1alpha/reflection.proto",
                 "proto/dev/restate/services.proto",
             ],
-            &["proto/grpc/reflection/v1alpha", "proto/dev/restate"],
+            &[
+                "proto/grpc/health/v1",
+                "proto/grpc/reflection/v1alpha",
+                "proto/dev/restate",
+            ],
         )?;
 
     prost_build::Config::new()

@@ -319,6 +319,14 @@ pub(crate) mod schemas_impl {
                         .expect("The built-in descriptor pool should contain the ingress service"),
                 ),
             );
+            inner.services.insert(
+                restate_pb::HEALTH_SERVICE_NAME.to_string(),
+                ServiceSchemas::new_ingress_only(
+                    &restate_pb::DESCRIPTOR_POOL
+                        .get_service_by_name(restate_pb::HEALTH_SERVICE_NAME)
+                        .expect("The built-in descriptor pool should contain the ingress service"),
+                ),
+            );
 
             inner
         }
