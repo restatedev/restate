@@ -424,7 +424,7 @@ where
         effects: &mut Effects,
         service_invocation_id: ServiceInvocationId,
         entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
+        mut journal_entry: EnrichedRawEntry,
         invocation_metadata: InvocationMetadata,
     ) -> Result<(), Error> {
         debug_assert_eq!(
@@ -627,11 +627,13 @@ where
                 let response = Self::create_response_for_awakeable_entry(entry);
                 self.send_message(response, effects);
             }
-            EnrichedEntryHeader::Custom {
-                requires_ack,
-                code: _,
-            } => {
+            EnrichedEntryHeader::Custom { requires_ack, code } => {
                 if requires_ack {
+                    // Reset the requires_ack flag to false
+                    journal_entry.header = EnrichedEntryHeader::Custom {
+                        code,
+                        requires_ack: false,
+                    };
                     effects.append_journal_entry_and_ack_storage(
                         service_invocation_id.service_id,
                         invocation_metadata,
