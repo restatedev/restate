@@ -32,11 +32,11 @@ fn throughput_benchmark(criterion: &mut Criterion) {
             .expect("should be able to connect to Restate gRPC ingress")
     });
 
-    let num_requests = 2000;
-    let num_parallel_requests = 100;
+    let num_requests = 4000;
+    let num_parallel_requests = 1000;
     let mut group = criterion.benchmark_group("throughput");
     group
-        .sample_size(40)
+        .sample_size(20)
         .throughput(Throughput::Elements(
             u64::try_from(num_requests).expect("usize to u64 conversion should work"),
         ))
@@ -66,10 +66,11 @@ async fn send_parallel_counter_requests(
 ) {
     let mut pending_requests = FuturesUnordered::new();
     let mut completed_requests = 0;
-    let mut issued_requests = 0;
 
     while completed_requests < num_requests {
-        if pending_requests.len() < num_parallel_requests && issued_requests < num_requests {
+        if pending_requests.len() < num_parallel_requests
+            && completed_requests + pending_requests.len() < num_requests
+        {
             let mut client = counter_client.clone();
             let counter_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
             pending_requests.push(async move {
@@ -80,13 +81,15 @@ async fn send_parallel_counter_requests(
                     })
                     .await
             });
-            issued_requests += 1;
         } else {
-            let _ = pending_requests
+            let result = pending_requests
                 .next()
                 .await
                 .expect("pending requests should not be empty");
-            completed_requests += 1;
+
+            if result.is_ok() {
+                completed_requests += 1;
+            }
         }
     }
 }
