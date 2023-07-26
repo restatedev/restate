@@ -23,7 +23,7 @@ macro_rules! declare_restate_error_codes {
     (@declare_code $code:ident) => {
         pub const $code: codederror::Code = codederror::Code::new(
             stringify!($code),
-            Some(concat!("For more details, look at the docs with https://restate.dev/docs/errors#", stringify!($code))),
+            Some(concat!("For more details, look at the docs with https://docs.restate.dev/errors#", stringify!($code))),
             paste::paste! { [< $code _DESCRIPTION >] }
         );
     };
