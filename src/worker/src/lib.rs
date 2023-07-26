@@ -157,7 +157,7 @@ pub enum Error {
     StorageQuery(#[from] restate_storage_query::Error),
     #[error("consensus failed: {0}")]
     #[code(unknown)]
-    Consensus(#[from] anyhow::Error),
+    Consensus(anyhow::Error),
     #[error("external client ingress failed: {0}")]
     ExternalClientIngress(
         #[from]
@@ -167,6 +167,9 @@ pub enum Error {
     #[error("no partition processor is running")]
     #[code(unknown)]
     NoPartitionProcessorRunning,
+    #[error("partition processor failed: {0}")]
+    #[code(unknown)]
+    PartitionProcessor(anyhow::Error),
     #[error("worker services failed: {0}")]
     #[code(unknown)]
     Services(#[from] services::Error),
@@ -378,13 +381,16 @@ impl Worker {
                 panic!("Unexpected termination of storage query.");
             },
             consensus_result = &mut consensus_handle => {
-                consensus_result.map_err(|err| Error::component_panic("consensus", err))??;
+                consensus_result
+                .map_err(|err| Error::component_panic("consensus", err))?
+                .map_err(Error::Consensus)?;
                 panic!("Unexpected termination of consensus.");
             },
             processor_result = processors_handles.next() => {
                 processor_result
                 .ok_or(Error::NoPartitionProcessorRunning)?
-                .map_err(|err| Error::component_panic("partition processor", err))??;
+                .map_err(|err| Error::component_panic("partition processor", err))?
+                .map_err(Error::PartitionProcessor)?;
                 panic!("Unexpected termination of one of the partition processors.");
             },
             external_client_ingress_result = &mut external_client_ingress_handle => {
