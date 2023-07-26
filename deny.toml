@@ -6,9 +6,6 @@ unmaintained = "warn"
 yanked = "deny"
 notice = "warn"
 ignore = [
-    # Caused by atty which is pulled in by criterion
-    "RUSTSEC-2021-0145",
-
     # Caused by arrow, and a workaround is applied in storage_query,
     # as described by the advisory description.
     "RUSTSEC-2020-0071"
