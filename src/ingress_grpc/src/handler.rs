@@ -201,7 +201,8 @@ where
             // which is used by the Restate components to correctly link to a single parent span
             // to commit intermediate results of the processing.
             let ingress_span = info_span!(
-                "ingress_service_invocation",
+                "ingress_invoke",
+                otel.name = format!("ingress_invoke {}", req_headers.method_name),
                 rpc.system = "grpc",
                 rpc.service = %req_headers.service_name,
                 rpc.method = %req_headers.method_name
