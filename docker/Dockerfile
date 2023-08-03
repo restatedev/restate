@@ -21,6 +21,7 @@ RUN CARGO_PROFILE_RELEASE_DEBUG=$CARGO_PROFILE_RELEASE_DEBUG just arch=$TARGETAR
 FROM debian:bookworm-slim AS runtime
 COPY --from=builder /restate/target/restate /usr/local/bin
 COPY --from=builder /restate/NOTICE /NOTICE
+COPY --from=builder /restate/LICENSE /LICENSE
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
 ENV RUST_LOG="warn,restate=info"

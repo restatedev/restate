@@ -120,7 +120,7 @@ docker:
     docker buildx build . --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}'
 
 notice-file:
-    cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2023 Restate GmbH <stephan@restate.dev>\n" && cat) > NOTICE
+    cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2023 Restate Software, Inc., Restate GmbH <info@restate.dev>\n" && cat) > NOTICE
 
 generate-config-schema:
     cargo xtask generate-config-schema > restate_config_schema.json
