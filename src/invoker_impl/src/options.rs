@@ -82,7 +82,7 @@ pub struct Options {
     )]
     retry_policy: RetryPolicy,
 
-    /// # Suspension timeout
+    /// # Inactivity timeout
     ///
     /// This timer is used to gracefully shutdown a bidirectional stream
     /// after inactivity on both request and response streams.
@@ -95,11 +95,11 @@ pub struct Options {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(
         feature = "options_schema",
-        schemars(with = "String", default = "Options::default_suspension_timeout")
+        schemars(with = "String", default = "Options::default_inactivity_timeout")
     )]
-    suspension_timeout: humantime::Duration,
+    inactivity_timeout: humantime::Duration,
 
-    /// # Response abort timeout
+    /// # Abort timeout
     ///
     /// This timer is used to forcefully shutdown an invocation when only the response stream is open.
     ///
@@ -107,7 +107,7 @@ pub struct Options {
     /// this timer will start as soon as the replay of the journal is completed.
     /// When protocol mode is `restate_service_metadata::ProtocolType::BidiStream`,
     /// this timer will start after the request stream has been closed.
-    /// Check `suspension_timeout` to configure a timer on the request stream.
+    /// Check `inactivity_timeout` to configure a timer on the request stream.
     ///
     /// When this timer is fired, the response stream will be aborted,
     /// potentially **interrupting** user code! If the user code needs longer to complete,
@@ -117,9 +117,9 @@ pub struct Options {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(
         feature = "options_schema",
-        schemars(with = "String", default = "Options::default_response_abort_timeout")
+        schemars(with = "String", default = "Options::default_abort_timeout")
     )]
-    response_abort_timeout: humantime::Duration,
+    abort_timeout: humantime::Duration,
 
     /// # Message size warning
     ///
@@ -178,8 +178,8 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             retry_policy: Options::default_retry_policy(),
-            suspension_timeout: Options::default_suspension_timeout(),
-            response_abort_timeout: Options::default_response_abort_timeout(),
+            inactivity_timeout: Options::default_inactivity_timeout(),
+            abort_timeout: Options::default_abort_timeout(),
             message_size_warning: Options::default_message_size_warning(),
             message_size_limit: None,
             proxy_uri: None,
@@ -201,12 +201,12 @@ impl Options {
         )
     }
 
-    fn default_suspension_timeout() -> humantime::Duration {
+    fn default_inactivity_timeout() -> humantime::Duration {
         Duration::from_secs(60).into()
     }
 
-    fn default_response_abort_timeout() -> humantime::Duration {
-        (Duration::from_secs(60) * 60).into()
+    fn default_abort_timeout() -> humantime::Duration {
+        Duration::from_secs(60).into()
     }
 
     fn default_message_size_warning() -> usize {
@@ -237,8 +237,8 @@ impl Options {
         Service::new(
             service_endpoint_registry,
             self.retry_policy,
-            *self.suspension_timeout,
-            *self.response_abort_timeout,
+            *self.inactivity_timeout,
+            *self.abort_timeout,
             self.disable_eager_state,
             self.message_size_warning,
             self.message_size_limit,

@@ -164,8 +164,8 @@ pub(super) struct InvocationTask<JR, SR, EE, EMR> {
     // Connection params
     partition: PartitionLeaderEpoch,
     service_invocation_id: ServiceInvocationId,
-    suspension_timeout: Duration,
-    response_abort_timeout: Duration,
+    inactivity_timeout: Duration,
+    abort_timeout: Duration,
     disable_eager_state: bool,
 
     // Invoker tx/rx
@@ -239,8 +239,8 @@ where
         partition: PartitionLeaderEpoch,
         sid: ServiceInvocationId,
         protocol_version: u16,
-        suspension_timeout: Duration,
-        response_abort_timeout: Duration,
+        inactivity_timeout: Duration,
+        abort_timeout: Duration,
         disable_eager_state: bool,
         message_size_warning: usize,
         message_size_limit: Option<usize>,
@@ -255,8 +255,8 @@ where
             client,
             partition,
             service_invocation_id: sid,
-            suspension_timeout,
-            response_abort_timeout,
+            inactivity_timeout,
+            abort_timeout,
             disable_eager_state,
             next_journal_index: 0,
             journal_reader,
@@ -367,8 +367,8 @@ where
             endpoint_meta
         };
 
-        // Figure out the protocol type. Force RequestResponse if suspension_timeout is zero
-        let protocol_type = if self.suspension_timeout.is_zero() {
+        // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
+        let protocol_type = if self.inactivity_timeout.is_zero() {
             ProtocolType::RequestResponse
         } else {
             endpoint_metadata.protocol_type()
@@ -511,7 +511,7 @@ where
                         }
                     }
                 },
-                _ = tokio::time::sleep(self.suspension_timeout) => {
+                _ = tokio::time::sleep(self.inactivity_timeout) => {
                     debug!("Inactivity detected, going to suspend invocation");
                     // Just return. This will drop the invoker_rx and http_stream_tx,
                     // closing the request stream and the invoker input channel.
@@ -537,7 +537,7 @@ where
                         }
                     }
                 },
-                _ = tokio::time::sleep(self.response_abort_timeout) => {
+                _ = tokio::time::sleep(self.abort_timeout) => {
                     warn!("Inactivity detected, going to close invocation");
                     return TerminalLoopState::Failed(InvocationTaskError::ResponseTimeout)
                 },

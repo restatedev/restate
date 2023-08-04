@@ -75,8 +75,8 @@ trait InvocationTaskRunner {
 #[derive(Debug)]
 struct DefaultInvocationTaskRunner<JR, SR, EE, EMR> {
     client: HttpsClient,
-    suspension_timeout: Duration,
-    response_abort_timeout: Duration,
+    inactivity_timeout: Duration,
+    abort_timeout: Duration,
     disable_eager_state: bool,
     message_size_warning: usize,
     message_size_limit: Option<usize>,
@@ -110,8 +110,8 @@ where
                 partition,
                 sid,
                 0,
-                self.suspension_timeout,
-                self.response_abort_timeout,
+                self.inactivity_timeout,
+                self.abort_timeout,
                 self.disable_eager_state,
                 self.message_size_warning,
                 self.message_size_limit,
@@ -152,8 +152,8 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
     pub(crate) fn new(
         endpoint_metadata_resolver: EMR,
         retry_policy: RetryPolicy,
-        suspension_timeout: Duration,
-        response_abort_timeout: Duration,
+        inactivity_timeout: Duration,
+        abort_timeout: Duration,
         disable_eager_state: bool,
         message_size_warning: usize,
         message_size_limit: Option<usize>,
@@ -177,8 +177,8 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
                     client: Self::create_client(proxy, keep_alive_options),
-                    suspension_timeout,
-                    response_abort_timeout,
+                    inactivity_timeout,
+                    abort_timeout,
                     disable_eager_state,
                     message_size_warning,
                     message_size_limit,
