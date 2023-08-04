@@ -75,7 +75,7 @@ jobs:
     name: Create docker image
     uses: ./.github/workflows/docker.yml
     with:
-      artifactInsteadOfPush: true
+      uploadImageAsTarball: true
       platforms: linux/amd64
 
   e2e:

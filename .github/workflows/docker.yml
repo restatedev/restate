@@ -3,8 +3,8 @@ name: Build Docker image
 on:
   workflow_call:
     inputs:
-      artifactInsteadOfPush:
-        description: 'skip pushing docker image and build an artifact instead'
+      uploadImageAsTarball:
+        description: 'uploads the Docker image additionally as a tarball'
         required: false
         default: false
         type: boolean
@@ -75,15 +75,15 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
 
-      - name: Build${{inputs.artifactInsteadOfPush != true && ' and push ' || ' '}}Docker image
+      - name: Build${{inputs.uploadImageAsTarball != true && ' and push ' || ' '}}Docker image
         id: build
         uses: docker/build-push-action@v3
         with:
           context: .
           file: "docker/Dockerfile"
-          push: ${{ inputs.artifactInsteadOfPush != true }}
+          push: ${{ inputs.uploadImageAsTarball != true }}
           tags: ${{ steps.meta.outputs.tags }}
-          load: ${{ inputs.artifactInsteadOfPush == true }}
+          load: ${{ inputs.uploadImageAsTarball == true }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
           build-args: |
@@ -92,12 +92,12 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ github.workflow }}
 
       - name: Save docker image as tar
-        if: ${{ inputs.artifactInsteadOfPush }}
+        if: ${{ inputs.uploadImageAsTarball }}
         run: |
           docker save -o restate.tar ${{ steps.build.outputs.imageid }}
 
       - name: Upload docker image tar as artifact
-        if: ${{ inputs.artifactInsteadOfPush }}
+        if: ${{ inputs.uploadImageAsTarball }}
         uses: actions/upload-artifact@v3
         with:
           name: restate.tar
@@ -105,10 +105,10 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-      # Even if artifactInsteadOfPush, push main images
+      # Even if uploadImageAsTarball, push main images
       # This won't actually build again, it'll just use cache
       - name: Push Docker image
-        if: ${{ inputs.artifactInsteadOfPush && github.ref == 'refs/heads/main' }}
+        if: ${{ inputs.uploadImageAsTarball && github.ref == 'refs/heads/main' }}
         uses: docker/build-push-action@v3
         with:
           context: .
