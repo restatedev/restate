@@ -33,6 +33,7 @@ jobs:
             restatedev/example-shopping-cart-typescript
             restatedev/example-lambda-ts-greeter
             restatedev/example-ticket-reservation-system
+            restatedev/example-food-ordering
           GITHUB_TOKEN: ${{ secrets.COLLABORATOR_ADMIN_ACCESS }}
         run: |
           collaborator_repos="${{ env.COLLABORATOR_REPOS }}"
