@@ -16,7 +16,8 @@ In order to create a full Restate release you need to:
 
 ## Releasing the Restate runtime
 
-In order to release the Restate runtime, you have to create a tag of the form `vX.Y.Z` and push it to the repository.
+In order to release the Restate runtime, you first have to set the version field in the [Cargo.toml](/Cargo.toml) to the new release version `X.Y.Z`. 
+Then you have to create a tag of the form `vX.Y.Z` and push it to the repository.
 The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which does the following:
 
 * Running the local tests
