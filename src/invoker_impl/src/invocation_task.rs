@@ -633,7 +633,7 @@ where
                 TerminalLoopState::Suspended(suspension_indexes)
             }
             ProtocolMessage::Error(e) => {
-                TerminalLoopState::Failed(InvocationTaskError::Invocation(e.into()))
+                TerminalLoopState::Failed(InvocationTaskError::Invocation(InvocationError::from(e)))
             }
             ProtocolMessage::UnparsedEntry(entry) => {
                 if entry.header == RawEntryHeader::OutputStream {
