@@ -4,13 +4,11 @@ use std::fmt;
 use std::fmt::Formatter;
 
 /// This error code set matches the [gRPC error code set](https://github.com/grpc/grpc/blob/master/doc/statuscodes.md#status-codes-and-their-use-in-grpc),
-/// representing all the error codes visible to the user code.
+/// representing all the error codes visible to the user code. Note, it does not include the Ok
+/// variant because only error cases are contained.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u16)]
 pub enum UserErrorCode {
-    /// The operation completed successfully.
-    Ok = 0,
-
     /// The operation was cancelled.
     Cancelled = 1,
 
@@ -71,7 +69,6 @@ impl From<u32> for UserErrorCode {
         use UserErrorCode::*;
 
         match value {
-            0 => Ok,
             1 => Cancelled,
             2 => Unknown,
             3 => InvalidArgument,
@@ -279,7 +276,6 @@ mod tonic_conversions_impl {
     impl From<UserErrorCode> for Code {
         fn from(value: UserErrorCode) -> Self {
             match value {
-                UserErrorCode::Ok => Code::Ok,
                 UserErrorCode::Cancelled => Code::Cancelled,
                 UserErrorCode::Unknown => Code::Unknown,
                 UserErrorCode::InvalidArgument => Code::InvalidArgument,
