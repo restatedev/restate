@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Update outside collaborators
         env:
+          # Make sure that secrets.COLLABORATOR_ADMIN_ACCESS has write access to administration of all
+          # collaborator repositories. You might have to update restatedev-ci's fine-grained PAT.
           COLLABORATOR_REPOS: |
             restatedev/restate-dist
             restatedev/documentation
