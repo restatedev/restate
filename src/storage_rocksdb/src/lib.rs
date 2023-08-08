@@ -23,10 +23,17 @@ use futures::{ready, FutureExt, Stream};
 use futures_util::future::ok;
 use futures_util::StreamExt;
 use restate_storage_api::{GetFuture, GetStream, PutFuture, Storage, StorageError, Transaction};
-use rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamily, DBCompressionType, DBPinnableSlice,
-    DBRawIteratorWithThreadMode, PrefixRange, ReadOptions, SingleThreaded, WriteBatch,
-};
+use rocksdb::BlockBasedOptions;
+use rocksdb::Cache;
+use rocksdb::ColumnFamily;
+use rocksdb::DBCompressionType;
+use rocksdb::DBPinnableSlice;
+use rocksdb::DBRawIteratorWithThreadMode;
+use rocksdb::Error;
+use rocksdb::PrefixRange;
+use rocksdb::ReadOptions;
+use rocksdb::SingleThreaded;
+use rocksdb::WriteBatch;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -172,14 +179,14 @@ impl Options {
 pub enum BuildError {
     #[error("db is locked: {0}")]
     #[code(restate_errors::RT0005)]
-    DbLocked(rocksdb::Error),
+    DbLocked(Error),
     #[error(transparent)]
     #[code(unknown)]
-    Other(rocksdb::Error),
+    Other(Error),
 }
 
 impl BuildError {
-    fn from_rocksdb_error(err: rocksdb::Error) -> Self {
+    fn from_rocksdb_error(err: Error) -> Self {
         let err_message = err.to_string();
 
         if err_message.starts_with("IO error: While lock file:")
@@ -205,6 +212,8 @@ fn db_options(opts: &Options) -> rocksdb::Options {
         db_options.increase_parallelism(opts.threads as i32);
         db_options.set_max_background_jobs(opts.threads as i32);
     }
+
+    db_options.set_atomic_flush(true);
     //
     // Disable WAL archiving.
     // the following two options has to be both 0 to disable WAL log archive.
@@ -223,11 +232,6 @@ fn db_options(opts: &Options) -> rocksdb::Options {
     // number is static.
     //
     db_options.set_db_write_buffer_size(0);
-    //
-    // enable pipelined writes for higher write throughput.
-    // we have lots of background threads trying to commit their WriteBatch in parallel.
-    // https://github.com/facebook/rocksdb/wiki/Pipelined-Write
-    db_options.set_enable_pipelined_write(true);
     //
     // Let rocksdb decide for level sizes.
     //
@@ -284,7 +288,7 @@ fn cf_options(opts: &Options, cache: Option<Cache>) -> rocksdb::Options {
     //
     cf_options.set_num_levels(7);
     cf_options.set_compression_per_level(&[
-        DBCompressionType::Snappy,
+        DBCompressionType::None,
         DBCompressionType::Snappy,
         DBCompressionType::Snappy,
         DBCompressionType::Snappy,
@@ -336,7 +340,8 @@ impl RocksDBStorage {
         let db = DB::open_cf_descriptors(&db_options, opts.path, tables)
             .map_err(BuildError::from_rocksdb_error)?;
 
-        Ok(Self { db: Arc::new(db) })
+        let db = Self { db: Arc::new(db) };
+        Ok(db)
     }
 
     #[inline]
