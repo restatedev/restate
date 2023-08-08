@@ -11,7 +11,7 @@ use restate_types::identifiers::IngressId;
 use restate_types::identifiers::ServiceInvocationId;
 use tokio::select;
 use tokio::sync::mpsc;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
@@ -140,14 +140,14 @@ impl DispatcherLoopHandler {
                     .remove(&response.service_invocation_id)
                 {
                     if let Err(Ok(response)) = sender.send(response.result.map_err(Into::into)) {
-                        warn!(
+                        debug!(
                             "Failed to send response '{:?}' because the handler has been closed, \
                     probably caused by the client connection that went away",
                             response
                         );
                     }
                 } else {
-                    warn!("Failed to handle response '{:?}' because no handler was found locally waiting for its invocation key", &response);
+                    debug!("Failed to handle response '{:?}' because no handler was found locally waiting for its invocation key", &response);
                 }
 
                 Some(IngressOutput::Ack(response.ack_target.acknowledge()))
