@@ -13,7 +13,23 @@ The dissector is composed by two components:
    1. (Optional, but suggested) Make sure you can run Wireshark capture as non-root user. In most of Linux distros this only requires to add your user to `wireshark` group. Check out https://wiki.wireshark.org/CaptureSetup/CapturePrivileges for more details.
 2. Install the lua module.
    1. Find out which Lua version Wireshark is using. Check https://wiki.wireshark.org/Lua#getting-started for more details.
-   1. Build the module using `cargo build --release --features [lua-version]`, for example `cargo build --release --features lua51`
+   1. Build the module using:
+      * Linux: 
+         ```
+         cargo build -p service_protocol_wireshark_dissector --release --features [lua-version]
+         ``` 
+         For example: 
+         ```
+        cargo build --release --features lua51
+        ``` 
+      * MacOS: 
+         ```
+         RUSTFLAGS='--cfg uuid_unstable -C link-arg=-undefined -C link-arg=dynamic_lookup' cargo build -p service_protocol_wireshark_dissector --release --features [lua-version]
+         ```
+         For example: 
+         ```
+         RUSTFLAGS='--cfg uuid_unstable -C link-arg=-undefined -C link-arg=dynamic_lookup' cargo build -p service_protocol_wireshark_dissector --release --features lua52 --no-default-features
+         ```
    1. Find the path(s) where Wireshark looks for Lua modules. You can easily do it by going in Tools > Lua > Evaluate and evaluating the following expression:
       ```lua
       require('mymodule')
