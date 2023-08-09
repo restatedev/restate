@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::{
-    Array, BinaryArray, BooleanArray, Date64Array, LargeBinaryArray, LargeStringArray,
+    Array, BinaryArray, BooleanArray, Date32Array, Date64Array, LargeBinaryArray, LargeStringArray,
     PrimitiveArray, StringArray,
 };
 use datafusion::arrow::datatypes::DataType;
@@ -15,7 +15,7 @@ use datafusion::arrow::datatypes::Int8Type;
 use datafusion::arrow::datatypes::UInt32Type;
 use datafusion::arrow::datatypes::UInt64Type;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::arrow::temporal_conversions::date64_to_datetime;
+use datafusion::arrow::temporal_conversions::{date32_to_datetime, date64_to_datetime};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use futures::{stream, StreamExt};
 use tokio::net::TcpStream;
@@ -202,7 +202,7 @@ fn get_bool_value(arr: &Arc<dyn Array>, idx: usize) -> bool {
         .value(idx)
 }
 
-fn get_date_value(arr: &Arc<dyn Array>, idx: usize) -> String {
+fn get_date64_value(arr: &Arc<dyn Array>, idx: usize) -> String {
     let value = arr
         .as_any()
         .downcast_ref::<Date64Array>()
@@ -210,6 +210,17 @@ fn get_date_value(arr: &Arc<dyn Array>, idx: usize) -> String {
         .value(idx);
 
     let dt = date64_to_datetime(value).unwrap();
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn get_date32_value(arr: &Arc<dyn Array>, idx: usize) -> String {
+    let value = arr
+        .as_any()
+        .downcast_ref::<Date32Array>()
+        .unwrap()
+        .value(idx);
+
+    let dt = date32_to_datetime(value).unwrap();
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
@@ -280,7 +291,8 @@ fn encode_value(
         DataType::LargeUtf8 => encoder.encode_field(&get_large_utf8_value(arr, idx))?,
         DataType::Binary => encoder.encode_field(&get_binary_value(arr, idx))?,
         DataType::LargeBinary => encoder.encode_field(&get_large_binary_value(arr, idx))?,
-        DataType::Date64 => encoder.encode_field(&get_date_value(arr, idx))?,
+        DataType::Date64 => encoder.encode_field(&get_date64_value(arr, idx))?,
+        DataType::Date32 => encoder.encode_field(&get_date32_value(arr, idx))?,
         _ => {
             return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
                 "ERROR".to_owned(),
