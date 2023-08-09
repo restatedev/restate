@@ -28,6 +28,7 @@ use pgwire::api::query::SimpleQueryHandler;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response};
 use pgwire::api::{ClientInfo, MakeHandler, StatelessMakeHandler, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
+use pgwire::messages::data::DataRow;
 use pgwire::tokio::process_socket;
 
 pub(crate) struct HandlerFactory {
@@ -156,26 +157,17 @@ async fn arrow_to_pg_encoder<'a>(
     let pg_row_stream = recordbatch_stream
         .map(move |rb: datafusion::error::Result<RecordBatch>| {
             if let Err(e) = rb {
-                let pg_err = PgWireResult::Err(PgWireError::ApiError(Box::new(e)));
+                let pg_err = Err(PgWireError::ApiError(Box::new(e)));
                 return stream::iter(vec![pg_err]);
             }
 
             let rb = rb.unwrap();
             let rows = rb.num_rows();
-            let cols = rb.num_columns();
             let mut results = Vec::with_capacity(rows);
 
             for row in 0..rows {
-                let mut encoder = DataRowEncoder::new(fields_ref.clone());
-                for col in 0..cols {
-                    let array = rb.column(col);
-                    if array.is_null(row) {
-                        encoder.encode_field(&None::<i8>).unwrap();
-                    } else {
-                        encode_value(&mut encoder, array, row).unwrap();
-                    }
-                }
-                results.push(encoder.finish());
+                let row_result = encode_row(row, &rb, &fields_ref);
+                results.push(row_result);
             }
 
             stream::iter(results)
@@ -183,6 +175,24 @@ async fn arrow_to_pg_encoder<'a>(
         .flatten();
 
     Ok(QueryResponse::new(fields, pg_row_stream))
+}
+
+fn encode_row(
+    row: usize,
+    rb: &RecordBatch,
+    fields_ref: &Arc<Vec<FieldInfo>>,
+) -> PgWireResult<DataRow> {
+    let cols = rb.num_columns();
+    let mut encoder = DataRowEncoder::new(Arc::clone(fields_ref));
+    for col in 0..cols {
+        let array = rb.column(col);
+        if array.is_null(row) {
+            encoder.encode_field(&None::<i8>)?;
+        } else {
+            encode_value(&mut encoder, array, row)?;
+        }
+    }
+    encoder.finish()
 }
 
 fn get_bool_value(arr: &Arc<dyn Array>, idx: usize) -> bool {
