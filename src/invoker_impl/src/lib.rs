@@ -781,7 +781,10 @@ where
         error: E,
         mut ism: InvocationStateMachine,
     ) {
-        warn_it!(error, "Error when executing the invocation");
+        warn_it!(
+            error,
+            restate.invocation.sid = %service_invocation_id,
+            "Error when executing the invocation");
 
         match ism.handle_task_error() {
             Some(next_retry_timer_duration) if error.is_transient() => {
