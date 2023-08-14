@@ -848,3 +848,159 @@ fn extract_span_relation(status: &InvocationStatus) -> SpanRelation {
         InvocationStatus::Free => SpanRelation::None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::partition::effects::Effect;
+    use futures::future::ok;
+    use futures::FutureExt;
+    use restate_invoker_api::EffectKind;
+    use restate_service_protocol::codec::ProtobufRawEntryCodec;
+    use restate_test_util::{assert_eq, let_assert, test};
+    use restate_types::errors::UserErrorCode;
+    use restate_types::journal::{EntryResult, JournalMetadata};
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct StateReaderMock {
+        invocations: HashMap<ServiceId, InvocationStatus>,
+    }
+
+    impl StateReaderMock {
+        fn register_invocation_status(&mut self, sid: &ServiceInvocationId, length: EntryIndex) {
+            self.invocations.insert(
+                sid.service_id.clone(),
+                InvocationStatus::Invoked(InvocationMetadata {
+                    invocation_id: sid.invocation_id,
+                    journal_metadata: JournalMetadata {
+                        endpoint_id: None,
+                        length,
+                        method: "".to_string(),
+                        span_context: ServiceInvocationSpanContext::empty(),
+                    },
+                    response_sink: None,
+                    creation_time: MillisSinceEpoch::now(),
+                    modification_time: MillisSinceEpoch::now(),
+                }),
+            );
+        }
+    }
+
+    impl StateReader for StateReaderMock {
+        fn get_invocation_status<'a>(
+            &'a mut self,
+            service_id: &'a ServiceId,
+        ) -> BoxFuture<'a, Result<InvocationStatus, StateReaderError>> {
+            ok(self.invocations.get(service_id).cloned().unwrap()).boxed()
+        }
+
+        fn peek_inbox<'a>(
+            &'a mut self,
+            _service_id: &'a ServiceId,
+        ) -> BoxFuture<'a, Result<Option<InboxEntry>, StateReaderError>> {
+            todo!()
+        }
+
+        fn is_entry_resumable<'a>(
+            &'a mut self,
+            _service_id: &'a ServiceId,
+            _entry_index: EntryIndex,
+        ) -> BoxFuture<Result<bool, StateReaderError>> {
+            todo!()
+        }
+    }
+
+    #[test(tokio::test)]
+    async fn awakeable_with_success() {
+        let mut state_machine: StateMachine<ProtobufRawEntryCodec> = StateMachine::new(0, 0);
+        let mut effects = Effects::default();
+        let mut state_reader = StateReaderMock::default();
+
+        let sid_caller = ServiceInvocationId::mock_random();
+        let sid_callee = ServiceInvocationId::mock_random();
+
+        let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
+            CompleteAwakeableEntry {
+                service_name: sid_callee.service_id.service_name.clone(),
+                instance_key: sid_callee.service_id.key.clone(),
+                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_id.as_bytes()),
+                entry_index: 1,
+                result: EntryResult::Success(Bytes::default()),
+            },
+        ));
+        let cmd = Command::Invoker(InvokerEffect {
+            service_invocation_id: sid_caller.clone(),
+            kind: EffectKind::JournalEntry {
+                entry_index: 1,
+                entry,
+            },
+        });
+
+        state_reader.register_invocation_status(&sid_caller, 1);
+
+        state_machine
+            .on_apply(cmd, &mut effects, &mut state_reader)
+            .await
+            .unwrap();
+        let_assert!(Effect::EnqueueIntoOutbox { message, .. } = effects.drain().next().unwrap());
+        let_assert!(
+            OutboxMessage::ServiceResponse(InvocationResponse {
+                id,
+                entry_index,
+                result: ResponseResult::Success(_),
+            }) = message
+        );
+        assert_eq!(id, sid_callee);
+        assert_eq!(entry_index, 1);
+    }
+
+    #[test(tokio::test)]
+    async fn awakeable_with_failure() {
+        let mut state_machine: StateMachine<ProtobufRawEntryCodec> = StateMachine::new(0, 0);
+        let mut effects = Effects::default();
+        let mut state_reader = StateReaderMock::default();
+
+        let sid_caller = ServiceInvocationId::mock_random();
+        let sid_callee = ServiceInvocationId::mock_random();
+
+        let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
+            CompleteAwakeableEntry {
+                service_name: sid_callee.service_id.service_name.clone(),
+                instance_key: sid_callee.service_id.key.clone(),
+                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_id.as_bytes()),
+                entry_index: 1,
+                result: EntryResult::Failure(
+                    UserErrorCode::FailedPrecondition,
+                    "Some failure".into(),
+                ),
+            },
+        ));
+        let cmd = Command::Invoker(InvokerEffect {
+            service_invocation_id: sid_caller.clone(),
+            kind: EffectKind::JournalEntry {
+                entry_index: 1,
+                entry,
+            },
+        });
+
+        state_reader.register_invocation_status(&sid_caller, 1);
+
+        state_machine
+            .on_apply(cmd, &mut effects, &mut state_reader)
+            .await
+            .unwrap();
+        let_assert!(Effect::EnqueueIntoOutbox { message, .. } = effects.drain().next().unwrap());
+        let_assert!(
+            OutboxMessage::ServiceResponse(InvocationResponse {
+                id,
+                entry_index,
+                result: ResponseResult::Failure(UserErrorCode::FailedPrecondition, failure_reason),
+            }) = message
+        );
+        assert_eq!(id, sid_callee);
+        assert_eq!(entry_index, 1);
+        assert_eq!(failure_reason, "Some failure");
+    }
+}

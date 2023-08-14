@@ -103,6 +103,86 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
     }
 }
 
+#[cfg(feature = "mocks")]
+mod mocks {
+    use super::*;
+
+    use crate::pb::protocol::{
+        complete_awakeable_entry_message, CompleteAwakeableEntryMessage, Failure,
+        PollInputStreamEntryMessage,
+    };
+    use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
+    use restate_types::journal::{CompleteAwakeableEntry, EntryResult, PollInputStreamEntry};
+
+    impl ProtobufRawEntryCodec {
+        pub fn serialize(entry: Entry) -> PlainRawEntry {
+            match entry {
+                Entry::PollInputStream(entry) => PlainRawEntry::new(
+                    RawEntryHeader::PollInputStream { is_completed: true },
+                    Self::serialize_poll_input_stream_entry(entry),
+                ),
+                Entry::CompleteAwakeable(entry) => PlainRawEntry::new(
+                    RawEntryHeader::CompleteAwakeable,
+                    Self::serialize_complete_awakeable_entry(entry),
+                ),
+                _ => unimplemented!(),
+            }
+        }
+
+        pub fn serialize_enriched(entry: Entry) -> EnrichedRawEntry {
+            match entry {
+                Entry::PollInputStream(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::PollInputStream { is_completed: true },
+                    Self::serialize_poll_input_stream_entry(entry),
+                ),
+                Entry::CompleteAwakeable(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::CompleteAwakeable,
+                    Self::serialize_complete_awakeable_entry(entry),
+                ),
+                _ => unimplemented!(),
+            }
+        }
+
+        fn serialize_poll_input_stream_entry(
+            PollInputStreamEntry { result }: PollInputStreamEntry,
+        ) -> Bytes {
+            PollInputStreamEntryMessage { value: result }
+                .encode_to_vec()
+                .into()
+        }
+
+        fn serialize_complete_awakeable_entry(
+            CompleteAwakeableEntry {
+                service_name,
+                instance_key,
+                invocation_id,
+                entry_index,
+                result,
+            }: CompleteAwakeableEntry,
+        ) -> Bytes {
+            CompleteAwakeableEntryMessage {
+                service_name: service_name.to_string(),
+                instance_key,
+                invocation_id,
+                entry_index,
+                result: Some(match result {
+                    EntryResult::Success(success) => {
+                        complete_awakeable_entry_message::Result::Value(success)
+                    }
+                    EntryResult::Failure(code, reason) => {
+                        complete_awakeable_entry_message::Result::Failure(Failure {
+                            code: code.into(),
+                            message: reason.to_string(),
+                        })
+                    }
+                }),
+            }
+            .encode_to_vec()
+            .into()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

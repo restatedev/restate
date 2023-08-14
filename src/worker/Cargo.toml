@@ -45,5 +45,7 @@ restate_storage_query = { workspace = true}
 restate_worker_api = { workspace = true }
 
 [dev-dependencies]
+restate_types = { workspace = true, features = ["mocks"] }
+restate_service_protocol = { workspace = true, features = ["mocks"] }
 restate_test_util = { workspace = true }
 tracing-subscriber = { workspace = true }

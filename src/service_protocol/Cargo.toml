@@ -13,6 +13,7 @@ protocol = []
 message = ["protocol", "dep:restate_types", "dep:bytes-utils", "dep:codederror", "dep:restate_errors", "dep:size", "dep:tracing"]
 codec = ["protocol", "dep:restate_types", "dep:thiserror", "dep:paste"]
 discovery = ["dep:thiserror", "dep:codederror", "dep:restate_errors", "dep:restate_schema_api", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:restate_types", "dep:restate_hyper_util"]
+mocks = []
 
 [dependencies]
 bytes = { workspace = true }

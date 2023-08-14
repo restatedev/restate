@@ -153,7 +153,13 @@ mod pb_into {
                 instance_key: msg.instance_key,
                 invocation_id: msg.invocation_id,
                 entry_index: msg.entry_index,
-                result: EntryResult::Success(msg.payload),
+                result: match msg.result.ok_or("result")? {
+                    complete_awakeable_entry_message::Result::Value(r) => EntryResult::Success(r),
+                    complete_awakeable_entry_message::Result::Failure(Failure {
+                        code,
+                        message,
+                    }) => EntryResult::Failure(code.into(), message.into()),
+                },
             }))
         }
     }
