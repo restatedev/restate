@@ -177,7 +177,10 @@ message CompleteAwakeableEntryMessage {
   bytes invocation_id = 3;
   uint32 entry_index = 4;
 
-  bytes payload = 5;
+  oneof result {
+    bytes value = 5;
+    Failure failure = 6;
+  };
 }
 
 // --- Nested messages
@@ -192,4 +195,13 @@ message Failure {
   uint32 code = 1;
   // Contains a concise error message, e.g. Throwable#getMessage() in Java.
   string message = 2;
+}
+
+// --- Other types
+
+message AwakeableIdentifier {
+  string service_name = 1;
+  bytes instance_key = 2;
+  bytes invocation_id = 3;
+  uint32 entry_index = 4;
 }
