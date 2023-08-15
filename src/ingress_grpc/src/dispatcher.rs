@@ -39,7 +39,7 @@ pub struct IngressDispatcherLoop {
 
     // This channel can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
-    server_rx: UnboundedCommandReceiver<ServiceInvocation, IngressResult>,
+    server_rx: UnboundedCommandReceiver<InvocationOrResponse, IngressResult>,
 
     input_rx: IngressInputReceiver,
 
@@ -171,16 +171,26 @@ impl DispatcherLoopHandler {
 
     fn handle_ingress_command(
         &mut self,
-        cmd: Command<ServiceInvocation, IngressResult>,
+        cmd: Command<InvocationOrResponse, IngressResult>,
     ) -> IngressOutput {
-        let (service_invocation, reply_channel) = cmd.into_inner();
-        self.waiting_responses
-            .insert(service_invocation.id.clone(), reply_channel);
-
         let current_msg_index = self.msg_index;
         self.msg_index += 1;
 
-        IngressOutput::service_invocation(service_invocation, self.ingress_id, current_msg_index)
+        let (invocation_or_response, reply_channel) = cmd.into_inner();
+        match invocation_or_response {
+            InvocationOrResponse::Invocation(service_invocation) => {
+                self.waiting_responses
+                    .insert(service_invocation.id.clone(), reply_channel);
+                IngressOutput::service_invocation(
+                    service_invocation,
+                    self.ingress_id,
+                    current_msg_index,
+                )
+            }
+            InvocationOrResponse::Response(response) => {
+                IngressOutput::awakeable_completion(response, self.ingress_id, current_msg_index)
+            }
+        }
     }
 }
 
@@ -217,7 +227,8 @@ mod tests {
             ))),
             SpanRelation::None,
         );
-        let (cmd, cmd_rx) = Command::prepare(service_invocation.clone());
+        let (cmd, cmd_rx) =
+            Command::prepare(InvocationOrResponse::Invocation(service_invocation.clone()));
         command_sender.send(cmd).unwrap();
         drop(cmd_rx);
 

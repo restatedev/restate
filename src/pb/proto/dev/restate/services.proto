@@ -5,6 +5,9 @@ syntax = "proto3";
 
 package dev.restate;
 
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+
 option java_multiple_files = true;
 option java_package = "dev.restate.generated";
 option go_package = "restate.dev/sdk-go/pb";
@@ -32,4 +35,32 @@ message InvokeResponse {
   // Generated unique invocation identifier.
   // It can be used to retrieve the status of the invocation and cancel it.
   string sid = 1;
+}
+
+service Awakeables {
+  // Resolve an Awakeable with a result value.
+  rpc Resolve(ResolveAwakeableRequest) returns (google.protobuf.Empty);
+  // Reject an Awakeable with a reason.
+  rpc Reject(RejectAwakeableRequest) returns (google.protobuf.Empty);
+}
+
+message ResolveAwakeableRequest {
+  // Base64 encoded identifier of the Awakeable to resolve.
+  string id = 1;
+
+  oneof result {
+    bytes bytes_result = 2;
+
+    // When executing requests to the ingress using JSON, you can pass a json_result directly for ease of use.
+    // json_result will be sent back to the awakeable as string encoded JSON, not as Protobuf value.
+    google.protobuf.Value json_result = 3;
+  }
+}
+
+message RejectAwakeableRequest {
+  // Base64 encoded identifier of the Awakeable to reject.
+  string id = 1;
+
+  // Rejection reason.
+  string reason = 2;
 }

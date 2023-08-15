@@ -24,7 +24,7 @@ use opentelemetry::Context;
 use restate_futures_util::command::*;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{IngressId, PeerId, ServiceInvocationId};
-use restate_types::invocation::ServiceInvocation;
+use restate_types::invocation::{InvocationResponse, ResponseResult, ServiceInvocation};
 use restate_types::message::{AckKind, MessageIndex};
 use tokio::sync::mpsc;
 use tonic::Status;
@@ -55,6 +55,12 @@ pub type IngressResponse = Bytes;
 pub type IngressError = InvocationError;
 
 // --- Input and output messages to interact with ingress
+
+#[derive(Debug, Clone)]
+pub enum InvocationOrResponse {
+    Invocation(ServiceInvocation),
+    Response(InvocationResponse),
+}
 
 #[derive(Debug, Clone)]
 pub struct IngressResponseMessage {
@@ -108,6 +114,11 @@ pub enum IngressOutput {
         ingress_id: IngressId,
         msg_index: MessageIndex,
     },
+    AwakeableCompletion {
+        response: InvocationResponse,
+        ingress_id: IngressId,
+        msg_index: MessageIndex,
+    },
     Ack(AckResponse),
 }
 
@@ -130,6 +141,18 @@ impl IngressOutput {
         }
     }
 
+    pub fn awakeable_completion(
+        response: InvocationResponse,
+        ingress_id: IngressId,
+        msg_index: MessageIndex,
+    ) -> Self {
+        Self::AwakeableCompletion {
+            response,
+            ingress_id,
+            msg_index,
+        }
+    }
+
     pub fn shuffle_ack(ack_response: AckResponse) -> Self {
         Self::Ack(ack_response)
     }
@@ -137,7 +160,7 @@ impl IngressOutput {
 
 // --- Channels
 
-pub type DispatcherCommandSender = UnboundedCommandSender<ServiceInvocation, IngressResult>;
+pub type DispatcherCommandSender = UnboundedCommandSender<InvocationOrResponse, IngressResult>;
 pub type IngressInputReceiver = mpsc::Receiver<IngressInput>;
 pub type IngressInputSender = mpsc::Sender<IngressInput>;
 

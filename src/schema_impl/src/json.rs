@@ -93,7 +93,7 @@ mod json_impl {
             json: Bytes,
             deserialize_options: &DeserializeOptions,
         ) -> Result<Bytes, anyhow::Error> {
-            let dynamic_msg = match self {
+            Ok(match self {
                 JsonToProtobufConverterInner::Other(msg_desc) => {
                     let mut deser = serde_json::Deserializer::from_reader(json.reader());
                     let dynamic_message = DynamicMessage::deserialize_with_options(
@@ -102,20 +102,21 @@ mod json_impl {
                         deserialize_options,
                     )?;
                     deser.end()?;
-                    Ok(dynamic_message)
+                    Bytes::from(dynamic_message.encode_to_vec())
                 }
                 JsonToProtobufConverterInner::DevRestateInvokeMessage(
                     invoke_request_msg_desc,
                     schemas,
-                ) => read_json_invoke_request(
-                    invoke_request_msg_desc,
-                    schemas,
-                    deserialize_options,
-                    json,
+                ) => Bytes::from(
+                    read_json_invoke_request(
+                        invoke_request_msg_desc,
+                        schemas,
+                        deserialize_options,
+                        json,
+                    )?
+                    .encode_to_vec(),
                 ),
-            }?;
-
-            Ok(Bytes::from(dynamic_msg.encode_to_vec()))
+            })
         }
     }
 

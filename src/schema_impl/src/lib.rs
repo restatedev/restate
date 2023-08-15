@@ -313,29 +313,27 @@ pub(crate) mod schemas_impl {
             // Insert built-in services
             inner.services.insert(
                 restate_pb::REFLECTION_SERVICE_NAME.to_string(),
-                ServiceSchemas::new_ingress_only(
-                    &restate_pb::DESCRIPTOR_POOL
-                        .get_service_by_name(restate_pb::REFLECTION_SERVICE_NAME)
-                        .expect(
-                            "The built-in descriptor pool should contain the reflection service",
-                        ),
-                ),
+                ServiceSchemas::new_ingress_only(&restate_pb::get_service(
+                    restate_pb::REFLECTION_SERVICE_NAME,
+                )),
             );
             inner.services.insert(
                 restate_pb::INGRESS_SERVICE_NAME.to_string(),
-                ServiceSchemas::new_ingress_only(
-                    &restate_pb::DESCRIPTOR_POOL
-                        .get_service_by_name(restate_pb::INGRESS_SERVICE_NAME)
-                        .expect("The built-in descriptor pool should contain the ingress service"),
-                ),
+                ServiceSchemas::new_ingress_only(&restate_pb::get_service(
+                    restate_pb::INGRESS_SERVICE_NAME,
+                )),
+            );
+            inner.services.insert(
+                restate_pb::AWAKEABLES_SERVICE_NAME.to_string(),
+                ServiceSchemas::new_ingress_only(&restate_pb::get_service(
+                    restate_pb::AWAKEABLES_SERVICE_NAME,
+                )),
             );
             inner.services.insert(
                 restate_pb::HEALTH_SERVICE_NAME.to_string(),
-                ServiceSchemas::new_ingress_only(
-                    &restate_pb::DESCRIPTOR_POOL
-                        .get_service_by_name(restate_pb::HEALTH_SERVICE_NAME)
-                        .expect("The built-in descriptor pool should contain the ingress service"),
-                ),
+                ServiceSchemas::new_ingress_only(&restate_pb::get_service(
+                    restate_pb::HEALTH_SERVICE_NAME,
+                )),
             );
 
             inner
