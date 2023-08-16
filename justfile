@@ -140,3 +140,15 @@ _target-installed target:
     if ! rustup target list --installed |grep -qF '{{ target }}' 2>/dev/null ; then
         rustup target add '{{ target }}'
     fi
+
+check-license-headers:
+    #!/usr/bin/env bash
+    exit_code=0
+    for file in `find src -name "*.rs" -type file`; do
+      head -9 $file | tr -d '\n' | grep -q -e '^// Copyright (c) \d\d\d\d -  Restate Software, Inc., Restate GmbH.// All rights reserved.//// Use of this software is governed by the Business Source License// included in the LICENSE file.//// As of the Change Date specified in that file, in accordance with// the Business Source License, use of this software will be governed// by the Apache License, Version 2.0.$'
+      if [ $? -ne 0 ]; then
+        echo "$file does not contain valid license header"
+        exit_code=1
+      fi
+     done
+     exit $exit_code
