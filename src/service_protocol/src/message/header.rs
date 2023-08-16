@@ -1,3 +1,13 @@
+// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
 const PARTIAL_STATE_MASK: u64 = 0x0400_0000_0000;
 const VERSION_MASK: u64 = 0x03FF_0000_0000;

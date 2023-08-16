@@ -1,3 +1,13 @@
+// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
 // Some of the code in this file has been taken from tokio-rs/tracing
 // https://github.com/tokio-rs/tracing/blob/8aae1c37b091963aafdd336b1168fe5a24c0b4f0/tracing-subscriber/src/fmt/format/pretty.rs
 // License MIT
