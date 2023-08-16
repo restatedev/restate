@@ -642,7 +642,7 @@ pub(crate) mod schemas_impl {
         fn register_new_endpoint_empty_registry() {
             let schemas = Schemas::default();
 
-            let endpoint = EndpointMetadata::mock_with_uri("http://localhost:8080");
+            let endpoint = EndpointMetadata::mock();
             let commands = schemas
                 .compute_new_endpoint_updates(
                     endpoint.clone(),
@@ -767,7 +767,7 @@ pub(crate) mod schemas_impl {
         fn override_existing_endpoint() {
             let schemas = Schemas::default();
 
-            let endpoint = EndpointMetadata::mock_with_uri("http://localhost:8080");
+            let endpoint = EndpointMetadata::mock();
             let commands = schemas
                 .compute_new_endpoint_updates(
                     endpoint.clone(),
@@ -901,6 +901,49 @@ pub(crate) mod schemas_impl {
                 .resolve_latest_endpoint_for_service(mocks::ANOTHER_GREETER_SERVICE_NAME)
                 .is_none());
             assert!(schemas.get_endpoint(&endpoint_1.id()).is_none());
+        }
+
+        // Reproducer for issue where the service name is the same of the method name
+        #[test]
+        fn register_issue682() {
+            let schemas = Schemas::default();
+            let svc_name = "test.Issue682";
+
+            let endpoint = EndpointMetadata::mock();
+            schemas
+                .apply_updates(
+                    schemas
+                        .compute_new_endpoint_updates(
+                            endpoint.clone(),
+                            vec![ServiceRegistrationRequest::new(
+                                svc_name.to_string(),
+                                ServiceInstanceType::Unkeyed,
+                            )],
+                            mocks::DESCRIPTOR_POOL.clone(),
+                            false,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
+            schemas.assert_service_revision(svc_name, 1);
+
+            // Force the update. This should not panic.
+            schemas
+                .apply_updates(
+                    schemas
+                        .compute_new_endpoint_updates(
+                            endpoint,
+                            vec![ServiceRegistrationRequest::new(
+                                svc_name.to_string(),
+                                ServiceInstanceType::Unkeyed,
+                            )],
+                            mocks::DESCRIPTOR_POOL.clone(),
+                            true,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
+            schemas.assert_service_revision(svc_name, 2);
         }
     }
 }

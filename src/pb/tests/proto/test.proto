@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+import "google/protobuf/empty.proto";
+
 package test;
 
 service TestService {
@@ -22,4 +24,9 @@ message TestMessage {
   bytes bytes = 2;
   uint32 number = 3;
   NestedKey nested_message = 4;
+}
+
+// Test for https://github.com/restatedev/restate/issues/682
+service Issue682 {
+  rpc Issue682(google.protobuf.Empty) returns (google.protobuf.Empty);
 }
