@@ -62,6 +62,9 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
+      - name: Check license headers
+        run: just check-license-headers
+
       - name: Run fmt
         run: just check-fmt
 
