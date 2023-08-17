@@ -94,12 +94,12 @@ pub struct Options {
 
     /// # Inactivity timeout
     ///
-    /// This timer is used to gracefully shutdown a bidirectional stream
-    /// after inactivity on both request and response streams.
+    /// This timer guards against stalled service/handler invocations. Once it expires,
+    /// Restate triggers a graceful termination by asking the service invocation to
+    /// suspend (which preserves intermediate progress).
     ///
-    /// When this timer is fired, the invocation will be closed gracefully
-    /// by closing the request stream, triggering a suspension on the sdk,
-    /// in case the sdk is waiting on a completion. This won't affect the response stream.
+    /// The 'abort timeout' is used to abort the invocation, in case it doesn't react to
+    /// the request to suspend.
     ///
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -111,17 +111,13 @@ pub struct Options {
 
     /// # Abort timeout
     ///
-    /// This timer is used to forcefully shutdown an invocation when only the response stream is open.
+    /// This timer guards against stalled service/handler invocations that are supposed to
+    /// terminate. The abort timeout is started after the 'inactivity timeout' has expired
+    /// and the service/handler invocation has been asked to gracefully terminate. Once the
+    /// timer expires, it will abort the service/handler invocation.
     ///
-    /// When protocol mode is `restate_service_metadata::ProtocolType::RequestResponse`,
-    /// this timer will start as soon as the replay of the journal is completed.
-    /// When protocol mode is `restate_service_metadata::ProtocolType::BidiStream`,
-    /// this timer will start after the request stream has been closed.
-    /// Check `inactivity_timeout` to configure a timer on the request stream.
-    ///
-    /// When this timer is fired, the response stream will be aborted,
-    /// potentially **interrupting** user code! If the user code needs longer to complete,
-    /// then this value needs to be set accordingly.
+    /// This timer potentially **interrupts** user code. If the user code needs longer to
+    /// gracefully terminate, then this value needs to be set accordingly.
     ///
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     #[serde_as(as = "serde_with::DisplayFromStr")]
