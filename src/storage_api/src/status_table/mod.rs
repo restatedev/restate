@@ -30,6 +30,17 @@ pub enum InvocationStatus {
     Free,
 }
 
+impl InvocationStatus {
+    #[inline]
+    pub fn invocation_id(&self) -> Option<InvocationId> {
+        match self {
+            InvocationStatus::Invoked(metadata) => Some(metadata.invocation_id),
+            InvocationStatus::Suspended { metadata, .. } => Some(metadata.invocation_id),
+            InvocationStatus::Free => None,
+        }
+    }
+}
+
 impl Default for InvocationStatus {
     fn default() -> Self {
         InvocationStatus::Free
@@ -74,6 +85,12 @@ pub trait StatusTable {
         &mut self,
         service_id: &ServiceId,
     ) -> GetFuture<Option<InvocationStatus>>;
+
+    fn get_invocation_status_from(
+        &mut self,
+        partition_key: PartitionKey,
+        invocation_id: InvocationId,
+    ) -> GetFuture<Option<(ServiceId, InvocationStatus)>>;
 
     fn delete_invocation_status(&mut self, service_id: &ServiceId) -> PutFuture;
 

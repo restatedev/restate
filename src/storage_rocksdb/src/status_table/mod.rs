@@ -11,19 +11,22 @@
 use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::owned_iter::OwnedIterator;
+use crate::scan::TableScan;
 use crate::TableKind::Status;
 use crate::TableScan::PartitionKeyRange;
 use crate::{GetFuture, PutFuture, RocksDBTransaction};
 use crate::{RocksDBStorage, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
+use futures_util::FutureExt;
 use prost::Message;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::{InvocationId, ServiceInvocationId};
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use std::ops::RangeInclusive;
+use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 define_table_key!(
@@ -96,6 +99,35 @@ impl StatusTable for RocksDBTransaction {
         })
     }
 
+    fn get_invocation_status_from(
+        &mut self,
+        partition_key: PartitionKey,
+        invocation_id: InvocationId,
+    ) -> GetFuture<Option<(ServiceId, InvocationStatus)>> {
+        let key = StatusKey::default().partition_key(partition_key);
+
+        let mut stream = self.for_each_key_value(TableScan::KeyPrefix(key), move |k, v| {
+            let invocation_status = match decode_status(v) {
+                Ok(invocation_status)
+                    if invocation_status.invocation_id() == Some(invocation_id) =>
+                {
+                    invocation_status
+                }
+                Ok(_) => {
+                    return TableScanIterationDecision::Continue;
+                }
+                Err(err) => {
+                    return TableScanIterationDecision::BreakWith(Err(err));
+                }
+            };
+            TableScanIterationDecision::BreakWith(
+                status_key_from_bytes(Bytes::copy_from_slice(k)).map(|id| (id, invocation_status)),
+            )
+        });
+
+        async move { stream.next().await.transpose() }.boxed()
+    }
+
     fn delete_invocation_status(&mut self, service_id: &ServiceId) -> PutFuture {
         let key = write_status_key(service_id);
 
@@ -148,6 +180,12 @@ impl RocksDBStorage {
             }
         })
     }
+}
+
+fn decode_status(v: &[u8]) -> crate::Result<InvocationStatus> {
+    let proto = storage::v1::InvocationStatus::decode(v)
+        .map_err(|error| StorageError::Generic(error.into()))?;
+    InvocationStatus::try_from(proto).map_err(StorageError::from)
 }
 
 fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<ServiceInvocationId>> {

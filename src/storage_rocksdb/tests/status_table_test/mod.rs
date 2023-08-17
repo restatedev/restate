@@ -49,6 +49,12 @@ async fn populate_data<T: StatusTable>(txn: &mut T) {
     .await;
 
     txn.put_invocation_status(
+        &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
+        invoked_status(uuid_str("008756fa-3f7f-7854-a76b-42c59a3d7f2d")),
+    )
+    .await;
+
+    txn.put_invocation_status(
         &ServiceId::with_partition_key(1338, "svc-1", "key-2"),
         invoked_status(uuid_str("118756fa-3f7f-7854-a76b-42c59a3d7f2d")),
     )
@@ -96,6 +102,10 @@ async fn verify_all_svc_with_status_invoked<T: StatusTable>(txn: &mut T) {
             uuid_str("018756fa-3f7f-7854-a76b-42c59a3d7f2d"),
         ),
         ServiceInvocationId::with_service_id(
+            ServiceId::with_partition_key(1337, "svc-1", "key-2"),
+            uuid_str("008756fa-3f7f-7854-a76b-42c59a3d7f2d"),
+        ),
+        ServiceInvocationId::with_service_id(
             ServiceId::with_partition_key(1338, "svc-1", "key-2"),
             uuid_str("118756fa-3f7f-7854-a76b-42c59a3d7f2d"),
         ),
@@ -106,6 +116,37 @@ async fn verify_all_svc_with_status_invoked<T: StatusTable>(txn: &mut T) {
     ];
 
     assert_stream_eq(stream, expected).await;
+}
+
+async fn verify_lookup_by_invocation_id<T: StatusTable>(txn: &mut T) {
+    let result = txn
+        .get_invocation_status_from(
+            1337,
+            uuid_str("018756fa-3f7f-7854-a76b-42c59a3d7f2d").into(),
+        )
+        .await
+        .expect("should not fail");
+
+    let (id, status) = result.expect("the invocation should be present");
+
+    assert_eq!(ServiceId::with_partition_key(1337, "svc-1", "key-1"), id);
+
+    assert_eq!(
+        status,
+        invoked_status(uuid_str("018756fa-3f7f-7854-a76b-42c59a3d7f2d"))
+    );
+}
+
+async fn verify_lookup_by_invocation_id_not_found<T: StatusTable>(txn: &mut T) {
+    let result = txn
+        .get_invocation_status_from(
+            1337,
+            uuid_str("00000000-3f7f-7854-a76b-42c59a3d7f2d").into(),
+        )
+        .await
+        .expect("should not fail");
+
+    assert_eq!(result, None);
 }
 
 async fn verify_last_partition_all_svc_with_status_invoked<T: StatusTable>(txn: &mut T) {
@@ -125,6 +166,8 @@ pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
 
     let mut txn = rocksdb.transaction();
     verify_point_lookups(&mut txn).await;
+    verify_lookup_by_invocation_id(&mut txn).await;
+    verify_lookup_by_invocation_id_not_found(&mut txn).await;
     verify_all_svc_with_status_invoked(&mut txn).await;
     verify_last_partition_all_svc_with_status_invoked(&mut txn).await;
 }

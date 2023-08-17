@@ -68,6 +68,7 @@ pub enum TableScanIterationDecision<R> {
     Emit(Result<R>),
     Continue,
     Break,
+    BreakWith(Result<R>),
 }
 
 #[inline]
@@ -547,6 +548,10 @@ impl RocksDBTransaction {
                             return;
                         }
                         iterator.next();
+                    }
+                    TableScanIterationDecision::BreakWith(result) => {
+                        let _ = tx.blocking_send(result);
+                        break;
                     }
                     TableScanIterationDecision::Continue => {
                         iterator.next();
