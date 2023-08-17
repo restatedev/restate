@@ -120,6 +120,14 @@ pub mod endpoint {
         use std::collections::HashMap;
 
         impl EndpointMetadata {
+            pub fn mock() -> EndpointMetadata {
+                EndpointMetadata::new(
+                    "http://localhost:8080".parse().unwrap(),
+                    ProtocolType::BidiStream,
+                    Default::default(),
+                )
+            }
+
             pub fn mock_with_uri(uri: &str) -> EndpointMetadata {
                 EndpointMetadata::new(
                     uri.parse().unwrap(),

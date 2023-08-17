@@ -134,6 +134,7 @@ enum Symbol {
 struct SymbolsIndex(HashMap<String, Symbol>);
 
 impl SymbolsIndex {
+    /// `methods` should be the [`prost_reflect::MethodDescriptor::full_name`]
     fn add_service(
         &mut self,
         service_name: String,
@@ -181,6 +182,7 @@ impl SymbolsIndex {
         };
     }
 
+    /// `methods` should be the [`prost_reflect::MethodDescriptor::full_name`]
     fn remove_service(
         &mut self,
         service_name: &str,
@@ -285,7 +287,7 @@ impl ProtoSymbols {
             service_desc.full_name().to_string(),
             service_desc
                 .methods()
-                .map(|m| m.name().to_string())
+                .map(|m| m.full_name().to_string())
                 .collect(),
             files.keys().cloned().collect(),
         );
@@ -318,7 +320,7 @@ impl ProtoSymbols {
         let methods = service_desc.methods();
         let service_related_files = self.symbols.remove_service(
             service_desc.full_name(),
-            methods.map(|m| m.name().to_string()),
+            methods.map(|m| m.full_name().to_string()),
         );
 
         // For each file related to the service, remove it
