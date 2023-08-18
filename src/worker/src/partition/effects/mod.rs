@@ -273,7 +273,6 @@ impl Effect {
                     }),
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %id.service_id.service_name,
                 restate.invocation.sid = %id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send success response to another invocation, completing entry index {}",
@@ -289,7 +288,6 @@ impl Effect {
                     }),
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %id.service_id.service_name,
                 restate.invocation.sid = %id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send failure code {} response to another invocation, completing entry index {}. Reason: {}",

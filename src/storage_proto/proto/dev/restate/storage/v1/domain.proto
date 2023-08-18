@@ -11,7 +11,7 @@ package dev.restate.storage.domain.v1;
 message ServiceInvocationId {
     bytes service_name = 1;
     bytes service_key = 2;
-    bytes invocation_id = 3;
+    bytes invocation_uuid = 3;
 }
 
 // ---------------------------------------------------------------------
@@ -259,7 +259,10 @@ message OutboxMessage {
     }
 
     message OutboxServiceInvocationResponse {
-        ServiceInvocationId service_invocation_id = 1;
+        oneof id {
+            ServiceInvocationId service_invocation_id = 1;
+            bytes invocation_id = 4;
+        }
         uint32 entry_index = 2;
         ResponseResult response_result = 3;
     }

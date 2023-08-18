@@ -163,9 +163,7 @@ mod shuffle_integration {
                 shuffle::InvocationOrResponse::Invocation(invocation) => {
                     invocation.id.service_id.partition_key()
                 }
-                shuffle::InvocationOrResponse::Response(response) => {
-                    response.id.service_id.partition_key()
-                }
+                shuffle::InvocationOrResponse::Response(response) => response.id.partition_key(),
             }
         }
     }

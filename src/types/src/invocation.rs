@@ -20,6 +20,7 @@ use opentelemetry_api::trace::{
     SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
 };
 use opentelemetry_api::Context;
+use std::fmt;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -58,10 +59,35 @@ impl ServiceInvocation {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum MaybeFullInvocationId {
+    Partial(InvocationId),
+    Full(ServiceInvocationId),
+}
+
+impl WithPartitionKey for MaybeFullInvocationId {
+    fn partition_key(&self) -> PartitionKey {
+        match self {
+            MaybeFullInvocationId::Partial(iid) => iid.partition_key(),
+            MaybeFullInvocationId::Full(fiid) => fiid.partition_key(),
+        }
+    }
+}
+
+impl fmt::Display for MaybeFullInvocationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MaybeFullInvocationId::Partial(iid) => fmt::Display::fmt(iid, f),
+            MaybeFullInvocationId::Full(sid) => fmt::Display::fmt(sid, f),
+        }
+    }
+}
+
 /// Representing a response for a caller
 #[derive(Debug, Clone, PartialEq)]
 pub struct InvocationResponse {
-    pub id: ServiceInvocationId,
+    /// Depending on the source of the response, this can be either the full identifier, or the short one.
+    pub id: MaybeFullInvocationId,
     pub entry_index: EntryIndex,
     pub result: ResponseResult,
 }
