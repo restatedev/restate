@@ -31,10 +31,12 @@ use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
-use restate_types::identifiers::{EntryIndex, InvocationUuid, ServiceId, ServiceInvocationId};
+use restate_types::identifiers::{
+    EntryIndex, InvocationId, InvocationUuid, ServiceId, ServiceInvocationId,
+};
 use restate_types::invocation::{
-    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
+    InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
 };
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::message::MessageIndex;
@@ -77,6 +79,12 @@ pub(crate) trait StateReader {
         &'a mut self,
         service_id: &'a ServiceId,
     ) -> BoxFuture<'a, Result<InvocationStatus, StateReaderError>>;
+
+    // TODO: Replace with async trait or proper future
+    fn resolve_invocation_status_from_invocation_id<'a>(
+        &'a mut self,
+        invocation_id: &'a InvocationId,
+    ) -> BoxFuture<'a, Result<(ServiceInvocationId, InvocationStatus), StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
     fn peek_inbox<'a>(
@@ -256,7 +264,7 @@ where
         return match value {
             Timer::CompleteSleepEntry => {
                 Self::handle_completion(
-                    service_invocation_id,
+                    MaybeFullInvocationId::Full(service_invocation_id),
                     Completion {
                         entry_index,
                         result: CompletionResult::Empty,
@@ -666,14 +674,22 @@ where
     }
 
     async fn handle_completion<State: StateReader>(
-        service_invocation_id: ServiceInvocationId,
+        maybe_full_invocation_id: MaybeFullInvocationId,
         completion: Completion,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
-        let status = state
-            .get_invocation_status(&service_invocation_id.service_id)
-            .await?;
+        let (service_invocation_id, status) = match maybe_full_invocation_id {
+            MaybeFullInvocationId::Partial(iid) => {
+                state
+                    .resolve_invocation_status_from_invocation_id(&iid)
+                    .await?
+            }
+            MaybeFullInvocationId::Full(sid) => {
+                let status = state.get_invocation_status(&sid.service_id).await?;
+                (sid, status)
+            }
+        };
         let mut related_sid = None;
         let mut span_relation = SpanRelation::None;
 
@@ -817,12 +833,12 @@ where
         OutboxMessage::ServiceResponse(InvocationResponse {
             entry_index,
             result: result.into(),
-            id: ServiceInvocationId::new(
+            id: MaybeFullInvocationId::Full(ServiceInvocationId::new(
                 service_name,
                 instance_key,
                 InvocationUuid::from_slice(&invocation_id)
                     .expect("Invocation id must be parse-able. If not, then this is a bug. Please contact the Restate developers."),
-            ),
+            )),
         })
     }
 
@@ -836,7 +852,7 @@ where
                 entry_index,
                 caller,
             } => OutboxMessage::ServiceResponse(InvocationResponse {
-                id: caller,
+                id: MaybeFullInvocationId::Full(caller),
                 entry_index,
                 result,
             }),
@@ -870,6 +886,7 @@ mod tests {
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_test_util::{assert_eq, let_assert, test};
     use restate_types::errors::UserErrorCode;
+    use restate_types::identifiers::WithPartitionKey;
     use restate_types::journal::{EntryResult, JournalMetadata};
     use std::collections::HashMap;
 
@@ -904,6 +921,30 @@ mod tests {
             service_id: &'a ServiceId,
         ) -> BoxFuture<'a, Result<InvocationStatus, StateReaderError>> {
             ok(self.invocations.get(service_id).cloned().unwrap()).boxed()
+        }
+
+        fn resolve_invocation_status_from_invocation_id<'a>(
+            &'a mut self,
+            invocation_id: &'a InvocationId,
+        ) -> BoxFuture<'a, Result<(ServiceInvocationId, InvocationStatus), StateReaderError>>
+        {
+            let (service_id, status) = self
+                .invocations
+                .iter()
+                .find(|(service_id, status)| {
+                    service_id.partition_key() == invocation_id.partition_key()
+                        && status.invocation_uuid().unwrap() == invocation_id.invocation_uuid()
+                })
+                .unwrap();
+
+            ok((
+                ServiceInvocationId::with_service_id(
+                    service_id.clone(),
+                    invocation_id.invocation_uuid(),
+                ),
+                status.clone(),
+            ))
+            .boxed()
         }
 
         fn peek_inbox<'a>(
@@ -962,7 +1003,7 @@ mod tests {
                 result: ResponseResult::Success(_),
             }) = message
         );
-        assert_eq!(id, sid_callee);
+        assert_eq!(id, MaybeFullInvocationId::Full(sid_callee));
         assert_eq!(entry_index, 1);
     }
 
@@ -1009,8 +1050,37 @@ mod tests {
                 result: ResponseResult::Failure(UserErrorCode::FailedPrecondition, failure_reason),
             }) = message
         );
-        assert_eq!(id, sid_callee);
+        assert_eq!(id, MaybeFullInvocationId::Full(sid_callee));
         assert_eq!(entry_index, 1);
         assert_eq!(failure_reason, "Some failure");
+    }
+
+    #[test(tokio::test)]
+    async fn send_response_using_invocation_id() {
+        let mut state_machine: StateMachine<ProtobufRawEntryCodec> = StateMachine::new(0, 0);
+        let mut effects = Effects::default();
+        let mut state_reader = StateReaderMock::default();
+
+        let sid = ServiceInvocationId::mock_random();
+
+        let cmd = Command::Response(InvocationResponse {
+            id: MaybeFullInvocationId::Partial(sid.clone().into()),
+            entry_index: 1,
+            result: ResponseResult::Success(Bytes::from_static(b"hello")),
+        });
+
+        state_reader.register_invocation_status(&sid, 1);
+
+        state_machine
+            .on_apply(cmd, &mut effects, &mut state_reader)
+            .await
+            .unwrap();
+        let_assert!(
+            Effect::StoreCompletionAndForward {
+                service_invocation_id,
+                ..
+            } = effects.drain().next().unwrap()
+        );
+        assert_eq!(service_invocation_id, sid);
     }
 }

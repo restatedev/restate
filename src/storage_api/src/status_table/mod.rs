@@ -32,7 +32,7 @@ pub enum InvocationStatus {
 
 impl InvocationStatus {
     #[inline]
-    pub fn invocation_id(&self) -> Option<InvocationUuid> {
+    pub fn invocation_uuid(&self) -> Option<InvocationUuid> {
         match self {
             InvocationStatus::Invoked(metadata) => Some(metadata.invocation_id),
             InvocationStatus::Suspended { metadata, .. } => Some(metadata.invocation_id),

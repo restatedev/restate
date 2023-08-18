@@ -59,7 +59,7 @@ impl ServiceInvocation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MaybeFullInvocationId {
     Partial(InvocationId),
     Full(ServiceInvocationId),

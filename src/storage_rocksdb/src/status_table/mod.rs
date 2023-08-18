@@ -109,7 +109,7 @@ impl StatusTable for RocksDBTransaction {
         let mut stream = self.for_each_key_value(TableScan::KeyPrefix(key), move |k, v| {
             let invocation_status = match decode_status(v) {
                 Ok(invocation_status)
-                    if invocation_status.invocation_id() == Some(invocation_id) =>
+                    if invocation_status.invocation_uuid() == Some(invocation_id) =>
                 {
                     invocation_status
                 }
