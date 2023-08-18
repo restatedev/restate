@@ -919,7 +919,7 @@ mod tests {
     use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
     use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
     use restate_test_util::{check, let_assert, test};
-    use restate_types::identifiers::InvocationId;
+    use restate_types::identifiers::InvocationUuid;
     use restate_types::identifiers::ServiceInvocationId;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
@@ -998,7 +998,7 @@ mod tests {
     }
 
     fn mock_sid() -> ServiceInvocationId {
-        ServiceInvocationId::new("MyService", Bytes::default(), InvocationId::now_v7())
+        ServiceInvocationId::new("MyService", Bytes::default(), InvocationUuid::now_v7())
     }
 
     #[test(tokio::test)]
@@ -1030,7 +1030,7 @@ mod tests {
         let invoker_join_handle = tokio::spawn(service.run(watch));
 
         let partition_leader_epoch = (0, 0);
-        let sid = ServiceInvocationId::new("TestService", Bytes::new(), InvocationId::now_v7());
+        let sid = ServiceInvocationId::new("TestService", Bytes::new(), InvocationUuid::now_v7());
 
         let (output_tx, mut output_rx) = mpsc::channel(1);
 

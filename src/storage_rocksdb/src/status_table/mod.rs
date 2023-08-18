@@ -23,7 +23,7 @@ use prost::Message;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
-use restate_types::identifiers::{InvocationId, ServiceInvocationId};
+use restate_types::identifiers::{InvocationUuid, ServiceInvocationId, WithPartitionKey};
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use std::ops::RangeInclusive;
 use tokio_stream::StreamExt;
@@ -102,7 +102,7 @@ impl StatusTable for RocksDBTransaction {
     fn get_invocation_status_from(
         &mut self,
         partition_key: PartitionKey,
-        invocation_id: InvocationId,
+        invocation_id: InvocationUuid,
     ) -> GetFuture<Option<(ServiceId, InvocationStatus)>> {
         let key = StatusKey::default().partition_key(partition_key);
 
@@ -208,7 +208,7 @@ fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<ServiceIn
 mod tests {
     use crate::keys::TableKey;
     use crate::status_table::{status_key_from_bytes, write_status_key};
-    use restate_types::identifiers::ServiceId;
+    use restate_types::identifiers::{ServiceId, WithPartitionKey};
 
     #[test]
     fn round_trip() {

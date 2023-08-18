@@ -20,7 +20,7 @@ use prost::Message;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
-use restate_types::identifiers::{PartitionKey, ServiceId};
+use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::invocation::ServiceInvocation;
 use std::io::Cursor;
 
@@ -111,7 +111,7 @@ mod tests {
     use crate::inbox_table::InboxKey;
     use crate::keys::TableKey;
     use bytes::{Bytes, BytesMut};
-    use restate_types::identifiers::ServiceId;
+    use restate_types::identifiers::{ServiceId, WithPartitionKey};
 
     fn message_key(service_id: &ServiceId, sequence_number: u64) -> Bytes {
         let key = InboxKey {

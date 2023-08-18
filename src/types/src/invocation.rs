@@ -11,7 +11,9 @@
 //! This module contains all the core types representing a service invocation.
 
 use crate::errors::UserErrorCode;
-use crate::identifiers::{EntryIndex, IngressId, ServiceInvocationId};
+use crate::identifiers::{
+    EntryIndex, IngressId, InvocationId, PartitionKey, ServiceInvocationId, WithPartitionKey,
+};
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::{
@@ -125,7 +127,7 @@ impl ServiceInvocationSpanContext {
         let (cause, new_span_context) = match &related_span {
             SpanRelation::Linked(linked_span_context) => {
                 // use part of the invocation id as the span id of the new trace root
-                let span_id: SpanId = service_invocation_id.invocation_id.into();
+                let span_id: SpanId = service_invocation_id.invocation_uuid.into();
 
                 // use its reverse as the span id of the background_invoke 'pointer' span in the previous trace
                 // as we cannot use the same span id for both spans
@@ -137,7 +139,7 @@ impl ServiceInvocationSpanContext {
                 let new_span_context = SpanContext::new(
                     // use invocation id as the new trace id; this allows you to follow cause -> new trace in jaeger
                     // trace ids are 128 bits and 'worldwide unique'
-                    service_invocation_id.invocation_id.into(),
+                    service_invocation_id.invocation_uuid.into(),
                     // use part of the invocation id as the new span id; this is 64 bits and best-effort 'globally unique'
                     span_id,
                     // use sampling decision of the causing trace; this is NOT default otel behaviour but
@@ -160,7 +162,7 @@ impl ServiceInvocationSpanContext {
                     // use parent trace id
                     parent_span_context.trace_id(),
                     // use part of the invocation id as the new span id
-                    service_invocation_id.invocation_id.into(),
+                    service_invocation_id.invocation_uuid.into(),
                     // use sampling decision of parent trace; this is default otel behaviour
                     parent_span_context.trace_flags(),
                     false,
@@ -176,8 +178,8 @@ impl ServiceInvocationSpanContext {
                 // create a span context with a new trace
                 let new_span_context = SpanContext::new(
                     // use invocation id as the new trace id and span id
-                    service_invocation_id.invocation_id.into(),
-                    service_invocation_id.invocation_id.into(),
+                    service_invocation_id.invocation_uuid.into(),
+                    service_invocation_id.invocation_uuid.into(),
                     // we don't have the means to actually sample here; just hardcode a sampled trace
                     // as this should only happen in tests anyway
                     TraceFlags::SAMPLED,

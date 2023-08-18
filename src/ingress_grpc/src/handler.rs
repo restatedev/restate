@@ -28,7 +28,7 @@ use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::errors::UserErrorCode;
-use restate_types::identifiers::{IngressId, InvocationId};
+use restate_types::identifiers::{IngressId, InvocationUuid};
 use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
 use std::sync::Arc;
 use std::task::Poll;
@@ -377,7 +377,7 @@ where
                     })?;
 
                 let service_invocation = ServiceInvocation::new(
-                    ServiceInvocationId::new(service_name, key, InvocationId::now_v7()),
+                    ServiceInvocationId::new(service_name, key, InvocationUuid::now_v7()),
                     method_name.into(),
                     req_payload,
                     response_sink,

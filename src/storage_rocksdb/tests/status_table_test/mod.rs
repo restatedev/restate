@@ -12,13 +12,13 @@ use crate::{assert_stream_eq, uuid_str};
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, StatusTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{InvocationId, ServiceId, ServiceInvocationId};
+use restate_types::identifiers::{InvocationUuid, ServiceId, ServiceInvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::JournalMetadata;
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 
-fn invoked_status(invocation_id: impl Into<InvocationId>) -> InvocationStatus {
+fn invoked_status(invocation_id: impl Into<InvocationUuid>) -> InvocationStatus {
     InvocationStatus::Invoked(InvocationMetadata::new(
         invocation_id.into(),
         JournalMetadata::new("service", ServiceInvocationSpanContext::empty(), 0),
@@ -28,7 +28,7 @@ fn invoked_status(invocation_id: impl Into<InvocationId>) -> InvocationStatus {
     ))
 }
 
-fn suspended_status(invocation_id: impl Into<InvocationId>) -> InvocationStatus {
+fn suspended_status(invocation_id: impl Into<InvocationUuid>) -> InvocationStatus {
     InvocationStatus::Suspended {
         metadata: InvocationMetadata::new(
             invocation_id.into(),

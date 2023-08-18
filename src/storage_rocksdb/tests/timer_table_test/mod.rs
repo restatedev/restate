@@ -21,7 +21,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
         &TimerKey {
             service_invocation_id: ServiceInvocationId {
                 service_id: ServiceId::new("svc-1", "key-1"),
-                invocation_id: Default::default(),
+                invocation_uuid: Default::default(),
             },
             journal_index: 0,
             timestamp: 0,
@@ -35,7 +35,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
         &TimerKey {
             service_invocation_id: ServiceInvocationId {
                 service_id: ServiceId::new("svc-1", "key-1"),
-                invocation_id: Default::default(),
+                invocation_uuid: Default::default(),
             },
             journal_index: 1,
             timestamp: 0,
@@ -47,7 +47,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     let service_invocation = ServiceInvocation::new(
         ServiceInvocationId {
             service_id: ServiceId::new("svc-2", "key-2"),
-            invocation_id: Default::default(),
+            invocation_uuid: Default::default(),
         },
         "mymethod".to_string().into(),
         Default::default(),
@@ -59,7 +59,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
         &TimerKey {
             service_invocation_id: ServiceInvocationId {
                 service_id: ServiceId::new("svc-1", "key-1"),
-                invocation_id: Default::default(),
+                invocation_uuid: Default::default(),
             },
             journal_index: 2,
             timestamp: 1,
@@ -76,7 +76,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
         &TimerKey {
             service_invocation_id: ServiceInvocationId {
                 service_id: ServiceId::new("", ""),
-                invocation_id: Default::default(),
+                invocation_uuid: Default::default(),
             },
             journal_index: 0,
             timestamp: 0,
@@ -90,7 +90,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
         &TimerKey {
             service_invocation_id: ServiceInvocationId {
                 service_id: ServiceId::new("", ""),
-                invocation_id: Default::default(),
+                invocation_uuid: Default::default(),
             },
             journal_index: 0,
             timestamp: 0,
@@ -117,7 +117,7 @@ async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
         Some(&TimerKey {
             service_invocation_id: ServiceInvocationId {
                 service_id: ServiceId::new("svc-1", "key-1"),
-                invocation_id: Default::default(),
+                invocation_uuid: Default::default(),
             },
             journal_index: 0,
             timestamp: 0,
@@ -146,7 +146,7 @@ async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
         &TimerKey {
             service_invocation_id: ServiceInvocationId {
                 service_id: ServiceId::new("svc-1", "key-1"),
-                invocation_id: Default::default(),
+                invocation_uuid: Default::default(),
             },
             journal_index: 0,
             timestamp: 0,
@@ -161,7 +161,7 @@ async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
         Some(&TimerKey {
             service_invocation_id: ServiceInvocationId {
                 service_id: ServiceId::new("", ""),
-                invocation_id: Default::default(),
+                invocation_uuid: Default::default(),
             },
             journal_index: 0,
             timestamp: 0,

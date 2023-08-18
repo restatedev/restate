@@ -17,7 +17,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::{ready, GetStream, StorageError};
-use restate_types::identifiers::{PartitionKey, ServiceId};
+use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use std::ops::RangeInclusive;
 
 define_table_key!(

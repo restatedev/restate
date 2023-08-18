@@ -570,7 +570,7 @@ where
             http_stream_tx,
             ProtocolMessage::new_start_message(
                 self.service_invocation_id
-                    .invocation_id
+                    .invocation_uuid
                     .as_bytes()
                     .to_vec()
                     .into(),

@@ -14,8 +14,8 @@ use crate::{
     TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress,
 };
 use restate_test_util::test;
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{PartitionKey, PeerId};
-use restate_types::message::PartitionedMessage;
 use restate_types::message::PeerTarget;
 use std::fmt::Debug;
 use std::future;
@@ -36,7 +36,7 @@ impl PartitionTable for MockPartitionTable {
 #[derive(Debug, PartialEq, Copy, Clone)]
 struct ConsensusMsg(u64);
 
-impl PartitionedMessage for ConsensusMsg {
+impl WithPartitionKey for ConsensusMsg {
     fn partition_key(&self) -> PartitionKey {
         0
     }

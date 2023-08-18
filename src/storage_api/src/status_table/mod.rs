@@ -10,7 +10,7 @@
 
 use crate::{GetFuture, GetStream, PutFuture};
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, PartitionKey, ServiceId, ServiceInvocationId,
+    EntryIndex, InvocationUuid, PartitionKey, ServiceId, ServiceInvocationId,
 };
 use restate_types::invocation::ServiceInvocationResponseSink;
 use restate_types::journal::JournalMetadata;
@@ -32,7 +32,7 @@ pub enum InvocationStatus {
 
 impl InvocationStatus {
     #[inline]
-    pub fn invocation_id(&self) -> Option<InvocationId> {
+    pub fn invocation_id(&self) -> Option<InvocationUuid> {
         match self {
             InvocationStatus::Invoked(metadata) => Some(metadata.invocation_id),
             InvocationStatus::Suspended { metadata, .. } => Some(metadata.invocation_id),
@@ -49,7 +49,7 @@ impl Default for InvocationStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct InvocationMetadata {
-    pub invocation_id: InvocationId,
+    pub invocation_id: InvocationUuid,
     pub journal_metadata: JournalMetadata,
     pub response_sink: Option<ServiceInvocationResponseSink>,
     pub creation_time: MillisSinceEpoch,
@@ -58,7 +58,7 @@ pub struct InvocationMetadata {
 
 impl InvocationMetadata {
     pub fn new(
-        invocation_id: InvocationId,
+        invocation_id: InvocationUuid,
         journal_metadata: JournalMetadata,
         response_sink: Option<ServiceInvocationResponseSink>,
         creation_time: MillisSinceEpoch,
@@ -89,7 +89,7 @@ pub trait StatusTable {
     fn get_invocation_status_from(
         &mut self,
         partition_key: PartitionKey,
-        invocation_id: InvocationId,
+        invocation_id: InvocationUuid,
     ) -> GetFuture<Option<(ServiceId, InvocationStatus)>>;
 
     fn delete_invocation_status(&mut self, service_id: &ServiceId) -> PutFuture;

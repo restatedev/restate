@@ -35,8 +35,9 @@ mod ingress_integration {
     use crate::partition;
     use crate::partition::shuffle;
     use restate_network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
+    use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{IngressId, PartitionKey, PeerId};
-    use restate_types::message::PartitionedMessage;
+    use restate_types::invocation::ServiceInvocation;
     use restate_types::message::{AckKind, MessageIndex};
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
@@ -84,7 +85,7 @@ mod ingress_integration {
         msg_index: MessageIndex,
     }
 
-    impl PartitionedMessage for IngressToConsensus {
+    impl WithPartitionKey for IngressToConsensus {
         fn partition_key(&self) -> PartitionKey {
             match &self.invocation_or_response {
                 restate_ingress_grpc::InvocationOrResponse::Invocation(invocation) => {
@@ -143,10 +144,10 @@ mod shuffle_integration {
     use crate::partition::shuffle;
     use restate_ingress_grpc::{IngressError, IngressResponseMessage};
     use restate_network::{ConsensusOrIngressTarget, TargetConsensusOrIngress};
+    use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
     use restate_types::invocation::ResponseResult;
     use restate_types::message::MessageIndex;
-    use restate_types::message::PartitionedMessage;
 
     #[derive(Debug)]
     pub(crate) struct ShuffleToConsensus {
@@ -156,7 +157,7 @@ mod shuffle_integration {
         msg_index: MessageIndex,
     }
 
-    impl PartitionedMessage for ShuffleToConsensus {
+    impl WithPartitionKey for ShuffleToConsensus {
         fn partition_key(&self) -> PartitionKey {
             match &self.msg {
                 shuffle::InvocationOrResponse::Invocation(invocation) => {

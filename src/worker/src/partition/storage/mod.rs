@@ -16,7 +16,7 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
 use restate_types::identifiers::{
-    EntryIndex, PartitionId, PartitionKey, ServiceId, ServiceInvocationId,
+    EntryIndex, PartitionId, PartitionKey, ServiceId, ServiceInvocationId, WithPartitionKey,
 };
 use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::EnrichedRawEntry;

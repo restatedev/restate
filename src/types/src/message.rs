@@ -10,7 +10,7 @@
 
 //! This module defines types used for the internal messaging between Restate components.
 
-use crate::identifiers::{PartitionKey, PeerId};
+use crate::identifiers::PeerId;
 
 /// Wrapper that extends a message with its target peer to which the message should be sent.
 pub type PeerTarget<Msg> = (PeerId, Msg);
@@ -28,10 +28,4 @@ pub enum AckKind {
         // See `DeduplicatingStateMachine` for more details.
         last_known_seq_number: MessageIndex,
     },
-}
-
-/// Trait for messages that have a partition key
-pub trait PartitionedMessage {
-    /// Returns the partition key
-    fn partition_key(&self) -> PartitionKey;
 }

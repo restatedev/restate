@@ -267,7 +267,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 collector.collect(ActuatorMessage::Invoke {
                     service_invocation_id: ServiceInvocationId {
                         service_id,
-                        invocation_id,
+                        invocation_uuid: invocation_id,
                     },
                     invoke_input_journal: InvokeInputJournal::NoCachedJournal,
                 });
@@ -637,7 +637,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             .store_invocation_status(
                 &service_invocation.id.service_id,
                 InvocationStatus::Invoked(InvocationMetadata::new(
-                    service_invocation.id.invocation_id,
+                    service_invocation.id.invocation_uuid,
                     journal_metadata.clone(),
                     service_invocation.response_sink,
                     creation_time,

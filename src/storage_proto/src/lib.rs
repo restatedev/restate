@@ -412,7 +412,7 @@ pub mod storage {
 
             impl From<restate_types::identifiers::ServiceInvocationId> for ServiceInvocationId {
                 fn from(value: restate_types::identifiers::ServiceInvocationId) -> Self {
-                    let invocation_id = invocation_id_to_bytes(&value.invocation_id);
+                    let invocation_id = invocation_id_to_bytes(&value.invocation_uuid);
                     let service_key = value.service_id.key;
                     let service_name = value.service_id.service_name.into_bytes();
 
@@ -426,13 +426,13 @@ pub mod storage {
 
             fn try_bytes_into_invocation_id(
                 bytes: Bytes,
-            ) -> Result<restate_types::identifiers::InvocationId, ConversionError> {
-                restate_types::identifiers::InvocationId::from_slice(bytes.as_ref())
+            ) -> Result<restate_types::identifiers::InvocationUuid, ConversionError> {
+                restate_types::identifiers::InvocationUuid::from_slice(bytes.as_ref())
                     .map_err(ConversionError::invalid_data)
             }
 
             fn invocation_id_to_bytes(
-                invocation_id: &restate_types::identifiers::InvocationId,
+                invocation_id: &restate_types::identifiers::InvocationUuid,
             ) -> Bytes {
                 Bytes::copy_from_slice(invocation_id.as_bytes())
             }

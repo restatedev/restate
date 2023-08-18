@@ -31,7 +31,7 @@ use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
-use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId, ServiceInvocationId};
+use restate_types::identifiers::{EntryIndex, InvocationUuid, ServiceId, ServiceInvocationId};
 use restate_types::invocation::{
     InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
     ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
@@ -197,7 +197,7 @@ where
 
         match status {
             InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. }
-                if metadata.invocation_id == service_invocation_id.invocation_id =>
+                if metadata.invocation_id == service_invocation_id.invocation_uuid =>
             {
                 let (sid, related_span) = self
                     .kill_invocation(service_invocation_id, metadata, state, effects)
@@ -289,7 +289,7 @@ where
         match status {
             InvocationStatus::Invoked(invocation_metadata)
                 if invocation_metadata.invocation_id
-                    == invoker_effect.service_invocation_id.invocation_id =>
+                    == invoker_effect.service_invocation_id.invocation_uuid =>
             {
                 self.on_invoker_effect(effects, state, invoker_effect, invocation_metadata)
                     .await
@@ -679,7 +679,7 @@ where
 
         match status {
             InvocationStatus::Invoked(metadata) => {
-                if metadata.invocation_id == service_invocation_id.invocation_id {
+                if metadata.invocation_id == service_invocation_id.invocation_uuid {
                     effects.store_and_forward_completion(service_invocation_id.clone(), completion);
                     related_sid = Some(service_invocation_id);
                     span_relation = metadata.journal_metadata.span_context.as_parent();
@@ -696,7 +696,7 @@ where
                 metadata,
                 waiting_for_completed_entries,
             } => {
-                if metadata.invocation_id == service_invocation_id.invocation_id {
+                if metadata.invocation_id == service_invocation_id.invocation_uuid {
                     span_relation = metadata.journal_metadata.span_context.as_parent();
 
                     if waiting_for_completed_entries.contains(&completion.entry_index) {
@@ -776,7 +776,7 @@ where
     }
 
     fn create_service_invocation(
-        invocation_id: InvocationId,
+        invocation_id: InvocationUuid,
         invocation_key: Bytes,
         invoke_request: InvokeRequest,
         response_target: Option<(ServiceInvocationId, EntryIndex)>,
@@ -820,7 +820,7 @@ where
             id: ServiceInvocationId::new(
                 service_name,
                 instance_key,
-                InvocationId::from_slice(&invocation_id)
+                InvocationUuid::from_slice(&invocation_id)
                     .expect("Invocation id must be parse-able. If not, then this is a bug. Please contact the Restate developers."),
             ),
         })
@@ -883,7 +883,7 @@ mod tests {
             self.invocations.insert(
                 sid.service_id.clone(),
                 InvocationStatus::Invoked(InvocationMetadata {
-                    invocation_id: sid.invocation_id,
+                    invocation_id: sid.invocation_uuid,
                     journal_metadata: JournalMetadata {
                         endpoint_id: None,
                         length,
@@ -935,7 +935,7 @@ mod tests {
             CompleteAwakeableEntry {
                 service_name: sid_callee.service_id.service_name.clone(),
                 instance_key: sid_callee.service_id.key.clone(),
-                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_id.as_bytes()),
+                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_uuid.as_bytes()),
                 entry_index: 1,
                 result: EntryResult::Success(Bytes::default()),
             },
@@ -979,7 +979,7 @@ mod tests {
             CompleteAwakeableEntry {
                 service_name: sid_callee.service_id.service_name.clone(),
                 instance_key: sid_callee.service_id.key.clone(),
-                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_id.as_bytes()),
+                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_uuid.as_bytes()),
                 entry_index: 1,
                 result: EntryResult::Failure(
                     UserErrorCode::FailedPrecondition,

@@ -14,7 +14,7 @@ use crate::{
     TargetShuffle,
 };
 use restate_types::identifiers::PeerId;
-use restate_types::message::PartitionedMessage;
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::message::PeerTarget;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -46,7 +46,7 @@ impl<I, ItoC, ItoS, C, S, P> IngressRouter<I, ItoC, ItoS, C, S, P>
 where
     I: TargetConsensusOrShuffle<ItoC, ItoS>,
     ItoS: TargetShuffle + Into<S> + Debug,
-    ItoC: PartitionedMessage + Into<C> + Debug,
+    ItoC: WithPartitionKey + Into<C> + Debug,
     P: PartitionTable,
 {
     pub(super) fn new(
