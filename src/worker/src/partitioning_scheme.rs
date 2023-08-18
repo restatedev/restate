@@ -15,13 +15,13 @@ use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FixedConsecutivePartitions {
-    num_partitions: u32,
+    num_partitions: u64,
 }
 
 impl FixedConsecutivePartitions {
-    const PARTITION_KEY_RANGE_END: u64 = 1 << 32;
+    const PARTITION_KEY_RANGE_END: u128 = 1 << 64;
 
-    pub(crate) fn new(num_partitions: u32) -> Self {
+    pub(crate) fn new(num_partitions: u64) -> Self {
         Self { num_partitions }
     }
 
@@ -30,20 +30,22 @@ impl FixedConsecutivePartitions {
     }
 
     fn partition_key_to_partition_id(
-        num_partitions: u32,
+        num_partitions: u64,
         partition_key: PartitionKey,
     ) -> PartitionId {
-        let num_partitions = u64::from(num_partitions);
-        let partition_key = u64::from(partition_key);
+        let num_partitions = u128::from(num_partitions);
+        let partition_key = u128::from(partition_key);
 
-        partition_key * num_partitions / Self::PARTITION_KEY_RANGE_END
+        u64::try_from(partition_key * num_partitions / Self::PARTITION_KEY_RANGE_END)
+            .expect("u64::MAX * u64::MAX / 1^64 should be <= u64::MAX.")
     }
 
     fn partition_id_to_partition_range(
-        num_partitions: u32,
+        num_partitions: u64,
         partition_id: PartitionId,
     ) -> RangeInclusive<PartitionKey> {
-        let num_partitions = u64::from(num_partitions);
+        let num_partitions = u128::from(num_partitions);
+        let partition_id = u128::from(partition_id);
 
         assert!(
             partition_id < num_partitions,
@@ -58,10 +60,10 @@ impl FixedConsecutivePartitions {
             / num_partitions
             - 1;
 
-        let start = u32::try_from(start)
-            .expect("Resulting partition start '{start}' should be <= u32::MAX.");
+        let start = u64::try_from(start)
+            .expect("Resulting partition start '{start}' should be <= u64::MAX.");
         let end =
-            u32::try_from(end).expect("Resulting partition end '{end}' should be <= u32::MAX.");
+            u64::try_from(end).expect("Resulting partition end '{end}' should be <= u64::MAX.");
 
         start..=end
     }
@@ -82,12 +84,12 @@ impl PartitionTable for FixedConsecutivePartitions {
 
 #[derive(Debug)]
 pub(crate) struct Partitioner {
-    num_partitions: u32,
-    next_partition_id: u32,
+    num_partitions: u64,
+    next_partition_id: u64,
 }
 
 impl Partitioner {
-    fn new(num_partitions: u32) -> Self {
+    fn new(num_partitions: u64) -> Self {
         Self {
             num_partitions,
             next_partition_id: 0,
@@ -100,7 +102,7 @@ impl Iterator for Partitioner {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.next_partition_id < self.num_partitions {
-            let partition_id = PeerId::from(self.next_partition_id);
+            let partition_id = self.next_partition_id;
             self.next_partition_id += 1;
 
             let partition_range = FixedConsecutivePartitions::partition_id_to_partition_range(

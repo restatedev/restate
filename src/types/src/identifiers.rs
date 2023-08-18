@@ -42,7 +42,7 @@ pub type EndpointId = String;
 
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.
-pub type PartitionKey = u32;
+pub type PartitionKey = u64;
 
 /// Discriminator for invocation instances
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, Ord, PartialOrd, Default)]
@@ -246,8 +246,7 @@ mod partitioner {
         pub(super) fn compute_partition_key(value: &impl Hash) -> PartitionKey {
             let mut hasher = xxhash_rust::xxh3::Xxh3::default();
             value.hash(&mut hasher);
-            // Safe to only take the lower 32 bits: See https://github.com/Cyan4973/xxHash/issues/453#issuecomment-696838445
-            hasher.finish() as u32
+            hasher.finish()
         }
     }
 }

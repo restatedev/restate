@@ -108,7 +108,7 @@ pub struct Options {
         feature = "options_schema",
         schemars(default = "Options::default_partitions")
     )]
-    partitions: u32,
+    partitions: u64,
 }
 
 impl Default for Options {
@@ -138,7 +138,7 @@ impl Options {
         64
     }
 
-    fn default_partitions() -> u32 {
+    fn default_partitions() -> u64 {
         1024
     }
 
