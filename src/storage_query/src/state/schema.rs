@@ -13,7 +13,7 @@
 use crate::table_macro::*;
 
 use datafusion::arrow::array::{
-    ArrayBuilder, ArrayRef, Int32Builder, LargeBinaryBuilder, LargeStringBuilder, UInt32Builder,
+    ArrayBuilder, ArrayRef, Int32Builder, LargeBinaryBuilder, LargeStringBuilder, UInt64Builder,
 };
 
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -21,7 +21,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use std::sync::Arc;
 
 define_table!(state(
-    partition_key: DataType::UInt32,
+    partition_key: DataType::UInt64,
     service: DataType::LargeUtf8,
     service_key: DataType::LargeBinary,
     service_key_utf8: DataType::LargeUtf8,
