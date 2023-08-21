@@ -16,7 +16,7 @@ In order to create a full Restate release you need to:
 
 ## Releasing the Restate runtime
 
-In order to release the Restate runtime, you first have to set the version field in the [Cargo.toml](/Cargo.toml) to the new release version `X.Y.Z`. 
+In order to release the Restate runtime, you first have to make sure that the version field in the [Cargo.toml](/Cargo.toml) is set to the new release version `X.Y.Z`. 
 Then you have to create a tag of the form `vX.Y.Z` and push it to the repository.
 The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which does the following:
 
@@ -26,6 +26,8 @@ The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow 
 
 In order to finish the release, you have to publish it [here](https://github.com/restatedev/restate/releases).
 
+Please also bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version after the release.
+
 After having created a new runtime release, you need to:
 
 1. [Update and release the documentation](https://github.com/restatedev/documentation#upgrading-restate-runtime-version)
@@ -34,3 +36,14 @@ After having created a new runtime release, you need to:
    * [Ticket reservation example](https://github.com/restatedev/example-ticket-reservation-system#upgrading-restate-runtime)
    * [Food ordering example](https://github.com/restatedev/example-food-ordering#upgrading-the-restate-runtime)
    * [Shopping cart example](https://github.com/restatedev/example-shopping-cart-typescript#upgrading-restate-runtime)
+
+## Versioning of the Restate runtime
+
+The runtime follows the [SemVer specification](https://semver.org/#semantic-versioning-200) for its versioning.
+In short, increment the: 
+
+* MAJOR version if you introduce breaking changes
+* MINOR version if you add functionality in a backward compatible manner
+* PATCH version if you add backward compatible bug fixes
+
+During the initial development phase where the major version is zero (0.x.y) the minor version field is incremented for breaking changes. 
