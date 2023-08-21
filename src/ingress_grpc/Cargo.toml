@@ -17,7 +17,7 @@ restate_types = { workspace = true, features = ["tonic_conversions"] }
 restate_errors = { workspace = true }
 restate_schema_api = { workspace = true, features = ["json_conversion", "key_extraction" ,"proto_symbol", "service"]}
 restate_pb = { workspace = true }
-restate_service_protocol = { workspace = true, features = ["protocol"] }
+restate_service_protocol = { workspace = true, features = ["awakeable-id"] }
 
 # Encoding/Decoding
 bytes = { workspace = true }
@@ -50,7 +50,6 @@ tracing-opentelemetry = { workspace = true }
 
 # Other
 anyhow = { workspace = true }
-base64 = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }

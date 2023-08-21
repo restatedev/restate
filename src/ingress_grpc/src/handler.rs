@@ -27,6 +27,7 @@ use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
+use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::UserErrorCode;
 use restate_types::identifiers::{IngressId, InvocationUuid};
 use restate_types::invocation::{
@@ -302,16 +303,13 @@ where
                             };
 
                             // Parse the awakeable identifier
-                            let id = awakeable_identifier::decode(req.id)?;
+                            let id = AwakeableIdentifier::decode(req.id)
+                                .map_err(|e| Status::invalid_argument(e.to_string()))?;
+                            let (invocation_id, entry_index) = id.into_inner();
 
                             InvocationResponse {
-                                id: MaybeFullInvocationId::Full(ServiceInvocationId::new(
-                                    id.service_name,
-                                    id.instance_key,
-                                    InvocationUuid::from_slice(&id.invocation_id)
-                                        .map_err(|e| Status::invalid_argument(e.to_string()))?
-                                )),
-                                entry_index: id.entry_index,
+                                id: MaybeFullInvocationId::Partial(invocation_id),
+                                entry_index,
                                 result: ResponseResult::Success(result),
                             }
                         },
@@ -322,16 +320,13 @@ where
                             ).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
                             // Parse the awakeable identifier
-                            let id = awakeable_identifier::decode(req.id)?;
+                            let id = AwakeableIdentifier::decode(req.id)
+                                .map_err(|e| Status::invalid_argument(e.to_string()))?;
+                            let (invocation_id, entry_index) = id.into_inner();
 
                             InvocationResponse {
-                                id: MaybeFullInvocationId::Full(ServiceInvocationId::new(
-                                    id.service_name,
-                                    id.instance_key,
-                                    InvocationUuid::from_slice(&id.invocation_id)
-                                        .map_err(|e| Status::invalid_argument(e.to_string()))?
-                                )),
-                                entry_index: id.entry_index,
+                                id: MaybeFullInvocationId::Partial(invocation_id),
+                                entry_index,
                                 result: ResponseResult::Failure(UserErrorCode::Unknown, req.reason.into()),
                             }
                         },
@@ -468,41 +463,4 @@ fn encode_http_status_code(status_code: StatusCode) -> Response<BoxBody> {
     let mut res = Response::new(hyper::Body::empty().map_err(Into::into).boxed_unsync());
     *res.status_mut() = status_code;
     res
-}
-
-mod awakeable_identifier {
-    use super::*;
-
-    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
-    use base64::{alphabet, Engine as _};
-
-    // We have this custom configuration for padding because Node's base64url implementation will omit padding,
-    // but the spec https://datatracker.ietf.org/doc/html/rfc4648#section-5 doesn't specify that padding MUST be omitted.
-    // Hence, Other implementations might include it, so we keep this relaxed.
-    const INDIFFERENT_PAD: GeneralPurposeConfig =
-        GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent);
-    const URL_SAFE: GeneralPurpose = GeneralPurpose::new(&alphabet::URL_SAFE, INDIFFERENT_PAD);
-
-    pub(super) fn decode(
-        id: String,
-    ) -> Result<restate_service_protocol::pb::protocol::AwakeableIdentifier, Status> {
-        let bytes = URL_SAFE.decode(id).map_err(|e| {
-            Status::invalid_argument(format!("Cannot decode the identifier: {}", e))
-        })?;
-
-        restate_service_protocol::pb::protocol::AwakeableIdentifier::decode(Bytes::from(bytes))
-            .map_err(|e| Status::invalid_argument(format!("Cannot decode the identifier: {}", e)))
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn decode_nodejs_generated_id() {
-            // This was generated manually from nodejs
-            decode("Ch5ybmxnLlJhbmRvbU51bWJlckxpc3RHZW5lcmF0b3ISEAGJ_a8oxHs9gofbykc2Z6kaEAGJ_a8oxHiLpxsDDW90AE0gAQ".to_string())
-                .unwrap();
-        }
-    }
 }

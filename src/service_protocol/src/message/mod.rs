@@ -43,8 +43,8 @@ pub enum ProtocolMessage {
 
 impl ProtocolMessage {
     pub fn new_start_message(
-        invocation_id: Bytes,
-        instance_key: Bytes,
+        id: Bytes,
+        debug_id: String,
         known_entries: u32,
         partial_state: bool,
         state_map_entries: impl IntoIterator<Item = (Bytes, Bytes)>,
@@ -52,8 +52,8 @@ impl ProtocolMessage {
         Self::Start {
             partial_state,
             inner: pb::protocol::StartMessage {
-                invocation_id,
-                instance_key,
+                id,
+                debug_id,
                 known_entries,
                 state_map: state_map_entries
                     .into_iter()

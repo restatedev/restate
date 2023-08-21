@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use assert2::let_assert;
+use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::identifiers::{InvocationUuid, ServiceInvocationId};
 use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
 use restate_types::journal::InvokeRequest;
-use restate_types::journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
+use restate_types::journal::{BackgroundInvokeEntry, CompleteAwakeableEntry, Entry, InvokeEntry};
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone)]
@@ -130,7 +131,17 @@ where
             RawEntryHeader::Awakeable { is_completed } => {
                 EnrichedEntryHeader::Awakeable { is_completed }
             }
-            RawEntryHeader::CompleteAwakeable => EnrichedEntryHeader::CompleteAwakeable,
+            RawEntryHeader::CompleteAwakeable => {
+                let entry = Codec::deserialize(&raw_entry)?;
+                let_assert!(Entry::CompleteAwakeable(CompleteAwakeableEntry { id, .. }) = entry);
+
+                let (invocation_id, entry_index) = AwakeableIdentifier::decode(id)?.into_inner();
+
+                EnrichedEntryHeader::CompleteAwakeable {
+                    invocation_id,
+                    entry_index,
+                }
+            }
             RawEntryHeader::Custom { code, requires_ack } => {
                 EnrichedEntryHeader::Custom { code, requires_ack }
             }

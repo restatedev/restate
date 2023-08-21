@@ -151,14 +151,13 @@ mod tests {
     use super::*;
 
     use crate::mocks::*;
-    use base64::{engine::general_purpose, Engine as _};
     use bytes::Bytes;
     use drain::Signal;
     use http::header::CONTENT_TYPE;
     use http::StatusCode;
     use hyper::Body;
     use prost::Message;
-    use restate_service_protocol::pb::protocol::AwakeableIdentifier;
+    use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_test_util::{assert_eq, let_assert, test};
     use restate_types::identifiers::ServiceInvocationId;
     use restate_types::invocation::MaybeFullInvocationId;
@@ -292,18 +291,11 @@ mod tests {
         });
 
         let sid = ServiceInvocationId::mock_random();
-        let awakeable_id = AwakeableIdentifier {
-            service_name: sid.service_id.service_name.to_string(),
-            instance_key: sid.service_id.key.clone(),
-            invocation_id: Bytes::copy_from_slice(sid.invocation_uuid.as_bytes()),
-            entry_index: 2,
-        };
-        let serialized_awakeable_id =
-            general_purpose::URL_SAFE.encode(awakeable_id.encode_to_vec());
+        let awakeable_id = AwakeableIdentifier::new(sid.clone().into(), 2).encode();
 
         // Send the request
         let json_payload = json!({
-            "id": serialized_awakeable_id,
+            "id": awakeable_id,
             "json_result": {
                 "my_result": false
             }
@@ -321,7 +313,10 @@ mod tests {
 
         // Get the function invocation and assert on it
         let_assert!(InvocationOrResponse::Response(invocation_response) = cmd_fut.await.unwrap());
-        assert_eq!(invocation_response.id, MaybeFullInvocationId::Full(sid));
+        assert_eq!(
+            invocation_response.id,
+            MaybeFullInvocationId::Partial(sid.into())
+        );
         assert_eq!(invocation_response.entry_index, 2);
         assert_eq!(
             invocation_response.result,

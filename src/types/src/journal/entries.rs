@@ -210,10 +210,6 @@ impl CompletableEntry for AwakeableEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompleteAwakeableEntry {
-    pub service_name: ByteString,
-    pub instance_key: Bytes,
-    pub invocation_id: Bytes,
-    pub entry_index: EntryIndex,
-
+    pub id: ByteString,
     pub result: EntryResult,
 }

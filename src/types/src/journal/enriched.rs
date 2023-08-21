@@ -11,7 +11,7 @@
 use super::raw::*;
 use super::*;
 
-use crate::identifiers::InvocationUuid;
+use crate::identifiers::{InvocationId, InvocationUuid};
 use crate::invocation::ServiceInvocationSpanContext;
 use bytes::Bytes;
 
@@ -53,7 +53,10 @@ pub enum EnrichedEntryHeader {
     Awakeable {
         is_completed: bool,
     },
-    CompleteAwakeable,
+    CompleteAwakeable {
+        invocation_id: InvocationId,
+        entry_index: EntryIndex,
+    },
     Custom {
         code: u16,
         requires_ack: bool,
@@ -72,7 +75,7 @@ impl EntryHeader for EnrichedEntryHeader {
             EnrichedEntryHeader::Invoke { is_completed, .. } => Some(*is_completed),
             EnrichedEntryHeader::BackgroundInvoke { .. } => None,
             EnrichedEntryHeader::Awakeable { is_completed } => Some(*is_completed),
-            EnrichedEntryHeader::CompleteAwakeable => None,
+            EnrichedEntryHeader::CompleteAwakeable { .. } => None,
             EnrichedEntryHeader::Custom { .. } => None,
         }
     }
@@ -88,7 +91,7 @@ impl EntryHeader for EnrichedEntryHeader {
             EnrichedEntryHeader::Invoke { is_completed, .. } => *is_completed = true,
             EnrichedEntryHeader::BackgroundInvoke { .. } => {}
             EnrichedEntryHeader::Awakeable { is_completed } => *is_completed = true,
-            EnrichedEntryHeader::CompleteAwakeable => {}
+            EnrichedEntryHeader::CompleteAwakeable { .. } => {}
             EnrichedEntryHeader::Custom { .. } => {}
         }
     }
@@ -104,7 +107,7 @@ impl EntryHeader for EnrichedEntryHeader {
             EnrichedEntryHeader::Invoke { .. } => EntryType::Invoke,
             EnrichedEntryHeader::BackgroundInvoke { .. } => EntryType::BackgroundInvoke,
             EnrichedEntryHeader::Awakeable { .. } => EntryType::Awakeable,
-            EnrichedEntryHeader::CompleteAwakeable => EntryType::CompleteAwakeable,
+            EnrichedEntryHeader::CompleteAwakeable { .. } => EntryType::CompleteAwakeable,
             EnrichedEntryHeader::Custom { .. } => EntryType::Custom,
         }
     }
@@ -130,7 +133,7 @@ impl From<EnrichedEntryHeader> for RawEntryHeader {
             EnrichedEntryHeader::Awakeable { is_completed } => {
                 RawEntryHeader::Awakeable { is_completed }
             }
-            EnrichedEntryHeader::CompleteAwakeable => RawEntryHeader::CompleteAwakeable,
+            EnrichedEntryHeader::CompleteAwakeable { .. } => RawEntryHeader::CompleteAwakeable,
             EnrichedEntryHeader::Custom { code, requires_ack } => {
                 RawEntryHeader::Custom { code, requires_ack }
             }

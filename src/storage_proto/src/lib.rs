@@ -846,8 +846,11 @@ pub mod storage {
                                 is_completed: awakeable.is_completed,
                             }
                         }
-                        enriched_entry_header::Kind::CompleteAwakeable(_) => {
-                            restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable
+                        enriched_entry_header::Kind::CompleteAwakeable(CompleteAwakeable { invocation_id, entry_index }) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable {
+                                invocation_id: restate_types::identifiers::InvocationId::from_slice(&invocation_id).map_err(ConversionError::invalid_data)?,
+                                entry_index,
+                            }
                         }
                         enriched_entry_header::Kind::Custom(custom) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::Custom {
@@ -904,8 +907,11 @@ pub mod storage {
                         restate_types::journal::enriched::EnrichedEntryHeader::Awakeable {
                             is_completed,
                         } => enriched_entry_header::Kind::Awakeable(Awakeable { is_completed }),
-                        restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable => {
-                            enriched_entry_header::Kind::CompleteAwakeable(CompleteAwakeable {})
+                        restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable { invocation_id, entry_index } => {
+                            enriched_entry_header::Kind::CompleteAwakeable(CompleteAwakeable {
+                                invocation_id: Bytes::copy_from_slice(&invocation_id.as_bytes()),
+                                entry_index
+                            })
                         }
                         restate_types::journal::enriched::EnrichedEntryHeader::Custom {
                             requires_ack,
