@@ -144,7 +144,7 @@ pub mod storage {
                 type Error = ConversionError;
 
                 fn try_from(value: Invoked) -> Result<Self, Self::Error> {
-                    let invocation_id = try_bytes_into_invocation_uuid(value.invocation_id)?;
+                    let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
                     let journal_metadata = restate_types::journal::JournalMetadata::try_from(
                         value
                             .journal_meta
@@ -159,7 +159,7 @@ pub mod storage {
                     )?;
 
                     Ok(restate_storage_api::status_table::InvocationMetadata::new(
-                        invocation_id,
+                        invocation_uuid,
                         journal_metadata,
                         response_sink,
                         MillisSinceEpoch::new(value.creation_time),
@@ -171,7 +171,7 @@ pub mod storage {
             impl From<restate_storage_api::status_table::InvocationMetadata> for Invoked {
                 fn from(value: restate_storage_api::status_table::InvocationMetadata) -> Self {
                     let restate_storage_api::status_table::InvocationMetadata {
-                        invocation_id,
+                        invocation_uuid,
                         response_sink,
                         journal_metadata,
                         creation_time,
@@ -180,7 +180,7 @@ pub mod storage {
 
                     Invoked {
                         response_sink: Some(ServiceInvocationResponseSink::from(response_sink)),
-                        invocation_id: invocation_uuid_to_bytes(&invocation_id),
+                        invocation_uuid: invocation_uuid_to_bytes(&invocation_uuid),
                         journal_meta: Some(JournalMeta::from(journal_metadata)),
                         creation_time: creation_time.as_u64(),
                         modification_time: modification_time.as_u64(),
@@ -197,7 +197,7 @@ pub mod storage {
                 type Error = ConversionError;
 
                 fn try_from(value: Suspended) -> Result<Self, Self::Error> {
-                    let invocation_id = try_bytes_into_invocation_uuid(value.invocation_id)?;
+                    let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
                     let journal_metadata = restate_types::journal::JournalMetadata::try_from(
                         value
                             .journal_meta
@@ -216,7 +216,7 @@ pub mod storage {
 
                     Ok((
                         restate_storage_api::status_table::InvocationMetadata::new(
-                            invocation_id,
+                            invocation_uuid,
                             journal_metadata,
                             response_sink,
                             MillisSinceEpoch::new(value.creation_time),
@@ -239,14 +239,14 @@ pub mod storage {
                         HashSet<restate_types::identifiers::EntryIndex>,
                     ),
                 ) -> Self {
-                    let invocation_id = invocation_uuid_to_bytes(&metadata.invocation_id);
+                    let invocation_uuid = invocation_uuid_to_bytes(&metadata.invocation_uuid);
                     let response_sink = ServiceInvocationResponseSink::from(metadata.response_sink);
                     let journal_meta = JournalMeta::from(metadata.journal_metadata);
                     let waiting_for_completed_entries =
                         waiting_for_completed_entries.into_iter().collect();
 
                     Suspended {
-                        invocation_id,
+                        invocation_uuid,
                         response_sink: Some(response_sink),
                         journal_meta: Some(journal_meta),
                         creation_time: metadata.creation_time.as_u64(),
@@ -938,13 +938,13 @@ pub mod storage {
                                         .span_context
                                         .ok_or(ConversionError::missing_field("span_context"))?,
                                 )?;
-                            let invocation_id =
-                                try_bytes_into_invocation_uuid(success.invocation_id)?;
+                            let invocation_uuid =
+                                try_bytes_into_invocation_uuid(success.invocation_uuid)?;
                             let service_key = success.service_key;
 
                             Some(restate_types::journal::enriched::ResolutionResult {
                                 span_context,
-                                invocation_id,
+                                invocation_uuid,
                                 service_key,
                             })
                         }
@@ -962,12 +962,12 @@ pub mod storage {
                         None => invocation_resolution_result::Result::None(Default::default()),
                         Some(resolution_result) => match resolution_result {
                             restate_types::journal::enriched::ResolutionResult {
-                                invocation_id,
+                                invocation_uuid,
                                 service_key,
                                 span_context,
                             } => invocation_resolution_result::Result::Success(
                                 invocation_resolution_result::Success {
-                                    invocation_id: invocation_uuid_to_bytes(&invocation_id),
+                                    invocation_uuid: invocation_uuid_to_bytes(&invocation_uuid),
                                     service_key,
                                     span_context: Some(SpanContext::from(span_context)),
                                 },
@@ -993,12 +993,12 @@ pub mod storage {
                                 .span_context
                                 .ok_or(ConversionError::missing_field("span_context"))?,
                         )?;
-                    let invocation_id = try_bytes_into_invocation_uuid(value.invocation_id)?;
+                    let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
                     let service_key = value.service_key;
 
                     Ok(restate_types::journal::enriched::ResolutionResult {
                         span_context,
-                        invocation_id,
+                        invocation_uuid,
                         service_key,
                     })
                 }
@@ -1007,7 +1007,7 @@ pub mod storage {
             impl From<restate_types::journal::enriched::ResolutionResult> for BackgroundCallResolutionResult {
                 fn from(value: restate_types::journal::enriched::ResolutionResult) -> Self {
                     BackgroundCallResolutionResult {
-                        invocation_id: invocation_uuid_to_bytes(&value.invocation_id),
+                        invocation_uuid: invocation_uuid_to_bytes(&value.invocation_uuid),
                         service_key: value.service_key,
                         span_context: Some(SpanContext::from(value.span_context)),
                     }

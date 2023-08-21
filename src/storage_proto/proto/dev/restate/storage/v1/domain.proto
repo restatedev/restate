@@ -31,7 +31,7 @@ message JournalMeta {
 message InvocationStatus {
 
     message Invoked {
-        bytes invocation_id = 1;
+        bytes invocation_uuid = 1;
         JournalMeta journal_meta = 2;
         ServiceInvocationResponseSink response_sink = 3;
         uint64 creation_time = 4;
@@ -39,7 +39,7 @@ message InvocationStatus {
     }
 
     message Suspended {
-        bytes invocation_id = 1;
+        bytes invocation_uuid = 1;
         JournalMeta journal_meta = 2;
         ServiceInvocationResponseSink response_sink = 3;
         uint64 creation_time = 4;
@@ -117,7 +117,7 @@ message InboxEntry {
 
 message InvocationResolutionResult {
     message Success {
-        bytes invocation_id = 1;
+        bytes invocation_uuid = 1;
         bytes service_key = 2;
         SpanContext span_context = 3;
     }
@@ -129,7 +129,7 @@ message InvocationResolutionResult {
 }
 
 message BackgroundCallResolutionResult {
-    bytes invocation_id = 1;
+    bytes invocation_uuid = 1;
     bytes service_key = 2;
     SpanContext span_context = 3;
 }

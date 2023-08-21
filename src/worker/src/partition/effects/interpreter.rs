@@ -259,7 +259,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 mut metadata,
             } => {
                 metadata.modification_time = MillisSinceEpoch::now();
-                let invocation_id = metadata.invocation_id;
+                let invocation_id = metadata.invocation_uuid;
                 state_storage
                     .store_invocation_status(&service_id, InvocationStatus::Invoked(metadata))
                     .await?;
@@ -382,7 +382,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
                 let service_invocation_id = ServiceInvocationId::with_service_id(
                     service_id.clone(),
-                    metadata.invocation_id,
+                    metadata.invocation_uuid,
                 );
 
                 Self::unchecked_append_journal_entry(
@@ -488,7 +488,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             } => {
                 let service_invocation_id = ServiceInvocationId::with_service_id(
                     service_id.clone(),
-                    metadata.invocation_id,
+                    metadata.invocation_uuid,
                 );
 
                 Self::append_journal_entry(
@@ -564,7 +564,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     },
             } => {
                 let service_invocation_id =
-                    ServiceInvocationId::with_service_id(service_id, metadata.invocation_id);
+                    ServiceInvocationId::with_service_id(service_id, metadata.invocation_uuid);
                 if Self::store_completion(
                     state_storage,
                     &service_invocation_id,
@@ -761,7 +761,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             .await?;
 
         let service_invocation_id =
-            ServiceInvocationId::with_service_id(service_id, metadata.invocation_id);
+            ServiceInvocationId::with_service_id(service_id, metadata.invocation_uuid);
 
         // update the journal metadata
         debug_assert_eq!(

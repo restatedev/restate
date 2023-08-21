@@ -34,8 +34,8 @@ impl InvocationStatus {
     #[inline]
     pub fn invocation_uuid(&self) -> Option<InvocationUuid> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(metadata.invocation_id),
-            InvocationStatus::Suspended { metadata, .. } => Some(metadata.invocation_id),
+            InvocationStatus::Invoked(metadata) => Some(metadata.invocation_uuid),
+            InvocationStatus::Suspended { metadata, .. } => Some(metadata.invocation_uuid),
             InvocationStatus::Free => None,
         }
     }
@@ -49,7 +49,7 @@ impl Default for InvocationStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct InvocationMetadata {
-    pub invocation_id: InvocationUuid,
+    pub invocation_uuid: InvocationUuid,
     pub journal_metadata: JournalMetadata,
     pub response_sink: Option<ServiceInvocationResponseSink>,
     pub creation_time: MillisSinceEpoch,
@@ -65,7 +65,7 @@ impl InvocationMetadata {
         modification_time: MillisSinceEpoch,
     ) -> Self {
         Self {
-            invocation_id,
+            invocation_uuid: invocation_id,
             journal_metadata,
             response_sink,
             creation_time,
@@ -89,7 +89,7 @@ pub trait StatusTable {
     fn get_invocation_status_from(
         &mut self,
         partition_key: PartitionKey,
-        invocation_id: InvocationUuid,
+        invocation_uuid: InvocationUuid,
     ) -> GetFuture<Option<(ServiceId, InvocationStatus)>>;
 
     fn delete_invocation_status(&mut self, service_id: &ServiceId) -> PutFuture;

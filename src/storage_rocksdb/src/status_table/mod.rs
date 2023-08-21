@@ -102,14 +102,14 @@ impl StatusTable for RocksDBTransaction {
     fn get_invocation_status_from(
         &mut self,
         partition_key: PartitionKey,
-        invocation_id: InvocationUuid,
+        invocation_uuid: InvocationUuid,
     ) -> GetFuture<Option<(ServiceId, InvocationStatus)>> {
         let key = StatusKey::default().partition_key(partition_key);
 
         let mut stream = self.for_each_key_value(TableScan::KeyPrefix(key), move |k, v| {
             let invocation_status = match decode_status(v) {
                 Ok(invocation_status)
-                    if invocation_status.invocation_uuid() == Some(invocation_id) =>
+                    if invocation_status.invocation_uuid() == Some(invocation_uuid) =>
                 {
                     invocation_status
                 }
@@ -192,11 +192,13 @@ fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<ServiceIn
     let status = storage::v1::InvocationStatus::decode(v)
         .map_err(|error| StorageError::Generic(error.into()))?;
     if let Some(storage::v1::invocation_status::Status::Invoked(
-        storage::v1::invocation_status::Invoked { invocation_id, .. },
+        storage::v1::invocation_status::Invoked {
+            invocation_uuid, ..
+        },
     )) = status.status
     {
         let service_id = status_key_from_bytes(Bytes::copy_from_slice(k))?;
-        let uuid = Uuid::from_slice(&invocation_id)
+        let uuid = Uuid::from_slice(&invocation_uuid)
             .map_err(|error| StorageError::Generic(error.into()))?;
         Ok(Some(ServiceInvocationId::with_service_id(service_id, uuid)))
     } else {

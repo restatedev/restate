@@ -205,7 +205,7 @@ where
 
         match status {
             InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. }
-                if metadata.invocation_id == service_invocation_id.invocation_uuid =>
+                if metadata.invocation_uuid == service_invocation_id.invocation_uuid =>
             {
                 let (sid, related_span) = self
                     .kill_invocation(service_invocation_id, metadata, state, effects)
@@ -296,7 +296,7 @@ where
 
         match status {
             InvocationStatus::Invoked(invocation_metadata)
-                if invocation_metadata.invocation_id
+                if invocation_metadata.invocation_uuid
                     == invoker_effect.service_invocation_id.invocation_uuid =>
             {
                 self.on_invoker_effect(effects, state, invoker_effect, invocation_metadata)
@@ -548,7 +548,7 @@ where
             } => {
                 if let Some(ResolutionResult {
                     service_key,
-                    invocation_id,
+                    invocation_uuid: invocation_id,
                     span_context,
                 }) = resolution_result
                 {
@@ -577,7 +577,7 @@ where
             } => {
                 let ResolutionResult {
                     service_key,
-                    invocation_id,
+                    invocation_uuid: invocation_id,
                     span_context,
                 } = resolution_result;
 
@@ -695,7 +695,7 @@ where
 
         match status {
             InvocationStatus::Invoked(metadata) => {
-                if metadata.invocation_id == service_invocation_id.invocation_uuid {
+                if metadata.invocation_uuid == service_invocation_id.invocation_uuid {
                     effects.store_and_forward_completion(service_invocation_id.clone(), completion);
                     related_sid = Some(service_invocation_id);
                     span_relation = metadata.journal_metadata.span_context.as_parent();
@@ -712,7 +712,7 @@ where
                 metadata,
                 waiting_for_completed_entries,
             } => {
-                if metadata.invocation_id == service_invocation_id.invocation_uuid {
+                if metadata.invocation_uuid == service_invocation_id.invocation_uuid {
                     span_relation = metadata.journal_metadata.span_context.as_parent();
 
                     if waiting_for_completed_entries.contains(&completion.entry_index) {
@@ -900,7 +900,7 @@ mod tests {
             self.invocations.insert(
                 sid.service_id.clone(),
                 InvocationStatus::Invoked(InvocationMetadata {
-                    invocation_id: sid.invocation_uuid,
+                    invocation_uuid: sid.invocation_uuid,
                     journal_metadata: JournalMetadata {
                         endpoint_id: None,
                         length,

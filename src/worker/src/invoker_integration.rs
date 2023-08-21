@@ -62,7 +62,7 @@ where
         );
 
         Ok(ResolutionResult {
-            invocation_id,
+            invocation_uuid: invocation_id,
             service_key,
             span_context,
         })
