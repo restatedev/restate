@@ -11,7 +11,7 @@
 //! This module contains Restate public protobuf definitions
 
 use once_cell::sync::Lazy;
-use prost_reflect::DescriptorPool;
+use prost_reflect::{DescriptorPool, ServiceDescriptor};
 use std::convert::AsRef;
 
 pub mod grpc {
@@ -44,7 +44,19 @@ pub static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
     .expect("The built-in descriptor pool should be valid")
 });
 
+pub fn get_service(svc_name: &str) -> ServiceDescriptor {
+    DESCRIPTOR_POOL
+        .get_service_by_name(svc_name)
+        .unwrap_or_else(|| {
+            panic!(
+                "The built-in descriptor pool should contain the {} service",
+                svc_name
+            )
+        })
+}
+
 pub const INGRESS_SERVICE_NAME: &str = "dev.restate.Ingress";
+pub const AWAKEABLES_SERVICE_NAME: &str = "dev.restate.Awakeables";
 pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1alpha.ServerReflection";
 pub const HEALTH_SERVICE_NAME: &str = "grpc.health.v1.Health";
 

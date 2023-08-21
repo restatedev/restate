@@ -237,21 +237,19 @@ impl Default for ProtoSymbols {
         };
         symbols.add_service(
             &"self_ingress".to_string(),
-            &restate_pb::DESCRIPTOR_POOL
-                .get_service_by_name(restate_pb::REFLECTION_SERVICE_NAME)
-                .expect("Service reflections should exist"),
+            &restate_pb::get_service(restate_pb::REFLECTION_SERVICE_NAME),
         );
         symbols.add_service(
             &"self_ingress".to_string(),
-            &restate_pb::DESCRIPTOR_POOL
-                .get_service_by_name(restate_pb::INGRESS_SERVICE_NAME)
-                .expect("Service ingress should exist"),
+            &restate_pb::get_service(restate_pb::INGRESS_SERVICE_NAME),
         );
         symbols.add_service(
             &"self_ingress".to_string(),
-            &restate_pb::DESCRIPTOR_POOL
-                .get_service_by_name(restate_pb::HEALTH_SERVICE_NAME)
-                .expect("Service ingress should exist"),
+            &restate_pb::get_service(restate_pb::AWAKEABLES_SERVICE_NAME),
+        );
+        symbols.add_service(
+            &"self_ingress".to_string(),
+            &restate_pb::get_service(restate_pb::HEALTH_SERVICE_NAME),
         );
 
         symbols

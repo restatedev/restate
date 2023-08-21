@@ -12,9 +12,6 @@ use super::options::JsonOptions;
 use super::protocol::{BoxBody, Protocol};
 use super::*;
 
-use std::sync::Arc;
-use std::task::Poll;
-
 use crate::reflection::ServerReflectionService;
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
@@ -23,14 +20,18 @@ use http_body::Body;
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
+use prost_reflect::ReflectMessage;
 use restate_pb::grpc::health;
 use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
+use restate_types::errors::UserErrorCode;
 use restate_types::identifiers::{IngressId, InvocationId};
 use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
+use std::sync::Arc;
+use std::task::Poll;
 use tokio::sync::Semaphore;
 use tonic_web::{GrpcWebLayer, GrpcWebService};
 use tower::{BoxError, Layer, Service};
@@ -276,6 +277,76 @@ where
                     return Err(Status::not_found("Not found"))
                 }
 
+                // --- Awakeables built-in service
+                if restate_pb::AWAKEABLES_SERVICE_NAME == service_name {
+                    let invocation_response = match method_name.as_str() {
+                        "Resolve" => {
+                            // Parse the ResolveAwakeableRequest
+                            let req = restate_pb::restate::services::ResolveAwakeableRequest::decode(
+                                req_payload
+                            ).map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+                            let result = match req.result {
+                                None => {
+                                    return Err(Status::invalid_argument("result must be non-empty"));
+                                }
+                                Some(restate_pb::restate::services::resolve_awakeable_request::Result::BytesResult(bytes)) => bytes,
+                                Some(restate_pb::restate::services::resolve_awakeable_request::Result::JsonResult(value)) => {
+                                    Bytes::from(
+                                        serde_json::to_vec(&value.transcode_to_dynamic())
+                                            .map_err(|e| Status::invalid_argument(e.to_string()))?
+                                    )
+                                }
+                            };
+
+                            // Parse the awakeable identifier
+                            let id = awakeable_identifier::decode(req.id)?;
+
+                            InvocationResponse {
+                                id: ServiceInvocationId::new(
+                                    id.service_name,
+                                    id.instance_key,
+                                    InvocationId::from_slice(&id.invocation_id)
+                                        .map_err(|e| Status::invalid_argument(e.to_string()))?
+                                ),
+                                entry_index: id.entry_index,
+                                result: ResponseResult::Success(result),
+                            }
+                        },
+                        "Reject" => {
+                            // Parse the RejectAwakeableRequest
+                            let req = restate_pb::restate::services::RejectAwakeableRequest::decode(
+                                req_payload
+                            ).map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+                            // Parse the awakeable identifier
+                            let id = awakeable_identifier::decode(req.id)?;
+
+                            InvocationResponse {
+                                id: ServiceInvocationId::new(
+                                    id.service_name,
+                                    id.instance_key,
+                                    InvocationId::from_slice(&id.invocation_id)
+                                        .map_err(|e| Status::invalid_argument(e.to_string()))?
+                                ),
+                                entry_index: id.entry_index,
+                                result: ResponseResult::Failure(UserErrorCode::Unknown, req.reason.into()),
+                            }
+                        },
+                        _ => return Err(Status::not_found("Not found"))
+                    };
+
+                    if dispatcher_command_sender.send(Command::fire_and_forget(
+                        InvocationOrResponse::Response(invocation_response)
+                    )).is_err() {
+                        debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
+                        return Err(Status::unavailable("Unavailable"));
+                    }
+                    return Ok(
+                        Bytes::default()
+                    )
+                }
+
                 let mut response_sink = Some(ServiceInvocationResponseSink::Ingress(ingress_id));
                 let mut wait_response = true;
 
@@ -318,7 +389,7 @@ where
                     let sid = service_invocation.id.to_string();
 
                     if dispatcher_command_sender.send(Command::fire_and_forget(
-                        service_invocation
+                        InvocationOrResponse::Invocation(service_invocation)
                     )).is_err() {
                         debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                         return Err(Status::unavailable("Unavailable"));
@@ -332,7 +403,7 @@ where
 
                 // Send the service invocation
                 let (service_invocation_command, response_rx) =
-                    Command::prepare(service_invocation);
+                    Command::prepare(InvocationOrResponse::Invocation(service_invocation));
                 if dispatcher_command_sender.send(service_invocation_command).is_err() {
                     debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                     return Err(Status::unavailable("Unavailable"));
@@ -390,9 +461,46 @@ fn is_ingress_invoke(service_name: &str, method_name: &str) -> bool {
     "dev.restate.Ingress" == service_name && "Invoke" == method_name
 }
 
-pub(crate) fn encode_http_status_code(status_code: StatusCode) -> Response<BoxBody> {
+fn encode_http_status_code(status_code: StatusCode) -> Response<BoxBody> {
     // In case we need to encode an http status, we just write it without considering the protocol.
     let mut res = Response::new(hyper::Body::empty().map_err(Into::into).boxed_unsync());
     *res.status_mut() = status_code;
     res
+}
+
+mod awakeable_identifier {
+    use super::*;
+
+    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+    use base64::{alphabet, Engine as _};
+
+    // We have this custom configuration for padding because Node's base64url implementation will omit padding,
+    // but the spec https://datatracker.ietf.org/doc/html/rfc4648#section-5 doesn't specify that padding MUST be omitted.
+    // Hence, Other implementations might include it, so we keep this relaxed.
+    const INDIFFERENT_PAD: GeneralPurposeConfig =
+        GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent);
+    const URL_SAFE: GeneralPurpose = GeneralPurpose::new(&alphabet::URL_SAFE, INDIFFERENT_PAD);
+
+    pub(super) fn decode(
+        id: String,
+    ) -> Result<restate_service_protocol::pb::protocol::AwakeableIdentifier, Status> {
+        let bytes = URL_SAFE.decode(id).map_err(|e| {
+            Status::invalid_argument(format!("Cannot decode the identifier: {}", e))
+        })?;
+
+        restate_service_protocol::pb::protocol::AwakeableIdentifier::decode(Bytes::from(bytes))
+            .map_err(|e| Status::invalid_argument(format!("Cannot decode the identifier: {}", e)))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn decode_nodejs_generated_id() {
+            // This was generated manually from nodejs
+            decode("Ch5ybmxnLlJhbmRvbU51bWJlckxpc3RHZW5lcmF0b3ISEAGJ_a8oxHs9gofbykc2Z6kaEAGJ_a8oxHiLpxsDDW90AE0gAQ".to_string())
+                .unwrap();
+        }
+    }
 }

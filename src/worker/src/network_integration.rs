@@ -36,7 +36,6 @@ mod ingress_integration {
     use crate::partition::shuffle;
     use restate_network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
     use restate_types::identifiers::{IngressId, PartitionKey, PeerId};
-    use restate_types::invocation::ServiceInvocation;
     use restate_types::message::PartitionedMessage;
     use restate_types::message::{AckKind, MessageIndex};
 
@@ -50,7 +49,20 @@ mod ingress_integration {
                     ingress_id,
                     msg_index,
                 } => ConsensusOrShuffleTarget::Consensus(IngressToConsensus {
-                    service_invocation,
+                    invocation_or_response: restate_ingress_grpc::InvocationOrResponse::Invocation(
+                        service_invocation,
+                    ),
+                    ingress_id,
+                    msg_index,
+                }),
+                restate_ingress_grpc::IngressOutput::AwakeableCompletion {
+                    response,
+                    ingress_id,
+                    msg_index,
+                } => ConsensusOrShuffleTarget::Consensus(IngressToConsensus {
+                    invocation_or_response: restate_ingress_grpc::InvocationOrResponse::Response(
+                        response,
+                    ),
                     ingress_id,
                     msg_index,
                 }),
@@ -67,27 +79,41 @@ mod ingress_integration {
 
     #[derive(Debug)]
     pub(crate) struct IngressToConsensus {
-        service_invocation: ServiceInvocation,
+        invocation_or_response: restate_ingress_grpc::InvocationOrResponse,
         ingress_id: IngressId,
         msg_index: MessageIndex,
     }
 
     impl PartitionedMessage for IngressToConsensus {
         fn partition_key(&self) -> PartitionKey {
-            self.service_invocation.id.service_id.partition_key()
+            match &self.invocation_or_response {
+                restate_ingress_grpc::InvocationOrResponse::Invocation(invocation) => {
+                    invocation.id.service_id.partition_key()
+                }
+                restate_ingress_grpc::InvocationOrResponse::Response(response) => {
+                    response.id.service_id.partition_key()
+                }
+            }
         }
     }
 
     impl From<IngressToConsensus> for partition::AckCommand {
         fn from(ingress_to_consensus: IngressToConsensus) -> Self {
             let IngressToConsensus {
-                service_invocation,
+                invocation_or_response,
                 ingress_id,
                 msg_index,
             } = ingress_to_consensus;
 
             partition::AckCommand::ack(
-                partition::Command::Invocation(service_invocation),
+                match invocation_or_response {
+                    restate_ingress_grpc::InvocationOrResponse::Invocation(service_invocation) => {
+                        partition::Command::Invocation(service_invocation)
+                    }
+                    restate_ingress_grpc::InvocationOrResponse::Response(invocation_response) => {
+                        partition::Command::Response(invocation_response)
+                    }
+                },
                 partition::AckTarget::ingress(ingress_id, msg_index),
             )
         }
