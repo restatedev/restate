@@ -338,13 +338,8 @@ mod tests {
         let encoder = Encoder::new(protocol_version);
         let mut decoder = Decoder::default();
 
-        let expected_msg_0 = ProtocolMessage::new_start_message(
-            "key".into(),
-            Bytes::copy_from_slice(uuid::Uuid::now_v7().as_bytes()),
-            1,
-            true,
-            vec![],
-        );
+        let expected_msg_0 =
+            ProtocolMessage::new_start_message("key".into(), "key".into(), 1, true, vec![]);
         let expected_msg_1: ProtocolMessage = RawEntry::new(
             RawEntryHeader::PollInputStream { is_completed: true },
             pb::protocol::PollInputStreamEntryMessage {

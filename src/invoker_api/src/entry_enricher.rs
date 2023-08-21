@@ -23,6 +23,8 @@ pub trait EntryEnricher {
 #[cfg(any(test, feature = "mocks"))]
 pub mod mocks {
     use super::*;
+
+    use restate_types::identifiers::{InvocationId, InvocationUuid};
     use restate_types::invocation::ServiceInvocationSpanContext;
     use restate_types::journal::enriched::{
         EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult,
@@ -79,7 +81,10 @@ pub mod mocks {
                 RawEntryHeader::Awakeable { is_completed } => {
                     EnrichedEntryHeader::Awakeable { is_completed }
                 }
-                RawEntryHeader::CompleteAwakeable => EnrichedEntryHeader::CompleteAwakeable,
+                RawEntryHeader::CompleteAwakeable => EnrichedEntryHeader::CompleteAwakeable {
+                    invocation_id: InvocationId::new(0, InvocationUuid::now_v7()),
+                    entry_index: 1,
+                },
                 RawEntryHeader::Custom { code, requires_ack } => {
                     EnrichedEntryHeader::Custom { code, requires_ack }
                 }

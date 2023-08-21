@@ -639,10 +639,17 @@ where
                 );
                 return Ok(());
             }
-            EnrichedEntryHeader::CompleteAwakeable => {
+            EnrichedEntryHeader::CompleteAwakeable {
+                ref invocation_id,
+                entry_index,
+            } => {
                 let_assert!(Entry::CompleteAwakeable(entry) = Codec::deserialize(&journal_entry)?);
 
-                let response = Self::create_response_for_awakeable_entry(entry);
+                let response = Self::create_response_for_awakeable_entry(
+                    invocation_id.clone(),
+                    entry_index,
+                    entry,
+                );
                 self.send_message(response, effects);
             }
             EnrichedEntryHeader::Custom { requires_ack, code } => {
@@ -822,23 +829,16 @@ where
         }
     }
 
-    fn create_response_for_awakeable_entry(entry: CompleteAwakeableEntry) -> OutboxMessage {
-        let CompleteAwakeableEntry {
-            entry_index,
-            result,
-            service_name,
-            instance_key,
-            invocation_id,
-        } = entry;
+    fn create_response_for_awakeable_entry(
+        invocation_id: InvocationId,
+        entry_index: EntryIndex,
+        entry: CompleteAwakeableEntry,
+    ) -> OutboxMessage {
+        let CompleteAwakeableEntry { result, .. } = entry;
         OutboxMessage::ServiceResponse(InvocationResponse {
             entry_index,
             result: result.into(),
-            id: MaybeFullInvocationId::Full(ServiceInvocationId::new(
-                service_name,
-                instance_key,
-                InvocationUuid::from_slice(&invocation_id)
-                    .expect("Invocation id must be parse-able. If not, then this is a bug. Please contact the Restate developers."),
-            )),
+            id: MaybeFullInvocationId::Partial(invocation_id),
         })
     }
 
@@ -883,6 +883,7 @@ mod tests {
     use futures::future::ok;
     use futures::FutureExt;
     use restate_invoker_api::EffectKind;
+    use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_test_util::{assert_eq, let_assert, test};
     use restate_types::errors::UserErrorCode;
@@ -974,10 +975,9 @@ mod tests {
 
         let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
             CompleteAwakeableEntry {
-                service_name: sid_callee.service_id.service_name.clone(),
-                instance_key: sid_callee.service_id.key.clone(),
-                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_uuid.as_bytes()),
-                entry_index: 1,
+                id: AwakeableIdentifier::new(sid_callee.clone().into(), 1)
+                    .encode()
+                    .into(),
                 result: EntryResult::Success(Bytes::default()),
             },
         ));
@@ -1003,7 +1003,10 @@ mod tests {
                 result: ResponseResult::Success(_),
             }) = message
         );
-        assert_eq!(id, MaybeFullInvocationId::Full(sid_callee));
+        assert_eq!(
+            id,
+            MaybeFullInvocationId::Partial(InvocationId::from(sid_callee))
+        );
         assert_eq!(entry_index, 1);
     }
 
@@ -1018,10 +1021,9 @@ mod tests {
 
         let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
             CompleteAwakeableEntry {
-                service_name: sid_callee.service_id.service_name.clone(),
-                instance_key: sid_callee.service_id.key.clone(),
-                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_uuid.as_bytes()),
-                entry_index: 1,
+                id: AwakeableIdentifier::new(sid_callee.clone().into(), 1)
+                    .encode()
+                    .into(),
                 result: EntryResult::Failure(
                     UserErrorCode::FailedPrecondition,
                     "Some failure".into(),
@@ -1050,7 +1052,10 @@ mod tests {
                 result: ResponseResult::Failure(UserErrorCode::FailedPrecondition, failure_reason),
             }) = message
         );
-        assert_eq!(id, MaybeFullInvocationId::Full(sid_callee));
+        assert_eq!(
+            id,
+            MaybeFullInvocationId::Partial(InvocationId::from(sid_callee))
+        );
         assert_eq!(entry_index, 1);
         assert_eq!(failure_reason, "Some failure");
     }
@@ -1064,7 +1069,7 @@ mod tests {
         let sid = ServiceInvocationId::mock_random();
 
         let cmd = Command::Response(InvocationResponse {
-            id: MaybeFullInvocationId::Partial(sid.clone().into()),
+            id: MaybeFullInvocationId::Partial(InvocationId::from(sid.clone())),
             entry_index: 1,
             result: ResponseResult::Success(Bytes::from_static(b"hello")),
         });

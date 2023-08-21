@@ -30,7 +30,7 @@ use restate_service_protocol::message::{
 };
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::{
-    EndpointId, EntryIndex, PartitionLeaderEpoch, ServiceInvocationId,
+    EndpointId, EntryIndex, InvocationId, PartitionLeaderEpoch, ServiceInvocationId,
 };
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -569,12 +569,10 @@ where
         self.write(
             http_stream_tx,
             ProtocolMessage::new_start_message(
-                self.service_invocation_id
-                    .invocation_uuid
-                    .as_bytes()
-                    .to_vec()
-                    .into(),
-                self.service_invocation_id.service_id.key.clone(),
+                Bytes::copy_from_slice(
+                    &InvocationId::from(self.service_invocation_id.clone()).as_bytes(),
+                ),
+                self.service_invocation_id.to_string(),
                 journal_size,
                 is_partial,
                 state_entries,

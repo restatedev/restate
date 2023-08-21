@@ -17,6 +17,9 @@ pub mod discovery;
 #[cfg(feature = "message")]
 pub mod message;
 
+#[cfg(feature = "awakeable-id")]
+pub mod awakeable_id;
+
 #[cfg(feature = "protocol")]
 pub mod pb {
     pub mod protocol {
@@ -159,10 +162,7 @@ mod pb_into {
 
         fn try_from(msg: CompleteAwakeableEntryMessage) -> Result<Self, Self::Error> {
             Ok(Self::CompleteAwakeable(CompleteAwakeableEntry {
-                service_name: msg.service_name.into(),
-                instance_key: msg.instance_key,
-                invocation_id: msg.invocation_id,
-                entry_index: msg.entry_index,
+                id: msg.id.into(),
                 result: match msg.result.ok_or("result")? {
                     complete_awakeable_entry_message::Result::Value(r) => EntryResult::Success(r),
                     complete_awakeable_entry_message::Result::Failure(Failure {

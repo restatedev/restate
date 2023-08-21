@@ -164,35 +164,6 @@ pub type DispatcherCommandSender = UnboundedCommandSender<InvocationOrResponse, 
 pub type IngressInputReceiver = mpsc::Receiver<IngressInput>;
 pub type IngressInputSender = mpsc::Sender<IngressInput>;
 
-// --- Traits
-
-#[derive(Debug, thiserror::Error)]
-pub enum ServiceInvocationFactoryError {
-    #[error("service method '{service_name}/{method_name}' is unknown")]
-    UnknownServiceMethod {
-        service_name: String,
-        method_name: String,
-    },
-    #[error("failed extracting the key from the request payload: {0}")]
-    KeyExtraction(anyhow::Error),
-}
-
-impl ServiceInvocationFactoryError {
-    pub fn unknown_service_method(
-        service_name: impl Into<String>,
-        method_name: impl Into<String>,
-    ) -> Self {
-        ServiceInvocationFactoryError::UnknownServiceMethod {
-            service_name: service_name.into(),
-            method_name: method_name.into(),
-        }
-    }
-
-    pub fn key_extraction_error(source: impl Into<anyhow::Error>) -> Self {
-        ServiceInvocationFactoryError::KeyExtraction(source.into())
-    }
-}
-
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {

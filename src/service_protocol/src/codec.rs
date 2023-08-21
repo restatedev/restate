@@ -117,6 +117,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
 mod mocks {
     use super::*;
 
+    use crate::awakeable_id::AwakeableIdentifier;
     use crate::pb::protocol::{
         complete_awakeable_entry_message, CompleteAwakeableEntryMessage, Failure,
         PollInputStreamEntryMessage,
@@ -145,10 +146,18 @@ mod mocks {
                     EnrichedEntryHeader::PollInputStream { is_completed: true },
                     Self::serialize_poll_input_stream_entry(entry),
                 ),
-                Entry::CompleteAwakeable(entry) => EnrichedRawEntry::new(
-                    EnrichedEntryHeader::CompleteAwakeable,
-                    Self::serialize_complete_awakeable_entry(entry),
-                ),
+                Entry::CompleteAwakeable(entry) => {
+                    let (invocation_id, entry_index) =
+                        AwakeableIdentifier::decode(&entry.id).unwrap().into_inner();
+
+                    EnrichedRawEntry::new(
+                        EnrichedEntryHeader::CompleteAwakeable {
+                            invocation_id,
+                            entry_index,
+                        },
+                        Self::serialize_complete_awakeable_entry(entry),
+                    )
+                }
                 _ => unimplemented!(),
             }
         }
@@ -162,19 +171,10 @@ mod mocks {
         }
 
         fn serialize_complete_awakeable_entry(
-            CompleteAwakeableEntry {
-                service_name,
-                instance_key,
-                invocation_id,
-                entry_index,
-                result,
-            }: CompleteAwakeableEntry,
+            CompleteAwakeableEntry { id, result }: CompleteAwakeableEntry,
         ) -> Bytes {
             CompleteAwakeableEntryMessage {
-                service_name: service_name.to_string(),
-                instance_key,
-                invocation_id,
-                entry_index,
+                id: id.to_string(),
                 result: Some(match result {
                     EntryResult::Success(success) => {
                         complete_awakeable_entry_message::Result::Value(success)

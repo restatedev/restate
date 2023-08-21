@@ -170,7 +170,8 @@ message EnrichedEntryHeader {
     }
 
     message CompleteAwakeable {
-
+        bytes invocation_id = 1;
+        uint32 entry_index = 2;
     }
 
     message Custom {

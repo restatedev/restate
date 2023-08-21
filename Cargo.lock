@@ -3629,7 +3629,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "arc-swap",
- "base64 0.21.0",
  "bytes",
  "bytestring",
  "codederror",
@@ -3866,6 +3865,7 @@ dependencies = [
 name = "restate_service_protocol"
 version = "0.2.0"
 dependencies = [
+ "base64 0.21.0",
  "bytes",
  "bytes-utils",
  "codederror",
