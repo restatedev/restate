@@ -37,7 +37,6 @@ mod ingress_integration {
     use restate_network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
     use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{IngressId, PartitionKey, PeerId};
-    use restate_types::invocation::ServiceInvocation;
     use restate_types::message::{AckKind, MessageIndex};
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
@@ -92,7 +91,7 @@ mod ingress_integration {
                     invocation.id.service_id.partition_key()
                 }
                 restate_ingress_grpc::InvocationOrResponse::Response(response) => {
-                    response.id.service_id.partition_key()
+                    response.id.partition_key()
                 }
             }
         }

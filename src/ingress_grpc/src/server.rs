@@ -161,6 +161,7 @@ mod tests {
     use restate_service_protocol::pb::protocol::AwakeableIdentifier;
     use restate_test_util::{assert_eq, let_assert, test};
     use restate_types::identifiers::ServiceInvocationId;
+    use restate_types::invocation::MaybeFullInvocationId;
     use serde_json::json;
     use std::net::SocketAddr;
     use tokio::sync::mpsc;
@@ -294,7 +295,7 @@ mod tests {
         let awakeable_id = AwakeableIdentifier {
             service_name: sid.service_id.service_name.to_string(),
             instance_key: sid.service_id.key.clone(),
-            invocation_id: Bytes::copy_from_slice(sid.invocation_id.as_bytes()),
+            invocation_id: Bytes::copy_from_slice(sid.invocation_uuid.as_bytes()),
             entry_index: 2,
         };
         let serialized_awakeable_id =
@@ -320,7 +321,7 @@ mod tests {
 
         // Get the function invocation and assert on it
         let_assert!(InvocationOrResponse::Response(invocation_response) = cmd_fut.await.unwrap());
-        assert_eq!(invocation_response.id, sid);
+        assert_eq!(invocation_response.id, MaybeFullInvocationId::Full(sid));
         assert_eq!(invocation_response.entry_index, 2);
         assert_eq!(
             invocation_response.result,

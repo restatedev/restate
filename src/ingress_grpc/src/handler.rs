@@ -29,7 +29,9 @@ use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::errors::UserErrorCode;
 use restate_types::identifiers::{IngressId, InvocationUuid};
-use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
+use restate_types::invocation::{
+    MaybeFullInvocationId, ServiceInvocationResponseSink, SpanRelation,
+};
 use std::sync::Arc;
 use std::task::Poll;
 use tokio::sync::Semaphore;
@@ -303,12 +305,12 @@ where
                             let id = awakeable_identifier::decode(req.id)?;
 
                             InvocationResponse {
-                                id: ServiceInvocationId::new(
+                                id: MaybeFullInvocationId::Full(ServiceInvocationId::new(
                                     id.service_name,
                                     id.instance_key,
-                                    InvocationId::from_slice(&id.invocation_id)
+                                    InvocationUuid::from_slice(&id.invocation_id)
                                         .map_err(|e| Status::invalid_argument(e.to_string()))?
-                                ),
+                                )),
                                 entry_index: id.entry_index,
                                 result: ResponseResult::Success(result),
                             }
@@ -323,12 +325,12 @@ where
                             let id = awakeable_identifier::decode(req.id)?;
 
                             InvocationResponse {
-                                id: ServiceInvocationId::new(
+                                id: MaybeFullInvocationId::Full(ServiceInvocationId::new(
                                     id.service_name,
                                     id.instance_key,
-                                    InvocationId::from_slice(&id.invocation_id)
+                                    InvocationUuid::from_slice(&id.invocation_id)
                                         .map_err(|e| Status::invalid_argument(e.to_string()))?
-                                ),
+                                )),
                                 entry_index: id.entry_index,
                                 result: ResponseResult::Failure(UserErrorCode::Unknown, req.reason.into()),
                             }
