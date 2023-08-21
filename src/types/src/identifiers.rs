@@ -160,6 +160,10 @@ impl WithPartitionKey for ServiceId {
 /// to route requests to the correct partition processors.
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(try_from = "EncodedInvocationId", into = "EncodedInvocationId")
+)]
 pub struct InvocationId {
     /// Partition key of the called service
     partition_key: PartitionKey,
@@ -201,16 +205,21 @@ impl TryFrom<EncodedInvocationId> for InvocationId {
 
     fn try_from(encoded_id: EncodedInvocationId) -> Result<Self, InvocationIdParseError> {
         let mut partition_key_buf = [0; size_of::<PartitionKey>()];
-        partition_key_buf.copy_from_slice(&encoded_id[0..size_of::<PartitionKey>()]);
+        partition_key_buf.copy_from_slice(&encoded_id[..size_of::<PartitionKey>()]);
         let partition_key = PartitionKey::from_be_bytes(partition_key_buf);
 
-        let uuid =
-            Uuid::from_slice(&encoded_id[size_of::<PartitionKey>()..size_of::<uuid::Bytes>()])?;
+        let uuid = Uuid::from_slice(&encoded_id[size_of::<PartitionKey>()..])?;
 
         Ok(Self {
             partition_key,
             invocation_uuid: InvocationUuid(uuid),
         })
+    }
+}
+
+impl From<InvocationId> for EncodedInvocationId {
+    fn from(value: InvocationId) -> Self {
+        value.as_bytes()
     }
 }
 
@@ -377,9 +386,8 @@ fn encode_invocation_id(
     invocation_uuid: &InvocationUuid,
 ) -> EncodedInvocationId {
     let mut buf = [0_u8; size_of::<PartitionKey>() + size_of::<uuid::Bytes>()];
-    buf[0..size_of::<PartitionKey>()].copy_from_slice(&partition_key.to_be_bytes());
-    buf[size_of::<PartitionKey>()..size_of::<uuid::Bytes>()]
-        .copy_from_slice(invocation_uuid.0.as_bytes());
+    buf[..size_of::<PartitionKey>()].copy_from_slice(&partition_key.to_be_bytes());
+    buf[size_of::<PartitionKey>()..].copy_from_slice(invocation_uuid.0.as_bytes());
     buf
 }
 
@@ -422,6 +430,15 @@ mod mocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roundtrip_invocation_id() {
+        let expected = InvocationId::new(92, InvocationUuid::now_v7());
+        assert_eq!(
+            expected,
+            InvocationId::from_slice(&expected.as_bytes()).unwrap()
+        )
+    }
 
     fn roundtrip_test(expected_sid: ServiceInvocationId) {
         let opaque_sid: String = expected_sid.to_string();
