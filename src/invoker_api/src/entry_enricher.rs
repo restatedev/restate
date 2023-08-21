@@ -56,7 +56,7 @@ pub mod mocks {
                         EnrichedEntryHeader::Invoke {
                             is_completed,
                             resolution_result: Some(ResolutionResult {
-                                invocation_id: Default::default(),
+                                invocation_uuid: Default::default(),
                                 service_key: Default::default(),
                                 span_context: invocation_span_context.clone(),
                             }),
@@ -71,7 +71,7 @@ pub mod mocks {
                 }
                 RawEntryHeader::BackgroundInvoke => EnrichedEntryHeader::BackgroundInvoke {
                     resolution_result: ResolutionResult {
-                        invocation_id: Default::default(),
+                        invocation_uuid: Default::default(),
                         service_key: Default::default(),
                         span_context: invocation_span_context.clone(),
                     },

@@ -11,7 +11,7 @@
 use super::raw::*;
 use super::*;
 
-use crate::identifiers::InvocationId;
+use crate::identifiers::InvocationUuid;
 use crate::invocation::ServiceInvocationSpanContext;
 use bytes::Bytes;
 
@@ -20,7 +20,7 @@ pub type EnrichedRawEntry = RawEntry<EnrichedEntryHeader>;
 /// Result of the target service resolution
 #[derive(Debug, Clone)]
 pub struct ResolutionResult {
-    pub invocation_id: InvocationId,
+    pub invocation_uuid: InvocationUuid,
     pub service_key: Bytes,
     // When resolving the service and generating its id, we also generate the associated span
     pub span_context: ServiceInvocationSpanContext,

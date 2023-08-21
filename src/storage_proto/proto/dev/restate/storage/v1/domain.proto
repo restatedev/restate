@@ -11,7 +11,7 @@ package dev.restate.storage.domain.v1;
 message ServiceInvocationId {
     bytes service_name = 1;
     bytes service_key = 2;
-    bytes invocation_id = 3;
+    bytes invocation_uuid = 3;
 }
 
 // ---------------------------------------------------------------------
@@ -31,7 +31,7 @@ message JournalMeta {
 message InvocationStatus {
 
     message Invoked {
-        bytes invocation_id = 1;
+        bytes invocation_uuid = 1;
         JournalMeta journal_meta = 2;
         ServiceInvocationResponseSink response_sink = 3;
         uint64 creation_time = 4;
@@ -39,7 +39,7 @@ message InvocationStatus {
     }
 
     message Suspended {
-        bytes invocation_id = 1;
+        bytes invocation_uuid = 1;
         JournalMeta journal_meta = 2;
         ServiceInvocationResponseSink response_sink = 3;
         uint64 creation_time = 4;
@@ -117,7 +117,7 @@ message InboxEntry {
 
 message InvocationResolutionResult {
     message Success {
-        bytes invocation_id = 1;
+        bytes invocation_uuid = 1;
         bytes service_key = 2;
         SpanContext span_context = 3;
     }
@@ -129,7 +129,7 @@ message InvocationResolutionResult {
 }
 
 message BackgroundCallResolutionResult {
-    bytes invocation_id = 1;
+    bytes invocation_uuid = 1;
     bytes service_key = 2;
     SpanContext span_context = 3;
 }
@@ -259,7 +259,10 @@ message OutboxMessage {
     }
 
     message OutboxServiceInvocationResponse {
-        ServiceInvocationId service_invocation_id = 1;
+        oneof id {
+            ServiceInvocationId service_invocation_id = 1;
+            bytes invocation_id = 4;
+        }
         uint32 entry_index = 2;
         ResponseResult response_result = 3;
     }

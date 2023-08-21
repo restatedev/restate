@@ -31,10 +31,12 @@ use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
-use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId, ServiceInvocationId};
+use restate_types::identifiers::{
+    EntryIndex, InvocationId, InvocationUuid, ServiceId, ServiceInvocationId,
+};
 use restate_types::invocation::{
-    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
+    InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
 };
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::message::MessageIndex;
@@ -77,6 +79,12 @@ pub(crate) trait StateReader {
         &'a mut self,
         service_id: &'a ServiceId,
     ) -> BoxFuture<'a, Result<InvocationStatus, StateReaderError>>;
+
+    // TODO: Replace with async trait or proper future
+    fn resolve_invocation_status_from_invocation_id<'a>(
+        &'a mut self,
+        invocation_id: &'a InvocationId,
+    ) -> BoxFuture<'a, Result<(ServiceInvocationId, InvocationStatus), StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
     fn peek_inbox<'a>(
@@ -197,7 +205,7 @@ where
 
         match status {
             InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. }
-                if metadata.invocation_id == service_invocation_id.invocation_id =>
+                if metadata.invocation_uuid == service_invocation_id.invocation_uuid =>
             {
                 let (sid, related_span) = self
                     .kill_invocation(service_invocation_id, metadata, state, effects)
@@ -256,7 +264,7 @@ where
         return match value {
             Timer::CompleteSleepEntry => {
                 Self::handle_completion(
-                    service_invocation_id,
+                    MaybeFullInvocationId::Full(service_invocation_id),
                     Completion {
                         entry_index,
                         result: CompletionResult::Empty,
@@ -288,8 +296,8 @@ where
 
         match status {
             InvocationStatus::Invoked(invocation_metadata)
-                if invocation_metadata.invocation_id
-                    == invoker_effect.service_invocation_id.invocation_id =>
+                if invocation_metadata.invocation_uuid
+                    == invoker_effect.service_invocation_id.invocation_uuid =>
             {
                 self.on_invoker_effect(effects, state, invoker_effect, invocation_metadata)
                     .await
@@ -540,7 +548,7 @@ where
             } => {
                 if let Some(ResolutionResult {
                     service_key,
-                    invocation_id,
+                    invocation_uuid: invocation_id,
                     span_context,
                 }) = resolution_result
                 {
@@ -569,7 +577,7 @@ where
             } => {
                 let ResolutionResult {
                     service_key,
-                    invocation_id,
+                    invocation_uuid: invocation_id,
                     span_context,
                 } = resolution_result;
 
@@ -666,20 +674,28 @@ where
     }
 
     async fn handle_completion<State: StateReader>(
-        service_invocation_id: ServiceInvocationId,
+        maybe_full_invocation_id: MaybeFullInvocationId,
         completion: Completion,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
-        let status = state
-            .get_invocation_status(&service_invocation_id.service_id)
-            .await?;
+        let (service_invocation_id, status) = match maybe_full_invocation_id {
+            MaybeFullInvocationId::Partial(iid) => {
+                state
+                    .resolve_invocation_status_from_invocation_id(&iid)
+                    .await?
+            }
+            MaybeFullInvocationId::Full(sid) => {
+                let status = state.get_invocation_status(&sid.service_id).await?;
+                (sid, status)
+            }
+        };
         let mut related_sid = None;
         let mut span_relation = SpanRelation::None;
 
         match status {
             InvocationStatus::Invoked(metadata) => {
-                if metadata.invocation_id == service_invocation_id.invocation_id {
+                if metadata.invocation_uuid == service_invocation_id.invocation_uuid {
                     effects.store_and_forward_completion(service_invocation_id.clone(), completion);
                     related_sid = Some(service_invocation_id);
                     span_relation = metadata.journal_metadata.span_context.as_parent();
@@ -696,7 +712,7 @@ where
                 metadata,
                 waiting_for_completed_entries,
             } => {
-                if metadata.invocation_id == service_invocation_id.invocation_id {
+                if metadata.invocation_uuid == service_invocation_id.invocation_uuid {
                     span_relation = metadata.journal_metadata.span_context.as_parent();
 
                     if waiting_for_completed_entries.contains(&completion.entry_index) {
@@ -776,7 +792,7 @@ where
     }
 
     fn create_service_invocation(
-        invocation_id: InvocationId,
+        invocation_id: InvocationUuid,
         invocation_key: Bytes,
         invoke_request: InvokeRequest,
         response_target: Option<(ServiceInvocationId, EntryIndex)>,
@@ -817,12 +833,12 @@ where
         OutboxMessage::ServiceResponse(InvocationResponse {
             entry_index,
             result: result.into(),
-            id: ServiceInvocationId::new(
+            id: MaybeFullInvocationId::Full(ServiceInvocationId::new(
                 service_name,
                 instance_key,
-                InvocationId::from_slice(&invocation_id)
+                InvocationUuid::from_slice(&invocation_id)
                     .expect("Invocation id must be parse-able. If not, then this is a bug. Please contact the Restate developers."),
-            ),
+            )),
         })
     }
 
@@ -836,7 +852,7 @@ where
                 entry_index,
                 caller,
             } => OutboxMessage::ServiceResponse(InvocationResponse {
-                id: caller,
+                id: MaybeFullInvocationId::Full(caller),
                 entry_index,
                 result,
             }),
@@ -870,6 +886,7 @@ mod tests {
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_test_util::{assert_eq, let_assert, test};
     use restate_types::errors::UserErrorCode;
+    use restate_types::identifiers::WithPartitionKey;
     use restate_types::journal::{EntryResult, JournalMetadata};
     use std::collections::HashMap;
 
@@ -883,7 +900,7 @@ mod tests {
             self.invocations.insert(
                 sid.service_id.clone(),
                 InvocationStatus::Invoked(InvocationMetadata {
-                    invocation_id: sid.invocation_id,
+                    invocation_uuid: sid.invocation_uuid,
                     journal_metadata: JournalMetadata {
                         endpoint_id: None,
                         length,
@@ -904,6 +921,30 @@ mod tests {
             service_id: &'a ServiceId,
         ) -> BoxFuture<'a, Result<InvocationStatus, StateReaderError>> {
             ok(self.invocations.get(service_id).cloned().unwrap()).boxed()
+        }
+
+        fn resolve_invocation_status_from_invocation_id<'a>(
+            &'a mut self,
+            invocation_id: &'a InvocationId,
+        ) -> BoxFuture<'a, Result<(ServiceInvocationId, InvocationStatus), StateReaderError>>
+        {
+            let (service_id, status) = self
+                .invocations
+                .iter()
+                .find(|(service_id, status)| {
+                    service_id.partition_key() == invocation_id.partition_key()
+                        && status.invocation_uuid().unwrap() == invocation_id.invocation_uuid()
+                })
+                .unwrap();
+
+            ok((
+                ServiceInvocationId::with_service_id(
+                    service_id.clone(),
+                    invocation_id.invocation_uuid(),
+                ),
+                status.clone(),
+            ))
+            .boxed()
         }
 
         fn peek_inbox<'a>(
@@ -935,7 +976,7 @@ mod tests {
             CompleteAwakeableEntry {
                 service_name: sid_callee.service_id.service_name.clone(),
                 instance_key: sid_callee.service_id.key.clone(),
-                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_id.as_bytes()),
+                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_uuid.as_bytes()),
                 entry_index: 1,
                 result: EntryResult::Success(Bytes::default()),
             },
@@ -962,7 +1003,7 @@ mod tests {
                 result: ResponseResult::Success(_),
             }) = message
         );
-        assert_eq!(id, sid_callee);
+        assert_eq!(id, MaybeFullInvocationId::Full(sid_callee));
         assert_eq!(entry_index, 1);
     }
 
@@ -979,7 +1020,7 @@ mod tests {
             CompleteAwakeableEntry {
                 service_name: sid_callee.service_id.service_name.clone(),
                 instance_key: sid_callee.service_id.key.clone(),
-                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_id.as_bytes()),
+                invocation_id: Bytes::copy_from_slice(sid_callee.invocation_uuid.as_bytes()),
                 entry_index: 1,
                 result: EntryResult::Failure(
                     UserErrorCode::FailedPrecondition,
@@ -1009,8 +1050,37 @@ mod tests {
                 result: ResponseResult::Failure(UserErrorCode::FailedPrecondition, failure_reason),
             }) = message
         );
-        assert_eq!(id, sid_callee);
+        assert_eq!(id, MaybeFullInvocationId::Full(sid_callee));
         assert_eq!(entry_index, 1);
         assert_eq!(failure_reason, "Some failure");
+    }
+
+    #[test(tokio::test)]
+    async fn send_response_using_invocation_id() {
+        let mut state_machine: StateMachine<ProtobufRawEntryCodec> = StateMachine::new(0, 0);
+        let mut effects = Effects::default();
+        let mut state_reader = StateReaderMock::default();
+
+        let sid = ServiceInvocationId::mock_random();
+
+        let cmd = Command::Response(InvocationResponse {
+            id: MaybeFullInvocationId::Partial(sid.clone().into()),
+            entry_index: 1,
+            result: ResponseResult::Success(Bytes::from_static(b"hello")),
+        });
+
+        state_reader.register_invocation_status(&sid, 1);
+
+        state_machine
+            .on_apply(cmd, &mut effects, &mut state_reader)
+            .await
+            .unwrap();
+        let_assert!(
+            Effect::StoreCompletionAndForward {
+                service_invocation_id,
+                ..
+            } = effects.drain().next().unwrap()
+        );
+        assert_eq!(service_invocation_id, sid);
     }
 }

@@ -16,7 +16,7 @@ use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
 use std::fmt;
-use std::fmt::{Display, Formatter};
+use std::mem::size_of;
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -40,16 +40,25 @@ pub type EntryIndex = u32;
 /// Currently this will contain the endpoint url authority and path base64 encoded, but this might change in future.
 pub type EndpointId = String;
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+pub struct IngressId(pub std::net::SocketAddr);
+
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.
 pub type PartitionKey = u64;
 
+/// Trait for data structures that have a partition key
+pub trait WithPartitionKey {
+    /// Returns the partition key
+    fn partition_key(&self) -> PartitionKey;
+}
+
 /// Discriminator for invocation instances
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, Ord, PartialOrd, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct InvocationId(Uuid);
+pub struct InvocationUuid(Uuid);
 
-impl InvocationId {
+impl InvocationUuid {
     pub fn from_slice(b: &[u8]) -> Result<Self, uuid::Error> {
         Ok(Self(Uuid::from_slice(b)?))
     }
@@ -63,52 +72,204 @@ impl InvocationId {
     }
 }
 
-impl Display for InvocationId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl fmt::Display for InvocationUuid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.as_simple().fmt(f)
     }
 }
 
-impl AsRef<[u8]> for InvocationId {
+impl AsRef<[u8]> for InvocationUuid {
     #[inline]
     fn as_ref(&self) -> &[u8] {
         self.0.as_ref()
     }
 }
 
-impl From<Uuid> for InvocationId {
+impl From<Uuid> for InvocationUuid {
     fn from(value: Uuid) -> Self {
         Self(value)
     }
 }
 
-impl From<InvocationId> for Uuid {
-    fn from(value: InvocationId) -> Self {
+impl From<InvocationUuid> for Uuid {
+    fn from(value: InvocationUuid) -> Self {
         value.0
     }
 }
 
-impl From<InvocationId> for opentelemetry_api::trace::TraceId {
-    fn from(value: InvocationId) -> Self {
+impl From<InvocationUuid> for opentelemetry_api::trace::TraceId {
+    fn from(value: InvocationUuid) -> Self {
         let uuid: Uuid = value.into();
         Self::from_bytes(uuid.into_bytes())
     }
 }
 
-impl From<InvocationId> for opentelemetry_api::trace::SpanId {
-    fn from(value: InvocationId) -> Self {
+impl From<InvocationUuid> for opentelemetry_api::trace::SpanId {
+    fn from(value: InvocationUuid) -> Self {
         let uuid: Uuid = value.into();
         let last8: [u8; 8] = std::convert::TryInto::try_into(&uuid.as_bytes()[8..16]).unwrap();
         Self::from_bytes(last8)
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-pub struct IngressId(pub std::net::SocketAddr);
+/// Id of a keyed service instance.
+///
+/// Services are isolated by key. This means that there cannot be two concurrent
+/// invocations for the same service instance (service name, key).
+#[derive(Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ServiceId {
+    /// Identifies the grpc service
+    pub service_name: ByteString,
+    /// Identifies the service instance for the given service name
+    pub key: Bytes,
+
+    partition_key: PartitionKey,
+}
+
+impl ServiceId {
+    pub fn new(service_name: impl Into<ByteString>, key: impl Into<Bytes>) -> Self {
+        let key = key.into();
+        let partition_key = partitioner::HashPartitioner::compute_partition_key(&key);
+        Self::with_partition_key(partition_key, service_name, key)
+    }
+
+    /// # Important
+    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`].
+    pub fn with_partition_key(
+        partition_key: PartitionKey,
+        service_name: impl Into<ByteString>,
+        key: impl Into<Bytes>,
+    ) -> Self {
+        Self {
+            service_name: service_name.into(),
+            key: key.into(),
+            partition_key,
+        }
+    }
+}
+
+impl WithPartitionKey for ServiceId {
+    fn partition_key(&self) -> PartitionKey {
+        self.partition_key
+    }
+}
+
+/// InvocationId is a unique identifier of the invocation,
+/// including enough routing information for the network component
+/// to route requests to the correct partition processors.
+#[derive(Eq, Hash, PartialEq, Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(try_from = "EncodedInvocationId", into = "EncodedInvocationId")
+)]
+pub struct InvocationId {
+    /// Partition key of the called service
+    partition_key: PartitionKey,
+    /// Uniquely identifies this invocation instance
+    invocation_uuid: InvocationUuid,
+}
+
+pub type EncodedInvocationId = [u8; size_of::<PartitionKey>() + size_of::<uuid::Bytes>()];
+
+impl InvocationId {
+    pub fn new(partition_key: PartitionKey, invocation_uuid: InvocationUuid) -> Self {
+        Self {
+            partition_key,
+            invocation_uuid,
+        }
+    }
+
+    pub fn from_slice(b: &[u8]) -> Result<Self, InvocationIdParseError> {
+        let mut encoded_id = EncodedInvocationId::default();
+        if b.len() != size_of::<EncodedInvocationId>() {
+            return Err(InvocationIdParseError::BadSliceLength);
+        }
+
+        encoded_id.copy_from_slice(b);
+        encoded_id.try_into()
+    }
+
+    pub fn invocation_uuid(&self) -> InvocationUuid {
+        self.invocation_uuid
+    }
+
+    pub fn as_bytes(&self) -> EncodedInvocationId {
+        encode_invocation_id(&self.partition_key, &self.invocation_uuid)
+    }
+}
+
+impl TryFrom<EncodedInvocationId> for InvocationId {
+    type Error = InvocationIdParseError;
+
+    fn try_from(encoded_id: EncodedInvocationId) -> Result<Self, InvocationIdParseError> {
+        let mut partition_key_buf = [0; size_of::<PartitionKey>()];
+        partition_key_buf.copy_from_slice(&encoded_id[..size_of::<PartitionKey>()]);
+        let partition_key = PartitionKey::from_be_bytes(partition_key_buf);
+
+        let uuid = Uuid::from_slice(&encoded_id[size_of::<PartitionKey>()..])?;
+
+        Ok(Self {
+            partition_key,
+            invocation_uuid: InvocationUuid(uuid),
+        })
+    }
+}
+
+impl From<InvocationId> for EncodedInvocationId {
+    fn from(value: InvocationId) -> Self {
+        value.as_bytes()
+    }
+}
+
+impl From<ServiceInvocationId> for InvocationId {
+    fn from(value: ServiceInvocationId) -> Self {
+        Self {
+            partition_key: value.partition_key(),
+            invocation_uuid: value.invocation_uuid,
+        }
+    }
+}
+
+impl WithPartitionKey for InvocationId {
+    fn partition_key(&self) -> PartitionKey {
+        self.partition_key
+    }
+}
+
+impl fmt::Display for InvocationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        display_invocation_id(&self.partition_key, &self.invocation_uuid, f)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum InvocationIdParseError {
+    #[error("cannot parse the invocation id, bad slice length")]
+    BadSliceLength,
+    #[error("cannot parse the invocation id uuid: {0}")]
+    Uuid(#[from] uuid::Error),
+    #[error("cannot parse the invocation id encoded as base64: {0}")]
+    Base64(#[from] base64::DecodeSliceError),
+}
+
+impl FromStr for InvocationId {
+    type Err = InvocationIdParseError;
+
+    fn from_str(str: &str) -> Result<Self, Self::Err> {
+        let mut encoded_id = EncodedInvocationId::default();
+
+        // Length check will be performed by the base64 lib directly
+        BASE64_STANDARD.decode_slice(str, &mut encoded_id)?;
+
+        encoded_id.try_into()
+    }
+}
 
 /// Id of a single service invocation.
 ///
-/// A service invocation id is composed of a [`ServiceId`] and an [`InvocationId`]
+/// A service invocation id is composed of a [`ServiceId`] and an [`InvocationUuid`]
 /// that makes the id unique.
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -116,34 +277,43 @@ pub struct ServiceInvocationId {
     /// Identifies the invoked service
     pub service_id: ServiceId,
     /// Uniquely identifies this invocation instance
-    pub invocation_id: InvocationId,
+    pub invocation_uuid: InvocationUuid,
 }
 
 impl ServiceInvocationId {
     pub fn new(
         service_name: impl Into<ByteString>,
         key: impl Into<Bytes>,
-        invocation_id: impl Into<InvocationId>,
+        invocation_id: impl Into<InvocationUuid>,
     ) -> Self {
         Self::with_service_id(ServiceId::new(service_name, key), invocation_id)
     }
 
-    pub fn with_service_id(service_id: ServiceId, invocation_id: impl Into<InvocationId>) -> Self {
+    pub fn with_service_id(
+        service_id: ServiceId,
+        invocation_id: impl Into<InvocationUuid>,
+    ) -> Self {
         Self {
             service_id,
-            invocation_id: invocation_id.into(),
+            invocation_uuid: invocation_id.into(),
         }
     }
 }
 
-impl Display for ServiceInvocationId {
+impl WithPartitionKey for ServiceInvocationId {
+    fn partition_key(&self) -> PartitionKey {
+        self.service_id.partition_key()
+    }
+}
+
+impl fmt::Display for ServiceInvocationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{}-{}-{}",
             self.service_id.service_name,
             Base64Display::new(&self.service_id.key, &BASE64_STANDARD),
-            self.invocation_id
+            self.invocation_uuid
         )
     }
 }
@@ -190,47 +360,6 @@ impl FromStr for ServiceInvocationId {
     }
 }
 
-/// Id of a keyed service instance.
-///
-/// Services are isolated by key. This means that there cannot be two concurrent
-/// invocations for the same service instance (service name, key).
-#[derive(Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ServiceId {
-    /// Identifies the grpc service
-    pub service_name: ByteString,
-    /// Identifies the service instance for the given service name
-    pub key: Bytes,
-
-    partition_key: PartitionKey,
-}
-
-impl ServiceId {
-    pub fn new(service_name: impl Into<ByteString>, key: impl Into<Bytes>) -> Self {
-        let key = key.into();
-        let partition_key = partitioner::HashPartitioner::compute_partition_key(&key);
-        Self::with_partition_key(partition_key, service_name, key)
-    }
-
-    /// # Important
-    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`].
-    pub fn with_partition_key(
-        partition_key: PartitionKey,
-        service_name: impl Into<ByteString>,
-        key: impl Into<Bytes>,
-    ) -> Self {
-        Self {
-            service_name: service_name.into(),
-            key: key.into(),
-            partition_key,
-        }
-    }
-
-    pub fn partition_key(&self) -> PartitionKey {
-        self.partition_key
-    }
-}
-
 /// Incremental id defining the service revision.
 pub type ServiceRevision = u32;
 
@@ -249,6 +378,32 @@ mod partitioner {
             hasher.finish()
         }
     }
+}
+
+fn encode_invocation_id(
+    partition_key: &PartitionKey,
+    invocation_uuid: &InvocationUuid,
+) -> EncodedInvocationId {
+    let mut buf = [0_u8; size_of::<PartitionKey>() + size_of::<uuid::Bytes>()];
+    buf[..size_of::<PartitionKey>()].copy_from_slice(&partition_key.to_be_bytes());
+    buf[size_of::<PartitionKey>()..].copy_from_slice(invocation_uuid.0.as_bytes());
+    buf
+}
+
+#[inline]
+fn display_invocation_id(
+    partition_key: &PartitionKey,
+    invocation_uuid: &InvocationUuid,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    write!(
+        f,
+        "{}",
+        Base64Display::new(
+            &encode_invocation_id(partition_key, invocation_uuid),
+            &BASE64_STANDARD
+        ),
+    )
 }
 
 #[cfg(any(test, feature = "mocks"))]
@@ -274,6 +429,15 @@ mod mocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roundtrip_invocation_id() {
+        let expected = InvocationId::new(92, InvocationUuid::now_v7());
+        assert_eq!(
+            expected,
+            InvocationId::from_slice(&expected.as_bytes()).unwrap()
+        )
+    }
 
     fn roundtrip_test(expected_sid: ServiceInvocationId) {
         let opaque_sid: String = expected_sid.to_string();

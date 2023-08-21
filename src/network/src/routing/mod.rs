@@ -17,7 +17,7 @@ use crate::{
     TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress, UnboundedNetworkHandle,
 };
 use restate_types::identifiers::PeerId;
-use restate_types::message::PartitionedMessage;
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::message::PeerTarget;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -147,10 +147,10 @@ where
     ConsensusMsg: Debug + Send + Sync + 'static,
     ShuffleIn: Debug + Send + Sync + 'static,
     ShuffleOut: TargetConsensusOrIngress<ShuffleToCon, ShuffleToIngress>,
-    ShuffleToCon: PartitionedMessage + Into<ConsensusMsg> + Debug,
+    ShuffleToCon: WithPartitionKey + Into<ConsensusMsg> + Debug,
     ShuffleToIngress: Into<IngressIn> + Debug,
     IngressOut: TargetConsensusOrShuffle<IngressToCon, IngressToShuffle>,
-    IngressToCon: PartitionedMessage + Into<ConsensusMsg> + Debug,
+    IngressToCon: WithPartitionKey + Into<ConsensusMsg> + Debug,
     IngressToShuffle: TargetShuffle + Into<ShuffleIn> + Debug,
     IngressIn: Debug + Send + Sync + 'static,
     PPOut: TargetShuffleOrIngress<PPToShuffle, PPToIngress>,
@@ -308,7 +308,7 @@ where
 }
 
 async fn lookup_target_peer(
-    msg: &impl PartitionedMessage,
+    msg: &impl WithPartitionKey,
     partition_table: &impl PartitionTable,
 ) -> Result<PeerId, PartitionTableError> {
     partition_table

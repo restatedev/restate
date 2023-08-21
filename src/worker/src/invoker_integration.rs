@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use assert2::let_assert;
-use restate_types::identifiers::{InvocationId, ServiceInvocationId};
+use restate_types::identifiers::{InvocationUuid, ServiceInvocationId};
 use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
@@ -53,7 +53,7 @@ where
             request.parameter,
         )?;
 
-        let invocation_id = InvocationId::now_v7();
+        let invocation_id = InvocationUuid::now_v7();
 
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(
@@ -62,7 +62,7 @@ where
         );
 
         Ok(ResolutionResult {
-            invocation_id,
+            invocation_uuid: invocation_id,
             service_key,
             span_context,
         })

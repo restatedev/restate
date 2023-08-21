@@ -232,7 +232,7 @@ impl Effect {
                     "suspend",
                     restate.journal.length = metadata.journal_metadata.length,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_id),
+                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
                 debug_if_leader!(
                 is_leader,
@@ -273,7 +273,6 @@ impl Effect {
                     }),
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %id.service_id.service_name,
                 restate.invocation.sid = %id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send success response to another invocation, completing entry index {}",
@@ -289,7 +288,6 @@ impl Effect {
                     }),
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %id.service_id.service_name,
                 restate.invocation.sid = %id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send failure code {} response to another invocation, completing entry index {}. Reason: {}",
@@ -370,7 +368,7 @@ impl Effect {
                     restate.journal.index = entry_index,
                     restate.state.key = ?key,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_id),
+                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
 
                 debug_if_leader!(
@@ -396,7 +394,7 @@ impl Effect {
                     restate.journal.index = entry_index,
                     restate.state.key = ?key,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_id),
+                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
 
                 debug_if_leader!(
@@ -422,7 +420,7 @@ impl Effect {
                     restate.state.key = ?key,
                     restate.journal.index = entry_index,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_id),
+                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
 
                 debug_if_leader!(
@@ -559,7 +557,7 @@ impl Effect {
                     "resume",
                     restate.journal.index = entry_index,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_id),
+                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
 
                 debug_if_leader!(

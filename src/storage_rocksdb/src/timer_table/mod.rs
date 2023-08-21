@@ -51,7 +51,7 @@ fn write_timer_key(partition_id: PartitionId, timer_key: &TimerKey) -> TimersKey
         .invocation_id(
             timer_key // TODO: fix this
                 .service_invocation_id
-                .invocation_id
+                .invocation_uuid
                 .as_ref()
                 .to_vec()
                 .into(),

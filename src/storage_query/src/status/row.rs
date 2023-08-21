@@ -82,7 +82,7 @@ fn fill_invocation_metadata(
     meta: InvocationMetadata,
 ) {
     let InvocationMetadata {
-        invocation_id,
+        invocation_uuid: invocation_id,
         journal_metadata,
         response_sink,
         creation_time,

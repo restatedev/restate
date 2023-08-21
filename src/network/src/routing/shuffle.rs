@@ -12,7 +12,7 @@ use crate::routing::lookup_target_peer;
 use crate::{
     ConsensusOrIngressTarget, PartitionTable, PartitionTableError, TargetConsensusOrIngress,
 };
-use restate_types::message::PartitionedMessage;
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::message::PeerTarget;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -51,7 +51,7 @@ impl<ShuffleMsg, ShuffleToCon, ShuffleToIngress, ConsensusMsg, IngressMsg, P>
     ShuffleRouter<ShuffleMsg, ShuffleToCon, ShuffleToIngress, ConsensusMsg, IngressMsg, P>
 where
     ShuffleMsg: TargetConsensusOrIngress<ShuffleToCon, ShuffleToIngress>,
-    ShuffleToCon: PartitionedMessage + Into<ConsensusMsg> + Debug,
+    ShuffleToCon: WithPartitionKey + Into<ConsensusMsg> + Debug,
     ShuffleToIngress: Into<IngressMsg> + Debug,
     P: PartitionTable,
 {

@@ -98,10 +98,10 @@ impl Ord for TimerValue {
             .cmp(&other.wake_up_time)
             .then_with(|| {
                 let service_id = &self.service_invocation_id.service_id;
-                let invocation_id = &self.service_invocation_id.invocation_id;
+                let invocation_id = &self.service_invocation_id.invocation_uuid;
 
                 let other_service_id = &other.service_invocation_id.service_id;
-                let other_invocation_id = &other.service_invocation_id.invocation_id;
+                let other_invocation_id = &other.service_invocation_id.invocation_uuid;
 
                 service_id
                     .service_name
@@ -139,7 +139,7 @@ impl<'a> fmt::Display for TimerKeyDisplay<'a> {
         write!(
             f,
             "{}[{:?}][{}]({})",
-            self.0.service_id.service_name, self.0.service_id.key, self.0.invocation_id, self.1
+            self.0.service_id.service_name, self.0.service_id.key, self.0.invocation_uuid, self.1
         )
     }
 }

@@ -14,6 +14,7 @@ use futures::FutureExt;
 use restate_consensus::ProposalSender;
 use restate_network::PartitionTableError;
 use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::message::PeerTarget;
 use tokio::sync::mpsc;
 use tracing::debug;

@@ -35,8 +35,8 @@ mod ingress_integration {
     use crate::partition;
     use crate::partition::shuffle;
     use restate_network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
+    use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{IngressId, PartitionKey, PeerId};
-    use restate_types::message::PartitionedMessage;
     use restate_types::message::{AckKind, MessageIndex};
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
@@ -84,14 +84,14 @@ mod ingress_integration {
         msg_index: MessageIndex,
     }
 
-    impl PartitionedMessage for IngressToConsensus {
+    impl WithPartitionKey for IngressToConsensus {
         fn partition_key(&self) -> PartitionKey {
             match &self.invocation_or_response {
                 restate_ingress_grpc::InvocationOrResponse::Invocation(invocation) => {
                     invocation.id.service_id.partition_key()
                 }
                 restate_ingress_grpc::InvocationOrResponse::Response(response) => {
-                    response.id.service_id.partition_key()
+                    response.id.partition_key()
                 }
             }
         }
@@ -143,10 +143,10 @@ mod shuffle_integration {
     use crate::partition::shuffle;
     use restate_ingress_grpc::{IngressError, IngressResponseMessage};
     use restate_network::{ConsensusOrIngressTarget, TargetConsensusOrIngress};
+    use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
     use restate_types::invocation::ResponseResult;
     use restate_types::message::MessageIndex;
-    use restate_types::message::PartitionedMessage;
 
     #[derive(Debug)]
     pub(crate) struct ShuffleToConsensus {
@@ -156,15 +156,13 @@ mod shuffle_integration {
         msg_index: MessageIndex,
     }
 
-    impl PartitionedMessage for ShuffleToConsensus {
+    impl WithPartitionKey for ShuffleToConsensus {
         fn partition_key(&self) -> PartitionKey {
             match &self.msg {
                 shuffle::InvocationOrResponse::Invocation(invocation) => {
                     invocation.id.service_id.partition_key()
                 }
-                shuffle::InvocationOrResponse::Response(response) => {
-                    response.id.service_id.partition_key()
-                }
+                shuffle::InvocationOrResponse::Response(response) => response.id.partition_key(),
             }
         }
     }
