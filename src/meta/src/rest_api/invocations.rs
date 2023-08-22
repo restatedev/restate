@@ -47,14 +47,14 @@ pub enum ServiceInvocationId {
 }
 
 impl ServiceInvocationId {
-    fn into_service_invocation_id<K: RestateKeyConverter>(
+    fn into_full_invocation_id<K: RestateKeyConverter>(
         self,
         key_converter: &K,
     ) -> Result<identifiers::FullInvocationId, MetaApiError> {
         match self {
             ServiceInvocationId::Token(opaque_sid) => opaque_sid
                 .parse::<identifiers::FullInvocationId>()
-                .map_err(|e| MetaApiError::InvalidField("sid", e.to_string())),
+                .map_err(|e| MetaApiError::InvalidField("fid", e.to_string())),
             ServiceInvocationId::Structured {
                 service,
                 key,
@@ -65,7 +65,7 @@ impl ServiceInvocationId {
                     .json_to_key(&service, key.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| match e {
                         Error::NotFound => MetaApiError::ServiceNotFound(service.clone()),
-                        e => MetaApiError::InvalidField("sid", e.to_string()),
+                        e => MetaApiError::InvalidField("fid", e.to_string()),
                     })?;
 
                 Ok(identifiers::FullInvocationId::new(
@@ -84,7 +84,7 @@ pub struct CancelInvocationRequest {
     ///
     /// Identifier of the service invocation to cancel/kill.
     #[allow(dead_code)]
-    sid: ServiceInvocationId,
+    fid: ServiceInvocationId,
 }
 
 /// Cancel/kill an invocation
@@ -105,7 +105,7 @@ where
 {
     state
         .worker_handle()
-        .kill_invocation(req.sid.into_service_invocation_id(state.schemas())?)
+        .kill_invocation(req.fid.into_full_invocation_id(state.schemas())?)
         .await?;
     Ok(())
 }

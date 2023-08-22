@@ -22,7 +22,7 @@ pub trait JournalReader {
     where
         Self: 'a;
 
-    fn read_journal<'a>(&'a self, sid: &'a FullInvocationId) -> Self::Future<'_>;
+    fn read_journal<'a>(&'a self, fid: &'a FullInvocationId) -> Self::Future<'_>;
 }
 
 #[cfg(any(test, feature = "mocks"))]

@@ -18,7 +18,7 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
 
-use restate_types::identifiers::{EntryIndex, ServiceId, FullInvocationId};
+use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{
@@ -41,7 +41,7 @@ pub(crate) enum Error {
 #[derive(Debug)]
 pub(crate) enum ActuatorMessage {
     Invoke {
-        service_invocation_id: FullInvocationId,
+        full_invocation_id: FullInvocationId,
         invoke_input_journal: InvokeInputJournal,
     },
     NewOutboxMessage {
@@ -52,11 +52,11 @@ pub(crate) enum ActuatorMessage {
         timer_value: TimerValue,
     },
     AckStoredEntry {
-        service_invocation_id: FullInvocationId,
+        full_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
     },
     ForwardCompletion {
-        service_invocation_id: FullInvocationId,
+        full_invocation_id: FullInvocationId,
         completion: Completion,
     },
     SendAckResponse(AckResponse),
@@ -173,7 +173,7 @@ pub(crate) trait StateStorage {
     // Timer
     fn store_timer(
         &mut self,
-        service_invocation_id: FullInvocationId,
+        full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         timer: Timer,
@@ -181,7 +181,7 @@ pub(crate) trait StateStorage {
 
     fn delete_timer(
         &mut self,
-        service_invocation_id: FullInvocationId,
+        full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<(), StateStorageError>>;
@@ -265,7 +265,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .await?;
 
                 collector.collect(ActuatorMessage::Invoke {
-                    service_invocation_id: FullInvocationId {
+                    full_invocation_id: FullInvocationId {
                         service_id,
                         invocation_uuid: invocation_id,
                     },
@@ -380,10 +380,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
                 Codec::write_completion(&mut journal_entry, completion_result.clone())?;
 
-                let service_invocation_id = FullInvocationId::with_service_id(
-                    service_id.clone(),
-                    metadata.invocation_uuid,
-                );
+                let full_invocation_id =
+                    FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid);
 
                 Self::unchecked_append_journal_entry(
                     state_storage,
@@ -396,7 +394,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 .await?;
 
                 collector.collect(ActuatorMessage::ForwardCompletion {
-                    service_invocation_id,
+                    full_invocation_id,
                     completion: Completion {
                         entry_index,
                         result: completion_result,
@@ -406,7 +404,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             Effect::RegisterTimer { timer_value, .. } => {
                 state_storage
                     .store_timer(
-                        timer_value.service_invocation_id.clone(),
+                        timer_value.full_invocation_id.clone(),
                         timer_value.wake_up_time,
                         timer_value.entry_index,
                         timer_value.value.clone(),
@@ -416,12 +414,12 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 collector.collect(ActuatorMessage::RegisterTimer { timer_value });
             }
             Effect::DeleteTimer {
-                service_invocation_id,
+                full_invocation_id,
                 wake_up_time,
                 entry_index,
             } => {
                 state_storage
-                    .delete_timer(service_invocation_id, wake_up_time, entry_index)
+                    .delete_timer(full_invocation_id, wake_up_time, entry_index)
                     .await?;
             }
             Effect::StoreEndpointId {
@@ -486,10 +484,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 journal_entry,
                 entry_index,
             } => {
-                let service_invocation_id = FullInvocationId::with_service_id(
-                    service_id.clone(),
-                    metadata.invocation_uuid,
-                );
+                let full_invocation_id =
+                    FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid);
 
                 Self::append_journal_entry(
                     state_storage,
@@ -503,7 +499,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
                 // storage is acked by sending an empty completion
                 collector.collect(ActuatorMessage::ForwardCompletion {
-                    service_invocation_id,
+                    full_invocation_id,
                     completion: Completion {
                         entry_index,
                         result: CompletionResult::Ack,
@@ -516,18 +512,18 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .await?;
             }
             Effect::StoreCompletion {
-                service_invocation_id,
+                full_invocation_id,
                 completion:
                     Completion {
                         entry_index,
                         result,
                     },
             } => {
-                Self::store_completion(state_storage, &service_invocation_id, entry_index, result)
+                Self::store_completion(state_storage, &full_invocation_id, entry_index, result)
                     .await?;
             }
             Effect::StoreCompletionAndForward {
-                service_invocation_id,
+                full_invocation_id,
                 completion:
                     Completion {
                         entry_index,
@@ -536,7 +532,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             } => {
                 if Self::store_completion(
                     state_storage,
-                    &service_invocation_id,
+                    &full_invocation_id,
                     entry_index,
                     // We need to give ownership because storing the completion requires creating
                     // a protobuf message. However, cloning should be "cheap" because
@@ -546,7 +542,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 .await?
                 {
                     collector.collect(ActuatorMessage::ForwardCompletion {
-                        service_invocation_id,
+                        full_invocation_id,
                         completion: Completion {
                             entry_index,
                             result,
@@ -563,11 +559,11 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                         result,
                     },
             } => {
-                let service_invocation_id =
+                let full_invocation_id =
                     FullInvocationId::with_service_id(service_id, metadata.invocation_uuid);
                 if Self::store_completion(
                     state_storage,
-                    &service_invocation_id,
+                    &full_invocation_id,
                     entry_index,
                     // We need to give ownership because storing the completion requires creating
                     // a protobuf message. However, cloning should be "cheap" because
@@ -579,13 +575,13 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     metadata.modification_time = MillisSinceEpoch::now();
                     state_storage
                         .store_invocation_status(
-                            &service_invocation_id.service_id,
+                            &full_invocation_id.service_id,
                             InvocationStatus::Invoked(metadata),
                         )
                         .await?;
 
                     collector.collect(ActuatorMessage::Invoke {
-                        service_invocation_id,
+                        full_invocation_id,
                         invoke_input_journal: InvokeInputJournal::NoCachedJournal,
                     });
                 } else {
@@ -613,8 +609,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             Effect::SendAckResponse(ack_response) => {
                 collector.collect(ActuatorMessage::SendAckResponse(ack_response))
             }
-            Effect::AbortInvocation(service_invocation_id) => {
-                collector.collect(ActuatorMessage::AbortInvocation(service_invocation_id))
+            Effect::AbortInvocation(full_invocation_id) => {
+                collector.collect(ActuatorMessage::AbortInvocation(full_invocation_id))
             }
         }
 
@@ -663,7 +659,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             .await?;
 
         collector.collect(ActuatorMessage::Invoke {
-            service_invocation_id: service_invocation.id,
+            full_invocation_id: service_invocation.id,
             invoke_input_journal: InvokeInputJournal::CachedJournal(
                 journal_metadata,
                 vec![PlainRawEntry::new(
@@ -678,12 +674,12 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
     /// Stores the given completion. Returns `true` if an [`RawEntry`] was completed.
     async fn store_completion<S: StateStorage>(
         state_storage: &mut S,
-        service_invocation_id: &FullInvocationId,
+        full_invocation_id: &FullInvocationId,
         entry_index: EntryIndex,
         completion_result: CompletionResult,
     ) -> Result<bool, Error> {
         if let Some(mut journal_entry) = state_storage
-            .load_journal_entry(&service_invocation_id.service_id, entry_index)
+            .load_journal_entry(&full_invocation_id.service_id, entry_index)
             .await?
         {
             if journal_entry.ty() == EntryType::Awakeable
@@ -694,7 +690,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 // We'll use only the first completion, because changing the awakeable result
                 // after it has been completed for the first time can cause non-deterministic execution.
                 warn!(
-                    restate.invocation.sid = %service_invocation_id,
+                    restate.invocation.id = %full_invocation_id,
                     restate.journal.index = entry_index,
                     "Trying to complete an awakeable already completed. Ignoring this completion");
                 debug!("Discarded awakeable completion: {:?}", completion_result);
@@ -702,17 +698,13 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             }
             Codec::write_completion(&mut journal_entry, completion_result)?;
             state_storage
-                .store_journal_entry(
-                    &service_invocation_id.service_id,
-                    entry_index,
-                    journal_entry,
-                )
+                .store_journal_entry(&full_invocation_id.service_id, entry_index, journal_entry)
                 .await?;
             Ok(true)
         } else {
             state_storage
                 .store_completion_result(
-                    &service_invocation_id.service_id,
+                    &full_invocation_id.service_id,
                     entry_index,
                     completion_result,
                 )
@@ -760,7 +752,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             .store_journal_entry(&service_id, entry_index, journal_entry)
             .await?;
 
-        let service_invocation_id =
+        let full_invocation_id =
             FullInvocationId::with_service_id(service_id, metadata.invocation_uuid);
 
         // update the journal metadata
@@ -772,13 +764,13 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
         state_storage
             .store_invocation_status(
-                &service_invocation_id.service_id,
+                &full_invocation_id.service_id,
                 InvocationStatus::Invoked(metadata),
             )
             .await?;
 
         collector.collect(ActuatorMessage::AckStoredEntry {
-            service_invocation_id,
+            full_invocation_id,
             entry_index,
         });
 

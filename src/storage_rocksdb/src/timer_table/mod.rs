@@ -40,17 +40,11 @@ fn write_timer_key(partition_id: PartitionId, timer_key: &TimerKey) -> TimersKey
     TimersKey::default()
         .partition_id(partition_id)
         .timestamp(timer_key.timestamp)
-        .service_name(
-            timer_key
-                .service_invocation_id
-                .service_id
-                .service_name
-                .clone(),
-        )
-        .service_key(timer_key.service_invocation_id.service_id.key.clone())
+        .service_name(timer_key.full_invocation_id.service_id.service_name.clone())
+        .service_key(timer_key.full_invocation_id.service_id.key.clone())
         .invocation_id(
             timer_key // TODO: fix this
-                .service_invocation_id
+                .full_invocation_id
                 .invocation_uuid
                 .as_ref()
                 .to_vec()
@@ -91,7 +85,7 @@ fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
     let invocation_uuid = Uuid::from_slice(key.invocation_id_ok_or()?.as_ref())
         .map_err(|error| StorageError::Generic(error.into()))?;
     let timer_key = TimerKey {
-        service_invocation_id: restate_types::identifiers::FullInvocationId::new(
+        full_invocation_id: restate_types::identifiers::FullInvocationId::new(
             key.service_name.unwrap(),
             key.service_key.unwrap(),
             invocation_uuid,
@@ -160,7 +154,7 @@ mod tests {
     fn round_trip() {
         let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
         let key = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 1448,
             timestamp: 87654321,
         };
@@ -176,12 +170,12 @@ mod tests {
         let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
 
         let a = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
         let b = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 301,
         };
@@ -192,12 +186,12 @@ mod tests {
     fn test_lexicographical_sorting_by_svc() {
         let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
         let a = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
         let b = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-2", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-2", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
@@ -206,12 +200,12 @@ mod tests {
         // same timestamp and svc, different key
         //
         let a = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
         let b = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-2", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-2", uuid),
             journal_index: 0,
             timestamp: 300,
         };
@@ -220,13 +214,13 @@ mod tests {
         // same timestamp, svc, key, but different invocation
         //
         let a = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
         let uuid2 = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2d").expect("invalid uuid");
         let b = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid2),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid2),
             journal_index: 0,
             timestamp: 300,
         };
@@ -235,12 +229,12 @@ mod tests {
         // same everything but journal index
         //
         let a = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
         let b = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 1,
             timestamp: 300,
         };
@@ -251,12 +245,12 @@ mod tests {
     fn test_lexicographical_sorting_by_svc_keys() {
         let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
         let a = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
         let b = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-2", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-2", uuid),
             journal_index: 0,
             timestamp: 300,
         };
@@ -265,13 +259,13 @@ mod tests {
         // same timestamp, svc, key, but different invocation
         //
         let a = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
         let uuid2 = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2d").expect("invalid uuid");
         let b = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid2),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid2),
             journal_index: 0,
             timestamp: 300,
         };
@@ -280,12 +274,12 @@ mod tests {
         // same everything but journal index
         //
         let a = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
         let b = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 1,
             timestamp: 300,
         };
@@ -296,13 +290,13 @@ mod tests {
     fn test_lexicographical_sorting_by_invocation() {
         let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
         let a = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
         let uuid2 = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2d").expect("invalid uuid");
         let b = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid2),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid2),
             journal_index: 0,
             timestamp: 300,
         };
@@ -313,12 +307,12 @@ mod tests {
     fn test_lexicographical_sorting_by_journal_index() {
         let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
         let a = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 0,
             timestamp: 300,
         };
         let b = TimerKey {
-            service_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
+            full_invocation_id: FullInvocationId::new("svc-1", "key-1", uuid),
             journal_index: 1,
             timestamp: 300,
         };

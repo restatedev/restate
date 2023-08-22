@@ -46,14 +46,14 @@ pub struct InvocationStatusReport(
 
 impl InvocationStatusReport {
     pub fn new(
-        sid: FullInvocationId,
+        fid: FullInvocationId,
         partition: PartitionLeaderEpoch,
         report: InvocationStatusReportInner,
     ) -> Self {
-        Self(sid, partition, report)
+        Self(fid, partition, report)
     }
 
-    pub fn service_invocation_id(&self) -> &FullInvocationId {
+    pub fn full_invocation_id(&self) -> &FullInvocationId {
         &self.0
     }
 

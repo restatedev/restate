@@ -34,7 +34,7 @@ message InvokeRequest {
 message InvokeResponse {
   // Generated unique invocation identifier.
   // It can be used to retrieve the status of the invocation and cancel it.
-  string sid = 1;
+  string id = 1;
 }
 
 service Awakeables {

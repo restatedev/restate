@@ -21,5 +21,5 @@ pub trait Handle {
     type Future: Future<Output = Result<(), Error>> + Send;
 
     /// Send a command to kill an invocation. This command is best-effort.
-    fn kill_invocation(&self, service_invocation_id: FullInvocationId) -> Self::Future;
+    fn kill_invocation(&self, full_invocation_id: FullInvocationId) -> Self::Future;
 }

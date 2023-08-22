@@ -16,7 +16,7 @@ use std::collections::HashSet;
 
 #[derive(Debug)]
 pub struct Effect {
-    pub service_invocation_id: FullInvocationId,
+    pub full_invocation_id: FullInvocationId,
     pub kind: EffectKind,
 }
 

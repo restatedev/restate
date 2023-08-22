@@ -10,7 +10,7 @@
 
 use crate::{GetFuture, GetStream, PutFuture};
 use restate_types::identifiers::{
-    EntryIndex, InvocationUuid, PartitionKey, ServiceId, FullInvocationId,
+    EntryIndex, FullInvocationId, InvocationUuid, PartitionKey, ServiceId,
 };
 use restate_types::invocation::ServiceInvocationResponseSink;
 use restate_types::journal::JournalMetadata;

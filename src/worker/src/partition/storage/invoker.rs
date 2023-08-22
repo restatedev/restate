@@ -16,8 +16,8 @@ use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::Transaction;
-use restate_types::identifiers::ServiceId;
 use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::ServiceId;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::JournalMetadata;
@@ -48,16 +48,16 @@ where
     type Error = InvokerStorageReaderError;
     type Future<'a> = BoxFuture<'a, Result<(JournalMetadata, Self::JournalStream), Self::Error>> where Self: 'a;
 
-    fn read_journal<'a>(&'a self, sid: &'a FullInvocationId) -> Self::Future<'_> {
+    fn read_journal<'a>(&'a self, fid: &'a FullInvocationId) -> Self::Future<'_> {
         let mut transaction = self.0.transaction();
 
         async move {
-            let invocation_status = transaction.get_invocation_status(&sid.service_id).await?;
+            let invocation_status = transaction.get_invocation_status(&fid.service_id).await?;
 
             if let Some(InvocationStatus::Invoked(invoked_status)) = invocation_status {
                 let journal_metadata = invoked_status.journal_metadata;
                 let journal_stream = transaction
-                    .get_journal(&sid.service_id, journal_metadata.length)
+                    .get_journal(&fid.service_id, journal_metadata.length)
                     .map(|entry| {
                         entry
                             .map_err(InvokerStorageReaderError::Storage)

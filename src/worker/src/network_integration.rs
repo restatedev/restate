@@ -230,7 +230,7 @@ mod shuffle_integration {
             let ShuffleToIngress {
                 msg:
                     shuffle::IngressResponse {
-                        service_invocation_id,
+                        full_invocation_id,
                         response,
                         ..
                     },
@@ -246,7 +246,7 @@ mod shuffle_integration {
             };
 
             restate_ingress_grpc::IngressInput::response(IngressResponseMessage {
-                service_invocation_id,
+                full_invocation_id,
                 result,
                 ack_target: restate_ingress_grpc::AckTarget::new(shuffle_id, msg_index),
             })

@@ -17,8 +17,8 @@ use restate_futures_util::pipe::{
     new_sender_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
     UnboundedReceiverPipeInput,
 };
-use restate_types::identifiers::IngressId;
 use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::IngressId;
 use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace};
@@ -145,10 +145,7 @@ impl DispatcherLoopHandler {
     fn handle_network_input(&mut self, input: IngressInput) -> Option<IngressOutput> {
         match input {
             IngressInput::Response(response) => {
-                if let Some(sender) = self
-                    .waiting_responses
-                    .remove(&response.service_invocation_id)
-                {
+                if let Some(sender) = self.waiting_responses.remove(&response.full_invocation_id) {
                     if let Err(Ok(response)) = sender.send(response.result.map_err(Into::into)) {
                         debug!(
                             "Failed to send response '{:?}' because the handler has been closed, \
@@ -235,7 +232,7 @@ mod tests {
         // Now let's send the response
         input_sender
             .send(IngressInput::Response(IngressResponseMessage {
-                service_invocation_id: service_invocation.id.clone(),
+                full_invocation_id: service_invocation.id.clone(),
                 result: Ok(Bytes::new()),
                 ack_target: AckTarget::new(0, 0),
             }))

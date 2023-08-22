@@ -37,10 +37,10 @@ impl WorkerCommandSender {
 impl restate_worker_api::Handle for WorkerCommandSender {
     type Future = BoxFuture<'static, Result<(), restate_worker_api::Error>>;
 
-    fn kill_invocation(&self, service_invocation_id: FullInvocationId) -> Self::Future {
+    fn kill_invocation(&self, full_invocation_id: FullInvocationId) -> Self::Future {
         let tx = self.0.clone();
         async move {
-            tx.send(WorkerCommand::KillInvocation(service_invocation_id))
+            tx.send(WorkerCommand::KillInvocation(full_invocation_id))
                 .await
                 .map_err(|_| restate_worker_api::Error::Unreachable)
         }
@@ -109,11 +109,11 @@ where
                 },
                 Some(command) = command_rx.recv() => {
                     match command {
-                        WorkerCommand::KillInvocation(service_invocation_id) => {
+                        WorkerCommand::KillInvocation(full_invocation_id) => {
                             let target_peer_id = partition_table
-                                .partition_key_to_target_peer(service_invocation_id.service_id.partition_key())
+                                .partition_key_to_target_peer(full_invocation_id.service_id.partition_key())
                                 .await?;
-                            let msg = AckCommand::no_ack(Command::Kill(service_invocation_id));
+                            let msg = AckCommand::no_ack(Command::Kill(full_invocation_id));
                             proposal_tx.send((target_peer_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
                         }
                     }

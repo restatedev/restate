@@ -23,7 +23,7 @@ use bytes::Bytes;
 use opentelemetry::Context;
 use restate_futures_util::command::*;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{IngressId, PeerId, FullInvocationId};
+use restate_types::identifiers::{FullInvocationId, IngressId, PeerId};
 use restate_types::invocation::{InvocationResponse, ResponseResult, ServiceInvocation};
 use restate_types::message::{AckKind, MessageIndex};
 use tokio::sync::mpsc;
@@ -64,7 +64,7 @@ pub enum InvocationOrResponse {
 
 #[derive(Debug, Clone)]
 pub struct IngressResponseMessage {
-    pub service_invocation_id: FullInvocationId,
+    pub full_invocation_id: FullInvocationId,
     pub result: Result<IngressResponse, IngressError>,
     pub ack_target: AckTarget,
 }

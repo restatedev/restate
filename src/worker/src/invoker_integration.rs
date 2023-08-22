@@ -10,7 +10,7 @@
 
 use assert2::let_assert;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::identifiers::{InvocationUuid, FullInvocationId};
+use restate_types::identifiers::{FullInvocationId, InvocationUuid};
 use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};

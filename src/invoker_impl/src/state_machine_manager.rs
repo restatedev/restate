@@ -42,11 +42,11 @@ impl InvocationStateMachineManager {
     pub(super) fn resolve_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: &FullInvocationId,
+        full_invocation_id: &FullInvocationId,
     ) -> Option<(&mpsc::Sender<Effect>, &mut InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
-                .get_mut(service_invocation_id)
+                .get_mut(full_invocation_id)
                 .map(|ism| (&p.output_tx, ism))
         })
     }
@@ -55,11 +55,11 @@ impl InvocationStateMachineManager {
     pub(super) fn remove_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: &FullInvocationId,
+        full_invocation_id: &FullInvocationId,
     ) -> Option<(&mpsc::Sender<Effect>, InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
-                .remove(service_invocation_id)
+                .remove(full_invocation_id)
                 .map(|ism| (&p.output_tx, ism))
         })
     }
@@ -93,13 +93,13 @@ impl InvocationStateMachineManager {
     pub(super) fn register_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
-        sid: FullInvocationId,
+        fid: FullInvocationId,
         ism: InvocationStateMachine,
     ) {
         self.resolve_partition(partition)
             .expect("Cannot register an invocation on an unknown partition")
             .invocation_state_machines
-            .insert(sid, ism);
+            .insert(fid, ism);
     }
 
     #[inline]

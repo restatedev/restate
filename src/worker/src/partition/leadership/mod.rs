@@ -224,13 +224,13 @@ where
             let invoked_invocations = transaction.scan_invoked_invocations();
             tokio::pin!(invoked_invocations);
 
-            while let Some(service_invocation_id) = invoked_invocations.next().await {
-                let service_invocation_id = service_invocation_id?;
+            while let Some(full_invocation_id) = invoked_invocations.next().await {
+                let full_invocation_id = full_invocation_id?;
 
                 invoker_handle
                     .invoke(
                         partition_leader_epoch,
-                        service_invocation_id,
+                        full_invocation_id,
                         InvokeInputJournal::NoCachedJournal,
                     )
                     .await?;

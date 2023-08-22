@@ -8,7 +8,7 @@ package dev.restate.storage.domain.v1;
 // Common
 // ---------------------------------------------------------------------
 
-message ServiceInvocationId {
+message FullInvocationId {
     bytes service_name = 1;
     bytes service_key = 2;
     bytes invocation_uuid = 3;
@@ -60,7 +60,7 @@ message InvocationStatus {
 message ServiceInvocationResponseSink {
 
     message PartitionProcessor {
-        ServiceInvocationId caller = 1;
+        FullInvocationId caller = 1;
         uint32 entry_index = 2;
     }
 
@@ -104,7 +104,7 @@ message SpanRelation {
 }
 
 message ServiceInvocation {
-    ServiceInvocationId id = 1;
+    FullInvocationId id = 1;
     bytes method_name = 2;
     bytes argument = 3;
     ServiceInvocationResponseSink response_sink = 4;
@@ -261,7 +261,7 @@ message OutboxMessage {
 
     message OutboxServiceInvocationResponse {
         oneof id {
-            ServiceInvocationId service_invocation_id = 1;
+            FullInvocationId full_invocation_id = 1;
             bytes invocation_id = 4;
         }
         uint32 entry_index = 2;
@@ -269,7 +269,7 @@ message OutboxMessage {
     }
 
     message OutboxIngressResponse {
-        ServiceInvocationId service_invocation_id = 1;
+        FullInvocationId full_invocation_id = 1;
         string ingress_id = 2;
         ResponseResult response_result = 3;
     }
