@@ -32,7 +32,7 @@ use restate_queue::SegmentQueue;
 use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_timer_queue::TimerQueue;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EndpointId, ServiceInvocationId};
+use restate_types::identifiers::{EndpointId, FullInvocationId};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::Completion;
@@ -74,7 +74,7 @@ trait InvocationTaskRunner {
     fn start_invocation_task(
         &self,
         partition: PartitionLeaderEpoch,
-        sid: ServiceInvocationId,
+        fid: FullInvocationId,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Completion>,
         input_journal: InvokeInputJournal,
@@ -108,7 +108,7 @@ where
     fn start_invocation_task(
         &self,
         partition: PartitionLeaderEpoch,
-        sid: ServiceInvocationId,
+        fid: FullInvocationId,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Completion>,
         input_journal: InvokeInputJournal,
@@ -118,7 +118,7 @@ where
             InvocationTask::new(
                 self.client.clone(),
                 partition,
-                sid,
+                fid,
                 0,
                 self.inactivity_timeout,
                 self.abort_timeout,
@@ -297,7 +297,7 @@ struct ServiceInner<InvocationTaskRunner> {
 
     // Invoker state machine
     invocation_tasks: JoinSet<()>,
-    retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
+    retry_timers: TimerQueue<(PartitionLeaderEpoch, FullInvocationId)>,
     quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
     invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager,
@@ -327,17 +327,17 @@ where
                     InputCommand::RegisterPartition { partition, sender } => {
                         self.handle_register_partition(partition, sender);
                     },
-                    InputCommand::Abort { partition, service_invocation_id } => {
-                        self.handle_abort_invocation(partition, service_invocation_id);
+                    InputCommand::Abort { partition, full_invocation_id } => {
+                        self.handle_abort_invocation(partition, full_invocation_id);
                     }
                     InputCommand::AbortAllPartition { partition } => {
                         self.handle_abort_partition(partition);
                     }
-                    InputCommand::Completion { partition, service_invocation_id, completion } => {
-                        self.handle_completion(partition, service_invocation_id, completion);
+                    InputCommand::Completion { partition, full_invocation_id, completion } => {
+                        self.handle_completion(partition, full_invocation_id, completion);
                     },
-                    InputCommand::StoredEntryAck { partition, service_invocation_id, entry_index } => {
-                        self.handle_stored_entry_ack(partition, service_invocation_id, entry_index).await;
+                    InputCommand::StoredEntryAck { partition, full_invocation_id, entry_index } => {
+                        self.handle_stored_entry_ack(partition, full_invocation_id, entry_index).await;
                     },
                     InputCommand::ReadStatus(cmd) => {
                         let _ = cmd.reply(self.status_store.iter().collect());
@@ -346,12 +346,12 @@ where
             },
 
             Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
-                self.handle_invoke(invoke_input_command.partition, invoke_input_command.service_invocation_id, invoke_input_command.journal).await;
+                self.handle_invoke(invoke_input_command.partition, invoke_input_command.full_invocation_id, invoke_input_command.journal).await;
             },
 
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
                 let InvocationTaskOutput {
-                    service_invocation_id,
+                    full_invocation_id,
                     partition,
                     inner
                 } = invocation_task_msg;
@@ -359,32 +359,32 @@ where
                     InvocationTaskOutputInner::SelectedEndpoint(endpoint_id) => {
                         self.handle_selected_endpoint(
                             partition,
-                            service_invocation_id,
+                            full_invocation_id,
                             endpoint_id
                         ).await
                     }
                     InvocationTaskOutputInner::NewEntry {entry_index, entry} => {
                         self.handle_new_entry(
                             partition,
-                            service_invocation_id,
+                            full_invocation_id,
                             entry_index,
                             entry,
                         ).await
                     },
                     InvocationTaskOutputInner::Closed => {
-                        self.handle_invocation_task_closed(partition, service_invocation_id).await
+                        self.handle_invocation_task_closed(partition, full_invocation_id).await
                     },
                     InvocationTaskOutputInner::Failed(e) => {
-                        self.handle_invocation_task_failed(partition, service_invocation_id, e).await
+                        self.handle_invocation_task_failed(partition, full_invocation_id, e).await
                     },
                     InvocationTaskOutputInner::Suspended(indexes) => {
-                        self.handle_invocation_task_suspended(partition, service_invocation_id, indexes).await
+                        self.handle_invocation_task_suspended(partition, full_invocation_id, indexes).await
                     }
                 };
             },
             timer = self.retry_timers.await_timer() => {
-                let (partition, sid) = timer.into_inner();
-                self.handle_retry_timer_fired(partition, sid).await;
+                let (partition, fid) = timer.into_inner();
+                self.handle_retry_timer_fired(partition, fid).await;
             },
             Some(invocation_task_result) = self.invocation_tasks.join_next() => {
                 if let Err(err) = invocation_task_result {
@@ -428,15 +428,15 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %service_invocation_id,
+            rpc.service = %full_invocation_id.service_id.service_name,
+            restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     async fn handle_invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         journal: InvokeInputJournal,
     ) {
         debug_assert!(self
@@ -444,13 +444,13 @@ where
             .has_partition(partition));
         debug_assert!(self
             .invocation_state_machine_manager
-            .resolve_invocation(partition, &service_invocation_id)
+            .resolve_invocation(partition, &full_invocation_id)
             .is_none());
 
         self.quota.reserve_slot();
         self.start_invocation_task(
             partition,
-            service_invocation_id,
+            full_invocation_id,
             journal,
             InvocationStateMachine::create(self.retry_policy.clone()),
         )
@@ -461,18 +461,18 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %service_invocation_id,
+            rpc.service = %full_invocation_id.service_id.service_name,
+            restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     async fn handle_retry_timer_fired(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
     ) {
         trace!("Retry timeout fired");
-        self.handle_retry_event(partition, service_invocation_id, |sm| {
+        self.handle_retry_event(partition, full_invocation_id, |sm| {
             sm.notify_retry_timer_fired()
         })
         .await;
@@ -482,8 +482,8 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %service_invocation_id,
+            rpc.service = %full_invocation_id.service_id.service_name,
+            restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.index = entry_index,
         )
@@ -491,11 +491,11 @@ where
     async fn handle_stored_entry_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
     ) {
         trace!("Received a new stored journal entry acknowledgement");
-        self.handle_retry_event(partition, service_invocation_id, |sm| {
+        self.handle_retry_event(partition, full_invocation_id, |sm| {
             sm.notify_stored_ack(entry_index)
         })
         .await;
@@ -505,8 +505,8 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %service_invocation_id,
+            rpc.service = %full_invocation_id.service_id.service_name,
+            restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.service_endpoint.id = %endpoint_id,
         )
@@ -514,12 +514,12 @@ where
     async fn handle_selected_endpoint(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         endpoint_id: EndpointId,
     ) {
         if let Some((_, ism)) = self
             .invocation_state_machine_manager
-            .resolve_invocation(partition, &service_invocation_id)
+            .resolve_invocation(partition, &full_invocation_id)
         {
             trace!(
                 "Chosen endpoint {}. Invocation state: {:?}",
@@ -537,8 +537,8 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %service_invocation_id,
+            rpc.service = %full_invocation_id.service_id.service_name,
+            restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.index = entry_index,
             restate.journal.entry_type = ?entry.ty(),
@@ -547,13 +547,13 @@ where
     async fn handle_new_entry(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
-            .resolve_invocation(partition, &service_invocation_id)
+            .resolve_invocation(partition, &full_invocation_id)
         {
             ism.notify_new_entry(entry_index);
             trace!(
@@ -563,14 +563,14 @@ where
             if let Some(endpoint_id) = ism.chosen_endpoint_to_notify() {
                 let _ = output_tx
                     .send(Effect {
-                        service_invocation_id: service_invocation_id.clone(),
+                        full_invocation_id: full_invocation_id.clone(),
                         kind: EffectKind::SelectedEndpoint(endpoint_id),
                     })
                     .await;
             }
             let _ = output_tx
                 .send(Effect {
-                    service_invocation_id,
+                    full_invocation_id,
                     kind: EffectKind::JournalEntry { entry_index, entry },
                 })
                 .await;
@@ -584,20 +584,20 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %service_invocation_id,
+            rpc.service = %full_invocation_id.service_id.service_name,
+            restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     fn handle_completion(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         completion: Completion,
     ) {
         if let Some((_, ism)) = self
             .invocation_state_machine_manager
-            .resolve_invocation(partition, &service_invocation_id)
+            .resolve_invocation(partition, &full_invocation_id)
         {
             trace!(
                 restate.journal.index = completion.entry_index,
@@ -614,26 +614,26 @@ where
         level = "debug",
         skip_all,
         fields(
-            rpc.service = %service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %service_invocation_id,
+            rpc.service = %full_invocation_id.service_id.service_name,
+            restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     async fn handle_invocation_task_closed(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
     ) {
         if let Some((sender, _)) = self
             .invocation_state_machine_manager
-            .remove_invocation(partition, &service_invocation_id)
+            .remove_invocation(partition, &full_invocation_id)
         {
             trace!("Invocation task closed correctly");
             self.quota.unreserve_slot();
-            self.status_store.on_end(&partition, &service_invocation_id);
+            self.status_store.on_end(&partition, &full_invocation_id);
             let _ = sender
                 .send(Effect {
-                    service_invocation_id,
+                    full_invocation_id,
                     kind: EffectKind::End,
                 })
                 .await;
@@ -647,27 +647,27 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %service_invocation_id,
+            rpc.service = %full_invocation_id.service_id.service_name,
+            restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     async fn handle_invocation_task_suspended(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         entry_indexes: HashSet<EntryIndex>,
     ) {
         if let Some((sender, _)) = self
             .invocation_state_machine_manager
-            .remove_invocation(partition, &service_invocation_id)
+            .remove_invocation(partition, &full_invocation_id)
         {
             trace!("Suspending invocation");
             self.quota.unreserve_slot();
-            self.status_store.on_end(&partition, &service_invocation_id);
+            self.status_store.on_end(&partition, &full_invocation_id);
             let _ = sender
                 .send(Effect {
-                    service_invocation_id,
+                    full_invocation_id,
                     kind: EffectKind::Suspended {
                         waiting_for_completed_entries: entry_indexes,
                     },
@@ -683,22 +683,22 @@ where
         level = "debug",
         skip_all,
         fields(
-            rpc.service = %service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %service_invocation_id,
+            rpc.service = %full_invocation_id.service_id.service_name,
+            restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     async fn handle_invocation_task_failed(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         error: impl InvokerError + CodedError + Send + Sync + 'static,
     ) {
         if let Some((_, ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation(partition, &service_invocation_id)
+            .remove_invocation(partition, &full_invocation_id)
         {
-            self.handle_error_event(partition, service_invocation_id, error, ism)
+            self.handle_error_event(partition, full_invocation_id, error, ism)
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -710,33 +710,33 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %service_invocation_id.service_id.service_name,
-            restate.invocation.sid = %service_invocation_id,
+            rpc.service = %full_invocation_id.service_id.service_name,
+            restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     fn handle_abort_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
     ) {
         if let Some((_, mut ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation(partition, &service_invocation_id)
+            .remove_invocation(partition, &full_invocation_id)
         {
             trace!(
-                rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.sid = %service_invocation_id,
+                rpc.service = %full_invocation_id.service_id.service_name,
+                restate.invocation.id = %full_invocation_id,
                 "Aborting invocation"
             );
             ism.abort();
             self.quota.unreserve_slot();
-            self.status_store.on_end(&partition, &service_invocation_id);
+            self.status_store.on_end(&partition, &full_invocation_id);
         } else {
             trace!(
                 restate.invoker.partition_leader_epoch = ?partition,
-                rpc.service = %service_invocation_id.service_id.service_name,
-                restate.invocation.sid = %service_invocation_id,
+                rpc.service = %full_invocation_id.service_id.service_name,
+                restate.invocation.id = %full_invocation_id,
                 "Ignoring Abort command because there is no matching partition/invocation"
             );
         }
@@ -754,15 +754,15 @@ where
             .invocation_state_machine_manager
             .remove_partition(partition)
         {
-            for (sid, mut ism) in invocation_state_machines.into_iter() {
+            for (fid, mut ism) in invocation_state_machines.into_iter() {
                 trace!(
-                    rpc.service = %sid.service_id.service_name,
-                    restate.invocation.sid = %sid,
+                    rpc.service = %fid.service_id.service_name,
+                    restate.invocation.id = %fid,
                     "Aborting invocation"
                 );
                 ism.abort();
                 self.quota.unreserve_slot();
-                self.status_store.on_end(&partition, &sid);
+                self.status_store.on_end(&partition, &fid);
             }
         } else {
             trace!(
@@ -787,13 +787,13 @@ where
     async fn handle_error_event<E: InvokerError + CodedError + Send + Sync + 'static>(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         error: E,
         mut ism: InvocationStateMachine,
     ) {
         warn_it!(
             error,
-            restate.invocation.sid = %service_invocation_id,
+            restate.invocation.id = %full_invocation_id,
             "Error when executing the invocation");
 
         match ism.handle_task_error() {
@@ -805,29 +805,29 @@ where
                 );
                 self.status_store.on_failure(
                     partition,
-                    service_invocation_id.clone(),
+                    full_invocation_id.clone(),
                     InvocationErrorReport::new(error.to_invocation_error(), error.code()),
                 );
                 self.invocation_state_machine_manager.register_invocation(
                     partition,
-                    service_invocation_id.clone(),
+                    full_invocation_id.clone(),
                     ism,
                 );
                 self.retry_timers.sleep_until(
                     SystemTime::now() + next_retry_timer_duration,
-                    (partition, service_invocation_id),
+                    (partition, full_invocation_id),
                 );
             }
             _ => {
                 trace!("Not going to retry the error");
                 self.quota.unreserve_slot();
-                self.status_store.on_end(&partition, &service_invocation_id);
+                self.status_store.on_end(&partition, &full_invocation_id);
                 let _ = self
                     .invocation_state_machine_manager
                     .resolve_partition_sender(partition)
                     .expect("Partition should be registered")
                     .send(Effect {
-                        service_invocation_id,
+                        full_invocation_id,
                         kind: EffectKind::Failed(error.to_invocation_error()),
                     })
                     .await;
@@ -838,7 +838,7 @@ where
     async fn start_invocation_task(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         journal: InvokeInputJournal,
         mut ism: InvocationStateMachine,
     ) {
@@ -846,7 +846,7 @@ where
         let (completions_tx, completions_rx) = mpsc::unbounded_channel();
         let abort_handle = self.invocation_task_runner.start_invocation_task(
             partition,
-            service_invocation_id.clone(),
+            full_invocation_id.clone(),
             self.invocation_tasks_tx.clone(),
             completions_rx,
             journal,
@@ -855,7 +855,7 @@ where
 
         // Transition the state machine, and store it
         self.status_store
-            .on_start(partition, service_invocation_id.clone());
+            .on_start(partition, full_invocation_id.clone());
         ism.start(abort_handle, completions_tx);
         trace!(
             "Invocation task started state. Invocation state: {:?}",
@@ -863,7 +863,7 @@ where
         );
         self.invocation_state_machine_manager.register_invocation(
             partition,
-            service_invocation_id,
+            full_invocation_id,
             ism,
         );
     }
@@ -871,21 +871,21 @@ where
     async fn handle_retry_event<FN>(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         f: FN,
     ) where
         FN: FnOnce(&mut InvocationStateMachine),
     {
         if let Some((_, mut ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation(partition, &service_invocation_id)
+            .remove_invocation(partition, &full_invocation_id)
         {
             f(&mut ism);
             if ism.is_ready_to_retry() {
                 trace!("Going to retry now");
                 self.start_invocation_task(
                     partition,
-                    service_invocation_id,
+                    full_invocation_id,
                     InvokeInputJournal::NoCachedJournal,
                     ism,
                 )
@@ -898,7 +898,7 @@ where
                 // Not ready for retrying yet
                 self.invocation_state_machine_manager.register_invocation(
                     partition,
-                    service_invocation_id,
+                    full_invocation_id,
                     ism,
                 );
             }
@@ -919,8 +919,8 @@ mod tests {
     use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
     use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
     use restate_test_util::{check, let_assert, test};
+    use restate_types::identifiers::FullInvocationId;
     use restate_types::identifiers::InvocationUuid;
-    use restate_types::identifiers::ServiceInvocationId;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::retries::RetryPolicy;
@@ -971,7 +971,7 @@ mod tests {
     where
         F: Fn(
             PartitionLeaderEpoch,
-            ServiceInvocationId,
+            FullInvocationId,
             mpsc::UnboundedSender<InvocationTaskOutput>,
             mpsc::UnboundedReceiver<Completion>,
             InvokeInputJournal,
@@ -981,7 +981,7 @@ mod tests {
         fn start_invocation_task(
             &self,
             partition: PartitionLeaderEpoch,
-            sid: ServiceInvocationId,
+            fid: FullInvocationId,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Completion>,
             input_journal: InvokeInputJournal,
@@ -989,7 +989,7 @@ mod tests {
         ) -> AbortHandle {
             task_pool.spawn((*self)(
                 partition,
-                sid,
+                fid,
                 invoker_tx,
                 invoker_rx,
                 input_journal,
@@ -997,8 +997,8 @@ mod tests {
         }
     }
 
-    fn mock_sid() -> ServiceInvocationId {
-        ServiceInvocationId::new("MyService", Bytes::default(), InvocationUuid::now_v7())
+    fn mock_sid() -> FullInvocationId {
+        FullInvocationId::new("MyService", Bytes::default(), InvocationUuid::now_v7())
     }
 
     #[test(tokio::test)]
@@ -1030,7 +1030,7 @@ mod tests {
         let invoker_join_handle = tokio::spawn(service.run(watch));
 
         let partition_leader_epoch = (0, 0);
-        let sid = ServiceInvocationId::new("TestService", Bytes::new(), InvocationUuid::now_v7());
+        let fid = FullInvocationId::new("TestService", Bytes::new(), InvocationUuid::now_v7());
 
         let (output_tx, mut output_rx) = mpsc::channel(1);
 
@@ -1041,7 +1041,7 @@ mod tests {
         handle
             .invoke(
                 partition_leader_epoch,
-                sid,
+                fid,
                 InvokeInputJournal::NoCachedJournal,
             )
             .await
@@ -1075,14 +1075,14 @@ mod tests {
         segment_queue
             .enqueue(InvokeCommand {
                 partition: MOCK_PARTITION,
-                service_invocation_id: sid_1.clone(),
+                full_invocation_id: sid_1.clone(),
                 journal: InvokeInputJournal::NoCachedJournal,
             })
             .await;
         segment_queue
             .enqueue(InvokeCommand {
                 partition: MOCK_PARTITION,
-                service_invocation_id: sid_2.clone(),
+                full_invocation_id: sid_2.clone(),
                 journal: InvokeInputJournal::NoCachedJournal,
             })
             .await;
@@ -1142,17 +1142,17 @@ mod tests {
 
     #[test(tokio::test)]
     async fn reclaim_quota_after_abort() {
-        let sid = mock_sid();
+        let fid = mock_sid();
 
         let (_, mut service_inner) = ServiceInner::mock(
             |partition,
-             service_invocation_id,
+             full_invocation_id,
              invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
              _,
              _| {
                 let _ = invoker_tx.send(InvocationTaskOutput {
                     partition,
-                    service_invocation_id,
+                    full_invocation_id,
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: 1,
                         entry: RawEntry {
@@ -1172,14 +1172,14 @@ mod tests {
         service_inner
             .handle_invoke(
                 MOCK_PARTITION,
-                sid.clone(),
+                fid.clone(),
                 InvokeInputJournal::NoCachedJournal,
             )
             .await;
 
         // We should receive the new entry here
         let invoker_effect = service_inner.invocation_tasks_rx.recv().await.unwrap();
-        assert_eq!(invoker_effect.service_invocation_id, sid);
+        assert_eq!(invoker_effect.full_invocation_id, fid);
         check!(let InvocationTaskOutputInner::NewEntry { .. } = invoker_effect.inner);
 
         // Check the quota
@@ -1187,7 +1187,7 @@ mod tests {
         assert_eq!(*available_slots, 1);
 
         // Abort the invocation
-        service_inner.handle_abort_invocation(MOCK_PARTITION, sid.clone());
+        service_inner.handle_abort_invocation(MOCK_PARTITION, fid.clone());
 
         // Check the quota
         let_assert!(InvokerConcurrencyQuota::Limited { available_slots } = &service_inner.quota);
@@ -1197,7 +1197,7 @@ mod tests {
         service_inner
             .handle_invocation_task_failed(
                 MOCK_PARTITION,
-                sid.clone(),
+                fid.clone(),
                 InvocationTaskError::TooManyTerminalMessages, /* any error is fine */
             )
             .await;

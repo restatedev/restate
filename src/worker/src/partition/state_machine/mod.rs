@@ -32,7 +32,7 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, InvocationUuid, ServiceId, ServiceInvocationId,
+    EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
 };
 use restate_types::invocation::{
     InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
@@ -59,7 +59,7 @@ pub(crate) enum Error {
 
 #[derive(Debug)]
 pub(crate) enum Command {
-    Kill(ServiceInvocationId),
+    Kill(InvocationId),
     Invoker(InvokerEffect),
     Timer(TimerValue),
     OutboxTruncation(MessageIndex),
@@ -84,7 +84,7 @@ pub(crate) trait StateReader {
     fn resolve_invocation_status_from_invocation_id<'a>(
         &'a mut self,
         invocation_id: &'a InvocationId,
-    ) -> BoxFuture<'a, Result<(ServiceInvocationId, InvocationStatus), StateReaderError>>;
+    ) -> BoxFuture<'a, Result<(FullInvocationId, InvocationStatus), StateReaderError>>;
 
     // TODO: Replace with async trait or proper future
     fn peek_inbox<'a>(
@@ -150,14 +150,14 @@ where
         command: Command,
         effects: &mut Effects,
         state: &mut State,
-    ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         return match command {
             Command::Invocation(service_invocation) => {
                 let status = state
-                    .get_invocation_status(&service_invocation.id.service_id)
+                    .get_invocation_status(&service_invocation.fid.service_id)
                     .await?;
 
-                let sid = service_invocation.id.clone();
+                let fid = service_invocation.fid.clone();
 
                 if let InvocationStatus::Free = status {
                     effects.invoke_service(service_invocation);
@@ -165,7 +165,7 @@ where
                     effects.enqueue_into_inbox(self.inbox_seq_number, service_invocation);
                     self.inbox_seq_number += 1;
                 }
-                Ok((Some(sid), extract_span_relation(&status)))
+                Ok((Some(fid), extract_span_relation(&status)))
             }
             Command::Response(InvocationResponse {
                 id,
@@ -189,82 +189,84 @@ where
                 Ok((None, SpanRelation::None))
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
-            Command::Kill(sid) => self.try_kill_invocation(sid, state, effects).await,
+            Command::Kill(iid) => self.try_kill_invocation(iid, state, effects).await,
         };
     }
 
     async fn try_kill_invocation<State: StateReader>(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        invocation_id: InvocationId,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
-        let status = state
-            .get_invocation_status(&service_invocation_id.service_id)
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        let (full_invocation_id, status) = state
+            .resolve_invocation_status_from_invocation_id(&invocation_id)
             .await?;
 
         match status {
             InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. }
-                if metadata.invocation_uuid == service_invocation_id.invocation_uuid =>
+                if metadata.invocation_uuid == full_invocation_id.invocation_uuid =>
             {
-                let (sid, related_span) = self
-                    .kill_invocation(service_invocation_id, metadata, state, effects)
+                let (fid, related_span) = self
+                    .kill_invocation(full_invocation_id, metadata, state, effects)
                     .await?;
-                Ok((Some(sid), related_span))
+                Ok((Some(fid), related_span))
             }
             _ => {
-                trace!("Received kill command for unknown invocation with sid '{service_invocation_id}'.");
+                trace!(
+                    "Received kill command for unknown invocation with fid '{full_invocation_id}'."
+                );
                 // We still try to send the abort signal to the invoker,
                 // as it might be the case that previously the user sent an abort signal
                 // but some message was still between the invoker/PP queues.
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                effects.abort_invocation(service_invocation_id.clone());
-                Ok((Some(service_invocation_id), SpanRelation::None))
+                effects.abort_invocation(full_invocation_id.clone());
+                Ok((Some(full_invocation_id), SpanRelation::None))
             }
         }
     }
 
     async fn kill_invocation<State: StateReader>(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         metadata: InvocationMetadata,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(ServiceInvocationId, SpanRelation), Error> {
+    ) -> Result<(FullInvocationId, SpanRelation), Error> {
         let related_span = metadata.journal_metadata.span_context.as_parent();
 
         self.fail_invocation(
             effects,
             state,
-            service_invocation_id.clone(),
+            full_invocation_id.clone(),
             metadata,
             KILLED_INVOCATION_ERROR,
         )
         .await?;
-        effects.abort_invocation(service_invocation_id.clone());
+        effects.abort_invocation(full_invocation_id.clone());
 
-        Ok((service_invocation_id, related_span))
+        Ok((full_invocation_id, related_span))
     }
 
     async fn on_timer<State: StateReader>(
         &mut self,
         TimerValue {
-            service_invocation_id,
+            full_invocation_id,
             entry_index,
             wake_up_time,
             value,
         }: TimerValue,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
-        effects.delete_timer(wake_up_time, service_invocation_id.clone(), entry_index);
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        effects.delete_timer(wake_up_time, full_invocation_id.clone(), entry_index);
 
         return match value {
             Timer::CompleteSleepEntry => {
                 Self::handle_completion(
-                    MaybeFullInvocationId::Full(service_invocation_id),
+                    MaybeFullInvocationId::Full(full_invocation_id),
                     Completion {
                         entry_index,
                         result: CompletionResult::Empty,
@@ -279,7 +281,7 @@ where
                     OutboxMessage::ServiceInvocation(service_invocation),
                     effects,
                 );
-                Ok((Some(service_invocation_id), SpanRelation::None))
+                Ok((Some(full_invocation_id), SpanRelation::None))
             }
         };
     }
@@ -289,23 +291,23 @@ where
         effects: &mut Effects,
         state: &mut State,
         invoker_effect: InvokerEffect,
-    ) -> Result<(ServiceInvocationId, SpanRelation), Error> {
+    ) -> Result<(FullInvocationId, SpanRelation), Error> {
         let status = state
-            .get_invocation_status(&invoker_effect.service_invocation_id.service_id)
+            .get_invocation_status(&invoker_effect.full_invocation_id.service_id)
             .await?;
 
         match status {
             InvocationStatus::Invoked(invocation_metadata)
                 if invocation_metadata.invocation_uuid
-                    == invoker_effect.service_invocation_id.invocation_uuid =>
+                    == invoker_effect.full_invocation_id.invocation_uuid =>
             {
                 self.on_invoker_effect(effects, state, invoker_effect, invocation_metadata)
                     .await
             }
             _ => {
                 trace!("Received invoker effect for unknown service invocation. Ignoring the effect and aborting.");
-                effects.abort_invocation(invoker_effect.service_invocation_id.clone());
-                Ok((invoker_effect.service_invocation_id, SpanRelation::None))
+                effects.abort_invocation(invoker_effect.full_invocation_id.clone());
+                Ok((invoker_effect.full_invocation_id, SpanRelation::None))
             }
         }
     }
@@ -315,12 +317,12 @@ where
         effects: &mut Effects,
         state: &mut State,
         InvokerEffect {
-            service_invocation_id,
+            full_invocation_id,
             kind,
         }: InvokerEffect,
         invocation_metadata: InvocationMetadata,
-    ) -> Result<(ServiceInvocationId, SpanRelation), Error> {
-        let related_sid = service_invocation_id.clone();
+    ) -> Result<(FullInvocationId, SpanRelation), Error> {
+        let related_sid = full_invocation_id.clone();
         let span_relation = invocation_metadata
             .journal_metadata
             .span_context
@@ -329,7 +331,7 @@ where
         match kind {
             InvokerEffectKind::SelectedEndpoint(endpoint_id) => {
                 effects.store_chosen_endpoint(
-                    service_invocation_id.service_id,
+                    full_invocation_id.service_id,
                     endpoint_id,
                     invocation_metadata,
                 );
@@ -337,7 +339,7 @@ where
             InvokerEffectKind::JournalEntry { entry_index, entry } => {
                 self.handle_journal_entry(
                     effects,
-                    service_invocation_id,
+                    full_invocation_id,
                     entry_index,
                     entry,
                     invocation_metadata,
@@ -349,45 +351,39 @@ where
             } => {
                 debug_assert!(
                     !waiting_for_completed_entries.is_empty(),
-                    "Expecting at least one entry on which the invocation {service_invocation_id} is waiting."
+                    "Expecting at least one entry on which the invocation {full_invocation_id} is waiting."
                 );
                 let mut any_completed = false;
                 for entry_index in &waiting_for_completed_entries {
                     if state
-                        .is_entry_resumable(&service_invocation_id.service_id, *entry_index)
+                        .is_entry_resumable(&full_invocation_id.service_id, *entry_index)
                         .await?
                     {
                         trace!(
-                            rpc.service = %service_invocation_id.service_id.service_name,
-                            restate.invocation.sid = %service_invocation_id,
+                            rpc.service = %full_invocation_id.service_id.service_name,
+                            restate.invocation.id = %full_invocation_id,
                             "Resuming instead of suspending service because an awaited entry is completed/acked.");
                         any_completed = true;
                         break;
                     }
                 }
                 if any_completed {
-                    effects.resume_service(service_invocation_id.service_id, invocation_metadata);
+                    effects.resume_service(full_invocation_id.service_id, invocation_metadata);
                 } else {
                     effects.suspend_service(
-                        service_invocation_id.service_id,
+                        full_invocation_id.service_id,
                         invocation_metadata,
                         waiting_for_completed_entries,
                     );
                 }
             }
             InvokerEffectKind::End => {
-                self.finish_invocation(effects, state, service_invocation_id, invocation_metadata)
+                self.finish_invocation(effects, state, full_invocation_id, invocation_metadata)
                     .await?;
             }
             InvokerEffectKind::Failed(e) => {
-                self.fail_invocation(
-                    effects,
-                    state,
-                    service_invocation_id,
-                    invocation_metadata,
-                    e,
-                )
-                .await?;
+                self.fail_invocation(effects, state, full_invocation_id, invocation_metadata, e)
+                    .await?;
             }
         }
 
@@ -398,12 +394,12 @@ where
         &mut self,
         effects: &mut Effects,
         state: &mut State,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         invocation_metadata: InvocationMetadata,
     ) -> Result<(), Error> {
         let length = invocation_metadata.journal_metadata.length;
-        self.notify_invocation_result(&service_invocation_id, invocation_metadata, effects, Ok(()));
-        self.complete_invocation(service_invocation_id, state, length, effects)
+        self.notify_invocation_result(&full_invocation_id, invocation_metadata, effects, Ok(()));
+        self.complete_invocation(full_invocation_id, state, length, effects)
             .await
     }
 
@@ -411,14 +407,14 @@ where
         &mut self,
         effects: &mut Effects,
         state: &mut State,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         invocation_metadata: InvocationMetadata,
         error: InvocationError,
     ) -> Result<(), Error> {
         let code = error.code();
         if let Some(response_sink) = &invocation_metadata.response_sink {
             let outbox_message = Self::create_response(
-                &service_invocation_id,
+                &full_invocation_id,
                 response_sink.clone(),
                 ResponseResult::Failure(code.into(), error.message().into()),
             );
@@ -428,26 +424,26 @@ where
 
         let length = invocation_metadata.journal_metadata.length;
         self.notify_invocation_result(
-            &service_invocation_id,
+            &full_invocation_id,
             invocation_metadata,
             effects,
             Err((code, error.to_string())),
         );
-        self.complete_invocation(service_invocation_id, state, length, effects)
+        self.complete_invocation(full_invocation_id, state, length, effects)
             .await
     }
 
     async fn handle_journal_entry(
         &mut self,
         effects: &mut Effects,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
         mut journal_entry: EnrichedRawEntry,
         invocation_metadata: InvocationMetadata,
     ) -> Result<(), Error> {
         debug_assert_eq!(
             entry_index, invocation_metadata.journal_metadata.length,
-            "Expect to receive next journal entry for {service_invocation_id}"
+            "Expect to receive next journal entry for {full_invocation_id}"
         );
 
         match journal_entry.header {
@@ -466,7 +462,7 @@ where
                     );
 
                     let outbox_message = Self::create_response(
-                        &service_invocation_id,
+                        &full_invocation_id,
                         response_sink.clone(),
                         result.into(),
                     );
@@ -481,7 +477,7 @@ where
                     );
 
                     effects.get_state_and_append_completed_entry(
-                        service_invocation_id.service_id,
+                        full_invocation_id.service_id,
                         invocation_metadata,
                         key,
                         entry_index,
@@ -497,7 +493,7 @@ where
                 );
 
                 effects.set_state(
-                    service_invocation_id.service_id,
+                    full_invocation_id.service_id,
                     invocation_metadata,
                     key,
                     value,
@@ -514,7 +510,7 @@ where
                         Codec::deserialize(&journal_entry)?
                 );
                 effects.clear_state(
-                    service_invocation_id.service_id,
+                    full_invocation_id.service_id,
                     invocation_metadata,
                     key,
                     journal_entry,
@@ -535,7 +531,7 @@ where
                         // Registering a timer generates multiple effects: timer registration and
                         // journal append which each generate actuator messages for the timer service
                         // and the invoker --> Cloning required
-                        service_invocation_id.clone(),
+                        full_invocation_id.clone(),
                         MillisSinceEpoch::new(wake_up_time),
                         entry_index,
                     ),
@@ -561,7 +557,7 @@ where
                         *invocation_id,
                         service_key.clone(),
                         request,
-                        Some((service_invocation_id.clone(), entry_index)),
+                        Some((full_invocation_id.clone(), entry_index)),
                         span_context.clone(),
                     );
                     self.send_message(
@@ -604,7 +600,7 @@ where
                 };
 
                 effects.background_invoke(
-                    service_invocation.id.clone(),
+                    service_invocation.fid.clone(),
                     method,
                     invocation_metadata.journal_metadata.span_context.clone(),
                     pointer_span_id,
@@ -619,7 +615,7 @@ where
                 } else {
                     effects.register_timer(
                         TimerValue::new_invoke(
-                            service_invocation_id.clone(),
+                            full_invocation_id.clone(),
                             MillisSinceEpoch::new(invoke_time),
                             entry_index,
                             service_invocation,
@@ -632,7 +628,7 @@ where
             EnrichedEntryHeader::Awakeable { is_completed } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
                 effects.append_awakeable_entry(
-                    service_invocation_id.service_id,
+                    full_invocation_id.service_id,
                     invocation_metadata,
                     entry_index,
                     journal_entry,
@@ -660,7 +656,7 @@ where
                         requires_ack: false,
                     };
                     effects.append_journal_entry_and_ack_storage(
-                        service_invocation_id.service_id,
+                        full_invocation_id.service_id,
                         invocation_metadata,
                         entry_index,
                         journal_entry,
@@ -671,7 +667,7 @@ where
         }
 
         effects.append_journal_entry(
-            service_invocation_id.service_id,
+            full_invocation_id.service_id,
             invocation_metadata,
             entry_index,
             journal_entry,
@@ -685,16 +681,16 @@ where
         completion: Completion,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
-        let (service_invocation_id, status) = match maybe_full_invocation_id {
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        let (full_invocation_id, status) = match maybe_full_invocation_id {
             MaybeFullInvocationId::Partial(iid) => {
                 state
                     .resolve_invocation_status_from_invocation_id(&iid)
                     .await?
             }
-            MaybeFullInvocationId::Full(sid) => {
-                let status = state.get_invocation_status(&sid.service_id).await?;
-                (sid, status)
+            MaybeFullInvocationId::Full(fid) => {
+                let status = state.get_invocation_status(&fid.service_id).await?;
+                (fid, status)
             }
         };
         let mut related_sid = None;
@@ -702,14 +698,14 @@ where
 
         match status {
             InvocationStatus::Invoked(metadata) => {
-                if metadata.invocation_uuid == service_invocation_id.invocation_uuid {
-                    effects.store_and_forward_completion(service_invocation_id.clone(), completion);
-                    related_sid = Some(service_invocation_id);
+                if metadata.invocation_uuid == full_invocation_id.invocation_uuid {
+                    effects.store_and_forward_completion(full_invocation_id.clone(), completion);
+                    related_sid = Some(full_invocation_id);
                     span_relation = metadata.journal_metadata.span_context.as_parent();
                 } else {
                     debug!(
-                        rpc.service = %service_invocation_id.service_id.service_name,
-                        restate.invocation.sid = %service_invocation_id,
+                        rpc.service = %full_invocation_id.service_id.service_name,
+                        restate.invocation.id = %full_invocation_id,
                         ?completion,
                         "Ignoring completion for invocation that is no longer running."
                     );
@@ -719,23 +715,23 @@ where
                 metadata,
                 waiting_for_completed_entries,
             } => {
-                if metadata.invocation_uuid == service_invocation_id.invocation_uuid {
+                if metadata.invocation_uuid == full_invocation_id.invocation_uuid {
                     span_relation = metadata.journal_metadata.span_context.as_parent();
 
                     if waiting_for_completed_entries.contains(&completion.entry_index) {
                         effects.store_completion_and_resume(
-                            service_invocation_id.service_id.clone(),
+                            full_invocation_id.service_id.clone(),
                             metadata,
                             completion,
                         );
                     } else {
-                        effects.store_completion(service_invocation_id.clone(), completion);
+                        effects.store_completion(full_invocation_id.clone(), completion);
                     }
-                    related_sid = Some(service_invocation_id);
+                    related_sid = Some(full_invocation_id);
                 } else {
                     debug!(
-                        rpc.service = %service_invocation_id.service_id.service_name,
-                        restate.invocation.sid = %service_invocation_id,
+                        rpc.service = %full_invocation_id.service_id.service_name,
+                        restate.invocation.id = %full_invocation_id,
                         ?completion,
                         "Ignoring completion for invocation that is no longer running."
                     );
@@ -743,8 +739,8 @@ where
             }
             InvocationStatus::Free => {
                 debug!(
-                    rpc.service = %service_invocation_id.service_id.service_name,
-                    restate.invocation.sid = %service_invocation_id,
+                    rpc.service = %full_invocation_id.service_id.service_name,
+                    restate.invocation.id = %full_invocation_id,
                     ?completion,
                     "Ignoring completion for invocation that is no longer running."
                 )
@@ -756,21 +752,17 @@ where
 
     fn notify_invocation_result(
         &mut self,
-        service_invocation_id: &ServiceInvocationId,
+        full_invocation_id: &FullInvocationId,
         invocation_metadata: InvocationMetadata,
         effects: &mut Effects,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {
-        effects.notify_invocation_result(
-            service_invocation_id.clone(),
-            invocation_metadata,
-            result,
-        );
+        effects.notify_invocation_result(full_invocation_id.clone(), invocation_metadata, result);
     }
 
     async fn complete_invocation<State: StateReader>(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         state: &mut State,
         journal_length: EntryIndex,
         effects: &mut Effects,
@@ -778,16 +770,16 @@ where
         if let Some(InboxEntry {
             inbox_sequence_number,
             service_invocation,
-        }) = state.peek_inbox(&service_invocation_id.service_id).await?
+        }) = state.peek_inbox(&full_invocation_id.service_id).await?
         {
             effects.drop_journal_and_pop_inbox(
-                service_invocation_id.service_id,
+                full_invocation_id.service_id,
                 inbox_sequence_number,
                 journal_length,
                 service_invocation,
             );
         } else {
-            effects.drop_journal_and_free_service(service_invocation_id.service_id, journal_length);
+            effects.drop_journal_and_free_service(full_invocation_id.service_id, journal_length);
         }
 
         Ok(())
@@ -802,7 +794,7 @@ where
         invocation_id: InvocationUuid,
         invocation_key: Bytes,
         invoke_request: InvokeRequest,
-        response_target: Option<(ServiceInvocationId, EntryIndex)>,
+        response_target: Option<(FullInvocationId, EntryIndex)>,
         span_context: ServiceInvocationSpanContext,
     ) -> ServiceInvocation {
         let InvokeRequest {
@@ -821,7 +813,7 @@ where
         };
 
         ServiceInvocation {
-            id: ServiceInvocationId::new(service_name, invocation_key, invocation_id),
+            fid: FullInvocationId::new(service_name, invocation_key, invocation_id),
             method_name,
             argument: parameter,
             response_sink,
@@ -843,7 +835,7 @@ where
     }
 
     fn create_response(
-        callee: &ServiceInvocationId,
+        callee: &FullInvocationId,
         response_sink: ServiceInvocationResponseSink,
         result: ResponseResult,
     ) -> OutboxMessage {
@@ -858,7 +850,7 @@ where
             }),
             ServiceInvocationResponseSink::Ingress(ingress_id) => OutboxMessage::IngressResponse {
                 ingress_id,
-                service_invocation_id: callee.clone(),
+                full_invocation_id: callee.clone(),
                 response: result,
             },
         }
@@ -897,11 +889,11 @@ mod tests {
     }
 
     impl StateReaderMock {
-        fn register_invocation_status(&mut self, sid: &ServiceInvocationId, length: EntryIndex) {
+        fn register_invocation_status(&mut self, fid: &FullInvocationId, length: EntryIndex) {
             self.invocations.insert(
-                sid.service_id.clone(),
+                fid.service_id.clone(),
                 InvocationStatus::Invoked(InvocationMetadata {
-                    invocation_uuid: sid.invocation_uuid,
+                    invocation_uuid: fid.invocation_uuid,
                     journal_metadata: JournalMetadata {
                         endpoint_id: None,
                         length,
@@ -927,8 +919,7 @@ mod tests {
         fn resolve_invocation_status_from_invocation_id<'a>(
             &'a mut self,
             invocation_id: &'a InvocationId,
-        ) -> BoxFuture<'a, Result<(ServiceInvocationId, InvocationStatus), StateReaderError>>
-        {
+        ) -> BoxFuture<'a, Result<(FullInvocationId, InvocationStatus), StateReaderError>> {
             let (service_id, status) = self
                 .invocations
                 .iter()
@@ -939,7 +930,7 @@ mod tests {
                 .unwrap();
 
             ok((
-                ServiceInvocationId::with_service_id(
+                FullInvocationId::with_service_id(
                     service_id.clone(),
                     invocation_id.invocation_uuid(),
                 ),
@@ -970,8 +961,8 @@ mod tests {
         let mut effects = Effects::default();
         let mut state_reader = StateReaderMock::default();
 
-        let sid_caller = ServiceInvocationId::mock_random();
-        let sid_callee = ServiceInvocationId::mock_random();
+        let sid_caller = FullInvocationId::mock_random();
+        let sid_callee = FullInvocationId::mock_random();
 
         let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
             CompleteAwakeableEntry {
@@ -982,7 +973,7 @@ mod tests {
             },
         ));
         let cmd = Command::Invoker(InvokerEffect {
-            service_invocation_id: sid_caller.clone(),
+            full_invocation_id: sid_caller.clone(),
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry,
@@ -1016,8 +1007,8 @@ mod tests {
         let mut effects = Effects::default();
         let mut state_reader = StateReaderMock::default();
 
-        let sid_caller = ServiceInvocationId::mock_random();
-        let sid_callee = ServiceInvocationId::mock_random();
+        let sid_caller = FullInvocationId::mock_random();
+        let sid_callee = FullInvocationId::mock_random();
 
         let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
             CompleteAwakeableEntry {
@@ -1031,7 +1022,7 @@ mod tests {
             },
         ));
         let cmd = Command::Invoker(InvokerEffect {
-            service_invocation_id: sid_caller.clone(),
+            full_invocation_id: sid_caller.clone(),
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry,
@@ -1066,15 +1057,15 @@ mod tests {
         let mut effects = Effects::default();
         let mut state_reader = StateReaderMock::default();
 
-        let sid = ServiceInvocationId::mock_random();
+        let fid = FullInvocationId::mock_random();
 
         let cmd = Command::Response(InvocationResponse {
-            id: MaybeFullInvocationId::Partial(InvocationId::from(sid.clone())),
+            id: MaybeFullInvocationId::Partial(InvocationId::from(fid.clone())),
             entry_index: 1,
             result: ResponseResult::Success(Bytes::from_static(b"hello")),
         });
 
-        state_reader.register_invocation_status(&sid, 1);
+        state_reader.register_invocation_status(&fid, 1);
 
         state_machine
             .on_apply(cmd, &mut effects, &mut state_reader)
@@ -1082,10 +1073,10 @@ mod tests {
             .unwrap();
         let_assert!(
             Effect::StoreCompletionAndForward {
-                service_invocation_id,
+                full_invocation_id,
                 ..
             } = effects.drain().next().unwrap()
         );
-        assert_eq!(service_invocation_id, sid);
+        assert_eq!(full_invocation_id, fid);
     }
 }

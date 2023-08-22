@@ -16,7 +16,7 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, PartitionId, PartitionKey, ServiceId, ServiceInvocationId,
+    EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
     WithPartitionKey,
 };
 use restate_types::invocation::ServiceInvocation;
@@ -120,7 +120,7 @@ where
 
     pub(super) fn scan_invoked_invocations(
         &mut self,
-    ) -> BoxStream<'_, Result<ServiceInvocationId, restate_storage_api::StorageError>> {
+    ) -> BoxStream<'_, Result<FullInvocationId, restate_storage_api::StorageError>> {
         self.inner
             .invoked_invocations(self.partition_key_range.clone())
     }
@@ -219,7 +219,7 @@ where
     fn resolve_invocation_status_from_invocation_id<'a>(
         &'a mut self,
         invocation_id: &'a InvocationId,
-    ) -> BoxFuture<'a, Result<(ServiceInvocationId, InvocationStatus), StateReaderError>> {
+    ) -> BoxFuture<'a, Result<(FullInvocationId, InvocationStatus), StateReaderError>> {
         self.assert_invocation_id(invocation_id);
         async {
             let (service_id, status) = match self
@@ -239,7 +239,7 @@ where
             };
 
             Ok((
-                ServiceInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
+                FullInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
                 status,
             ))
         }
@@ -398,10 +398,10 @@ where
         seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
     ) -> BoxFuture<Result<(), StateStorageError>> {
-        self.assert_service_id(&service_invocation.id.service_id);
+        self.assert_service_id(&service_invocation.fid.service_id);
         async move {
             // TODO: Avoid cloning when moving this logic into the RocksDB storage impl
-            let service_id = service_invocation.id.service_id.clone();
+            let service_id = service_invocation.fid.service_id.clone();
 
             self.inner
                 .put_invocation(&service_id, InboxEntry::new(seq_number, service_invocation))
@@ -511,15 +511,15 @@ where
 
     fn store_timer(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         timer: Timer,
     ) -> BoxFuture<Result<(), StateStorageError>> {
-        self.assert_service_id(&service_invocation_id.service_id);
+        self.assert_service_id(&full_invocation_id.service_id);
         async move {
             let timer_key = TimerKey {
-                service_invocation_id,
+                full_invocation_id,
                 timestamp: wake_up_time.as_u64(),
                 journal_index: entry_index,
             };
@@ -534,14 +534,14 @@ where
 
     fn delete_timer(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<(), StateStorageError>> {
-        self.assert_service_id(&service_invocation_id.service_id);
+        self.assert_service_id(&full_invocation_id.service_id);
         async move {
             let timer_key = TimerKey {
-                service_invocation_id,
+                full_invocation_id,
                 timestamp: wake_up_time.as_u64(),
                 journal_index: entry_index,
             };
@@ -612,7 +612,7 @@ where
 
         async move {
             let exclusive_start = previous_timer_key.map(|timer_value| TimerKey {
-                service_invocation_id: timer_value.service_invocation_id,
+                full_invocation_id: timer_value.full_invocation_id,
                 journal_index: timer_value.entry_index,
                 timestamp: timer_value.wake_up_time.as_u64(),
             });
@@ -621,7 +621,7 @@ where
                 .next_timers_greater_than(self.partition_id, exclusive_start.as_ref(), num_timers)
                 .map(|result| {
                     result.map(|(timer_key, timer)| TimerValue {
-                        service_invocation_id: timer_key.service_invocation_id,
+                        full_invocation_id: timer_key.full_invocation_id,
                         wake_up_time: MillisSinceEpoch::new(timer_key.timestamp),
                         entry_index: timer_key.journal_index,
                         value: timer,

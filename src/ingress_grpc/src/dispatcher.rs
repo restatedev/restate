@@ -17,8 +17,8 @@ use restate_futures_util::pipe::{
     new_sender_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
     UnboundedReceiverPipeInput,
 };
+use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::IngressId;
-use restate_types::identifiers::ServiceInvocationId;
 use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace};
@@ -130,7 +130,7 @@ struct DispatcherLoopHandler {
 
     // This map can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
-    waiting_responses: HashMap<ServiceInvocationId, CommandResponseSender<IngressResult>>,
+    waiting_responses: HashMap<FullInvocationId, CommandResponseSender<IngressResult>>,
 }
 
 impl DispatcherLoopHandler {
@@ -145,10 +145,7 @@ impl DispatcherLoopHandler {
     fn handle_network_input(&mut self, input: IngressInput) -> Option<IngressOutput> {
         match input {
             IngressInput::Response(response) => {
-                if let Some(sender) = self
-                    .waiting_responses
-                    .remove(&response.service_invocation_id)
-                {
+                if let Some(sender) = self.waiting_responses.remove(&response.full_invocation_id) {
                     if let Err(Ok(response)) = sender.send(response.result.map_err(Into::into)) {
                         debug!(
                             "Failed to send response '{:?}' because the handler has been closed, \
@@ -180,7 +177,7 @@ impl DispatcherLoopHandler {
         match invocation_or_response {
             InvocationOrResponse::Invocation(service_invocation) => {
                 self.waiting_responses
-                    .insert(service_invocation.id.clone(), reply_channel);
+                    .insert(service_invocation.fid.clone(), reply_channel);
                 IngressOutput::service_invocation(
                     service_invocation,
                     self.ingress_id,
@@ -219,7 +216,7 @@ mod tests {
         // Ask for a response, then drop the receiver=
         let method_name = ByteString::from_static("pippo");
         let service_invocation = ServiceInvocation::new(
-            ServiceInvocationId::new("MySvc", "MyMethod", uuid::Uuid::now_v7()),
+            FullInvocationId::new("MySvc", "MyMethod", uuid::Uuid::now_v7()),
             method_name,
             Default::default(),
             Some(ServiceInvocationResponseSink::Ingress(IngressId(
@@ -235,7 +232,7 @@ mod tests {
         // Now let's send the response
         input_sender
             .send(IngressInput::Response(IngressResponseMessage {
-                service_invocation_id: service_invocation.id.clone(),
+                full_invocation_id: service_invocation.fid.clone(),
                 result: Ok(Bytes::new()),
                 ack_target: AckTarget::new(0, 0),
             }))

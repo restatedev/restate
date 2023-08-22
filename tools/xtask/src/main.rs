@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::bail;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::InvocationId;
 use restate_types::retries::RetryPolicy;
 use schemars::gen::SchemaSettings;
 use std::env;
@@ -37,7 +37,7 @@ struct Mock;
 impl restate_worker_api::Handle for Mock {
     type Future = std::future::Ready<Result<(), restate_worker_api::Error>>;
 
-    fn kill_invocation(&self, _: ServiceInvocationId) -> Self::Future {
+    fn kill_invocation(&self, _: InvocationId) -> Self::Future {
         unimplemented!()
     }
 }

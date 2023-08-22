@@ -10,7 +10,7 @@
 
 use codederror::Code;
 use restate_types::errors::{InvocationError, InvocationErrorCode};
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use std::fmt;
 use std::future::Future;
@@ -39,21 +39,21 @@ impl Default for InvocationStatusReportInner {
 
 #[derive(Debug)]
 pub struct InvocationStatusReport(
-    ServiceInvocationId,
+    FullInvocationId,
     PartitionLeaderEpoch,
     InvocationStatusReportInner,
 );
 
 impl InvocationStatusReport {
     pub fn new(
-        sid: ServiceInvocationId,
+        fid: FullInvocationId,
         partition: PartitionLeaderEpoch,
         report: InvocationStatusReportInner,
     ) -> Self {
-        Self(sid, partition, report)
+        Self(fid, partition, report)
     }
 
-    pub fn service_invocation_id(&self) -> &ServiceInvocationId {
+    pub fn full_invocation_id(&self) -> &FullInvocationId {
         &self.0
     }
 

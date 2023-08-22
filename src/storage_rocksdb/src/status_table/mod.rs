@@ -23,7 +23,7 @@ use prost::Message;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
-use restate_types::identifiers::{InvocationUuid, ServiceInvocationId, WithPartitionKey};
+use restate_types::identifiers::{FullInvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use std::ops::RangeInclusive;
 use tokio_stream::StreamExt;
@@ -139,7 +139,7 @@ impl StatusTable for RocksDBTransaction {
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> GetStream<ServiceInvocationId> {
+    ) -> GetStream<FullInvocationId> {
         self.for_each_key_value(
             PartitionKeyRange::<StatusKey>(partition_key_range),
             |k, v| {
@@ -188,7 +188,7 @@ fn decode_status(v: &[u8]) -> crate::Result<InvocationStatus> {
     InvocationStatus::try_from(proto).map_err(StorageError::from)
 }
 
-fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<ServiceInvocationId>> {
+fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<FullInvocationId>> {
     let status = storage::v1::InvocationStatus::decode(v)
         .map_err(|error| StorageError::Generic(error.into()))?;
     if let Some(storage::v1::invocation_status::Status::Invoked(
@@ -200,7 +200,7 @@ fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<ServiceIn
         let service_id = status_key_from_bytes(Bytes::copy_from_slice(k))?;
         let uuid = Uuid::from_slice(&invocation_uuid)
             .map_err(|error| StorageError::Generic(error.into()))?;
-        Ok(Some(ServiceInvocationId::with_service_id(service_id, uuid)))
+        Ok(Some(FullInvocationId::with_service_id(service_id, uuid)))
     } else {
         Ok(None)
     }

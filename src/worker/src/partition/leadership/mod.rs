@@ -26,12 +26,12 @@ mod actuator;
 
 pub(crate) use actuator::{ActuatorMessageCollector, ActuatorOutput, ActuatorStream};
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
 
 pub(crate) trait InvocationReader {
     type InvokedInvocationStream<'a>: Stream<
-        Item = Result<ServiceInvocationId, restate_storage_api::StorageError>,
+        Item = Result<FullInvocationId, restate_storage_api::StorageError>,
     >
     where
         Self: 'a;
@@ -224,13 +224,13 @@ where
             let invoked_invocations = transaction.scan_invoked_invocations();
             tokio::pin!(invoked_invocations);
 
-            while let Some(service_invocation_id) = invoked_invocations.next().await {
-                let service_invocation_id = service_invocation_id?;
+            while let Some(full_invocation_id) = invoked_invocations.next().await {
+                let full_invocation_id = full_invocation_id?;
 
                 invoker_handle
                     .invoke(
                         partition_leader_epoch,
-                        service_invocation_id,
+                        full_invocation_id,
                         InvokeInputJournal::NoCachedJournal,
                     )
                     .await?;

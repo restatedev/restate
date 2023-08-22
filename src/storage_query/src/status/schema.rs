@@ -24,7 +24,7 @@ define_table!(status(
     service_key_uuid: DataType::LargeUtf8,
     status: DataType::LargeUtf8,
     invocation_id: DataType::LargeUtf8,
-    sid: DataType::LargeUtf8,
+    fid: DataType::LargeUtf8,
     invoked_by: DataType::LargeUtf8,
     invoked_by_service: DataType::LargeUtf8,
     invoked_by_sid: DataType::LargeUtf8,

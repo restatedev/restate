@@ -84,13 +84,13 @@ where
 
             match message {
                 ActuatorMessage::Invoke {
-                    service_invocation_id,
+                    full_invocation_id,
                     invoke_input_journal,
                 } => {
                     invoker_tx
                         .invoke(
                             partition_leader_epoch,
-                            service_invocation_id,
+                            full_invocation_id,
                             invoke_input_journal,
                         )
                         .await?
@@ -107,33 +107,29 @@ where
                     timer_service.as_mut().add_timer(timer_value)
                 }
                 ActuatorMessage::AckStoredEntry {
-                    service_invocation_id,
+                    full_invocation_id,
                     entry_index,
                 } => {
                     invoker_tx
                         .notify_stored_entry_ack(
                             partition_leader_epoch,
-                            service_invocation_id,
+                            full_invocation_id,
                             entry_index,
                         )
                         .await?;
                 }
                 ActuatorMessage::ForwardCompletion {
-                    service_invocation_id,
+                    full_invocation_id,
                     completion,
                 } => {
                     invoker_tx
-                        .notify_completion(
-                            partition_leader_epoch,
-                            service_invocation_id,
-                            completion,
-                        )
+                        .notify_completion(partition_leader_epoch, full_invocation_id, completion)
                         .await?
                 }
                 ActuatorMessage::SendAckResponse(ack_response) => ack_tx.send(ack_response).await?,
-                ActuatorMessage::AbortInvocation(service_invocation_id) => {
+                ActuatorMessage::AbortInvocation(full_invocation_id) => {
                     invoker_tx
-                        .abort_invocation(partition_leader_epoch, service_invocation_id)
+                        .abort_invocation(partition_leader_epoch, full_invocation_id)
                         .await?
                 }
             }

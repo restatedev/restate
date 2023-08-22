@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::InvocationId;
 use std::future::Future;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,5 +21,5 @@ pub trait Handle {
     type Future: Future<Output = Result<(), Error>> + Send;
 
     /// Send a command to kill an invocation. This command is best-effort.
-    fn kill_invocation(&self, service_invocation_id: ServiceInvocationId) -> Self::Future;
+    fn kill_invocation(&self, invocation_id: InvocationId) -> Self::Future;
 }

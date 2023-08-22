@@ -26,7 +26,7 @@ use restate_invoker_api::{
     EagerState, Effect, EffectKind, InvokeInputJournal, JournalReader, ServiceHandle, StateReader,
 };
 use restate_service_protocol::pb::protocol::PollInputStreamEntryMessage;
-use restate_types::identifiers::{EntryIndex, ServiceId, ServiceInvocationId};
+use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
 use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec};
@@ -51,7 +51,7 @@ enum SimulatorStep {
 }
 
 pub enum SimulatorAction {
-    SendCompletion(ServiceInvocationId, Completion),
+    SendCompletion(FullInvocationId, Completion),
     Noop,
 }
 
@@ -112,15 +112,15 @@ where
 {
     pub async fn invoke(
         &mut self,
-        sid: ServiceInvocationId,
+        fid: FullInvocationId,
         method: impl Into<String>,
         request_payload: impl Message,
     ) {
         debug!("Writing new journal");
-        self.journals.create_new_journal(sid.clone(), method).await;
+        self.journals.create_new_journal(fid.clone(), method).await;
         self.journals
             .append_entry(
-                &sid,
+                &fid,
                 RawEntry::new(
                     EnrichedEntryHeader::PollInputStream { is_completed: true },
                     PollInputStreamEntryMessage {
@@ -132,9 +132,9 @@ where
             )
             .await;
 
-        debug!("Sending invoke to invoker: {:?}", sid);
+        debug!("Sending invoke to invoker: {:?}", fid);
         self.in_tx
-            .invoke((0, 0), sid, InvokeInputJournal::NoCachedJournal)
+            .invoke((0, 0), fid, InvokeInputJournal::NoCachedJournal)
             .await
             .unwrap();
     }
@@ -147,7 +147,7 @@ where
                     debug!("Got from invoker: {:?}", out);
 
                     if let Effect {
-                        service_invocation_id,
+                        full_invocation_id,
                         kind:
                             EffectKind::JournalEntry {
                                 entry_index, entry, ..
@@ -155,13 +155,13 @@ where
                     } = &out
                     {
                         self.journals
-                            .append_entry(service_invocation_id, entry.clone())
+                            .append_entry(full_invocation_id, entry.clone())
                             .await;
                         debug!("Notifying stored ack to invoker: {:?}", entry_index);
                         self.in_tx
                             .notify_stored_entry_ack(
                                 (0, 0),
-                                service_invocation_id.clone(),
+                                full_invocation_id.clone(),
                                 *entry_index,
                             )
                             .await
@@ -177,10 +177,10 @@ where
             };
 
             match handler_res {
-                SimulatorAction::SendCompletion(sid, completion) => {
+                SimulatorAction::SendCompletion(fid, completion) => {
                     self.journals
                         .complete_entry::<Codec>(
-                            &sid,
+                            &fid,
                             completion.entry_index,
                             completion.result.clone(),
                         )
@@ -188,7 +188,7 @@ where
 
                     debug!("Sending completion to invoker: {:?}", &completion);
                     self.in_tx
-                        .notify_completion((0, 0), sid, completion)
+                        .notify_completion((0, 0), fid, completion)
                         .await
                         .unwrap();
                 }
@@ -201,21 +201,17 @@ where
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryJournalStorage {
     #[allow(clippy::type_complexity)]
-    journals: Arc<Mutex<HashMap<ServiceInvocationId, (JournalMetadata, Vec<PlainRawEntry>)>>>,
+    journals: Arc<Mutex<HashMap<FullInvocationId, (JournalMetadata, Vec<PlainRawEntry>)>>>,
 }
 
 impl InMemoryJournalStorage {
-    pub async fn create_new_journal(
-        &mut self,
-        sid: ServiceInvocationId,
-        method: impl Into<String>,
-    ) {
+    pub async fn create_new_journal(&mut self, fid: FullInvocationId, method: impl Into<String>) {
         let mut journals = self.journals.lock().await;
 
-        let span_context = ServiceInvocationSpanContext::start(&sid, SpanRelation::None);
+        let span_context = ServiceInvocationSpanContext::start(&fid, SpanRelation::None);
 
         journals.insert(
-            sid,
+            fid,
             (
                 JournalMetadata {
                     endpoint_id: None,
@@ -228,10 +224,10 @@ impl InMemoryJournalStorage {
         );
     }
 
-    pub async fn append_entry(&mut self, sid: &ServiceInvocationId, entry: EnrichedRawEntry) {
+    pub async fn append_entry(&mut self, fid: &FullInvocationId, entry: EnrichedRawEntry) {
         let mut journals = self.journals.lock().await;
         let (meta, journal) = journals
-            .get_mut(sid)
+            .get_mut(fid)
             .expect("append_entry can be invoked only when the journal is already available");
 
         meta.length += 1;
@@ -245,7 +241,7 @@ impl InMemoryJournalStorage {
 
     pub async fn complete_entry<Codec>(
         &mut self,
-        sid: &ServiceInvocationId,
+        fid: &FullInvocationId,
         index: EntryIndex,
         result: CompletionResult,
     ) where
@@ -253,7 +249,7 @@ impl InMemoryJournalStorage {
     {
         let mut journals = self.journals.lock().await;
         let (_, journal) = journals
-            .get_mut(sid)
+            .get_mut(fid)
             .expect("append_entry can be invoked only when the journal is already available");
 
         let raw_entry = journal
@@ -269,13 +265,13 @@ impl JournalReader for InMemoryJournalStorage {
     type Future<'a> =
         BoxFuture<'static, Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
 
-    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future<'_> {
+    fn read_journal(&self, fid: &FullInvocationId) -> Self::Future<'_> {
         let journals_arc = self.journals.clone();
-        let sid = sid.clone();
+        let fid = fid.clone();
         async move {
             let journals = journals_arc.lock().await;
 
-            let (meta, journal) = journals.get(&sid).unwrap();
+            let (meta, journal) = journals.get(&fid).unwrap();
 
             Ok((meta.clone(), stream::iter(journal.clone())))
         }

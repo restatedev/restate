@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::{GetFuture, PutFuture};
-use restate_types::identifiers::{IngressId, PartitionId, ServiceInvocationId};
+use restate_types::identifiers::{FullInvocationId, IngressId, PartitionId};
 use restate_types::invocation::{InvocationResponse, ResponseResult, ServiceInvocation};
 use std::ops::Range;
 
@@ -25,7 +25,7 @@ pub enum OutboxMessage {
     /// Service response to send to an ingress as a response to an external client request
     IngressResponse {
         ingress_id: IngressId,
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         response: ResponseResult,
     },
 }

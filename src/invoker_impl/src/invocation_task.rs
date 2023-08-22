@@ -29,9 +29,7 @@ use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
 use restate_types::errors::{InvocationError, UserErrorCode};
-use restate_types::identifiers::{
-    EndpointId, EntryIndex, InvocationId, PartitionLeaderEpoch, ServiceInvocationId,
-};
+use restate_types::identifiers::{EndpointId, EntryIndex, FullInvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryHeader};
@@ -145,7 +143,7 @@ fn h2_reason(err: &hyper::Error) -> h2::Reason {
 
 pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
-    pub(super) service_invocation_id: ServiceInvocationId,
+    pub(super) full_invocation_id: FullInvocationId,
     pub(super) inner: InvocationTaskOutputInner,
 }
 
@@ -173,7 +171,7 @@ pub(super) struct InvocationTask<JR, SR, EE, EMR> {
 
     // Connection params
     partition: PartitionLeaderEpoch,
-    service_invocation_id: ServiceInvocationId,
+    full_invocation_id: FullInvocationId,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
@@ -247,7 +245,7 @@ where
     pub fn new(
         client: HttpsClient,
         partition: PartitionLeaderEpoch,
-        sid: ServiceInvocationId,
+        fid: FullInvocationId,
         protocol_version: u16,
         inactivity_timeout: Duration,
         abort_timeout: Duration,
@@ -264,7 +262,7 @@ where
         Self {
             client,
             partition,
-            service_invocation_id: sid,
+            full_invocation_id: fid,
             inactivity_timeout,
             abort_timeout,
             disable_eager_state,
@@ -282,7 +280,7 @@ where
     }
 
     /// Loop opening the request to service endpoint and consuming the stream
-    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.service_invocation_id.service_id.service_name, restate.invocation.sid = %self.service_invocation_id), skip_all)]
+    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.full_invocation_id.service_id.service_name, restate.invocation.id = %self.full_invocation_id), skip_all)]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
         // Execute the task
         let terminal_state = self.run_internal(input_journal).await;
@@ -316,7 +314,7 @@ where
 
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
-            service_invocation_id: self.service_invocation_id,
+            full_invocation_id: self.full_invocation_id,
             inner,
         });
     }
@@ -328,7 +326,7 @@ where
                 InvokeInputJournal::NoCachedJournal => {
                     let (journal_meta, journal_stream) = self
                         .journal_reader
-                        .read_journal(&self.service_invocation_id)
+                        .read_journal(&self.full_invocation_id)
                         .await
                         .map_err(|e| InvocationTaskError::JournalReader(e.into()))?;
                     (journal_meta, future::Either::Left(journal_stream))
@@ -345,7 +343,7 @@ where
                 Ok(EagerState::<iter::Empty<_>>::default().map(itertools::Either::Right))
             } else {
                 self.state_reader
-                    .read_state(&self.service_invocation_id.service_id)
+                    .read_state(&self.full_invocation_id.service_id)
                     .await
                     .map_err(|e| InvocationTaskError::StateReader(e.into()))
                     .map(|r| r.map(itertools::Either::Left))
@@ -366,12 +364,12 @@ where
             let endpoint_meta = shortcircuit!(self
                 .endpoint_metadata_resolver
                 .resolve_latest_endpoint_for_service(
-                    &self.service_invocation_id.service_id.service_name
+                    &self.full_invocation_id.service_id.service_name
                 )
                 .ok_or(InvocationTaskError::NoEndpointForService));
             let _ = self.invoker_tx.send(InvocationTaskOutput {
                 partition: self.partition,
-                service_invocation_id: self.service_invocation_id.clone(),
+                full_invocation_id: self.full_invocation_id.clone(),
                 inner: InvocationTaskOutputInner::SelectedEndpoint(endpoint_meta.id()),
             });
             endpoint_meta
@@ -569,10 +567,8 @@ where
         self.write(
             http_stream_tx,
             ProtocolMessage::new_start_message(
-                Bytes::copy_from_slice(
-                    &InvocationId::from(self.service_invocation_id.clone()).as_bytes(),
-                ),
-                self.service_invocation_id.to_string(),
+                Bytes::copy_from_slice(&self.full_invocation_id.to_invocation_id_bytes()),
+                self.full_invocation_id.to_string(),
                 journal_size,
                 is_partial,
                 state_entries,
@@ -658,7 +654,7 @@ where
                     )));
                 let _ = self.invoker_tx.send(InvocationTaskOutput {
                     partition: self.partition,
-                    service_invocation_id: self.service_invocation_id.clone(),
+                    full_invocation_id: self.full_invocation_id.clone(),
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
                         entry: enriched_entry,
@@ -685,7 +681,7 @@ where
             endpoint_metadata.address(),
             &[
                 "invoke",
-                self.service_invocation_id
+                self.full_invocation_id
                     .service_id
                     .service_name
                     .chars()

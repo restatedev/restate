@@ -42,9 +42,9 @@ pub mod storage {
                 enriched_entry_header, invocation_resolution_result, invocation_status,
                 outbox_message, outbox_message::outbox_service_invocation_response,
                 response_result, span_relation, timer, BackgroundCallResolutionResult,
-                EnrichedEntryHeader, InboxEntry, InvocationResolutionResult, InvocationStatus,
-                JournalEntry, JournalMeta, OutboxMessage, ResponseResult, SequencedTimer,
-                ServiceInvocation, ServiceInvocationId, ServiceInvocationResponseSink, SpanContext,
+                EnrichedEntryHeader, FullInvocationId, InboxEntry, InvocationResolutionResult,
+                InvocationStatus, JournalEntry, JournalMeta, OutboxMessage, ResponseResult,
+                SequencedTimer, ServiceInvocation, ServiceInvocationResponseSink, SpanContext,
                 SpanRelation, Timer,
             };
             use anyhow::anyhow;
@@ -344,7 +344,7 @@ pub mod storage {
                         argument,
                     } = value;
 
-                    let id = restate_types::identifiers::ServiceInvocationId::try_from(
+                    let id = restate_types::identifiers::FullInvocationId::try_from(
                         id.ok_or(ConversionError::missing_field("id"))?,
                     )?;
 
@@ -363,7 +363,7 @@ pub mod storage {
                         ByteString::try_from(method_name).map_err(ConversionError::invalid_data)?;
 
                     Ok(restate_types::invocation::ServiceInvocation {
-                        id,
+                        fid: id,
                         method_name,
                         argument,
                         response_sink,
@@ -374,7 +374,7 @@ pub mod storage {
 
             impl From<restate_types::invocation::ServiceInvocation> for ServiceInvocation {
                 fn from(value: restate_types::invocation::ServiceInvocation) -> Self {
-                    let id = ServiceInvocationId::from(value.id);
+                    let id = FullInvocationId::from(value.fid);
                     let span_context = SpanContext::from(value.span_context);
                     let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
                     let method_name = value.method_name.into_bytes();
@@ -389,11 +389,11 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<ServiceInvocationId> for restate_types::identifiers::ServiceInvocationId {
+            impl TryFrom<FullInvocationId> for restate_types::identifiers::FullInvocationId {
                 type Error = ConversionError;
 
-                fn try_from(value: ServiceInvocationId) -> Result<Self, Self::Error> {
-                    let ServiceInvocationId {
+                fn try_from(value: FullInvocationId) -> Result<Self, Self::Error> {
+                    let FullInvocationId {
                         service_name,
                         service_key,
                         invocation_uuid,
@@ -403,7 +403,7 @@ pub mod storage {
                         .map_err(ConversionError::invalid_data)?;
                     let invocation_uuid = try_bytes_into_invocation_uuid(invocation_uuid)?;
 
-                    Ok(restate_types::identifiers::ServiceInvocationId::new(
+                    Ok(restate_types::identifiers::FullInvocationId::new(
                         service_name,
                         service_key,
                         invocation_uuid,
@@ -411,13 +411,13 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_types::identifiers::ServiceInvocationId> for ServiceInvocationId {
-                fn from(value: restate_types::identifiers::ServiceInvocationId) -> Self {
+            impl From<restate_types::identifiers::FullInvocationId> for FullInvocationId {
+                fn from(value: restate_types::identifiers::FullInvocationId) -> Self {
                     let invocation_uuid = invocation_uuid_to_bytes(&value.invocation_uuid);
                     let service_key = value.service_id.key;
                     let service_name = value.service_id.service_name.into_bytes();
 
-                    ServiceInvocationId {
+                    FullInvocationId {
                         invocation_uuid,
                         service_key,
                         service_name,
@@ -571,7 +571,7 @@ pub mod storage {
                         .ok_or(ConversionError::missing_field("response_sink"))?
                     {
                         ResponseSink::PartitionProcessor(partition_processor) => {
-                            let caller = restate_types::identifiers::ServiceInvocationId::try_from(
+                            let caller = restate_types::identifiers::FullInvocationId::try_from(
                                 partition_processor
                                     .caller
                                     .ok_or(ConversionError::missing_field("caller"))?,
@@ -613,7 +613,7 @@ pub mod storage {
                             },
                         ) => ResponseSink::PartitionProcessor(PartitionProcessor {
                             entry_index,
-                            caller: Some(ServiceInvocationId::from(caller)),
+                            caller: Some(FullInvocationId::from(caller)),
                         }),
                         Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress(ingress_id)) => {
                             ResponseSink::Ingress(Ingress {
@@ -1046,11 +1046,11 @@ pub mod storage {
                                     .id
                                     .ok_or(ConversionError::missing_field("id"))?
                                 {
-                                    outbox_service_invocation_response::Id::ServiceInvocationId(
-                                        sid,
+                                    outbox_service_invocation_response::Id::FullInvocationId(
+                                        fid,
                                     ) => MaybeFullInvocationId::Full(
-                                        restate_types::identifiers::ServiceInvocationId::try_from(
-                                            sid,
+                                        restate_types::identifiers::FullInvocationId::try_from(
+                                            fid,
                                         )?,
                                     ),
                                     outbox_service_invocation_response::Id::InvocationId(
@@ -1071,10 +1071,10 @@ pub mod storage {
                         ),
                         outbox_message::OutboxMessage::IngressResponse(ingress_response) => {
                             restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
-                                service_invocation_id:
-                                    restate_types::identifiers::ServiceInvocationId::try_from(
-                                        ingress_response.service_invocation_id.ok_or(
-                                            ConversionError::missing_field("service_invocation_id"),
+                                full_invocation_id:
+                                    restate_types::identifiers::FullInvocationId::try_from(
+                                        ingress_response.full_invocation_id.ok_or(
+                                            ConversionError::missing_field("full_invocation_id"),
                                         )?,
                                     )?,
                                 ingress_id: try_string_into_ingress_id(
@@ -1116,9 +1116,9 @@ pub mod storage {
                                             Bytes::copy_from_slice(&iid.as_bytes()),
                                         )
                                     }
-                                    MaybeFullInvocationId::Full(sid) => {
-                                        outbox_service_invocation_response::Id::ServiceInvocationId(
-                                            ServiceInvocationId::from(sid),
+                                    MaybeFullInvocationId::Full(fid) => {
+                                        outbox_service_invocation_response::Id::FullInvocationId(
+                                            FullInvocationId::from(fid),
                                         )
                                     }
                                 }),
@@ -1129,12 +1129,12 @@ pub mod storage {
                         ),
                         restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
                             ingress_id,
-                            service_invocation_id,
+                            full_invocation_id,
                             response,
                         } => {
                             outbox_message::OutboxMessage::IngressResponse(OutboxIngressResponse {
-                                service_invocation_id: Some(ServiceInvocationId::from(
-                                    service_invocation_id,
+                                full_invocation_id: Some(FullInvocationId::from(
+                                    full_invocation_id,
                                 )),
                                 ingress_id: ingress_id_to_string(ingress_id),
                                 response_result: Some(ResponseResult::from(response)),

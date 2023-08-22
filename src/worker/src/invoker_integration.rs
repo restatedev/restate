@@ -10,7 +10,7 @@
 
 use assert2::let_assert;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::identifiers::{InvocationUuid, ServiceInvocationId};
+use restate_types::identifiers::{FullInvocationId, InvocationUuid};
 use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
 use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec, RawEntryHeader};
@@ -58,7 +58,7 @@ where
 
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(
-            &ServiceInvocationId::new(request.service_name, service_key.clone(), invocation_id),
+            &FullInvocationId::new(request.service_name, service_key.clone(), invocation_id),
             span_relation,
         );
 

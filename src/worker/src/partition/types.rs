@@ -10,7 +10,7 @@
 
 use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::EntryIndex;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::ServiceInvocation;
 use restate_types::time::MillisSinceEpoch;
 use std::cmp::Ordering;
@@ -22,7 +22,7 @@ pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TimerValue {
-    pub service_invocation_id: ServiceInvocationId,
+    pub full_invocation_id: FullInvocationId,
     pub wake_up_time: MillisSinceEpoch,
     pub entry_index: EntryIndex,
     pub value: Timer,
@@ -30,12 +30,12 @@ pub(crate) struct TimerValue {
 
 impl TimerValue {
     pub(crate) fn new_sleep(
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Self {
         Self {
-            service_invocation_id,
+            full_invocation_id,
             wake_up_time,
             entry_index,
             value: Timer::CompleteSleepEntry,
@@ -43,13 +43,13 @@ impl TimerValue {
     }
 
     pub(crate) fn new_invoke(
-        service_invocation_id: ServiceInvocationId,
+        full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         service_invocation: ServiceInvocation,
     ) -> Self {
         Self {
-            service_invocation_id,
+            full_invocation_id,
             wake_up_time,
             entry_index,
             value: Timer::Invoke(service_invocation),
@@ -57,13 +57,13 @@ impl TimerValue {
     }
 
     pub(crate) fn display_key(&self) -> TimerKeyDisplay {
-        return TimerKeyDisplay(&self.service_invocation_id, &self.entry_index);
+        return TimerKeyDisplay(&self.full_invocation_id, &self.entry_index);
     }
 }
 
 impl Hash for TimerValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Hash::hash(&self.service_invocation_id, state);
+        Hash::hash(&self.full_invocation_id, state);
         Hash::hash(&self.wake_up_time, state);
         Hash::hash(&self.entry_index, state);
         // We don't hash the value field.
@@ -72,7 +72,7 @@ impl Hash for TimerValue {
 
 impl PartialEq for TimerValue {
     fn eq(&self, other: &Self) -> bool {
-        self.service_invocation_id == other.service_invocation_id
+        self.full_invocation_id == other.full_invocation_id
             && self.wake_up_time == other.wake_up_time
             && self.entry_index == other.entry_index
     }
@@ -97,11 +97,11 @@ impl Ord for TimerValue {
         self.wake_up_time
             .cmp(&other.wake_up_time)
             .then_with(|| {
-                let service_id = &self.service_invocation_id.service_id;
-                let invocation_id = &self.service_invocation_id.invocation_uuid;
+                let service_id = &self.full_invocation_id.service_id;
+                let invocation_id = &self.full_invocation_id.invocation_uuid;
 
-                let other_service_id = &other.service_invocation_id.service_id;
-                let other_invocation_id = &other.service_invocation_id.invocation_uuid;
+                let other_service_id = &other.full_invocation_id.service_id;
+                let other_invocation_id = &other.full_invocation_id.invocation_uuid;
 
                 service_id
                     .service_name
@@ -129,10 +129,7 @@ impl restate_timer::TimerKey for TimerValue {
 
 // Helper to display timer key
 #[derive(Debug)]
-pub(crate) struct TimerKeyDisplay<'a>(
-    pub(crate) &'a ServiceInvocationId,
-    pub(crate) &'a EntryIndex,
-);
+pub(crate) struct TimerKeyDisplay<'a>(pub(crate) &'a FullInvocationId, pub(crate) &'a EntryIndex);
 
 impl<'a> fmt::Display for TimerKeyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

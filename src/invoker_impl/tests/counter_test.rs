@@ -24,7 +24,7 @@ use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_test_util::{assert, assert_eq, let_assert, test};
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::{
@@ -55,7 +55,7 @@ fn register_counter_test_steps(partition_processor_simulator: &mut PartitionProc
     partition_processor_simulator.append_handler_step(|out| {
         let_assert!(
             Effect {
-                service_invocation_id,
+                full_invocation_id,
                 kind: EffectKind::JournalEntry {
                     entry_index: 1,
                     entry,
@@ -74,7 +74,7 @@ fn register_counter_test_steps(partition_processor_simulator: &mut PartitionProc
         assert_eq!(key, Bytes::from_static(b"total"));
 
         SimulatorAction::SendCompletion(
-            service_invocation_id,
+            full_invocation_id,
             Completion {
                 entry_index: 1,
                 result: CompletionResult::Empty,
@@ -129,7 +129,7 @@ fn register_set_state_and_output_steps(
 #[ignore]
 #[test(tokio::test)]
 async fn bidi_stream() {
-    let sid = ServiceInvocationId::new(
+    let fid = FullInvocationId::new(
         "counter.Counter",
         Bytes::from_static(b"my-counter"),
         Uuid::now_v7(),
@@ -140,7 +140,7 @@ async fn bidi_stream() {
 
     let mut endpoint_metadata_registry = MockEndpointMetadataRegistry::default();
     endpoint_metadata_registry.mock_service_with_metadata(
-        &sid.service_id.service_name,
+        &fid.service_id.service_name,
         EndpointMetadata::new(
             Uri::from_static("http://localhost:8080"),
             ProtocolType::BidiStream,
@@ -167,7 +167,7 @@ async fn bidi_stream() {
         PartitionProcessorSimulator::new(journal_reader, remote_invoker.handle()).await;
     partition_processor_simulator
         .invoke(
-            sid.clone(),
+            fid.clone(),
             "GetAndAdd",
             CounterAddRequest {
                 counter_name: "my-counter".to_string(),

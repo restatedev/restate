@@ -88,7 +88,7 @@ mod ingress_integration {
         fn partition_key(&self) -> PartitionKey {
             match &self.invocation_or_response {
                 restate_ingress_grpc::InvocationOrResponse::Invocation(invocation) => {
-                    invocation.id.service_id.partition_key()
+                    invocation.fid.service_id.partition_key()
                 }
                 restate_ingress_grpc::InvocationOrResponse::Response(response) => {
                     response.id.partition_key()
@@ -160,7 +160,7 @@ mod shuffle_integration {
         fn partition_key(&self) -> PartitionKey {
             match &self.msg {
                 shuffle::InvocationOrResponse::Invocation(invocation) => {
-                    invocation.id.service_id.partition_key()
+                    invocation.fid.service_id.partition_key()
                 }
                 shuffle::InvocationOrResponse::Response(response) => response.id.partition_key(),
             }
@@ -230,7 +230,7 @@ mod shuffle_integration {
             let ShuffleToIngress {
                 msg:
                     shuffle::IngressResponse {
-                        service_invocation_id,
+                        full_invocation_id,
                         response,
                         ..
                     },
@@ -246,7 +246,7 @@ mod shuffle_integration {
             };
 
             restate_ingress_grpc::IngressInput::response(IngressResponseMessage {
-                service_invocation_id,
+                full_invocation_id,
                 result,
                 ack_target: restate_ingress_grpc::AckTarget::new(shuffle_id, msg_index),
             })

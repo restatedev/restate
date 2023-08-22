@@ -15,7 +15,7 @@ use std::time::SystemTime;
 
 #[derive(Default, Debug)]
 pub(super) struct InvocationStatusStore(
-    HashMap<PartitionLeaderEpoch, HashMap<ServiceInvocationId, InvocationStatusReportInner>>,
+    HashMap<PartitionLeaderEpoch, HashMap<FullInvocationId, InvocationStatusReportInner>>,
 );
 
 impl InvocationStatusStore {
@@ -23,9 +23,9 @@ impl InvocationStatusStore {
         self.0
             .iter()
             .flat_map(|(partition_leader_epoch, inner_map)| {
-                inner_map.iter().map(move |(sid, report)| {
+                inner_map.iter().map(move |(fid, report)| {
                     InvocationStatusReport::new(
-                        sid.clone(),
+                        fid.clone(),
                         *partition_leader_epoch,
                         report.clone(),
                     )
@@ -35,21 +35,21 @@ impl InvocationStatusStore {
 
     // -- Methods used by the invoker to notify the status
 
-    pub(super) fn on_start(&mut self, partition: PartitionLeaderEpoch, sid: ServiceInvocationId) {
+    pub(super) fn on_start(&mut self, partition: PartitionLeaderEpoch, fid: FullInvocationId) {
         let report = self
             .0
             .entry(partition)
             .or_insert_with(Default::default)
-            .entry(sid)
+            .entry(fid)
             .or_insert_with(Default::default);
         report.start_count += 1;
         report.last_start_at = SystemTime::now();
         report.in_flight = true;
     }
 
-    pub(super) fn on_end(&mut self, partition: &PartitionLeaderEpoch, sid: &ServiceInvocationId) {
+    pub(super) fn on_end(&mut self, partition: &PartitionLeaderEpoch, fid: &FullInvocationId) {
         if let Some(inner) = self.0.get_mut(partition) {
-            inner.remove(sid);
+            inner.remove(fid);
             if inner.is_empty() {
                 self.0.remove(partition);
             }
@@ -59,14 +59,14 @@ impl InvocationStatusStore {
     pub(super) fn on_failure(
         &mut self,
         partition: PartitionLeaderEpoch,
-        sid: ServiceInvocationId,
+        fid: FullInvocationId,
         reason: InvocationErrorReport,
     ) {
         let report = self
             .0
             .entry(partition)
             .or_insert_with(Default::default)
-            .entry(sid)
+            .entry(fid)
             .or_insert_with(Default::default);
         report.in_flight = false;
         report.last_retry_attempt_failure = Some(reason);
@@ -81,11 +81,11 @@ mod tests {
         pub fn resolve_invocation(
             &self,
             partition: PartitionLeaderEpoch,
-            sid: &ServiceInvocationId,
+            fid: &FullInvocationId,
         ) -> Option<InvocationStatusReport> {
             self.0.get(&partition).and_then(|inner| {
-                inner.get(sid).map(|report| {
-                    InvocationStatusReport::new(sid.clone(), partition, report.clone())
+                inner.get(fid).map(|report| {
+                    InvocationStatusReport::new(fid.clone(), partition, report.clone())
                 })
             })
         }

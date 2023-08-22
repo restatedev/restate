@@ -26,7 +26,6 @@ use hyper::Server;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
 use restate_schema_api::endpoint::EndpointMetadataResolver;
-use restate_schema_api::key::RestateKeyConverter;
 use restate_schema_api::service::ServiceMetadataResolver;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -63,12 +62,7 @@ impl MetaRestEndpoint {
     }
 
     pub async fn run<
-        S: ServiceMetadataResolver
-            + EndpointMetadataResolver
-            + RestateKeyConverter
-            + Send
-            + Sync
-            + 'static,
+        S: ServiceMetadataResolver + EndpointMetadataResolver + Send + Sync + 'static,
         W: restate_worker_api::Handle + Send + Sync + 'static,
     >(
         self,
@@ -119,7 +113,7 @@ impl MetaRestEndpoint {
                 get(openapi_handler!(methods::get_service_method)),
             )
             .route(
-                "/invocations",
+                "/invocations/:invocation_id",
                 delete(openapi_handler!(invocations::cancel_invocation)),
             )
             .route("/health", get(openapi_handler!(health::health)))

@@ -174,10 +174,10 @@ pub struct InvocationId {
 pub type EncodedInvocationId = [u8; size_of::<PartitionKey>() + size_of::<uuid::Bytes>()];
 
 impl InvocationId {
-    pub fn new(partition_key: PartitionKey, invocation_uuid: InvocationUuid) -> Self {
+    pub fn new(partition_key: PartitionKey, invocation_uuid: impl Into<InvocationUuid>) -> Self {
         Self {
             partition_key,
-            invocation_uuid,
+            invocation_uuid: invocation_uuid.into(),
         }
     }
 
@@ -223,15 +223,6 @@ impl From<InvocationId> for EncodedInvocationId {
     }
 }
 
-impl From<ServiceInvocationId> for InvocationId {
-    fn from(value: ServiceInvocationId) -> Self {
-        Self {
-            partition_key: value.partition_key(),
-            invocation_uuid: value.invocation_uuid,
-        }
-    }
-}
-
 impl WithPartitionKey for InvocationId {
     fn partition_key(&self) -> PartitionKey {
         self.partition_key
@@ -273,14 +264,14 @@ impl FromStr for InvocationId {
 /// that makes the id unique.
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ServiceInvocationId {
+pub struct FullInvocationId {
     /// Identifies the invoked service
     pub service_id: ServiceId,
     /// Uniquely identifies this invocation instance
     pub invocation_uuid: InvocationUuid,
 }
 
-impl ServiceInvocationId {
+impl FullInvocationId {
     pub fn new(
         service_name: impl Into<ByteString>,
         key: impl Into<Bytes>,
@@ -298,65 +289,36 @@ impl ServiceInvocationId {
             invocation_uuid: invocation_id.into(),
         }
     }
+
+    pub fn to_invocation_id_bytes(&self) -> EncodedInvocationId {
+        encode_invocation_id(&self.service_id.partition_key, &self.invocation_uuid)
+    }
 }
 
-impl WithPartitionKey for ServiceInvocationId {
+impl WithPartitionKey for FullInvocationId {
     fn partition_key(&self) -> PartitionKey {
         self.service_id.partition_key()
     }
 }
 
-impl fmt::Display for ServiceInvocationId {
+impl fmt::Display for FullInvocationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}-{}-{}",
-            self.service_id.service_name,
-            Base64Display::new(&self.service_id.key, &BASE64_STANDARD),
-            self.invocation_uuid
-        )
+        display_invocation_id(&self.service_id.partition_key, &self.invocation_uuid, f)
     }
 }
 
-#[derive(Debug, Default, thiserror::Error)]
-#[error("cannot parse the opaque id, bad format")]
-pub struct ServiceInvocationIdParseError {
-    #[source]
-    cause: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
-}
-
-impl ServiceInvocationIdParseError {
-    pub fn from_cause(cause: impl std::error::Error + Send + Sync + 'static) -> Self {
+impl From<FullInvocationId> for InvocationId {
+    fn from(value: FullInvocationId) -> Self {
         Self {
-            cause: Some(Box::new(cause)),
+            partition_key: value.partition_key(),
+            invocation_uuid: value.invocation_uuid,
         }
     }
 }
 
-impl FromStr for ServiceInvocationId {
-    type Err = ServiceInvocationIdParseError;
-
-    fn from_str(str: &str) -> Result<Self, Self::Err> {
-        // This encoding is based on the fact that neither invocation_id
-        // nor service_name can contain the '-' character
-        // Invocation id is serialized as simple
-        // Service name follows the fullIdent ABNF here:
-        // https://protobuf.dev/reference/protobuf/proto3-spec/#identifiers
-        let mut splits: Vec<&str> = str.splitn(3, '-').collect();
-        if splits.len() != 3 {
-            return Err(ServiceInvocationIdParseError::default());
-        }
-        let invocation_id: Uuid = splits
-            .pop()
-            .unwrap()
-            .parse()
-            .map_err(ServiceInvocationIdParseError::from_cause)?;
-        let key = BASE64_STANDARD
-            .decode(splits.pop().unwrap())
-            .map_err(ServiceInvocationIdParseError::from_cause)?;
-        let service_name = splits.pop().unwrap().to_string();
-
-        Ok(ServiceInvocationId::new(service_name, key, invocation_id))
+impl From<FullInvocationId> for EncodedInvocationId {
+    fn from(value: FullInvocationId) -> Self {
+        value.to_invocation_id_bytes()
     }
 }
 
@@ -413,7 +375,16 @@ mod mocks {
     use rand::distributions::{Alphanumeric, DistString};
     use rand::Rng;
 
-    impl ServiceInvocationId {
+    impl InvocationId {
+        pub fn mock_random() -> Self {
+            Self::new(
+                rand::thread_rng().sample::<PartitionKey, _>(rand::distributions::Standard),
+                Uuid::now_v7(),
+            )
+        }
+    }
+
+    impl FullInvocationId {
         pub fn mock_random() -> Self {
             Self::new(
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
@@ -437,38 +408,5 @@ mod tests {
             expected,
             InvocationId::from_slice(&expected.as_bytes()).unwrap()
         )
-    }
-
-    fn roundtrip_test(expected_sid: ServiceInvocationId) {
-        let opaque_sid: String = expected_sid.to_string();
-        let actual_sid: ServiceInvocationId = opaque_sid.parse().unwrap();
-        assert_eq!(expected_sid, actual_sid);
-    }
-
-    #[test]
-    fn roundtrip_keyed_service_with_hyphens() {
-        roundtrip_test(ServiceInvocationId::new(
-            "my.example.Service",
-            "-------stuff------".as_bytes().to_vec(),
-            Uuid::now_v7(),
-        ));
-    }
-
-    #[test]
-    fn roundtrip_unkeyed_service() {
-        roundtrip_test(ServiceInvocationId::new(
-            "my.example.Service",
-            Uuid::now_v7().as_bytes().to_vec(),
-            Uuid::now_v7(),
-        ));
-    }
-
-    #[test]
-    fn roundtrip_empty_key() {
-        roundtrip_test(ServiceInvocationId::new(
-            "my.example.Service",
-            "".as_bytes().to_vec(),
-            Uuid::now_v7(),
-        ));
     }
 }

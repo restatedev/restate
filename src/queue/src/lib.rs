@@ -17,7 +17,7 @@ pub use segmented_queue::SegmentQueue;
 mod tests {
     use super::*;
 
-    use restate_types::identifiers::ServiceInvocationId;
+    use restate_types::identifiers::FullInvocationId;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -43,10 +43,10 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let mut queue = SegmentQueue::new(temp_dir.path(), 1);
 
-        queue.enqueue(ServiceInvocationId::mock_random()).await;
-        queue.enqueue(ServiceInvocationId::mock_random()).await;
-        queue.enqueue(ServiceInvocationId::mock_random()).await;
-        queue.enqueue(ServiceInvocationId::mock_random()).await;
+        queue.enqueue(FullInvocationId::mock_random()).await;
+        queue.enqueue(FullInvocationId::mock_random()).await;
+        queue.enqueue(FullInvocationId::mock_random()).await;
+        queue.enqueue(FullInvocationId::mock_random()).await;
 
         assert!(queue.dequeue().await.is_some());
         assert!(queue.dequeue().await.is_some());

@@ -374,7 +374,7 @@ where
                     })?;
 
                 let service_invocation = ServiceInvocation::new(
-                    ServiceInvocationId::new(service_name, key, InvocationUuid::now_v7()),
+                    FullInvocationId::new(service_name, key, InvocationUuid::now_v7()),
                     method_name.into(),
                     req_payload,
                     response_sink,
@@ -383,7 +383,7 @@ where
 
                 // Ingress built-in service just sends a fire and forget and closes
                 if !wait_response {
-                    let sid = service_invocation.id.to_string();
+                    let id = service_invocation.fid.to_string();
 
                     if dispatcher_command_sender.send(Command::fire_and_forget(
                         InvocationOrResponse::Invocation(service_invocation)
@@ -393,7 +393,7 @@ where
                     }
                     return Ok(
                         restate_pb::restate::services::InvokeResponse {
-                            sid,
+                            id,
                         }.encode_to_vec().into()
                     )
                 }

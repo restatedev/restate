@@ -159,7 +159,7 @@ mod tests {
     use prost::Message;
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_test_util::{assert_eq, let_assert, test};
-    use restate_types::identifiers::ServiceInvocationId;
+    use restate_types::identifiers::{FullInvocationId, InvocationId};
     use restate_types::invocation::MaybeFullInvocationId;
     use serde_json::json;
     use std::net::SocketAddr;
@@ -197,7 +197,7 @@ mod tests {
         // Get the function invocation and assert on it
         let_assert!(InvocationOrResponse::Invocation(mut service_invocation) = cmd_fut.await.unwrap());
         assert_eq!(
-            service_invocation.id.service_id.service_name,
+            service_invocation.fid.service_id.service_name,
             "greeter.Greeter"
         );
         assert_eq!(service_invocation.method_name, "Greet");
@@ -254,7 +254,7 @@ mod tests {
         // Get the function invocation and assert on it
         let_assert!(InvocationOrResponse::Invocation(mut service_invocation) = cmd_fut.await.unwrap());
         assert_eq!(
-            service_invocation.id.service_id.service_name,
+            service_invocation.fid.service_id.service_name,
             "greeter.Greeter"
         );
         assert_eq!(service_invocation.method_name, "Greet");
@@ -269,14 +269,14 @@ mod tests {
         let response_bytes = hyper::body::to_bytes(response_body).await.unwrap();
         let response_json_value: serde_json::Value =
             serde_json::from_slice(&response_bytes).unwrap();
-        let sid: ServiceInvocationId = response_json_value
-            .get("sid")
+        let id: InvocationId = response_json_value
+            .get("id")
             .unwrap()
             .as_str()
             .unwrap()
             .parse()
             .unwrap();
-        assert_eq!(sid.service_id.service_name, "greeter.Greeter");
+        assert_eq!(id, InvocationId::from(service_invocation.fid));
 
         handle.close().await;
     }
@@ -290,8 +290,8 @@ mod tests {
             service_invocation
         });
 
-        let sid = ServiceInvocationId::mock_random();
-        let awakeable_id = AwakeableIdentifier::new(sid.clone().into(), 2).encode();
+        let fid = FullInvocationId::mock_random();
+        let awakeable_id = AwakeableIdentifier::new(fid.clone().into(), 2).encode();
 
         // Send the request
         let json_payload = json!({
@@ -315,7 +315,7 @@ mod tests {
         let_assert!(InvocationOrResponse::Response(invocation_response) = cmd_fut.await.unwrap());
         assert_eq!(
             invocation_response.id,
-            MaybeFullInvocationId::Partial(sid.into())
+            MaybeFullInvocationId::Partial(fid.into())
         );
         assert_eq!(invocation_response.entry_index, 2);
         assert_eq!(
@@ -360,7 +360,7 @@ mod tests {
 
         let_assert!(InvocationOrResponse::Invocation(mut service_invocation) = cmd_fut.await.unwrap());
         assert_eq!(
-            service_invocation.id.service_id.service_name,
+            service_invocation.fid.service_id.service_name,
             "greeter.Greeter"
         );
         assert_eq!(service_invocation.method_name, "Greet");

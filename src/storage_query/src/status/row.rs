@@ -14,7 +14,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_rocksdb::status_table::OwnedStatusRow;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::ServiceInvocationResponseSink;
 use std::fmt;
 use std::fmt::Write;
@@ -96,9 +96,9 @@ fn fill_invocation_metadata(
         row.invocation_id(invocation_id_str);
     }
 
-    if row.is_sid_defined() {
-        let sid = ServiceInvocationId::new(service_name, service_key, invocation_id);
-        row.sid(format_using(output, &sid));
+    if row.is_fid_defined() {
+        let fid = FullInvocationId::new(service_name, service_key, invocation_id);
+        row.fid(format_using(output, &fid));
     }
 
     row.created_at(creation_time.as_u64() as i64);

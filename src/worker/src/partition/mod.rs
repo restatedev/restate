@@ -150,12 +150,12 @@ where
                                 let mut transaction = partition_storage.create_transaction();
 
                                 // Handle the command, returns the span_relation to use to log effects
-                                let (sid, span_relation) = state_machine.on_apply(ackable_command, &mut effects, &mut transaction).await?;
+                                let (fid, span_relation) = state_machine.on_apply(ackable_command, &mut effects, &mut transaction).await?;
 
                                 let is_leader = leadership_state.is_leader();
 
                                 // Log the effects
-                                effects.log(is_leader, sid, span_relation);
+                                effects.log(is_leader, fid, span_relation);
 
                                 // Prepare message collector
                                 let message_collector = leadership_state.into_message_collector();
