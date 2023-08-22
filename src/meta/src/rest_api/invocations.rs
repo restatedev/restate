@@ -10,102 +10,39 @@
 
 use super::error::*;
 use super::state::*;
-use axum::extract::State;
-use axum::Json;
+
+use axum::extract::{Path, State};
 use okapi_operation::*;
-use restate_schema_api::key::json_conversion::Error;
-use restate_schema_api::key::RestateKeyConverter;
-use restate_types::identifiers;
-
-use schemars::JsonSchema;
-use serde::Deserialize;
+use restate_types::identifiers::InvocationId;
 use std::sync::Arc;
-use uuid::Uuid;
-
-/// # Service invocation id
-///
-/// Identifier for a service invocation.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum ServiceInvocationId {
-    /// # Token representation
-    ///
-    /// Token representation of the service invocation identifier.
-    /// This is the same representation used by the Restate CLI SQL interface.
-    Token(String),
-    /// # Structured representation
-    ///
-    /// Structured representation of the service invocation identifier.
-    ///
-    /// When providing the key, it must be non-empty for Keyed and Unkeyed services, and it must be empty for Singleton services.
-    Structured {
-        service: String,
-        key: Option<serde_json::Value>,
-        #[serde(alias = "id")]
-        invocation_id: restate_serde_util::SerdeableUuid,
-    },
-}
-
-impl ServiceInvocationId {
-    fn into_full_invocation_id<K: RestateKeyConverter>(
-        self,
-        key_converter: &K,
-    ) -> Result<identifiers::FullInvocationId, MetaApiError> {
-        match self {
-            ServiceInvocationId::Token(opaque_sid) => opaque_sid
-                .parse::<identifiers::FullInvocationId>()
-                .map_err(|e| MetaApiError::InvalidField("fid", e.to_string())),
-            ServiceInvocationId::Structured {
-                service,
-                key,
-                invocation_id,
-            } => {
-                // Convert the json key to restate key
-                let restate_key = key_converter
-                    .json_to_key(&service, key.unwrap_or(serde_json::Value::Null))
-                    .map_err(|e| match e {
-                        Error::NotFound => MetaApiError::ServiceNotFound(service.clone()),
-                        e => MetaApiError::InvalidField("fid", e.to_string()),
-                    })?;
-
-                Ok(identifiers::FullInvocationId::new(
-                    service,
-                    restate_key,
-                    Uuid::from(invocation_id),
-                ))
-            }
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CancelInvocationRequest {
-    /// # Target identifier
-    ///
-    /// Identifier of the service invocation to cancel/kill.
-    #[allow(dead_code)]
-    fid: ServiceInvocationId,
-}
 
 /// Cancel/kill an invocation
 #[openapi(
     summary = "Kill an invocation",
     description = "Kill the given invocation. When killing, consistency is not guaranteed for service instance state, in-flight invocation to other services, etc. Future releases will support graceful invocation cancellation.",
     operation_id = "cancel_invocation",
-    tags = "invocation"
+    tags = "invocation",
+    parameters(path(
+        name = "invocation_id",
+        description = "Invocation identifier.",
+        schema = "std::string::String"
+    ))
 )]
 pub async fn cancel_invocation<S, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
-    #[request_body(required = true)] Json(req): Json<CancelInvocationRequest>,
+    Path(invocation_id): Path<String>,
 ) -> Result<(), MetaApiError>
 where
-    S: RestateKeyConverter,
     W: restate_worker_api::Handle + Send,
     W::Future: Send,
 {
     state
         .worker_handle()
-        .kill_invocation(req.fid.into_full_invocation_id(state.schemas())?)
+        .kill_invocation(
+            invocation_id
+                .parse::<InvocationId>()
+                .map_err(|e| MetaApiError::InvalidField("fid", e.to_string()))?,
+        )
         .await?;
     Ok(())
 }

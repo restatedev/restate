@@ -59,7 +59,7 @@ pub(crate) enum Error {
 
 #[derive(Debug)]
 pub(crate) enum Command {
-    Kill(FullInvocationId),
+    Kill(InvocationId),
     Invoker(InvokerEffect),
     Timer(TimerValue),
     OutboxTruncation(MessageIndex),
@@ -189,18 +189,18 @@ where
                 Ok((None, SpanRelation::None))
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
-            Command::Kill(fid) => self.try_kill_invocation(fid, state, effects).await,
+            Command::Kill(iid) => self.try_kill_invocation(iid, state, effects).await,
         };
     }
 
     async fn try_kill_invocation<State: StateReader>(
         &mut self,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let status = state
-            .get_invocation_status(&full_invocation_id.service_id)
+        let (full_invocation_id, status) = state
+            .resolve_invocation_status_from_invocation_id(&invocation_id)
             .await?;
 
         match status {
