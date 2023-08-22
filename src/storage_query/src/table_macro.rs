@@ -10,28 +10,28 @@
 
 macro_rules! define_builder {
     (DataType::Utf8) => {
-        StringBuilder
+        ::datafusion::arrow::array::StringBuilder
     };
     (DataType::LargeUtf8) => {
-        LargeStringBuilder
+        ::datafusion::arrow::array::LargeStringBuilder
     };
     (DataType::Binary) => {
-        BinaryBuilder
+        ::datafusion::arrow::array::BinaryBuilder
     };
     (DataType::LargeBinary) => {
-        LargeBinaryBuilder
+        ::datafusion::arrow::array::LargeBinaryBuilder
     };
     (DataType::UInt32) => {
-        UInt32Builder
+        ::datafusion::arrow::array::UInt32Builder
     };
     (DataType::UInt64) => {
-        UInt64Builder
+        ::datafusion::arrow::array::UInt64Builder
     };
     (DataType::Int32) => {
-        Int32Builder
+        ::datafusion::arrow::array::Int32Builder
     };
     (DataType::Date64) => {
-        Date64Builder
+        ::datafusion::arrow::array::Date64Builder
     };
 }
 
@@ -282,7 +282,7 @@ macro_rules! define_table {
 
         pub struct [< $table_name:camel Builder >] {
             rows_inserted_so_far: usize,
-            projected_schema: SchemaRef,
+            projected_schema: ::datafusion::arrow::datatypes::SchemaRef,
             arrays: [< $table_name:camel ArrayBuilder >],
         }
 
@@ -345,13 +345,13 @@ macro_rules! define_table {
 
         impl [< $table_name:camel ArrayBuilder >] {
 
-             fn new(projected_schema: &SchemaRef) -> Self {
+             fn new(projected_schema: &::datafusion::arrow::datatypes::SchemaRef) -> Self {
                 Self {
                     $($element : Self::new_builder(&projected_schema, &stringify!($element)) ,)+
                 }
             }
 
-             fn new_builder<T: ArrayBuilder + Default>(projected_schema: &SchemaRef, me: &str) -> Option<T> {
+             fn new_builder<T: ::datafusion::arrow::array::ArrayBuilder + Default>(projected_schema: &::datafusion::arrow::datatypes::SchemaRef, me: &str) -> Option<T> {
                     if projected_schema.column_with_name(me).is_some() {
                        Some(T::default())
                     } else {
@@ -360,11 +360,11 @@ macro_rules! define_table {
              }
 
 
-             fn finish(mut self) -> Vec<ArrayRef> {
+             fn finish(mut self) -> Vec<::datafusion::arrow::array::ArrayRef> {
                 let arrays = [
                     $(  {
                         self.$element.as_mut().map(|e| {
-                            let builder: &mut dyn ArrayBuilder = e;
+                            let builder: &mut dyn ::datafusion::arrow::array::ArrayBuilder = e;
                             builder.finish()
                         })
 
@@ -382,7 +382,7 @@ macro_rules! define_table {
 
         impl [< $table_name:camel Builder >] {
 
-            pub fn new(projected_schema: SchemaRef) -> Self {
+            pub fn new(projected_schema: ::datafusion::arrow::datatypes::SchemaRef) -> Self {
                 Self {
                     rows_inserted_so_far: 0,
                     arrays:  [< $table_name:camel ArrayBuilder >]::new(&projected_schema),
@@ -400,10 +400,10 @@ macro_rules! define_table {
                  }
             }
 
-            pub fn schema() -> SchemaRef {
-                Arc::new(Schema::new(
+            pub fn schema() -> ::datafusion::arrow::datatypes::SchemaRef {
+                std::sync::Arc::new(::datafusion::arrow::datatypes::Schema::new(
                     vec![
-                        $(Field::new(stringify!($element), $ty, true),)+
+                        $(::datafusion::arrow::datatypes::Field::new(stringify!($element), $ty, true),)+
                     ])
                 )
             }
@@ -422,9 +422,9 @@ macro_rules! define_table {
                 self.rows_inserted_so_far == 0
             }
 
-            pub fn finish(self) -> RecordBatch {
+            pub fn finish(self) -> ::datafusion::arrow::record_batch::RecordBatch {
                 let arrays = self.arrays.finish();
-                RecordBatch::try_new(self.projected_schema, arrays).unwrap()
+                ::datafusion::arrow::record_batch::RecordBatch::try_new(self.projected_schema, arrays).unwrap()
             }
 
         }
