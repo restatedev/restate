@@ -121,6 +121,7 @@ pub struct ServiceEndpointResponse {
     #[schemars(with = "String")]
     uri: Uri,
     protocol_type: ProtocolType,
+    #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
     additional_headers: SerdeableHeaderHashMap,
     /// # Services
     ///
@@ -160,6 +161,41 @@ pub async fn get_service_endpoint<S: EndpointMetadataResolver, W>(
             .collect(),
     }
     .into())
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListServiceEndpointsResponse {
+    endpoints: Vec<ServiceEndpointResponse>,
+}
+
+/// List services
+#[openapi(
+    summary = "List service endpoints",
+    description = "List all registered endpoints.",
+    operation_id = "list_service_endpoints",
+    tags = "service_endpoint"
+)]
+pub async fn list_service_endpoints<S: EndpointMetadataResolver, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
+) -> Json<ListServiceEndpointsResponse> {
+    ListServiceEndpointsResponse {
+        endpoints: state
+            .schemas()
+            .get_endpoints()
+            .into_iter()
+            .map(|(endpoint_meta, services)| ServiceEndpointResponse {
+                id: endpoint_meta.id(),
+                uri: endpoint_meta.address().clone(),
+                protocol_type: endpoint_meta.protocol_type(),
+                additional_headers: endpoint_meta.additional_headers().clone().into(),
+                services: services
+                    .into_iter()
+                    .map(|(name, revision)| RegisterServiceResponse { name, revision })
+                    .collect(),
+            })
+            .collect(),
+    }
+    .into()
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

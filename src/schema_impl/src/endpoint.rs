@@ -50,4 +50,13 @@ impl EndpointMetadataResolver for Schemas {
             .get(endpoint_id)
             .map(|schemas| (schemas.metadata.clone(), schemas.services.clone()))
     }
+
+    fn get_endpoints(&self) -> Vec<(EndpointMetadata, Vec<(String, ServiceRevision)>)> {
+        let schemas = self.0.load();
+        schemas
+            .endpoints
+            .values()
+            .map(|schemas| (schemas.metadata.clone(), schemas.services.clone()))
+            .collect()
+    }
 }

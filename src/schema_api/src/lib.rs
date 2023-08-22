@@ -111,6 +111,8 @@ pub mod endpoint {
             &self,
             endpoint_id: &EndpointId,
         ) -> Option<(EndpointMetadata, Vec<(String, ServiceRevision)>)>;
+
+        fn get_endpoints(&self) -> Vec<(EndpointMetadata, Vec<(String, ServiceRevision)>)>;
     }
 
     #[cfg(feature = "mocks")]
@@ -183,6 +185,13 @@ pub mod endpoint {
                     .get(endpoint_id)
                     .cloned()
                     .map(|e| (e, vec![]))
+            }
+
+            fn get_endpoints(&self) -> Vec<(EndpointMetadata, Vec<(String, ServiceRevision)>)> {
+                self.endpoints
+                    .values()
+                    .map(|e| (e.clone(), vec![]))
+                    .collect()
             }
         }
     }

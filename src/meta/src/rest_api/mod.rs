@@ -87,6 +87,10 @@ impl MetaRestEndpoint {
         let meta_api = axum_integration::Router::new()
             .route(
                 "/endpoints",
+                get(openapi_handler!(endpoints::list_service_endpoints)),
+            )
+            .route(
+                "/endpoints",
                 post(openapi_handler!(endpoints::create_service_endpoint)),
             )
             .route(
