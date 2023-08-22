@@ -10,11 +10,9 @@
 
 use crate::status::schema::{StatusBuilder, StatusRowBuilder};
 use crate::udfs::restate_keys;
-use bytes::Bytes;
-use bytestring::ByteString;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_rocksdb::status_table::OwnedStatusRow;
-use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ServiceInvocationResponseSink;
 use std::fmt;
 use std::fmt::Write;
@@ -41,6 +39,7 @@ pub(crate) fn append_status_row(
             None
         }
     };
+
     row.partition_key(status_row.partition_key);
     row.service(&status_row.service);
     row.service_key(&status_row.service_key);
@@ -63,13 +62,14 @@ pub(crate) fn append_status_row(
         }
     }
     if let Some(metadata) = metadata {
-        fill_invocation_metadata(
-            &mut row,
-            output,
-            status_row.service,
-            status_row.service_key,
-            metadata,
-        );
+        if row.is_id_defined() {
+            row.id(format_using(
+                output,
+                &InvocationId::new(status_row.partition_key, metadata.invocation_uuid),
+            ));
+        }
+
+        fill_invocation_metadata(&mut row, output, metadata);
     }
 }
 
@@ -77,29 +77,15 @@ pub(crate) fn append_status_row(
 fn fill_invocation_metadata(
     row: &mut StatusRowBuilder,
     output: &mut String,
-    service_name: ByteString,
-    service_key: Bytes,
     meta: InvocationMetadata,
 ) {
     let InvocationMetadata {
-        invocation_uuid: invocation_id,
         journal_metadata,
         response_sink,
         creation_time,
         modification_time,
+        ..
     } = meta;
-
-    if row.is_invocation_id_defined() {
-        let mut buffer = Uuid::encode_buffer();
-        let invocation_id: Uuid = invocation_id.into();
-        let invocation_id_str = invocation_id.simple().encode_lower(&mut buffer);
-        row.invocation_id(invocation_id_str);
-    }
-
-    if row.is_fid_defined() {
-        let fid = FullInvocationId::new(service_name, service_key, invocation_id);
-        row.fid(format_using(output, &fid));
-    }
 
     row.created_at(creation_time.as_u64() as i64);
     row.modified_at(modification_time.as_u64() as i64);
@@ -116,8 +102,8 @@ fn fill_invocation_metadata(
         Some(ServiceInvocationResponseSink::PartitionProcessor { caller, .. }) => {
             row.invoked_by("service");
             row.invoked_by_service(&caller.service_id.service_name);
-            if row.is_invoked_by_sid_defined() {
-                row.invoked_by_sid(format_using(output, &caller));
+            if row.is_invoked_by_id_defined() {
+                row.invoked_by_id(format_using(output, &caller));
             }
         }
         Some(ServiceInvocationResponseSink::Ingress(..)) => {
