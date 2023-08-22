@@ -12,13 +12,7 @@
 
 use crate::table_macro::*;
 
-use datafusion::arrow::array::{
-    ArrayBuilder, ArrayRef, Int32Builder, LargeBinaryBuilder, LargeStringBuilder, UInt64Builder,
-};
-
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::arrow::record_batch::RecordBatch;
-use std::sync::Arc;
+use datafusion::arrow::datatypes::DataType;
 
 define_table!(state(
     partition_key: DataType::UInt64,
