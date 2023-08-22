@@ -21,7 +21,6 @@ pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
 use opentelemetry::Context;
-use restate_futures_util::command::*;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{FullInvocationId, IngressId, PeerId};
 use restate_types::invocation::{InvocationResponse, ResponseResult, ServiceInvocation};

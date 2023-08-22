@@ -207,7 +207,7 @@ impl Options {
             json,
             ingress_id,
             schemas,
-            ingress_dispatcher_loop.create_command_sender(),
+            ingress_dispatcher_loop.create_input_sender(),
         );
 
         (ingress_dispatcher_loop, hyper_ingress_server)

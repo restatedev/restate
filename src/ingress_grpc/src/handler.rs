@@ -12,7 +12,7 @@ use super::options::JsonOptions;
 use super::protocol::{BoxBody, Protocol};
 use super::*;
 
-use crate::dispatcher::{DispatcherCommandSender, InvocationOrResponse};
+use crate::dispatcher::{DispatcherInputSender, InvocationOrResponse};
 use crate::reflection::ServerReflectionService;
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
@@ -51,7 +51,7 @@ where
     schemas: Schemas,
     reflection_server:
         GrpcWebService<ServerReflectionServer<ServerReflectionService<ProtoSymbols>>>,
-    dispatcher_command_sender: DispatcherCommandSender,
+    dispatcher_input_sender: DispatcherInputSender,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
 
@@ -66,7 +66,7 @@ where
             json: self.json.clone(),
             schemas: self.schemas.clone(),
             reflection_server: self.reflection_server.clone(),
-            dispatcher_command_sender: self.dispatcher_command_sender.clone(),
+            dispatcher_input_sender: self.dispatcher_input_sender.clone(),
             global_concurrency_semaphore: self.global_concurrency_semaphore.clone(),
         }
     }
@@ -80,7 +80,7 @@ where
         ingress_id: IngressId,
         json: JsonOptions,
         schemas: Schemas,
-        dispatcher_command_sender: DispatcherCommandSender,
+        dispatcher_input_sender: DispatcherInputSender,
         global_concurrency_semaphore: Arc<Semaphore>,
     ) -> Self {
         Self {
@@ -90,7 +90,7 @@ where
             reflection_server: GrpcWebLayer::new().layer(ServerReflectionServer::new(
                 ServerReflectionService(schemas),
             )),
-            dispatcher_command_sender,
+            dispatcher_input_sender,
             global_concurrency_semaphore,
         }
     }
@@ -206,7 +206,7 @@ where
         // Encapsulate in this closure the remaining part of the processing
         let ingress_id = self.ingress_id;
         let schemas = self.schemas.clone();
-        let dispatcher_command_sender = self.dispatcher_command_sender.clone();
+        let dispatcher_input_sender = self.dispatcher_input_sender.clone();
         let ingress_request_handler = move |ingress_request: IngressRequest| {
             let (req_headers, req_payload) = ingress_request;
 
@@ -334,15 +334,19 @@ where
                         _ => return Err(Status::not_found("Not found"))
                     };
 
-                    if dispatcher_command_sender.send(Command::fire_and_forget(
-                        InvocationOrResponse::Response(invocation_response)
-                    )).is_err() {
+                    let (ack_rx, response) = InvocationOrResponse::response(invocation_response);
+
+                    if dispatcher_input_sender.send(response).is_err() {
                         debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                         return Err(Status::unavailable("Unavailable"));
                     }
-                    return Ok(
-                        Bytes::default()
-                    )
+
+                    let ack_result = ack_rx.await;
+
+                    return ack_result.map(|_| Bytes::default()).map_err(|_| {
+                        debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
+                        Status::unavailable("Unavailable")
+                    });
                 }
 
                 let mut response_sink = Some(ServiceInvocationResponseSink::Ingress(ingress_id));
@@ -386,23 +390,24 @@ where
                 if !wait_response {
                     let id = service_invocation.fid.to_string();
 
-                    if dispatcher_command_sender.send(Command::fire_and_forget(
-                        InvocationOrResponse::Invocation(service_invocation)
-                    )).is_err() {
+                    let (ack_rx, invocation) = InvocationOrResponse::background_invocation(service_invocation);
+                    if dispatcher_input_sender.send(
+                        invocation).is_err() {
                         debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                         return Err(Status::unavailable("Unavailable"));
                     }
-                    return Ok(
-                        restate_pb::restate::services::InvokeResponse {
-                            id,
-                        }.encode_to_vec().into()
-                    )
+
+                    return ack_rx.await.map(|_| restate_pb::restate::services::InvokeResponse {
+                        id,
+                    }.encode_to_vec().into()).map_err(|_| {
+                        debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
+                        Status::unavailable("Unavailable")
+                    });
                 }
 
                 // Send the service invocation
-                let (service_invocation_command, response_rx) =
-                    Command::prepare(InvocationOrResponse::Invocation(service_invocation));
-                if dispatcher_command_sender.send(service_invocation_command).is_err() {
+                let (response_rx, invocation) = InvocationOrResponse::invocation(service_invocation);
+                if dispatcher_input_sender.send(invocation).is_err() {
                     debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                     return Err(Status::unavailable("Unavailable"));
                 }

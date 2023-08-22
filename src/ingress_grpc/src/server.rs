@@ -11,7 +11,7 @@
 use super::options::JsonOptions;
 use super::*;
 
-use crate::dispatcher::DispatcherCommandSender;
+use crate::dispatcher::DispatcherInputSender;
 use codederror::CodedError;
 use futures::FutureExt;
 use restate_schema_api::json::JsonMapperResolver;
@@ -54,7 +54,7 @@ pub struct HyperServerIngress<Schemas> {
     ingress_id: IngressId,
     json: JsonOptions,
     schemas: Schemas,
-    dispatcher_command_sender: DispatcherCommandSender,
+    dispatcher_input_sender: DispatcherInputSender,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
@@ -80,7 +80,7 @@ where
         json: JsonOptions,
         ingress_id: IngressId,
         schemas: Schemas,
-        dispatcher_command_sender: DispatcherCommandSender,
+        dispatcher_input_sender: DispatcherInputSender,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
 
@@ -90,7 +90,7 @@ where
             json,
             ingress_id,
             schemas,
-            dispatcher_command_sender,
+            dispatcher_input_sender,
             start_signal_tx,
         };
 
@@ -104,7 +104,7 @@ where
             ingress_id,
             json,
             schemas,
-            dispatcher_command_sender,
+            dispatcher_input_sender: dispatcher_command_sender,
             start_signal_tx,
         } = self;
 
@@ -151,7 +151,7 @@ where
 mod tests {
     use super::*;
 
-    use crate::dispatcher::InvocationOrResponse;
+    use crate::dispatcher::{InvocationOrResponse, ResponseOrAckSender};
     use crate::mocks::*;
     use bytes::Bytes;
     use drain::Signal;
@@ -165,14 +165,32 @@ mod tests {
     use restate_types::invocation::MaybeFullInvocationId;
     use serde_json::json;
     use std::net::SocketAddr;
+    use std::time::Duration;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
     #[test(tokio::test)]
     async fn test_http_connect_call() {
-        let (address, cmd_fut, handle) = bootstrap_test().await;
-        let cmd_fut = tokio::spawn(async move {
-            let (service_invocation, response_tx) = cmd_fut.await.unwrap().unwrap().into_inner();
+        let (address, input, handle) = bootstrap_test().await;
+        let process_fut = tokio::spawn(async move {
+            // Get the function invocation and assert on it
+            let_assert!(
+                InvocationOrResponse::Invocation(
+                    mut service_invocation,
+                    ResponseOrAckSender::Response(response_tx)
+                ) = input.await.unwrap().unwrap()
+            );
+            assert_eq!(
+                service_invocation.fid.service_id.service_name,
+                "greeter.Greeter"
+            );
+            assert_eq!(service_invocation.method_name, "Greet");
+            let greeting_req = restate_pb::mocks::greeter::GreetingRequest::decode(
+                &mut service_invocation.argument,
+            )
+            .unwrap();
+            assert_eq!(&greeting_req.person, "Francesco");
+
             response_tx
                 .send(Ok(restate_pb::mocks::greeter::GreetingResponse {
                     greeting: "Igal".to_string(),
@@ -180,7 +198,6 @@ mod tests {
                 .encode_to_vec()
                 .into()))
                 .unwrap();
-            service_invocation
         });
 
         // Send the request
@@ -196,17 +213,8 @@ mod tests {
             .unwrap();
         assert_eq!(http_response.status(), StatusCode::OK);
 
-        // Get the function invocation and assert on it
-        let_assert!(InvocationOrResponse::Invocation(mut service_invocation) = cmd_fut.await.unwrap());
-        assert_eq!(
-            service_invocation.fid.service_id.service_name,
-            "greeter.Greeter"
-        );
-        assert_eq!(service_invocation.method_name, "Greet");
-        let greeting_req =
-            restate_pb::mocks::greeter::GreetingRequest::decode(&mut service_invocation.argument)
-                .unwrap();
-        assert_eq!(&greeting_req.person, "Francesco");
+        // check that the input processing has completed
+        process_fut.await.unwrap();
 
         // Read the http_response_future
         let (_, response_body) = http_response.into_parts();
@@ -227,12 +235,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn test_ingress_service_http_connect_call() {
-        let (address, cmd_fut, handle) = bootstrap_test().await;
-        let cmd_fut = tokio::spawn(async move {
-            let (service_invocation, response_tx) = cmd_fut.await.unwrap().unwrap().into_inner();
-            assert!(response_tx.is_closed());
-            service_invocation
-        });
+        let (address, input, handle) = bootstrap_test().await;
 
         // Send the request
         let json_payload = json!({
@@ -242,19 +245,21 @@ mod tests {
                 "person": "Francesco"
             }
         });
-        let http_response = hyper::Client::new()
-            .request(
-                hyper::Request::post(format!("http://{address}/dev.restate.Ingress/Invoke"))
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&json_payload).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(http_response.status(), StatusCode::OK);
+        let http_response = tokio::spawn(async move {
+            hyper::Client::new()
+                .request(
+                    hyper::Request::post(format!("http://{address}/dev.restate.Ingress/Invoke"))
+                        .header(CONTENT_TYPE, "application/json")
+                        .body(Body::from(serde_json::to_vec(&json_payload).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+        tokio::pin!(http_response);
 
         // Get the function invocation and assert on it
-        let_assert!(InvocationOrResponse::Invocation(mut service_invocation) = cmd_fut.await.unwrap());
+        let_assert!(InvocationOrResponse::Invocation(mut service_invocation, ResponseOrAckSender::Ack(ack_tx)) = input.await.unwrap().unwrap());
         assert_eq!(
             service_invocation.fid.service_id.service_name,
             "greeter.Greeter"
@@ -266,8 +271,21 @@ mod tests {
         assert_eq!(&greeting_req.person, "Francesco");
         assert!(service_invocation.response_sink.is_none());
 
+        // check that there is no response yet
+        let timed_out_http_response =
+            tokio::time::timeout(Duration::from_millis(10), &mut http_response);
+        assert!(timed_out_http_response.await.is_err());
+
+        // ack the request which should complete the response future
+        ack_tx.send(()).unwrap();
+
+        let http_response = http_response.await.unwrap();
+
+        assert_eq!(http_response.status(), StatusCode::OK);
+
         // Read the http_response_future
         let (_, response_body) = http_response.into_parts();
+
         let response_bytes = hyper::body::to_bytes(response_body).await.unwrap();
         let response_json_value: serde_json::Value =
             serde_json::from_slice(&response_bytes).unwrap();
@@ -285,12 +303,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn test_awakeables_service_http_connect_call() {
-        let (address, cmd_fut, handle) = bootstrap_test().await;
-        let cmd_fut = tokio::spawn(async move {
-            let (service_invocation, response_tx) = cmd_fut.await.unwrap().unwrap().into_inner();
-            assert!(response_tx.is_closed());
-            service_invocation
-        });
+        let (address, input, handle) = bootstrap_test().await;
 
         let fid = FullInvocationId::mock_random();
         let awakeable_id = AwakeableIdentifier::new(fid.clone().into(), 2).encode();
@@ -302,19 +315,26 @@ mod tests {
                 "my_result": false
             }
         });
-        let http_response = hyper::Client::new()
-            .request(
-                hyper::Request::post(format!("http://{address}/dev.restate.Awakeables/Resolve"))
+        let http_response = tokio::spawn(async move {
+            hyper::Client::new()
+                .request(
+                    hyper::Request::post(format!(
+                        "http://{address}/dev.restate.Awakeables/Resolve"
+                    ))
                     .header(CONTENT_TYPE, "application/json")
                     .body(Body::from(serde_json::to_vec(&json_payload).unwrap()))
                     .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(http_response.status(), StatusCode::OK);
+                )
+                .await
+                .unwrap()
+        });
+        tokio::pin!(http_response);
 
         // Get the function invocation and assert on it
-        let_assert!(InvocationOrResponse::Response(invocation_response) = cmd_fut.await.unwrap());
+        let_assert!(
+            InvocationOrResponse::Response(invocation_response, ack_tx) =
+                input.await.unwrap().unwrap()
+        );
         assert_eq!(
             invocation_response.id,
             MaybeFullInvocationId::Partial(fid.into())
@@ -330,6 +350,18 @@ mod tests {
             ))
         );
 
+        let timed_out_http_response =
+            tokio::time::timeout(Duration::from_millis(10), &mut http_response);
+
+        // check that the http response won't get completed
+        assert!(timed_out_http_response.await.is_err());
+
+        ack_tx.send(()).unwrap();
+
+        let http_response = http_response.await.unwrap();
+
+        assert_eq!(http_response.status(), StatusCode::OK);
+
         handle.close().await;
     }
 
@@ -340,11 +372,20 @@ mod tests {
         };
         let encoded_greeting_response = Bytes::from(expected_greeting_response.encode_to_vec());
 
-        let (address, cmd_fut, handle) = bootstrap_test().await;
-        let cmd_fut = tokio::spawn(async move {
-            let (service_invocation, response_tx) = cmd_fut.await.unwrap().unwrap().into_inner();
+        let (address, input, handle) = bootstrap_test().await;
+        let process_fut = tokio::spawn(async move {
+            let_assert!(InvocationOrResponse::Invocation(mut service_invocation, ResponseOrAckSender::Response(response_tx)) = input.await.unwrap().unwrap());
+            assert_eq!(
+                service_invocation.fid.service_id.service_name,
+                "greeter.Greeter"
+            );
+            assert_eq!(service_invocation.method_name, "Greet");
+            let greeting_req = restate_pb::mocks::greeter::GreetingRequest::decode(
+                &mut service_invocation.argument,
+            )
+            .unwrap();
+            assert_eq!(&greeting_req.person, "Francesco");
             response_tx.send(Ok(encoded_greeting_response)).unwrap();
-            service_invocation
         });
 
         let mut client = restate_pb::mocks::greeter::greeter_client::GreeterClient::connect(
@@ -360,16 +401,8 @@ mod tests {
             .await
             .unwrap();
 
-        let_assert!(InvocationOrResponse::Invocation(mut service_invocation) = cmd_fut.await.unwrap());
-        assert_eq!(
-            service_invocation.fid.service_id.service_name,
-            "greeter.Greeter"
-        );
-        assert_eq!(service_invocation.method_name, "Greet");
-        let greeting_req =
-            restate_pb::mocks::greeter::GreetingRequest::decode(&mut service_invocation.argument)
-                .unwrap();
-        assert_eq!(&greeting_req.person, "Francesco");
+        // Check that the input processing completed
+        process_fut.await.unwrap();
 
         // Read the http_response_future
         let greeting_res = response.into_inner();
@@ -380,11 +413,11 @@ mod tests {
 
     async fn bootstrap_test() -> (
         SocketAddr,
-        JoinHandle<Option<Command<InvocationOrResponse, IngressResult>>>,
+        JoinHandle<Option<InvocationOrResponse>>,
         TestHandle,
     ) {
         let (drain, watch) = drain::channel();
-        let (dispatcher_command_tx, mut dispatcher_command_rx) = mpsc::unbounded_channel();
+        let (dispatcher_input_tx, mut dispatcher_input_rx) = mpsc::unbounded_channel();
 
         // Create the ingress and start it
         let (ingress, start_signal) = HyperServerIngress::new(
@@ -393,17 +426,17 @@ mod tests {
             JsonOptions::default(),
             IngressId("0.0.0.0:0".parse().unwrap()),
             test_schemas(),
-            dispatcher_command_tx,
+            dispatcher_input_tx,
         );
         let ingress_handle = tokio::spawn(ingress.run(watch));
 
         // Mock the service invocation receiver
-        let cmd_fut = tokio::spawn(async move { dispatcher_command_rx.recv().await });
+        let input = tokio::spawn(async move { dispatcher_input_rx.recv().await });
 
         // Wait server to start
         let address = start_signal.await.unwrap();
 
-        (address, cmd_fut, TestHandle(drain, ingress_handle))
+        (address, input, TestHandle(drain, ingress_handle))
     }
 
     struct TestHandle(Signal, JoinHandle<Result<(), IngressServerError>>);
