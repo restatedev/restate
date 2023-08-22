@@ -383,7 +383,7 @@ where
 
                 // Ingress built-in service just sends a fire and forget and closes
                 if !wait_response {
-                    let id = service_invocation.id.to_string();
+                    let id = service_invocation.fid.to_string();
 
                     if dispatcher_command_sender.send(Command::fire_and_forget(
                         InvocationOrResponse::Invocation(service_invocation)

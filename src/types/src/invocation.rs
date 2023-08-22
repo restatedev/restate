@@ -27,7 +27,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceInvocation {
-    pub id: FullInvocationId,
+    pub fid: FullInvocationId,
     pub method_name: ByteString,
     pub argument: Bytes,
     pub response_sink: Option<ServiceInvocationResponseSink>,
@@ -42,15 +42,15 @@ impl ServiceInvocation {
     /// On the contrary, it is encouraged to drop it as soon as possible,
     /// to let the exporter commit this span to jaeger/zipkin to visualize intermediate results of the invocation.
     pub fn new(
-        id: FullInvocationId,
+        fid: FullInvocationId,
         method_name: ByteString,
         argument: Bytes,
         response_sink: Option<ServiceInvocationResponseSink>,
         related_span: SpanRelation,
     ) -> Self {
-        let span_context = ServiceInvocationSpanContext::start(&id, related_span);
+        let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         Self {
-            id,
+            fid,
             method_name,
             argument,
             response_sink,
@@ -69,7 +69,7 @@ impl WithPartitionKey for MaybeFullInvocationId {
     fn partition_key(&self) -> PartitionKey {
         match self {
             MaybeFullInvocationId::Partial(iid) => iid.partition_key(),
-            MaybeFullInvocationId::Full(fiid) => fiid.partition_key(),
+            MaybeFullInvocationId::Full(fid) => fid.partition_key(),
         }
     }
 }

@@ -177,7 +177,7 @@ impl DispatcherLoopHandler {
         match invocation_or_response {
             InvocationOrResponse::Invocation(service_invocation) => {
                 self.waiting_responses
-                    .insert(service_invocation.id.clone(), reply_channel);
+                    .insert(service_invocation.fid.clone(), reply_channel);
                 IngressOutput::service_invocation(
                     service_invocation,
                     self.ingress_id,
@@ -232,7 +232,7 @@ mod tests {
         // Now let's send the response
         input_sender
             .send(IngressInput::Response(IngressResponseMessage {
-                full_invocation_id: service_invocation.id.clone(),
+                full_invocation_id: service_invocation.fid.clone(),
                 result: Ok(Bytes::new()),
                 ack_target: AckTarget::new(0, 0),
             }))

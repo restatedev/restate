@@ -631,9 +631,9 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
         state_storage
             .store_invocation_status(
-                &service_invocation.id.service_id,
+                &service_invocation.fid.service_id,
                 InvocationStatus::Invoked(InvocationMetadata::new(
-                    service_invocation.id.invocation_uuid,
+                    service_invocation.fid.invocation_uuid,
                     journal_metadata.clone(),
                     service_invocation.response_sink,
                     creation_time,
@@ -655,11 +655,11 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         let raw_bytes = input_entry.entry.clone();
 
         state_storage
-            .store_journal_entry(&service_invocation.id.service_id, 0, input_entry)
+            .store_journal_entry(&service_invocation.fid.service_id, 0, input_entry)
             .await?;
 
         collector.collect(ActuatorMessage::Invoke {
-            full_invocation_id: service_invocation.id,
+            full_invocation_id: service_invocation.fid,
             invoke_input_journal: InvokeInputJournal::CachedJournal(
                 journal_metadata,
                 vec![PlainRawEntry::new(

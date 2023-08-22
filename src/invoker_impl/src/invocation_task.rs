@@ -567,7 +567,7 @@ where
         self.write(
             http_stream_tx,
             ProtocolMessage::new_start_message(
-                Bytes::copy_from_slice(&self.full_invocation_id.as_invocation_id_bytes()),
+                Bytes::copy_from_slice(&self.full_invocation_id.to_invocation_id_bytes()),
                 self.full_invocation_id.to_string(),
                 journal_size,
                 is_partial,

@@ -363,7 +363,7 @@ pub mod storage {
                         ByteString::try_from(method_name).map_err(ConversionError::invalid_data)?;
 
                     Ok(restate_types::invocation::ServiceInvocation {
-                        id,
+                        fid: id,
                         method_name,
                         argument,
                         response_sink,
@@ -374,7 +374,7 @@ pub mod storage {
 
             impl From<restate_types::invocation::ServiceInvocation> for ServiceInvocation {
                 fn from(value: restate_types::invocation::ServiceInvocation) -> Self {
-                    let id = FullInvocationId::from(value.id);
+                    let id = FullInvocationId::from(value.fid);
                     let span_context = SpanContext::from(value.span_context);
                     let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
                     let method_name = value.method_name.into_bytes();

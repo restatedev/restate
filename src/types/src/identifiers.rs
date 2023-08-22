@@ -290,7 +290,7 @@ impl FullInvocationId {
         }
     }
 
-    pub fn as_invocation_id_bytes(&self) -> EncodedInvocationId {
+    pub fn to_invocation_id_bytes(&self) -> EncodedInvocationId {
         encode_invocation_id(&self.service_id.partition_key, &self.invocation_uuid)
     }
 }
@@ -318,7 +318,7 @@ impl From<FullInvocationId> for InvocationId {
 
 impl From<FullInvocationId> for EncodedInvocationId {
     fn from(value: FullInvocationId) -> Self {
-        value.as_invocation_id_bytes()
+        value.to_invocation_id_bytes()
     }
 }
 

@@ -197,7 +197,7 @@ mod tests {
         // Get the function invocation and assert on it
         let_assert!(InvocationOrResponse::Invocation(mut service_invocation) = cmd_fut.await.unwrap());
         assert_eq!(
-            service_invocation.id.service_id.service_name,
+            service_invocation.fid.service_id.service_name,
             "greeter.Greeter"
         );
         assert_eq!(service_invocation.method_name, "Greet");
@@ -254,7 +254,7 @@ mod tests {
         // Get the function invocation and assert on it
         let_assert!(InvocationOrResponse::Invocation(mut service_invocation) = cmd_fut.await.unwrap());
         assert_eq!(
-            service_invocation.id.service_id.service_name,
+            service_invocation.fid.service_id.service_name,
             "greeter.Greeter"
         );
         assert_eq!(service_invocation.method_name, "Greet");
@@ -276,7 +276,7 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert_eq!(id, InvocationId::from(service_invocation.id));
+        assert_eq!(id, InvocationId::from(service_invocation.fid));
 
         handle.close().await;
     }
@@ -360,7 +360,7 @@ mod tests {
 
         let_assert!(InvocationOrResponse::Invocation(mut service_invocation) = cmd_fut.await.unwrap());
         assert_eq!(
-            service_invocation.id.service_id.service_name,
+            service_invocation.fid.service_id.service_name,
             "greeter.Greeter"
         );
         assert_eq!(service_invocation.method_name, "Greet");

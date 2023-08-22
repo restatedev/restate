@@ -398,10 +398,10 @@ where
         seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
     ) -> BoxFuture<Result<(), StateStorageError>> {
-        self.assert_service_id(&service_invocation.id.service_id);
+        self.assert_service_id(&service_invocation.fid.service_id);
         async move {
             // TODO: Avoid cloning when moving this logic into the RocksDB storage impl
-            let service_id = service_invocation.id.service_id.clone();
+            let service_id = service_invocation.fid.service_id.clone();
 
             self.inner
                 .put_invocation(&service_id, InboxEntry::new(seq_number, service_invocation))

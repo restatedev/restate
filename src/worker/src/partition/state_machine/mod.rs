@@ -154,10 +154,10 @@ where
         return match command {
             Command::Invocation(service_invocation) => {
                 let status = state
-                    .get_invocation_status(&service_invocation.id.service_id)
+                    .get_invocation_status(&service_invocation.fid.service_id)
                     .await?;
 
-                let fid = service_invocation.id.clone();
+                let fid = service_invocation.fid.clone();
 
                 if let InvocationStatus::Free = status {
                     effects.invoke_service(service_invocation);
@@ -600,7 +600,7 @@ where
                 };
 
                 effects.background_invoke(
-                    service_invocation.id.clone(),
+                    service_invocation.fid.clone(),
                     method,
                     invocation_metadata.journal_metadata.span_context.clone(),
                     pointer_span_id,
@@ -813,7 +813,7 @@ where
         };
 
         ServiceInvocation {
-            id: FullInvocationId::new(service_name, invocation_key, invocation_id),
+            fid: FullInvocationId::new(service_name, invocation_key, invocation_id),
             method_name,
             argument: parameter,
             response_sink,

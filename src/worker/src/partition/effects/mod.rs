@@ -257,9 +257,9 @@ impl Effect {
                 message: OutboxMessage::ServiceInvocation(service_invocation),
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation.id.service_id.service_name,
+                rpc.service = %service_invocation.fid.service_id.service_name,
                 rpc.method = %service_invocation.method_name,
-                restate.invocation.id = %service_invocation.id,
+                restate.invocation.id = %service_invocation.fid,
                 restate.outbox.seq = seq_number,
                 "Effect: Send service invocation to partition processor"
             ),
@@ -335,7 +335,9 @@ impl Effect {
                 inbox_sequence_number,
                 service_invocation:
                     ServiceInvocation {
-                        method_name, id, ..
+                        method_name,
+                        fid: id,
+                        ..
                     },
                 ..
             } => {
@@ -461,8 +463,8 @@ impl Effect {
                     // no span necessary; there will already be a background_invoke span
                     debug_if_leader!(
                         is_leader,
-                        rpc.service = %service_invocation.id.service_id.service_name,
-                        restate.invocation.id = %service_invocation.id,
+                        rpc.service = %service_invocation.fid.service_id.service_name,
+                        restate.invocation.id = %service_invocation.fid,
                         restate.timer.key = %timer_value.display_key(),
                         restate.timer.wake_up_time = %timer_value.wake_up_time,
                         "Effect: Register background invoke timer"
