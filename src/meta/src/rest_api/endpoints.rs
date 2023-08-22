@@ -121,6 +121,7 @@ pub struct ServiceEndpointResponse {
     #[schemars(with = "String")]
     uri: Uri,
     protocol_type: ProtocolType,
+    #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
     additional_headers: SerdeableHeaderHashMap,
     /// # Services
     ///

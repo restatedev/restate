@@ -25,6 +25,12 @@ pub struct SerdeableHeaderHashMap(
     HashMap<HeaderName, HeaderValue>,
 );
 
+impl SerdeableHeaderHashMap {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 impl From<SerdeableHeaderHashMap> for HashMap<HeaderName, HeaderValue> {
     fn from(value: SerdeableHeaderHashMap) -> Self {
         value.0
