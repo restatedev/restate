@@ -248,13 +248,13 @@ descriptions in [`protocol.proto`](dev/restate/service/protocol.proto).
 
 **Completable journal entries**
 
-| Message                       | Type     | Description                                                                                                                                                                                                                                                             |
-| ----------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PollInputStreamEntryMessage` | `0x0400` | Carries the service method input message(s) of the invocation. Note: currently the runtime always sends this entry completed, but this may change in future.                                                                                                            |
-| `GetStateEntryMessage`        | `0x0800` | Get the value of a service instance state key.                                                                                                                                                                                                                          |
-| `SleepEntryMessage`           | `0x0C00` | Initiate a timer that completes after the given time.                                                                                                                                                                                                                   |
-| `InvokeEntryMessage`          | `0x0C01` | Invoke another Restate service.                                                                                                                                                                                                                                         |
-| `AwakeableEntryMessage`       | `0x0C03` | Arbitrary result container which can be completed from another service, given a specific id. The id MUST be exposed to the user code serializing the `AwakeableIdentifier` message as [Base64 URL Safe string](https://datatracker.ietf.org/doc/html/rfc4648#section-5) |
+| Message                       | Type     | Description                                                                                                                                                      |
+| ----------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PollInputStreamEntryMessage` | `0x0400` | Carries the service method input message(s) of the invocation. Note: currently the runtime always sends this entry completed, but this may change in future.     |
+| `GetStateEntryMessage`        | `0x0800` | Get the value of a service instance state key.                                                                                                                   |
+| `SleepEntryMessage`           | `0x0C00` | Initiate a timer that completes after the given time.                                                                                                            |
+| `InvokeEntryMessage`          | `0x0C01` | Invoke another Restate service.                                                                                                                                  |
+| `AwakeableEntryMessage`       | `0x0C03` | Arbitrary result container which can be completed from another service, given a specific id. See [Awakeable identifier](#awakeable-identifier) for more details. |
 
 **Non-Completable journal entries**
 
@@ -264,7 +264,18 @@ descriptions in [`protocol.proto`](dev/restate/service/protocol.proto).
 | `SetStateEntryMessage`          | `0x0800` | Set the value of a service instance state key.                                                                                                                                      |
 | `ClearStateEntryMessage`        | `0x0801` | Clear the value of a service instance state key.                                                                                                                                    |
 | `BackgroundInvokeEntryMessage`  | `0x0C02` | Invoke another Restate service at the given time, without waiting for the response.                                                                                                 |
-| `CompleteAwakeableEntryMessage` | `0x0C04` | Complete an `Awakeable`, given its id (see `AwakeableEntryMessage`).                                                                                                                |
+| `CompleteAwakeableEntryMessage` | `0x0C04` | Complete an `Awakeable`, given its id. See [Awakeable identifier](#awakeable-identifier) for more details.                                                                          |
+
+#### Awakeable identifier
+
+When creating an `AwakeableEntryMessage`, the SDK MUST expose to the user code an id, required to later complete the
+entry, using either `CompleteAwakeableEntryMessage` or some other mechanism provided by the runtime.
+
+The id format is a [Base64 URL Safe string](https://datatracker.ietf.org/doc/html/rfc4648#section-5) encoding a byte
+array that concatenates:
+
+- `StartMessage.id`
+- The index of the Awakeable entry, encoded as unsigned 32 bit integer big endian.
 
 ## Suspension
 
