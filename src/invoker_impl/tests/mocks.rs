@@ -26,7 +26,7 @@ use restate_invoker_api::{
     EagerState, Effect, EffectKind, InvokeInputJournal, JournalReader, ServiceHandle, StateReader,
 };
 use restate_service_protocol::pb::protocol::PollInputStreamEntryMessage;
-use restate_types::identifiers::{EntryIndex, ServiceId, ServiceInvocationId};
+use restate_types::identifiers::{EntryIndex, ServiceId, FullInvocationId};
 use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec};
@@ -51,7 +51,7 @@ enum SimulatorStep {
 }
 
 pub enum SimulatorAction {
-    SendCompletion(ServiceInvocationId, Completion),
+    SendCompletion(FullInvocationId, Completion),
     Noop,
 }
 
@@ -112,7 +112,7 @@ where
 {
     pub async fn invoke(
         &mut self,
-        sid: ServiceInvocationId,
+        sid: FullInvocationId,
         method: impl Into<String>,
         request_payload: impl Message,
     ) {
@@ -201,13 +201,13 @@ where
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryJournalStorage {
     #[allow(clippy::type_complexity)]
-    journals: Arc<Mutex<HashMap<ServiceInvocationId, (JournalMetadata, Vec<PlainRawEntry>)>>>,
+    journals: Arc<Mutex<HashMap<FullInvocationId, (JournalMetadata, Vec<PlainRawEntry>)>>>,
 }
 
 impl InMemoryJournalStorage {
     pub async fn create_new_journal(
         &mut self,
-        sid: ServiceInvocationId,
+        sid: FullInvocationId,
         method: impl Into<String>,
     ) {
         let mut journals = self.journals.lock().await;
@@ -228,7 +228,7 @@ impl InMemoryJournalStorage {
         );
     }
 
-    pub async fn append_entry(&mut self, sid: &ServiceInvocationId, entry: EnrichedRawEntry) {
+    pub async fn append_entry(&mut self, sid: &FullInvocationId, entry: EnrichedRawEntry) {
         let mut journals = self.journals.lock().await;
         let (meta, journal) = journals
             .get_mut(sid)
@@ -245,7 +245,7 @@ impl InMemoryJournalStorage {
 
     pub async fn complete_entry<Codec>(
         &mut self,
-        sid: &ServiceInvocationId,
+        sid: &FullInvocationId,
         index: EntryIndex,
         result: CompletionResult,
     ) where
@@ -269,7 +269,7 @@ impl JournalReader for InMemoryJournalStorage {
     type Future<'a> =
         BoxFuture<'static, Result<(JournalMetadata, Self::JournalStream), Self::Error>>;
 
-    fn read_journal(&self, sid: &ServiceInvocationId) -> Self::Future<'_> {
+    fn read_journal(&self, sid: &FullInvocationId) -> Self::Future<'_> {
         let journals_arc = self.journals.clone();
         let sid = sid.clone();
         async move {

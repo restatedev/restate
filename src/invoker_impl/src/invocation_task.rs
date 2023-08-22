@@ -30,7 +30,7 @@ use restate_service_protocol::message::{
 };
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::{
-    EndpointId, EntryIndex, InvocationId, PartitionLeaderEpoch, ServiceInvocationId,
+    EndpointId, EntryIndex, InvocationId, PartitionLeaderEpoch, FullInvocationId,
 };
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -145,7 +145,7 @@ fn h2_reason(err: &hyper::Error) -> h2::Reason {
 
 pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
-    pub(super) service_invocation_id: ServiceInvocationId,
+    pub(super) service_invocation_id: FullInvocationId,
     pub(super) inner: InvocationTaskOutputInner,
 }
 
@@ -173,7 +173,7 @@ pub(super) struct InvocationTask<JR, SR, EE, EMR> {
 
     // Connection params
     partition: PartitionLeaderEpoch,
-    service_invocation_id: ServiceInvocationId,
+    service_invocation_id: FullInvocationId,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
@@ -247,7 +247,7 @@ where
     pub fn new(
         client: HttpsClient,
         partition: PartitionLeaderEpoch,
-        sid: ServiceInvocationId,
+        sid: FullInvocationId,
         protocol_version: u16,
         inactivity_timeout: Duration,
         abort_timeout: Duration,

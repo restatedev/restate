@@ -9,14 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{EndpointId, EntryIndex};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use std::collections::HashSet;
 
 #[derive(Debug)]
 pub struct Effect {
-    pub service_invocation_id: ServiceInvocationId,
+    pub service_invocation_id: FullInvocationId,
     pub kind: EffectKind,
 }
 

@@ -12,7 +12,7 @@ use crate::{assert_stream_eq, uuid_str};
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, StatusTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{InvocationUuid, ServiceId, ServiceInvocationId};
+use restate_types::identifiers::{InvocationUuid, ServiceId, FullInvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::JournalMetadata;
 use restate_types::time::MillisSinceEpoch;
@@ -97,19 +97,19 @@ async fn verify_all_svc_with_status_invoked<T: StatusTable>(txn: &mut T) {
     let stream = txn.invoked_invocations(1337..=1339);
 
     let expected = vec![
-        ServiceInvocationId::with_service_id(
+        FullInvocationId::with_service_id(
             ServiceId::with_partition_key(1337, "svc-1", "key-1"),
             uuid_str("018756fa-3f7f-7854-a76b-42c59a3d7f2d"),
         ),
-        ServiceInvocationId::with_service_id(
+        FullInvocationId::with_service_id(
             ServiceId::with_partition_key(1337, "svc-1", "key-2"),
             uuid_str("008756fa-3f7f-7854-a76b-42c59a3d7f2d"),
         ),
-        ServiceInvocationId::with_service_id(
+        FullInvocationId::with_service_id(
             ServiceId::with_partition_key(1338, "svc-1", "key-2"),
             uuid_str("118756fa-3f7f-7854-a76b-42c59a3d7f2d"),
         ),
-        ServiceInvocationId::with_service_id(
+        FullInvocationId::with_service_id(
             ServiceId::with_partition_key(1339, "svc-2", "key-0"),
             uuid_str("118756fa-3f7f-7854-a76b-42c59a3d7f2d"),
         ),
@@ -151,7 +151,7 @@ async fn verify_lookup_by_invocation_id_not_found<T: StatusTable>(txn: &mut T) {
 
 async fn verify_last_partition_all_svc_with_status_invoked<T: StatusTable>(txn: &mut T) {
     let stream = txn.invoked_invocations(4000..=u64::MAX);
-    let expected = vec![ServiceInvocationId::with_service_id(
+    let expected = vec![FullInvocationId::with_service_id(
         ServiceId::with_partition_key(u64::MAX, "svc-u64", "key-0"),
         uuid_str("218756fa-3f7f-7854-a76b-42c59a3d7f2d"),
     )];

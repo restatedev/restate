@@ -10,7 +10,7 @@
 
 use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::EntryIndex;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::ServiceInvocation;
 use restate_types::time::MillisSinceEpoch;
 use std::cmp::Ordering;
@@ -22,7 +22,7 @@ pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TimerValue {
-    pub service_invocation_id: ServiceInvocationId,
+    pub service_invocation_id: FullInvocationId,
     pub wake_up_time: MillisSinceEpoch,
     pub entry_index: EntryIndex,
     pub value: Timer,
@@ -30,7 +30,7 @@ pub(crate) struct TimerValue {
 
 impl TimerValue {
     pub(crate) fn new_sleep(
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Self {
@@ -43,7 +43,7 @@ impl TimerValue {
     }
 
     pub(crate) fn new_invoke(
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         service_invocation: ServiceInvocation,
@@ -130,7 +130,7 @@ impl restate_timer::TimerKey for TimerValue {
 // Helper to display timer key
 #[derive(Debug)]
 pub(crate) struct TimerKeyDisplay<'a>(
-    pub(crate) &'a ServiceInvocationId,
+    pub(crate) &'a FullInvocationId,
     pub(crate) &'a EntryIndex,
 );
 

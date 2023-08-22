@@ -10,12 +10,12 @@
 
 use crate::{GetStream, PutFuture};
 use restate_types::identifiers::PartitionId;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::ServiceInvocation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimerKey {
-    pub service_invocation_id: ServiceInvocationId,
+    pub service_invocation_id: FullInvocationId,
     pub journal_index: u32,
     pub timestamp: u64,
 }

@@ -10,7 +10,7 @@
 
 use super::Effect;
 
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
@@ -36,28 +36,28 @@ pub trait ServiceHandle {
     fn invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         journal: InvokeInputJournal,
     ) -> Self::Future;
 
     fn resume(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         journal: InvokeInputJournal,
     ) -> Self::Future;
 
     fn notify_completion(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         completion: Completion,
     ) -> Self::Future;
 
     fn notify_stored_entry_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
     ) -> Self::Future;
 
@@ -66,7 +66,7 @@ pub trait ServiceHandle {
     fn abort_invocation(
         &mut self,
         partition_leader_epoch: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
     ) -> Self::Future;
 
     fn register_partition(

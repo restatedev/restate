@@ -16,7 +16,7 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, PartitionId, PartitionKey, ServiceId, ServiceInvocationId,
+    EntryIndex, InvocationId, PartitionId, PartitionKey, ServiceId, FullInvocationId,
     WithPartitionKey,
 };
 use restate_types::invocation::ServiceInvocation;
@@ -120,7 +120,7 @@ where
 
     pub(super) fn scan_invoked_invocations(
         &mut self,
-    ) -> BoxStream<'_, Result<ServiceInvocationId, restate_storage_api::StorageError>> {
+    ) -> BoxStream<'_, Result<FullInvocationId, restate_storage_api::StorageError>> {
         self.inner
             .invoked_invocations(self.partition_key_range.clone())
     }
@@ -219,7 +219,7 @@ where
     fn resolve_invocation_status_from_invocation_id<'a>(
         &'a mut self,
         invocation_id: &'a InvocationId,
-    ) -> BoxFuture<'a, Result<(ServiceInvocationId, InvocationStatus), StateReaderError>> {
+    ) -> BoxFuture<'a, Result<(FullInvocationId, InvocationStatus), StateReaderError>> {
         self.assert_invocation_id(invocation_id);
         async {
             let (service_id, status) = match self
@@ -239,7 +239,7 @@ where
             };
 
             Ok((
-                ServiceInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
+                FullInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
                 status,
             ))
         }
@@ -511,7 +511,7 @@ where
 
     fn store_timer(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         timer: Timer,
@@ -534,7 +534,7 @@ where
 
     fn delete_timer(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<(), StateStorageError>> {

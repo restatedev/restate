@@ -10,7 +10,7 @@
 
 use crate::{GetFuture, GetStream, PutFuture};
 use restate_types::identifiers::{
-    EntryIndex, InvocationUuid, PartitionKey, ServiceId, ServiceInvocationId,
+    EntryIndex, InvocationUuid, PartitionKey, ServiceId, FullInvocationId,
 };
 use restate_types::invocation::ServiceInvocationResponseSink;
 use restate_types::journal::JournalMetadata;
@@ -97,5 +97,5 @@ pub trait StatusTable {
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> GetStream<ServiceInvocationId>;
+    ) -> GetStream<FullInvocationId>;
 }

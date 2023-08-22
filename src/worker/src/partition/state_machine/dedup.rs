@@ -13,7 +13,7 @@ use crate::partition::effects::Effects;
 use crate::partition::state_machine::{Error, StateMachine};
 use crate::partition::storage::Transaction;
 use crate::partition::AckCommand;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::SpanRelation;
 use restate_types::journal::raw::RawEntryCodec;
 
@@ -37,7 +37,7 @@ where
         command: AckCommand,
         effects: &mut Effects,
         transaction: &mut Transaction<TransactionType>,
-    ) -> Result<(Option<ServiceInvocationId>, SpanRelation), Error> {
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         let (fsm_command, ack_mode) = command.into_inner();
 
         match ack_mode {

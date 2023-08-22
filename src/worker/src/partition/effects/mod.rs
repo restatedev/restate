@@ -30,7 +30,7 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::InvocationMetadata;
 use restate_storage_api::timer_table::Timer;
 use restate_types::errors::InvocationErrorCode;
-use restate_types::identifiers::{EndpointId, EntryIndex, ServiceId, ServiceInvocationId};
+use restate_types::identifiers::{EndpointId, EntryIndex, ServiceId, FullInvocationId};
 use restate_types::invocation::{
     InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext,
     SpanRelation,
@@ -104,7 +104,7 @@ pub(crate) enum Effect {
         span_context: ServiceInvocationSpanContext,
     },
     DeleteTimer {
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     },
@@ -134,11 +134,11 @@ pub(crate) enum Effect {
         journal_entry: EnrichedRawEntry,
     },
     StoreCompletion {
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         completion: Completion,
     },
     StoreCompletionAndForward {
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         completion: Completion,
     },
     StoreCompletionAndResume {
@@ -149,13 +149,13 @@ pub(crate) enum Effect {
 
     // Effects used only for tracing purposes
     BackgroundInvoke {
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
         pointer_span_id: Option<SpanId>,
     },
     NotifyInvocationResult {
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         creation_time: MillisSinceEpoch,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
@@ -166,7 +166,7 @@ pub(crate) enum Effect {
     SendAckResponse(AckResponse),
 
     // Invoker commands
-    AbortInvocation(ServiceInvocationId),
+    AbortInvocation(FullInvocationId),
 }
 
 macro_rules! debug_if_leader {
@@ -232,7 +232,7 @@ impl Effect {
                     "suspend",
                     restate.journal.length = metadata.journal_metadata.length,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                    restate.invocation.sid = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
                 debug_if_leader!(
                 is_leader,
@@ -368,7 +368,7 @@ impl Effect {
                     restate.journal.index = entry_index,
                     restate.state.key = ?key,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                    restate.invocation.sid = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
 
                 debug_if_leader!(
@@ -394,7 +394,7 @@ impl Effect {
                     restate.journal.index = entry_index,
                     restate.state.key = ?key,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                    restate.invocation.sid = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
 
                 debug_if_leader!(
@@ -420,7 +420,7 @@ impl Effect {
                     restate.state.key = ?key,
                     restate.journal.index = entry_index,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                    restate.invocation.sid = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
 
                 debug_if_leader!(
@@ -557,7 +557,7 @@ impl Effect {
                     "resume",
                     restate.journal.index = entry_index,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.sid = %ServiceInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                    restate.invocation.sid = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
 
                 debug_if_leader!(
@@ -801,7 +801,7 @@ impl Effects {
     pub(crate) fn delete_timer(
         &mut self,
         wake_up_time: MillisSinceEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
     ) {
         self.effects.push(Effect::DeleteTimer {
@@ -876,7 +876,7 @@ impl Effects {
 
     pub(crate) fn store_completion(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         completion: Completion,
     ) {
         self.effects.push(Effect::StoreCompletion {
@@ -887,7 +887,7 @@ impl Effects {
 
     pub(crate) fn store_and_forward_completion(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         completion: Completion,
     ) {
         self.effects.push(Effect::StoreCompletionAndForward {
@@ -926,7 +926,7 @@ impl Effects {
 
     pub(crate) fn background_invoke(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
         pointer_span_id: Option<SpanId>,
@@ -941,7 +941,7 @@ impl Effects {
 
     pub(crate) fn notify_invocation_result(
         &mut self,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         invocation_metadata: InvocationMetadata,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {
@@ -958,7 +958,7 @@ impl Effects {
         self.effects.push(Effect::SendAckResponse(ack_response));
     }
 
-    pub(crate) fn abort_invocation(&mut self, service_invocation_id: ServiceInvocationId) {
+    pub(crate) fn abort_invocation(&mut self, service_invocation_id: FullInvocationId) {
         self.effects
             .push(Effect::AbortInvocation(service_invocation_id));
     }
@@ -968,7 +968,7 @@ impl Effects {
     pub(crate) fn log(
         &self,
         is_leader: bool,
-        service_invocation_id: Option<ServiceInvocationId>,
+        service_invocation_id: Option<FullInvocationId>,
         related_span: SpanRelation,
     ) {
         // Skip this method altogether if logging is disabled

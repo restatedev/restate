@@ -374,7 +374,7 @@ where
                     })?;
 
                 let service_invocation = ServiceInvocation::new(
-                    ServiceInvocationId::new(service_name, key, InvocationUuid::now_v7()),
+                    FullInvocationId::new(service_name, key, InvocationUuid::now_v7()),
                     method_name.into(),
                     req_payload,
                     response_sink,

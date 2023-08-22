@@ -18,7 +18,7 @@ use restate_futures_util::pipe::{
     UnboundedReceiverPipeInput,
 };
 use restate_types::identifiers::IngressId;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace};
@@ -130,7 +130,7 @@ struct DispatcherLoopHandler {
 
     // This map can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
-    waiting_responses: HashMap<ServiceInvocationId, CommandResponseSender<IngressResult>>,
+    waiting_responses: HashMap<FullInvocationId, CommandResponseSender<IngressResult>>,
 }
 
 impl DispatcherLoopHandler {
@@ -219,7 +219,7 @@ mod tests {
         // Ask for a response, then drop the receiver=
         let method_name = ByteString::from_static("pippo");
         let service_invocation = ServiceInvocation::new(
-            ServiceInvocationId::new("MySvc", "MyMethod", uuid::Uuid::now_v7()),
+            FullInvocationId::new("MySvc", "MyMethod", uuid::Uuid::now_v7()),
             method_name,
             Default::default(),
             Some(ServiceInvocationResponseSink::Ingress(IngressId(

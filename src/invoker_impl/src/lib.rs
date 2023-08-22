@@ -32,7 +32,7 @@ use restate_queue::SegmentQueue;
 use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_timer_queue::TimerQueue;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EndpointId, ServiceInvocationId};
+use restate_types::identifiers::{EndpointId, FullInvocationId};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::Completion;
@@ -74,7 +74,7 @@ trait InvocationTaskRunner {
     fn start_invocation_task(
         &self,
         partition: PartitionLeaderEpoch,
-        sid: ServiceInvocationId,
+        sid: FullInvocationId,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Completion>,
         input_journal: InvokeInputJournal,
@@ -108,7 +108,7 @@ where
     fn start_invocation_task(
         &self,
         partition: PartitionLeaderEpoch,
-        sid: ServiceInvocationId,
+        sid: FullInvocationId,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Completion>,
         input_journal: InvokeInputJournal,
@@ -297,7 +297,7 @@ struct ServiceInner<InvocationTaskRunner> {
 
     // Invoker state machine
     invocation_tasks: JoinSet<()>,
-    retry_timers: TimerQueue<(PartitionLeaderEpoch, ServiceInvocationId)>,
+    retry_timers: TimerQueue<(PartitionLeaderEpoch, FullInvocationId)>,
     quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
     invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager,
@@ -436,7 +436,7 @@ where
     async fn handle_invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         journal: InvokeInputJournal,
     ) {
         debug_assert!(self
@@ -469,7 +469,7 @@ where
     async fn handle_retry_timer_fired(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
     ) {
         trace!("Retry timeout fired");
         self.handle_retry_event(partition, service_invocation_id, |sm| {
@@ -491,7 +491,7 @@ where
     async fn handle_stored_entry_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
     ) {
         trace!("Received a new stored journal entry acknowledgement");
@@ -514,7 +514,7 @@ where
     async fn handle_selected_endpoint(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         endpoint_id: EndpointId,
     ) {
         if let Some((_, ism)) = self
@@ -547,7 +547,7 @@ where
     async fn handle_new_entry(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
     ) {
@@ -592,7 +592,7 @@ where
     fn handle_completion(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         completion: Completion,
     ) {
         if let Some((_, ism)) = self
@@ -622,7 +622,7 @@ where
     async fn handle_invocation_task_closed(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
     ) {
         if let Some((sender, _)) = self
             .invocation_state_machine_manager
@@ -655,7 +655,7 @@ where
     async fn handle_invocation_task_suspended(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         entry_indexes: HashSet<EntryIndex>,
     ) {
         if let Some((sender, _)) = self
@@ -691,7 +691,7 @@ where
     async fn handle_invocation_task_failed(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         error: impl InvokerError + CodedError + Send + Sync + 'static,
     ) {
         if let Some((_, ism)) = self
@@ -718,7 +718,7 @@ where
     fn handle_abort_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
     ) {
         if let Some((_, mut ism)) = self
             .invocation_state_machine_manager
@@ -787,7 +787,7 @@ where
     async fn handle_error_event<E: InvokerError + CodedError + Send + Sync + 'static>(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         error: E,
         mut ism: InvocationStateMachine,
     ) {
@@ -838,7 +838,7 @@ where
     async fn start_invocation_task(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         journal: InvokeInputJournal,
         mut ism: InvocationStateMachine,
     ) {
@@ -871,7 +871,7 @@ where
     async fn handle_retry_event<FN>(
         &mut self,
         partition: PartitionLeaderEpoch,
-        service_invocation_id: ServiceInvocationId,
+        service_invocation_id: FullInvocationId,
         f: FN,
     ) where
         FN: FnOnce(&mut InvocationStateMachine),
@@ -920,7 +920,7 @@ mod tests {
     use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
     use restate_test_util::{check, let_assert, test};
     use restate_types::identifiers::InvocationUuid;
-    use restate_types::identifiers::ServiceInvocationId;
+    use restate_types::identifiers::FullInvocationId;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::retries::RetryPolicy;
@@ -971,7 +971,7 @@ mod tests {
     where
         F: Fn(
             PartitionLeaderEpoch,
-            ServiceInvocationId,
+            FullInvocationId,
             mpsc::UnboundedSender<InvocationTaskOutput>,
             mpsc::UnboundedReceiver<Completion>,
             InvokeInputJournal,
@@ -981,7 +981,7 @@ mod tests {
         fn start_invocation_task(
             &self,
             partition: PartitionLeaderEpoch,
-            sid: ServiceInvocationId,
+            sid: FullInvocationId,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Completion>,
             input_journal: InvokeInputJournal,
@@ -997,8 +997,8 @@ mod tests {
         }
     }
 
-    fn mock_sid() -> ServiceInvocationId {
-        ServiceInvocationId::new("MyService", Bytes::default(), InvocationUuid::now_v7())
+    fn mock_sid() -> FullInvocationId {
+        FullInvocationId::new("MyService", Bytes::default(), InvocationUuid::now_v7())
     }
 
     #[test(tokio::test)]
@@ -1030,7 +1030,7 @@ mod tests {
         let invoker_join_handle = tokio::spawn(service.run(watch));
 
         let partition_leader_epoch = (0, 0);
-        let sid = ServiceInvocationId::new("TestService", Bytes::new(), InvocationUuid::now_v7());
+        let sid = FullInvocationId::new("TestService", Bytes::new(), InvocationUuid::now_v7());
 
         let (output_tx, mut output_rx) = mpsc::channel(1);
 

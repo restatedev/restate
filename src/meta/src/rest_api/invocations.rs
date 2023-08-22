@@ -50,10 +50,10 @@ impl ServiceInvocationId {
     fn into_service_invocation_id<K: RestateKeyConverter>(
         self,
         key_converter: &K,
-    ) -> Result<identifiers::ServiceInvocationId, MetaApiError> {
+    ) -> Result<identifiers::FullInvocationId, MetaApiError> {
         match self {
             ServiceInvocationId::Token(opaque_sid) => opaque_sid
-                .parse::<identifiers::ServiceInvocationId>()
+                .parse::<identifiers::FullInvocationId>()
                 .map_err(|e| MetaApiError::InvalidField("sid", e.to_string())),
             ServiceInvocationId::Structured {
                 service,
@@ -68,7 +68,7 @@ impl ServiceInvocationId {
                         e => MetaApiError::InvalidField("sid", e.to_string()),
                     })?;
 
-                Ok(identifiers::ServiceInvocationId::new(
+                Ok(identifiers::FullInvocationId::new(
                     service,
                     restate_key,
                     Uuid::from(invocation_id),

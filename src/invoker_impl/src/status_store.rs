@@ -15,7 +15,7 @@ use std::time::SystemTime;
 
 #[derive(Default, Debug)]
 pub(super) struct InvocationStatusStore(
-    HashMap<PartitionLeaderEpoch, HashMap<ServiceInvocationId, InvocationStatusReportInner>>,
+    HashMap<PartitionLeaderEpoch, HashMap<FullInvocationId, InvocationStatusReportInner>>,
 );
 
 impl InvocationStatusStore {
@@ -35,7 +35,7 @@ impl InvocationStatusStore {
 
     // -- Methods used by the invoker to notify the status
 
-    pub(super) fn on_start(&mut self, partition: PartitionLeaderEpoch, sid: ServiceInvocationId) {
+    pub(super) fn on_start(&mut self, partition: PartitionLeaderEpoch, sid: FullInvocationId) {
         let report = self
             .0
             .entry(partition)
@@ -47,7 +47,7 @@ impl InvocationStatusStore {
         report.in_flight = true;
     }
 
-    pub(super) fn on_end(&mut self, partition: &PartitionLeaderEpoch, sid: &ServiceInvocationId) {
+    pub(super) fn on_end(&mut self, partition: &PartitionLeaderEpoch, sid: &FullInvocationId) {
         if let Some(inner) = self.0.get_mut(partition) {
             inner.remove(sid);
             if inner.is_empty() {
@@ -59,7 +59,7 @@ impl InvocationStatusStore {
     pub(super) fn on_failure(
         &mut self,
         partition: PartitionLeaderEpoch,
-        sid: ServiceInvocationId,
+        sid: FullInvocationId,
         reason: InvocationErrorReport,
     ) {
         let report = self
@@ -81,7 +81,7 @@ mod tests {
         pub fn resolve_invocation(
             &self,
             partition: PartitionLeaderEpoch,
-            sid: &ServiceInvocationId,
+            sid: &FullInvocationId,
         ) -> Option<InvocationStatusReport> {
             self.0.get(&partition).and_then(|inner| {
                 inner.get(sid).map(|report| {

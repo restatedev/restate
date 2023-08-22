@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use futures::Stream;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::JournalMetadata;
 use std::future::Future;
@@ -22,7 +22,7 @@ pub trait JournalReader {
     where
         Self: 'a;
 
-    fn read_journal<'a>(&'a self, sid: &'a ServiceInvocationId) -> Self::Future<'_>;
+    fn read_journal<'a>(&'a self, sid: &'a FullInvocationId) -> Self::Future<'_>;
 }
 
 #[cfg(any(test, feature = "mocks"))]
@@ -40,7 +40,7 @@ pub mod mocks {
         type Future<'a> = futures::future::Ready<Result<(JournalMetadata, Self::JournalStream), Self::Error>> where
             Self: 'a;
 
-        fn read_journal<'a>(&'a self, _sid: &'a ServiceInvocationId) -> Self::Future<'_> {
+        fn read_journal<'a>(&'a self, _sid: &'a FullInvocationId) -> Self::Future<'_> {
             futures::future::ready(Ok((
                 JournalMetadata::new("test", ServiceInvocationSpanContext::empty(), 0),
                 futures::stream::empty(),

@@ -24,7 +24,7 @@ use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_test_util::{assert, assert_eq, let_assert, test};
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::{
@@ -129,7 +129,7 @@ fn register_set_state_and_output_steps(
 #[ignore]
 #[test(tokio::test)]
 async fn bidi_stream() {
-    let sid = ServiceInvocationId::new(
+    let sid = FullInvocationId::new(
         "counter.Counter",
         Bytes::from_static(b"my-counter"),
         Uuid::now_v7(),

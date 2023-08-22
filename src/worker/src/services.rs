@@ -13,7 +13,7 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 use restate_consensus::ProposalSender;
 use restate_network::PartitionTableError;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::message::PeerTarget;
 use tokio::sync::mpsc;
@@ -22,7 +22,7 @@ use tracing::debug;
 /// Commands that can be sent to a worker.
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum WorkerCommand {
-    KillInvocation(ServiceInvocationId),
+    KillInvocation(FullInvocationId),
 }
 
 #[derive(Debug, Clone)]
@@ -37,7 +37,7 @@ impl WorkerCommandSender {
 impl restate_worker_api::Handle for WorkerCommandSender {
     type Future = BoxFuture<'static, Result<(), restate_worker_api::Error>>;
 
-    fn kill_invocation(&self, service_invocation_id: ServiceInvocationId) -> Self::Future {
+    fn kill_invocation(&self, service_invocation_id: FullInvocationId) -> Self::Future {
         let tx = self.0.clone();
         async move {
             tx.send(WorkerCommand::KillInvocation(service_invocation_id))

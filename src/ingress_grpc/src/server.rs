@@ -159,7 +159,7 @@ mod tests {
     use prost::Message;
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_test_util::{assert_eq, let_assert, test};
-    use restate_types::identifiers::ServiceInvocationId;
+    use restate_types::identifiers::FullInvocationId;
     use restate_types::invocation::MaybeFullInvocationId;
     use serde_json::json;
     use std::net::SocketAddr;
@@ -269,7 +269,7 @@ mod tests {
         let response_bytes = hyper::body::to_bytes(response_body).await.unwrap();
         let response_json_value: serde_json::Value =
             serde_json::from_slice(&response_bytes).unwrap();
-        let sid: ServiceInvocationId = response_json_value
+        let sid: FullInvocationId = response_json_value
             .get("sid")
             .unwrap()
             .as_str()
@@ -290,7 +290,7 @@ mod tests {
             service_invocation
         });
 
-        let sid = ServiceInvocationId::mock_random();
+        let sid = FullInvocationId::mock_random();
         let awakeable_id = AwakeableIdentifier::new(sid.clone().into(), 2).encode();
 
         // Send the request

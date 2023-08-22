@@ -11,7 +11,7 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_storage_api::GetStream;
-use restate_types::identifiers::ServiceInvocationId;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::{ServiceInvocation, SpanRelation};
 use std::fmt::Debug;
 use std::str::FromStr;
@@ -63,7 +63,7 @@ pub(crate) fn uuid_str(uuid: &str) -> Uuid {
 
 pub(crate) fn mock_service_invocation() -> ServiceInvocation {
     ServiceInvocation::new(
-        ServiceInvocationId::new(
+        FullInvocationId::new(
             ByteString::from_static("service"),
             Bytes::new(),
             uuid_str("018756fa-3f7f-7854-a76b-42c59a3d7f2d"),
