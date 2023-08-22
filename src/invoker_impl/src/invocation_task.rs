@@ -29,9 +29,7 @@ use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
 use restate_types::errors::{InvocationError, UserErrorCode};
-use restate_types::identifiers::{
-    EndpointId, EntryIndex, FullInvocationId, InvocationId, PartitionLeaderEpoch,
-};
+use restate_types::identifiers::{EndpointId, EntryIndex, FullInvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryHeader};
@@ -569,9 +567,7 @@ where
         self.write(
             http_stream_tx,
             ProtocolMessage::new_start_message(
-                Bytes::copy_from_slice(
-                    &InvocationId::from(self.full_invocation_id.clone()).as_bytes(),
-                ),
+                Bytes::copy_from_slice(&self.full_invocation_id.as_invocation_id_bytes()),
                 self.full_invocation_id.to_string(),
                 journal_size,
                 is_partial,
