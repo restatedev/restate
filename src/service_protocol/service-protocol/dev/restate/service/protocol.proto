@@ -18,8 +18,12 @@ message StartMessage {
     bytes value = 2;
   }
 
-  bytes invocation_id = 1;
-  bytes instance_key = 2;
+  // Unique id of the invocation. This id is unique across invocations and won't change when replaying the journal.
+  bytes id = 1;
+
+  // Invocation id that can be used for logging.
+  // The user can use this id to address this invocation in admin and status introspection apis.
+  string debug_id = 2;
 
   uint32 known_entries = 3;
 
@@ -162,6 +166,7 @@ message BackgroundInvokeEntryMessage {
 
 // Kind: Completable JournalEntry
 // Type: 0x0C00 + 3
+// Awakeables are addressed by an identifier exposed to the user. See the spec for more details.
 message AwakeableEntryMessage {
   oneof result {
     bytes value = 14;
@@ -172,10 +177,8 @@ message AwakeableEntryMessage {
 // Kind: Non-Completable JournalEntry
 // Type: 0x0C00 + 4
 message CompleteAwakeableEntryMessage {
-  string service_name = 1;
-  bytes instance_key = 2;
-  bytes invocation_id = 3;
-  uint32 entry_index = 4;
+  // Identifier of the awakeable. See the spec for more details.
+  string id = 1;
 
   oneof result {
     bytes value = 5;
@@ -195,13 +198,4 @@ message Failure {
   uint32 code = 1;
   // Contains a concise error message, e.g. Throwable#getMessage() in Java.
   string message = 2;
-}
-
-// --- Other types
-
-message AwakeableIdentifier {
-  string service_name = 1;
-  bytes instance_key = 2;
-  bytes invocation_id = 3;
-  uint32 entry_index = 4;
 }
