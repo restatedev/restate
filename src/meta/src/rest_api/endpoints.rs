@@ -182,18 +182,15 @@ pub async fn list_service_endpoints<S: EndpointMetadataResolver, W>(
         endpoints: state
             .schemas()
             .get_endpoints()
-            .iter()
+            .into_iter()
             .map(|(endpoint_meta, services)| ServiceEndpointResponse {
                 id: endpoint_meta.id(),
                 uri: endpoint_meta.address().clone(),
                 protocol_type: endpoint_meta.protocol_type(),
                 additional_headers: endpoint_meta.additional_headers().clone().into(),
                 services: services
-                    .iter()
-                    .map(|(name, revision)| RegisterServiceResponse {
-                        name: name.clone(),
-                        revision: *revision,
-                    })
+                    .into_iter()
+                    .map(|(name, revision)| RegisterServiceResponse { name, revision })
                     .collect(),
             })
             .collect(),
