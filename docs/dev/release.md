@@ -8,11 +8,7 @@ In order to create a full Restate release you need to:
 3. [Update and release the documentation](https://github.com/restatedev/documentation#releasing-the-documentation) with the newly released runtime and SDK
 4. [Update and release the Node template generator](https://github.com/restatedev/node-template-generator#releasing)
 5. [Update and release the tour of Restate](https://github.com/restatedev/tour-of-restate-typescript#releasing)
-6. Update the examples
-   * [Ticket reservation example](https://github.com/restatedev/example-ticket-reservation-system#releasing)
-   * [Food ordering example](https://github.com/restatedev/example-food-ordering#releasing)
-   * [Shopping cart example](https://github.com/restatedev/example-shopping-cart-typescript#releasing)
-   * [Lambda greeter example](https://github.com/restatedev/example-lambda-ts-greeter#upgrading-the-sdk)
+6. [Update the examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
 
 ## Releasing the Restate runtime
 
@@ -32,10 +28,6 @@ After having created a new runtime release, you need to:
 
 1. [Update and release the documentation](https://github.com/restatedev/documentation#upgrading-restate-runtime-version)
 2. [Update the Node template generator](https://github.com/restatedev/node-template-generator#upgrading-restate-runtime)
-3. Update the examples
-   * [Ticket reservation example](https://github.com/restatedev/example-ticket-reservation-system#upgrading-restate-runtime)
-   * [Food ordering example](https://github.com/restatedev/example-food-ordering#upgrading-the-restate-runtime)
-   * [Shopping cart example](https://github.com/restatedev/example-shopping-cart-typescript#upgrading-restate-runtime)
 
 ## Versioning of the Restate runtime
 
