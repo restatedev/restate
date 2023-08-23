@@ -22,6 +22,7 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 rand = { workspace = true, optional = true }
+restate_base64_util = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }

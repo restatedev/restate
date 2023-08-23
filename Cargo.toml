@@ -66,6 +66,7 @@ uuid = { version = "1.3.0", features = ["v7", "serde"] }
 # Own crates
 codederror = { path = "src/codederror" }
 restate = { path = "src/restate" }
+restate_base64_util = { path = "src/base64_util" }
 restate_benchmarks = { path = "src/benchmarks" }
 restate_consensus = { path = "src/consensus" }
 restate_errors = { path = "src/errors" }

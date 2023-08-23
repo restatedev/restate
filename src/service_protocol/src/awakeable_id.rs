@@ -8,8 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
-use base64::{alphabet, Engine as _};
+use base64::Engine as _;
 use bytes::{BufMut, BytesMut};
 use restate_types::identifiers::{
     EncodedInvocationId, EntryIndex, InvocationId, InvocationIdParseError,
@@ -32,13 +31,6 @@ pub enum Error {
     Base64(#[from] base64::DecodeError),
 }
 
-// We have this custom configuration for padding because Node's base64url implementation will omit padding,
-// but the spec https://datatracker.ietf.org/doc/html/rfc4648#section-5 doesn't specify that padding MUST be omitted.
-// Hence, Other implementations might include it, so we keep this relaxed.
-const INDIFFERENT_PAD: GeneralPurposeConfig =
-    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent);
-const URL_SAFE: GeneralPurpose = GeneralPurpose::new(&alphabet::URL_SAFE, INDIFFERENT_PAD);
-
 impl AwakeableIdentifier {
     pub fn new(invocation_id: InvocationId, entry_index: EntryIndex) -> Self {
         Self {
@@ -48,7 +40,7 @@ impl AwakeableIdentifier {
     }
 
     pub fn decode<T: AsRef<[u8]>>(id: T) -> Result<Self, Error> {
-        let buffer = URL_SAFE.decode(id)?;
+        let buffer = restate_base64_util::URL_SAFE.decode(id)?;
         if buffer.len() != size_of::<EncodedInvocationId>() + size_of::<EntryIndex>() {
             return Err(Error::BadLength);
         }
@@ -72,7 +64,7 @@ impl AwakeableIdentifier {
             BytesMut::with_capacity(size_of::<EncodedInvocationId>() + size_of::<EntryIndex>());
         input_buf.put_slice(&self.invocation_id.as_bytes());
         input_buf.put_u32(self.entry_index);
-        URL_SAFE.encode(input_buf.freeze())
+        restate_base64_util::URL_SAFE.encode(input_buf.freeze())
     }
 
     pub fn into_inner(self) -> (InvocationId, EntryIndex) {

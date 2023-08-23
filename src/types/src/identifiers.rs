@@ -11,7 +11,6 @@
 //! Restate uses many identifiers to uniquely identify its components and entities.
 
 use base64::display::Base64Display;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -252,7 +251,7 @@ impl FromStr for InvocationId {
         let mut encoded_id = EncodedInvocationId::default();
 
         // Length check will be performed by the base64 lib directly
-        BASE64_STANDARD.decode_slice(str, &mut encoded_id)?;
+        restate_base64_util::URL_SAFE.decode_slice(str, &mut encoded_id)?;
 
         encoded_id.try_into()
     }
@@ -363,7 +362,7 @@ fn display_invocation_id(
         "{}",
         Base64Display::new(
             &encode_invocation_id(partition_key, invocation_uuid),
-            &BASE64_STANDARD
+            &restate_base64_util::URL_SAFE
         ),
     )
 }

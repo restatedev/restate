@@ -95,7 +95,7 @@ pub mod endpoint {
                 self.address.authority().expect("Must have authority"),
                 self.address.path()
             );
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(authority_and_path.as_bytes())
+            restate_base64_util::URL_SAFE.encode(authority_and_path.as_bytes())
         }
     }
 

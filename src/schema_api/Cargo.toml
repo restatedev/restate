@@ -14,7 +14,7 @@ serde_schema = ["serde", "dep:schemars", "restate_types?/serde_schema", "restate
 key_extraction = ["dep:bytes", "dep:thiserror", "dep:anyhow", "dep:prost"]
 key_expansion = ["dep:bytes", "dep:thiserror", "dep:prost", "dep:prost-reflect", "dep:anyhow"]
 json_key_conversion = ["key_extraction", "key_expansion", "dep:serde_json", "dep:thiserror"]
-endpoint = ["dep:restate_types", "dep:http", "dep:base64"]
+endpoint = ["dep:restate_types", "dep:http", "dep:base64", "dep:restate_base64_util"]
 service = ["dep:restate_types"]
 json_conversion = ["dep:prost-reflect", "prost-reflect?/serde", "dep:anyhow"]
 proto_symbol = ["dep:bytes"]
@@ -27,6 +27,7 @@ bytes = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }
+restate_base64_util = { workspace = true, optional = true }
 restate_types = { workspace = true, optional = true }
 restate_serde_util = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
