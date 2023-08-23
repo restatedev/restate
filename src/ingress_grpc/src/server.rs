@@ -11,6 +11,7 @@
 use super::options::JsonOptions;
 use super::*;
 
+use crate::dispatcher::DispatcherCommandSender;
 use codederror::CodedError;
 use futures::FutureExt;
 use restate_schema_api::json::JsonMapperResolver;
@@ -73,7 +74,7 @@ where
     JsonEncoder: Send,
 {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         listening_addr: SocketAddr,
         concurrency_limit: usize,
         json: JsonOptions,
@@ -150,6 +151,7 @@ where
 mod tests {
     use super::*;
 
+    use crate::dispatcher::InvocationOrResponse;
     use crate::mocks::*;
     use bytes::Bytes;
     use drain::Signal;

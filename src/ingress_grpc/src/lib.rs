@@ -57,12 +57,6 @@ pub type IngressError = InvocationError;
 // --- Input and output messages to interact with ingress
 
 #[derive(Debug, Clone)]
-pub enum InvocationOrResponse {
-    Invocation(ServiceInvocation),
-    Response(InvocationResponse),
-}
-
-#[derive(Debug, Clone)]
 pub struct IngressResponseMessage {
     pub full_invocation_id: FullInvocationId,
     pub result: Result<IngressResponse, IngressError>,
@@ -159,8 +153,6 @@ impl IngressOutput {
 }
 
 // --- Channels
-
-pub type DispatcherCommandSender = UnboundedCommandSender<InvocationOrResponse, IngressResult>;
 pub type IngressInputReceiver = mpsc::Receiver<IngressInput>;
 pub type IngressInputSender = mpsc::Sender<IngressInput>;
 

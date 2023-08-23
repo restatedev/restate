@@ -12,6 +12,7 @@ use super::options::JsonOptions;
 use super::protocol::{BoxBody, Protocol};
 use super::*;
 
+use crate::dispatcher::{DispatcherCommandSender, InvocationOrResponse};
 use crate::reflection::ServerReflectionService;
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
@@ -75,7 +76,7 @@ impl<Schemas> Handler<Schemas, Schemas>
 where
     Schemas: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
-    pub fn new(
+    pub(crate) fn new(
         ingress_id: IngressId,
         json: JsonOptions,
         schemas: Schemas,

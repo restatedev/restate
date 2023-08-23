@@ -37,6 +37,7 @@ mod ingress_integration {
     use restate_network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
     use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{IngressId, PartitionKey, PeerId};
+    use restate_types::invocation::{InvocationResponse, ServiceInvocation};
     use restate_types::message::{AckKind, MessageIndex};
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
@@ -49,9 +50,7 @@ mod ingress_integration {
                     ingress_id,
                     msg_index,
                 } => ConsensusOrShuffleTarget::Consensus(IngressToConsensus {
-                    invocation_or_response: restate_ingress_grpc::InvocationOrResponse::Invocation(
-                        service_invocation,
-                    ),
+                    invocation_or_response: InvocationOrResponse::Invocation(service_invocation),
                     ingress_id,
                     msg_index,
                 }),
@@ -60,9 +59,7 @@ mod ingress_integration {
                     ingress_id,
                     msg_index,
                 } => ConsensusOrShuffleTarget::Consensus(IngressToConsensus {
-                    invocation_or_response: restate_ingress_grpc::InvocationOrResponse::Response(
-                        response,
-                    ),
+                    invocation_or_response: InvocationOrResponse::Response(response),
                     ingress_id,
                     msg_index,
                 }),
@@ -78,8 +75,14 @@ mod ingress_integration {
     }
 
     #[derive(Debug)]
+    pub(crate) enum InvocationOrResponse {
+        Invocation(ServiceInvocation),
+        Response(InvocationResponse),
+    }
+
+    #[derive(Debug)]
     pub(crate) struct IngressToConsensus {
-        invocation_or_response: restate_ingress_grpc::InvocationOrResponse,
+        invocation_or_response: InvocationOrResponse,
         ingress_id: IngressId,
         msg_index: MessageIndex,
     }
@@ -87,12 +90,10 @@ mod ingress_integration {
     impl WithPartitionKey for IngressToConsensus {
         fn partition_key(&self) -> PartitionKey {
             match &self.invocation_or_response {
-                restate_ingress_grpc::InvocationOrResponse::Invocation(invocation) => {
+                InvocationOrResponse::Invocation(invocation) => {
                     invocation.fid.service_id.partition_key()
                 }
-                restate_ingress_grpc::InvocationOrResponse::Response(response) => {
-                    response.id.partition_key()
-                }
+                InvocationOrResponse::Response(response) => response.id.partition_key(),
             }
         }
     }
@@ -107,10 +108,10 @@ mod ingress_integration {
 
             partition::AckCommand::ack(
                 match invocation_or_response {
-                    restate_ingress_grpc::InvocationOrResponse::Invocation(service_invocation) => {
+                    InvocationOrResponse::Invocation(service_invocation) => {
                         partition::Command::Invocation(service_invocation)
                     }
-                    restate_ingress_grpc::InvocationOrResponse::Response(invocation_response) => {
+                    InvocationOrResponse::Response(invocation_response) => {
                         partition::Command::Response(invocation_response)
                     }
                 },

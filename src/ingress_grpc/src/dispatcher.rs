@@ -23,6 +23,15 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace};
 
+#[derive(Debug, Clone)]
+pub(crate) enum InvocationOrResponse {
+    Invocation(ServiceInvocation),
+    Response(InvocationResponse),
+}
+
+pub(crate) type DispatcherCommandSender =
+    UnboundedCommandSender<InvocationOrResponse, IngressResult>;
+
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 pub struct IngressDispatcherLoopError(#[from] PipeError);
@@ -119,7 +128,7 @@ impl IngressDispatcherLoop {
         self.input_tx.clone()
     }
 
-    pub fn create_command_sender(&self) -> DispatcherCommandSender {
+    pub(crate) fn create_command_sender(&self) -> DispatcherCommandSender {
         self.server_tx.clone()
     }
 }
