@@ -3542,6 +3542,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate_base64_util"
+version = "0.2.0"
+dependencies = [
+ "base64 0.21.0",
+]
+
+[[package]]
 name = "restate_benchmarks"
 version = "0.2.0"
 dependencies = [
@@ -3813,6 +3820,7 @@ dependencies = [
  "http",
  "prost",
  "prost-reflect",
+ "restate_base64_util",
  "restate_serde_util",
  "restate_types",
  "schemars",
@@ -3876,6 +3884,7 @@ dependencies = [
  "prost-build",
  "prost-reflect",
  "prost-types",
+ "restate_base64_util",
  "restate_errors",
  "restate_hyper_util",
  "restate_schema_api",
@@ -4043,6 +4052,7 @@ dependencies = [
  "humantime",
  "opentelemetry_api",
  "rand",
+ "restate_base64_util",
  "schemars",
  "serde",
  "serde_with",

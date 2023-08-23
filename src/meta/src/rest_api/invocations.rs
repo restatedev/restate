@@ -41,7 +41,7 @@ where
         .kill_invocation(
             invocation_id
                 .parse::<InvocationId>()
-                .map_err(|e| MetaApiError::InvalidField("fid", e.to_string()))?,
+                .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?,
         )
         .await?;
     Ok(())
