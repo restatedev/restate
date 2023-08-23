@@ -49,7 +49,7 @@ fn user_state_key_from_slice(key: &[u8]) -> Result<Bytes> {
     Ok(key)
 }
 
-impl StateTable for RocksDBTransaction {
+impl<'a> StateTable for RocksDBTransaction<'a> {
     fn put_user_state(
         &mut self,
         service_id: &ServiceId,

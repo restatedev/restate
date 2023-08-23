@@ -420,7 +420,7 @@ impl RocksDBStorage {
     pub fn transaction(&self) -> RocksDBTransaction {
         RocksDBTransaction {
             write_batch: Default::default(),
-            storage: Clone::clone(self),
+            storage: self,
             key_buffer: Default::default(),
             value_buffer: Default::default(),
         }
@@ -428,17 +428,17 @@ impl RocksDBStorage {
 }
 
 impl Storage for RocksDBStorage {
-    type TransactionType = RocksDBTransaction;
+    type TransactionType<'a> = RocksDBTransaction<'a>;
 
     #[allow(clippy::needless_lifetimes)]
-    fn transaction(&self) -> Self::TransactionType {
+    fn transaction(&self) -> Self::TransactionType<'_> {
         RocksDBStorage::transaction(self)
     }
 }
 
-pub struct RocksDBTransaction {
+pub struct RocksDBTransaction<'a> {
     write_batch: Option<WriteBatch>,
-    storage: RocksDBStorage,
+    storage: &'a RocksDBStorage,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
 }
@@ -479,7 +479,7 @@ impl<T: Send + 'static> Stream for BackgroundScanStream<T> {
     }
 }
 
-impl RocksDBTransaction {
+impl<'a> RocksDBTransaction<'a> {
     pub fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> GetFuture<'static, R>
     where
         K: TableKey + Send + 'static,
@@ -490,7 +490,7 @@ impl RocksDBTransaction {
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
-        let db = Clone::clone(&self.storage);
+        let db = Clone::clone(self.storage);
         tokio::task::spawn_blocking(move || match db.get(K::table(), &buf) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
@@ -512,7 +512,7 @@ impl RocksDBTransaction {
         F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let db = Clone::clone(&self.storage);
+        let db = Clone::clone(self.storage);
         let background_task = move || {
             let iterator = db.iterator_from(scan);
             f(iterator.item())
@@ -537,7 +537,7 @@ impl RocksDBTransaction {
         R: Send + 'static,
     {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<R>>(256);
-        let db = Clone::clone(&self.storage);
+        let db = Clone::clone(self.storage);
 
         let background_task = move || {
             let mut iterator = db.iterator_from(scan);
@@ -618,8 +618,11 @@ impl RocksDBTransaction {
     }
 }
 
-impl Transaction for RocksDBTransaction {
-    fn commit(self) -> GetFuture<'static, ()> {
+impl<'a> Transaction for RocksDBTransaction<'a> {
+    fn commit<'b>(self) -> GetFuture<'b, ()>
+    where
+        Self: 'b,
+    {
         if self.write_batch.is_none() {
             return ok(()).boxed();
         }

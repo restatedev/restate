@@ -34,7 +34,7 @@ define_table_key!(
     )
 );
 
-impl InboxTable for RocksDBTransaction {
+impl<'a> InboxTable for RocksDBTransaction<'a> {
     fn put_invocation(
         &mut self,
         service_id: &ServiceId,

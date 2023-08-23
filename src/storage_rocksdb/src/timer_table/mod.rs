@@ -97,7 +97,7 @@ fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
     Ok(timer_key)
 }
 
-impl TimerTable for RocksDBTransaction {
+impl<'a> TimerTable for RocksDBTransaction<'a> {
     fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) -> PutFuture {
         let key = write_timer_key(partition_id, key);
         let value = ProtoValue(storage::v1::Timer::from(timer));

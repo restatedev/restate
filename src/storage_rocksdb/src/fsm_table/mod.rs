@@ -24,7 +24,7 @@ define_table_key!(
     PartitionStateMachineKey(partition_id: PartitionId, state_id: u64)
 );
 
-impl FsmTable for RocksDBTransaction {
+impl<'a> FsmTable for RocksDBTransaction<'a> {
     fn get(&mut self, partition_id: PartitionId, state_id: u64) -> GetFuture<Option<Bytes>> {
         let key = PartitionStateMachineKey::default()
             .partition_id(partition_id)

@@ -55,7 +55,7 @@ fn status_key_from_bytes(mut bytes: Bytes) -> crate::Result<ServiceId> {
     ))
 }
 
-impl StatusTable for RocksDBTransaction {
+impl<'a> StatusTable for RocksDBTransaction<'a> {
     fn put_invocation_status(
         &mut self,
         service_id: &ServiceId,

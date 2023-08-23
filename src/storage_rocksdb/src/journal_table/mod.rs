@@ -40,7 +40,7 @@ fn write_journal_entry_key(service_id: &ServiceId, journal_index: u32) -> Journa
         .journal_index(journal_index)
 }
 
-impl JournalTable for RocksDBTransaction {
+impl<'a> JournalTable for RocksDBTransaction<'a> {
     fn put_journal_entry(
         &mut self,
         service_id: &ServiceId,

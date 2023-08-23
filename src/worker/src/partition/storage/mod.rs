@@ -61,7 +61,7 @@ where
         }
     }
 
-    pub(super) fn create_transaction(&self) -> Transaction<Storage::TransactionType> {
+    pub(super) fn create_transaction(&self) -> Transaction<Storage::TransactionType<'_>> {
         Transaction::new(
             self.partition_id,
             self.partition_key_range.clone(),
@@ -112,9 +112,10 @@ where
         }
     }
 
-    pub(super) fn commit(
-        self,
-    ) -> BoxFuture<'static, Result<(), restate_storage_api::StorageError>> {
+    pub(super) fn commit<'a>(self) -> BoxFuture<'a, Result<(), restate_storage_api::StorageError>>
+    where
+        Self: 'a,
+    {
         self.inner.commit()
     }
 
@@ -560,16 +561,19 @@ mod fsm_variable {
 
 impl<TransactionType> Committable for Transaction<TransactionType>
 where
-    TransactionType: restate_storage_api::Transaction + 'static,
+    TransactionType: restate_storage_api::Transaction,
 {
-    fn commit(self) -> BoxFuture<'static, Result<(), CommitError>> {
+    fn commit<'a>(self) -> BoxFuture<'a, Result<(), CommitError>>
+    where
+        Self: 'a,
+    {
         async { self.inner.commit().await.map_err(CommitError::with_source) }.boxed()
     }
 }
 
 impl<Storage> OutboxReader for PartitionStorage<Storage>
 where
-    Storage: restate_storage_api::Storage + 'static,
+    for<'a> Storage: restate_storage_api::Storage + 'a,
 {
     fn get_next_message(
         &self,
@@ -599,7 +603,7 @@ where
 
 impl<Storage> TimerReader<TimerValue> for PartitionStorage<Storage>
 where
-    Storage: restate_storage_api::Storage + Send + Sync,
+    for<'a> Storage: restate_storage_api::Storage + Send + Sync + 'a,
 {
     type TimerStream<'a> = BoxStream<'a, TimerValue> where Self: 'a;
 

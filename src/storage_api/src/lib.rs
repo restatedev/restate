@@ -44,9 +44,11 @@ pub mod status_table;
 pub mod timer_table;
 
 pub trait Storage {
-    type TransactionType: Transaction;
+    type TransactionType<'a>: Transaction
+    where
+        Self: 'a;
 
-    fn transaction(&self) -> Self::TransactionType;
+    fn transaction(&self) -> Self::TransactionType<'_>;
 }
 
 pub trait Transaction:
@@ -60,5 +62,7 @@ pub trait Transaction:
     + timer_table::TimerTable
     + Send
 {
-    fn commit(self) -> GetFuture<'static, ()>;
+    fn commit<'a>(self) -> GetFuture<'a, ()>
+    where
+        Self: 'a;
 }

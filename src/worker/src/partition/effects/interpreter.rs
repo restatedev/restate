@@ -203,7 +203,9 @@ impl CommitError {
 
 pub(crate) trait Committable {
     // TODO: Replace with async trait or proper future
-    fn commit(self) -> BoxFuture<'static, Result<(), CommitError>>;
+    fn commit<'a>(self) -> BoxFuture<'a, Result<(), CommitError>>
+    where
+        Self: 'a;
 }
 
 #[must_use = "Don't forget to commit the interpretation result"]

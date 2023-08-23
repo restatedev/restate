@@ -26,7 +26,7 @@ define_table_key!(
     OutboxKey(partition_id: PartitionId, message_index: u64)
 );
 
-impl OutboxTable for RocksDBTransaction {
+impl<'a> OutboxTable for RocksDBTransaction<'a> {
     fn add_message(
         &mut self,
         partition_id: PartitionId,

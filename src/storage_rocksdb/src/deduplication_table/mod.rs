@@ -26,7 +26,7 @@ define_table_key!(
     )
 );
 
-impl DeduplicationTable for RocksDBTransaction {
+impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
     fn get_sequence_number(
         &mut self,
         partition_id: PartitionId,
