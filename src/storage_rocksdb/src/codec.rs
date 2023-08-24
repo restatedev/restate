@@ -10,12 +10,15 @@
 
 use bytes::{Buf, BufMut, Bytes};
 use bytestring::ByteString;
+use prost::encoding::encoded_len_varint;
 use prost::Message;
 use restate_storage_api::StorageError;
 
 pub trait Codec: Sized {
     fn encode<B: BufMut>(&self, target: &mut B);
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self>;
+
+    fn serialized_length(&self) -> usize;
 }
 
 impl Codec for Bytes {
@@ -25,6 +28,11 @@ impl Codec for Bytes {
 
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         read_delimited(source)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.len()
+            + encoded_len_varint(u64::try_from(self.len()).expect("usize should fit into u64"))
     }
 }
 
@@ -38,6 +46,11 @@ impl Codec for ByteString {
 
         unsafe { Ok(ByteString::from_bytes_unchecked(bs)) }
     }
+
+    fn serialized_length(&self) -> usize {
+        self.len()
+            + encoded_len_varint(u64::try_from(self.len()).expect("usize should fit into u64"))
+    }
 }
 
 impl Codec for u64 {
@@ -48,6 +61,10 @@ impl Codec for u64 {
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         Ok(source.get_u64())
     }
+
+    fn serialized_length(&self) -> usize {
+        8
+    }
 }
 
 impl Codec for u32 {
@@ -57,6 +74,10 @@ impl Codec for u32 {
 
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         Ok(source.get_u32())
+    }
+
+    fn serialized_length(&self) -> usize {
+        4
     }
 }
 
@@ -77,6 +98,10 @@ impl<T: Codec> Codec for Option<T> {
         let res = T::decode(source)?;
         Ok(Some(res))
     }
+
+    fn serialized_length(&self) -> usize {
+        self.as_ref().map(|v| v.serialized_length()).unwrap_or(0)
+    }
 }
 
 impl<'a> Codec for &'a [u8] {
@@ -86,6 +111,10 @@ impl<'a> Codec for &'a [u8] {
 
     fn decode<B: Buf>(_source: &mut B) -> crate::Result<Self> {
         unimplemented!("could not decode into a slice u8");
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.len()
     }
 }
 
@@ -105,6 +134,10 @@ impl<M: Message + Default> Codec for ProtoValue<M> {
         M::decode(source)
             .map_err(|err| StorageError::Generic(err.into()))
             .map(ProtoValue)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.0.encoded_len()
     }
 }
 

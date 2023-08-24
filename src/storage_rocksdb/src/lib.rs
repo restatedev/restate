@@ -486,7 +486,7 @@ impl<'a> RocksDBTransaction<'a> {
         F: FnOnce(&[u8], Option<&[u8]>) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let mut buf = self.key_buffer();
+        let mut buf = self.key_buffer(key.serialized_length());
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
@@ -569,25 +569,27 @@ impl<'a> RocksDBTransaction<'a> {
     }
 
     #[inline]
-    fn key_buffer(&mut self) -> &mut BytesMut {
+    fn key_buffer(&mut self, min_size: usize) -> &mut BytesMut {
         self.key_buffer.clear();
+        self.key_buffer.reserve(min_size);
         &mut self.key_buffer
     }
 
     #[inline]
-    fn value_buffer(&mut self) -> &mut BytesMut {
+    fn value_buffer(&mut self, min_size: usize) -> &mut BytesMut {
         self.value_buffer.clear();
+        self.value_buffer.reserve(min_size);
         &mut self.value_buffer
     }
 
     fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V) {
         self.ensure_write_batch();
         {
-            let buffer = self.key_buffer();
+            let buffer = self.key_buffer(key.serialized_length());
             key.serialize_to(buffer);
         }
         {
-            let buffer = self.value_buffer();
+            let buffer = self.value_buffer(value.serialized_length());
             value.encode(buffer);
         }
         let table = self.storage.table_handle(K::table());
@@ -600,7 +602,7 @@ impl<'a> RocksDBTransaction<'a> {
     fn delete_key<K: TableKey>(&mut self, key: &K) {
         self.ensure_write_batch();
         {
-            let buffer = self.key_buffer();
+            let buffer = self.key_buffer(key.serialized_length());
             key.serialize_to(buffer);
         }
         let table = self.storage.table_handle(K::table());

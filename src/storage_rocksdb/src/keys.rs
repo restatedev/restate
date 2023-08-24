@@ -17,10 +17,12 @@ pub trait TableKey: Sized + Send + 'static {
     fn table() -> TableKind;
 
     fn serialize(&self) -> BytesMut {
-        let mut buf = BytesMut::new();
+        let mut buf = BytesMut::with_capacity(self.serialized_length());
         self.serialize_to(&mut buf);
         buf
     }
+
+    fn serialized_length(&self) -> usize;
 }
 
 /// The following macro defines an ordered, named key tuple, that is used as a rocksdb key.
@@ -143,6 +145,15 @@ macro_rules! define_table_key {
                 )+
 
                 return Ok(this);
+            }
+
+            #[inline]
+            fn serialized_length(&self) -> usize {
+                let mut serialized_length = 0;
+                $(
+                    serialized_length += crate::codec::Codec::serialized_length(&self.$element);
+                )+
+                serialized_length
             }
         }
     })
