@@ -119,7 +119,7 @@ impl MetaRestEndpoint {
             .route("/health", get(openapi_handler!(health::health)))
             .route_openapi_specification(
                 "/openapi",
-                OpenApiBuilder::new("Meta REST Operational API", env!("CARGO_PKG_VERSION")),
+                OpenApiBuilder::new("Admin API", env!("CARGO_PKG_VERSION")),
             )
             .expect("Error when building the OpenAPI specification")
             .with_state(shared_state)
