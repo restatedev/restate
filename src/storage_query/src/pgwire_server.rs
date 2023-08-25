@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -40,6 +41,7 @@ use pgwire::api::{ClientInfo, MakeHandler, StatelessMakeHandler, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use pgwire::tokio::process_socket;
+use tracing::warn;
 
 pub(crate) struct HandlerFactory {
     processor: Arc<StatelessMakeHandler<DfSessionService>>,
@@ -65,12 +67,12 @@ impl HandlerFactory {
         }
     }
 
-    pub fn spawn_connection(&self, incoming_socket: TcpStream) {
+    pub fn spawn_connection(&self, incoming_socket: TcpStream, addr: SocketAddr) {
         let authenticator_ref = self.authenticator.make();
         let processor_ref = self.processor.make();
         let placeholder_ref = self.placeholder.make();
         tokio::spawn(async move {
-            let _ = process_socket(
+            let result = process_socket(
                 incoming_socket,
                 None,
                 authenticator_ref,
@@ -78,6 +80,10 @@ impl HandlerFactory {
                 placeholder_ref,
             )
             .await;
+
+            if let Err(err) = result {
+                warn!("Failed processing socket for connection '{addr}': {err}");
+            }
         });
     }
 }

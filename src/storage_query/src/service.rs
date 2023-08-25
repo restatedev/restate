@@ -16,6 +16,7 @@ use std::io::ErrorKind;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio::select;
+use tracing::warn;
 
 pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -66,8 +67,11 @@ impl PostgresQueryService {
         loop {
             select! {
                 incoming_socket = listener.accept() => {
-                    if let Ok((stream, _addr)) = incoming_socket {
-                        factory.spawn_connection(stream);
+                    match incoming_socket {
+                        Ok((stream, addr)) => factory.spawn_connection(stream, addr),
+                        Err(err) => {
+                            warn!("Failed to accept storage query connection: {err}");
+                        }
                     }
                 },
                 _ = &mut shutdown => {
