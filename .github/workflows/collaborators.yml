@@ -29,11 +29,8 @@ jobs:
           # make sure that restatedev-ci is an admin for all collaborator repositories.
           COLLABORATOR_REPOS: |
             restatedev/restate-dist
-            restatedev/documentation
             restatedev/sdk-typescript
             restatedev/node-template-generator
-            restatedev/tour-of-restate-typescript
-            restatedev/examples
           GITHUB_TOKEN: ${{ secrets.COLLABORATOR_ADMIN_ACCESS }}
         run: |
           collaborator_repos="${{ env.COLLABORATOR_REPOS }}"
