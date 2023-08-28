@@ -77,7 +77,6 @@ jobs:
         if: ${{ inputs.email != '' && inputs.operation == 'add' }}
         uses: dawidd6/action-send-mail@v3
         with:
-          #connection_url: ${{secrets.MAIL_CONNECTION}}
           server_address: smtp.gmail.com
           server_port: 465
           username: ${{secrets.MAIL_USERNAME}}
@@ -85,8 +84,8 @@ jobs:
           secure: true
           subject: Welcome to Restate
           to: ${{ inputs.email }}
-          from: Restate
+          from: Stephan and the Restate team
           html_body: file://.github/welcome_mail.md
-          reply_to: info@restate.dev
+          reply_to: stephan@restate.dev
           ignore_cert: true
           convert_markdown: true
