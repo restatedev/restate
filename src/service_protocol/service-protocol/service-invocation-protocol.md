@@ -149,15 +149,14 @@ The `StartMessage` carries the metadata required to bootstrap the invocation sta
     0                   1                   2                   3
     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |             0x0000            | Reserved|S|         PV        |
+    |             0x0000            | Reserved  |         PV        |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |                             Length                            |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
 Flags:
 
-- 5 bits (MSB): Reserved
-- 1 bit `S`: `PARTIAL_STATE` flag (see [Eager state](#eager-state)). Mask: `0x0000_0400_0000_0000`
+- 6 bits (MSB): Reserved
 - 10 bits `PV`: Protocol version. Mask: `0x0000_03FF_0000_0000`
 
 ### Entries and Completions
@@ -360,10 +359,10 @@ As described in [Journal entries reference](#journal-entries-reference), to get 
 creates a `GetStateEntryMessage` without a result, and waits for a `Completion` with the result, or alternatively
 suspends and expects the `GetStateEntryMessage.result` is filled when replaying.
 
-SDKs MAY optimize the state access operations by reading the flag `PARTIAL_STATE` and `state_map` within the
+SDKs MAY optimize the state access operations by reading the `partial_state` and `state_map` fields within the
 [`StartMessage`](#startmessage). The `state_map` field contains key-value pairs of the current state of the service
-instance. When `PARTIAL_STATE` is set, the `state_map` is partial/incomplete, meaning there might be entries stored in
-the Runtime that are not part of `state_map`. When `PARTIAL_STATE` is unset, the `state_map` is complete, thus if an
+instance. When `partial_state` is set, the `state_map` is partial/incomplete, meaning there might be entries stored in
+the Runtime that are not part of `state_map`. When `partial_state` is unset, the `state_map` is complete, thus if an
 entry is not within the map, the SDK can assume it's not stored in the runtime either.
 
 A possible implementation could be the following. Given a user requests a state entry with key `my-key`:
@@ -371,8 +370,8 @@ A possible implementation could be the following. Given a user requests a state 
 - If `my-key` is available in `state_map`, generate a `GetStateEntryMessage` with filled `result`, and return the value
   to the user
 - If `my-key` is not available in `state_map`
-  - If `PARTIAL_STATE` is unset, generate a `GetStateEntryMessage` with empty `result`, and return empty to the user
-  - If `PARTIAL_STATE` is set, generate a `GetStateEntryMessage` without a `result`, and wait for the runtime to send a
+  - If `partial_state` is unset, generate a `GetStateEntryMessage` with empty `result`, and return empty to the user
+  - If `partial_state` is set, generate a `GetStateEntryMessage` without a `result`, and wait for the runtime to send a
     `Completion` back (same logic as without eager state)
 
 In order for the aforementioned algorithm to work, set and clear state operations must be reflected on the local

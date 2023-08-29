@@ -1,3 +1,12 @@
+// Copyright (c) 2023 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/service-protocol/blob/main/LICENSE
+
 syntax = "proto3";
 
 package dev.restate.service.protocol;
@@ -29,6 +38,7 @@ message StartMessage {
 
   // protolint:disable:next REPEATED_FIELD_NAMES_PLURALIZED
   repeated StateEntry state_map = 4;
+  bool partial_state = 5;
 }
 
 // Type: 0x0000 + 1
