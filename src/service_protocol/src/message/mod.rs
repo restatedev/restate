@@ -55,6 +55,7 @@ impl ProtocolMessage {
                 id,
                 debug_id,
                 known_entries,
+                partial_state,
                 state_map: state_map_entries
                     .into_iter()
                     .map(|(key, value)| pb::protocol::start_message::StateEntry { key, value })
