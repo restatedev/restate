@@ -1,0 +1,46 @@
+// Copyright (c) 2023 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/service-protocol/blob/main/LICENSE
+
+syntax = "proto3";
+
+package dev.restate.service.discovery;
+
+import "google/protobuf/descriptor.proto";
+
+option java_package = "dev.restate.generated.service.discovery";
+option go_package = "restate.dev/sdk-go/pb/service/discovery";
+
+
+// --- Service discovery endpoint ---
+// Request: POST /discover with application/proto containing ServiceDiscoveryRequest
+// Response: application/proto containing ServiceDiscoveryResponse
+
+message ServiceDiscoveryRequest {
+}
+
+enum ProtocolMode {
+  // protolint:disable:next ENUM_FIELD_NAMES_ZERO_VALUE_END_WITH
+  BIDI_STREAM = 0;
+  REQUEST_RESPONSE = 1;
+}
+
+message ServiceDiscoveryResponse {
+  // List of all proto files used to define the services, including the dependencies.
+  google.protobuf.FileDescriptorSet files = 1;
+
+  // List of services to register. This might be a subset of services defined in files.
+  repeated string services = 2;
+
+  // Service-protocol version negotiation
+  uint32 min_protocol_version = 3;
+  uint32 max_protocol_version = 4;
+
+  // Protocol mode negotiation
+  ProtocolMode protocol_mode = 5;
+}

@@ -1,0 +1,211 @@
+// Copyright (c) 2023 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/service-protocol/blob/main/LICENSE
+
+syntax = "proto3";
+
+package dev.restate.service.protocol;
+
+import "google/protobuf/empty.proto";
+
+option java_package = "dev.restate.generated.service.protocol";
+option go_package = "restate.dev/sdk-go/pb/service/protocol";
+
+// --- Core frames ---
+
+// Type: 0x0000 + 0
+message StartMessage {
+  message StateEntry {
+    bytes key = 1;
+    // If value is an empty byte array,
+    // then it means the value is empty and not "missing" (e.g. empty string).
+    bytes value = 2;
+  }
+
+  // Unique id of the invocation. This id is unique across invocations and won't change when replaying the journal.
+  bytes id = 1;
+
+  // Invocation id that can be used for logging.
+  // The user can use this id to address this invocation in admin and status introspection apis.
+  string debug_id = 2;
+
+  uint32 known_entries = 3;
+
+  // protolint:disable:next REPEATED_FIELD_NAMES_PLURALIZED
+  repeated StateEntry state_map = 4;
+  bool partial_state = 5;
+}
+
+// Type: 0x0000 + 1
+// Note: Acks to custom messages will have the `empty` field filled.
+message CompletionMessage {
+  uint32 entry_index = 1;
+
+  oneof result {
+    google.protobuf.Empty empty = 13;
+    bytes value = 14;
+    Failure failure = 15;
+  };
+}
+
+// Type: 0x0000 + 2
+// Implementations MUST send this message when suspending an invocation.
+message SuspensionMessage {
+  // This list represents any of the entry_index the invocation is waiting on to progress.
+  // The runtime will resume the invocation as soon as one of the given entry_index is completed.
+  // This list MUST not be empty.
+  // False positive, entry_indexes is a valid plural of entry_indices.
+  // https://learn.microsoft.com/en-us/style-guide/a-z-word-list-term-collections/i/index-indexes-indices
+  repeated uint32 entry_indexes = 1;  // protolint:disable:this REPEATED_FIELD_NAMES_PLURALIZED
+}
+
+// Type: 0x0000 + 3
+message ErrorMessage {
+  // The code can be:
+  // * Any of the error codes defined by OutputStreamEntry.failure (see Failure message)
+  // * JOURNAL_MISMATCH = 32, that is when the SDK cannot replay a journal due to the mismatch between the journal and the actual code.
+  // * PROTOCOL_VIOLATION = 33, that is when the SDK receives an unexpected message or an expected message variant, given its state.
+  //
+  // If 16 < code < 32, or code > 33, the runtime will interpret it as code 2 (UNKNOWN).
+  uint32 code = 1;
+  // Contains a concise error message, e.g. Throwable#getMessage() in Java.
+  string message = 2;
+  // Contains a verbose error description, e.g. the exception stacktrace.
+  string description = 3;
+}
+
+// --- Journal Entries ---
+
+// Every Completable JournalEntry has a result field, filled only and only if the entry is in DONE state.
+// Depending on the semantics of the corresponding syscall, the entry can represent the result field with any of these three types:
+//
+//   * google.protobuf.Empty empty = 13 for cases when we need to propagate to user code the distinction between default value or no value.
+//   * bytes value = 14 for carrying the result value
+//   * Failure failure = 15 for carrying a failure
+//
+// The tag numbers 13, 14 and 15 are reserved and shouldn't be used for other fields.
+
+// ------ Input and output ------
+
+// Kind: Completable JournalEntry
+// Type: 0x0400 + 0
+message PollInputStreamEntryMessage {
+  bytes value = 14;
+}
+
+// Kind: Non-Completable JournalEntry
+// Type: 0x0400 + 1
+message OutputStreamEntryMessage {
+  oneof result {
+    bytes value = 14;
+    Failure failure = 15;
+  };
+}
+
+// ------ State access ------
+
+// Kind: Completable JournalEntry
+// Type: 0x0800 + 0
+message GetStateEntryMessage {
+  bytes key = 1;
+
+  oneof result {
+    google.protobuf.Empty empty = 13;
+    bytes value = 14;
+  };
+}
+
+// Kind: Non-Completable JournalEntry
+// Type: 0x0800 + 1
+message SetStateEntryMessage {
+  bytes key = 1;
+  bytes value = 3;
+}
+
+// Kind: Non-Completable JournalEntry
+// Type: 0x0800 + 2
+message ClearStateEntryMessage {
+  bytes key = 1;
+}
+
+// ------ Syscalls ------
+
+// Kind: Completable JournalEntry
+// Type: 0x0C00 + 0
+message SleepEntryMessage {
+  // Wake up time.
+  // The time is set as duration since UNIX Epoch.
+  uint64 wake_up_time = 1;
+
+  google.protobuf.Empty result = 13;
+}
+
+// Kind: Completable JournalEntry
+// Type: 0x0C00 + 1
+message InvokeEntryMessage {
+  string service_name = 1;
+  string method_name = 2;
+
+  bytes parameter = 3;
+
+  oneof result {
+    bytes value = 14;
+    Failure failure = 15;
+  };
+}
+
+// Kind: Non-Completable JournalEntry
+// Type: 0x0C00 + 2
+message BackgroundInvokeEntryMessage {
+  string service_name = 1;
+  string method_name = 2;
+
+  bytes parameter = 3;
+
+  // Time when this BackgroundInvoke should be executed.
+  // The time is set as duration since UNIX Epoch.
+  // If this value is not set, equal to 0, or past in time,
+  // the runtime will execute this BackgroundInvoke as soon as possible.
+  uint64 invoke_time = 4;
+}
+
+// Kind: Completable JournalEntry
+// Type: 0x0C00 + 3
+// Awakeables are addressed by an identifier exposed to the user. See the spec for more details.
+message AwakeableEntryMessage {
+  oneof result {
+    bytes value = 14;
+    Failure failure = 15;
+  };
+}
+
+// Kind: Non-Completable JournalEntry
+// Type: 0x0C00 + 4
+message CompleteAwakeableEntryMessage {
+  // Identifier of the awakeable. See the spec for more details.
+  string id = 1;
+
+  oneof result {
+    bytes value = 5;
+    Failure failure = 6;
+  };
+}
+
+// --- Nested messages
+
+// This failure object carries user visible errors,
+// e.g. invocation failure return value or failure result of an InvokeEntryMessage.
+message Failure {
+  // The code should be any of the gRPC error codes,
+  // as defined here: https://github.com/grpc/grpc/blob/master/doc/statuscodes.md#status-codes-and-their-use-in-grpc
+  //
+  // If code > 16, the runtime will interpret it as code 2 (UNKNOWN).
+  uint32 code = 1;
+  // Contains a concise error message, e.g. Throwable#getMessage() in Java.
+  string message = 2;
+}
