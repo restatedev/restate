@@ -140,12 +140,12 @@ pub enum ServiceDiscoveryError {
     #[code(META0002)]
     BadKeyFieldType(MethodDescriptor),
     #[error(
-        "error when trying to parse the key of service method '{}' with input type '{}'. The key type is different from other methods key types",
+        "error when trying to parse the key of service method '{}' with input type '{}'. The key type is not compatible with the key type from other methods",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
     #[code(META0002)]
-    DifferentKeyTypes(MethodDescriptor),
+    IncompatibleKeyTypes(MethodDescriptor),
 
     // Errors most likely related to SDK bugs
     #[error("cannot find service '{0}' in descriptor set. This might be a symptom of an SDK bug, or of the build tool/pipeline used to generate the descriptor")]
@@ -183,7 +183,7 @@ impl ServiceDiscoveryError {
                 | ServiceDiscoveryError::MissingKeyField(_)
                 | ServiceDiscoveryError::MoreThanOneKeyField(_)
                 | ServiceDiscoveryError::BadKeyFieldType(_)
-                | ServiceDiscoveryError::DifferentKeyTypes(_)
+                | ServiceDiscoveryError::IncompatibleKeyTypes(_)
         )
     }
 }
@@ -352,6 +352,7 @@ pub fn infer_keyed_service_type(
     // Parse the key from the first method
     let first_method = desc.methods().next().unwrap();
     let first_key_field_descriptor = resolve_key_field(&first_method, restate_key_extension)?;
+    let first_key_field_descriptor_kind = first_key_field_descriptor.kind();
 
     // Generate the KeyStructure out of it
     let key_structure = infer_key_structure(&first_key_field_descriptor);
@@ -363,10 +364,11 @@ pub fn infer_keyed_service_type(
     // Now parse the next methods
     for method_desc in desc.methods().skip(1) {
         let key_field_descriptor = resolve_key_field(&method_desc, restate_key_extension)?;
+        let key_field_descriptor_kind = key_field_descriptor.kind();
 
         // Validate every method has the same key field type
-        if key_field_descriptor.kind() != first_key_field_descriptor.kind() {
-            return Err(ServiceDiscoveryError::DifferentKeyTypes(method_desc));
+        if !is_key_kind_compatible(&key_field_descriptor_kind, &first_key_field_descriptor_kind) {
+            return Err(ServiceDiscoveryError::IncompatibleKeyTypes(method_desc));
         }
 
         service_methods_key_field_root_number.insert(
@@ -428,6 +430,14 @@ fn resolve_key_field(
     }
 
     Ok(field_descriptor)
+}
+
+fn is_key_kind_compatible(this: &Kind, other: &Kind) -> bool {
+    match this {
+        // For string and bytes, we just check that the wire types are compatible
+        Kind::String | Kind::Bytes => this.wire_type() == other.wire_type(),
+        _ => this == other,
+    }
 }
 
 fn append_discover(uri: &Uri) -> Result<Uri, ServiceDiscoveryError> {
