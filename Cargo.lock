@@ -3631,6 +3631,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate_ingress_dispatcher"
+version = "0.2.2"
+dependencies = [
+ "bytes",
+ "drain",
+ "restate_futures_util",
+ "restate_test_util",
+ "restate_types",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "restate_ingress_grpc"
 version = "0.2.2"
 dependencies = [

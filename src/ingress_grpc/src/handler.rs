@@ -380,7 +380,7 @@ where
 
                 let service_invocation = ServiceInvocation::new(
                     FullInvocationId::new(service_name, key, InvocationUuid::now_v7()),
-                    method_name.into(),
+                    method_name,
                     req_payload,
                     response_sink,
                     SpanRelation::Parent(ingress_span_context),

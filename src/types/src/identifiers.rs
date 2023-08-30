@@ -279,6 +279,10 @@ impl FullInvocationId {
         Self::with_service_id(ServiceId::new(service_name, key), invocation_id)
     }
 
+    pub fn generate(service_name: impl Into<ByteString>, key: impl Into<Bytes>) -> Self {
+        Self::with_service_id(ServiceId::new(service_name, key), InvocationUuid::now_v7())
+    }
+
     pub fn with_service_id(
         service_id: ServiceId,
         invocation_id: impl Into<InvocationUuid>,
@@ -373,6 +377,12 @@ mod mocks {
 
     use rand::distributions::{Alphanumeric, DistString};
     use rand::Rng;
+
+    impl IngressId {
+        pub fn mock() -> Self {
+            Self("127.0.0.1:8080".parse().unwrap())
+        }
+    }
 
     impl InvocationId {
         pub fn mock_random() -> Self {

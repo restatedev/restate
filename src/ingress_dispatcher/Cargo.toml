@@ -1,0 +1,22 @@
+[package]
+name = "restate_ingress_dispatcher"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bytes = { workspace = true }
+drain = { workspace = true }
+restate_futures_util = { workspace = true }
+restate_types = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+restate_types = { workspace = true, features = ["mocks"] }
+restate_test_util = { workspace = true }
+tracing-subscriber = { workspace = true }
