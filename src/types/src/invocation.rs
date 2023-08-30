@@ -43,16 +43,16 @@ impl ServiceInvocation {
     /// to let the exporter commit this span to jaeger/zipkin to visualize intermediate results of the invocation.
     pub fn new(
         fid: FullInvocationId,
-        method_name: ByteString,
-        argument: Bytes,
+        method_name: impl Into<ByteString>,
+        argument: impl Into<Bytes>,
         response_sink: Option<ServiceInvocationResponseSink>,
         related_span: SpanRelation,
     ) -> Self {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         Self {
             fid,
-            method_name,
-            argument,
+            method_name: method_name.into(),
+            argument: argument.into(),
             response_sink,
             span_context,
         }
