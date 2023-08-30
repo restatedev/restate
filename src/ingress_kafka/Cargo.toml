@@ -1,0 +1,71 @@
+[package]
+name = "restate_ingress_kafka"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+#options_schema = ["dep:schemars"]
+
+[dependencies]
+bytes = { workspace = true }
+prost = { workspace = true }
+rdkafka = "0.33"
+restate_errors = { workspace = true }
+restate_futures_util = { workspace = true }
+restate_pb = { workspace = true }
+restate_types = { workspace = true }
+
+#
+## Encoding/Decoding
+#bytes = { workspace = true }
+#bytestring = { workspace = true }
+#serde = { workspace = true }
+#serde_json = { workspace = true }
+#prost = { workspace = true }
+#prost-reflect = { workspace = true, features = ["serde"] }
+#
+## Futures
+#pin-project = { workspace = true }
+#futures = { workspace = true }
+#restate_futures_util = { workspace = true }
+#
+## Tower + Hyper + Tonic + Tokio
+#tower = { workspace = true, features = ["util"] }
+#tower-http = { version = "0.4", default-features = false, features = ["cors"] }
+#http = { workspace = true }
+#http-body = "0.4"
+#hyper = { workspace = true, features = ["http1", "http2", "server", "tcp", "stream", "runtime"] }
+#tokio = { workspace = true }
+#tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
+#tonic-web = "0.9.2"
+#
+## Tracing
+#opentelemetry = { workspace = true }
+#opentelemetry-http = { workspace = true }
+#tracing = { workspace = true }
+#tracing-opentelemetry = { workspace = true }
+#
+## Other
+#anyhow = { workspace = true }
+#codederror = { workspace = true }
+#derive_builder = { workspace = true }
+#drain = { workspace = true }
+#arc-swap = { workspace = true }
+#thiserror = { workspace = true }
+#schemars = { workspace = true, optional = true }
+#once_cell = "1.18"
+
+[dev-dependencies]
+restate_types = { workspace = true, features = ["mocks"] }
+#hyper = { workspace = true, features = ["client"] }
+restate_test_util = { workspace = true }
+#tonic = { workspace = true, features = ["default"] }
+#tracing-subscriber = { workspace = true }
+#uuid = { workspace = true }
+#restate_schema_impl = { workspace = true }
+#restate_pb = { workspace = true, features = ["mocks"] }

@@ -29,6 +29,11 @@ pub mod grpc {
     }
 }
 pub mod restate {
+    #![allow(warnings)]
+    #![allow(clippy::all)]
+    #![allow(unknown_lints)]
+    include!(concat!(env!("OUT_DIR"), "/dev.restate.rs"));
+    #[deprecated]
     pub mod services {
         #![allow(warnings)]
         #![allow(clippy::all)]

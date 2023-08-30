@@ -1,0 +1,45 @@
+// Copyright (c) 2023 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+// Restate built-in event types.
+// This package contains the definition of Restate built-in services.
+// To invoke them, check out the documentation: https://docs.restate.dev/services/invocation
+package dev.restate;
+
+import "dev/restate/ext.proto";
+
+option java_multiple_files = true;
+option java_package = "dev.restate.generated";
+option go_package = "restate.dev/sdk-go/pb";
+
+message Event {
+  // Payload
+  bytes payload = 2; // This is what we fill from KafkaRecord.value
+
+  // Metadata
+  string source = 3; // The Restate source (see below)
+  bytes ordering_key = 1 [(dev.restate.ext.field) = KEY]; // In Kafka case, this is partition + topic (+ consumer group name?)
+
+  // Free form list of additional metadata
+  map<string, string> attributes = 15; // In the Kafka case, we can add some KafkaRecord attributes here (partition, offset, etc), and the record headers
+}
+
+message KeyedEvent {
+  // Payload
+  bytes key = 1 [(dev.restate.ext.field) = KEY]; // This is what we fill from KafkaRecord.key
+  bytes payload = 2; // This is what we fill from KafkaRecord.value
+
+  // Metadata
+  string source = 3; // The Restate source (see below)
+
+  // Free form list of additional metadata
+  map<string, string> attributes = 15; // In the Kafka case, we can add some KafkaRecord attributes here (partition, offset, etc), and the record headers
+}

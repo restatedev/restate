@@ -296,7 +296,9 @@ pub enum SpanRelationCause {
     Linked(TraceId, SpanId),
 }
 
+#[derive(Default)]
 pub enum SpanRelation {
+    #[default]
     None,
     Parent(SpanContext),
     Linked(SpanContext),
