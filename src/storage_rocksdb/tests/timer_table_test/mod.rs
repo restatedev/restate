@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytes::Bytes;
 use futures_util::StreamExt;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Transaction;
@@ -45,12 +46,9 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     .await;
 
     let service_invocation = ServiceInvocation::new(
-        FullInvocationId {
-            service_id: ServiceId::new("svc-2", "key-2"),
-            invocation_uuid: Default::default(),
-        },
-        "mymethod".to_string().into(),
-        Default::default(),
+        FullInvocationId::generate("svc-2", "key-2"),
+        "mymethod".to_string(),
+        Bytes::default(),
         None,
         SpanRelation::None,
     );
