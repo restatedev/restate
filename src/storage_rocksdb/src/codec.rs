@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes};
 use bytestring::ByteString;
 use prost::encoding::encoded_len_varint;
 use prost::Message;
+use restate_storage_api::deduplication_table::SequenceNumberSource;
 use restate_storage_api::StorageError;
 
 pub trait Codec: Sized {
@@ -164,6 +166,41 @@ pub(crate) fn serialize<T: Codec, B: BufMut>(what: &T, target: &mut B) {
 #[inline]
 pub(crate) fn deserialize<T: Codec, B: Buf>(source: &mut B) -> crate::Result<T> {
     T::decode(source)
+}
+
+impl Codec for SequenceNumberSource {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        match self {
+            SequenceNumberSource::Partition(p) => {
+                target.put_u8(0);
+                Codec::encode(p, target)
+            }
+            SequenceNumberSource::Ingress(i) => {
+                target.put_u8(1);
+                Codec::encode(i, target)
+            }
+        }
+    }
+
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        Ok(match source.get_u8() {
+            0 => SequenceNumberSource::Partition(Codec::decode(source)?),
+            1 => SequenceNumberSource::Ingress(Codec::decode(source)?),
+            i => {
+                return Err(StorageError::Generic(anyhow!(
+                    "Unexpected wrong discriminator for SequenceNumberSource: {}",
+                    i
+                )))
+            }
+        })
+    }
+
+    fn serialized_length(&self) -> usize {
+        1 + match self {
+            SequenceNumberSource::Partition(p) => Codec::serialized_length(p),
+            SequenceNumberSource::Ingress(i) => Codec::serialized_length(i),
+        }
+    }
 }
 
 #[cfg(test)]
