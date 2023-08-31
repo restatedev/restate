@@ -264,6 +264,7 @@ mod partition_integration {
     use crate::partition::shuffle;
     use restate_network::{ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress};
     use restate_types::identifiers::PeerId;
+    use restate_types::message::AckKind;
 
     impl
         TargetShuffleOrIngress<
@@ -298,7 +299,15 @@ mod partition_integration {
 
     impl From<partition::IngressAckResponse> for restate_ingress_dispatcher::IngressDispatcherInput {
         fn from(value: partition::IngressAckResponse) -> Self {
-            restate_ingress_dispatcher::IngressDispatcherInput::message_ack(value.seq_number)
+            match value.kind {
+                AckKind::Acknowledge(seq_number) => {
+                    restate_ingress_dispatcher::IngressDispatcherInput::message_ack(seq_number)
+                }
+                AckKind::Duplicate { seq_number, .. } => {
+                    // Ingress dispatcher doesn't currently support handling duplicates
+                    restate_ingress_dispatcher::IngressDispatcherInput::message_ack(seq_number)
+                }
+            }
         }
     }
 }
