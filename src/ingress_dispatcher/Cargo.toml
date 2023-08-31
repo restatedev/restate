@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 bytes = { workspace = true }
+bytestring = { workspace = true }
 drain = { workspace = true }
 restate_futures_util = { workspace = true }
 restate_types = { workspace = true }

@@ -3635,6 +3635,7 @@ name = "restate_ingress_dispatcher"
 version = "0.2.2"
 dependencies = [
  "bytes",
+ "bytestring",
  "drain",
  "restate_futures_util",
  "restate_test_util",
