@@ -168,16 +168,12 @@ mod tests {
         let (address, input, handle) = bootstrap_test().await;
         let process_fut = tokio::spawn(async move {
             // Get the function invocation and assert on it
-            let (fid, method_name, mut argument, _, response_tx) = input.await.unwrap().unwrap().expect_invocation();
-            assert_eq!(
-                fid.service_id.service_name,
-                "greeter.Greeter"
-            );
+            let (fid, method_name, mut argument, _, response_tx) =
+                input.await.unwrap().unwrap().expect_invocation();
+            assert_eq!(fid.service_id.service_name, "greeter.Greeter");
             assert_eq!(method_name, "Greet");
-            let greeting_req = restate_pb::mocks::greeter::GreetingRequest::decode(
-                &mut argument,
-            )
-            .unwrap();
+            let greeting_req =
+                restate_pb::mocks::greeter::GreetingRequest::decode(&mut argument).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
 
             response_tx
@@ -248,15 +244,12 @@ mod tests {
         tokio::pin!(http_response);
 
         // Get the function invocation and assert on it
-        let (fid, method_name, mut argument, _, ack_tx) = input.await.unwrap().unwrap().expect_background_invocation();
-        assert_eq!(
-            fid.service_id.service_name,
-            "greeter.Greeter"
-        );
+        let (fid, method_name, mut argument, _, ack_tx) =
+            input.await.unwrap().unwrap().expect_background_invocation();
+        assert_eq!(fid.service_id.service_name, "greeter.Greeter");
         assert_eq!(method_name, "Greet");
         let greeting_req =
-            restate_pb::mocks::greeter::GreetingRequest::decode(&mut argument)
-                .unwrap();
+            restate_pb::mocks::greeter::GreetingRequest::decode(&mut argument).unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
 
         // check that there is no response yet
@@ -359,16 +352,12 @@ mod tests {
 
         let (address, input, handle) = bootstrap_test().await;
         let process_fut = tokio::spawn(async move {
-            let (fid, method_name, mut argument, _, response_tx) = input.await.unwrap().unwrap().expect_invocation();
-            assert_eq!(
-                fid.service_id.service_name,
-                "greeter.Greeter"
-            );
+            let (fid, method_name, mut argument, _, response_tx) =
+                input.await.unwrap().unwrap().expect_invocation();
+            assert_eq!(fid.service_id.service_name, "greeter.Greeter");
             assert_eq!(method_name, "Greet");
-            let greeting_req = restate_pb::mocks::greeter::GreetingRequest::decode(
-                &mut argument,
-            )
-            .unwrap();
+            let greeting_req =
+                restate_pb::mocks::greeter::GreetingRequest::decode(&mut argument).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
             response_tx.send(Ok(encoded_greeting_response)).unwrap();
         });

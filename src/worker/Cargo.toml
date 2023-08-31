@@ -22,6 +22,7 @@ derive_builder = { workspace = true }
 restate_consensus = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
+restate_ingress_dispatcher = { workspace = true }
 restate_ingress_grpc = { workspace = true }
 restate_invoker_api = { workspace = true }
 restate_invoker_impl = { workspace = true }

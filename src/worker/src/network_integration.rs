@@ -21,10 +21,10 @@ pub(super) type Network = restate_network::Network<
     shuffle::ShuffleOutput,
     shuffle_integration::ShuffleToConsensus,
     shuffle_integration::ShuffleToIngress,
-    restate_ingress_grpc::IngressOutput,
+    restate_ingress_dispatcher::IngressDispatcherOutput,
     ingress_integration::IngressToConsensus,
     ingress_integration::IngressToShuffle,
-    restate_ingress_grpc::IngressInput,
+    restate_ingress_dispatcher::IngressDispatcherInput,
     partition::AckResponse,
     partition::ShuffleDeduplicationResponse,
     partition::IngressAckResponse,
@@ -41,11 +41,11 @@ mod ingress_integration {
     use restate_types::message::{AckKind, MessageIndex};
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
-        for restate_ingress_grpc::IngressOutput
+        for restate_ingress_dispatcher::IngressDispatcherOutput
     {
         fn target(self) -> ConsensusOrShuffleTarget<IngressToConsensus, IngressToShuffle> {
             match self {
-                restate_ingress_grpc::IngressOutput::Invocation {
+                restate_ingress_dispatcher::IngressDispatcherOutput::Invocation {
                     service_invocation,
                     ingress_id,
                     msg_index,
@@ -54,7 +54,7 @@ mod ingress_integration {
                     ingress_id,
                     msg_index,
                 }),
-                restate_ingress_grpc::IngressOutput::AwakeableCompletion {
+                restate_ingress_dispatcher::IngressDispatcherOutput::AwakeableCompletion {
                     response,
                     ingress_id,
                     msg_index,
@@ -63,10 +63,12 @@ mod ingress_integration {
                     ingress_id,
                     msg_index,
                 }),
-                restate_ingress_grpc::IngressOutput::Ack(restate_ingress_grpc::AckResponse {
-                    kind,
-                    shuffle_target,
-                }) => ConsensusOrShuffleTarget::Shuffle(IngressToShuffle {
+                restate_ingress_dispatcher::IngressDispatcherOutput::Ack(
+                    restate_ingress_dispatcher::AckResponse {
+                        kind,
+                        shuffle_target,
+                    },
+                ) => ConsensusOrShuffleTarget::Shuffle(IngressToShuffle {
                     shuffle_target,
                     kind,
                 }),
@@ -142,8 +144,8 @@ mod ingress_integration {
 mod shuffle_integration {
     use crate::partition;
     use crate::partition::shuffle;
-    use restate_ingress_grpc::{IngressError, IngressResponseMessage};
     use restate_network::{ConsensusOrIngressTarget, TargetConsensusOrIngress};
+    use restate_types::errors::InvocationError;
     use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
     use restate_types::invocation::ResponseResult;
@@ -226,7 +228,7 @@ mod shuffle_integration {
         }
     }
 
-    impl From<ShuffleToIngress> for restate_ingress_grpc::IngressInput {
+    impl From<ShuffleToIngress> for restate_ingress_dispatcher::IngressDispatcherInput {
         fn from(value: ShuffleToIngress) -> Self {
             let ShuffleToIngress {
                 msg:
@@ -242,15 +244,17 @@ mod shuffle_integration {
             let result = match response {
                 ResponseResult::Success(result) => Ok(result),
                 ResponseResult::Failure(err_code, error_msg) => {
-                    Err(IngressError::new(err_code, error_msg.to_string()))
+                    Err(InvocationError::new(err_code, error_msg.to_string()))
                 }
             };
 
-            restate_ingress_grpc::IngressInput::response(IngressResponseMessage {
-                full_invocation_id,
-                result,
-                ack_target: restate_ingress_grpc::AckTarget::new(shuffle_id, msg_index),
-            })
+            restate_ingress_dispatcher::IngressDispatcherInput::response(
+                restate_ingress_dispatcher::IngressResponseMessage {
+                    full_invocation_id,
+                    result,
+                    ack_target: restate_ingress_dispatcher::AckTarget::new(shuffle_id, msg_index),
+                },
+            )
         }
     }
 }
@@ -292,9 +296,9 @@ mod partition_integration {
         }
     }
 
-    impl From<partition::IngressAckResponse> for restate_ingress_grpc::IngressInput {
+    impl From<partition::IngressAckResponse> for restate_ingress_dispatcher::IngressDispatcherInput {
         fn from(value: partition::IngressAckResponse) -> Self {
-            restate_ingress_grpc::IngressInput::message_ack(value.seq_number)
+            restate_ingress_dispatcher::IngressDispatcherInput::message_ack(value.seq_number)
         }
     }
 }
