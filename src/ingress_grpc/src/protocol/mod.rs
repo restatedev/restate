@@ -75,8 +75,8 @@ impl Protocol {
     ) -> Result<Response<BoxBody>, BoxError>
     where
         MapperResolver: JsonMapperResolver,
-        Handler: FnOnce(IngressRequest) -> HandlerFut + Send + 'static,
-        HandlerFut: Future<Output = Result<IngressResponse, Status>> + Send,
+        Handler: FnOnce(HandlerRequest) -> HandlerFut + Send + 'static,
+        HandlerFut: Future<Output = HandlerResult> + Send,
     {
         // Extract tracing context if any
         let tracing_context = TraceContextPropagator::new()
@@ -108,8 +108,8 @@ impl Protocol {
         handler_fn: Handler,
     ) -> Result<Response<BoxBody>, BoxError>
     where
-        Handler: FnOnce(IngressRequest) -> HandlerFut + Send + 'static,
-        HandlerFut: Future<Output = Result<IngressResponse, Status>> + Send,
+        Handler: FnOnce(HandlerRequest) -> HandlerFut + Send + 'static,
+        HandlerFut: Future<Output = HandlerResult> + Send,
     {
         // Why FnOnce and service_fn_once are safe here?
         //
@@ -152,8 +152,8 @@ impl Protocol {
     ) -> Response<hyper::Body>
     where
         MapperResolver: JsonMapperResolver,
-        Handler: FnOnce(IngressRequest) -> HandlerFut + Send + 'static,
-        HandlerFut: Future<Output = Result<IngressResponse, Status>> + Send,
+        Handler: FnOnce(HandlerRequest) -> HandlerFut + Send + 'static,
+        HandlerFut: Future<Output = HandlerResult> + Send,
     {
         let content_type = match connect_adapter::verify_headers_and_infer_body_type(&mut req) {
             Ok(c) => c,
@@ -203,7 +203,7 @@ mod tests {
     use restate_test_util::{assert, assert_eq, test};
     use serde_json::json;
 
-    fn greeter_service_fn(ingress_req: IngressRequest) -> Ready<Result<IngressResponse, Status>> {
+    fn greeter_service_fn(ingress_req: HandlerRequest) -> Ready<HandlerResult> {
         let person = restate_pb::mocks::greeter::GreetingRequest::decode(ingress_req.1)
             .unwrap()
             .person;
