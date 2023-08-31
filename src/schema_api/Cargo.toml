@@ -18,6 +18,7 @@ endpoint = ["dep:restate_types", "dep:http", "dep:base64", "dep:restate_base64_u
 service = ["dep:restate_types"]
 json_conversion = ["dep:prost-reflect", "prost-reflect?/serde", "dep:anyhow"]
 proto_symbol = ["dep:bytes"]
+subscription = ["dep:anyhow"]
 mocks = []
 
 [dependencies]

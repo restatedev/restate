@@ -9,11 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use arc_swap::ArcSwap;
+use http::Uri;
 use prost_reflect::DescriptorPool;
 use restate_schema_api::endpoint::EndpointMetadata;
 use restate_schema_api::key::ServiceInstanceType;
+use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 mod endpoint;
@@ -23,6 +26,7 @@ mod key_expansion;
 mod key_extraction;
 mod proto_symbol;
 mod service;
+mod subscriptions;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceRegistrationRequest {
@@ -69,6 +73,13 @@ pub enum RegistrationError {
     ModifyInternalService(String),
     #[error("unknown endpoint id {0}")]
     UnknownEndpoint(EndpointId),
+    #[error("unknown subscription id {0}")]
+    UnknownSubscription(String),
+    #[error("invalid subscription: {0}")]
+    // TODO add error code to describe how to set sink and source
+    InvalidSubscription(anyhow::Error),
+    #[error("a subscription with the same id {0} already exists in the registry")]
+    OverrideSubscription(EndpointId),
 }
 
 /// Insert (or replace) service
@@ -101,6 +112,8 @@ pub enum SchemasUpdateCommand {
         name: String,
         public: bool,
     },
+    AddSubscription(Subscription),
+    RemoveSubscription(String),
 }
 
 mod descriptor_pool_serde {
@@ -170,6 +183,27 @@ impl Schemas {
         self.0.load().compute_remove_endpoint(endpoint_id)
     }
 
+    // Returns the [`Subscription`] id together with the update command
+    pub fn compute_add_subscription<V: SubscriptionValidator>(
+        &self,
+        id: Option<String>,
+        source: Uri,
+        sink: Uri,
+        metadata: Option<HashMap<String, String>>,
+        validator: V,
+    ) -> Result<(String, SchemasUpdateCommand), RegistrationError> {
+        self.0
+            .load()
+            .compute_add_subscription(id, source, sink, metadata, validator)
+    }
+
+    pub fn compute_remove_subscription(
+        &self,
+        id: String,
+    ) -> Result<SchemasUpdateCommand, RegistrationError> {
+        self.0.load().compute_remove_subscription(id)
+    }
+
     /// Apply the updates to the schema registry.
     /// This method will update the internal pointer to the in-memory schema registry,
     /// propagating the changes to every component consuming it.
@@ -192,8 +226,10 @@ impl Schemas {
 pub(crate) mod schemas_impl {
     use super::*;
 
+    use anyhow::anyhow;
     use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
     use proto_symbol::ProtoSymbols;
+    use restate_schema_api::subscription::{Sink, Source};
     use restate_types::identifiers::{EndpointId, ServiceRevision};
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
@@ -221,6 +257,7 @@ pub(crate) mod schemas_impl {
     pub(crate) struct SchemasInner {
         pub(crate) services: HashMap<String, ServiceSchemas>,
         pub(crate) endpoints: HashMap<EndpointId, EndpointSchemas>,
+        pub(crate) subscriptions: HashMap<String, Subscription>,
         pub(crate) proto_symbols: ProtoSymbols,
     }
 
@@ -307,6 +344,7 @@ pub(crate) mod schemas_impl {
             let mut inner = Self {
                 services: Default::default(),
                 endpoints: Default::default(),
+                subscriptions: Default::default(),
                 proto_symbols: Default::default(),
             };
 
@@ -457,6 +495,129 @@ pub(crate) mod schemas_impl {
             Ok(commands)
         }
 
+        pub(crate) fn compute_add_subscription<V: SubscriptionValidator>(
+            &self,
+            id: Option<String>,
+            source: Uri,
+            sink: Uri,
+            metadata: Option<HashMap<String, String>>,
+            validator: V,
+        ) -> Result<(String, SchemasUpdateCommand), RegistrationError> {
+            // TODO We could generate a more human readable uuid here by taking the source and sink,
+            // and adding an incremental number in case of collision.
+            let id = id.unwrap_or_else(|| uuid::Uuid::now_v7().as_simple().to_string());
+
+            if self.subscriptions.contains_key(&id) {
+                return Err(RegistrationError::OverrideSubscription(id));
+            }
+
+            // TODO This logic to parse source and sink should be moved elsewhere to abstract over the known source/sink providers
+            //  Maybe together with the validator?
+
+            // Parse source
+            let source = match source.scheme_str() {
+                Some("kafka") => {
+                    let cluster_name = source.authority().ok_or_else(|| RegistrationError::InvalidSubscription(anyhow!(
+                        "source URI of Kafka type must have a authority segment containing the cluster name. Was '{}'",
+                        source
+                    )))?.as_str();
+                    let topic_name = &source.path()[1..];
+                    Source::Kafka {
+                        cluster: cluster_name.to_string(),
+                        topic: topic_name.to_string(),
+                    }
+                }
+                _ => {
+                    return Err(RegistrationError::InvalidSubscription(anyhow!(
+                    "source URI must have a scheme segment, with supported schemes: {:?}. Was '{}'",
+                    ["kafka"],
+                    source
+                )))
+                }
+            };
+
+            // Parse sink
+            let sink = match sink.scheme_str() {
+                Some("service") => {
+                    let service_name = sink.authority().ok_or_else(|| RegistrationError::InvalidSubscription(anyhow!(
+                        "sink URI of service type must have a authority segment containing the service name. Was '{}'",
+                        sink
+                    )))?.as_str();
+                    let method_name = &sink.path()[1..];
+
+                    // Lookup the service in the registry to find what's the input type.
+                    let method_input_type = self
+                        .services
+                        .get(service_name)
+                        .ok_or_else(|| {
+                            RegistrationError::InvalidSubscription(anyhow!(
+                                "cannot find service specified in the sink URI. Was '{}'",
+                                sink
+                            ))
+                        })?
+                        .methods
+                        .get(method_name)
+                        .ok_or_else(|| {
+                            RegistrationError::InvalidSubscription(anyhow!(
+                                "cannot find service method specified in the sink URI. Was '{}'",
+                                sink
+                            ))
+                        })?
+                        .input();
+                    let is_input_type_keyed = match method_input_type.full_name() {
+                        "dev.restate.KeyedEvent" => {
+                            true
+                        },
+                        "dev.restate.Event" => {
+                            false
+                        },
+                        _ => {
+                            return Err(RegistrationError::InvalidSubscription(anyhow!(
+                                "the specified service method in the sink URI '{}' has an incompatible input type '{}'. Only dev.restate.Event or dev.restate.KeyedEvent can be used as input types of event handler methods",
+                                sink,
+                                method_input_type.full_name()
+                            )))
+                        }
+                    };
+
+                    Sink::Service {
+                        name: service_name.to_string(),
+                        method: method_name.to_string(),
+                        is_input_type_keyed,
+                    }
+                }
+                _ => {
+                    return Err(RegistrationError::InvalidSubscription(anyhow!(
+                    "sink URI must have a scheme segment, with supported schemes: {:?}. Was '{}'",
+                    ["service"],
+                    sink
+                )))
+                }
+            };
+
+            let subscription = validator
+                .validate(Subscription::new(
+                    id.clone(),
+                    source,
+                    sink,
+                    metadata.unwrap_or_default(),
+                ))
+                .map_err(|e| RegistrationError::InvalidSubscription(e.into()))?;
+
+            Ok((id, SchemasUpdateCommand::AddSubscription(subscription)))
+        }
+
+        pub(crate) fn compute_remove_subscription(
+            &self,
+            id: String,
+        ) -> Result<SchemasUpdateCommand, RegistrationError> {
+            if !self.subscriptions.contains_key(&id) {
+                return Err(RegistrationError::UnknownSubscription(id));
+            }
+
+            Ok(SchemasUpdateCommand::RemoveSubscription(id))
+        }
+
         pub(crate) fn apply_update(
             &mut self,
             update_cmd: SchemasUpdateCommand,
@@ -599,6 +760,12 @@ pub(crate) mod schemas_impl {
                     {
                         *old_public_value = new_public_value;
                     }
+                }
+                SchemasUpdateCommand::AddSubscription(sub) => {
+                    self.subscriptions.insert(sub.id().to_string(), sub);
+                }
+                SchemasUpdateCommand::RemoveSubscription(sub_id) => {
+                    self.subscriptions.remove(&sub_id);
                 }
             }
 

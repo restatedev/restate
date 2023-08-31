@@ -455,3 +455,126 @@ pub mod proto_symbol {
         fn get_file_descriptor(&self, file_name: &str) -> Option<Bytes>;
     }
 }
+
+#[cfg(feature = "subscription")]
+pub mod subscription {
+    use std::collections::HashMap;
+    use std::fmt;
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum Source {
+        Kafka { cluster: String, topic: String },
+    }
+
+    impl fmt::Display for Source {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Source::Kafka { cluster, topic } => {
+                    write!(f, "kafka://{}/{}", cluster, topic)
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum Sink {
+        Service {
+            name: String,
+            method: String,
+            is_input_type_keyed: bool,
+        },
+    }
+
+    impl fmt::Display for Sink {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Sink::Service { name, method, .. } => {
+                    write!(f, "service://{}/{}", name, method)
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub struct Subscription {
+        id: String,
+        source: Source,
+        sink: Sink,
+        metadata: HashMap<String, String>,
+    }
+
+    impl Subscription {
+        pub fn new(
+            id: String,
+            source: Source,
+            sink: Sink,
+            metadata: HashMap<String, String>,
+        ) -> Self {
+            Self {
+                id,
+                source,
+                sink,
+                metadata,
+            }
+        }
+
+        pub fn id(&self) -> &str {
+            &self.id
+        }
+
+        pub fn source(&self) -> &Source {
+            &self.source
+        }
+
+        pub fn sink(&self) -> &Sink {
+            &self.sink
+        }
+
+        pub fn metadata(&self) -> &HashMap<String, String> {
+            &self.metadata
+        }
+
+        pub fn metadata_mut(&mut self) -> &mut HashMap<String, String> {
+            &mut self.metadata
+        }
+    }
+
+    pub trait SubscriptionResolver {
+        fn get_subscription(&self, id: &str) -> Option<Subscription>;
+    }
+
+    pub trait SubscriptionValidator {
+        type Error: Into<anyhow::Error>;
+
+        fn validate(&self, subscription: Subscription) -> Result<Subscription, Self::Error>;
+    }
+
+    #[cfg(feature = "mocks")]
+    pub mod mocks {
+        use super::*;
+
+        impl Subscription {
+            pub fn mock() -> Self {
+                Subscription {
+                    id: "my-sub".to_string(),
+                    source: Source::Kafka {
+                        cluster: "my-cluster".to_string(),
+                        topic: "my-topic".to_string(),
+                    },
+                    sink: Sink::Service {
+                        name: "MySvc".to_string(),
+                        method: "MyMethod".to_string(),
+                        is_input_type_keyed: false,
+                    },
+                    metadata: Default::default(),
+                }
+            }
+        }
+    }
+}
