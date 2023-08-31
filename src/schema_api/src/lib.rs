@@ -455,3 +455,81 @@ pub mod proto_symbol {
         fn get_file_descriptor(&self, file_name: &str) -> Option<Bytes>;
     }
 }
+
+#[cfg(feature = "subscription")]
+pub mod subscription {
+    use std::collections::HashMap;
+    use http::Uri;
+
+    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub struct Subscription {
+        name: String,
+        #[cfg_attr(
+            feature = "serde",
+            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
+        )]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+        source: Uri,
+        #[cfg_attr(
+            feature = "serde",
+            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
+        )]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+        sink: Uri,
+        metadata: HashMap<String, String>
+    }
+
+    impl Subscription {
+        pub fn new(
+            name: String,
+            source: Uri,
+            sink: Uri,
+            metadata: HashMap<String, String>
+        ) -> Self {
+            Self {
+                name,
+                source,
+                sink,
+                metadata,
+            }
+        }
+
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+
+        pub fn source(&self) -> &Uri {
+            &self.source
+        }
+
+        pub fn sink(&self) -> &Uri {
+            &self.sink
+        }
+
+        pub fn metadata(&self) -> &HashMap<String, String> {
+            &self.metadata
+        }
+    }
+
+    pub trait SubscriptionResolver {
+        fn get_subscription(&self, name: &str) -> Option<Subscription>;
+    }
+
+    #[cfg(feature = "mocks")]
+    pub mod mocks {
+        use super::*;
+
+        impl Subscription {
+            pub fn mock() -> Self {
+                Subscription {
+                    name: "my-sub".to_string(),
+                    source: "kafka://my-cluster/my-topic".parse().unwrap(),
+                    sink: "service://MySvc/MyMethod".parse().unwrap(),
+                    metadata: Default::default(),
+                }
+            }
+        }
+    }
+}
