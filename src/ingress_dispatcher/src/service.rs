@@ -16,6 +16,7 @@ use restate_futures_util::pipe::{
 };
 use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::IngressId;
+use restate_types::invocation::ServiceInvocationResponseSink;
 use std::collections::HashMap;
 use std::future::poll_fn;
 use tokio::select;
@@ -187,18 +188,26 @@ impl DispatcherLoopHandler {
 
         match ingress_request.0 {
             IngressRequestInner::Invocation(service_invocation, result_or_ack) => {
-                match result_or_ack {
+                let response_sink = match result_or_ack {
                     ResponseOrAckSender::Response(response_sender) => {
                         self.waiting_responses
                             .insert(service_invocation.fid.clone(), response_sender);
+                        Some(ServiceInvocationResponseSink::Ingress(self.ingress_id))
                     }
                     ResponseOrAckSender::Ack(ack_sender) => {
                         self.waiting_for_acks.insert(current_msg_index, ack_sender);
+                        None
                     }
-                }
+                };
 
                 IngressDispatcherOutput::service_invocation(
-                    service_invocation,
+                    ServiceInvocation {
+                        fid: service_invocation.fid,
+                        method_name: service_invocation.method_name,
+                        argument: service_invocation.argument,
+                        response_sink,
+                        span_context: service_invocation.span_context,
+                    },
                     self.ingress_id,
                     current_msg_index,
                 )
@@ -222,7 +231,7 @@ mod tests {
 
     use restate_test_util::test;
     use restate_types::identifiers::IngressId;
-    use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
+    use restate_types::invocation::SpanRelation;
 
     #[test(tokio::test)]
     async fn test_closed_handler() {
@@ -237,21 +246,16 @@ mod tests {
         let loop_handle = tokio::spawn(ingress_dispatcher.run(output_tx, watch));
 
         // Ask for a response, then drop the receiver
-        let service_invocation = ServiceInvocation::new(
-            FullInvocationId::generate("MySvc", "MyKey"),
-            "pippo",
-            Bytes::default(),
-            Some(ServiceInvocationResponseSink::Ingress(IngressId::mock())),
-            SpanRelation::None,
-        );
-        let (response_rx, invocation) = IngressRequest::invocation(service_invocation.clone());
+        let fid = FullInvocationId::generate("MySvc", "MyKey");
+        let (response_rx, invocation) =
+            IngressRequest::invocation(fid.clone(), "pippo", Bytes::default(), SpanRelation::None);
         command_sender.send(invocation).unwrap();
         drop(response_rx);
 
         // Now let's send the response
         input_sender
             .send(IngressDispatcherInput::Response(IngressResponseMessage {
-                full_invocation_id: service_invocation.fid.clone(),
+                full_invocation_id: fid.clone(),
                 result: Ok(Bytes::new()),
                 ack_target: AckTarget::new(0, 0),
             }))

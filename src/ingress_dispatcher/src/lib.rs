@@ -9,9 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{FullInvocationId, IngressId, PeerId};
-use restate_types::invocation::{InvocationResponse, ServiceInvocation};
+use restate_types::invocation::{
+    InvocationResponse, ServiceInvocation, ServiceInvocationSpanContext, SpanRelation,
+};
 use restate_types::message::{AckKind, MessageIndex};
 use tokio::sync::{mpsc, oneshot};
 
@@ -35,9 +38,35 @@ pub struct IngressRequest(IngressRequestInner);
 
 pub type IngressResponse = Result<Bytes, InvocationError>;
 
+/// Trimmed down version of [`ServiceInvocation`] without the destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IngressServiceInvocation {
+    fid: FullInvocationId,
+    method_name: ByteString,
+    argument: Bytes,
+    span_context: ServiceInvocationSpanContext,
+}
+
+impl IngressServiceInvocation {
+    fn new(
+        fid: FullInvocationId,
+        method_name: impl Into<ByteString>,
+        argument: impl Into<Bytes>,
+        related_span: SpanRelation,
+    ) -> Self {
+        let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
+        Self {
+            fid,
+            method_name: method_name.into(),
+            argument: argument.into(),
+            span_context,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum IngressRequestInner {
-    Invocation(ServiceInvocation, ResponseOrAckSender),
+    Invocation(IngressServiceInvocation, ResponseOrAckSender),
     Response(InvocationResponse, AckSender),
 }
 
@@ -57,25 +86,35 @@ impl IngressRequest {
         )
     }
 
-    pub fn invocation(service_invocation: ServiceInvocation) -> (IngressResponseReceiver, Self) {
+    pub fn invocation(
+        fid: FullInvocationId,
+        method_name: impl Into<ByteString>,
+        argument: impl Into<Bytes>,
+        related_span: SpanRelation,
+    ) -> (IngressResponseReceiver, Self) {
         let (result_tx, result_rx) = oneshot::channel();
 
         (
             result_rx,
             IngressRequest(IngressRequestInner::Invocation(
-                service_invocation,
+                IngressServiceInvocation::new(fid, method_name, argument, related_span),
                 ResponseOrAckSender::Response(result_tx),
             )),
         )
     }
 
-    pub fn background_invocation(service_invocation: ServiceInvocation) -> (AckReceiver, Self) {
+    pub fn background_invocation(
+        fid: FullInvocationId,
+        method_name: impl Into<ByteString>,
+        argument: impl Into<Bytes>,
+        related_span: SpanRelation,
+    ) -> (AckReceiver, Self) {
         let (ack_tx, ack_rx) = oneshot::channel();
 
         (
             ack_rx,
             IngressRequest(IngressRequestInner::Invocation(
-                service_invocation,
+                IngressServiceInvocation::new(fid, method_name, argument, related_span),
                 ResponseOrAckSender::Ack(ack_tx),
             )),
         )
