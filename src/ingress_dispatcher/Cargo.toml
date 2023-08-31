@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+mocks = ["dep:restate_test_util"]
+
 [dependencies]
 bytes = { workspace = true }
 bytestring = { workspace = true }
@@ -16,6 +20,8 @@ restate_types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+restate_test_util = { workspace = true, optional = true }
 
 [dev-dependencies]
 restate_types = { workspace = true, features = ["mocks"] }

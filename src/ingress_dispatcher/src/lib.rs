@@ -221,3 +221,69 @@ impl IngressDispatcherOutput {
         Self::Ack(ack_response)
     }
 }
+
+#[cfg(feature = "mocks")]
+pub mod mocks {
+    use super::*;
+
+    use restate_test_util::let_assert;
+
+    impl IngressRequest {
+        pub fn expect_invocation(
+            self,
+        ) -> (
+            FullInvocationId,
+            ByteString,
+            Bytes,
+            ServiceInvocationSpanContext,
+            IngressResponseSender,
+        ) {
+            let_assert!(
+                IngressRequestInner::Invocation(
+                    IngressServiceInvocation {
+                        fid,
+                        method_name,
+                        argument,
+                        span_context,
+                    },
+                    ResponseOrAckSender::Response(ingress_response_sender)
+                ) = self.0
+            );
+            (
+                fid,
+                method_name,
+                argument,
+                span_context,
+                ingress_response_sender,
+            )
+        }
+
+        pub fn expect_background_invocation(
+            self,
+        ) -> (
+            FullInvocationId,
+            ByteString,
+            Bytes,
+            ServiceInvocationSpanContext,
+            AckSender,
+        ) {
+            let_assert!(
+                IngressRequestInner::Invocation(
+                    IngressServiceInvocation {
+                        fid,
+                        method_name,
+                        argument,
+                        span_context,
+                    },
+                    ResponseOrAckSender::Ack(ack_sender)
+                ) = self.0
+            );
+            (fid, method_name, argument, span_context, ack_sender)
+        }
+
+        pub fn expect_response(self) -> (InvocationResponse, AckSender) {
+            let_assert!(IngressRequestInner::Response(invocation_response, ack_sender) = self.0);
+            (invocation_response, ack_sender)
+        }
+    }
+}
