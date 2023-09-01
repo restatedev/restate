@@ -461,11 +461,11 @@ pub mod subscription {
     use http::Uri;
     use std::collections::HashMap;
 
-    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    #[derive(Debug, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub struct Subscription {
-        name: String,
+        id: String,
         #[cfg_attr(
             feature = "serde",
             serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
@@ -482,22 +482,17 @@ pub mod subscription {
     }
 
     impl Subscription {
-        pub fn new(
-            name: String,
-            source: Uri,
-            sink: Uri,
-            metadata: HashMap<String, String>,
-        ) -> Self {
+        pub fn new(id: String, source: Uri, sink: Uri, metadata: HashMap<String, String>) -> Self {
             Self {
-                name,
+                id: id,
                 source,
                 sink,
                 metadata,
             }
         }
 
-        pub fn name(&self) -> &str {
-            &self.name
+        pub fn id(&self) -> &str {
+            &self.id
         }
 
         pub fn source(&self) -> &Uri {
@@ -534,7 +529,7 @@ pub mod subscription {
         impl Subscription {
             pub fn mock() -> Self {
                 Subscription {
-                    name: "my-sub".to_string(),
+                    id: "my-sub".to_string(),
                     source: "kafka://my-cluster/my-topic".parse().unwrap(),
                     sink: "service://MySvc/MyMethod".parse().unwrap(),
                     metadata: Default::default(),
