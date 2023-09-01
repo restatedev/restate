@@ -33,7 +33,7 @@ pub(super) type Network = restate_network::Network<
 
 mod ingress_integration {
     use crate::partition;
-    use crate::partition::shuffle;
+    use crate::partition::{shuffle, DeduplicationSource};
     use restate_network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
     use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{IngressDispatcherId, PartitionKey, PeerId};
@@ -48,10 +48,12 @@ mod ingress_integration {
                 restate_ingress_dispatcher::IngressDispatcherOutput::Invocation {
                     service_invocation,
                     ingress_dispatcher_id,
+                    deduplication_source,
                     msg_index,
                 } => ConsensusOrShuffleTarget::Consensus(IngressToConsensus {
                     invocation_or_response: InvocationOrResponse::Invocation(service_invocation),
                     ingress_dispatcher_id,
+                    deduplication_source,
                     msg_index,
                 }),
                 restate_ingress_dispatcher::IngressDispatcherOutput::AwakeableCompletion {
@@ -61,6 +63,7 @@ mod ingress_integration {
                 } => ConsensusOrShuffleTarget::Consensus(IngressToConsensus {
                     invocation_or_response: InvocationOrResponse::Response(response),
                     ingress_dispatcher_id,
+                    deduplication_source: None,
                     msg_index,
                 }),
                 restate_ingress_dispatcher::IngressDispatcherOutput::Ack(
@@ -86,6 +89,7 @@ mod ingress_integration {
     pub(crate) struct IngressToConsensus {
         invocation_or_response: InvocationOrResponse,
         ingress_dispatcher_id: IngressDispatcherId,
+        deduplication_source: Option<String>,
         msg_index: MessageIndex,
     }
 
@@ -105,20 +109,33 @@ mod ingress_integration {
             let IngressToConsensus {
                 invocation_or_response,
                 ingress_dispatcher_id,
+                deduplication_source,
                 msg_index,
             } = ingress_to_consensus;
 
-            partition::AckCommand::ack(
-                match invocation_or_response {
-                    InvocationOrResponse::Invocation(service_invocation) => {
-                        partition::Command::Invocation(service_invocation)
-                    }
-                    InvocationOrResponse::Response(invocation_response) => {
-                        partition::Command::Response(invocation_response)
-                    }
-                },
-                partition::AckTarget::ingress(ingress_dispatcher_id, msg_index),
-            )
+            let cmd = match invocation_or_response {
+                InvocationOrResponse::Invocation(service_invocation) => {
+                    partition::Command::Invocation(service_invocation)
+                }
+                InvocationOrResponse::Response(invocation_response) => {
+                    partition::Command::Response(invocation_response)
+                }
+            };
+
+            match deduplication_source {
+                None => partition::AckCommand::ack(
+                    cmd,
+                    partition::AckTarget::ingress(ingress_dispatcher_id, msg_index),
+                ),
+                Some(source_id) => partition::AckCommand::dedup(
+                    cmd,
+                    DeduplicationSource::Ingress {
+                        ingress_id,
+                        source_id,
+                        seq_number: msg_index,
+                    },
+                ),
+            }
         }
     }
 

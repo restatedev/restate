@@ -38,6 +38,8 @@ pub struct IngressRequest(IngressRequestInner);
 
 pub type IngressResponse = Result<Bytes, InvocationError>;
 
+pub type IngressDeduplicationId = (String, MessageIndex);
+
 /// Trimmed down version of [`ServiceInvocation`] without the destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IngressServiceInvocation {
@@ -45,6 +47,7 @@ struct IngressServiceInvocation {
     method_name: ByteString,
     argument: Bytes,
     span_context: ServiceInvocationSpanContext,
+    ingress_deduplication_id: Option<IngressDeduplicationId>,
 }
 
 impl IngressServiceInvocation {
@@ -53,6 +56,7 @@ impl IngressServiceInvocation {
         method_name: impl Into<ByteString>,
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
+        ingress_deduplication_id: Option<IngressDeduplicationId>,
     ) -> Self {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         Self {
@@ -60,6 +64,7 @@ impl IngressServiceInvocation {
             method_name: method_name.into(),
             argument: argument.into(),
             span_context,
+            ingress_deduplication_id,
         }
     }
 }
@@ -96,7 +101,11 @@ impl IngressRequest {
 
         (
             IngressRequest(IngressRequestInner::Invocation(
-                IngressServiceInvocation::new(fid, method_name, argument, related_span),
+                // For the time being we don't support setting the deduplication_id for the regular requests,
+                // as it's unclear if and how to send any response back in case of duplication.
+                // In any case we might implement the deduplication of request/response scenarios as built-in service,
+                // rather than at this abstraction level.
+                IngressServiceInvocation::new(fid, method_name, argument, related_span, None),
                 ResponseOrAckSender::Response(result_tx),
             )),
             result_rx,
@@ -108,12 +117,19 @@ impl IngressRequest {
         method_name: impl Into<ByteString>,
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
+        ingress_deduplication_id: Option<IngressDeduplicationId>,
     ) -> (Self, AckReceiver) {
         let (ack_tx, ack_rx) = oneshot::channel();
 
         (
             IngressRequest(IngressRequestInner::Invocation(
-                IngressServiceInvocation::new(fid, method_name, argument, related_span),
+                IngressServiceInvocation::new(
+                    fid,
+                    method_name,
+                    argument,
+                    related_span,
+                    ingress_deduplication_id,
+                ),
                 ResponseOrAckSender::Ack(ack_tx),
             )),
             ack_rx,
@@ -176,6 +192,7 @@ pub enum IngressDispatcherOutput {
     Invocation {
         service_invocation: ServiceInvocation,
         ingress_dispatcher_id: IngressDispatcherId,
+        deduplication_source: Option<String>,
         msg_index: MessageIndex,
     },
     AwakeableCompletion {
@@ -196,11 +213,13 @@ impl IngressDispatcherOutput {
     pub fn service_invocation(
         service_invocation: ServiceInvocation,
         ingress_dispatcher_id: IngressDispatcherId,
+        deduplication_source: Option<String>,
         msg_index: MessageIndex,
     ) -> Self {
         Self::Invocation {
             service_invocation,
             ingress_dispatcher_id,
+            deduplication_source,
             msg_index,
         }
     }
@@ -245,6 +264,7 @@ pub mod mocks {
                         method_name,
                         argument,
                         span_context,
+                        ..
                     },
                     ResponseOrAckSender::Response(ingress_response_sender)
                 ) = self.0
@@ -274,6 +294,7 @@ pub mod mocks {
                         method_name,
                         argument,
                         span_context,
+                        ..
                     },
                     ResponseOrAckSender::Ack(ack_sender)
                 ) = self.0

@@ -132,6 +132,7 @@ struct DispatcherLoopHandler {
     // services using the global semaphore
     waiting_responses: HashMap<FullInvocationId, IngressResponseSender>,
     waiting_for_acks: HashMap<MessageIndex, AckSender>,
+    waiting_for_acks_with_custom_id: HashMap<IngressDeduplicationId, AckSender>,
 }
 
 impl DispatcherLoopHandler {
@@ -141,6 +142,7 @@ impl DispatcherLoopHandler {
             msg_index: 0,
             waiting_responses: HashMap::new(),
             waiting_for_acks: HashMap::default(),
+            waiting_for_acks_with_custom_id: Default::default(),
         }
     }
 
@@ -187,30 +189,51 @@ impl DispatcherLoopHandler {
 
         match ingress_request.0 {
             IngressRequestInner::Invocation(service_invocation, result_or_ack) => {
-                let response_sink = match result_or_ack {
-                    ResponseOrAckSender::Response(response_sender) => {
-                        self.waiting_responses
-                            .insert(service_invocation.fid.clone(), response_sender);
-                        Some(ServiceInvocationResponseSink::Ingress(
-                            self.ingress_dispatcher_id,
-                        ))
+                let IngressServiceInvocation {
+                    fid,
+                    method_name,
+                    argument,
+                    span_context,
+                    ingress_deduplication_id,
+                } = service_invocation;
+
+                let (response_sink, dedup_source, msg_index) = match (
+                    result_or_ack,
+                    ingress_deduplication_id,
+                ) {
+                    (ResponseOrAckSender::Response(response_sender), None) => {
+                        self.waiting_responses.insert(fid.clone(), response_sender);
+                        (
+                            Some(ServiceInvocationResponseSink::Ingress(self.ingress_dispatcher_id)),
+                            None,
+                            current_msg_index,
+                        )
                     }
-                    ResponseOrAckSender::Ack(ack_sender) => {
+                    (ResponseOrAckSender::Response(_), Some(_)) => {
+                        unreachable!("ingress_dispatcher does not support setting custom dedup ids when proposing the invocation")
+                    }
+                    (ResponseOrAckSender::Ack(ack_sender), None) => {
                         self.waiting_for_acks.insert(current_msg_index, ack_sender);
-                        None
+                        (None, None, current_msg_index)
+                    }
+                    (ResponseOrAckSender::Ack(ack_sender), Some(dedup_id)) => {
+                        self.waiting_for_acks_with_custom_id
+                            .insert(dedup_id.clone(), ack_sender);
+                        (None, Some(dedup_id.0), dedup_id.1)
                     }
                 };
 
                 IngressDispatcherOutput::service_invocation(
                     ServiceInvocation {
-                        fid: service_invocation.fid,
-                        method_name: service_invocation.method_name,
-                        argument: service_invocation.argument,
+                        fid,
+                        method_name,
+                        argument,
                         response_sink,
-                        span_context: service_invocation.span_context,
+                        span_context,
                     },
                     self.ingress_dispatcher_id,
-                    current_msg_index,
+                    dedup_source,
+                    msg_index,
                 )
             }
             IngressRequestInner::Response(response, ack_listener) => {

@@ -379,7 +379,8 @@ where
                         fid,
                         method_name,
                         req_payload,
-                        span_relation
+                        span_relation,
+                        None
                     );
                     if request_tx.send(invocation).is_err() {
                         debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
