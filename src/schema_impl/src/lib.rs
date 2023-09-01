@@ -26,6 +26,7 @@ mod key_expansion;
 mod key_extraction;
 mod proto_symbol;
 mod service;
+mod subscriptions;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceRegistrationRequest {

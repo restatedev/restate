@@ -484,7 +484,7 @@ pub mod subscription {
     impl Subscription {
         pub fn new(id: String, source: Uri, sink: Uri, metadata: HashMap<String, String>) -> Self {
             Self {
-                id: id,
+                id,
                 source,
                 sink,
                 metadata,
@@ -513,7 +513,7 @@ pub mod subscription {
     }
 
     pub trait SubscriptionResolver {
-        fn get_subscription(&self, name: &str) -> Option<Subscription>;
+        fn get_subscription(&self, id: &str) -> Option<Subscription>;
     }
 
     pub trait SubscriptionValidator {
