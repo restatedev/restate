@@ -247,7 +247,7 @@ mod tests {
 
         // Ask for a response, then drop the receiver
         let fid = FullInvocationId::generate("MySvc", "MyKey");
-        let (response_rx, invocation) =
+        let (invocation, response_rx) =
             IngressRequest::invocation(fid.clone(), "pippo", Bytes::default(), SpanRelation::None);
         command_sender.send(invocation).unwrap();
         drop(response_rx);

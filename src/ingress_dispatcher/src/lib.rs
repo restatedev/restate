@@ -77,12 +77,12 @@ enum ResponseOrAckSender {
 }
 
 impl IngressRequest {
-    pub fn response(invocation_response: InvocationResponse) -> (AckReceiver, Self) {
+    pub fn response(invocation_response: InvocationResponse) -> (Self, AckReceiver) {
         let (ack_tx, ack_rx) = oneshot::channel();
 
         (
-            ack_rx,
             IngressRequest(IngressRequestInner::Response(invocation_response, ack_tx)),
+            ack_rx,
         )
     }
 
@@ -91,15 +91,15 @@ impl IngressRequest {
         method_name: impl Into<ByteString>,
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
-    ) -> (IngressResponseReceiver, Self) {
+    ) -> (Self, IngressResponseReceiver) {
         let (result_tx, result_rx) = oneshot::channel();
 
         (
-            result_rx,
             IngressRequest(IngressRequestInner::Invocation(
                 IngressServiceInvocation::new(fid, method_name, argument, related_span),
                 ResponseOrAckSender::Response(result_tx),
             )),
+            result_rx,
         )
     }
 
@@ -108,15 +108,15 @@ impl IngressRequest {
         method_name: impl Into<ByteString>,
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
-    ) -> (AckReceiver, Self) {
+    ) -> (Self, AckReceiver) {
         let (ack_tx, ack_rx) = oneshot::channel();
 
         (
-            ack_rx,
             IngressRequest(IngressRequestInner::Invocation(
                 IngressServiceInvocation::new(fid, method_name, argument, related_span),
                 ResponseOrAckSender::Ack(ack_tx),
             )),
+            ack_rx,
         )
     }
 }

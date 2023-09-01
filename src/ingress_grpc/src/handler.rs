@@ -326,7 +326,7 @@ where
                         _ => return Err(Status::not_found("Not found"))
                     };
 
-                    let (ack_rx, response) = IngressRequest::response(invocation_response);
+                    let (response, ack_rx) = IngressRequest::response(invocation_response);
 
                     if request_tx.send(response).is_err() {
                         debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
@@ -375,7 +375,7 @@ where
                 if !wait_response {
                     let id = fid.to_string();
 
-                    let (ack_rx, invocation) = IngressRequest::background_invocation(
+                    let (invocation, ack_rx) = IngressRequest::background_invocation(
                         fid,
                         method_name,
                         req_payload,
@@ -395,7 +395,7 @@ where
                 }
 
                 // Send the service invocation
-                let (response_rx, invocation) = IngressRequest::invocation(
+                let (invocation, response_rx) = IngressRequest::invocation(
                     fid,
                     method_name,
                     req_payload,
