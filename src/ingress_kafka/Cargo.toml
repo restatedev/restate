@@ -17,6 +17,7 @@ prost = { workspace = true }
 rdkafka = "0.33"
 restate_errors = { workspace = true }
 restate_futures_util = { workspace = true }
+restate_ingress_dispatcher = { workspace = true }
 restate_pb = { workspace = true }
 restate_types = { workspace = true }
 

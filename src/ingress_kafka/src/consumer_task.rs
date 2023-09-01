@@ -13,9 +13,8 @@ use prost::Message as _;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::message::BorrowedMessage;
 use rdkafka::Message;
-use restate_futures_util::command::{Command, UnboundedCommandSender};
+use restate_ingress_dispatcher::{AckReceiver, IngressRequest, IngressRequestSender};
 use restate_types::identifiers::FullInvocationId;
-use restate_types::invocation::ServiceInvocation;
 
 // Remove and replace with proper error type
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -34,7 +33,7 @@ impl MessageDispatcherType {
         method_name: &str,
         source_name: &str,
         msg: &BorrowedMessage<'_>,
-    ) -> Result<ServiceInvocation, Error> {
+    ) -> Result<(AckReceiver, IngressRequest), Error> {
         Ok(match self {
             MessageDispatcherType::DispatchEvent {
                 ordering_key_prefix,
@@ -52,11 +51,10 @@ impl MessageDispatcherType {
 
                 let fid = FullInvocationId::generate(service_name, key);
 
-                ServiceInvocation::new(
+                IngressRequest::background_invocation(
                     fid,
-                    method_name.into(),
-                    pb_event.encode_to_vec().into(),
-                    None,
+                    method_name,
+                    pb_event.encode_to_vec(),
                     Default::default(),
                 )
             }
@@ -75,11 +73,10 @@ impl MessageDispatcherType {
 
                 let fid = FullInvocationId::generate(service_name, key);
 
-                ServiceInvocation::new(
+                IngressRequest::background_invocation(
                     fid,
-                    method_name.into(),
-                    pb_event.encode_to_vec().into(),
-                    None,
+                    method_name,
+                    pb_event.encode_to_vec(),
                     Default::default(),
                 )
             }
@@ -101,7 +98,7 @@ pub struct MessageSender {
     method_name: String,
     source_name: String,
     message_dispatcher_type: MessageDispatcherType,
-    tx: UnboundedCommandSender<ServiceInvocation, ()>,
+    tx: IngressRequestSender,
 }
 
 impl MessageSender {
@@ -110,7 +107,7 @@ impl MessageSender {
         method_name: String,
         source_name: String,
         message_dispatcher_type: MessageDispatcherType,
-        tx: UnboundedCommandSender<ServiceInvocation, ()>,
+        tx: IngressRequestSender,
     ) -> Self {
         Self {
             service_name,
@@ -122,15 +119,14 @@ impl MessageSender {
     }
 
     async fn send(&mut self, msg: &BorrowedMessage<'_>) -> Result<(), Error> {
-        let service_invocation = self.message_dispatcher_type.convert_to_service_invocation(
+        let (rx, req) = self.message_dispatcher_type.convert_to_service_invocation(
             &self.service_name,
             &self.method_name,
             &self.source_name,
             &msg,
         )?;
 
-        let (cmd, rx) = Command::prepare(service_invocation);
-        self.tx.send(cmd)?;
+        self.tx.send(req)?;
         Ok(rx.await?)
     }
 }

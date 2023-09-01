@@ -3778,6 +3778,7 @@ dependencies = [
  "rdkafka",
  "restate_errors",
  "restate_futures_util",
+ "restate_ingress_dispatcher",
  "restate_pb",
  "restate_test_util",
  "restate_types",
