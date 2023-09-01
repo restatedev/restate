@@ -458,8 +458,8 @@ pub mod proto_symbol {
 
 #[cfg(feature = "subscription")]
 pub mod subscription {
-    use std::collections::HashMap;
     use http::Uri;
+    use std::collections::HashMap;
 
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -478,7 +478,7 @@ pub mod subscription {
         )]
         #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
         sink: Uri,
-        metadata: HashMap<String, String>
+        metadata: HashMap<String, String>,
     }
 
     impl Subscription {
@@ -486,7 +486,7 @@ pub mod subscription {
             name: String,
             source: Uri,
             sink: Uri,
-            metadata: HashMap<String, String>
+            metadata: HashMap<String, String>,
         ) -> Self {
             Self {
                 name,
@@ -511,10 +511,20 @@ pub mod subscription {
         pub fn metadata(&self) -> &HashMap<String, String> {
             &self.metadata
         }
+
+        pub fn metadata_mut(&mut self) -> &mut HashMap<String, String> {
+            &mut self.metadata
+        }
     }
 
     pub trait SubscriptionResolver {
         fn get_subscription(&self, name: &str) -> Option<Subscription>;
+    }
+
+    pub trait SubscriptionValidator {
+        type Error;
+
+        fn validate(&self, subscription: Subscription) -> Result<Subscription, Self::Error>;
     }
 
     #[cfg(feature = "mocks")]
