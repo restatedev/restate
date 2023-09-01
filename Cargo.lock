@@ -3838,6 +3838,7 @@ dependencies = [
  "arc-swap",
  "bytes",
  "codederror",
+ "http",
  "itertools 0.11.0",
  "once_cell",
  "prost",

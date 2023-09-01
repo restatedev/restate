@@ -517,7 +517,7 @@ pub mod subscription {
     }
 
     pub trait SubscriptionValidator {
-        type Error;
+        type Error: Into<anyhow::Error>;
 
         fn validate(&self, subscription: Subscription) -> Result<Subscription, Self::Error>;
     }
