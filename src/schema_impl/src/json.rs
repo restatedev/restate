@@ -254,8 +254,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            restate_pb::restate::services::InvokeRequest::decode(protobuf).unwrap(),
-            restate_pb::restate::services::InvokeRequest {
+            restate_pb::restate::InvokeRequest::decode(protobuf).unwrap(),
+            restate_pb::restate::InvokeRequest {
                 service: "greeter.Greeter".to_string(),
                 method: "Greet".to_string(),
                 argument: restate_pb::mocks::greeter::GreetingRequest {

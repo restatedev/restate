@@ -38,7 +38,7 @@ impl MessageDispatcherType {
             MessageDispatcherType::DispatchEvent {
                 ordering_key_prefix,
             } => {
-                let key = MessageDispatcherType::generate_ordering_key(&ordering_key_prefix, msg);
+                let key = MessageDispatcherType::generate_ordering_key(ordering_key_prefix, msg);
 
                 let pb_event = restate_pb::restate::Event {
                     payload: Bytes::copy_from_slice(
@@ -106,7 +106,7 @@ impl MessageDispatcherType {
         );
         prost::encoding::encode_varint(key.len() as u64, &mut buf);
         buf.put_slice(key);
-        return buf.freeze();
+        buf.freeze()
     }
 }
 
@@ -140,7 +140,7 @@ impl MessageSender {
             &self.service_name,
             &self.method_name,
             &self.source_name,
-            &msg,
+            msg,
         )?;
 
         self.tx.send(req)?;
