@@ -458,31 +458,64 @@ pub mod proto_symbol {
 
 #[cfg(feature = "subscription")]
 pub mod subscription {
-    use http::Uri;
     use std::collections::HashMap;
+    use std::fmt;
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum Source {
+        Kafka { cluster: String, topic: String },
+    }
+
+    impl fmt::Display for Source {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Source::Kafka { cluster, topic } => {
+                    write!(f, "kafka://{}/{}", cluster, topic)
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum Sink {
+        Service {
+            name: String,
+            method: String,
+            is_input_type_keyed: bool,
+        },
+    }
+
+    impl fmt::Display for Sink {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Sink::Service { name, method, .. } => {
+                    write!(f, "service://{}/{}", name, method)
+                }
+            }
+        }
+    }
 
     #[derive(Debug, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub struct Subscription {
         id: String,
-        #[cfg_attr(
-            feature = "serde",
-            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
-        )]
-        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
-        source: Uri,
-        #[cfg_attr(
-            feature = "serde",
-            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
-        )]
-        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
-        sink: Uri,
+        source: Source,
+        sink: Sink,
         metadata: HashMap<String, String>,
     }
 
     impl Subscription {
-        pub fn new(id: String, source: Uri, sink: Uri, metadata: HashMap<String, String>) -> Self {
+        pub fn new(
+            id: String,
+            source: Source,
+            sink: Sink,
+            metadata: HashMap<String, String>,
+        ) -> Self {
             Self {
                 id,
                 source,
@@ -495,11 +528,11 @@ pub mod subscription {
             &self.id
         }
 
-        pub fn source(&self) -> &Uri {
+        pub fn source(&self) -> &Source {
             &self.source
         }
 
-        pub fn sink(&self) -> &Uri {
+        pub fn sink(&self) -> &Sink {
             &self.sink
         }
 
@@ -530,8 +563,15 @@ pub mod subscription {
             pub fn mock() -> Self {
                 Subscription {
                     id: "my-sub".to_string(),
-                    source: "kafka://my-cluster/my-topic".parse().unwrap(),
-                    sink: "service://MySvc/MyMethod".parse().unwrap(),
+                    source: Source::Kafka {
+                        cluster: "my-cluster".to_string(),
+                        topic: "my-topic".to_string(),
+                    },
+                    sink: Sink::Service {
+                        name: "MySvc".to_string(),
+                        method: "MyMethod".to_string(),
+                        is_input_type_keyed: false,
+                    },
                     metadata: Default::default(),
                 }
             }

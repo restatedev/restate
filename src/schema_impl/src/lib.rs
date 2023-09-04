@@ -229,6 +229,7 @@ pub(crate) mod schemas_impl {
     use anyhow::anyhow;
     use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
     use proto_symbol::ProtoSymbols;
+    use restate_schema_api::subscription::{Sink, Source};
     use restate_types::identifiers::{EndpointId, ServiceRevision};
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
@@ -502,25 +503,97 @@ pub(crate) mod schemas_impl {
             metadata: Option<HashMap<String, String>>,
             validator: V,
         ) -> Result<(String, SchemasUpdateCommand), RegistrationError> {
-            // We could generate a more human readable uuid here by taking the source and sink, and adding an incremental number in case of collision.
+            // TODO We could generate a more human readable uuid here by taking the source and sink,
+            // and adding an incremental number in case of collision.
             let id = id.unwrap_or_else(|| uuid::Uuid::now_v7().as_simple().to_string());
 
             if self.subscriptions.contains_key(&id) {
                 return Err(RegistrationError::OverrideSubscription(id));
             }
 
-            if source.scheme().is_none() || source.authority().is_none() {
-                return Err(RegistrationError::InvalidSubscription(anyhow!(
-                    "source URI must have a scheme and an authority segment, was {}",
+            // TODO This logic to parse source and sink should be moved elsewhere to abstract over the known source/sink providers
+            //  Maybe together with the validator?
+
+            // Parse source
+            let source = match source.scheme_str() {
+                Some("kafka") => {
+                    let cluster_name = source.authority().ok_or_else(|| RegistrationError::InvalidSubscription(anyhow!(
+                        "source URI of Kafka type must have a authority segment containing the cluster name. Was '{}'",
+                        source
+                    )))?.as_str();
+                    let topic_name = &source.path()[1..];
+                    Source::Kafka {
+                        cluster: cluster_name.to_string(),
+                        topic: topic_name.to_string(),
+                    }
+                }
+                _ => {
+                    return Err(RegistrationError::InvalidSubscription(anyhow!(
+                    "source URI must have a scheme segment, with supported schemes: {:?}. Was '{}'",
+                    ["kafka"],
                     source
-                )));
-            }
-            if sink.scheme().is_none() || sink.authority().is_none() {
-                return Err(RegistrationError::InvalidSubscription(anyhow!(
-                    "sink URI must have a schema and an authority segment, was {}",
+                )))
+                }
+            };
+
+            // Parse sink
+            let sink = match sink.scheme_str() {
+                Some("service") => {
+                    let service_name = sink.authority().ok_or_else(|| RegistrationError::InvalidSubscription(anyhow!(
+                        "sink URI of service type must have a authority segment containing the service name. Was '{}'",
+                        sink
+                    )))?.as_str();
+                    let method_name = &sink.path()[1..];
+
+                    // Lookup the service in the registry to find what's the input type.
+                    let method_input_type = self
+                        .services
+                        .get(service_name)
+                        .ok_or_else(|| {
+                            RegistrationError::InvalidSubscription(anyhow!(
+                                "cannot find service specified in the sink URI. Was '{}'",
+                                sink
+                            ))
+                        })?
+                        .methods
+                        .get(method_name)
+                        .ok_or_else(|| {
+                            RegistrationError::InvalidSubscription(anyhow!(
+                                "cannot find service method specified in the sink URI. Was '{}'",
+                                sink
+                            ))
+                        })?
+                        .input();
+                    let is_input_type_keyed = match method_input_type.full_name() {
+                        "dev.restate.KeyedEvent" => {
+                            true
+                        },
+                        "dev.restate.Event" => {
+                            false
+                        },
+                        _ => {
+                            return Err(RegistrationError::InvalidSubscription(anyhow!(
+                                "the specified service method in the sink URI '{}' has an incompatible input type '{}'. Only dev.restate.Event or dev.restate.KeyedEvent can be used as input types of event handler methods",
+                                sink,
+                                method_input_type.full_name()
+                            )))
+                        }
+                    };
+
+                    Sink::Service {
+                        name: service_name.to_string(),
+                        method: method_name.to_string(),
+                        is_input_type_keyed,
+                    }
+                }
+                _ => {
+                    return Err(RegistrationError::InvalidSubscription(anyhow!(
+                    "sink URI must have a scheme segment, with supported schemes: {:?}. Was '{}'",
+                    ["service"],
                     sink
-                )));
-            }
+                )))
+                }
+            };
 
             let subscription = validator
                 .validate(Subscription::new(
