@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use prost::Message as _;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::message::BorrowedMessage;
@@ -59,7 +59,8 @@ impl MessageDispatcherType {
                 )
             }
             MessageDispatcherType::DispatchKeyedEvent => {
-                let key = Bytes::copy_from_slice(msg.key().unwrap_or_default());
+                let key =
+                    MessageDispatcherType::generate_restate_key(msg.key().unwrap_or_default());
 
                 let pb_event = restate_pb::restate::KeyedEvent {
                     key: key.clone(),
@@ -83,13 +84,29 @@ impl MessageDispatcherType {
         })
     }
 
-    fn generate_ordering_key(ordering_key_prefix: &String, msg: &BorrowedMessage<'_>) -> String {
-        format!(
-            "{ordering_key_prefix}-{}-{}-{}",
-            msg.topic(),
-            msg.partition(),
-            msg.offset()
+    // TODO add a test with key to json for this!
+    fn generate_ordering_key(ordering_key_prefix: &String, msg: &BorrowedMessage<'_>) -> Bytes {
+        Self::generate_restate_key(
+            format!(
+                "{ordering_key_prefix}-{}-{}-{}",
+                msg.topic(),
+                msg.partition(),
+                msg.offset()
+            )
+            .as_bytes(),
         )
+    }
+
+    fn generate_restate_key(key: &[u8]) -> Bytes {
+        // Because this needs to be a valid Restate key, we need to prepend it with its length to make it
+        // look like it was extracted using the RestateKeyExtractor
+        // This is done to ensure all the other operations on the key will work correctly (e.g. key to json)
+        let mut buf = BytesMut::with_capacity(
+            prost::encoding::encoded_len_varint(key.len() as u64) + key.len(),
+        );
+        prost::encoding::encode_varint(key.len() as u64, &mut buf);
+        buf.put_slice(key);
+        return buf.freeze();
     }
 }
 
