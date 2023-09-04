@@ -36,7 +36,7 @@ env:
 jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: ${{ inputs.debug && 140 || 70 }}
 
     steps:
       - name: Checkout repository
