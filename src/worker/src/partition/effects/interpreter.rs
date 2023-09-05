@@ -19,7 +19,7 @@ use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
 
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
-use restate_types::invocation::ServiceInvocation;
+use restate_types::invocation::{InvocationResponse, MaybeFullInvocationId, ServiceInvocation, ServiceInvocationResponseSink};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{
     EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
@@ -29,6 +29,7 @@ use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use std::marker::PhantomData;
 use tracing::{debug, warn};
+use crate::partition::services::NonDeterministicBuiltInServiceInvoker;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -61,6 +62,7 @@ pub(crate) enum ActuatorMessage {
     },
     SendAckResponse(AckResponse),
     AbortInvocation(FullInvocationId),
+    ProposeSelf(Vec<OutboxMessage>)
 }
 
 pub(crate) trait MessageCollector {
@@ -620,6 +622,77 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
     }
 
     async fn invoke_service<S: StateStorage, C: MessageCollector>(
+        state_storage: &mut S,
+        collector: &mut C,
+        service_invocation: ServiceInvocation,
+    ) -> Result<(), Error> {
+        if NonDeterministicBuiltInServiceInvoker::is_supported(&service_invocation.fid.service_name()) {
+            Self::invoke_built_in_service(collector, service_invocation).await
+        } else {
+            Self::invoke_service_through_invoker(state_storage, collector, service_invocation).await
+        }
+    }
+
+    async fn invoke_built_in_service<S: StateStorage, C: MessageCollector>(
+        collector: &mut C,
+        service_invocation: ServiceInvocation,
+    ) -> Result<(), Error> {
+        // We store the invocation status because we need to handle cases where the proposal to self arrives after another invocation to the same service
+        // TODO perhaps change this to support the ingress idempotency service?
+        // let creation_time = MillisSinceEpoch::now();
+        // let journal_metadata = JournalMetadata::new(
+        //     service_invocation.method_name.clone(),
+        //     service_invocation.span_context.clone(),
+        //     0,
+        // );
+        // state_storage
+        //     .store_invocation_status(
+        //         &service_invocation.fid.service_id,
+        //         InvocationStatus::Invoked(InvocationMetadata::new(
+        //             service_invocation.fid.invocation_uuid,
+        //             journal_metadata.clone(),
+        //             service_invocation.response_sink,
+        //             creation_time,
+        //             creation_time,
+        //         )),
+        //     )
+        //     .await?;
+
+        let mut output_messages = vec![];
+        // TODO Optimize this by executing the built-in service logic only in the leader
+        let res = NonDeterministicBuiltInServiceInvoker::invoke(
+            &service_invocation.fid,
+            &mut output_messages,
+            &service_invocation.method_name,
+            service_invocation.argument.clone()
+        );
+
+        if let Some(response_sink) = service_invocation.response_sink {
+            // Perhaps share this code with state_machine/mod.rs
+            let outbox_message = match response_sink {
+                ServiceInvocationResponseSink::PartitionProcessor {
+                    entry_index,
+                    caller,
+                } => OutboxMessage::ServiceResponse(InvocationResponse {
+                    id: MaybeFullInvocationId::Full(caller),
+                    entry_index,
+                    result: res.into(),
+                }),
+                ServiceInvocationResponseSink::Ingress(ingress_id) => OutboxMessage::IngressResponse {
+                    ingress_id,
+                    full_invocation_id: service_invocation.fid.clone(),
+                    response: res.into(),
+                },
+            };
+            output_messages.push(outbox_message);
+        }
+
+        collector.collect(ActuatorMessage::ProposeSelf(output_messages));
+        Ok(())
+    }
+
+
+    async fn invoke_service_through_invoker<S: StateStorage, C: MessageCollector>(
         state_storage: &mut S,
         collector: &mut C,
         service_invocation: ServiceInvocation,

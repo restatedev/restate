@@ -292,6 +292,10 @@ impl FullInvocationId {
     pub fn to_invocation_id_bytes(&self) -> EncodedInvocationId {
         encode_invocation_id(&self.service_id.partition_key, &self.invocation_uuid)
     }
+
+    pub fn service_name(&self) -> &str {
+        &self.service_id.service_name
+    }
 }
 
 impl WithPartitionKey for FullInvocationId {

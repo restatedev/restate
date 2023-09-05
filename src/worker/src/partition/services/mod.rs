@@ -18,6 +18,8 @@ use restate_types::identifiers::FullInvocationId;
 use restate_types::message::MessageIndex;
 use std::ops::Deref;
 
+// -- Deterministic built-in services infra
+
 /// Deterministic built-in services are executed by both leaders and followers, hence they must generate the same output.
 pub(super) struct DeterministicBuiltInServiceInvoker<'a> {
     fid: &'a FullInvocationId,
@@ -60,6 +62,54 @@ impl DeterministicBuiltInServiceInvoker<'_> {
             restate_pb::AWAKEABLES_SERVICE_NAME => {
                 AwakeablesInvoker(self).invoke_builtin(method, argument)
             }
+            _ => Err(InvocationError::new(
+                UserErrorCode::NotFound,
+                format!("{} not found", self.fid.service_id.service_name),
+            )),
+        }
+    }
+}
+
+// Non-deterministic built-in services infra
+
+pub(super) struct NonDeterministicBuiltInServiceInvoker<'a> {
+    fid: &'a FullInvocationId,
+    outbox_messages_buffer: &'a mut Vec<OutboxMessage>
+}
+
+impl<'a> NonDeterministicBuiltInServiceInvoker<'a> {
+    pub(super) fn is_supported(service_name: &str) -> bool {
+        // The reason we just check for the prefix is the following:
+        //
+        // * No user can register services starting with dev.restate
+        // * We already checked in the previous step of the state machine whether the service is a deterministic built-in service
+        // * Hence with this assertion we can 404 sooner in case the user inputs a bad built-in service name, avoiding to get it stuck in the invoker
+        service_name.starts_with("dev.restate")
+    }
+
+    pub(super) fn invoke(
+        fid: &'a FullInvocationId,
+        outbox_messages_buffer: &'a mut Vec<OutboxMessage>,
+        method: &'a str,
+        argument: Bytes,
+    ) -> Result<Bytes, InvocationError> {
+        let this: NonDeterministicBuiltInServiceInvoker<'a> = Self {
+            fid,
+            outbox_messages_buffer,
+        };
+
+        this._invoke(method, argument)
+    }
+
+    fn send_message(&mut self, msg: OutboxMessage) {
+        self.outbox_messages_buffer.push(msg);
+    }
+}
+
+impl NonDeterministicBuiltInServiceInvoker<'_> {
+    // Function that routes through the available built-in services
+    fn _invoke(self, _method: &str, _argument: Bytes) -> Result<Bytes, InvocationError> {
+        match self.fid.service_id.service_name.deref() {
             _ => Err(InvocationError::new(
                 UserErrorCode::NotFound,
                 format!("{} not found", self.fid.service_id.service_name),
