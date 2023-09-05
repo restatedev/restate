@@ -19,9 +19,11 @@ use restate_types::journal::{
 };
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
+use std::ops::Deref;
 use tracing::{debug, instrument, trace};
 
 use crate::partition::effects::Effects;
+use crate::partition::services::DeterministicBuiltInServiceInvoker;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
 
 mod dedup;
@@ -159,7 +161,14 @@ where
 
                 let fid = service_invocation.fid.clone();
 
-                if let InvocationStatus::Free = status {
+                if DeterministicBuiltInServiceInvoker::is_supported(
+                    fid.service_id.service_name.deref(),
+                ) {
+                    self.handle_deterministic_built_in_service_invocation(
+                        service_invocation,
+                        effects,
+                    );
+                } else if let InvocationStatus::Free = status {
                     effects.invoke_service(service_invocation);
                 } else {
                     effects.enqueue_into_inbox(self.inbox_seq_number, service_invocation);
@@ -748,6 +757,28 @@ where
         }
 
         Ok((related_sid, span_relation))
+    }
+
+    fn handle_deterministic_built_in_service_invocation(
+        &mut self,
+        invocation: ServiceInvocation,
+        effects: &mut Effects,
+    ) {
+        // Invoke built-in service
+        let result = DeterministicBuiltInServiceInvoker::invoke(
+            &invocation.fid,
+            &mut self.outbox_seq_number,
+            effects,
+            invocation.method_name.deref(),
+            invocation.argument.clone(),
+        );
+
+        if let Some(response_sink) = invocation.response_sink {
+            // Write response in outbox
+            let outbox_message =
+                Self::create_response(&invocation.fid, response_sink, result.into());
+            self.send_message(outbox_message, effects);
+        }
     }
 
     fn notify_invocation_result(
