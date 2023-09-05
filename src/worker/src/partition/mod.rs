@@ -20,6 +20,7 @@ pub mod ack;
 mod actuator_output_handler;
 mod effects;
 mod leadership;
+mod services;
 pub mod shuffle;
 mod state_machine;
 pub mod storage;
