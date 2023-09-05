@@ -10,7 +10,7 @@
 
 //! This module contains all the core types representing a service invocation.
 
-use crate::errors::UserErrorCode;
+use crate::errors::{InvocationError, UserErrorCode};
 use crate::identifiers::{
     EntryIndex, FullInvocationId, IngressId, InvocationId, PartitionKey, WithPartitionKey,
 };
@@ -96,6 +96,15 @@ pub struct InvocationResponse {
 pub enum ResponseResult {
     Success(Bytes),
     Failure(UserErrorCode, ByteString),
+}
+
+impl From<Result<Bytes, InvocationError>> for ResponseResult {
+    fn from(value: Result<Bytes, InvocationError>) -> Self {
+        match value {
+            Ok(v) => ResponseResult::Success(v),
+            Err(e) => ResponseResult::Failure(e.code().into(), e.message().into()),
+        }
+    }
 }
 
 /// Definition of the sink where to send the result of a service invocation.
