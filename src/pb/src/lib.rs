@@ -58,5 +58,15 @@ pub const AWAKEABLES_SERVICE_NAME: &str = "dev.restate.Awakeables";
 pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1alpha.ServerReflection";
 pub const HEALTH_SERVICE_NAME: &str = "grpc.health.v1.Health";
 
+#[cfg(feature = "builtin-service")]
+pub mod builtin_service {
+    use prost::bytes::Bytes;
+    use restate_types::errors::InvocationError;
+
+    pub trait BuiltInService {
+        fn invoke_builtin(&mut self, method: &str, input: Bytes) -> Result<Bytes, InvocationError>;
+    }
+}
+
 #[cfg(feature = "mocks")]
 pub mod mocks;
