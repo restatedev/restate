@@ -23,7 +23,7 @@ use bytes::Bytes;
 use opentelemetry::Context;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{FullInvocationId, IngressId, PeerId};
-use restate_types::invocation::{InvocationResponse, ResponseResult, ServiceInvocation};
+use restate_types::invocation::{InvocationResponse, ServiceInvocation};
 use restate_types::message::{AckKind, MessageIndex};
 use tokio::sync::mpsc;
 use tonic::Status;

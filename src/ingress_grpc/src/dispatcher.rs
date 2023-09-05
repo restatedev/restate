@@ -44,6 +44,7 @@ pub(crate) enum InvocationOrResponse {
 }
 
 impl InvocationOrResponse {
+    #[allow(unused)]
     pub(crate) fn response(invocation_response: InvocationResponse) -> (AckReceiver, Self) {
         let (ack_tx, ack_rx) = oneshot::channel();
 
