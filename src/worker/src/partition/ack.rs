@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition;
-use restate_types::identifiers::{IngressId, PartitionId, PeerId};
+use restate_types::identifiers::{IngressDispatcherId, PartitionId, PeerId};
 use restate_types::message::{AckKind, MessageIndex};
 
 /// Envelope for [`partition::Command`] that might require an explicit acknowledge.
@@ -115,15 +115,18 @@ impl DeduplicationSource {
 #[derive(Debug)]
 pub(crate) enum AckTarget {
     Ingress {
-        ingress_id: IngressId,
+        ingress_dispatcher_id: IngressDispatcherId,
         seq_number: MessageIndex,
     },
 }
 
 impl AckTarget {
-    pub(crate) fn ingress(ingress_id: IngressId, seq_number: MessageIndex) -> Self {
+    pub(crate) fn ingress(
+        ingress_dispatcher_id: IngressDispatcherId,
+        seq_number: MessageIndex,
+    ) -> Self {
         AckTarget::Ingress {
-            ingress_id,
+            ingress_dispatcher_id,
             seq_number,
         }
     }
@@ -131,10 +134,10 @@ impl AckTarget {
     pub(super) fn acknowledge(self) -> AckResponse {
         match self {
             AckTarget::Ingress {
-                ingress_id,
+                ingress_dispatcher_id,
                 seq_number,
             } => AckResponse::Ingress(IngressAckResponse {
-                _ingress_id: ingress_id,
+                _ingress_dispatcher_id: ingress_dispatcher_id,
                 seq_number,
             }),
         }
@@ -155,6 +158,6 @@ pub(crate) struct ShuffleDeduplicationResponse {
 
 #[derive(Debug)]
 pub(crate) struct IngressAckResponse {
-    pub(crate) _ingress_id: IngressId,
+    pub(crate) _ingress_dispatcher_id: IngressDispatcherId,
     pub(crate) seq_number: MessageIndex,
 }

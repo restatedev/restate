@@ -848,11 +848,13 @@ where
                 entry_index,
                 result,
             }),
-            ServiceInvocationResponseSink::Ingress(ingress_id) => OutboxMessage::IngressResponse {
-                ingress_id,
-                full_invocation_id: callee.clone(),
-                response: result,
-            },
+            ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
+                OutboxMessage::IngressResponse {
+                    ingress_dispatcher_id,
+                    full_invocation_id: callee.clone(),
+                    response: result,
+                }
+            }
         }
     }
 }

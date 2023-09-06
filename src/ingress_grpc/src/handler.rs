@@ -12,7 +12,6 @@ use super::options::JsonOptions;
 use super::protocol::{BoxBody, Protocol};
 use super::*;
 
-use crate::dispatcher::{DispatcherInputSender, InvocationOrResponse};
 use crate::reflection::ServerReflectionService;
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
@@ -22,6 +21,7 @@ use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
 use prost_reflect::ReflectMessage;
+use restate_ingress_dispatcher::{IngressRequest, IngressRequestSender};
 use restate_pb::grpc::health;
 use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
 use restate_schema_api::json::JsonMapperResolver;
@@ -30,10 +30,7 @@ use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::UserErrorCode;
-use restate_types::identifiers::{IngressId, InvocationUuid};
-use restate_types::invocation::{
-    MaybeFullInvocationId, ServiceInvocationResponseSink, SpanRelation,
-};
+use restate_types::invocation::{MaybeFullInvocationId, SpanRelation};
 use std::sync::Arc;
 use std::task::Poll;
 use tokio::sync::Semaphore;
@@ -46,12 +43,11 @@ pub struct Handler<Schemas, ProtoSymbols>
 where
     ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
-    ingress_id: IngressId,
     json: JsonOptions,
     schemas: Schemas,
     reflection_server:
         GrpcWebService<ServerReflectionServer<ServerReflectionService<ProtoSymbols>>>,
-    dispatcher_input_sender: DispatcherInputSender,
+    request_tx: IngressRequestSender,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
 
@@ -62,11 +58,10 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            ingress_id: self.ingress_id,
             json: self.json.clone(),
             schemas: self.schemas.clone(),
             reflection_server: self.reflection_server.clone(),
-            dispatcher_input_sender: self.dispatcher_input_sender.clone(),
+            request_tx: self.request_tx.clone(),
             global_concurrency_semaphore: self.global_concurrency_semaphore.clone(),
         }
     }
@@ -77,20 +72,18 @@ where
     Schemas: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
-        ingress_id: IngressId,
         json: JsonOptions,
         schemas: Schemas,
-        dispatcher_input_sender: DispatcherInputSender,
+        request_tx: IngressRequestSender,
         global_concurrency_semaphore: Arc<Semaphore>,
     ) -> Self {
         Self {
-            ingress_id,
             json,
             schemas: schemas.clone(),
             reflection_server: GrpcWebLayer::new().layer(ServerReflectionServer::new(
                 ServerReflectionService(schemas),
             )),
-            dispatcher_input_sender,
+            request_tx,
             global_concurrency_semaphore,
         }
     }
@@ -204,11 +197,10 @@ where
         }
 
         // Encapsulate in this closure the remaining part of the processing
-        let ingress_id = self.ingress_id;
         let schemas = self.schemas.clone();
-        let dispatcher_input_sender = self.dispatcher_input_sender.clone();
-        let ingress_request_handler = move |ingress_request: IngressRequest| {
-            let (req_headers, req_payload) = ingress_request;
+        let request_tx = self.request_tx.clone();
+        let ingress_request_handler = move |handler_request: HandlerRequest| {
+            let (req_headers, req_payload) = handler_request;
 
             // Create the ingress span and attach it to the next async block.
             // This span is committed once the async block terminates, recording the execution time of the invocation.
@@ -334,9 +326,9 @@ where
                         _ => return Err(Status::not_found("Not found"))
                     };
 
-                    let (ack_rx, response) = InvocationOrResponse::response(invocation_response);
+                    let (response, ack_rx) = IngressRequest::response(invocation_response);
 
-                    if dispatcher_input_sender.send(response).is_err() {
+                    if request_tx.send(response).is_err() {
                         debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                         return Err(Status::unavailable("Unavailable"));
                     }
@@ -349,7 +341,6 @@ where
                     });
                 }
 
-                let mut response_sink = Some(ServiceInvocationResponseSink::Ingress(ingress_id));
                 let mut wait_response = true;
 
                 // --- Ingress built-in service
@@ -360,7 +351,6 @@ where
                     service_name = invoke_request.service;
                     method_name = invoke_request.method;
                     req_payload = invoke_request.argument;
-                    response_sink = None;
                     wait_response = false;
                 }
 
@@ -378,21 +368,20 @@ where
                         err => Status::internal(err.to_string())
                     })?;
 
-                let service_invocation = ServiceInvocation::new(
-                    FullInvocationId::new(service_name, key, InvocationUuid::now_v7()),
-                    method_name.into(),
-                    req_payload,
-                    response_sink,
-                    SpanRelation::Parent(ingress_span_context),
-                );
+                let fid = FullInvocationId::generate(service_name, key);
+                let span_relation = SpanRelation::Parent(ingress_span_context);
 
                 // Ingress built-in service just sends a fire and forget and closes
                 if !wait_response {
-                    let id = service_invocation.fid.to_string();
+                    let id = fid.to_string();
 
-                    let (ack_rx, invocation) = InvocationOrResponse::background_invocation(service_invocation);
-                    if dispatcher_input_sender.send(
-                        invocation).is_err() {
+                    let (invocation, ack_rx) = IngressRequest::background_invocation(
+                        fid,
+                        method_name,
+                        req_payload,
+                        span_relation
+                    );
+                    if request_tx.send(invocation).is_err() {
                         debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                         return Err(Status::unavailable("Unavailable"));
                     }
@@ -406,8 +395,13 @@ where
                 }
 
                 // Send the service invocation
-                let (response_rx, invocation) = InvocationOrResponse::invocation(service_invocation);
-                if dispatcher_input_sender.send(invocation).is_err() {
+                let (invocation, response_rx) = IngressRequest::invocation(
+                    fid,
+                    method_name,
+                    req_payload,
+                    span_relation
+                );
+                if request_tx.send(invocation).is_err() {
                     debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
                     return Err(Status::unavailable("Unavailable"));
                 }

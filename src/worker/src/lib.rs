@@ -21,6 +21,7 @@ use futures::StreamExt;
 use partition::ack::AckCommand;
 use partition::shuffle;
 use restate_consensus::Consensus;
+use restate_ingress_dispatcher::Service as IngressDispatcherService;
 use restate_invoker_impl::{
     ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
@@ -29,7 +30,7 @@ use restate_schema_impl::Schemas;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query::service::PostgresQueryService;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{IngressId, PartitionKey, PeerId};
+use restate_types::identifiers::{IngressDispatcherId, PartitionKey, PeerId};
 use restate_types::message::PeerTarget;
 use std::ops::RangeInclusive;
 use tokio::join;
@@ -220,24 +221,28 @@ impl Worker {
         let num_partition_processors = opts.partitions;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
-        let external_client_ingress_id = IngressId(
+        let external_client_ingress_dispatcher_id = IngressDispatcherId(
             "127.0.0.1:0"
                 .parse()
                 .expect("Loopback address needs to be valid."),
         );
 
-        let (ingress_dispatcher_loop, external_client_ingress) = ingress_grpc.build(
+        let ingress_dispatcher_service = IngressDispatcherService::new(
             // TODO replace with proper network address once we have a distributed runtime
-            external_client_ingress_id,
-            schemas.clone(),
+            external_client_ingress_dispatcher_id,
             channel_size,
+        );
+
+        let external_client_ingress = ingress_grpc.build(
+            ingress_dispatcher_service.create_ingress_request_sender(),
+            schemas.clone(),
         );
 
         let partition_table = FixedConsecutivePartitions::new(num_partition_processors);
 
         let network = network_integration::Network::new(
             raft_in_tx,
-            ingress_dispatcher_loop.create_response_sender(),
+            ingress_dispatcher_service.create_ingress_dispatcher_input_sender(),
             partition_table.clone(),
             channel_size,
         );
@@ -296,8 +301,8 @@ impl Worker {
             storage_query,
             invoker,
             external_client_ingress_runner: ExternalClientIngressRunner::new(
+                ingress_dispatcher_service,
                 external_client_ingress,
-                ingress_dispatcher_loop,
                 network_ingress_sender,
             ),
             services,

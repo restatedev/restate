@@ -3631,6 +3631,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate_ingress_dispatcher"
+version = "0.2.2"
+dependencies = [
+ "bytes",
+ "bytestring",
+ "drain",
+ "restate_futures_util",
+ "restate_test_util",
+ "restate_types",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "restate_ingress_grpc"
 version = "0.2.2"
 dependencies = [
@@ -3653,6 +3669,7 @@ dependencies = [
  "prost-reflect",
  "restate_errors",
  "restate_futures_util",
+ "restate_ingress_dispatcher",
  "restate_pb",
  "restate_schema_api",
  "restate_schema_impl",
@@ -4081,6 +4098,7 @@ dependencies = [
  "opentelemetry_api",
  "pin-project",
  "restate_consensus",
+ "restate_ingress_dispatcher",
  "restate_ingress_grpc",
  "restate_invoker_api",
  "restate_invoker_impl",

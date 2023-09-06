@@ -584,11 +584,13 @@ pub mod storage {
                             )
                         }
                         ResponseSink::Ingress(ingress) => {
-                            let ingress_id = try_string_into_ingress_id(ingress.ingress_id)?;
+                            let ingress_dispatcher_id = try_string_into_ingress_dispatcher_id(
+                                ingress.ingress_dispatcher_id,
+                            )?;
 
                             Some(
                                 restate_types::invocation::ServiceInvocationResponseSink::Ingress(
-                                    ingress_id,
+                                    ingress_dispatcher_id,
                                 ),
                             )
                         }
@@ -615,9 +617,9 @@ pub mod storage {
                             entry_index,
                             caller: Some(FullInvocationId::from(caller)),
                         }),
-                        Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress(ingress_id)) => {
+                        Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id)) => {
                             ResponseSink::Ingress(Ingress {
-                                ingress_id: ingress_id_to_string(ingress_id),
+                                ingress_dispatcher_id: ingress_dispatcher_id.to_string(),
                             })
                         }
                         None => ResponseSink::None(Default::default()),
@@ -629,16 +631,11 @@ pub mod storage {
                 }
             }
 
-            fn try_string_into_ingress_id(
+            fn try_string_into_ingress_dispatcher_id(
                 value: String,
-            ) -> Result<restate_types::identifiers::IngressId, ConversionError> {
-                Ok(restate_types::identifiers::IngressId(
-                    value.parse().map_err(ConversionError::invalid_data)?,
-                ))
-            }
-
-            fn ingress_id_to_string(ingress_id: restate_types::identifiers::IngressId) -> String {
-                ingress_id.0.to_string()
+            ) -> Result<restate_types::identifiers::IngressDispatcherId, ConversionError>
+            {
+                Ok(value.parse().map_err(ConversionError::invalid_data)?)
             }
 
             impl TryFrom<JournalEntry> for restate_storage_api::journal_table::JournalEntry {
@@ -1077,8 +1074,8 @@ pub mod storage {
                                             ConversionError::missing_field("full_invocation_id"),
                                         )?,
                                     )?,
-                                ingress_id: try_string_into_ingress_id(
-                                    ingress_response.ingress_id,
+                                ingress_dispatcher_id: try_string_into_ingress_dispatcher_id(
+                                    ingress_response.ingress_dispatcher_id,
                                 )?,
                                 response: restate_types::invocation::ResponseResult::try_from(
                                     ingress_response
@@ -1128,7 +1125,7 @@ pub mod storage {
                             },
                         ),
                         restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
-                            ingress_id,
+                            ingress_dispatcher_id,
                             full_invocation_id,
                             response,
                         } => {
@@ -1136,7 +1133,7 @@ pub mod storage {
                                 full_invocation_id: Some(FullInvocationId::from(
                                     full_invocation_id,
                                 )),
-                                ingress_id: ingress_id_to_string(ingress_id),
+                                ingress_dispatcher_id: ingress_dispatcher_id.to_string(),
                                 response_result: Some(ResponseResult::from(response)),
                             })
                         }

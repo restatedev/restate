@@ -9,9 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use codederror::CodedError;
-use restate_ingress_grpc::{
-    HyperServerIngress, IngressDispatcherLoop, IngressDispatcherLoopError, IngressOutput,
+use restate_ingress_dispatcher::{
+    IngressDispatcherOutput, Service as IngressDispatcherService,
+    ServiceError as IngressDispatcherServiceError,
 };
+use restate_ingress_grpc::HyperServerIngress;
 use restate_schema_impl::Schemas;
 use tokio::select;
 use tokio::sync::mpsc;
@@ -22,7 +24,7 @@ type ExternalClientIngress = HyperServerIngress<Schemas>;
 pub enum IngressIntegrationError {
     #[error(transparent)]
     #[code(unknown)]
-    DispatcherLoop(#[from] IngressDispatcherLoopError),
+    Dispatcher(#[from] IngressDispatcherServiceError),
     #[error(transparent)]
     Ingress(
         #[from]
@@ -32,20 +34,20 @@ pub enum IngressIntegrationError {
 }
 
 pub(super) struct ExternalClientIngressRunner {
-    ingress_dispatcher_loop: IngressDispatcherLoop,
+    dispatcher_service: IngressDispatcherService,
     external_client_ingress: ExternalClientIngress,
-    sender: mpsc::Sender<IngressOutput>,
+    sender: mpsc::Sender<IngressDispatcherOutput>,
 }
 
 impl ExternalClientIngressRunner {
     pub(super) fn new(
+        dispatcher_service: IngressDispatcherService,
         external_client_ingress: ExternalClientIngress,
-        ingress_dispatcher_loop: IngressDispatcherLoop,
-        sender: mpsc::Sender<IngressOutput>,
+        sender: mpsc::Sender<IngressDispatcherOutput>,
     ) -> Self {
         Self {
+            dispatcher_service,
             external_client_ingress,
-            ingress_dispatcher_loop,
             sender,
         }
     }
@@ -55,13 +57,13 @@ impl ExternalClientIngressRunner {
         shutdown_watch: drain::Watch,
     ) -> Result<(), IngressIntegrationError> {
         let ExternalClientIngressRunner {
-            ingress_dispatcher_loop,
+            dispatcher_service,
             external_client_ingress,
             sender,
         } = self;
 
         select! {
-            result = ingress_dispatcher_loop.run(sender, shutdown_watch.clone()) => result?,
+            result = dispatcher_service.run(sender, shutdown_watch.clone()) => result?,
             result = external_client_ingress.run(shutdown_watch) => result?,
         }
 

@@ -10,76 +10,22 @@
 
 use super::*;
 
-use std::collections::HashMap;
-use std::future::poll_fn;
-
 use restate_futures_util::pipe::{
     new_sender_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
     UnboundedReceiverPipeInput,
 };
 use restate_types::identifiers::FullInvocationId;
-use restate_types::identifiers::IngressId;
+use restate_types::identifiers::IngressDispatcherId;
+use restate_types::invocation::ServiceInvocationResponseSink;
+use std::collections::HashMap;
+use std::future::poll_fn;
 use tokio::select;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tracing::{debug, info, trace};
-
-pub(crate) type ResponseSender = oneshot::Sender<IngressResult>;
-pub(crate) type ResponseReceiver = oneshot::Receiver<IngressResult>;
-pub(crate) type AckSender = oneshot::Sender<()>;
-pub(crate) type AckReceiver = oneshot::Receiver<()>;
-
-pub(crate) type DispatcherInputSender = mpsc::UnboundedSender<InvocationOrResponse>;
-pub(crate) type DispatcherInputReceiver = mpsc::UnboundedReceiver<InvocationOrResponse>;
-
-#[derive(Debug)]
-pub(crate) enum ResponseOrAckSender {
-    Response(ResponseSender),
-    Ack(AckSender),
-}
-
-#[derive(Debug)]
-pub(crate) enum InvocationOrResponse {
-    Invocation(ServiceInvocation, ResponseOrAckSender),
-    Response(InvocationResponse, AckSender),
-}
-
-impl InvocationOrResponse {
-    pub(crate) fn response(invocation_response: InvocationResponse) -> (AckReceiver, Self) {
-        let (ack_tx, ack_rx) = oneshot::channel();
-
-        (
-            ack_rx,
-            InvocationOrResponse::Response(invocation_response, ack_tx),
-        )
-    }
-
-    pub(crate) fn invocation(service_invocation: ServiceInvocation) -> (ResponseReceiver, Self) {
-        let (result_tx, result_rx) = oneshot::channel();
-
-        (
-            result_rx,
-            InvocationOrResponse::Invocation(
-                service_invocation,
-                ResponseOrAckSender::Response(result_tx),
-            ),
-        )
-    }
-
-    pub(crate) fn background_invocation(
-        service_invocation: ServiceInvocation,
-    ) -> (AckReceiver, Self) {
-        let (ack_tx, ack_rx) = oneshot::channel();
-
-        (
-            ack_rx,
-            InvocationOrResponse::Invocation(service_invocation, ResponseOrAckSender::Ack(ack_tx)),
-        )
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
-pub struct IngressDispatcherLoopError(#[from] PipeError);
+pub struct Error(#[from] PipeError);
 
 /// This loop is taking care of dispatching responses back to [super::RequestResponseHandler].
 ///
@@ -87,28 +33,28 @@ pub struct IngressDispatcherLoopError(#[from] PipeError);
 /// is that you need multiplexing between different processes, in case the request came to an handler
 /// which lives in a separate process of the partition processor leader.
 ///
-/// To interact with the loop use [IngressInputSender] and [ResponseRequester].
-pub struct IngressDispatcherLoop {
-    ingress_id: IngressId,
+/// To interact with the loop use [IngressDispatcherInputSender] and [ResponseRequester].
+pub struct Service {
+    ingress_dispatcher_id: IngressDispatcherId,
 
     // This channel can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
-    server_rx: DispatcherInputReceiver,
+    server_rx: IngressRequestReceiver,
 
-    input_rx: IngressInputReceiver,
+    input_rx: IngressDispatcherInputReceiver,
 
     // For constructing the sender sides
-    input_tx: IngressInputSender,
-    server_tx: DispatcherInputSender,
+    input_tx: IngressDispatcherInputSender,
+    server_tx: IngressRequestSender,
 }
 
-impl IngressDispatcherLoop {
-    pub fn new(ingress_id: IngressId, channel_size: usize) -> IngressDispatcherLoop {
+impl Service {
+    pub fn new(ingress_dispatcher_id: IngressDispatcherId, channel_size: usize) -> Service {
         let (input_tx, input_rx) = mpsc::channel(channel_size);
         let (server_tx, server_rx) = mpsc::unbounded_channel();
 
-        IngressDispatcherLoop {
-            ingress_id,
+        Service {
+            ingress_dispatcher_id,
             input_rx,
             server_rx,
             input_tx,
@@ -118,13 +64,13 @@ impl IngressDispatcherLoop {
 
     pub async fn run(
         self,
-        output_tx: mpsc::Sender<IngressOutput>,
+        output_tx: mpsc::Sender<IngressDispatcherOutput>,
         drain: drain::Watch,
-    ) -> Result<(), IngressDispatcherLoopError> {
+    ) -> Result<(), Error> {
         debug!("Running the ResponseDispatcher");
 
-        let IngressDispatcherLoop {
-            ingress_id,
+        let Service {
+            ingress_dispatcher_id,
             server_rx,
             input_rx,
             ..
@@ -143,7 +89,7 @@ impl IngressDispatcherLoop {
 
         tokio::pin!(pipe);
 
-        let mut handler = DispatcherLoopHandler::new(ingress_id);
+        let mut handler = DispatcherLoopHandler::new(ingress_dispatcher_id);
 
         loop {
             select! {
@@ -169,38 +115,41 @@ impl IngressDispatcherLoop {
         Ok(())
     }
 
-    pub fn create_response_sender(&self) -> IngressInputSender {
+    pub fn create_ingress_dispatcher_input_sender(&self) -> IngressDispatcherInputSender {
         self.input_tx.clone()
     }
 
-    pub(crate) fn create_input_sender(&self) -> DispatcherInputSender {
+    pub fn create_ingress_request_sender(&self) -> IngressRequestSender {
         self.server_tx.clone()
     }
 }
 
 struct DispatcherLoopHandler {
-    ingress_id: IngressId,
+    ingress_dispatcher_id: IngressDispatcherId,
     msg_index: MessageIndex,
 
     // This map can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
-    waiting_responses: HashMap<FullInvocationId, ResponseSender>,
+    waiting_responses: HashMap<FullInvocationId, IngressResponseSender>,
     waiting_for_acks: HashMap<MessageIndex, AckSender>,
 }
 
 impl DispatcherLoopHandler {
-    fn new(ingress_id: IngressId) -> Self {
+    fn new(ingress_dispatcher_id: IngressDispatcherId) -> Self {
         Self {
-            ingress_id,
+            ingress_dispatcher_id,
             msg_index: 0,
             waiting_responses: HashMap::new(),
             waiting_for_acks: HashMap::default(),
         }
     }
 
-    fn handle_network_input(&mut self, input: IngressInput) -> Option<IngressOutput> {
+    fn handle_network_input(
+        &mut self,
+        input: IngressDispatcherInput,
+    ) -> Option<IngressDispatcherOutput> {
         match input {
-            IngressInput::Response(response) => {
+            IngressDispatcherInput::Response(response) => {
                 if let Some(sender) = self.waiting_responses.remove(&response.full_invocation_id) {
                     if let Err(Ok(response)) = sender.send(response.result.map_err(Into::into)) {
                         debug!(
@@ -213,9 +162,11 @@ impl DispatcherLoopHandler {
                     debug!("Failed to handle response '{:?}' because no handler was found locally waiting for its invocation key", &response);
                 }
 
-                Some(IngressOutput::Ack(response.ack_target.acknowledge()))
+                Some(IngressDispatcherOutput::Ack(
+                    response.ack_target.acknowledge(),
+                ))
             }
-            IngressInput::MessageAck(acked_index) => {
+            IngressDispatcherInput::MessageAck(acked_index) => {
                 trace!("Received message ack: {acked_index:?}.");
 
                 if let Some(ack_sender) = self.waiting_for_acks.remove(&acked_index) {
@@ -229,33 +180,47 @@ impl DispatcherLoopHandler {
 
     fn handle_ingress_command(
         &mut self,
-        invocation_or_response: InvocationOrResponse,
-    ) -> IngressOutput {
+        ingress_request: IngressRequest,
+    ) -> IngressDispatcherOutput {
         let current_msg_index = self.msg_index;
         self.msg_index += 1;
 
-        match invocation_or_response {
-            InvocationOrResponse::Invocation(service_invocation, result_or_ack) => {
-                match result_or_ack {
+        match ingress_request.0 {
+            IngressRequestInner::Invocation(service_invocation, result_or_ack) => {
+                let response_sink = match result_or_ack {
                     ResponseOrAckSender::Response(response_sender) => {
                         self.waiting_responses
                             .insert(service_invocation.fid.clone(), response_sender);
+                        Some(ServiceInvocationResponseSink::Ingress(
+                            self.ingress_dispatcher_id,
+                        ))
                     }
                     ResponseOrAckSender::Ack(ack_sender) => {
                         self.waiting_for_acks.insert(current_msg_index, ack_sender);
+                        None
                     }
-                }
+                };
 
-                IngressOutput::service_invocation(
-                    service_invocation,
-                    self.ingress_id,
+                IngressDispatcherOutput::service_invocation(
+                    ServiceInvocation {
+                        fid: service_invocation.fid,
+                        method_name: service_invocation.method_name,
+                        argument: service_invocation.argument,
+                        response_sink,
+                        span_context: service_invocation.span_context,
+                    },
+                    self.ingress_dispatcher_id,
                     current_msg_index,
                 )
             }
-            InvocationOrResponse::Response(response, ack_listener) => {
+            IngressRequestInner::Response(response, ack_listener) => {
                 self.waiting_for_acks
                     .insert(current_msg_index, ack_listener);
-                IngressOutput::awakeable_completion(response, self.ingress_id, current_msg_index)
+                IngressDispatcherOutput::awakeable_completion(
+                    response,
+                    self.ingress_dispatcher_id,
+                    current_msg_index,
+                )
             }
         }
     }
@@ -265,44 +230,34 @@ impl DispatcherLoopHandler {
 mod tests {
     use super::*;
 
-    use bytestring::ByteString;
     use restate_test_util::test;
-    use restate_types::identifiers::IngressId;
-    use restate_types::invocation::{ServiceInvocationResponseSink, SpanRelation};
+    use restate_types::identifiers::IngressDispatcherId;
+    use restate_types::invocation::SpanRelation;
 
     #[test(tokio::test)]
     async fn test_closed_handler() {
         let (output_tx, _output_rx) = mpsc::channel(2);
 
         let ingress_dispatcher =
-            IngressDispatcherLoop::new(IngressId("127.0.0.1:0".parse().unwrap()), 1);
-        let input_sender = ingress_dispatcher.create_response_sender();
-        let command_sender = ingress_dispatcher.create_input_sender();
+            Service::new(IngressDispatcherId("127.0.0.1:0".parse().unwrap()), 1);
+        let input_sender = ingress_dispatcher.create_ingress_dispatcher_input_sender();
+        let command_sender = ingress_dispatcher.create_ingress_request_sender();
 
         // Start the dispatcher loop
         let (drain_signal, watch) = drain::channel();
         let loop_handle = tokio::spawn(ingress_dispatcher.run(output_tx, watch));
 
-        // Ask for a response, then drop the receiver=
-        let method_name = ByteString::from_static("pippo");
-        let service_invocation = ServiceInvocation::new(
-            FullInvocationId::new("MySvc", "MyMethod", uuid::Uuid::now_v7()),
-            method_name,
-            Default::default(),
-            Some(ServiceInvocationResponseSink::Ingress(IngressId(
-                "0.0.0.0:0".parse().unwrap(),
-            ))),
-            SpanRelation::None,
-        );
-        let (response_rx, invocation) =
-            InvocationOrResponse::invocation(service_invocation.clone());
+        // Ask for a response, then drop the receiver
+        let fid = FullInvocationId::generate("MySvc", "MyKey");
+        let (invocation, response_rx) =
+            IngressRequest::invocation(fid.clone(), "pippo", Bytes::default(), SpanRelation::None);
         command_sender.send(invocation).unwrap();
         drop(response_rx);
 
         // Now let's send the response
         input_sender
-            .send(IngressInput::Response(IngressResponseMessage {
-                full_invocation_id: service_invocation.fid.clone(),
+            .send(IngressDispatcherInput::Response(IngressResponseMessage {
+                full_invocation_id: fid.clone(),
                 result: Ok(Bytes::new()),
                 ack_target: AckTarget::new(0, 0),
             }))

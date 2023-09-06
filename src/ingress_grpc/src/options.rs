@@ -9,14 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use super::HyperServerIngress;
-use super::*;
 
 use prost_reflect::{DeserializeOptions, SerializeOptions};
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
-use restate_types::identifiers::IngressId;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -175,10 +173,9 @@ impl Options {
 
     pub fn build<Schemas, JsonDecoder, JsonEncoder>(
         self,
-        ingress_id: IngressId,
+        request_tx: restate_ingress_dispatcher::IngressRequestSender,
         schemas: Schemas,
-        channel_size: usize,
-    ) -> (IngressDispatcherLoop, HyperServerIngress<Schemas>)
+    ) -> HyperServerIngress<Schemas>
     where
         Schemas: JsonMapperResolver<
                 JsonToProtobufMapper = JsonDecoder,
@@ -199,17 +196,9 @@ impl Options {
             json,
         } = self;
 
-        let ingress_dispatcher_loop = IngressDispatcherLoop::new(ingress_id, channel_size);
+        let (hyper_ingress_server, _) =
+            HyperServerIngress::new(bind_address, concurrency_limit, json, schemas, request_tx);
 
-        let (hyper_ingress_server, _) = HyperServerIngress::new(
-            bind_address,
-            concurrency_limit,
-            json,
-            ingress_id,
-            schemas,
-            ingress_dispatcher_loop.create_input_sender(),
-        );
-
-        (ingress_dispatcher_loop, hyper_ingress_server)
+        hyper_ingress_server
     }
 }
