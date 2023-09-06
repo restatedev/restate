@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::ActuatorMessage;
+use crate::partition::effects::{ActuatorMessage, Effects};
 use crate::partition::shuffle::Shuffle;
 use crate::partition::{shuffle, storage, AckResponse, TimerValue};
 use futures::{future, Stream, StreamExt};
@@ -49,6 +49,7 @@ pub(crate) struct LeaderState<'a> {
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
     message_buffer: Vec<ActuatorMessage>,
     timer_service: Pin<Box<TimerService<'a>>>,
+    self_tx: mpsc::UnboundedSender<Effects>,
 }
 
 pub(crate) struct FollowerState<I, N> {
@@ -149,6 +150,9 @@ where
         Error,
     > {
         if let LeadershipState::Follower(mut follower_state) = self {
+            // Used to propose to self
+            let (self_tx, self_rx) = mpsc::unbounded_channel();
+
             let invoker_rx = Self::register_at_invoker(
                 &mut follower_state.invoker_tx,
                 (follower_state.partition_id, leader_epoch),
@@ -186,7 +190,7 @@ where
             let shuffle_handle = tokio::spawn(shuffle.run(shutdown_watch));
 
             Ok((
-                ActuatorStream::leader(invoker_rx, shuffle_rx),
+                ActuatorStream::leader(invoker_rx, shuffle_rx, self_rx),
                 LeadershipState::Leader {
                     follower_state,
                     leader_state: LeaderState {
@@ -195,6 +199,7 @@ where
                         shuffle_hint_tx,
                         shuffle_handle,
                         timer_service,
+                        self_tx,
                         // The max number of actuator messages should be 2 atm (e.g. RegisterTimer and
                         // AckStoredEntry)
                         message_buffer: Vec::with_capacity(2),

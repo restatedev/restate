@@ -47,6 +47,12 @@ impl ActuatorOutputHandler {
                     .send(AckCommand::no_ack(Command::Timer(timer)))
                     .await;
             }
+            ActuatorOutput::EffectsBatch(effects_batch) => {
+                let _ = self
+                    .proposal_tx
+                    .send(AckCommand::no_ack(Command::Effects(effects_batch)))
+                    .await;
+            }
         };
     }
 }

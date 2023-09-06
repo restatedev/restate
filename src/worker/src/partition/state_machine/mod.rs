@@ -62,6 +62,7 @@ pub(crate) enum Error {
 #[derive(Debug)]
 pub(crate) enum Command {
     Kill(InvocationId),
+    Effects(Effects),
     Invoker(InvokerEffect),
     Timer(TimerValue),
     OutboxTruncation(MessageIndex),
@@ -195,6 +196,10 @@ where
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
             Command::Kill(iid) => self.try_kill_invocation(iid, state, effects).await,
+            Command::Effects(new_effects) => {
+                effects.extend(new_effects);
+                Ok((None, SpanRelation::None))
+            }
         };
     }
 

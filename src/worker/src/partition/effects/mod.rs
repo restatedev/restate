@@ -1008,3 +1008,18 @@ impl Effects {
         }
     }
 }
+
+impl Extend<Effect> for Effects {
+    fn extend<T: IntoIterator<Item=Effect>>(&mut self, iter: T) {
+        self.effects.extend(iter);
+    }
+}
+
+impl IntoIterator for Effects {
+    type Item = Effect;
+    type IntoIter = std::vec::IntoIter<Effect>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.effects.into_iter()
+    }
+}

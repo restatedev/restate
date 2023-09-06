@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::{ActuatorMessage, MessageCollector};
+use crate::partition::effects::{ActuatorMessage, Effects, MessageCollector};
 use crate::partition::leadership::{FollowerState, LeaderState, LeadershipState, TimerService};
 use crate::partition::{shuffle, AckResponse, TimerValue};
 use futures::{Stream, StreamExt};
@@ -18,7 +18,7 @@ use std::ops::DerefMut;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tracing::trace;
 
 pub(crate) enum ActuatorMessageCollector<'a, I, N> {
@@ -56,6 +56,7 @@ where
                     &mut leader_state.shuffle_hint_tx,
                     leader_state.timer_service.as_mut(),
                     &follower_state.ack_tx,
+                    &mut leader_state.self_tx,
                     leader_state.message_buffer.drain(..),
                 )
                 .await?;
@@ -77,6 +78,7 @@ where
         shuffle_hint_tx: &mut mpsc::Sender<shuffle::NewOutboxMessage>,
         mut timer_service: Pin<&mut TimerService<'a>>,
         ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
+        self_tx: &mut mpsc::UnboundedSender<Effects>,
         messages: impl IntoIterator<Item = ActuatorMessage>,
     ) -> Result<(), ActuatorMessageCollectorError> {
         for message in messages.into_iter() {
@@ -133,7 +135,7 @@ where
                         .await?
                 }
                 ActuatorMessage::ProposeSelf(effects) => {
-                    todo!("Implement the self proposal!")
+                    self_tx.send(effects).expect("There can never be a case when this channel is closed, since we control its lifecycle")
                 }
             }
         }
@@ -161,6 +163,7 @@ pub(crate) enum ActuatorStream {
     Leader {
         invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
         shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
+        self_stream: UnboundedReceiverStream<Effects>,
     },
 }
 
@@ -168,16 +171,19 @@ impl ActuatorStream {
     pub(crate) fn leader(
         invoker_rx: mpsc::Receiver<restate_invoker_api::Effect>,
         shuffle_rx: mpsc::Receiver<shuffle::OutboxTruncation>,
+        self_rx: mpsc::UnboundedReceiver<Effects>
     ) -> Self {
         ActuatorStream::Leader {
             invoker_stream: ReceiverStream::new(invoker_rx),
             shuffle_stream: ReceiverStream::new(shuffle_rx),
+            self_stream: UnboundedReceiverStream::new(self_rx),
         }
     }
 }
 
 #[derive(Debug)]
 pub(crate) enum ActuatorOutput {
+    EffectsBatch(Effects),
     Invoker(restate_invoker_api::Effect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerValue),
@@ -191,12 +197,13 @@ impl Stream for ActuatorStream {
             ActuatorStream::Follower => Poll::Pending,
             ActuatorStream::Leader {
                 invoker_stream,
-                shuffle_stream,
+                shuffle_stream, self_stream,
             } => {
                 let invoker_stream = invoker_stream.map(ActuatorOutput::Invoker);
                 let shuffle_stream = shuffle_stream.map(ActuatorOutput::Shuffle);
+                let self_stream = self_stream.map(ActuatorOutput::EffectsBatch);
 
-                let mut all_streams = futures::stream_select!(invoker_stream, shuffle_stream);
+                let mut all_streams = futures::stream_select!(invoker_stream, shuffle_stream, self_stream);
                 Pin::new(&mut all_streams).poll_next(cx)
             }
         }
