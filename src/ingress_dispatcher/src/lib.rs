@@ -12,9 +12,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PeerId};
-use restate_types::invocation::{
-    InvocationResponse, ServiceInvocation, ServiceInvocationSpanContext, SpanRelation,
-};
+use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext, SpanRelation};
 use restate_types::message::{AckKind, MessageIndex};
 use tokio::sync::{mpsc, oneshot};
 
@@ -34,43 +32,17 @@ pub type AckSender = oneshot::Sender<()>;
 pub type AckReceiver = oneshot::Receiver<()>;
 
 #[derive(Debug)]
-pub struct IngressRequest(IngressRequestInner);
-
-pub type IngressResponse = Result<Bytes, InvocationError>;
-
-pub type IngressDeduplicationId = (String, MessageIndex);
-
-/// Trimmed down version of [`ServiceInvocation`] without the destination.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct IngressServiceInvocation {
+pub struct IngressRequest {
     fid: FullInvocationId,
     method_name: ByteString,
     argument: Bytes,
     span_context: ServiceInvocationSpanContext,
+    request_mode: IngressRequestMode,
 }
 
-impl IngressServiceInvocation {
-    fn new(
-        fid: FullInvocationId,
-        method_name: impl Into<ByteString>,
-        argument: impl Into<Bytes>,
-        related_span: SpanRelation,
-    ) -> Self {
-        let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
-        Self {
-            fid,
-            method_name: method_name.into(),
-            argument: argument.into(),
-            span_context,
-        }
-    }
-}
+pub type IngressResponse = Result<Bytes, InvocationError>;
 
-#[derive(Debug)]
-enum IngressRequestInner {
-    Invocation(IngressServiceInvocation, IngressRequestMode),
-    Response(InvocationResponse, AckSender),
-}
+pub type IngressDeduplicationId = (String, MessageIndex);
 
 #[derive(Debug)]
 enum IngressRequestMode {
@@ -80,28 +52,23 @@ enum IngressRequestMode {
 }
 
 impl IngressRequest {
-    pub fn response(invocation_response: InvocationResponse) -> (Self, AckReceiver) {
-        let (ack_tx, ack_rx) = oneshot::channel();
-
-        (
-            IngressRequest(IngressRequestInner::Response(invocation_response, ack_tx)),
-            ack_rx,
-        )
-    }
-
     pub fn invocation(
         fid: FullInvocationId,
         method_name: impl Into<ByteString>,
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
     ) -> (Self, IngressResponseReceiver) {
+        let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         let (result_tx, result_rx) = oneshot::channel();
 
         (
-            IngressRequest(IngressRequestInner::Invocation(
-                IngressServiceInvocation::new(fid, method_name, argument, related_span),
-                IngressRequestMode::RequestResponse(result_tx),
-            )),
+            IngressRequest {
+                fid,
+                method_name: method_name.into(),
+                argument: argument.into(),
+                request_mode: IngressRequestMode::RequestResponse(result_tx),
+                span_context,
+            },
             result_rx,
         )
     }
@@ -113,16 +80,20 @@ impl IngressRequest {
         related_span: SpanRelation,
         ingress_deduplication_id: Option<IngressDeduplicationId>,
     ) -> (Self, AckReceiver) {
+        let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         let (ack_tx, ack_rx) = oneshot::channel();
 
         (
-            IngressRequest(IngressRequestInner::Invocation(
-                IngressServiceInvocation::new(fid, method_name, argument, related_span),
-                match ingress_deduplication_id {
+            IngressRequest {
+                fid,
+                method_name: method_name.into(),
+                argument: argument.into(),
+                span_context,
+                request_mode: match ingress_deduplication_id {
                     None => IngressRequestMode::FireAndForget(ack_tx),
                     Some(dedup_id) => IngressRequestMode::DedupFireAndForget(dedup_id, ack_tx),
                 },
-            )),
+            },
             ack_rx,
         )
     }
@@ -186,11 +157,6 @@ pub enum IngressDispatcherOutput {
         deduplication_source: Option<String>,
         msg_index: MessageIndex,
     },
-    AwakeableCompletion {
-        response: InvocationResponse,
-        ingress_dispatcher_id: IngressDispatcherId,
-        msg_index: MessageIndex,
-    },
     Ack(AckResponse),
 }
 
@@ -211,18 +177,6 @@ impl IngressDispatcherOutput {
             service_invocation,
             ingress_dispatcher_id,
             deduplication_source,
-            msg_index,
-        }
-    }
-
-    pub fn awakeable_completion(
-        response: InvocationResponse,
-        ingress_dispatcher_id: IngressDispatcherId,
-        msg_index: MessageIndex,
-    ) -> Self {
-        Self::AwakeableCompletion {
-            response,
-            ingress_dispatcher_id,
             msg_index,
         }
     }
@@ -249,16 +203,13 @@ pub mod mocks {
             IngressResponseSender,
         ) {
             let_assert!(
-                IngressRequestInner::Invocation(
-                    IngressServiceInvocation {
-                        fid,
-                        method_name,
-                        argument,
-                        span_context,
-                        ..
-                    },
-                    IngressRequestMode::RequestResponse(ingress_response_sender)
-                ) = self.0
+                IngressRequest {
+                    fid,
+                    method_name,
+                    argument,
+                    span_context,
+                    request_mode: IngressRequestMode::RequestResponse(ingress_response_sender)
+                } = self
             );
             (
                 fid,
@@ -279,16 +230,13 @@ pub mod mocks {
             AckSender,
         ) {
             let_assert!(
-                IngressRequestInner::Invocation(
-                    IngressServiceInvocation {
-                        fid,
-                        method_name,
-                        argument,
-                        span_context,
-                        ..
-                    },
-                    IngressRequestMode::FireAndForget(ack_sender)
-                ) = self.0
+                IngressRequest {
+                    fid,
+                    method_name,
+                    argument,
+                    span_context,
+                    request_mode: IngressRequestMode::FireAndForget(ack_sender)
+                } = self
             );
             (fid, method_name, argument, span_context, ack_sender)
         }
@@ -304,16 +252,13 @@ pub mod mocks {
             AckSender,
         ) {
             let_assert!(
-                IngressRequestInner::Invocation(
-                    IngressServiceInvocation {
-                        fid,
-                        method_name,
-                        argument,
-                        span_context,
-                        ..
-                    },
-                    IngressRequestMode::DedupFireAndForget(dedup_id, ack_sender)
-                ) = self.0
+                IngressRequest {
+                    fid,
+                    method_name,
+                    argument,
+                    span_context,
+                    request_mode: IngressRequestMode::DedupFireAndForget(dedup_id, ack_sender)
+                } = self
             );
             (
                 fid,
@@ -323,11 +268,6 @@ pub mod mocks {
                 dedup_id,
                 ack_sender,
             )
-        }
-
-        pub fn expect_response(self) -> (InvocationResponse, AckSender) {
-            let_assert!(IngressRequestInner::Response(invocation_response, ack_sender) = self.0);
-            (invocation_response, ack_sender)
         }
     }
 }

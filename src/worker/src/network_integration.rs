@@ -37,7 +37,7 @@ mod ingress_integration {
     use restate_network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
     use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{IngressDispatcherId, PartitionKey, PeerId};
-    use restate_types::invocation::{InvocationResponse, ServiceInvocation};
+    use restate_types::invocation::ServiceInvocation;
     use restate_types::message::{AckKind, MessageIndex};
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
@@ -51,19 +51,9 @@ mod ingress_integration {
                     deduplication_source,
                     msg_index,
                 } => ConsensusOrShuffleTarget::Consensus(IngressToConsensus {
-                    invocation_or_response: InvocationOrResponse::Invocation(service_invocation),
+                    service_invocation,
                     ingress_dispatcher_id,
                     deduplication_source,
-                    msg_index,
-                }),
-                restate_ingress_dispatcher::IngressDispatcherOutput::AwakeableCompletion {
-                    response,
-                    ingress_dispatcher_id,
-                    msg_index,
-                } => ConsensusOrShuffleTarget::Consensus(IngressToConsensus {
-                    invocation_or_response: InvocationOrResponse::Response(response),
-                    ingress_dispatcher_id,
-                    deduplication_source: None,
                     msg_index,
                 }),
                 restate_ingress_dispatcher::IngressDispatcherOutput::Ack(
@@ -80,14 +70,8 @@ mod ingress_integration {
     }
 
     #[derive(Debug)]
-    pub(crate) enum InvocationOrResponse {
-        Invocation(ServiceInvocation),
-        Response(InvocationResponse),
-    }
-
-    #[derive(Debug)]
     pub(crate) struct IngressToConsensus {
-        invocation_or_response: InvocationOrResponse,
+        service_invocation: ServiceInvocation,
         ingress_dispatcher_id: IngressDispatcherId,
         deduplication_source: Option<String>,
         msg_index: MessageIndex,
@@ -95,32 +79,20 @@ mod ingress_integration {
 
     impl WithPartitionKey for IngressToConsensus {
         fn partition_key(&self) -> PartitionKey {
-            match &self.invocation_or_response {
-                InvocationOrResponse::Invocation(invocation) => {
-                    invocation.fid.service_id.partition_key()
-                }
-                InvocationOrResponse::Response(response) => response.id.partition_key(),
-            }
+            self.service_invocation.fid.service_id.partition_key()
         }
     }
 
     impl From<IngressToConsensus> for partition::AckCommand {
         fn from(ingress_to_consensus: IngressToConsensus) -> Self {
             let IngressToConsensus {
-                invocation_or_response,
+                service_invocation,
                 ingress_dispatcher_id,
                 deduplication_source,
                 msg_index,
             } = ingress_to_consensus;
 
-            let cmd = match invocation_or_response {
-                InvocationOrResponse::Invocation(service_invocation) => {
-                    partition::Command::Invocation(service_invocation)
-                }
-                InvocationOrResponse::Response(invocation_response) => {
-                    partition::Command::Response(invocation_response)
-                }
-            };
+            let cmd = partition::Command::Invocation(service_invocation);
 
             match deduplication_source {
                 None => partition::AckCommand::ack(
