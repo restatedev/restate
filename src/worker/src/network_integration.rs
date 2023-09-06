@@ -129,11 +129,7 @@ mod ingress_integration {
                 ),
                 Some(source_id) => partition::AckCommand::dedup(
                     cmd,
-                    DeduplicationSource::Ingress {
-                        ingress_id,
-                        source_id,
-                        seq_number: msg_index,
-                    },
+                    DeduplicationSource::ingress(ingress_dispatcher_id, source_id, msg_index),
                 ),
             }
         }

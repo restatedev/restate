@@ -204,7 +204,9 @@ impl DispatcherLoopHandler {
                     (ResponseOrAckSender::Response(response_sender), None) => {
                         self.waiting_responses.insert(fid.clone(), response_sender);
                         (
-                            Some(ServiceInvocationResponseSink::Ingress(self.ingress_dispatcher_id)),
+                            Some(ServiceInvocationResponseSink::Ingress(
+                                self.ingress_dispatcher_id,
+                            )),
                             None,
                             current_msg_index,
                         )

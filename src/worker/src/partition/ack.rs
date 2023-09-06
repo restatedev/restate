@@ -68,7 +68,7 @@ pub(crate) enum DeduplicationSource {
         seq_number: MessageIndex,
     },
     Ingress {
-        ingress_id: IngressId,
+        ingress_dispatcher_id: IngressDispatcherId,
         // String used to distinguish between different seq_numbers indexes produced by the ingress
         source_id: String,
         seq_number: MessageIndex,
@@ -89,12 +89,12 @@ impl DeduplicationSource {
     }
 
     pub(crate) fn ingress(
-        ingress_id: IngressId,
+        ingress_dispatcher_id: IngressDispatcherId,
         source_id: String,
         seq_number: MessageIndex,
     ) -> Self {
         DeduplicationSource::Ingress {
-            ingress_id,
+            ingress_dispatcher_id,
             source_id,
             seq_number,
         }
@@ -111,11 +111,11 @@ impl DeduplicationSource {
                 kind: AckKind::Acknowledge(seq_number),
             }),
             DeduplicationSource::Ingress {
-                ingress_id,
+                ingress_dispatcher_id,
                 seq_number,
                 ..
             } => AckResponse::Ingress(IngressAckResponse {
-                _ingress_id: ingress_id,
+                _ingress_dispatcher_id: ingress_dispatcher_id,
                 kind: AckKind::Acknowledge(seq_number),
             }),
         }
@@ -135,11 +135,11 @@ impl DeduplicationSource {
                 },
             }),
             DeduplicationSource::Ingress {
-                ingress_id,
+                ingress_dispatcher_id,
                 seq_number,
                 ..
             } => AckResponse::Ingress(IngressAckResponse {
-                _ingress_id: ingress_id,
+                _ingress_dispatcher_id: ingress_dispatcher_id,
                 kind: AckKind::Duplicate {
                     seq_number,
                     last_known_seq_number,
@@ -174,7 +174,7 @@ impl AckTarget {
                 ingress_dispatcher_id,
                 seq_number,
             } => AckResponse::Ingress(IngressAckResponse {
-                _ingress_dispatcher_id,
+                _ingress_dispatcher_id: ingress_dispatcher_id,
                 kind: AckKind::Acknowledge(seq_number),
             }),
         }
