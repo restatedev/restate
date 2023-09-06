@@ -47,7 +47,6 @@ struct IngressServiceInvocation {
     method_name: ByteString,
     argument: Bytes,
     span_context: ServiceInvocationSpanContext,
-    ingress_deduplication_id: Option<IngressDeduplicationId>,
 }
 
 impl IngressServiceInvocation {
@@ -56,7 +55,6 @@ impl IngressServiceInvocation {
         method_name: impl Into<ByteString>,
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
-        ingress_deduplication_id: Option<IngressDeduplicationId>,
     ) -> Self {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         Self {
@@ -64,21 +62,21 @@ impl IngressServiceInvocation {
             method_name: method_name.into(),
             argument: argument.into(),
             span_context,
-            ingress_deduplication_id,
         }
     }
 }
 
 #[derive(Debug)]
 enum IngressRequestInner {
-    Invocation(IngressServiceInvocation, ResponseOrAckSender),
+    Invocation(IngressServiceInvocation, IngressRequestMode),
     Response(InvocationResponse, AckSender),
 }
 
 #[derive(Debug)]
-enum ResponseOrAckSender {
-    Response(IngressResponseSender),
-    Ack(AckSender),
+enum IngressRequestMode {
+    RequestResponse(IngressResponseSender),
+    DedupFireAndForget(IngressDeduplicationId, AckSender),
+    FireAndForget(AckSender),
 }
 
 impl IngressRequest {
@@ -101,12 +99,8 @@ impl IngressRequest {
 
         (
             IngressRequest(IngressRequestInner::Invocation(
-                // For the time being we don't support setting the deduplication_id for the regular requests,
-                // as it's unclear if and how to send any response back in case of duplication.
-                // In any case we might implement the deduplication of request/response scenarios as built-in service,
-                // rather than at this abstraction level.
-                IngressServiceInvocation::new(fid, method_name, argument, related_span, None),
-                ResponseOrAckSender::Response(result_tx),
+                IngressServiceInvocation::new(fid, method_name, argument, related_span),
+                IngressRequestMode::RequestResponse(result_tx),
             )),
             result_rx,
         )
@@ -123,14 +117,11 @@ impl IngressRequest {
 
         (
             IngressRequest(IngressRequestInner::Invocation(
-                IngressServiceInvocation::new(
-                    fid,
-                    method_name,
-                    argument,
-                    related_span,
-                    ingress_deduplication_id,
-                ),
-                ResponseOrAckSender::Ack(ack_tx),
+                IngressServiceInvocation::new(fid, method_name, argument, related_span),
+                match ingress_deduplication_id {
+                    None => IngressRequestMode::FireAndForget(ack_tx),
+                    Some(dedup_id) => IngressRequestMode::DedupFireAndForget(dedup_id, ack_tx),
+                },
             )),
             ack_rx,
         )
@@ -266,7 +257,7 @@ pub mod mocks {
                         span_context,
                         ..
                     },
-                    ResponseOrAckSender::Response(ingress_response_sender)
+                    IngressRequestMode::RequestResponse(ingress_response_sender)
                 ) = self.0
             );
             (
@@ -296,7 +287,7 @@ pub mod mocks {
                         span_context,
                         ..
                     },
-                    ResponseOrAckSender::Ack(ack_sender)
+                    IngressRequestMode::FireAndForget(ack_sender)
                 ) = self.0
             );
             (fid, method_name, argument, span_context, ack_sender)

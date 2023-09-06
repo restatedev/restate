@@ -184,41 +184,33 @@ impl DispatcherLoopHandler {
         &mut self,
         ingress_request: IngressRequest,
     ) -> IngressDispatcherOutput {
-        let current_msg_index = self.msg_index;
-        self.msg_index += 1;
-
         match ingress_request.0 {
-            IngressRequestInner::Invocation(service_invocation, result_or_ack) => {
+            IngressRequestInner::Invocation(service_invocation, request_mode) => {
                 let IngressServiceInvocation {
                     fid,
                     method_name,
                     argument,
                     span_context,
-                    ingress_deduplication_id,
                 } = service_invocation;
 
-                let (response_sink, dedup_source, msg_index) = match (
-                    result_or_ack,
-                    ingress_deduplication_id,
-                ) {
-                    (ResponseOrAckSender::Response(response_sender), None) => {
+                let (response_sink, dedup_source, msg_index) = match request_mode {
+                    IngressRequestMode::RequestResponse(response_sender) => {
                         self.waiting_responses.insert(fid.clone(), response_sender);
                         (
                             Some(ServiceInvocationResponseSink::Ingress(
                                 self.ingress_dispatcher_id,
                             )),
                             None,
-                            current_msg_index,
+                            self.get_and_increment_msg_index(),
                         )
                     }
-                    (ResponseOrAckSender::Response(_), Some(_)) => {
-                        unreachable!("ingress_dispatcher does not support setting custom dedup ids when proposing the invocation")
+                    IngressRequestMode::FireAndForget(ack_sender) => {
+                        let msg_index = self.get_and_increment_msg_index();
+                        self.msg_index += 1;
+                        self.waiting_for_acks.insert(msg_index, ack_sender);
+                        (None, None, msg_index)
                     }
-                    (ResponseOrAckSender::Ack(ack_sender), None) => {
-                        self.waiting_for_acks.insert(current_msg_index, ack_sender);
-                        (None, None, current_msg_index)
-                    }
-                    (ResponseOrAckSender::Ack(ack_sender), Some(dedup_id)) => {
+                    IngressRequestMode::DedupFireAndForget(dedup_id, ack_sender) => {
                         self.waiting_for_acks_with_custom_id
                             .insert(dedup_id.clone(), ack_sender);
                         (None, Some(dedup_id.0), dedup_id.1)
@@ -239,15 +231,21 @@ impl DispatcherLoopHandler {
                 )
             }
             IngressRequestInner::Response(response, ack_listener) => {
-                self.waiting_for_acks
-                    .insert(current_msg_index, ack_listener);
+                let msg_index = self.get_and_increment_msg_index();
+                self.waiting_for_acks.insert(msg_index, ack_listener);
                 IngressDispatcherOutput::awakeable_completion(
                     response,
                     self.ingress_dispatcher_id,
-                    current_msg_index,
+                    msg_index,
                 )
             }
         }
+    }
+
+    fn get_and_increment_msg_index(&mut self) -> MessageIndex {
+        let current_msg_index = self.msg_index;
+        self.msg_index += 1;
+        current_msg_index
     }
 }
 
