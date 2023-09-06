@@ -230,15 +230,6 @@ impl DispatcherLoopHandler {
                     msg_index,
                 )
             }
-            IngressRequestInner::Response(response, ack_listener) => {
-                let msg_index = self.get_and_increment_msg_index();
-                self.waiting_for_acks.insert(msg_index, ack_listener);
-                IngressDispatcherOutput::awakeable_completion(
-                    response,
-                    self.ingress_dispatcher_id,
-                    msg_index,
-                )
-            }
         }
     }
 

@@ -3673,7 +3673,6 @@ dependencies = [
  "restate_pb",
  "restate_schema_api",
  "restate_schema_impl",
- "restate_service_protocol",
  "restate_test_util",
  "restate_types",
  "schemars",

@@ -153,7 +153,7 @@ mod tests {
     use hyper::Body;
     use prost::Message;
     use restate_ingress_dispatcher::IngressRequest;
-    use restate_test_util::{assert_eq, let_assert, test};
+    use restate_test_util::{assert_eq, test};
     use restate_types::identifiers::InvocationId;
     use serde_json::json;
     use std::net::SocketAddr;

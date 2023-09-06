@@ -27,9 +27,7 @@ use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
-use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::errors::UserErrorCode;
-use restate_types::invocation::{MaybeFullInvocationId, SpanRelation};
+use restate_types::invocation::SpanRelation;
 use std::sync::Arc;
 use std::task::Poll;
 use tokio::sync::Semaphore;
@@ -272,7 +270,6 @@ where
                     return Err(Status::not_found("Not found"))
                 }
 
-                let mut response_sink = Some(ServiceInvocationResponseSink::Ingress(ingress_id));
                 let mut wait_response = true;
 
                 // --- Ingress built-in service

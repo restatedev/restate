@@ -12,9 +12,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PeerId};
-use restate_types::invocation::{
-    InvocationResponse, ServiceInvocation, ServiceInvocationSpanContext, SpanRelation,
-};
+use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext, SpanRelation};
 use restate_types::message::{AckKind, MessageIndex};
 use tokio::sync::{mpsc, oneshot};
 
@@ -69,7 +67,6 @@ impl IngressServiceInvocation {
 #[derive(Debug)]
 enum IngressRequestInner {
     Invocation(IngressServiceInvocation, IngressRequestMode),
-    Response(InvocationResponse, AckSender),
 }
 
 #[derive(Debug)]
@@ -80,15 +77,6 @@ enum IngressRequestMode {
 }
 
 impl IngressRequest {
-    pub fn response(invocation_response: InvocationResponse) -> (Self, AckReceiver) {
-        let (ack_tx, ack_rx) = oneshot::channel();
-
-        (
-            IngressRequest(IngressRequestInner::Response(invocation_response, ack_tx)),
-            ack_rx,
-        )
-    }
-
     pub fn invocation(
         fid: FullInvocationId,
         method_name: impl Into<ByteString>,
@@ -186,11 +174,6 @@ pub enum IngressDispatcherOutput {
         deduplication_source: Option<String>,
         msg_index: MessageIndex,
     },
-    AwakeableCompletion {
-        response: InvocationResponse,
-        ingress_dispatcher_id: IngressDispatcherId,
-        msg_index: MessageIndex,
-    },
     Ack(AckResponse),
 }
 
@@ -211,18 +194,6 @@ impl IngressDispatcherOutput {
             service_invocation,
             ingress_dispatcher_id,
             deduplication_source,
-            msg_index,
-        }
-    }
-
-    pub fn awakeable_completion(
-        response: InvocationResponse,
-        ingress_dispatcher_id: IngressDispatcherId,
-        msg_index: MessageIndex,
-    ) -> Self {
-        Self::AwakeableCompletion {
-            response,
-            ingress_dispatcher_id,
             msg_index,
         }
     }
@@ -291,11 +262,6 @@ pub mod mocks {
                 ) = self.0
             );
             (fid, method_name, argument, span_context, ack_sender)
-        }
-
-        pub fn expect_response(self) -> (InvocationResponse, AckSender) {
-            let_assert!(IngressRequestInner::Response(invocation_response, ack_sender) = self.0);
-            (invocation_response, ack_sender)
         }
     }
 }
