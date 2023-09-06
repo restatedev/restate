@@ -28,11 +28,12 @@ impl prost_build::ServiceGenerator for RestateBuiltInServiceGen {
         // Everything is hidden behind the feature flag "builtin-service"
 
         let svc_interface_name = format!("{}BuiltInService", service.name);
-        let svc_interface_method_signatures: String = service.methods.iter().map(|m| format!("fn {}(&mut self, input: {}) -> Result<{}, restate_types::errors::InvocationError>;\n", m.name, m.input_type, m.output_type)).collect();
+        let svc_interface_method_signatures: String = service.methods.iter().map(|m| format!("async fn {}(&mut self, input: {}) -> Result<{}, restate_types::errors::InvocationError>;\n", m.name, m.input_type, m.output_type)).collect();
 
         let interface_def = format!(
             r#"
             #[cfg(feature = "builtin-service")]
+            #[async_trait::async_trait]
             pub trait {svc_interface_name} {{
                 {svc_interface_method_signatures}
             }}
@@ -46,7 +47,7 @@ impl prost_build::ServiceGenerator for RestateBuiltInServiceGen {
             use prost::Message;
 
             let mut input_t = {}::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
-            let output_t = T::{}(&mut self.0, input_t)?;
+            let output_t = T::{}(&mut self.0, input_t).await?;
             Ok(output_t.encode_to_vec().into())
         }},"#, m.proto_name, m.input_type, m.name)).collect();
         let invoker_name = format!("{}Invoker", service.name);
@@ -57,8 +58,9 @@ impl prost_build::ServiceGenerator for RestateBuiltInServiceGen {
             pub struct {invoker_name}<T>(pub T);
 
             #[cfg(feature = "builtin-service")]
-            impl<T: {svc_interface_name}> crate::builtin_service::BuiltInService for {invoker_name}<T> {{
-                fn invoke_builtin(&mut self, method: &str, mut input: prost::bytes::Bytes) -> Result<prost::bytes::Bytes, restate_types::errors::InvocationError> {{
+            #[async_trait::async_trait]
+            impl<T: {svc_interface_name} + Send> crate::builtin_service::BuiltInService for {invoker_name}<T> {{
+                async fn invoke_builtin(&mut self, method: &str, mut input: prost::bytes::Bytes) -> Result<prost::bytes::Bytes, restate_types::errors::InvocationError> {{
                     match method {{
                         {impl_built_in_service_match_arms}
                         _ => Err(restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::NotFound, format!("{{}} not found", method)))

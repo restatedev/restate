@@ -65,8 +65,13 @@ pub mod builtin_service {
     use prost::bytes::Bytes;
     use restate_types::errors::InvocationError;
 
+    #[async_trait::async_trait]
     pub trait BuiltInService {
-        fn invoke_builtin(&mut self, method: &str, input: Bytes) -> Result<Bytes, InvocationError>;
+        async fn invoke_builtin(
+            &mut self,
+            method: &str,
+            input: Bytes,
+        ) -> Result<Bytes, InvocationError>;
     }
 }
 

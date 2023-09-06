@@ -31,7 +31,7 @@ impl<'a> DeterministicBuiltInServiceInvoker<'a> {
         service_name == restate_pb::AWAKEABLES_SERVICE_NAME
     }
 
-    pub(super) fn invoke(
+    pub(super) async fn invoke(
         fid: &'a FullInvocationId,
         effects: &'a mut Effects,
         method: &'a str,
@@ -39,16 +39,18 @@ impl<'a> DeterministicBuiltInServiceInvoker<'a> {
     ) -> Result<Bytes, InvocationError> {
         let this: DeterministicBuiltInServiceInvoker<'a> = Self { fid, effects };
 
-        this._invoke(method, argument)
+        this._invoke(method, argument).await
     }
 }
 
 impl DeterministicBuiltInServiceInvoker<'_> {
     // Function that routes through the available built-in services
-    fn _invoke(self, method: &str, argument: Bytes) -> Result<Bytes, InvocationError> {
+    async fn _invoke(self, method: &str, argument: Bytes) -> Result<Bytes, InvocationError> {
         match self.fid.service_id.service_name.deref() {
             restate_pb::AWAKEABLES_SERVICE_NAME => {
-                AwakeablesInvoker(self).invoke_builtin(method, argument)
+                AwakeablesInvoker(self)
+                    .invoke_builtin(method, argument)
+                    .await
             }
             _ => Err(InvocationError::new(
                 UserErrorCode::NotFound,
@@ -97,14 +99,14 @@ where
             schemas,
         };
 
-        this._invoke(method, argument)
+        this._invoke(method, argument).await
     }
 }
 
 impl<State, Schemas> NonDeterministicBuiltInServiceInvoker<'_, State, Schemas> {
     // Function that routes through the available built-in services
     #[allow(clippy::match_single_binding)]
-    fn _invoke(self, _method: &str, _argument: Bytes) -> Result<Bytes, InvocationError> {
+    async fn _invoke(self, _method: &str, _argument: Bytes) -> Result<Bytes, InvocationError> {
         match self.fid.service_id.service_name.deref() {
             _ => Err(InvocationError::new(
                 UserErrorCode::NotFound,
@@ -121,8 +123,9 @@ mod awakeables {
     use restate_pb::restate::services::AwakeablesBuiltInService;
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 
+    #[async_trait::async_trait]
     impl AwakeablesBuiltInService for DeterministicBuiltInServiceInvoker<'_> {
-        fn resolve(&mut self, req: ResolveAwakeableRequest) -> Result<(), InvocationError> {
+        async fn resolve(&mut self, req: ResolveAwakeableRequest) -> Result<(), InvocationError> {
             let (invocation_id, entry_index) = AwakeableIdentifier::decode(req.id)
                 .map_err(|e| InvocationError::new(UserErrorCode::InvalidArgument, e.to_string()))?
                 .into_inner();
@@ -147,7 +150,7 @@ mod awakeables {
             Ok(())
         }
 
-        fn reject(&mut self, req: RejectAwakeableRequest) -> Result<(), InvocationError> {
+        async fn reject(&mut self, req: RejectAwakeableRequest) -> Result<(), InvocationError> {
             let (invocation_id, entry_index) = AwakeableIdentifier::decode(req.id)
                 .map_err(|e| InvocationError::new(UserErrorCode::InvalidArgument, e.to_string()))?
                 .into_inner();

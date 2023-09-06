@@ -164,7 +164,8 @@ where
                     self.handle_deterministic_built_in_service_invocation(
                         service_invocation,
                         effects,
-                    );
+                    )
+                    .await;
                 } else if let InvocationStatus::Free = status {
                     effects.invoke_service(service_invocation);
                 } else {
@@ -760,7 +761,7 @@ where
         Ok((related_sid, span_relation))
     }
 
-    fn handle_deterministic_built_in_service_invocation(
+    async fn handle_deterministic_built_in_service_invocation(
         &mut self,
         invocation: ServiceInvocation,
         effects: &mut Effects,
@@ -771,7 +772,8 @@ where
             effects,
             invocation.method_name.deref(),
             invocation.argument.clone(),
-        );
+        )
+        .await;
 
         if let Some(response_sink) = invocation.response_sink {
             // Write response in outbox
