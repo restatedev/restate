@@ -73,7 +73,7 @@ where
     RawEntryCodec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: restate_invoker_api::ServiceHandle + Clone,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-    Schemas: KeyExtractor,
+    Schemas: KeyExtractor + Send + Sync,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(

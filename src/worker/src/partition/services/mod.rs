@@ -9,10 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::effects::Effects;
-use crate::partition::state_machine::StateReader;
 use bytes::Bytes;
 use restate_pb::builtin_service::BuiltInService;
-use restate_pb::restate::services::*;
 use restate_schema_api::key::KeyExtractor;
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::FullInvocationId;
@@ -48,7 +46,7 @@ impl DeterministicBuiltInServiceInvoker<'_> {
     async fn _invoke(self, method: &str, argument: Bytes) -> Result<Bytes, InvocationError> {
         match self.fid.service_id.service_name.deref() {
             restate_pb::AWAKEABLES_SERVICE_NAME => {
-                AwakeablesInvoker(self)
+                restate_pb::restate::services::AwakeablesInvoker(self)
                     .invoke_builtin(method, argument)
                     .await
             }
@@ -72,8 +70,8 @@ pub(super) struct NonDeterministicBuiltInServiceInvoker<'a, State, Schemas> {
 
 impl<'a, State, Schemas> NonDeterministicBuiltInServiceInvoker<'a, State, Schemas>
 where
-    State: StateReader,
-    Schemas: KeyExtractor,
+    State: Send,
+    Schemas: KeyExtractor + Send + Sync,
 {
     pub(super) fn is_supported(service_name: &str) -> bool {
         // The reason we just check for the prefix is the following:
@@ -103,11 +101,19 @@ where
     }
 }
 
-impl<State, Schemas> NonDeterministicBuiltInServiceInvoker<'_, State, Schemas> {
+impl<State, Schemas> NonDeterministicBuiltInServiceInvoker<'_, State, Schemas>
+where
+    State: Send,
+    Schemas: KeyExtractor + Send + Sync,
+{
     // Function that routes through the available built-in services
-    #[allow(clippy::match_single_binding)]
-    async fn _invoke(self, _method: &str, _argument: Bytes) -> Result<Bytes, InvocationError> {
+    async fn _invoke(self, method: &str, argument: Bytes) -> Result<Bytes, InvocationError> {
         match self.fid.service_id.service_name.deref() {
+            restate_pb::INGRESS_SERVICE_NAME => {
+                restate_pb::restate::services::IngressInvoker(self)
+                    .invoke_builtin(method, argument)
+                    .await
+            }
             _ => Err(InvocationError::new(
                 UserErrorCode::NotFound,
                 format!("{} not found", self.fid.service_id.service_name),
@@ -120,7 +126,10 @@ mod awakeables {
     use super::*;
 
     use prost_reflect::ReflectMessage;
-    use restate_pb::restate::services::AwakeablesBuiltInService;
+    use restate_pb::restate::services::{
+        resolve_awakeable_request, AwakeablesBuiltInService, RejectAwakeableRequest,
+        ResolveAwakeableRequest,
+    };
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 
     #[async_trait::async_trait]
@@ -161,6 +170,58 @@ mod awakeables {
                 Err(InvocationError::new(UserErrorCode::Unknown, req.reason)),
             );
             Ok(())
+        }
+    }
+}
+
+mod ingress {
+    use super::*;
+
+    use restate_pb::restate::services::{IngressBuiltInService, InvokeRequest, InvokeResponse};
+    use restate_storage_api::outbox_table::OutboxMessage;
+    use restate_types::identifiers::{InvocationId, InvocationUuid};
+    use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext};
+
+    #[async_trait::async_trait]
+    impl<State, Schemas> IngressBuiltInService
+        for NonDeterministicBuiltInServiceInvoker<'_, State, Schemas>
+    where
+        State: Send,
+        Schemas: KeyExtractor + Send + Sync,
+    {
+        async fn invoke(
+            &mut self,
+            input: InvokeRequest,
+        ) -> Result<InvokeResponse, InvocationError> {
+            // Extract the key
+            let key = self
+                .schemas
+                .extract(&input.service, &input.method, input.argument.clone())
+                .map_err(|err| match err {
+                    restate_schema_api::key::KeyExtractorError::NotFound => InvocationError::new(
+                        UserErrorCode::NotFound,
+                        format!(
+                            "Service method {}/{} not found",
+                            input.service, input.method
+                        ),
+                    ),
+                    err => InvocationError::new(UserErrorCode::InvalidArgument, err.to_string()),
+                })?;
+
+            let fid = FullInvocationId::new(input.service, key, InvocationUuid::now_v7());
+
+            self.effects
+                .enqueue_into_outbox(OutboxMessage::ServiceInvocation(ServiceInvocation {
+                    fid: fid.clone(),
+                    method_name: input.method.into(),
+                    argument: input.argument,
+                    response_sink: None,
+                    span_context: ServiceInvocationSpanContext::empty(),
+                }));
+
+            Ok(InvokeResponse {
+                id: InvocationId::from(fid).to_string(),
+            })
         }
     }
 }

@@ -242,8 +242,8 @@ pub(crate) struct Interpreter<Codec> {
 
 impl<Codec: RawEntryCodec> Interpreter<Codec> {
     pub(crate) async fn interpret_effects<
-        State: StateStorage + StateReader + Committable,
-        Schemas: KeyExtractor,
+        State: StateStorage + StateReader + Committable + Send,
+        Schemas: KeyExtractor + Send + Sync,
         C: MessageCollector,
     >(
         effects: &mut Effects,
@@ -267,8 +267,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
     }
 
     async fn interpret_effect<
-        State: StateStorage + StateReader,
-        Schemas: KeyExtractor,
+        State: StateStorage + StateReader + Send,
+        Schemas: KeyExtractor + Send + Sync,
         C: MessageCollector,
     >(
         effect: Effect,
@@ -644,8 +644,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
     }
 
     async fn invoke_service<
-        State: StateStorage + StateReader,
-        Schemas: KeyExtractor,
+        State: StateStorage + StateReader + Send,
+        Schemas: KeyExtractor + Send + Sync,
         C: MessageCollector,
     >(
         state_storage: &mut State,
@@ -664,8 +664,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
     }
 
     async fn invoke_built_in_service<
-        State: StateReader,
-        Schemas: KeyExtractor,
+        State: StateReader + Send,
+        Schemas: KeyExtractor + Send + Sync,
         C: MessageCollector,
     >(
         state_storage: &mut State,
