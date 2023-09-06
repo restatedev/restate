@@ -1010,7 +1010,7 @@ impl Effects {
 }
 
 impl Extend<Effect> for Effects {
-    fn extend<T: IntoIterator<Item=Effect>>(&mut self, iter: T) {
+    fn extend<T: IntoIterator<Item = Effect>>(&mut self, iter: T) {
         self.effects.extend(iter);
     }
 }

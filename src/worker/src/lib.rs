@@ -74,6 +74,7 @@ type PartitionProcessor = partition::PartitionProcessor<
     ProtobufRawEntryCodec,
     InvokerChannelServiceHandle,
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    Schemas,
 >;
 
 /// # Worker options
@@ -257,7 +258,7 @@ impl Worker {
             invoker_storage_reader.clone(),
             invoker_storage_reader,
             EntryEnricher::new(schemas.clone()),
-            schemas,
+            schemas.clone(),
         );
 
         let partitioner = partition_table.partitioner();
@@ -277,6 +278,7 @@ impl Worker {
                     network_handle.clone(),
                     network.create_partition_processor_sender(),
                     rocksdb.clone(),
+                    schemas.clone(),
                 )
             })
             .unzip();
@@ -315,6 +317,7 @@ impl Worker {
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
         ack_sender: PartitionProcessorSender<partition::AckResponse>,
         rocksdb_storage: RocksDBStorage,
+        schemas: Schemas,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(channel_size);
         let processor = PartitionProcessor::new(
@@ -329,6 +332,7 @@ impl Worker {
             network_handle,
             ack_sender,
             rocksdb_storage,
+            schemas,
         );
 
         ((peer_id, command_tx), processor)

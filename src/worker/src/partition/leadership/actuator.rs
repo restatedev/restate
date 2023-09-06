@@ -171,7 +171,7 @@ impl ActuatorStream {
     pub(crate) fn leader(
         invoker_rx: mpsc::Receiver<restate_invoker_api::Effect>,
         shuffle_rx: mpsc::Receiver<shuffle::OutboxTruncation>,
-        self_rx: mpsc::UnboundedReceiver<Effects>
+        self_rx: mpsc::UnboundedReceiver<Effects>,
     ) -> Self {
         ActuatorStream::Leader {
             invoker_stream: ReceiverStream::new(invoker_rx),
@@ -197,13 +197,15 @@ impl Stream for ActuatorStream {
             ActuatorStream::Follower => Poll::Pending,
             ActuatorStream::Leader {
                 invoker_stream,
-                shuffle_stream, self_stream,
+                shuffle_stream,
+                self_stream,
             } => {
                 let invoker_stream = invoker_stream.map(ActuatorOutput::Invoker);
                 let shuffle_stream = shuffle_stream.map(ActuatorOutput::Shuffle);
                 let self_stream = self_stream.map(ActuatorOutput::EffectsBatch);
 
-                let mut all_streams = futures::stream_select!(invoker_stream, shuffle_stream, self_stream);
+                let mut all_streams =
+                    futures::stream_select!(invoker_stream, shuffle_stream, self_stream);
                 Pin::new(&mut all_streams).poll_next(cx)
             }
         }

@@ -9,9 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::effects::Effects;
+use crate::partition::state_machine::StateReader;
 use bytes::Bytes;
 use restate_pb::builtin_service::BuiltInService;
 use restate_pb::restate::services::*;
+use restate_schema_api::key::KeyExtractor;
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::FullInvocationId;
 use std::ops::Deref;
@@ -58,12 +60,19 @@ impl DeterministicBuiltInServiceInvoker<'_> {
 
 // Non-deterministic built-in services infra
 
-pub(super) struct NonDeterministicBuiltInServiceInvoker<'a> {
+#[allow(dead_code)]
+pub(super) struct NonDeterministicBuiltInServiceInvoker<'a, State, Schemas> {
     fid: &'a FullInvocationId,
     effects: &'a mut Effects,
+    state: &'a mut State,
+    schemas: &'a Schemas,
 }
 
-impl<'a> NonDeterministicBuiltInServiceInvoker<'a> {
+impl<'a, State, Schemas> NonDeterministicBuiltInServiceInvoker<'a, State, Schemas>
+where
+    State: StateReader,
+    Schemas: KeyExtractor,
+{
     pub(super) fn is_supported(service_name: &str) -> bool {
         // The reason we just check for the prefix is the following:
         //
@@ -73,20 +82,28 @@ impl<'a> NonDeterministicBuiltInServiceInvoker<'a> {
         service_name.starts_with("dev.restate")
     }
 
-    pub(super) fn invoke(
+    pub(super) async fn invoke(
         fid: &'a FullInvocationId,
         effects: &'a mut Effects,
+        state: &'a mut State,
+        schemas: &'a Schemas,
         method: &'a str,
         argument: Bytes,
     ) -> Result<Bytes, InvocationError> {
-        let this: NonDeterministicBuiltInServiceInvoker<'a> = Self { fid, effects };
+        let this: NonDeterministicBuiltInServiceInvoker<'a, _, _> = Self {
+            fid,
+            effects,
+            state,
+            schemas,
+        };
 
         this._invoke(method, argument)
     }
 }
 
-impl NonDeterministicBuiltInServiceInvoker<'_> {
+impl<State, Schemas> NonDeterministicBuiltInServiceInvoker<'_, State, Schemas> {
     // Function that routes through the available built-in services
+    #[allow(clippy::match_single_binding)]
     fn _invoke(self, _method: &str, _argument: Bytes) -> Result<Bytes, InvocationError> {
         match self.fid.service_id.service_name.deref() {
             _ => Err(InvocationError::new(

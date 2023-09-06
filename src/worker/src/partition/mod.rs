@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use futures::StreamExt;
+use restate_schema_api::key::KeyExtractor;
 use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -42,7 +43,7 @@ use state_machine::DeduplicatingStateMachine;
 pub(super) use types::TimerValue;
 
 #[derive(Debug)]
-pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle> {
+pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, Schemas> {
     peer_id: PeerId,
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
@@ -61,15 +62,18 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
 
     rocksdb_storage: RocksDBStorage,
 
+    schemas: Schemas,
+
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
-impl<RawEntryCodec, InvokerInputSender, NetworkHandle>
-    PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle>
+impl<RawEntryCodec, InvokerInputSender, NetworkHandle, Schemas>
+    PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle, Schemas>
 where
     RawEntryCodec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: restate_invoker_api::ServiceHandle + Clone,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    Schemas: KeyExtractor,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -84,6 +88,7 @@ where
         network_handle: NetworkHandle,
         ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
         rocksdb_storage: RocksDBStorage,
+        schemas: Schemas,
     ) -> Self {
         Self {
             peer_id,
@@ -98,6 +103,7 @@ where
             ack_tx,
             _entry_codec: Default::default(),
             rocksdb_storage,
+            schemas,
         }
     }
 
@@ -115,6 +121,7 @@ where
             proposal_tx,
             ack_tx,
             rocksdb_storage,
+            schemas,
             ..
         } = self;
 
@@ -163,7 +170,7 @@ where
                                 let message_collector = leadership_state.into_message_collector();
 
                                 // Interpret effects
-                                let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, &mut outbox_seq_number, transaction, message_collector).await?;
+                                let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, &mut outbox_seq_number, transaction, &schemas, message_collector).await?;
 
                                 // Commit actuator messages
                                 let message_collector = result.commit().await?;

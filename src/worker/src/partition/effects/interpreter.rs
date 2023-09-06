@@ -19,6 +19,8 @@ use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
 
 use crate::partition::services::NonDeterministicBuiltInServiceInvoker;
+use crate::partition::state_machine::StateReader;
+use restate_schema_api::key::KeyExtractor;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
 use restate_types::invocation::{
     InvocationResponse, MaybeFullInvocationId, ServiceInvocation, ServiceInvocationResponseSink,
@@ -239,17 +241,23 @@ pub(crate) struct Interpreter<Codec> {
 }
 
 impl<Codec: RawEntryCodec> Interpreter<Codec> {
-    pub(crate) async fn interpret_effects<S: StateStorage + Committable, C: MessageCollector>(
+    pub(crate) async fn interpret_effects<
+        State: StateStorage + StateReader + Committable,
+        Schemas: KeyExtractor,
+        C: MessageCollector,
+    >(
         effects: &mut Effects,
         outbox_seq_number: &mut MessageIndex,
-        mut state_storage: S,
+        mut state_storage: State,
+        schemas: &Schemas,
         mut message_collector: C,
-    ) -> Result<InterpretationResult<S, C>, Error> {
+    ) -> Result<InterpretationResult<State, C>, Error> {
         for effect in effects.drain() {
             Self::interpret_effect(
                 effect,
                 outbox_seq_number,
                 &mut state_storage,
+                schemas,
                 &mut message_collector,
             )
             .await?;
@@ -258,15 +266,20 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         Ok(InterpretationResult::new(state_storage, message_collector))
     }
 
-    async fn interpret_effect<S: StateStorage, C: MessageCollector>(
+    async fn interpret_effect<
+        State: StateStorage + StateReader,
+        Schemas: KeyExtractor,
+        C: MessageCollector,
+    >(
         effect: Effect,
         outbox_seq_number: &mut MessageIndex,
-        state_storage: &mut S,
+        state_storage: &mut State,
+        schemas: &Schemas,
         collector: &mut C,
     ) -> Result<(), Error> {
         match effect {
             Effect::InvokeService(service_invocation) => {
-                Self::invoke_service(state_storage, collector, service_invocation).await?;
+                Self::invoke_service(state_storage, schemas, collector, service_invocation).await?;
             }
             Effect::ResumeService {
                 service_id,
@@ -614,7 +627,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 state_storage
                     .truncate_inbox(&service_id, inbox_sequence_number)
                     .await?;
-                Self::invoke_service(state_storage, collector, service_invocation).await?;
+                Self::invoke_service(state_storage, schemas, collector, service_invocation).await?;
             }
             Effect::NotifyInvocationResult { .. } | Effect::BackgroundInvoke { .. } => {
                 // these effects are only needed for span creation
@@ -630,21 +643,33 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         Ok(())
     }
 
-    async fn invoke_service<S: StateStorage, C: MessageCollector>(
-        state_storage: &mut S,
+    async fn invoke_service<
+        State: StateStorage + StateReader,
+        Schemas: KeyExtractor,
+        C: MessageCollector,
+    >(
+        state_storage: &mut State,
+        schemas: &Schemas,
         collector: &mut C,
         service_invocation: ServiceInvocation,
     ) -> Result<(), Error> {
-        if NonDeterministicBuiltInServiceInvoker::is_supported(
-            &service_invocation.fid.service_name(),
+        if NonDeterministicBuiltInServiceInvoker::<State, Schemas>::is_supported(
+            service_invocation.fid.service_name(),
         ) {
-            Self::invoke_built_in_service(collector, service_invocation)
+            Self::invoke_built_in_service(state_storage, schemas, collector, service_invocation)
+                .await
         } else {
             Self::invoke_service_through_invoker(state_storage, collector, service_invocation).await
         }
     }
 
-    fn invoke_built_in_service<C: MessageCollector>(
+    async fn invoke_built_in_service<
+        State: StateReader,
+        Schemas: KeyExtractor,
+        C: MessageCollector,
+    >(
+        state_storage: &mut State,
+        schemas: &Schemas,
         collector: &mut C,
         service_invocation: ServiceInvocation,
     ) -> Result<(), Error> {
@@ -674,9 +699,12 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         let res = NonDeterministicBuiltInServiceInvoker::invoke(
             &service_invocation.fid,
             &mut effects,
+            state_storage,
+            schemas,
             &service_invocation.method_name,
             service_invocation.argument.clone(),
-        );
+        )
+        .await;
 
         if let Some(response_sink) = service_invocation.response_sink {
             // Perhaps share this code with state_machine/mod.rs
