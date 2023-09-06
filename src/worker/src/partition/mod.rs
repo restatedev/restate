@@ -36,6 +36,7 @@ use crate::partition::leadership::{ActuatorOutput, LeadershipState, TaskResult};
 use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::message::MessageIndex;
 pub(crate) use state_machine::Command;
 use state_machine::DeduplicatingStateMachine;
 pub(super) use types::TimerValue;
@@ -133,7 +134,7 @@ where
             ack_tx,
         );
 
-        let mut state_machine =
+        let (mut state_machine, mut outbox_seq_number) =
             Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?;
 
         let actuator_output_handler = ActuatorOutputHandler::new(proposal_tx);
@@ -162,7 +163,7 @@ where
                                 let message_collector = leadership_state.into_message_collector();
 
                                 // Interpret effects
-                                let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).await?;
+                                let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, &mut outbox_seq_number, transaction, message_collector).await?;
 
                                 // Commit actuator messages
                                 let message_collector = result.commit().await?;
@@ -216,7 +217,7 @@ where
 
     async fn create_state_machine<Codec, Storage>(
         partition_storage: &PartitionStorage<Storage>,
-    ) -> Result<DeduplicatingStateMachine<Codec>, restate_storage_api::StorageError>
+    ) -> Result<(DeduplicatingStateMachine<Codec>, MessageIndex), restate_storage_api::StorageError>
     where
         Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
         Storage: restate_storage_api::Storage,
@@ -226,9 +227,8 @@ where
         let outbox_seq_number = transaction.load_outbox_seq_number().await?;
         transaction.commit().await?;
 
-        let state_machine =
-            state_machine::create_deduplicating_state_machine(inbox_seq_number, outbox_seq_number);
+        let state_machine = state_machine::create_deduplicating_state_machine(inbox_seq_number);
 
-        Ok(state_machine)
+        Ok((state_machine, outbox_seq_number))
     }
 }

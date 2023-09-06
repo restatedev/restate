@@ -132,6 +132,9 @@ where
                         .abort_invocation(partition_leader_epoch, full_invocation_id)
                         .await?
                 }
+                ActuatorMessage::ProposeSelf(effects) => {
+                    todo!("Implement the self proposal!")
+                }
             }
         }
 

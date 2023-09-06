@@ -30,10 +30,12 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::InvocationMetadata;
 use restate_storage_api::timer_table::Timer;
 use restate_types::errors::InvocationErrorCode;
-use restate_types::identifiers::{EndpointId, EntryIndex, FullInvocationId, ServiceId};
+use restate_types::identifiers::{
+    EndpointId, EntryIndex, FullInvocationId, InvocationId, ServiceId,
+};
 use restate_types::invocation::{
-    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext,
-    SpanRelation,
+    InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
+    ServiceInvocationSpanContext, SpanRelation,
 };
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::message::MessageIndex;
@@ -63,7 +65,6 @@ pub(crate) enum Effect {
         service_invocation: ServiceInvocation,
     },
     EnqueueIntoOutbox {
-        seq_number: MessageIndex,
         message: OutboxMessage,
     },
     TruncateOutbox(MessageIndex),
@@ -253,18 +254,15 @@ impl Effect {
                 "Effect: Enqueue invocation in inbox"
             ),
             Effect::EnqueueIntoOutbox {
-                seq_number,
                 message: OutboxMessage::ServiceInvocation(service_invocation),
             } => debug_if_leader!(
                 is_leader,
                 rpc.service = %service_invocation.fid.service_id.service_name,
                 rpc.method = %service_invocation.method_name,
                 restate.invocation.id = %service_invocation.fid,
-                restate.outbox.seq = seq_number,
                 "Effect: Send service invocation to partition processor"
             ),
             Effect::EnqueueIntoOutbox {
-                seq_number,
                 message:
                     OutboxMessage::ServiceResponse(InvocationResponse {
                         result: ResponseResult::Success(_),
@@ -274,12 +272,10 @@ impl Effect {
             } => debug_if_leader!(
                 is_leader,
                 restate.invocation.id = %id,
-                restate.outbox.seq = seq_number,
                 "Effect: Send success response to another invocation, completing entry index {}",
                 entry_index
             ),
             Effect::EnqueueIntoOutbox {
-                seq_number,
                 message:
                     OutboxMessage::ServiceResponse(InvocationResponse {
                         result: ResponseResult::Failure(failure_code, failure_msg),
@@ -289,14 +285,12 @@ impl Effect {
             } => debug_if_leader!(
                 is_leader,
                 restate.invocation.id = %id,
-                restate.outbox.seq = seq_number,
                 "Effect: Send failure code {} response to another invocation, completing entry index {}. Reason: {}",
                 failure_code,
                 entry_index,
                 failure_msg
             ),
             Effect::EnqueueIntoOutbox {
-                seq_number,
                 message:
                     OutboxMessage::IngressResponse {
                         response: ResponseResult::Success(_),
@@ -307,11 +301,9 @@ impl Effect {
                 is_leader,
                 rpc.service = %full_invocation_id.service_id.service_name,
                 restate.invocation.id = %full_invocation_id,
-                restate.outbox.seq = seq_number,
                 "Effect: Send success response to ingress"
             ),
             Effect::EnqueueIntoOutbox {
-                seq_number,
                 message:
                     OutboxMessage::IngressResponse {
                         response: ResponseResult::Failure(failure_code, failure_msg),
@@ -322,7 +314,6 @@ impl Effect {
                 is_leader,
                 rpc.service = %full_invocation_id.service_id.service_name,
                 restate.invocation.id = %full_invocation_id,
-                restate.outbox.seq = seq_number,
                 "Effect: Send failure code {} response to ingress. Reason: {}",
                 failure_code,
                 failure_msg
@@ -728,11 +719,8 @@ impl Effects {
         })
     }
 
-    pub(crate) fn enqueue_into_outbox(&mut self, seq_number: MessageIndex, message: OutboxMessage) {
-        self.effects.push(Effect::EnqueueIntoOutbox {
-            seq_number,
-            message,
-        })
+    pub(crate) fn enqueue_into_outbox(&mut self, message: OutboxMessage) {
+        self.effects.push(Effect::EnqueueIntoOutbox { message })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -963,6 +951,21 @@ impl Effects {
     pub(crate) fn abort_invocation(&mut self, full_invocation_id: FullInvocationId) {
         self.effects
             .push(Effect::AbortInvocation(full_invocation_id));
+    }
+
+    pub(crate) fn send_awakeable_completion(
+        &mut self,
+        invocation_id: InvocationId,
+        entry_index: EntryIndex,
+        result: impl Into<ResponseResult>,
+    ) {
+        self.effects.push(Effect::EnqueueIntoOutbox {
+            message: OutboxMessage::ServiceResponse(InvocationResponse {
+                id: MaybeFullInvocationId::Partial(invocation_id),
+                entry_index,
+                result: result.into(),
+            }),
+        });
     }
 
     /// We log only if the log level is TRACE, or if the log level is DEBUG and we're the leader,

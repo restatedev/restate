@@ -12,10 +12,8 @@ use crate::partition::effects::Effects;
 use bytes::Bytes;
 use restate_pb::builtin_service::BuiltInService;
 use restate_pb::restate::services::*;
-use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::FullInvocationId;
-use restate_types::message::MessageIndex;
 use std::ops::Deref;
 
 // -- Deterministic built-in services infra
@@ -23,7 +21,6 @@ use std::ops::Deref;
 /// Deterministic built-in services are executed by both leaders and followers, hence they must generate the same output.
 pub(super) struct DeterministicBuiltInServiceInvoker<'a> {
     fid: &'a FullInvocationId,
-    outbox_seq_number: &'a mut MessageIndex,
     effects: &'a mut Effects,
 }
 
@@ -34,24 +31,13 @@ impl<'a> DeterministicBuiltInServiceInvoker<'a> {
 
     pub(super) fn invoke(
         fid: &'a FullInvocationId,
-        outbox_seq_number: &'a mut MessageIndex,
         effects: &'a mut Effects,
         method: &'a str,
         argument: Bytes,
     ) -> Result<Bytes, InvocationError> {
-        let this: DeterministicBuiltInServiceInvoker<'a> = Self {
-            fid,
-            outbox_seq_number,
-            effects,
-        };
+        let this: DeterministicBuiltInServiceInvoker<'a> = Self { fid, effects };
 
         this._invoke(method, argument)
-    }
-
-    fn send_message(&mut self, msg: OutboxMessage) {
-        self.effects
-            .enqueue_into_outbox(*self.outbox_seq_number, msg);
-        *self.outbox_seq_number += 1;
     }
 }
 
@@ -74,7 +60,7 @@ impl DeterministicBuiltInServiceInvoker<'_> {
 
 pub(super) struct NonDeterministicBuiltInServiceInvoker<'a> {
     fid: &'a FullInvocationId,
-    outbox_messages_buffer: &'a mut Vec<OutboxMessage>
+    effects: &'a mut Effects,
 }
 
 impl<'a> NonDeterministicBuiltInServiceInvoker<'a> {
@@ -89,20 +75,13 @@ impl<'a> NonDeterministicBuiltInServiceInvoker<'a> {
 
     pub(super) fn invoke(
         fid: &'a FullInvocationId,
-        outbox_messages_buffer: &'a mut Vec<OutboxMessage>,
+        effects: &'a mut Effects,
         method: &'a str,
         argument: Bytes,
     ) -> Result<Bytes, InvocationError> {
-        let this: NonDeterministicBuiltInServiceInvoker<'a> = Self {
-            fid,
-            outbox_messages_buffer,
-        };
+        let this: NonDeterministicBuiltInServiceInvoker<'a> = Self { fid, effects };
 
         this._invoke(method, argument)
-    }
-
-    fn send_message(&mut self, msg: OutboxMessage) {
-        self.outbox_messages_buffer.push(msg);
     }
 }
 
@@ -124,7 +103,6 @@ mod awakeables {
     use prost_reflect::ReflectMessage;
     use restate_pb::restate::services::AwakeablesBuiltInService;
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-    use restate_types::invocation::{InvocationResponse, MaybeFullInvocationId};
 
     impl AwakeablesBuiltInService for DeterministicBuiltInServiceInvoker<'_> {
         fn resolve(&mut self, req: ResolveAwakeableRequest) -> Result<(), InvocationError> {
@@ -147,12 +125,8 @@ mod awakeables {
                 ),
             };
 
-            self.send_message(OutboxMessage::ServiceResponse(InvocationResponse {
-                entry_index,
-                result: Ok(result).into(),
-                id: MaybeFullInvocationId::Partial(invocation_id),
-            }));
-
+            self.effects
+                .send_awakeable_completion(invocation_id, entry_index, Ok(result));
             Ok(())
         }
 
@@ -161,12 +135,11 @@ mod awakeables {
                 .map_err(|e| InvocationError::new(UserErrorCode::InvalidArgument, e.to_string()))?
                 .into_inner();
 
-            self.send_message(OutboxMessage::ServiceResponse(InvocationResponse {
+            self.effects.send_awakeable_completion(
+                invocation_id,
                 entry_index,
-                result: Err(InvocationError::new(UserErrorCode::Unknown, req.reason)).into(),
-                id: MaybeFullInvocationId::Partial(invocation_id),
-            }));
-
+                Err(InvocationError::new(UserErrorCode::Unknown, req.reason)),
+            );
             Ok(())
         }
     }

@@ -18,8 +18,11 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
 
+use crate::partition::services::NonDeterministicBuiltInServiceInvoker;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
-use restate_types::invocation::{InvocationResponse, MaybeFullInvocationId, ServiceInvocation, ServiceInvocationResponseSink};
+use restate_types::invocation::{
+    InvocationResponse, MaybeFullInvocationId, ServiceInvocation, ServiceInvocationResponseSink,
+};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{
     EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
@@ -29,7 +32,6 @@ use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use std::marker::PhantomData;
 use tracing::{debug, warn};
-use crate::partition::services::NonDeterministicBuiltInServiceInvoker;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -62,7 +64,7 @@ pub(crate) enum ActuatorMessage {
     },
     SendAckResponse(AckResponse),
     AbortInvocation(FullInvocationId),
-    ProposeSelf(Vec<OutboxMessage>)
+    ProposeSelf(Effects),
 }
 
 pub(crate) trait MessageCollector {
@@ -239,11 +241,18 @@ pub(crate) struct Interpreter<Codec> {
 impl<Codec: RawEntryCodec> Interpreter<Codec> {
     pub(crate) async fn interpret_effects<S: StateStorage + Committable, C: MessageCollector>(
         effects: &mut Effects,
+        outbox_seq_number: &mut MessageIndex,
         mut state_storage: S,
         mut message_collector: C,
     ) -> Result<InterpretationResult<S, C>, Error> {
         for effect in effects.drain() {
-            Self::interpret_effect(effect, &mut state_storage, &mut message_collector).await?;
+            Self::interpret_effect(
+                effect,
+                outbox_seq_number,
+                &mut state_storage,
+                &mut message_collector,
+            )
+            .await?;
         }
 
         Ok(InterpretationResult::new(state_storage, message_collector))
@@ -251,6 +260,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
     async fn interpret_effect<S: StateStorage, C: MessageCollector>(
         effect: Effect,
+        outbox_seq_number: &mut MessageIndex,
         state_storage: &mut S,
         collector: &mut C,
     ) -> Result<(), Error> {
@@ -313,10 +323,9 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 // need to store the next inbox sequence number
                 state_storage.store_inbox_seq_number(seq_number + 1).await?;
             }
-            Effect::EnqueueIntoOutbox {
-                seq_number,
-                message,
-            } => {
+            Effect::EnqueueIntoOutbox { message } => {
+                let seq_number = *outbox_seq_number;
+                *outbox_seq_number += 1;
                 state_storage
                     .enqueue_into_outbox(seq_number, message.clone())
                     .await?;
@@ -626,14 +635,16 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         collector: &mut C,
         service_invocation: ServiceInvocation,
     ) -> Result<(), Error> {
-        if NonDeterministicBuiltInServiceInvoker::is_supported(&service_invocation.fid.service_name()) {
-            Self::invoke_built_in_service(collector, service_invocation).await
+        if NonDeterministicBuiltInServiceInvoker::is_supported(
+            &service_invocation.fid.service_name(),
+        ) {
+            Self::invoke_built_in_service(collector, service_invocation)
         } else {
             Self::invoke_service_through_invoker(state_storage, collector, service_invocation).await
         }
     }
 
-    async fn invoke_built_in_service<S: StateStorage, C: MessageCollector>(
+    fn invoke_built_in_service<C: MessageCollector>(
         collector: &mut C,
         service_invocation: ServiceInvocation,
     ) -> Result<(), Error> {
@@ -658,17 +669,18 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         //     )
         //     .await?;
 
-        let mut output_messages = vec![];
+        let mut effects = Effects::default();
         // TODO Optimize this by executing the built-in service logic only in the leader
         let res = NonDeterministicBuiltInServiceInvoker::invoke(
             &service_invocation.fid,
-            &mut output_messages,
+            &mut effects,
             &service_invocation.method_name,
-            service_invocation.argument.clone()
+            service_invocation.argument.clone(),
         );
 
         if let Some(response_sink) = service_invocation.response_sink {
             // Perhaps share this code with state_machine/mod.rs
+            // TODO perhaps move this as a new method of effects
             let outbox_message = match response_sink {
                 ServiceInvocationResponseSink::PartitionProcessor {
                     entry_index,
@@ -678,19 +690,20 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     entry_index,
                     result: res.into(),
                 }),
-                ServiceInvocationResponseSink::Ingress(ingress_id) => OutboxMessage::IngressResponse {
-                    ingress_id,
-                    full_invocation_id: service_invocation.fid.clone(),
-                    response: res.into(),
-                },
+                ServiceInvocationResponseSink::Ingress(ingress_id) => {
+                    OutboxMessage::IngressResponse {
+                        ingress_id,
+                        full_invocation_id: service_invocation.fid.clone(),
+                        response: res.into(),
+                    }
+                }
             };
-            output_messages.push(outbox_message);
+            effects.enqueue_into_outbox(outbox_message);
         }
 
-        collector.collect(ActuatorMessage::ProposeSelf(output_messages));
+        collector.collect(ActuatorMessage::ProposeSelf(effects));
         Ok(())
     }
-
 
     async fn invoke_service_through_invoker<S: StateStorage, C: MessageCollector>(
         state_storage: &mut S,

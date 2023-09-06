@@ -104,15 +104,13 @@ pub(crate) trait StateReader {
 
 pub(crate) fn create_deduplicating_state_machine<Codec>(
     inbox_seq_number: MessageIndex,
-    outbox_seq_number: MessageIndex,
 ) -> DeduplicatingStateMachine<Codec> {
-    DeduplicatingStateMachine::new(StateMachine::new(inbox_seq_number, outbox_seq_number))
+    DeduplicatingStateMachine::new(StateMachine::new(inbox_seq_number))
 }
 
 pub(crate) struct StateMachine<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
-    outbox_seq_number: MessageIndex,
 
     _codec: PhantomData<Codec>,
 }
@@ -121,16 +119,14 @@ impl<Codec> Debug for StateMachine<Codec> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateMachine")
             .field("inbox_seq_number", &self.inbox_seq_number)
-            .field("outbox_seq_number", &self.outbox_seq_number)
             .finish()
     }
 }
 
 impl<Codec> StateMachine<Codec> {
-    pub(crate) fn new(inbox_seq_number: MessageIndex, outbox_seq_number: MessageIndex) -> Self {
+    pub(crate) fn new(inbox_seq_number: MessageIndex) -> Self {
         Self {
             inbox_seq_number,
-            outbox_seq_number,
             _codec: PhantomData::default(),
         }
     }
@@ -767,7 +763,6 @@ where
         // Invoke built-in service
         let result = DeterministicBuiltInServiceInvoker::invoke(
             &invocation.fid,
-            &mut self.outbox_seq_number,
             effects,
             invocation.method_name.deref(),
             invocation.argument.clone(),
@@ -817,8 +812,7 @@ where
     }
 
     fn send_message(&mut self, message: OutboxMessage, effects: &mut Effects) {
-        effects.enqueue_into_outbox(self.outbox_seq_number, message);
-        self.outbox_seq_number += 1;
+        effects.enqueue_into_outbox(message);
     }
 
     fn create_service_invocation(
@@ -988,7 +982,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn awakeable_with_success() {
-        let mut state_machine: StateMachine<ProtobufRawEntryCodec> = StateMachine::new(0, 0);
+        let mut state_machine: StateMachine<ProtobufRawEntryCodec> = StateMachine::new(0);
         let mut effects = Effects::default();
         let mut state_reader = StateReaderMock::default();
 
@@ -1034,7 +1028,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn awakeable_with_failure() {
-        let mut state_machine: StateMachine<ProtobufRawEntryCodec> = StateMachine::new(0, 0);
+        let mut state_machine: StateMachine<ProtobufRawEntryCodec> = StateMachine::new(0);
         let mut effects = Effects::default();
         let mut state_reader = StateReaderMock::default();
 
@@ -1084,7 +1078,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn send_response_using_invocation_id() {
-        let mut state_machine: StateMachine<ProtobufRawEntryCodec> = StateMachine::new(0, 0);
+        let mut state_machine: StateMachine<ProtobufRawEntryCodec> = StateMachine::new(0);
         let mut effects = Effects::default();
         let mut state_reader = StateReaderMock::default();
 
