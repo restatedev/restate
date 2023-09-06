@@ -40,7 +40,21 @@ pub type EntryIndex = u32;
 pub type EndpointId = String;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-pub struct IngressId(pub std::net::SocketAddr);
+pub struct IngressDispatcherId(pub std::net::SocketAddr);
+
+impl fmt::Display for IngressDispatcherId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl FromStr for IngressDispatcherId {
+    type Err = std::net::AddrParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(IngressDispatcherId(s.parse()?))
+    }
+}
 
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.
@@ -378,7 +392,7 @@ mod mocks {
     use rand::distributions::{Alphanumeric, DistString};
     use rand::Rng;
 
-    impl IngressId {
+    impl IngressDispatcherId {
         pub fn mock() -> Self {
             Self("127.0.0.1:8080".parse().unwrap())
         }

@@ -15,7 +15,7 @@ use restate_futures_util::pipe::{
     UnboundedReceiverPipeInput,
 };
 use restate_types::identifiers::FullInvocationId;
-use restate_types::identifiers::IngressId;
+use restate_types::identifiers::IngressDispatcherId;
 use restate_types::invocation::ServiceInvocationResponseSink;
 use std::collections::HashMap;
 use std::future::poll_fn;
@@ -35,7 +35,7 @@ pub struct Error(#[from] PipeError);
 ///
 /// To interact with the loop use [IngressDispatcherInputSender] and [ResponseRequester].
 pub struct Service {
-    ingress_id: IngressId,
+    ingress_dispatcher_id: IngressDispatcherId,
 
     // This channel can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
@@ -49,12 +49,12 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new(ingress_id: IngressId, channel_size: usize) -> Service {
+    pub fn new(ingress_dispatcher_id: IngressDispatcherId, channel_size: usize) -> Service {
         let (input_tx, input_rx) = mpsc::channel(channel_size);
         let (server_tx, server_rx) = mpsc::unbounded_channel();
 
         Service {
-            ingress_id,
+            ingress_dispatcher_id,
             input_rx,
             server_rx,
             input_tx,
@@ -70,7 +70,7 @@ impl Service {
         debug!("Running the ResponseDispatcher");
 
         let Service {
-            ingress_id,
+            ingress_dispatcher_id,
             server_rx,
             input_rx,
             ..
@@ -89,7 +89,7 @@ impl Service {
 
         tokio::pin!(pipe);
 
-        let mut handler = DispatcherLoopHandler::new(ingress_id);
+        let mut handler = DispatcherLoopHandler::new(ingress_dispatcher_id);
 
         loop {
             select! {
@@ -125,8 +125,7 @@ impl Service {
 }
 
 struct DispatcherLoopHandler {
-    // TODO perhaps we should rename this type to IngressDispatcherId, because that's what it is.
-    ingress_id: IngressId,
+    ingress_dispatcher_id: IngressDispatcherId,
     msg_index: MessageIndex,
 
     // This map can be unbounded, because we enforce concurrency limits in the ingress
@@ -136,9 +135,9 @@ struct DispatcherLoopHandler {
 }
 
 impl DispatcherLoopHandler {
-    fn new(ingress_id: IngressId) -> Self {
+    fn new(ingress_dispatcher_id: IngressDispatcherId) -> Self {
         Self {
-            ingress_id,
+            ingress_dispatcher_id,
             msg_index: 0,
             waiting_responses: HashMap::new(),
             waiting_for_acks: HashMap::default(),
@@ -192,7 +191,9 @@ impl DispatcherLoopHandler {
                     ResponseOrAckSender::Response(response_sender) => {
                         self.waiting_responses
                             .insert(service_invocation.fid.clone(), response_sender);
-                        Some(ServiceInvocationResponseSink::Ingress(self.ingress_id))
+                        Some(ServiceInvocationResponseSink::Ingress(
+                            self.ingress_dispatcher_id,
+                        ))
                     }
                     ResponseOrAckSender::Ack(ack_sender) => {
                         self.waiting_for_acks.insert(current_msg_index, ack_sender);
@@ -208,7 +209,7 @@ impl DispatcherLoopHandler {
                         response_sink,
                         span_context: service_invocation.span_context,
                     },
-                    self.ingress_id,
+                    self.ingress_dispatcher_id,
                     current_msg_index,
                 )
             }
@@ -217,7 +218,7 @@ impl DispatcherLoopHandler {
                     .insert(current_msg_index, ack_listener);
                 IngressDispatcherOutput::awakeable_completion(
                     response,
-                    self.ingress_id,
+                    self.ingress_dispatcher_id,
                     current_msg_index,
                 )
             }
@@ -230,14 +231,15 @@ mod tests {
     use super::*;
 
     use restate_test_util::test;
-    use restate_types::identifiers::IngressId;
+    use restate_types::identifiers::IngressDispatcherId;
     use restate_types::invocation::SpanRelation;
 
     #[test(tokio::test)]
     async fn test_closed_handler() {
         let (output_tx, _output_rx) = mpsc::channel(2);
 
-        let ingress_dispatcher = Service::new(IngressId("127.0.0.1:0".parse().unwrap()), 1);
+        let ingress_dispatcher =
+            Service::new(IngressDispatcherId("127.0.0.1:0".parse().unwrap()), 1);
         let input_sender = ingress_dispatcher.create_ingress_dispatcher_input_sender();
         let command_sender = ingress_dispatcher.create_ingress_request_sender();
 

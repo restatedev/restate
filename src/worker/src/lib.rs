@@ -30,7 +30,7 @@ use restate_schema_impl::Schemas;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query::service::PostgresQueryService;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{IngressId, PartitionKey, PeerId};
+use restate_types::identifiers::{IngressDispatcherId, PartitionKey, PeerId};
 use restate_types::message::PeerTarget;
 use std::ops::RangeInclusive;
 use tokio::join;
@@ -221,7 +221,7 @@ impl Worker {
         let num_partition_processors = opts.partitions;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
-        let external_client_ingress_id = IngressId(
+        let external_client_ingress_dispatcher_id = IngressDispatcherId(
             "127.0.0.1:0"
                 .parse()
                 .expect("Loopback address needs to be valid."),
@@ -229,7 +229,7 @@ impl Worker {
 
         let ingress_dispatcher_service = IngressDispatcherService::new(
             // TODO replace with proper network address once we have a distributed runtime
-            external_client_ingress_id,
+            external_client_ingress_dispatcher_id,
             channel_size,
         );
 

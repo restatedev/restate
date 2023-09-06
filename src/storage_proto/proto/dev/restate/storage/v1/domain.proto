@@ -65,7 +65,7 @@ message ServiceInvocationResponseSink {
     }
 
     message Ingress {
-        string ingress_id = 1;
+        string ingress_dispatcher_id = 1;
     }
 
     message None {
@@ -270,7 +270,7 @@ message OutboxMessage {
 
     message OutboxIngressResponse {
         FullInvocationId full_invocation_id = 1;
-        string ingress_id = 2;
+        string ingress_dispatcher_id = 2;
         ResponseResult response_result = 3;
     }
 

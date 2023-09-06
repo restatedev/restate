@@ -11,7 +11,7 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{FullInvocationId, IngressId, PeerId};
+use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PeerId};
 use restate_types::invocation::{
     InvocationResponse, ServiceInvocation, ServiceInvocationSpanContext, SpanRelation,
 };
@@ -175,12 +175,12 @@ impl IngressDispatcherInput {
 pub enum IngressDispatcherOutput {
     Invocation {
         service_invocation: ServiceInvocation,
-        ingress_id: IngressId,
+        ingress_dispatcher_id: IngressDispatcherId,
         msg_index: MessageIndex,
     },
     AwakeableCompletion {
         response: InvocationResponse,
-        ingress_id: IngressId,
+        ingress_dispatcher_id: IngressDispatcherId,
         msg_index: MessageIndex,
     },
     Ack(AckResponse),
@@ -195,24 +195,24 @@ pub struct AckResponse {
 impl IngressDispatcherOutput {
     pub fn service_invocation(
         service_invocation: ServiceInvocation,
-        ingress_id: IngressId,
+        ingress_dispatcher_id: IngressDispatcherId,
         msg_index: MessageIndex,
     ) -> Self {
         Self::Invocation {
             service_invocation,
-            ingress_id,
+            ingress_dispatcher_id,
             msg_index,
         }
     }
 
     pub fn awakeable_completion(
         response: InvocationResponse,
-        ingress_id: IngressId,
+        ingress_dispatcher_id: IngressDispatcherId,
         msg_index: MessageIndex,
     ) -> Self {
         Self::AwakeableCompletion {
             response,
-            ingress_id,
+            ingress_dispatcher_id,
             msg_index,
         }
     }

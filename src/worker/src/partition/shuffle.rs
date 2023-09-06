@@ -11,7 +11,7 @@
 use crate::partition::shuffle::state_machine::StateMachine;
 use futures::future::BoxFuture;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::{FullInvocationId, IngressId, PartitionId, PeerId};
+use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PartitionId, PeerId};
 use restate_types::invocation::{InvocationResponse, ResponseResult, ServiceInvocation};
 use restate_types::message::{AckKind, MessageIndex};
 use std::time::Duration;
@@ -57,7 +57,7 @@ pub(crate) enum InvocationOrResponse {
 
 #[derive(Debug, Clone)]
 pub(crate) struct IngressResponse {
-    pub(crate) _ingress_id: IngressId,
+    pub(crate) _ingress_dispatcher_id: IngressDispatcherId,
     pub(crate) full_invocation_id: FullInvocationId,
     pub(crate) response: ResponseResult,
 }
@@ -107,11 +107,11 @@ impl From<OutboxMessage> for ShuffleMessageDestination {
     fn from(value: OutboxMessage) -> Self {
         match value {
             OutboxMessage::IngressResponse {
-                ingress_id,
+                ingress_dispatcher_id: ingress_id,
                 full_invocation_id,
                 response,
             } => ShuffleMessageDestination::Ingress(IngressResponse {
-                _ingress_id: ingress_id,
+                _ingress_dispatcher_id: ingress_id,
                 full_invocation_id,
                 response,
             }),
