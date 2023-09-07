@@ -491,6 +491,7 @@ pub(crate) mod extract_impls {
                     use super::*;
 
                     #[test]
+                    #[allow(clippy::redundant_closure_call)]
                     fn extract_mixed() {
                         let mut input_buf = BytesMut::new();
                         // These are not part of the key
@@ -524,6 +525,7 @@ pub(crate) mod extract_impls {
                     }
 
                     #[test]
+                    #[allow(clippy::redundant_closure_call)]
                     fn extract_first_field() {
                         let mut input_buf = BytesMut::new();
                         prost::encoding::$typ::encode(3, &($val), &mut input_buf);
@@ -543,6 +545,7 @@ pub(crate) mod extract_impls {
                     }
 
                     #[test]
+                    #[allow(clippy::redundant_closure_call)]
                     fn extract_last_field() {
                         let mut input_buf = BytesMut::new();
                         prost::encoding::string::encode(5, &"my str".to_string(), &mut input_buf); // This is not part of the key
@@ -558,6 +561,7 @@ pub(crate) mod extract_impls {
                     }
 
                     #[test]
+                    #[allow(clippy::redundant_closure_call)]
                     fn extract_only_field() {
                         let mut input_buf = BytesMut::new();
                         prost::encoding::$typ::encode(3, &($val), &mut input_buf);

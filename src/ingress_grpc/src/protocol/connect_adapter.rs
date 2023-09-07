@@ -176,9 +176,9 @@ impl<JsonEncoder: ProtobufToJsonMapper> Encoder<JsonEncoder> {
                         .unwrap(),
                     Err(err) => {
                         warn!("The response payload cannot be serialized: {}", err);
-                        return status::status_response(Status::internal(format!(
+                        status::status_response(Status::internal(format!(
                             "The response payload cannot be serialized: {err}",
-                        )));
+                        )))
                     }
                 }
             }

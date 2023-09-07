@@ -408,7 +408,7 @@ where
                 }
 
                 // Wait on response
-                return match response_rx.await {
+                match response_rx.await {
                     Ok(Ok(response_payload)) => {
                         trace!(rpc.response = ?response_payload, "Complete external gRPC request successfully");
                         Ok(response_payload)

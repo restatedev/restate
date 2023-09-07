@@ -38,7 +38,8 @@ impl AnalyzerRule for UseSymmetricHashJoinWhenPartitionKeyIsPresent {
                 join_constraint,
                 schema,
                 null_equals_null,
-            }) = &plan else {
+            }) = &plan
+            else {
                 return Ok(Transformed::No(plan));
             };
 

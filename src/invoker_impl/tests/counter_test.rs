@@ -158,7 +158,7 @@ async fn bidi_stream() {
     > = options.build(
         journal_reader.clone(),
         InMemoryStateStorage::default(),
-        MockEntryEnricher::default(),
+        MockEntryEnricher,
         endpoint_metadata_registry,
     );
 

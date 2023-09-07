@@ -30,7 +30,7 @@ pub mod counter {
 pub fn discover_endpoint(current_thread_rt: &Runtime, address: Uri) {
     let discovery_payload = serde_json::json!({"uri": address.to_string()}).to_string();
     let discovery_result = current_thread_rt.block_on(async {
-        let result = RetryPolicy::fixed_delay(Duration::from_millis(200), 50)
+        RetryPolicy::fixed_delay(Duration::from_millis(200), 50)
             .retry_operation(|| {
                 hyper::Client::new()
                     .request(
@@ -48,9 +48,7 @@ pub fn discover_endpoint(current_thread_rt: &Runtime, address: Uri) {
                         }
                     })
             })
-            .await;
-
-        result
+            .await
     });
 
     assert!(discovery_result
