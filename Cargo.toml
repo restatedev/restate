@@ -6,6 +6,7 @@ members = [
     "tools/service_protocol_wireshark_dissector"
 ]
 default-members = [ "src/*", "src/codederror/impl" ]
+resolver = "2"
 
 [workspace.package]
 version = "0.2.2"
