@@ -13,6 +13,7 @@ use datafusion::execution::context::SessionState;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
+use restate_storage_rocksdb::RocksDBStorage;
 use std::sync::Arc;
 
 pub struct QueryContext {
@@ -80,6 +81,11 @@ impl QueryContext {
         let plan = state.statement_to_plan(statement).await?;
         let df = self.datafusion_context.execute_logical_plan(plan).await?;
         df.execute_stream().await
+    }
+
+    pub fn register(&self, storage: RocksDBStorage) -> datafusion::common::Result<()> {
+        crate::status::register_self(self, storage.clone())?;
+        crate::state::register_self(self, storage)
     }
 }
 

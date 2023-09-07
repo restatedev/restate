@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::context::QueryContext;
 use crate::pgwire_server::HandlerFactory;
 use codederror::CodedError;
+use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
@@ -22,7 +22,9 @@ pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
-    #[error("failed binding to address '{0}' specified in 'worker.storage_query.bind_address'")]
+    #[error(
+        "failed binding to address '{0}' specified in 'worker.storage_query_postgres.bind_address'"
+    )]
     #[code(unknown)]
     AddrInUse(SocketAddr),
     #[error("error: {0:?}")]
@@ -60,8 +62,7 @@ impl PostgresQueryService {
         tokio::pin!(shutdown);
 
         let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
-        crate::status::register_self(&ctx, rocksdb.clone()).map_err(|e| Error::Other(e.into()))?;
-        crate::state::register_self(&ctx, rocksdb).map_err(|e| Error::Other(e.into()))?;
+        ctx.register(rocksdb).map_err(|e| Error::Other(e.into()))?;
 
         let factory = HandlerFactory::new(ctx);
         loop {

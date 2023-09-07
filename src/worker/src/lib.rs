@@ -29,7 +29,7 @@ use restate_invoker_impl::{
 use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use restate_schema_impl::Schemas;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_query::service::PostgresQueryService;
+use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{IngressDispatcherId, PartitionKey, PeerId};
 use restate_types::message::PeerTarget;
@@ -69,9 +69,9 @@ pub use restate_timer::{
     OptionsBuilderError as TimerOptionsBuilderError,
 };
 
-pub use restate_storage_query::{
-    Options as StorageQueryOptions, OptionsBuilder as StorageQueryOptionsBuilder,
-    OptionsBuilderError as StorageQueryOptionsBuilderError,
+pub use restate_storage_query_postgres::{
+    Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
+    OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
 
 type PartitionProcessorCommand = AckCommand;
@@ -98,7 +98,7 @@ pub struct Options {
     #[cfg_attr(feature = "options_schema", schemars(default))]
     timers: TimerOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
-    storage_query: StorageQueryOptions,
+    storage_query_postgres: StorageQueryPostgresOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
     storage_rocksdb: RocksdbOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
@@ -125,7 +125,7 @@ impl Default for Options {
         Self {
             channel_size: Options::default_channel_size(),
             timers: Default::default(),
-            storage_query: Default::default(),
+            storage_query_postgres: Default::default(),
             storage_rocksdb: Default::default(),
             ingress_grpc: Default::default(),
             kafka: Default::default(),
@@ -172,9 +172,9 @@ pub enum Error {
     #[error("network failed: {0}")]
     #[code(unknown)]
     Network(#[from] restate_network::RoutingError),
-    #[error("storage query failed: {0}")]
+    #[error("storage query postgres failed: {0}")]
     #[code(unknown)]
-    StorageQuery(#[from] restate_storage_query::Error),
+    StorageQueryPostgres(#[from] restate_storage_query_postgres::Error),
     #[error("consensus failed: {0}")]
     #[code(unknown)]
     Consensus(anyhow::Error),
@@ -205,7 +205,7 @@ pub struct Worker {
     consensus: Consensus<PartitionProcessorCommand>,
     processors: Vec<PartitionProcessor>,
     network: network_integration::Network,
-    storage_query: PostgresQueryService,
+    storage_query_postgres: PostgresQueryService,
     invoker: InvokerService<
         InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,
@@ -224,7 +224,7 @@ impl Worker {
             ingress_grpc,
             kafka,
             timers,
-            storage_query,
+            storage_query_postgres,
             storage_rocksdb,
             ..
         } = opts;
@@ -276,7 +276,7 @@ impl Worker {
 
         let rocksdb = storage_rocksdb.build()?;
 
-        let storage_query = storage_query.build(rocksdb.clone());
+        let storage_query_postgres = storage_query_postgres.build(rocksdb.clone());
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb.clone());
         let invoker = opts.invoker.build(
@@ -320,7 +320,7 @@ impl Worker {
             consensus,
             processors,
             network,
-            storage_query,
+            storage_query_postgres,
             invoker,
             external_client_ingress_runner: ExternalClientIngressRunner::new(
                 ingress_dispatcher_service,
@@ -375,7 +375,8 @@ impl Worker {
         );
         let mut invoker_handle = tokio::spawn(self.invoker.run(shutdown_watch.clone()));
         let mut network_handle = tokio::spawn(self.network.run(shutdown_watch.clone()));
-        let mut storage_query_handle = tokio::spawn(self.storage_query.run(shutdown_watch.clone()));
+        let mut storage_query_postgres_handle =
+            tokio::spawn(self.storage_query_postgres.run(shutdown_watch.clone()));
         let mut consensus_handle = tokio::spawn(self.consensus.run());
         let mut processors_handles: FuturesUnordered<_> = self
             .processors
@@ -398,7 +399,7 @@ impl Worker {
                 // ignored because we are shutting down
                 let _ = join!(
                     network_handle,
-                    storage_query_handle,
+                    storage_query_postgres_handle,
                     consensus_handle,
                     processors_handles.collect::<Vec<_>>(),
                     invoker_handle,
@@ -416,8 +417,8 @@ impl Worker {
                 network_result.map_err(|err| Error::component_panic("network", err))??;
                 panic!("Unexpected termination of network.");
             },
-            storage_query_result = &mut storage_query_handle => {
-                storage_query_result.map_err(|err| Error::component_panic("storage query", err))??;
+            storage_query_postgres_result = &mut storage_query_postgres_handle => {
+                storage_query_postgres_result.map_err(|err| Error::component_panic("storage query", err))??;
                 panic!("Unexpected termination of storage query.");
             },
             consensus_result = &mut consensus_handle => {

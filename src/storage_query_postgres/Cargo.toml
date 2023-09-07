@@ -1,5 +1,5 @@
 [package]
-name = "restate_storage_query"
+name = "restate_storage_query_postgres"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -25,6 +25,7 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 prost = {workspace = true}
 restate_storage_proto = {workspace = true }
+restate_storage_query_datafusion = {workspace = true }
 restate_storage_rocksdb = {workspace = true }
 restate_errors = { workspace = true }
 restate_types = { workspace = true }

@@ -32,7 +32,6 @@ use futures::{stream, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-use crate::context::QueryContext;
 use crate::extended_query::NoopExtendedQueryHandler;
 use pgwire::api::auth::noop::NoopStartupHandler;
 use pgwire::api::query::SimpleQueryHandler;
@@ -41,9 +40,10 @@ use pgwire::api::{ClientInfo, MakeHandler, StatelessMakeHandler, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use pgwire::tokio::process_socket;
+use restate_storage_query_datafusion::context::QueryContext;
 use tracing::warn;
 
-pub(crate) struct HandlerFactory {
+pub struct HandlerFactory {
     processor: Arc<StatelessMakeHandler<DfSessionService>>,
     placeholder: Arc<StatelessMakeHandler<NoopExtendedQueryHandler>>,
     authenticator: Arc<StatelessMakeHandler<NoopStartupHandler>>,

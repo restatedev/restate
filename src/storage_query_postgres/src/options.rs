@@ -12,10 +12,13 @@ use crate::service::PostgresQueryService;
 use restate_storage_rocksdb::RocksDBStorage;
 use std::net::SocketAddr;
 
-/// # Storage query options
+/// # Storage query postgres options
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "options_schema", schemars(rename = "StorageQueryOptions"))]
+#[cfg_attr(
+    feature = "options_schema",
+    schemars(rename = "StorageQueryPostgresOptions")
+)]
 pub struct Options {
     /// # Bind address
     ///

@@ -1,0 +1,29 @@
+[package]
+name = "restate_storage_query_datafusion"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+async-trait = { version = "0.1.68" }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+datafusion = { version = "27.0.0" }
+datafusion-expr = { version = "27.0.0" }
+chrono = { version = "0.4.26", default-features = false, features = ["clock"] }
+derive_builder = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+prost = {workspace = true}
+restate_storage_rocksdb = {workspace = true }
+restate_types = { workspace = true }
+restate_storage_api = {workspace = true}
+paste = { workspace = true}
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
