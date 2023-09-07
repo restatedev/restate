@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use std::ops::RangeInclusive;
 
 /// Status of a service instance.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum InvocationStatus {
     Invoked(InvocationMetadata),
     Suspended {
@@ -27,6 +27,7 @@ pub enum InvocationStatus {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     /// Service instance is currently not invoked
+    #[default]
     Free,
 }
 
@@ -38,12 +39,6 @@ impl InvocationStatus {
             InvocationStatus::Suspended { metadata, .. } => Some(metadata.invocation_uuid),
             InvocationStatus::Free => None,
         }
-    }
-}
-
-impl Default for InvocationStatus {
-    fn default() -> Self {
-        InvocationStatus::Free
     }
 }
 

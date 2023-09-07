@@ -122,7 +122,7 @@ fn mock_network() -> (
 ) {
     let (consensus_tx, consensus_rx) = mpsc::channel(1);
     let (ingress_tx, ingress_rx) = mpsc::channel(1);
-    let partition_table = MockPartitionTable::default();
+    let partition_table = MockPartitionTable;
 
     let network = Network::<
         ConsensusMsg,

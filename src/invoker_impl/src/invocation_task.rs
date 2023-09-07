@@ -624,7 +624,7 @@ where
                 InvocationTaskError::UnexpectedMessage(MessageType::Completion),
             ),
             ProtocolMessage::Suspension(suspension) => {
-                let suspension_indexes = HashSet::from_iter(suspension.entry_indexes.into_iter());
+                let suspension_indexes = HashSet::from_iter(suspension.entry_indexes);
                 if suspension_indexes.is_empty() {
                     return TerminalLoopState::Failed(InvocationTaskError::EmptySuspensionMessage);
                 }

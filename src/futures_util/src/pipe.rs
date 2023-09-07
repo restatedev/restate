@@ -155,7 +155,7 @@ where
         let target = this.pipe_target;
         let state = this.state;
 
-        return match state {
+        match state {
             PipeState::NotReady => {
                 panic!("Invoked write() before poll_next_input()")
             }
@@ -170,7 +170,7 @@ where
                 }
             },
             PipeState::Closed(err) => Err(*err),
-        };
+        }
     }
 
     /// Returns a future that polls the pipe in a loop until it's closed,
@@ -441,7 +441,7 @@ mod multi_target {
             let left_target = this.left_target;
             let right_target = this.right_target;
 
-            return match (*this.left_state, *this.right_state, msg) {
+            match (*this.left_state, *this.right_state, msg) {
                 (PipeState::Closed(err), _, Either::Left(_))
                 | (_, PipeState::Closed(err), Either::Right(_)) => Err(err),
                 (PipeState::Ready, _, Either::Left(left_msg)) => {
@@ -463,7 +463,7 @@ mod multi_target {
                 _ => {
                     panic!("Unexpected state")
                 }
-            };
+            }
         }
     }
 }

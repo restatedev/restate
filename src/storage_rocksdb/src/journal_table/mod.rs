@@ -107,7 +107,7 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
 
     fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) -> PutFuture {
         let mut key = write_journal_entry_key(service_id, 0);
-        let mut k = &mut key;
+        let k = &mut key;
         for journal_index in 0..journal_length {
             k.journal_index = Some(journal_index);
             self.delete_key(k);

@@ -129,7 +129,7 @@ impl<Codec> StateMachine<Codec> {
         Self {
             inbox_seq_number,
             outbox_seq_number,
-            _codec: PhantomData::default(),
+            _codec: PhantomData,
         }
     }
 }
@@ -151,7 +151,7 @@ where
         effects: &mut Effects,
         state: &mut State,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        return match command {
+        match command {
             Command::Invocation(service_invocation) => {
                 let status = state
                     .get_invocation_status(&service_invocation.fid.service_id)
@@ -190,7 +190,7 @@ where
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
             Command::Kill(iid) => self.try_kill_invocation(iid, state, effects).await,
-        };
+        }
     }
 
     async fn try_kill_invocation<State: StateReader>(
@@ -263,7 +263,7 @@ where
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         effects.delete_timer(wake_up_time, full_invocation_id.clone(), entry_index);
 
-        return match value {
+        match value {
             Timer::CompleteSleepEntry => {
                 Self::handle_completion(
                     MaybeFullInvocationId::Full(full_invocation_id),
@@ -283,7 +283,7 @@ where
                 );
                 Ok((Some(full_invocation_id), SpanRelation::None))
             }
-        };
+        }
     }
 
     async fn try_invoker_effect<State: StateReader>(

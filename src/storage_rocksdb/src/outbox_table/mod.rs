@@ -72,7 +72,7 @@ impl<'a> OutboxTable for RocksDBTransaction<'a> {
         seq_to_truncate: Range<u64>,
     ) -> PutFuture {
         let mut key = OutboxKey::default().partition_id(partition_id);
-        let mut k = &mut key;
+        let k = &mut key;
 
         for seq in seq_to_truncate {
             k.message_index = Some(seq);

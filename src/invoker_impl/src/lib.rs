@@ -1020,7 +1020,7 @@ mod tests {
             None,
             journal_reader::mocks::EmptyJournalReader,
             state_reader::mocks::EmptyStateReader,
-            entry_enricher::mocks::MockEntryEnricher::default(),
+            entry_enricher::mocks::MockEntryEnricher,
         );
 
         let (signal, watch) = drain::channel();

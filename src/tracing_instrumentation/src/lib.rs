@@ -102,18 +102,14 @@ impl TracingOptions {
             return Err(Error::InvalidTracingConfiguration);
         }
 
-        let resource = opentelemetry::sdk::Resource::new(
-            vec![
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME
-                    .string(service_name.clone()),
-                opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE.string("Restate"),
-                opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID
-                    .string(instance_id.to_string()),
-                opentelemetry_semantic_conventions::resource::SERVICE_VERSION
-                    .string(env!("CARGO_PKG_VERSION")),
-            ]
-            .into_iter(),
-        );
+        let resource = opentelemetry::sdk::Resource::new(vec![
+            opentelemetry_semantic_conventions::resource::SERVICE_NAME.string(service_name.clone()),
+            opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE.string("Restate"),
+            opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID
+                .string(instance_id.to_string()),
+            opentelemetry_semantic_conventions::resource::SERVICE_VERSION
+                .string(env!("CARGO_PKG_VERSION")),
+        ]);
 
         // the following logic is based on `opentelemetry_otlp::span::build_batch_with_exporter`
         // but also injecting ResourceModifyingSpanProcessor around the BatchSpanProcessor
@@ -241,7 +237,7 @@ impl LogOptions {
         Ok(match self.format {
             LogFormat::Pretty => tracing_subscriber::fmt::layer()
                 .event_format::<Pretty<SystemTime>>(Pretty::default())
-                .fmt_fields(PrettyFields::default())
+                .fmt_fields(PrettyFields)
                 .with_writer(
                     // Write WARN and ERR to stderr, everything else to stdout
                     std::io::stderr
