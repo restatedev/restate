@@ -20,14 +20,15 @@ use restate_types::journal::{
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::Deref;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, info, instrument, trace};
 
 use crate::partition::effects::Effects;
-use crate::partition::services::DeterministicBuiltInServiceInvoker;
+use crate::partition::services::deterministic::DeterministicBuiltInServiceInvoker;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
 
 mod dedup;
 
+use crate::partition::services::non_deterministic;
 pub(crate) use dedup::DeduplicatingStateMachine;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -67,6 +68,7 @@ pub(crate) enum Command {
     OutboxTruncation(MessageIndex),
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
+    BuiltInInvoker(non_deterministic::Output),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -199,7 +201,20 @@ where
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
             Command::Kill(iid) => self.try_kill_invocation(iid, state, effects).await,
+            Command::BuiltInInvoker(effect) => {
+                self.on_built_in_invoker_effect(effects, effect).await
+            }
         }
+    }
+
+    async fn on_built_in_invoker_effect(
+        &mut self,
+        effects: &mut Effects,
+        effect: non_deterministic::Output,
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        info!("Processing built in invoker effect {effect:?}");
+
+        Ok((None, SpanRelation::None))
     }
 
     async fn try_kill_invocation<State: StateReader>(

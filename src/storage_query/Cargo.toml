@@ -12,7 +12,7 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
-async-trait = { version = "0.1.68" }
+async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 datafusion = { version = "27.0.0" }

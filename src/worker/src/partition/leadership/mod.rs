@@ -8,14 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::ActuatorMessage;
+use crate::partition::effects::{ActuatorMessage, StateStorage, StateStorageError};
 use crate::partition::shuffle::Shuffle;
-use crate::partition::{shuffle, storage, AckResponse, TimerValue};
+use crate::partition::{services, shuffle, storage, AckResponse, TimerValue};
 use futures::{future, Stream, StreamExt};
 use restate_invoker_api::{InvokeInputJournal, ServiceNotRunning};
 use restate_network::NetworkNotRunning;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
+use std::io::Bytes;
 use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -24,10 +25,13 @@ use tokio::task::JoinError;
 
 mod actuator;
 
+use crate::partition::services::non_deterministic;
 pub(crate) use actuator::{ActuatorMessageCollector, ActuatorOutput, ActuatorStream};
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
+use restate_types::journal::raw::EntryHeader;
+use restate_types::journal::EntryType;
 
 pub(crate) trait InvocationReader {
     type InvokedInvocationStream<'a>: Stream<
@@ -49,6 +53,7 @@ pub(crate) struct LeaderState<'a> {
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
     message_buffer: Vec<ActuatorMessage>,
     timer_service: Pin<Box<TimerService<'a>>>,
+    non_deterministic_service_invoker: non_deterministic::ServiceInvoker<'a>,
 }
 
 pub(crate) struct FollowerState<I, N> {
@@ -71,6 +76,8 @@ pub(crate) enum Error {
     FailedShuffleTask(#[from] anyhow::Error),
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
+    #[error(transparent)]
+    StateStorage(#[from] StateStorageError),
 }
 
 pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle> {
@@ -149,8 +156,12 @@ where
         Error,
     > {
         if let LeadershipState::Follower(mut follower_state) = self {
-            let invoker_rx = Self::register_at_invoker(
+            let (mut service_invoker, service_invoker_output_rx) =
+                non_deterministic::ServiceInvoker::new(partition_storage);
+
+            let invoker_rx = Self::resume_invoked_invocations(
                 &mut follower_state.invoker_tx,
+                &mut service_invoker,
                 (follower_state.partition_id, leader_epoch),
                 partition_storage,
                 follower_state.channel_size,
@@ -186,7 +197,7 @@ where
             let shuffle_handle = tokio::spawn(shuffle.run(shutdown_watch));
 
             Ok((
-                ActuatorStream::leader(invoker_rx, shuffle_rx),
+                ActuatorStream::leader(invoker_rx, shuffle_rx, service_invoker_output_rx),
                 LeadershipState::Leader {
                     follower_state,
                     leader_state: LeaderState {
@@ -195,6 +206,7 @@ where
                         shuffle_hint_tx,
                         shuffle_handle,
                         timer_service,
+                        non_deterministic_service_invoker: service_invoker,
                         // The max number of actuator messages should be 2 atm (e.g. RegisterTimer and
                         // AckStoredEntry)
                         message_buffer: Vec::with_capacity(2),
@@ -206,8 +218,9 @@ where
         }
     }
 
-    async fn register_at_invoker(
+    async fn resume_invoked_invocations(
         invoker_handle: &mut InvokerInputSender,
+        built_in_service_invoker: &mut non_deterministic::ServiceInvoker<'_>,
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_storage: &PartitionStorage,
         channel_size: usize,
@@ -220,6 +233,8 @@ where
 
         let mut transaction = partition_storage.create_transaction();
 
+        let mut built_in_invoked_services = Vec::new();
+
         {
             let invoked_invocations = transaction.scan_invoked_invocations();
             tokio::pin!(invoked_invocations);
@@ -227,14 +242,39 @@ where
             while let Some(full_invocation_id) = invoked_invocations.next().await {
                 let full_invocation_id = full_invocation_id?;
 
-                invoker_handle
-                    .invoke(
-                        partition_leader_epoch,
-                        full_invocation_id,
-                        InvokeInputJournal::NoCachedJournal,
-                    )
-                    .await?;
+                if !non_deterministic::is_built_in_service(
+                    &full_invocation_id.service_id.service_name,
+                ) {
+                    invoker_handle
+                        .invoke(
+                            partition_leader_epoch,
+                            full_invocation_id,
+                            InvokeInputJournal::NoCachedJournal,
+                        )
+                        .await?;
+                } else {
+                    built_in_invoked_services.push(full_invocation_id);
+                }
             }
+        }
+
+        for full_invocation_id in built_in_invoked_services {
+            let input_entry = transaction
+                .load_journal_entry(&full_invocation_id.service_id, 0)
+                .await?
+                .expect("first journal entry must be present; if not, this indicates a bug.");
+
+            assert_eq!(
+                input_entry.header.to_entry_type(),
+                EntryType::Custom,
+                "first journal entry must be a '{}' for built in services",
+                EntryType::Custom
+            );
+
+            let argument = input_entry.entry;
+            built_in_service_invoker
+                .invoke(full_invocation_id, argument)
+                .await;
         }
 
         transaction.commit().await?;

@@ -47,6 +47,13 @@ impl ActuatorOutputHandler {
                     .send(AckCommand::no_ack(Command::Timer(timer)))
                     .await;
             }
+            ActuatorOutput::BuiltInInvoker(invoker_output) => {
+                // Err only if the consensus module is shutting down
+                let _ = self
+                    .proposal_tx
+                    .send(AckCommand::no_ack(Command::BuiltInInvoker(invoker_output)))
+                    .await;
+            }
         };
     }
 }

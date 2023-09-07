@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::effects::{Effect, Effects};
-use crate::partition::{AckResponse, TimerValue};
+use crate::partition::{services, AckResponse, TimerValue};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
@@ -43,6 +43,10 @@ pub(crate) enum ActuatorMessage {
     Invoke {
         full_invocation_id: FullInvocationId,
         invoke_input_journal: InvokeInputJournal,
+    },
+    InvokeBuiltInService {
+        full_invocation_id: FullInvocationId,
+        argument: Bytes,
     },
     NewOutboxMessage {
         seq_number: MessageIndex,
@@ -644,32 +648,52 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             )
             .await?;
 
-        let_assert!(
-            restate_types::journal::raw::RawEntry {
-                header: RawEntryHeader::PollInputStream { is_completed },
-                entry
-            } = Codec::serialize_as_unary_input_entry(service_invocation.argument)
-        );
+        let service_id = service_invocation.fid.service_id.clone();
 
-        let input_entry =
-            EnrichedRawEntry::new(EnrichedEntryHeader::PollInputStream { is_completed }, entry);
+        let input_entry = if services::non_deterministic::is_built_in_service(
+            &service_invocation.fid.service_id.service_name,
+        ) {
+            collector.collect(ActuatorMessage::InvokeBuiltInService {
+                full_invocation_id: service_invocation.fid,
+                argument: service_invocation.argument.clone(),
+            });
 
-        let raw_bytes = input_entry.entry.clone();
+            // TODO clean up custom entry hack by allowing to store bytes directly?
+            EnrichedRawEntry::new(
+                EnrichedEntryHeader::Custom {
+                    code: 0,
+                    requires_ack: false,
+                },
+                service_invocation.argument,
+            )
+        } else {
+            let_assert!(
+                restate_types::journal::raw::RawEntry {
+                    header: RawEntryHeader::PollInputStream { is_completed },
+                    entry
+                } = Codec::serialize_as_unary_input_entry(service_invocation.argument.clone())
+            );
+
+            let raw_bytes = entry.clone();
+
+            collector.collect(ActuatorMessage::Invoke {
+                full_invocation_id: service_invocation.fid,
+                invoke_input_journal: InvokeInputJournal::CachedJournal(
+                    journal_metadata,
+                    vec![PlainRawEntry::new(
+                        RawEntryHeader::PollInputStream { is_completed },
+                        raw_bytes,
+                    )],
+                ),
+            });
+
+            EnrichedRawEntry::new(EnrichedEntryHeader::PollInputStream { is_completed }, entry)
+        };
 
         state_storage
-            .store_journal_entry(&service_invocation.fid.service_id, 0, input_entry)
+            .store_journal_entry(&service_id, 0, input_entry)
             .await?;
 
-        collector.collect(ActuatorMessage::Invoke {
-            full_invocation_id: service_invocation.fid,
-            invoke_input_journal: InvokeInputJournal::CachedJournal(
-                journal_metadata,
-                vec![PlainRawEntry::new(
-                    RawEntryHeader::PollInputStream { is_completed },
-                    raw_bytes,
-                )],
-            ),
-        });
         Ok(())
     }
 
