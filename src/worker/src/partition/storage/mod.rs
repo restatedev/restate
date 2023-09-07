@@ -30,6 +30,7 @@ use std::ops::RangeInclusive;
 pub mod invoker;
 
 use crate::partition::TimerValue;
+use restate_storage_api::deduplication_table::SequenceNumberSource;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
@@ -182,19 +183,18 @@ where
 
     pub(super) fn load_dedup_seq_number(
         &mut self,
-        producer_id: PartitionId,
+        source: SequenceNumberSource,
     ) -> BoxFuture<'_, Result<Option<MessageIndex>, restate_storage_api::StorageError>> {
-        self.inner
-            .get_sequence_number(self.partition_id, producer_id)
+        self.inner.get_sequence_number(self.partition_id, source)
     }
 
     pub(super) fn store_dedup_seq_number(
         &mut self,
-        producer_id: PartitionId,
+        source: SequenceNumberSource,
         dedup_seq_number: MessageIndex,
     ) -> PutFuture {
         self.inner
-            .put_sequence_number(self.partition_id, producer_id, dedup_seq_number)
+            .put_sequence_number(self.partition_id, source, dedup_seq_number)
     }
 }
 

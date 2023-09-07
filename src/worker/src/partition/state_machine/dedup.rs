@@ -13,6 +13,7 @@ use crate::partition::effects::Effects;
 use crate::partition::state_machine::{Error, StateMachine};
 use crate::partition::storage::Transaction;
 use crate::partition::AckCommand;
+use restate_storage_api::deduplication_table::SequenceNumberSource;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::SpanRelation;
 use restate_types::journal::raw::RawEntryCodec;
@@ -45,17 +46,27 @@ where
                 effects.send_ack_response(ack_target.acknowledge());
             }
             AckMode::Dedup(deduplication_source) => {
-                let (producing_partition_id, seq_number) = match deduplication_source {
+                let (source, seq_number) = match deduplication_source {
                     DeduplicationSource::Shuffle {
                         seq_number,
                         producing_partition_id,
                         ..
-                    } => (producing_partition_id, seq_number),
+                    } => (
+                        SequenceNumberSource::Partition(producing_partition_id),
+                        seq_number,
+                    ),
+                    DeduplicationSource::Ingress {
+                        seq_number,
+                        ref source_id,
+                        ..
+                    } => (
+                        SequenceNumberSource::Ingress(source_id.clone().into()),
+                        seq_number,
+                    ),
                 };
 
-                if let Some(last_known_seq_number) = transaction
-                    .load_dedup_seq_number(producing_partition_id)
-                    .await?
+                if let Some(last_known_seq_number) =
+                    transaction.load_dedup_seq_number(source.clone()).await?
                 {
                     if seq_number <= last_known_seq_number {
                         effects.send_ack_response(
@@ -65,9 +76,7 @@ where
                     }
                 }
 
-                transaction
-                    .store_dedup_seq_number(producing_partition_id, seq_number)
-                    .await;
+                transaction.store_dedup_seq_number(source, seq_number).await;
                 effects.send_ack_response(deduplication_source.acknowledge());
             }
             AckMode::None => {}

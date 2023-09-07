@@ -67,6 +67,12 @@ pub(crate) enum DeduplicationSource {
         shuffle_id: PeerId,
         seq_number: MessageIndex,
     },
+    Ingress {
+        ingress_dispatcher_id: IngressDispatcherId,
+        // String used to distinguish between different seq_numbers indexes produced by the ingress
+        source_id: String,
+        seq_number: MessageIndex,
+    },
 }
 
 impl DeduplicationSource {
@@ -82,6 +88,18 @@ impl DeduplicationSource {
         }
     }
 
+    pub(crate) fn ingress(
+        ingress_dispatcher_id: IngressDispatcherId,
+        source_id: String,
+        seq_number: MessageIndex,
+    ) -> Self {
+        DeduplicationSource::Ingress {
+            ingress_dispatcher_id,
+            source_id,
+            seq_number,
+        }
+    }
+
     pub(crate) fn acknowledge(self) -> AckResponse {
         match self {
             DeduplicationSource::Shuffle {
@@ -90,6 +108,14 @@ impl DeduplicationSource {
                 ..
             } => AckResponse::Shuffle(ShuffleDeduplicationResponse {
                 shuffle_target: shuffle_id,
+                kind: AckKind::Acknowledge(seq_number),
+            }),
+            DeduplicationSource::Ingress {
+                ingress_dispatcher_id,
+                seq_number,
+                ..
+            } => AckResponse::Ingress(IngressAckResponse {
+                _ingress_dispatcher_id: ingress_dispatcher_id,
                 kind: AckKind::Acknowledge(seq_number),
             }),
         }
@@ -103,6 +129,17 @@ impl DeduplicationSource {
                 ..
             } => AckResponse::Shuffle(ShuffleDeduplicationResponse {
                 shuffle_target: shuffle_id,
+                kind: AckKind::Duplicate {
+                    seq_number,
+                    last_known_seq_number,
+                },
+            }),
+            DeduplicationSource::Ingress {
+                ingress_dispatcher_id,
+                seq_number,
+                ..
+            } => AckResponse::Ingress(IngressAckResponse {
+                _ingress_dispatcher_id: ingress_dispatcher_id,
                 kind: AckKind::Duplicate {
                     seq_number,
                     last_known_seq_number,
@@ -138,7 +175,7 @@ impl AckTarget {
                 seq_number,
             } => AckResponse::Ingress(IngressAckResponse {
                 _ingress_dispatcher_id: ingress_dispatcher_id,
-                seq_number,
+                kind: AckKind::Acknowledge(seq_number),
             }),
         }
     }
@@ -159,5 +196,5 @@ pub(crate) struct ShuffleDeduplicationResponse {
 #[derive(Debug)]
 pub(crate) struct IngressAckResponse {
     pub(crate) _ingress_dispatcher_id: IngressDispatcherId,
-    pub(crate) seq_number: MessageIndex,
+    pub(crate) kind: AckKind,
 }

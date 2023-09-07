@@ -13,28 +13,25 @@ use crate::TableKind::Deduplication;
 use crate::{
     GetFuture, GetStream, PutFuture, RocksDBTransaction, TableScan, TableScanIterationDecision,
 };
-use restate_storage_api::deduplication_table::DeduplicationTable;
+use restate_storage_api::deduplication_table::{DeduplicationTable, SequenceNumberSource};
 use restate_storage_api::{ready, StorageError};
 use restate_types::identifiers::PartitionId;
 use std::io::Cursor;
 
 define_table_key!(
     Deduplication,
-    DeduplicationKey(
-        partition_id: PartitionId,
-        producing_partition_id: PartitionId
-    )
+    DeduplicationKey(partition_id: PartitionId, source: SequenceNumberSource)
 );
 
 impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
     fn get_sequence_number(
         &mut self,
         partition_id: PartitionId,
-        producing_partition_id: PartitionId,
+        source: SequenceNumberSource,
     ) -> GetFuture<Option<u64>> {
         let key = DeduplicationKey::default()
             .partition_id(partition_id)
-            .producing_partition_id(producing_partition_id);
+            .source(source);
 
         self.get_blocking(key, move |_k, maybe_sequence_number_slice| {
             let maybe_sequence_number = maybe_sequence_number_slice.map(|slice| {
@@ -50,12 +47,12 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
     fn put_sequence_number(
         &mut self,
         partition_id: PartitionId,
-        producing_partition_id: PartitionId,
+        source: SequenceNumberSource,
         sequence_number: u64,
     ) -> PutFuture {
         let key = DeduplicationKey::default()
             .partition_id(partition_id)
-            .producing_partition_id(producing_partition_id);
+            .source(source);
         self.put_kv(key, sequence_number);
         ready()
     }
@@ -63,19 +60,19 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
     fn get_all_sequence_numbers(
         &mut self,
         partition_id: PartitionId,
-    ) -> GetStream<(PartitionId, u64)> {
+    ) -> GetStream<(SequenceNumberSource, u64)> {
         self.for_each_key_value(
             TableScan::Partition::<DeduplicationKey>(partition_id),
             move |k, v| {
-                let key = DeduplicationKey::deserialize_from(&mut Cursor::new(k))
-                    .map(|key| key.producing_partition_id);
+                let key =
+                    DeduplicationKey::deserialize_from(&mut Cursor::new(k)).map(|key| key.source);
 
-                let res = if let Ok(Some(producing_partition_id)) = key {
+                let res = if let Ok(Some(source)) = key {
                     // read out the value
                     let mut buf = [0u8; 8];
                     buf.copy_from_slice(v);
                     let sequence_number = u64::from_be_bytes(buf);
-                    Ok((producing_partition_id, sequence_number))
+                    Ok((source, sequence_number))
                 } else {
                     Err(StorageError::DataIntegrityError)
                 };

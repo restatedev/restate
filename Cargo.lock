@@ -3921,6 +3921,7 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "bytes",
+ "bytestring",
  "futures-util",
  "restate_types",
  "thiserror",

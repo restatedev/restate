@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use restate_storage_api::deduplication_table::DeduplicationTable;
+use restate_storage_api::deduplication_table::{DeduplicationTable, SequenceNumberSource};
 use restate_storage_api::Transaction;
 use std::path;
 use tempfile::tempdir;
@@ -33,7 +33,8 @@ async fn writing_to_rocksdb(base_path: &path::Path) {
     for i in 0..100000 {
         let mut txn = rocksdb.transaction();
         for j in 0..10 {
-            txn.put_sequence_number(i, j, 0).await;
+            txn.put_sequence_number(i, SequenceNumberSource::Partition(j), 0)
+                .await;
         }
         txn.commit().await.unwrap();
     }
