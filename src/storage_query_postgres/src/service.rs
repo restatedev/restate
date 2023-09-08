@@ -11,7 +11,7 @@
 use crate::pgwire_server::HandlerFactory;
 use codederror::CodedError;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_storage_rocksdb::RocksDBStorage;
+
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -34,20 +34,14 @@ pub enum Error {
 
 pub struct PostgresQueryService {
     pub bind_address: SocketAddr,
-    pub rocksdb: RocksDBStorage,
-    pub memory_limit: Option<usize>,
-    pub temp_folder: Option<String>,
-    pub query_parallelism: Option<usize>,
+    pub query_context: QueryContext,
 }
 
 impl PostgresQueryService {
     pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
         let PostgresQueryService {
             bind_address,
-            rocksdb,
-            memory_limit,
-            temp_folder,
-            query_parallelism,
+            query_context,
         } = self;
 
         let listener = TcpListener::bind(&bind_address).await.map_err(|e| {
@@ -61,10 +55,7 @@ impl PostgresQueryService {
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
 
-        let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
-        ctx.register(rocksdb).map_err(|e| Error::Other(e.into()))?;
-
-        let factory = HandlerFactory::new(ctx);
+        let factory = HandlerFactory::new(query_context);
         loop {
             select! {
                 incoming_socket = listener.accept() => {

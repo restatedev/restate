@@ -7,10 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+options_schema = ["dep:schemars"]
+
 [dependencies]
 async-trait = { version = "0.1.68" }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+codederror = { workspace = true }
 datafusion = { version = "27.0.0" }
 datafusion-expr = { version = "27.0.0" }
 chrono = { version = "0.4.26", default-features = false, features = ["clock"] }

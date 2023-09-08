@@ -43,7 +43,7 @@ use pgwire::tokio::process_socket;
 use restate_storage_query_datafusion::context::QueryContext;
 use tracing::warn;
 
-pub struct HandlerFactory {
+pub(crate) struct HandlerFactory {
     processor: Arc<StatelessMakeHandler<DfSessionService>>,
     placeholder: Arc<StatelessMakeHandler<NoopExtendedQueryHandler>>,
     authenticator: Arc<StatelessMakeHandler<NoopStartupHandler>>,

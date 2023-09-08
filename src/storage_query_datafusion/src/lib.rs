@@ -11,9 +11,12 @@
 mod analyzer;
 pub mod context;
 mod generic_table;
+mod options;
 mod physical_optimizer;
 mod state;
 mod status;
 mod table_macro;
 mod table_util;
 mod udfs;
+
+pub use crate::options::{BuildError, Options, OptionsBuilder, OptionsBuilderError};

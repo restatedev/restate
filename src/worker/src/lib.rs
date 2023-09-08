@@ -69,6 +69,12 @@ pub use restate_timer::{
     OptionsBuilderError as TimerOptionsBuilderError,
 };
 
+pub use restate_storage_query_datafusion::{
+    Options as StorageQueryDatafusionOptions,
+    OptionsBuilder as StorageQueryDatafusionOptionsBuilder,
+    OptionsBuilderError as StorageQueryDatafusionOptionsBuilderError,
+};
+
 pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
@@ -98,6 +104,8 @@ pub struct Options {
     #[cfg_attr(feature = "options_schema", schemars(default))]
     timers: TimerOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
+    storage_query_datafusion: StorageQueryDatafusionOptions,
+    #[cfg_attr(feature = "options_schema", schemars(default))]
     storage_query_postgres: StorageQueryPostgresOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
     storage_rocksdb: RocksdbOptions,
@@ -125,6 +133,7 @@ impl Default for Options {
         Self {
             channel_size: Options::default_channel_size(),
             timers: Default::default(),
+            storage_query_datafusion: Default::default(),
             storage_query_postgres: Default::default(),
             storage_rocksdb: Default::default(),
             ingress_grpc: Default::default(),
@@ -136,11 +145,19 @@ impl Default for Options {
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
-#[error("failed creating worker: {cause}")]
-pub struct BuildError {
-    #[from]
-    #[code]
-    cause: restate_storage_rocksdb::BuildError,
+#[error("failed creating worker: {0}")]
+pub enum BuildError {
+    Datafusion(
+        #[from]
+        #[code]
+        restate_storage_query_datafusion::BuildError,
+    ),
+    #[error("failed creating worker: {0}")]
+    RocksDB(
+        #[from]
+        #[code]
+        restate_storage_rocksdb::BuildError,
+    ),
 }
 
 impl Options {
@@ -224,6 +241,7 @@ impl Worker {
             ingress_grpc,
             kafka,
             timers,
+            storage_query_datafusion,
             storage_query_postgres,
             storage_rocksdb,
             ..
@@ -276,7 +294,8 @@ impl Worker {
 
         let rocksdb = storage_rocksdb.build()?;
 
-        let storage_query_postgres = storage_query_postgres.build(rocksdb.clone());
+        let query_context = storage_query_datafusion.build(rocksdb.clone())?;
+        let storage_query_postgres = storage_query_postgres.build(query_context);
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb.clone());
         let invoker = opts.invoker.build(

@@ -25,7 +25,7 @@ pub struct NoopExtendedQueryHandler {
 }
 
 impl NoopExtendedQueryHandler {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         NoopExtendedQueryHandler {
             portal_store: Arc::new(Default::default()),
             query_parser: Arc::new(Default::default()),

@@ -27,7 +27,7 @@ use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 
-pub fn register_self(
+pub(crate) fn register_self(
     ctx: &QueryContext,
     storage: RocksDBStorage,
 ) -> datafusion::common::Result<()> {
