@@ -47,7 +47,7 @@ fn map_to_service_metadata(
     service_schemas: &ServiceSchemas,
 ) -> Option<ServiceMetadata> {
     match &service_schemas.location {
-        ServiceLocation::IngressOnly => None, // We filter out from this interface ingress only services
+        ServiceLocation::IngressOnly | ServiceLocation::BuiltIn => None, // We filter out from this interface ingress only services
         ServiceLocation::ServiceEndpoint {
             latest_endpoint,
             public,

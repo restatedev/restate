@@ -259,6 +259,18 @@ pub(crate) mod schemas_impl {
             }
         }
 
+        fn built_in_service(
+            svc_desc: &ServiceDescriptor,
+            instance_type: ServiceInstanceType,
+        ) -> Self {
+            Self {
+                revision: 0,
+                methods: Self::compute_service_methods(svc_desc),
+                instance_type,
+                location: ServiceLocation::BuiltIn,
+            }
+        }
+
         fn compute_service_methods(
             svc_desc: &ServiceDescriptor,
         ) -> HashMap<String, MethodDescriptor> {
@@ -285,12 +297,13 @@ pub(crate) mod schemas_impl {
             latest_endpoint: EndpointId,
             public: bool,
         },
+        BuiltIn,
     }
 
     impl ServiceLocation {
         pub(crate) fn is_ingress_available(&self) -> bool {
             match self {
-                ServiceLocation::IngressOnly => true,
+                ServiceLocation::IngressOnly | ServiceLocation::BuiltIn => true,
                 ServiceLocation::ServiceEndpoint { public, .. } => *public,
             }
         }
@@ -319,9 +332,10 @@ pub(crate) mod schemas_impl {
             );
             inner.services.insert(
                 restate_pb::INGRESS_SERVICE_NAME.to_string(),
-                ServiceSchemas::new_ingress_only(&restate_pb::get_service(
-                    restate_pb::INGRESS_SERVICE_NAME,
-                )),
+                ServiceSchemas::built_in_service(
+                    &restate_pb::get_service(restate_pb::INGRESS_SERVICE_NAME),
+                    ServiceInstanceType::Unkeyed,
+                ),
             );
             inner.services.insert(
                 restate_pb::AWAKEABLES_SERVICE_NAME.to_string(),
