@@ -16,6 +16,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct QueryContext {
     datafusion_context: SessionContext,
 }
