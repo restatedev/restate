@@ -171,7 +171,7 @@ pub(crate) enum ActuatorStream {
         invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
         shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
         non_deterministic_service_invoker_stream:
-            UnboundedReceiverStream<non_deterministic::Output>,
+            UnboundedReceiverStream<non_deterministic::Effects>,
     },
 }
 
@@ -196,7 +196,7 @@ pub(crate) enum ActuatorOutput {
     Invoker(restate_invoker_api::Effect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerValue),
-    BuiltInInvoker(non_deterministic::Output),
+    BuiltInInvoker(non_deterministic::Effects),
 }
 
 impl Stream for ActuatorStream {

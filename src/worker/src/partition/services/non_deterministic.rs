@@ -39,7 +39,7 @@ pub(crate) trait StateAccess {
 }
 
 #[derive(Debug)]
-pub(crate) enum Output {
+pub(crate) enum Effects {
     SetState,
     ClearState,
     OutboxMessage,
@@ -48,8 +48,8 @@ pub(crate) enum Output {
 }
 
 // TODO Replace with bounded channels but this requires support for spilling on the sender side
-pub(crate) type OutputSender = mpsc::UnboundedSender<Output>;
-pub(crate) type OutputReceiver = mpsc::UnboundedReceiver<Output>;
+pub(crate) type OutputSender = mpsc::UnboundedSender<Effects>;
+pub(crate) type OutputReceiver = mpsc::UnboundedReceiver<Effects>;
 
 pub(crate) struct ServiceInvoker<'a> {
     storage: &'a PartitionStorage<RocksDBStorage>,
@@ -68,6 +68,6 @@ impl<'a> ServiceInvoker<'a> {
         info!("Running nbis invoker for {full_invocation_id:?} with argument {argument:?}");
 
         // the receiver channel should only be shut down if the system is shutting down
-        let _ = self.output_tx.send(Output::End);
+        let _ = self.output_tx.send(Effects::End);
     }
 }

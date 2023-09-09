@@ -68,7 +68,7 @@ pub(crate) enum Command {
     OutboxTruncation(MessageIndex),
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
-    BuiltInInvoker(non_deterministic::Output),
+    BuiltInInvoker(non_deterministic::Effects),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -210,7 +210,7 @@ where
     async fn on_built_in_invoker_effect(
         &mut self,
         effects: &mut Effects,
-        effect: non_deterministic::Output,
+        effect: non_deterministic::Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         info!("Processing built in invoker effect {effect:?}");
 
