@@ -16,7 +16,7 @@ use crate::partition::{shuffle, AckResponse, TimerValue};
 use futures::{Stream, StreamExt};
 use restate_invoker_api::{ServiceHandle, ServiceNotRunning};
 use restate_types::identifiers::PartitionLeaderEpoch;
-use std::ops::DerefMut;
+use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
@@ -138,10 +138,12 @@ where
                 }
                 ActuatorMessage::InvokeBuiltInService {
                     full_invocation_id,
+                    response_sink,
+                    method,
                     argument,
                 } => {
                     non_deterministic_service_invoker
-                        .invoke(full_invocation_id, argument)
+                        .invoke(full_invocation_id, response_sink, method.deref(), argument)
                         .await;
                 }
             }
@@ -171,7 +173,7 @@ pub(crate) enum ActuatorStream {
         invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
         shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
         non_deterministic_service_invoker_stream:
-            UnboundedReceiverStream<non_deterministic::Effects>,
+            UnboundedReceiverStream<non_deterministic::Effect>,
     },
 }
 
@@ -196,7 +198,7 @@ pub(crate) enum ActuatorOutput {
     Invoker(restate_invoker_api::Effect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerValue),
-    BuiltInInvoker(non_deterministic::Effects),
+    BuiltInInvoker(non_deterministic::Effect),
 }
 
 impl Stream for ActuatorStream {

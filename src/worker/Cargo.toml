@@ -14,7 +14,6 @@ options_schema = ["dep:schemars", "restate_timer/options_schema", "restate_stora
 [dependencies]
 anyhow = { workspace = true }
 assert2 = { workspace = true }
-async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }

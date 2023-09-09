@@ -8,32 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::partition::effects::Effects;
+use crate::partition::services::deterministic::DeterministicBuiltInServiceInvoker;
+use crate::partition::services::non_deterministic::{
+    Effect as BuiltInInvokerEffect, Kind as BuiltInInvokerEffectKind,
+};
+use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use restate_types::errors::{InvocationError, InvocationErrorCode, RestateErrorCode};
-use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
-use restate_types::journal::{
-    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
-    Entry, GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
-};
-use std::fmt::{Debug, Formatter};
-use std::marker::PhantomData;
-use std::ops::Deref;
-use tracing::{debug, info, instrument, trace};
-
-use crate::partition::effects::Effects;
-use crate::partition::services::deterministic::DeterministicBuiltInServiceInvoker;
-use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
-
-mod dedup;
-
-use crate::partition::services::non_deterministic;
-pub(crate) use dedup::DeduplicatingStateMachine;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
+use restate_types::errors::{InvocationError, InvocationErrorCode, RestateErrorCode};
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
 };
@@ -42,8 +30,21 @@ use restate_types::invocation::{
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
 };
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
+use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
+use restate_types::journal::{
+    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
+    Entry, GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
+};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
+use std::fmt::{Debug, Formatter};
+use std::marker::PhantomData;
+use std::ops::Deref;
+use tracing::{debug, instrument, trace};
+
+mod dedup;
+
+pub(crate) use dedup::DeduplicatingStateMachine;
 
 const KILLED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
     InvocationErrorCode::Restate(RestateErrorCode::Killed),
@@ -68,7 +69,7 @@ pub(crate) enum Command {
     OutboxTruncation(MessageIndex),
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
-    BuiltInInvoker(non_deterministic::Effects),
+    BuiltInInvoker(BuiltInInvokerEffect),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -202,19 +203,99 @@ where
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
             Command::Kill(iid) => self.try_kill_invocation(iid, state, effects).await,
             Command::BuiltInInvoker(effect) => {
-                self.on_built_in_invoker_effect(effects, effect).await
+                self.try_built_in_invoker_effect(effects, state, effect)
+                    .await
             }
         }
     }
 
-    async fn on_built_in_invoker_effect(
+    async fn try_built_in_invoker_effect<State: StateReader>(
         &mut self,
         effects: &mut Effects,
-        effect: non_deterministic::Effects,
+        state: &mut State,
+        effect: BuiltInInvokerEffect,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        info!("Processing built in invoker effect {effect:?}");
+        let invocation_status = state
+            .get_invocation_status(&effect.full_invocation_id.service_id)
+            .await?;
 
-        Ok((None, SpanRelation::None))
+        match invocation_status {
+            InvocationStatus::Invoked(invocation_metadata)
+                if invocation_metadata.invocation_uuid
+                    == effect.full_invocation_id.invocation_uuid =>
+            {
+                self.on_built_in_invoker_effect(effects, state, effect, invocation_metadata)
+                    .await
+            }
+            _ => {
+                trace!(
+                    "Received built in invoker effect for unknown invocation {}. Ignoring it.",
+                    effect.full_invocation_id
+                );
+                Ok((Some(effect.full_invocation_id), SpanRelation::None))
+            }
+        }
+    }
+
+    async fn on_built_in_invoker_effect<State: StateReader>(
+        &mut self,
+        effects: &mut Effects,
+        state: &mut State,
+        BuiltInInvokerEffect {
+            full_invocation_id,
+            kind,
+        }: BuiltInInvokerEffect,
+        invocation_metadata: InvocationMetadata,
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        let span_relation = invocation_metadata
+            .journal_metadata
+            .span_context
+            .as_parent();
+
+        match kind {
+            BuiltInInvokerEffectKind::SetState { key, value } => {
+                effects.set_state_only(
+                    full_invocation_id.service_id.clone(),
+                    invocation_metadata,
+                    Bytes::from(key),
+                    value,
+                );
+            }
+            BuiltInInvokerEffectKind::ClearState(key) => {
+                effects.clear_state_only(
+                    full_invocation_id.service_id.clone(),
+                    invocation_metadata,
+                    Bytes::from(key),
+                );
+            }
+            BuiltInInvokerEffectKind::RegisterTimer => {
+                unimplemented!("Currently the built-in invoker does not support timers yet");
+            }
+            BuiltInInvokerEffectKind::OutboxMessage(msg) => {
+                self.send_message(msg, effects);
+            }
+            BuiltInInvokerEffectKind::End => {
+                self.finish_invocation(
+                    effects,
+                    state,
+                    full_invocation_id.clone(),
+                    invocation_metadata,
+                )
+                .await?
+            }
+            BuiltInInvokerEffectKind::Failed(e) => {
+                self.fail_invocation(
+                    effects,
+                    state,
+                    full_invocation_id.clone(),
+                    invocation_metadata,
+                    e,
+                )
+                .await?
+            }
+        }
+
+        Ok((Some(full_invocation_id), span_relation))
     }
 
     async fn try_kill_invocation<State: StateReader>(

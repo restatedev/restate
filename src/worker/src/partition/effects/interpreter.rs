@@ -18,8 +18,9 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
 
+use bytestring::ByteString;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
-use restate_types::invocation::ServiceInvocation;
+use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{
     EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
@@ -46,6 +47,8 @@ pub(crate) enum ActuatorMessage {
     },
     InvokeBuiltInService {
         full_invocation_id: FullInvocationId,
+        response_sink: Option<ServiceInvocationResponseSink>,
+        method: ByteString,
         argument: Bytes,
     },
     NewOutboxMessage {
@@ -352,6 +355,14 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 )
                 .await?;
             }
+            Effect::SetStateOnly {
+                service_id,
+                key,
+                value,
+                ..
+            } => {
+                state_storage.store_state(&service_id, key, value).await?;
+            }
             Effect::ClearState {
                 service_id,
                 metadata,
@@ -370,6 +381,11 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     journal_entry,
                 )
                 .await?;
+            }
+            Effect::ClearStateOnly {
+                service_id, key, ..
+            } => {
+                state_storage.clear_state(&service_id, &key).await?;
             }
             Effect::GetStateAndAppendCompletedEntry {
                 key,
@@ -641,7 +657,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 InvocationStatus::Invoked(InvocationMetadata::new(
                     service_invocation.fid.invocation_uuid,
                     journal_metadata.clone(),
-                    service_invocation.response_sink,
+                    service_invocation.response_sink.clone(),
                     creation_time,
                     creation_time,
                 )),
@@ -655,6 +671,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         ) {
             collector.collect(ActuatorMessage::InvokeBuiltInService {
                 full_invocation_id: service_invocation.fid,
+                response_sink: service_invocation.response_sink,
+                method: service_invocation.method_name,
                 argument: service_invocation.argument.clone(),
             });
 

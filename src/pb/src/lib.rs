@@ -64,9 +64,21 @@ pub const HEALTH_SERVICE_NAME: &str = "grpc.health.v1.Health";
 pub mod builtin_service {
     use prost::bytes::Bytes;
     use restate_types::errors::InvocationError;
+    use restate_types::identifiers::FullInvocationId;
+    use restate_types::invocation::ServiceInvocationResponseSink;
 
     pub trait BuiltInService {
         fn invoke_builtin(&mut self, method: &str, input: Bytes) -> Result<Bytes, InvocationError>;
+    }
+
+    pub trait NonDeterministicBuiltInService {
+        fn invoke_builtin(
+            &mut self,
+            method: &str,
+            full_invocation_id: &FullInvocationId,
+            response_sink: Option<ServiceInvocationResponseSink>,
+            input: Bytes,
+        ) -> Result<(), InvocationError>;
     }
 }
 

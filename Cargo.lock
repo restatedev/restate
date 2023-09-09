@@ -4090,7 +4090,6 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "assert2",
- "async-trait",
  "bytes",
  "bytestring",
  "codederror",

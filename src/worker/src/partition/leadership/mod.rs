@@ -10,13 +10,13 @@
 
 use crate::partition::effects::{ActuatorMessage, StateStorage, StateStorageError};
 use crate::partition::shuffle::Shuffle;
-use crate::partition::{services, shuffle, storage, AckResponse, TimerValue};
+use crate::partition::{shuffle, storage, AckResponse, TimerValue};
+use assert2::let_assert;
 use futures::{future, Stream, StreamExt};
 use restate_invoker_api::{InvokeInputJournal, ServiceNotRunning};
 use restate_network::NetworkNotRunning;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
-use std::io::Bytes;
 use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -26,7 +26,10 @@ use tokio::task::JoinError;
 mod actuator;
 
 use crate::partition::services::non_deterministic;
+use crate::partition::state_machine::{StateReader, StateReaderError};
 pub(crate) use actuator::{ActuatorMessageCollector, ActuatorOutput, ActuatorStream};
+use restate_schema_impl::Schemas;
+use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
@@ -78,6 +81,8 @@ pub(crate) enum Error {
     Storage(#[from] restate_storage_api::StorageError),
     #[error(transparent)]
     StateStorage(#[from] StateStorageError),
+    #[error(transparent)]
+    StateReader(#[from] StateReaderError),
 }
 
 pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle> {
@@ -125,6 +130,7 @@ where
         self,
         leader_epoch: LeaderEpoch,
         partition_storage: &'a PartitionStorage,
+        schemas: &'a Schemas,
     ) -> Result<
         (
             ActuatorStream,
@@ -133,13 +139,13 @@ where
         Error,
     > {
         if let LeadershipState::Follower { .. } = self {
-            self.unchecked_become_leader(leader_epoch, partition_storage)
+            self.unchecked_become_leader(leader_epoch, partition_storage, schemas)
                 .await
         } else {
             let (_, follower_state) = self.become_follower().await?;
 
             follower_state
-                .unchecked_become_leader(leader_epoch, partition_storage)
+                .unchecked_become_leader(leader_epoch, partition_storage, schemas)
                 .await
         }
     }
@@ -148,6 +154,7 @@ where
         self,
         leader_epoch: LeaderEpoch,
         partition_storage: &'a PartitionStorage,
+        schemas: &'a Schemas,
     ) -> Result<
         (
             ActuatorStream,
@@ -157,7 +164,7 @@ where
     > {
         if let LeadershipState::Follower(mut follower_state) = self {
             let (mut service_invoker, service_invoker_output_rx) =
-                non_deterministic::ServiceInvoker::new(partition_storage);
+                non_deterministic::ServiceInvoker::new(partition_storage, schemas);
 
             let invoker_rx = Self::resume_invoked_invocations(
                 &mut follower_state.invoker_tx,
@@ -271,9 +278,17 @@ where
                 EntryType::Custom
             );
 
+            let status = transaction
+                .get_invocation_status(&full_invocation_id.service_id)
+                .await?;
+
+            let_assert!(InvocationStatus::Invoked(metadata) = status);
+
+            let method = metadata.journal_metadata.method;
+            let response_sink = metadata.response_sink;
             let argument = input_entry.entry;
             built_in_service_invoker
-                .invoke(full_invocation_id, argument)
+                .invoke(full_invocation_id, response_sink, &method, argument)
                 .await;
         }
 

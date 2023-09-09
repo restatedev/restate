@@ -27,6 +27,13 @@ impl prost_build::ServiceGenerator for RestateBuiltInServiceGen {
 
         // Everything is hidden behind the feature flag "builtin-service"
 
+        Self::generate_deterministic_built_in_svc(&service, buf);
+        Self::generate_non_deterministic_built_in_svc(&service, buf);
+    }
+}
+
+impl RestateBuiltInServiceGen {
+    fn generate_deterministic_built_in_svc(service: &Service, buf: &mut String) {
         let svc_interface_name = format!("{}BuiltInService", service.name);
         let svc_interface_method_signatures: String = service.methods.iter().map(|m| format!("fn {}(&mut self, input: {}) -> Result<{}, restate_types::errors::InvocationError>;\n", m.name, m.input_type, m.output_type)).collect();
 
@@ -59,6 +66,50 @@ impl prost_build::ServiceGenerator for RestateBuiltInServiceGen {
             #[cfg(feature = "builtin-service")]
             impl<T: {svc_interface_name}> crate::builtin_service::BuiltInService for {invoker_name}<T> {{
                 fn invoke_builtin(&mut self, method: &str, mut input: prost::bytes::Bytes) -> Result<prost::bytes::Bytes, restate_types::errors::InvocationError> {{
+                    match method {{
+                        {impl_built_in_service_match_arms}
+                        _ => Err(restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::NotFound, format!("{{}} not found", method)))
+                    }}
+                }}
+            }}
+
+        "#
+        );
+        buf.push_str(invoker.as_str());
+    }
+
+    fn generate_non_deterministic_built_in_svc(service: &Service, buf: &mut String) {
+        let svc_interface_name = format!("{}NonDeterministicBuiltInService", service.name);
+        let svc_interface_method_signatures: String = service.methods.iter().map(|m| format!("fn {}(&self, full_invocation_id: &restate_types::identifiers::FullInvocationId, response_sink: Option<restate_types::invocation::ServiceInvocationResponseSink>, input: {}) -> Result<(), restate_types::errors::InvocationError>;\n", m.name, m.input_type)).collect();
+
+        let interface_def = format!(
+            r#"
+            #[cfg(feature = "builtin-service")]
+            pub trait {svc_interface_name} {{
+                {svc_interface_method_signatures}
+            }}
+
+        "#
+        );
+
+        buf.push_str(interface_def.as_str());
+
+        let impl_built_in_service_match_arms: String = service.methods.iter().map(|m| format!(r#""{}" => {{
+            use prost::Message;
+
+            let mut input_t = {}::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
+            T::{}(self.0, full_invocation_id, response_sink, input_t)?;
+            Ok(())
+        }},"#, m.proto_name, m.input_type, m.name)).collect();
+        let invoker_name = format!("{}NonDeterministicInvoker", service.name);
+        let invoker = format!(
+            r#"
+            #[cfg(feature = "builtin-service")]
+            pub struct {invoker_name}<'a, T>(pub &'a T);
+
+            #[cfg(feature = "builtin-service")]
+            impl<'a, T: {svc_interface_name}> crate::builtin_service::NonDeterministicBuiltInService for {invoker_name}<'a, T> {{
+                fn invoke_builtin(&mut self, method: &str, full_invocation_id: &restate_types::identifiers::FullInvocationId, response_sink: Option<restate_types::invocation::ServiceInvocationResponseSink>, mut input: prost::bytes::Bytes) -> Result<(), restate_types::errors::InvocationError> {{
                     match method {{
                         {impl_built_in_service_match_arms}
                         _ => Err(restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::NotFound, format!("{{}} not found", method)))
