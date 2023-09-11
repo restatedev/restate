@@ -20,7 +20,6 @@ pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 use bytes::Bytes;
 use opentelemetry::Context;
 use restate_types::identifiers::FullInvocationId;
-use restate_types::invocation::{InvocationResponse, ResponseResult};
 use tonic::Status;
 
 // --- Data model used by handlers and protocol

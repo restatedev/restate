@@ -20,7 +20,6 @@ use http_body::Body;
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
-use prost_reflect::ReflectMessage;
 use restate_ingress_dispatcher::{IngressRequest, IngressRequestSender};
 use restate_pb::grpc::health;
 use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
@@ -28,9 +27,7 @@ use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
-use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::errors::UserErrorCode;
-use restate_types::invocation::{MaybeFullInvocationId, SpanRelation};
+use restate_types::invocation::SpanRelation;
 use std::sync::Arc;
 use std::task::Poll;
 use tokio::sync::Semaphore;
@@ -271,74 +268,6 @@ where
                     }
                     // This should not really happen because the method existence is checked before
                     return Err(Status::not_found("Not found"))
-                }
-
-                // --- Awakeables built-in service
-                if restate_pb::AWAKEABLES_SERVICE_NAME == service_name {
-                    let invocation_response = match method_name.as_str() {
-                        "Resolve" => {
-                            // Parse the ResolveAwakeableRequest
-                            let req = restate_pb::restate::ResolveAwakeableRequest::decode(
-                                req_payload
-                            ).map_err(|e| Status::invalid_argument(e.to_string()))?;
-
-                            let result = match req.result {
-                                None => {
-                                    return Err(Status::invalid_argument("result must be non-empty"));
-                                }
-                                Some(restate_pb::restate::resolve_awakeable_request::Result::BytesResult(bytes)) => bytes,
-                                Some(restate_pb::restate::resolve_awakeable_request::Result::JsonResult(value)) => {
-                                    Bytes::from(
-                                        serde_json::to_vec(&value.transcode_to_dynamic())
-                                            .map_err(|e| Status::invalid_argument(e.to_string()))?
-                                    )
-                                }
-                            };
-
-                            // Parse the awakeable identifier
-                            let id = AwakeableIdentifier::decode(req.id)
-                                .map_err(|e| Status::invalid_argument(e.to_string()))?;
-                            let (invocation_id, entry_index) = id.into_inner();
-
-                            InvocationResponse {
-                                id: MaybeFullInvocationId::Partial(invocation_id),
-                                entry_index,
-                                result: ResponseResult::Success(result),
-                            }
-                        },
-                        "Reject" => {
-                            // Parse the RejectAwakeableRequest
-                            let req = restate_pb::restate::RejectAwakeableRequest::decode(
-                                req_payload
-                            ).map_err(|e| Status::invalid_argument(e.to_string()))?;
-
-                            // Parse the awakeable identifier
-                            let id = AwakeableIdentifier::decode(req.id)
-                                .map_err(|e| Status::invalid_argument(e.to_string()))?;
-                            let (invocation_id, entry_index) = id.into_inner();
-
-                            InvocationResponse {
-                                id: MaybeFullInvocationId::Partial(invocation_id),
-                                entry_index,
-                                result: ResponseResult::Failure(UserErrorCode::Unknown, req.reason.into()),
-                            }
-                        },
-                        _ => return Err(Status::not_found("Not found"))
-                    };
-
-                    let (response, ack_rx) = IngressRequest::response(invocation_response);
-
-                    if request_tx.send(response).is_err() {
-                        debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
-                        return Err(Status::unavailable("Unavailable"));
-                    }
-
-                    let ack_result = ack_rx.await;
-
-                    return ack_result.map(|_| Bytes::default()).map_err(|_| {
-                        debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
-                        Status::unavailable("Unavailable")
-                    });
                 }
 
                 let mut wait_response = true;

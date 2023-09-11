@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+builtin-service = ["dep:restate_types"]
 mocks = []
 
 [dependencies]
@@ -16,6 +17,7 @@ once_cell = { version = "1.18" }
 prost = { workspace = true }
 prost-types = { workspace = true }
 prost-reflect = { workspace = true }
+restate_types = { workspace = true, optional = true }
 tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
 
 [build-dependencies]

@@ -153,10 +153,8 @@ mod tests {
     use hyper::Body;
     use prost::Message;
     use restate_ingress_dispatcher::IngressRequest;
-    use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_test_util::{assert_eq, test};
-    use restate_types::identifiers::{FullInvocationId, InvocationId};
-    use restate_types::invocation::MaybeFullInvocationId;
+    use restate_types::identifiers::InvocationId;
     use serde_json::json;
     use std::net::SocketAddr;
     use std::time::Duration;
@@ -278,67 +276,6 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(id, InvocationId::from(fid));
-
-        handle.close().await;
-    }
-
-    #[test(tokio::test)]
-    async fn test_awakeables_service_http_connect_call() {
-        let (address, input, handle) = bootstrap_test().await;
-
-        let fid = FullInvocationId::mock_random();
-        let awakeable_id = AwakeableIdentifier::new(fid.clone().into(), 2).encode();
-
-        // Send the request
-        let json_payload = json!({
-            "id": awakeable_id,
-            "json_result": {
-                "my_result": false
-            }
-        });
-        let http_response = tokio::spawn(async move {
-            hyper::Client::new()
-                .request(
-                    hyper::Request::post(format!(
-                        "http://{address}/dev.restate.Awakeables/Resolve"
-                    ))
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&json_payload).unwrap()))
-                    .unwrap(),
-                )
-                .await
-                .unwrap()
-        });
-        tokio::pin!(http_response);
-
-        // Get the function invocation and assert on it
-        let (invocation_response, ack_tx) = input.await.unwrap().unwrap().expect_response();
-        assert_eq!(
-            invocation_response.id,
-            MaybeFullInvocationId::Partial(fid.into())
-        );
-        assert_eq!(invocation_response.entry_index, 2);
-        assert_eq!(
-            invocation_response.result,
-            ResponseResult::Success(Bytes::from(
-                json!({
-                    "my_result": false
-                })
-                .to_string()
-            ))
-        );
-
-        let timed_out_http_response =
-            tokio::time::timeout(Duration::from_millis(10), &mut http_response);
-
-        // check that the http response won't get completed
-        assert!(timed_out_http_response.await.is_err());
-
-        ack_tx.send(()).unwrap();
-
-        let http_response = http_response.await.unwrap();
-
-        assert_eq!(http_response.status(), StatusCode::OK);
 
         handle.close().await;
     }

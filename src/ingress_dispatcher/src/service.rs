@@ -184,62 +184,50 @@ impl DispatcherLoopHandler {
         &mut self,
         ingress_request: IngressRequest,
     ) -> IngressDispatcherOutput {
-        match ingress_request.0 {
-            IngressRequestInner::Invocation(service_invocation, request_mode) => {
-                let IngressServiceInvocation {
-                    fid,
-                    method_name,
-                    argument,
-                    span_context,
-                } = service_invocation;
+        let IngressRequest {
+            fid,
+            method_name,
+            argument,
+            span_context,
+            request_mode,
+        } = ingress_request;
 
-                let (response_sink, dedup_source, msg_index) = match request_mode {
-                    IngressRequestMode::RequestResponse(response_sender) => {
-                        self.waiting_responses.insert(fid.clone(), response_sender);
-                        (
-                            Some(ServiceInvocationResponseSink::Ingress(
-                                self.ingress_dispatcher_id,
-                            )),
-                            None,
-                            self.get_and_increment_msg_index(),
-                        )
-                    }
-                    IngressRequestMode::FireAndForget(ack_sender) => {
-                        let msg_index = self.get_and_increment_msg_index();
-                        self.msg_index += 1;
-                        self.waiting_for_acks.insert(msg_index, ack_sender);
-                        (None, None, msg_index)
-                    }
-                    IngressRequestMode::DedupFireAndForget(dedup_id, ack_sender) => {
-                        self.waiting_for_acks_with_custom_id
-                            .insert(dedup_id.clone(), ack_sender);
-                        (None, Some(dedup_id.0), dedup_id.1)
-                    }
-                };
-
-                IngressDispatcherOutput::service_invocation(
-                    ServiceInvocation {
-                        fid,
-                        method_name,
-                        argument,
-                        response_sink,
-                        span_context,
-                    },
-                    self.ingress_dispatcher_id,
-                    dedup_source,
-                    msg_index,
+        let (response_sink, dedup_source, msg_index) = match request_mode {
+            IngressRequestMode::RequestResponse(response_sender) => {
+                self.waiting_responses.insert(fid.clone(), response_sender);
+                (
+                    Some(ServiceInvocationResponseSink::Ingress(
+                        self.ingress_dispatcher_id,
+                    )),
+                    None,
+                    self.get_and_increment_msg_index(),
                 )
             }
-            IngressRequestInner::Response(response, ack_listener) => {
+            IngressRequestMode::FireAndForget(ack_sender) => {
                 let msg_index = self.get_and_increment_msg_index();
-                self.waiting_for_acks.insert(msg_index, ack_listener);
-                IngressDispatcherOutput::awakeable_completion(
-                    response,
-                    self.ingress_dispatcher_id,
-                    msg_index,
-                )
+                self.msg_index += 1;
+                self.waiting_for_acks.insert(msg_index, ack_sender);
+                (None, None, msg_index)
             }
-        }
+            IngressRequestMode::DedupFireAndForget(dedup_id, ack_sender) => {
+                self.waiting_for_acks_with_custom_id
+                    .insert(dedup_id.clone(), ack_sender);
+                (None, Some(dedup_id.0), dedup_id.1)
+            }
+        };
+
+        IngressDispatcherOutput::service_invocation(
+            ServiceInvocation {
+                fid,
+                method_name,
+                argument,
+                response_sink,
+                span_context,
+            },
+            self.ingress_dispatcher_id,
+            dedup_source,
+            msg_index,
+        )
     }
 
     fn get_and_increment_msg_index(&mut self) -> MessageIndex {
