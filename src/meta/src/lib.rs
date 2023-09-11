@@ -161,14 +161,16 @@ impl Meta {
     pub async fn run(
         self,
         drain: drain::Watch,
-        worker_handle: impl restate_worker_api::Handle + Send + Sync + 'static,
+        worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
     ) -> Result<(), Error> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         let meta_handle = self.service.meta_handle();
         let schemas = self.schemas();
 
-        let service_fut = self.service.run(shutdown_watch.clone());
+        let service_fut = self
+            .service
+            .run(worker_handle.clone(), shutdown_watch.clone());
         let rest_endpoint_fut =
             self.rest_endpoint
                 .run(meta_handle, schemas, worker_handle, shutdown_watch);

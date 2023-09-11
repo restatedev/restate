@@ -9,10 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::bail;
+use restate_schema_api::subscription::Subscription;
 use restate_types::identifiers::InvocationId;
 use restate_types::retries::RetryPolicy;
 use schemars::gen::SchemaSettings;
 use std::env;
+use std::future::ready;
 use std::time::Duration;
 
 fn generate_config_schema() -> anyhow::Result<()> {
@@ -32,12 +34,38 @@ fn generate_default_config() -> anyhow::Result<()> {
 }
 
 // Need this for worker Handle
+#[derive(Clone)]
 struct Mock;
 
 impl restate_worker_api::Handle for Mock {
     type Future = std::future::Ready<Result<(), restate_worker_api::Error>>;
+    type SubscriptionControllerHandle = Mock;
 
     fn kill_invocation(&self, _: InvocationId) -> Self::Future {
+        ready(Ok(()))
+    }
+
+    fn subscription_controller_handle(&self) -> Self::SubscriptionControllerHandle {
+        Mock
+    }
+}
+
+impl restate_worker_api::SubscriptionController for Mock {
+    type Future = std::future::Ready<Result<(), restate_worker_api::Error>>;
+
+    fn start_subscription(&self, _: Subscription) -> Self::Future {
+        ready(Ok(()))
+    }
+
+    fn stop_subscription(&self, _: String) -> Self::Future {
+        ready(Ok(()))
+    }
+}
+
+impl restate_schema_api::subscription::SubscriptionValidator for Mock {
+    type Error = restate_worker_api::Error;
+
+    fn validate(&self, _: Subscription) -> Result<Subscription, Self::Error> {
         unimplemented!()
     }
 }

@@ -278,7 +278,7 @@ where
                     let invocation_response = match method_name.as_str() {
                         "Resolve" => {
                             // Parse the ResolveAwakeableRequest
-                            let req = restate_pb::restate::services::ResolveAwakeableRequest::decode(
+                            let req = restate_pb::restate::ResolveAwakeableRequest::decode(
                                 req_payload
                             ).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
@@ -286,8 +286,8 @@ where
                                 None => {
                                     return Err(Status::invalid_argument("result must be non-empty"));
                                 }
-                                Some(restate_pb::restate::services::resolve_awakeable_request::Result::BytesResult(bytes)) => bytes,
-                                Some(restate_pb::restate::services::resolve_awakeable_request::Result::JsonResult(value)) => {
+                                Some(restate_pb::restate::resolve_awakeable_request::Result::BytesResult(bytes)) => bytes,
+                                Some(restate_pb::restate::resolve_awakeable_request::Result::JsonResult(value)) => {
                                     Bytes::from(
                                         serde_json::to_vec(&value.transcode_to_dynamic())
                                             .map_err(|e| Status::invalid_argument(e.to_string()))?
@@ -308,7 +308,7 @@ where
                         },
                         "Reject" => {
                             // Parse the RejectAwakeableRequest
-                            let req = restate_pb::restate::services::RejectAwakeableRequest::decode(
+                            let req = restate_pb::restate::RejectAwakeableRequest::decode(
                                 req_payload
                             ).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
@@ -345,7 +345,7 @@ where
 
                 // --- Ingress built-in service
                 if is_ingress_invoke(&service_name, &method_name) {
-                    let invoke_request = restate_pb::restate::services::InvokeRequest::decode(req_payload)
+                    let invoke_request = restate_pb::restate::InvokeRequest::decode(req_payload)
                         .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
                     service_name = invoke_request.service;
@@ -387,7 +387,7 @@ where
                         return Err(Status::unavailable("Unavailable"));
                     }
 
-                    return ack_rx.await.map(|_| restate_pb::restate::services::InvokeResponse {
+                    return ack_rx.await.map(|_| restate_pb::restate::InvokeResponse {
                         id,
                     }.encode_to_vec().into()).map_err(|_| {
                         debug!("Ingress dispatcher is closed while there is still an invocation in flight.");

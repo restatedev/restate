@@ -77,6 +77,11 @@ KNATIVE_VERSION=1.8.0 curl -sL https://raw.githubusercontent.com/csantanapr/knat
 
 This section explains how to generate the configuration documentation and REST api documentation.
 
+### Workaround for stuck _Analysis..._ in CLion
+
+Due to https://github.com/intellij-rust/intellij-rust/issues/10847, disable Rust macro expansion feature of the Rust IntelliJ plugin, 
+as described here https://plugins.jetbrains.com/plugin/8182-rust/docs/rust-project-settings.html#general-settings.
+
 ### Build the configuration documentation
 
 Requirements:

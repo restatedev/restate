@@ -61,9 +61,7 @@ impl Application {
     pub async fn run(mut self, drain: drain::Watch) -> Result<(), ApplicationError> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
-        // TODO This is a super terrible hack to enforce meta reloads from disk before
-        //  a partition processor starts processing enqueued requests.
-        //  Will be replaced with https://github.com/restatedev/restate/issues/91
+        // Init the meta. This will reload the schemas in memory.
         self.meta.init().await?;
 
         let worker_command_tx = self.worker.worker_command_tx();

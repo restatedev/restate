@@ -29,12 +29,10 @@ pub mod grpc {
     }
 }
 pub mod restate {
-    pub mod services {
-        #![allow(warnings)]
-        #![allow(clippy::all)]
-        #![allow(unknown_lints)]
-        include!(concat!(env!("OUT_DIR"), "/dev.restate.rs"));
-    }
+    #![allow(warnings)]
+    #![allow(clippy::all)]
+    #![allow(unknown_lints)]
+    include!(concat!(env!("OUT_DIR"), "/dev.restate.rs"));
 }
 
 pub static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {

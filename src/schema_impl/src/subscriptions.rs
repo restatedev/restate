@@ -17,4 +17,9 @@ impl SubscriptionResolver for Schemas {
         let schemas = self.0.load();
         schemas.subscriptions.get(id).cloned()
     }
+
+    fn list_subscriptions(&self) -> Vec<Subscription> {
+        let schemas = self.0.load();
+        schemas.subscriptions.values().cloned().collect()
+    }
 }

@@ -324,6 +324,20 @@ pub mod key {
         Singleton,
     }
 
+    impl ServiceInstanceType {
+        pub fn keyed_with_scalar_key<'a>(
+            methods: impl IntoIterator<Item = (&'a str, u32)>,
+        ) -> Self {
+            Self::Keyed {
+                key_structure: KeyStructure::Scalar,
+                service_methods_key_field_root_number: methods
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            }
+        }
+    }
+
     /// This structure provides the directives to the key parser to parse nested messages.
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -547,6 +561,8 @@ pub mod subscription {
 
     pub trait SubscriptionResolver {
         fn get_subscription(&self, id: &str) -> Option<Subscription>;
+
+        fn list_subscriptions(&self) -> Vec<Subscription>;
     }
 
     pub trait SubscriptionValidator {

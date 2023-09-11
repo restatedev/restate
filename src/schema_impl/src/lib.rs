@@ -191,7 +191,7 @@ impl Schemas {
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
         validator: V,
-    ) -> Result<(String, SchemasUpdateCommand), RegistrationError> {
+    ) -> Result<(Subscription, SchemasUpdateCommand), RegistrationError> {
         self.0
             .load()
             .compute_add_subscription(id, source, sink, metadata, validator)
@@ -502,7 +502,7 @@ pub(crate) mod schemas_impl {
             sink: Uri,
             metadata: Option<HashMap<String, String>>,
             validator: V,
-        ) -> Result<(String, SchemasUpdateCommand), RegistrationError> {
+        ) -> Result<(Subscription, SchemasUpdateCommand), RegistrationError> {
             // TODO We could generate a more human readable uuid here by taking the source and sink,
             // and adding an incremental number in case of collision.
             let id = id.unwrap_or_else(|| uuid::Uuid::now_v7().as_simple().to_string());
@@ -565,7 +565,9 @@ pub(crate) mod schemas_impl {
                         })?
                         .input();
                     let is_input_type_keyed = match method_input_type.full_name() {
-                        "dev.restate.KeyedEvent" => {
+                        "dev.restate.KeyedEvent" | "dev.restate.StringKeyedEvent" => {
+                            // Because on the wire KeyedEvent and StringKeyedEvent are the same,
+                            // we don't need to specify this difference in the subscription data model.
                             true
                         },
                         "dev.restate.Event" => {
@@ -597,14 +599,17 @@ pub(crate) mod schemas_impl {
 
             let subscription = validator
                 .validate(Subscription::new(
-                    id.clone(),
+                    id,
                     source,
                     sink,
                     metadata.unwrap_or_default(),
                 ))
                 .map_err(|e| RegistrationError::InvalidSubscription(e.into()))?;
 
-            Ok((id, SchemasUpdateCommand::AddSubscription(subscription)))
+            Ok((
+                subscription.clone(),
+                SchemasUpdateCommand::AddSubscription(subscription),
+            ))
         }
 
         pub(crate) fn compute_remove_subscription(

@@ -156,6 +156,9 @@ skip = [
 
     # clash between datafusion and arrow
     {name = "wasi"},
+
+    # clash between rdkafka and many other libraries
+    {name = "indexmap"},
 ]
 
 deny = [

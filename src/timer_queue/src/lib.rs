@@ -58,6 +58,10 @@ impl<T> TimerQueue<T> {
         Self(BinaryHeap::new())
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn sleep_until(&mut self, sleep_until: SystemTime, payload: T) {
         self.0.push(Reverse(Timer {
             sleep_until,

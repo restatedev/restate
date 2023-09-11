@@ -28,13 +28,11 @@ fn main() -> std::io::Result<()> {
             &[
                 "proto/grpc/health/v1/health.proto",
                 "proto/grpc/reflection/v1alpha/reflection.proto",
+                "proto/dev/restate/ext.proto",
                 "proto/dev/restate/services.proto",
+                "proto/dev/restate/events.proto",
             ],
-            &[
-                "proto/grpc/health/v1",
-                "proto/grpc/reflection/v1alpha",
-                "proto/dev/restate",
-            ],
+            &["proto"],
         )?;
 
     prost_build::Config::new()
@@ -44,9 +42,14 @@ fn main() -> std::io::Result<()> {
         )
         .bytes(["."])
         .service_generator(tonic_build::configure().service_generator())
+        .extern_path(".dev.restate", "crate::restate")
         .compile_protos(
-            &["tests/proto/test.proto", "tests/proto/greeter.proto"],
-            &["tests/proto"],
+            &[
+                "tests/proto/test.proto",
+                "tests/proto/greeter.proto",
+                "tests/proto/event_handler.proto",
+            ],
+            &["proto", "tests/proto"],
         )?;
 
     Ok(())
