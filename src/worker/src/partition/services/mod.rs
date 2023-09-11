@@ -11,7 +11,7 @@
 use crate::partition::effects::Effects;
 use bytes::Bytes;
 use restate_pb::builtin_service::BuiltInService;
-use restate_pb::restate::services::*;
+use restate_pb::restate::AwakeablesInvoker;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::FullInvocationId;
@@ -72,7 +72,7 @@ mod awakeables {
     use super::*;
 
     use prost_reflect::ReflectMessage;
-    use restate_pb::restate::services::AwakeablesBuiltInService;
+    use restate_pb::restate::*;
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_types::invocation::{InvocationResponse, MaybeFullInvocationId};
 

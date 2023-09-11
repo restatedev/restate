@@ -100,8 +100,12 @@ fn main() -> std::io::Result<()> {
         .bytes(["."])
         .service_generator(Box::new(RestateBuiltInServiceGen))
         .compile_protos(
-            &["proto/dev/restate/services.proto"],
-            &["proto/dev/restate"],
+            &[
+                "proto/dev/restate/services.proto",
+                "proto/dev/restate/events.proto",
+                "proto/dev/restate/ext.proto",
+            ],
+            &["proto"],
         )?;
 
     prost_build::Config::new()
