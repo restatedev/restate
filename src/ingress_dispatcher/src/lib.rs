@@ -293,6 +293,38 @@ pub mod mocks {
             (fid, method_name, argument, span_context, ack_sender)
         }
 
+        pub fn expect_dedupable_background_invocation(
+            self,
+        ) -> (
+            FullInvocationId,
+            ByteString,
+            Bytes,
+            ServiceInvocationSpanContext,
+            IngressDeduplicationId,
+            AckSender,
+        ) {
+            let_assert!(
+                IngressRequestInner::Invocation(
+                    IngressServiceInvocation {
+                        fid,
+                        method_name,
+                        argument,
+                        span_context,
+                        ..
+                    },
+                    IngressRequestMode::DedupFireAndForget(dedup_id, ack_sender)
+                ) = self.0
+            );
+            (
+                fid,
+                method_name,
+                argument,
+                span_context,
+                dedup_id,
+                ack_sender,
+            )
+        }
+
         pub fn expect_response(self) -> (InvocationResponse, AckSender) {
             let_assert!(IngressRequestInner::Response(invocation_response, ack_sender) = self.0);
             (invocation_response, ack_sender)

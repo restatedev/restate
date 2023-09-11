@@ -11,6 +11,13 @@
 use once_cell::sync::Lazy;
 use prost_reflect::DescriptorPool;
 
+pub mod eventhandler {
+    #![allow(warnings)]
+    #![allow(clippy::all)]
+    #![allow(unknown_lints)]
+    include!(concat!(env!("OUT_DIR"), "/eventhandler.rs"));
+}
+
 pub mod greeter {
     #![allow(warnings)]
     #![allow(clippy::all)]
@@ -34,3 +41,7 @@ pub static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
 
 pub const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
 pub const ANOTHER_GREETER_SERVICE_NAME: &str = "greeter.AnotherGreeter";
+
+pub const EVENT_HANDLER_SERVICE_NAME: &str = "eventhandler.EventHandler";
+pub const KEYED_EVENT_HANDLER_SERVICE_NAME: &str = "eventhandler.KeyedEventHandler";
+pub const STRING_KEYED_EVENT_HANDLER_SERVICE_NAME: &str = "eventhandler.StringKeyedEventHandler";

@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use super::subscription_integration;
+
 use crate::partition::{AckCommand, Command};
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -26,25 +28,39 @@ enum WorkerCommand {
 }
 
 #[derive(Debug, Clone)]
-pub struct WorkerCommandSender(mpsc::Sender<WorkerCommand>);
+pub struct WorkerCommandSender {
+    command_tx: mpsc::Sender<WorkerCommand>,
+    subscription_controller_handle: subscription_integration::SubscriptionControllerHandle,
+}
 
 impl WorkerCommandSender {
-    fn new(command_tx: mpsc::Sender<WorkerCommand>) -> Self {
-        Self(command_tx)
+    fn new(
+        command_tx: mpsc::Sender<WorkerCommand>,
+        subscription_controller_handle: subscription_integration::SubscriptionControllerHandle,
+    ) -> Self {
+        Self {
+            command_tx,
+            subscription_controller_handle,
+        }
     }
 }
 
 impl restate_worker_api::Handle for WorkerCommandSender {
     type Future = BoxFuture<'static, Result<(), restate_worker_api::Error>>;
+    type SubscriptionControllerHandle = subscription_integration::SubscriptionControllerHandle;
 
     fn kill_invocation(&self, invocation_id: InvocationId) -> Self::Future {
-        let tx = self.0.clone();
+        let tx = self.command_tx.clone();
         async move {
             tx.send(WorkerCommand::KillInvocation(invocation_id))
                 .await
                 .map_err(|_| restate_worker_api::Error::Unreachable)
         }
         .boxed()
+    }
+
+    fn subscription_controller_handle(&self) -> Self::SubscriptionControllerHandle {
+        self.subscription_controller_handle.clone()
     }
 }
 
@@ -71,6 +87,7 @@ where
 {
     pub(crate) fn new(
         proposal_tx: ProposalSender<PeerTarget<AckCommand>>,
+        subscription_controller_handle: subscription_integration::SubscriptionControllerHandle,
         partition_table: PartitionTable,
         channel_size: usize,
     ) -> Self {
@@ -78,7 +95,7 @@ where
 
         Self {
             command_rx,
-            command_tx: WorkerCommandSender::new(command_tx),
+            command_tx: WorkerCommandSender::new(command_tx, subscription_controller_handle),
             proposal_tx,
             partition_table,
         }

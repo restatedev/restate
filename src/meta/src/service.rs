@@ -19,6 +19,7 @@ use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use restate_hyper_util::proxy_connector::Proxy;
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
+use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
 use restate_schema_impl::{
     InsertServiceUpdateCommand, RegistrationError, Schemas, SchemasUpdateCommand,
     ServiceRegistrationRequest,
@@ -26,8 +27,9 @@ use restate_schema_impl::{
 use restate_service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 use restate_types::retries::RetryPolicy;
+use restate_worker_api::SubscriptionController;
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum MetaError {
@@ -67,6 +69,15 @@ enum MetaHandleRequest {
     RemoveEndpoint {
         endpoint_id: EndpointId,
     },
+    CreateSubscription {
+        id: Option<String>,
+        source: Uri,
+        sink: Uri,
+        metadata: Option<HashMap<String, String>>,
+    },
+    DeleteSubscription {
+        subscription_id: String,
+    },
 }
 
 pub(crate) struct DiscoverEndpointResponse {
@@ -78,6 +89,8 @@ enum MetaHandleResponse {
     DiscoverEndpoint(Result<DiscoverEndpointResponse, MetaError>),
     ModifyService(Result<(), MetaError>),
     RemoveEndpoint(Result<(), MetaError>),
+    CreateSubscription(Result<Subscription, MetaError>),
+    DeleteSubscription(Result<(), MetaError>),
 }
 
 impl MetaHandle {
@@ -136,6 +149,47 @@ impl MetaHandle {
             })
             .map_err(|_e| MetaError::MetaClosed)?
     }
+
+    pub(crate) async fn create_subscription(
+        &self,
+        id: Option<String>,
+        source: Uri,
+        sink: Uri,
+        metadata: Option<HashMap<String, String>>,
+    ) -> Result<Subscription, MetaError> {
+        let (cmd, response_tx) = Command::prepare(MetaHandleRequest::CreateSubscription {
+            id,
+            source,
+            sink,
+            metadata,
+        });
+        self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
+        response_tx
+            .await
+            .map(|res| match res {
+                MetaHandleResponse::CreateSubscription(res) => res,
+                #[allow(unreachable_patterns)]
+                _ => panic!("Unexpected response message, this is a bug"),
+            })
+            .map_err(|_e| MetaError::MetaClosed)?
+    }
+
+    pub(crate) async fn delete_subscription(
+        &self,
+        subscription_id: String,
+    ) -> Result<(), MetaError> {
+        let (cmd, response_tx) =
+            Command::prepare(MetaHandleRequest::DeleteSubscription { subscription_id });
+        self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
+        response_tx
+            .await
+            .map(|res| match res {
+                MetaHandleResponse::DeleteSubscription(res) => res,
+                #[allow(unreachable_patterns)]
+                _ => panic!("Unexpected response message, this is a bug"),
+            })
+            .map_err(|_e| MetaError::MetaClosed)?
+    }
 }
 
 // -- Service implementation
@@ -180,10 +234,14 @@ where
     }
 
     pub async fn init(&mut self) -> Result<(), MetaError> {
-        self.reload().await
+        self.reload_schemas().await
     }
 
-    pub async fn run(mut self, drain: drain::Watch) -> Result<(), MetaError> {
+    pub async fn run(
+        mut self,
+        worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
+        drain: drain::Watch,
+    ) -> Result<(), MetaError> {
         debug_assert!(
             self.reloaded,
             "The Meta service was not init-ed before running it"
@@ -191,6 +249,12 @@ where
 
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
+
+        // The reason we reload subscriptions here and not in init() is because
+        // reload_subscriptions writes to a bounded channel read by the worker.
+        // If the worker is not running, this could deadlock when reaching the channel capacity.
+        // While here, we're safe to assume the worker is running and will read from that channel.
+        self.reload_subscriptions(&worker_handle).await;
 
         loop {
             tokio::select! {
@@ -215,6 +279,18 @@ where
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
+                        ),
+                        MetaHandleRequest::CreateSubscription { id, source, sink, metadata } => MetaHandleResponse::CreateSubscription(
+                            self.create_subscription(id, source, sink, metadata, worker_handle.clone()).await
+                                .map_err(|e| {
+                                    warn_it!(e); e
+                                })
+                        ),
+                        MetaHandleRequest::DeleteSubscription { subscription_id } => MetaHandleResponse::DeleteSubscription(
+                            self.delete_subscription(subscription_id, worker_handle.clone()).await
+                                .map_err(|e| {
+                                    warn_it!(e); e
+                                })
                         )
                     };
 
@@ -229,11 +305,24 @@ where
         }
     }
 
-    async fn reload(&mut self) -> Result<(), MetaError> {
+    async fn reload_schemas(&mut self) -> Result<(), MetaError> {
         let update_commands = self.storage.reload().await?;
         self.schemas.apply_updates(update_commands)?;
         self.reloaded = true;
         Ok(())
+    }
+
+    async fn reload_subscriptions(
+        &mut self,
+        worker_handle: &(impl restate_worker_api::Handle + Send + Sync + 'static),
+    ) {
+        for subscription in self.schemas.list_subscriptions() {
+            // If the worker is closing, we can ignore this
+            let _ = worker_handle
+                .subscription_controller_handle()
+                .start_subscription(subscription)
+                .await;
+        }
     }
 
     async fn discover_endpoint(
@@ -301,6 +390,51 @@ where
         // Compute the diff and propagate updates
         let update_commands = self.schemas.compute_remove_endpoint(endpoint_id)?;
         self.store_and_apply_updates(update_commands).await?;
+
+        Ok(())
+    }
+
+    async fn create_subscription(
+        &mut self,
+        id: Option<String>,
+        source: Uri,
+        sink: Uri,
+        metadata: Option<HashMap<String, String>>,
+        worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
+    ) -> Result<Subscription, MetaError> {
+        info!(restate.subscription.source = %source, restate.subscription.sink = %sink, "Create subscription");
+
+        // Compute the diff and propagate updates
+        let (sub, update_command) = self.schemas.compute_add_subscription(
+            id,
+            source,
+            sink,
+            metadata,
+            worker_handle.subscription_controller_handle(),
+        )?;
+        self.store_and_apply_updates(vec![update_command]).await?;
+        let _ = worker_handle
+            .subscription_controller_handle()
+            .start_subscription(sub.clone())
+            .await;
+
+        Ok(sub)
+    }
+
+    async fn delete_subscription(
+        &mut self,
+        sub_id: String,
+        worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
+    ) -> Result<(), MetaError> {
+        info!(restate.subscription.id = %sub_id, "Delete subscription");
+
+        // Compute the diff and propagate updates
+        let update_command = self.schemas.compute_remove_subscription(sub_id.clone())?;
+        self.store_and_apply_updates(vec![update_command]).await?;
+        let _ = worker_handle
+            .subscription_controller_handle()
+            .stop_subscription(sub_id)
+            .await;
 
         Ok(())
     }

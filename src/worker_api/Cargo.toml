@@ -8,5 +8,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
+restate_schema_api = { workspace = true, features = ["subscription"]}
 restate_types = { workspace = true }
 thiserror = { workspace = true }

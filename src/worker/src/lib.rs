@@ -22,6 +22,7 @@ use partition::ack::AckCommand;
 use partition::shuffle;
 use restate_consensus::Consensus;
 use restate_ingress_dispatcher::Service as IngressDispatcherService;
+use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::{
     ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
@@ -44,11 +45,16 @@ mod network_integration;
 mod partition;
 mod partitioning_scheme;
 mod services;
+mod subscription_integration;
 mod util;
 
 pub use restate_ingress_grpc::{
     Options as IngressOptions, OptionsBuilder as IngressOptionsBuilder,
     OptionsBuilderError as IngressOptionsBuilderError,
+};
+pub use restate_ingress_kafka::{
+    Options as KafkaIngressOptions, OptionsBuilder as KafkaIngressOptionsBuilder,
+    OptionsBuilderError as KafkaIngressOptionsBuilderError,
 };
 pub use restate_invoker_impl::{
     Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
@@ -98,6 +104,8 @@ pub struct Options {
     #[cfg_attr(feature = "options_schema", schemars(default))]
     ingress_grpc: IngressOptions,
     #[cfg_attr(feature = "options_schema", schemars(default))]
+    kafka: KafkaIngressOptions,
+    #[cfg_attr(feature = "options_schema", schemars(default))]
     invoker: InvokerOptions,
     /// # Partitions
     ///
@@ -120,6 +128,7 @@ impl Default for Options {
             storage_query: Default::default(),
             storage_rocksdb: Default::default(),
             ingress_grpc: Default::default(),
+            kafka: Default::default(),
             invoker: Default::default(),
             partitions: Options::default_partitions(),
         }
@@ -204,6 +213,7 @@ pub struct Worker {
         Schemas,
     >,
     external_client_ingress_runner: ExternalClientIngressRunner,
+    ingress_kafka: IngressKafkaService,
     services: Services<FixedConsecutivePartitions>,
 }
 
@@ -212,6 +222,7 @@ impl Worker {
         let Options {
             channel_size,
             ingress_grpc,
+            kafka,
             timers,
             storage_query,
             storage_rocksdb,
@@ -233,10 +244,20 @@ impl Worker {
             channel_size,
         );
 
+        // ingress_grpc
         let external_client_ingress = ingress_grpc.build(
             ingress_dispatcher_service.create_ingress_request_sender(),
             schemas.clone(),
         );
+
+        // ingress_kafka
+        let kafka_config_clone = kafka.clone();
+        let ingress_kafka = kafka.build(ingress_dispatcher_service.create_ingress_request_sender());
+        let subscription_controller_handle =
+            subscription_integration::SubscriptionControllerHandle::new(
+                kafka_config_clone,
+                ingress_kafka.create_command_sender(),
+            );
 
         let partition_table = FixedConsecutivePartitions::new(num_partition_processors);
 
@@ -290,6 +311,7 @@ impl Worker {
 
         let services = Services::new(
             consensus.create_proposal_sender(),
+            subscription_controller_handle,
             partition_table,
             channel_size,
         );
@@ -305,6 +327,7 @@ impl Worker {
                 external_client_ingress,
                 network_ingress_sender,
             ),
+            ingress_kafka,
             services,
         })
     }
@@ -339,7 +362,7 @@ impl Worker {
         ((peer_id, command_tx), processor)
     }
 
-    pub fn worker_command_tx(&self) -> impl restate_worker_api::Handle + Send + Sync {
+    pub fn worker_command_tx(&self) -> impl restate_worker_api::Handle + Clone + Send + Sync {
         self.services.worker_command_tx()
     }
 
@@ -359,6 +382,7 @@ impl Worker {
             .into_iter()
             .map(|partition_processor| tokio::spawn(partition_processor.run()))
             .collect();
+        let mut ingress_kafka_handle = tokio::spawn(self.ingress_kafka.run(shutdown_watch.clone()));
         let mut services_handle = tokio::spawn(self.services.run(shutdown_watch));
 
         let shutdown = drain.signaled();
@@ -379,6 +403,7 @@ impl Worker {
                     processors_handles.collect::<Vec<_>>(),
                     invoker_handle,
                     external_client_ingress_handle,
+                    ingress_kafka_handle,
                     services_handle);
 
                 debug!("Completed shutdown of worker");
@@ -411,6 +436,10 @@ impl Worker {
             external_client_ingress_result = &mut external_client_ingress_handle => {
                 external_client_ingress_result.map_err(|err| Error::component_panic("external client ingress", err))??;
                 panic!("Unexpected termination of external client ingress.");
+            },
+            ingress_kafka_result = &mut ingress_kafka_handle => {
+                ingress_kafka_result.map_err(|err| Error::component_panic("kafka ingress", err))?;
+                panic!("Unexpected termination of kafka ingress.");
             },
             services_result = &mut services_handle => {
                 services_result.map_err(|err| Error::component_panic("worker services", err))??;

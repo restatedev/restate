@@ -1,0 +1,41 @@
+// Copyright (c) 2023 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+// Restate extensions.
+// This package contains the definition of the protobuf extensions to define Restate services.
+// For more details, check out the documentation: https://docs.restate.dev/services/service_type
+package dev.restate.ext;
+
+import "google/protobuf/descriptor.proto";
+
+option java_multiple_files = true;
+option java_package = "dev.restate.generated.ext";
+option go_package = "restate.dev/sdk-go/pb/ext";
+
+enum ServiceType {
+  // protolint:disable:next ENUM_FIELD_NAMES_ZERO_VALUE_END_WITH
+  UNKEYED = 0;
+  KEYED = 1;
+  SINGLETON = 2;
+}
+
+enum FieldType {
+  // protolint:disable:next ENUM_FIELD_NAMES_ZERO_VALUE_END_WITH
+  KEY = 0;
+}
+
+extend google.protobuf.ServiceOptions {
+  optional ServiceType service_type = 51234;
+}
+
+extend google.protobuf.FieldOptions {
+  optional FieldType field = 51234;
+}

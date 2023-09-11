@@ -37,6 +37,8 @@ pub enum MetaApiError {
         service_name: String,
         method_name: String,
     },
+    #[error("The requested subscription '{0}' does not exist")]
+    SubscriptionNotFound(String),
     #[error(transparent)]
     Meta(#[from] MetaError),
     #[error(transparent)]
@@ -60,7 +62,8 @@ impl IntoResponse for MetaApiError {
         let status_code = match &self {
             MetaApiError::ServiceNotFound(_)
             | MetaApiError::MethodNotFound { .. }
-            | MetaApiError::ServiceEndpointNotFound(_) => StatusCode::NOT_FOUND,
+            | MetaApiError::ServiceEndpointNotFound(_)
+            | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
             MetaApiError::Meta(MetaError::Discovery(desc_error)) if desc_error.is_user_error() => {
                 StatusCode::BAD_REQUEST
             }

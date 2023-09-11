@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_types::identifiers::InvocationId;
 use std::future::Future;
 
@@ -17,9 +18,21 @@ pub enum Error {
     Unreachable,
 }
 
+// This is just an interface to isolate the interaction between meta and subscription controller.
+// Depending on how we evolve the Kafka ingress deployment, this might end up living in a separate process.
+pub trait SubscriptionController: SubscriptionValidator {
+    type Future: Future<Output = Result<(), Error>> + Send;
+
+    fn start_subscription(&self, subscription: Subscription) -> Self::Future;
+    fn stop_subscription(&self, subscription_id: String) -> Self::Future;
+}
+
 pub trait Handle {
     type Future: Future<Output = Result<(), Error>> + Send;
+    type SubscriptionControllerHandle: SubscriptionController + Send + Sync;
 
     /// Send a command to kill an invocation. This command is best-effort.
     fn kill_invocation(&self, invocation_id: InvocationId) -> Self::Future;
+
+    fn subscription_controller_handle(&self) -> Self::SubscriptionControllerHandle;
 }

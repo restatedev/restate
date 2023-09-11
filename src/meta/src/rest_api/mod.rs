@@ -17,6 +17,7 @@ mod invocations;
 mod methods;
 mod services;
 mod state;
+mod subscriptions;
 
 use axum::error_handling::HandleErrorLayer;
 use axum::http::StatusCode;
@@ -27,6 +28,7 @@ use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
 use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
+use restate_schema_api::subscription::SubscriptionResolver;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceBuilder;
@@ -62,7 +64,12 @@ impl MetaRestEndpoint {
     }
 
     pub async fn run<
-        S: ServiceMetadataResolver + EndpointMetadataResolver + Send + Sync + 'static,
+        S: ServiceMetadataResolver
+            + EndpointMetadataResolver
+            + SubscriptionResolver
+            + Send
+            + Sync
+            + 'static,
         W: restate_worker_api::Handle + Send + Sync + 'static,
     >(
         self,
@@ -115,6 +122,18 @@ impl MetaRestEndpoint {
             .route(
                 "/invocations/:invocation_id",
                 delete(openapi_handler!(invocations::cancel_invocation)),
+            )
+            .route(
+                "/subscriptions",
+                post(openapi_handler!(subscriptions::create_subscription)),
+            )
+            .route(
+                "/subscriptions/:subscription",
+                get(openapi_handler!(subscriptions::get_subscription)),
+            )
+            .route(
+                "/subscriptions/:subscription",
+                delete(openapi_handler!(subscriptions::delete_subscription)),
             )
             .route("/health", get(openapi_handler!(health::health)))
             .route_openapi_specification(
