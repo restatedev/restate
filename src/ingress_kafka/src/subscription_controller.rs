@@ -126,12 +126,7 @@ impl Service {
         let message_dispatcher_type = if *is_input_type_keyed {
             MessageDispatcherType::DispatchKeyedEvent
         } else {
-            MessageDispatcherType::DispatchEvent {
-                ordering_key_prefix: client_config
-                    .get("group.id")
-                    .expect("Validator should have checked that group.id exists")
-                    .to_string(),
-            }
+            MessageDispatcherType::DispatchEvent
         };
 
         // Create the consumer task
