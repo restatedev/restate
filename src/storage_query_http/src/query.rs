@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::future;
 use std::io::Write;
 use std::sync::Arc;
 
@@ -23,7 +24,7 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::json::writer::record_batches_to_json_rows;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
-use futures::StreamExt;
+use futures::{stream, StreamExt};
 use okapi_operation::*;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -71,18 +72,27 @@ pub async fn query(
         .await
         .map_err(StorageApiError::DataFusionError)?;
     let mut buf = Vec::new();
-    let body = StreamBody::new(stream.map(move |batch| -> Result<Bytes, DataFusionError> {
-        // Binary types are not supported by record_batches_to_json_rows
-        let b64_batch = record_batch_bytes_to_b64(batch?)?;
-        for row in record_batches_to_json_rows(&[&b64_batch])? {
-            serde_json::to_writer(&mut buf, &row)
-                .map_err(|error| ArrowError::JsonError(error.to_string()))?;
-            buf.write_all(b"\n")?;
-        }
-        let b = Bytes::copy_from_slice(buf.as_slice());
-        buf.clear();
-        Ok(b)
-    }));
+    let mut is_first = true;
+    let body = StreamBody::new(
+        stream::once(future::ready(Ok(Bytes::from_static(b"["))))
+            .chain(stream.map(move |batch| -> Result<Bytes, DataFusionError> {
+                // Binary types are not supported by record_batches_to_json_rows
+                let b64_batch = record_batch_bytes_to_b64(batch?)?;
+                for row in record_batches_to_json_rows(&[&b64_batch])? {
+                    if is_first {
+                        is_first = false
+                    } else {
+                        buf.write_all(b",")?;
+                    }
+                    serde_json::to_writer(&mut buf, &row)
+                        .map_err(|error| ArrowError::JsonError(error.to_string()))?;
+                }
+                let b = Bytes::copy_from_slice(buf.as_slice());
+                buf.clear();
+                Ok(b)
+            }))
+            .chain(stream::once(future::ready(Ok(Bytes::from_static(b"]"))))),
+    );
     Ok(([(http::header::CONTENT_TYPE, "application/json")], body))
 }
 
