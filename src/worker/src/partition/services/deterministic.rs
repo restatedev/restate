@@ -11,6 +11,7 @@
 use crate::partition::types::OutboxMessageExt;
 use bytes::Bytes;
 use restate_pb::builtin_service::BuiltInService;
+use restate_pb::restate::internal::ProxyInvoker;
 use restate_pb::restate::AwakeablesInvoker;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::errors::{InvocationError, UserErrorCode};
@@ -32,6 +33,7 @@ pub(crate) struct ServiceInvoker<'a> {
 impl<'a> ServiceInvoker<'a> {
     pub(crate) fn is_supported(service_name: &str) -> bool {
         service_name == restate_pb::AWAKEABLES_SERVICE_NAME
+            || service_name == restate_pb::PROXY_SERVICE_NAME
     }
 
     pub(crate) async fn invoke(
@@ -71,6 +73,9 @@ impl ServiceInvoker<'_> {
                 AwakeablesInvoker(self)
                     .invoke_builtin(method, argument)
                     .await
+            }
+            restate_pb::PROXY_SERVICE_NAME => {
+                ProxyInvoker(self).invoke_builtin(method, argument).await
             }
             _ => Err(InvocationError::new(
                 UserErrorCode::NotFound,
@@ -132,6 +137,36 @@ mod awakeables {
                     req.reason,
                 ))),
             ));
+
+            Ok(())
+        }
+    }
+}
+
+mod proxy {
+    use super::*;
+
+    use restate_pb::restate::internal::*;
+    use restate_types::identifiers::InvocationUuid;
+    use restate_types::invocation::{ServiceInvocation, SpanRelation};
+
+    #[async_trait::async_trait]
+    impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
+        async fn proxy_through(&mut self, req: ProxyThroughRequest) -> Result<(), InvocationError> {
+            let target_fid = FullInvocationId::new(
+                req.target_service,
+                req.target_key,
+                InvocationUuid::from_slice(&req.target_invocation_uuid)
+                    .map_err(InvocationError::internal)?,
+            );
+
+            self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
+                target_fid,
+                req.target_method,
+                req.input,
+                None,
+                SpanRelation::None,
+            )));
 
             Ok(())
         }
