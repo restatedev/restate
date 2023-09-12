@@ -10,7 +10,9 @@
 
 use super::Schemas;
 
-use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
+use restate_schema_api::subscription::{
+    ListSubscriptionFilter, Subscription, SubscriptionResolver,
+};
 
 impl SubscriptionResolver for Schemas {
     fn get_subscription(&self, id: &str) -> Option<Subscription> {
@@ -18,8 +20,20 @@ impl SubscriptionResolver for Schemas {
         schemas.subscriptions.get(id).cloned()
     }
 
-    fn list_subscriptions(&self) -> Vec<Subscription> {
+    fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
         let schemas = self.0.load();
-        schemas.subscriptions.values().cloned().collect()
+        schemas
+            .subscriptions
+            .values()
+            .filter(|sub| {
+                for f in filters {
+                    if !f.matches(sub) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect()
     }
 }

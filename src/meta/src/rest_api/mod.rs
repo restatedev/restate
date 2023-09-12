@@ -128,6 +128,10 @@ impl MetaRestEndpoint {
                 post(openapi_handler!(subscriptions::create_subscription)),
             )
             .route(
+                "/subscriptions",
+                get(openapi_handler!(subscriptions::list_subscriptions)),
+            )
+            .route(
                 "/subscriptions/:subscription",
                 get(openapi_handler!(subscriptions::get_subscription)),
             )

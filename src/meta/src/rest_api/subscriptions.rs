@@ -11,11 +11,14 @@
 use super::error::*;
 use super::state::*;
 
+use axum::extract::Query;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, Uri};
 use axum::{http, Json};
 use okapi_operation::*;
-use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
+use restate_schema_api::subscription::{
+    ListSubscriptionFilter, Subscription, SubscriptionResolver,
+};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::HashMap;
@@ -132,6 +135,72 @@ where
         .ok_or_else(|| MetaApiError::SubscriptionNotFound(subscription_id.clone()))?;
 
     Ok(SubscriptionResponse::from(subscription).into())
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListSubscriptionsParams {
+    sink: Option<String>,
+    source: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListSubscriptionsResponse {
+    subscriptions: Vec<SubscriptionResponse>,
+}
+
+/// List subscriptions.
+#[openapi(
+    summary = "List subscriptions",
+    description = "List all subscriptions.",
+    operation_id = "list_subscriptions",
+    tags = "subscription",
+    parameters(
+        query(
+            name = "sink",
+            description = "Filter by the exact specified sink.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = "String",
+        ),
+        query(
+            name = "source",
+            description = "Filter by the exact specified source.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = "String",
+        )
+    )
+)]
+pub async fn list_subscriptions<S, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
+    Query(ListSubscriptionsParams { sink, source }): Query<ListSubscriptionsParams>,
+) -> Json<ListSubscriptionsResponse>
+where
+    S: SubscriptionResolver,
+{
+    let filters = match (sink, source) {
+        (Some(sink_filter), Some(source_filter)) => vec![
+            ListSubscriptionFilter::ExactMatchSink(sink_filter),
+            ListSubscriptionFilter::ExactMatchSource(source_filter),
+        ],
+        (Some(sink_filter), None) => vec![ListSubscriptionFilter::ExactMatchSink(sink_filter)],
+        (None, Some(source_filter)) => {
+            vec![ListSubscriptionFilter::ExactMatchSource(source_filter)]
+        }
+        _ => vec![],
+    };
+
+    ListSubscriptionsResponse {
+        subscriptions: state
+            .schemas()
+            .list_subscriptions(&filters)
+            .into_iter()
+            .map(SubscriptionResponse::from)
+            .collect(),
+    }
+    .into()
 }
 
 /// Delete subscription.
