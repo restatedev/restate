@@ -62,9 +62,40 @@ pub const HEALTH_SERVICE_NAME: &str = "grpc.health.v1.Health";
 pub mod builtin_service {
     use prost::bytes::Bytes;
     use restate_types::errors::InvocationError;
+    use restate_types::invocation::ResponseResult;
+    use std::marker::PhantomData;
 
+    pub const ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
+
+    #[async_trait::async_trait]
     pub trait BuiltInService {
-        fn invoke_builtin(&mut self, method: &str, input: Bytes) -> Result<Bytes, InvocationError>;
+        async fn invoke_builtin(
+            &mut self,
+            method: &str,
+            input: Bytes,
+        ) -> Result<Bytes, InvocationError>;
+    }
+
+    #[async_trait::async_trait]
+    pub trait ManualResponseBuiltInService {
+        async fn invoke_builtin(
+            &mut self,
+            method: &str,
+            input: Bytes,
+        ) -> Result<(), InvocationError>;
+    }
+
+    #[derive(Default)]
+    pub struct ResponseSerializer<T>(PhantomData<T>);
+
+    impl<T: prost::Message> ResponseSerializer<T> {
+        pub fn serialize_success(&self, t: T) -> ResponseResult {
+            ResponseResult::Success(t.encode_to_vec().into())
+        }
+
+        pub fn serialize_failure(&self, err: InvocationError) -> ResponseResult {
+            ResponseResult::Failure(err.code().into(), err.message().into())
+        }
     }
 }
 
