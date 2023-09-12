@@ -8,10 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::Timer;
-use restate_types::identifiers::EntryIndex;
 use restate_types::identifiers::FullInvocationId;
-use restate_types::invocation::ServiceInvocation;
+use restate_types::identifiers::{EntryIndex, InvocationId};
+use restate_types::invocation::{
+    InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink,
+};
 use restate_types::time::MillisSinceEpoch;
 use std::cmp::Ordering;
 use std::fmt;
@@ -138,5 +142,58 @@ impl<'a> fmt::Display for TimerKeyDisplay<'a> {
             "{}[{:?}][{}]({})",
             self.0.service_id.service_name, self.0.service_id.key, self.0.invocation_uuid, self.1
         )
+    }
+}
+
+// Extension methods to the OutboxMessage type
+pub(crate) trait OutboxMessageExt {
+    fn from_response_sink(
+        callee: &FullInvocationId,
+        response_sink: ServiceInvocationResponseSink,
+        result: ResponseResult,
+    ) -> OutboxMessage;
+
+    fn from_awakeable_completion(
+        invocation_id: InvocationId,
+        entry_index: EntryIndex,
+        result: ResponseResult,
+    ) -> OutboxMessage;
+}
+
+impl OutboxMessageExt for OutboxMessage {
+    fn from_response_sink(
+        callee: &FullInvocationId,
+        response_sink: ServiceInvocationResponseSink,
+        result: ResponseResult,
+    ) -> OutboxMessage {
+        match response_sink {
+            ServiceInvocationResponseSink::PartitionProcessor {
+                entry_index,
+                caller,
+            } => OutboxMessage::ServiceResponse(InvocationResponse {
+                id: MaybeFullInvocationId::Full(caller),
+                entry_index,
+                result,
+            }),
+            ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
+                OutboxMessage::IngressResponse {
+                    ingress_dispatcher_id,
+                    full_invocation_id: callee.clone(),
+                    response: result,
+                }
+            }
+        }
+    }
+
+    fn from_awakeable_completion(
+        invocation_id: InvocationId,
+        entry_index: EntryIndex,
+        result: ResponseResult,
+    ) -> OutboxMessage {
+        OutboxMessage::ServiceResponse(InvocationResponse {
+            entry_index,
+            result,
+            id: MaybeFullInvocationId::Partial(invocation_id),
+        })
     }
 }

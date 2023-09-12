@@ -10,15 +10,17 @@
 
 use crate::partition::effects::{ActuatorMessage, MessageCollector};
 use crate::partition::leadership::{FollowerState, LeaderState, LeadershipState, TimerService};
+use crate::partition::services::non_deterministic;
+use crate::partition::services::non_deterministic::ServiceInvoker;
 use crate::partition::{shuffle, AckResponse, TimerValue};
 use futures::{Stream, StreamExt};
 use restate_invoker_api::{ServiceHandle, ServiceNotRunning};
 use restate_types::identifiers::PartitionLeaderEpoch;
-use std::ops::DerefMut;
+use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tracing::trace;
 
 pub(crate) enum ActuatorMessageCollector<'a, I, N> {
@@ -55,6 +57,7 @@ where
                     &mut follower_state.invoker_tx,
                     &mut leader_state.shuffle_hint_tx,
                     leader_state.timer_service.as_mut(),
+                    &leader_state.non_deterministic_service_invoker,
                     &follower_state.ack_tx,
                     leader_state.message_buffer.drain(..),
                 )
@@ -76,6 +79,7 @@ where
         invoker_tx: &mut I,
         shuffle_hint_tx: &mut mpsc::Sender<shuffle::NewOutboxMessage>,
         mut timer_service: Pin<&mut TimerService<'a>>,
+        non_deterministic_service_invoker: &ServiceInvoker<'a>,
         ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
         messages: impl IntoIterator<Item = ActuatorMessage>,
     ) -> Result<(), ActuatorMessageCollectorError> {
@@ -132,6 +136,16 @@ where
                         .abort_invocation(partition_leader_epoch, full_invocation_id)
                         .await?
                 }
+                ActuatorMessage::InvokeBuiltInService {
+                    full_invocation_id,
+                    response_sink,
+                    method,
+                    argument,
+                } => {
+                    non_deterministic_service_invoker
+                        .invoke(full_invocation_id, method.deref(), argument, response_sink)
+                        .await;
+                }
             }
         }
 
@@ -158,6 +172,8 @@ pub(crate) enum ActuatorStream {
     Leader {
         invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
         shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
+        non_deterministic_service_invoker_stream:
+            UnboundedReceiverStream<non_deterministic::Effects>,
     },
 }
 
@@ -165,10 +181,14 @@ impl ActuatorStream {
     pub(crate) fn leader(
         invoker_rx: mpsc::Receiver<restate_invoker_api::Effect>,
         shuffle_rx: mpsc::Receiver<shuffle::OutboxTruncation>,
+        non_deterministic_service_invoker_rx: non_deterministic::EffectsReceiver,
     ) -> Self {
         ActuatorStream::Leader {
             invoker_stream: ReceiverStream::new(invoker_rx),
             shuffle_stream: ReceiverStream::new(shuffle_rx),
+            non_deterministic_service_invoker_stream: UnboundedReceiverStream::new(
+                non_deterministic_service_invoker_rx,
+            ),
         }
     }
 }
@@ -178,6 +198,7 @@ pub(crate) enum ActuatorOutput {
     Invoker(restate_invoker_api::Effect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerValue),
+    BuiltInInvoker(non_deterministic::Effects),
 }
 
 impl Stream for ActuatorStream {
@@ -189,11 +210,18 @@ impl Stream for ActuatorStream {
             ActuatorStream::Leader {
                 invoker_stream,
                 shuffle_stream,
+                non_deterministic_service_invoker_stream,
             } => {
                 let invoker_stream = invoker_stream.map(ActuatorOutput::Invoker);
                 let shuffle_stream = shuffle_stream.map(ActuatorOutput::Shuffle);
+                let non_deterministic_service_invoker_stream =
+                    non_deterministic_service_invoker_stream.map(ActuatorOutput::BuiltInInvoker);
 
-                let mut all_streams = futures::stream_select!(invoker_stream, shuffle_stream);
+                let mut all_streams = futures::stream_select!(
+                    invoker_stream,
+                    shuffle_stream,
+                    non_deterministic_service_invoker_stream
+                );
                 Pin::new(&mut all_streams).poll_next(cx)
             }
         }

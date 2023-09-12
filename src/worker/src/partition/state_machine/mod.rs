@@ -8,31 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::partition::effects::Effects;
+use crate::partition::services::non_deterministic::{Effect as NBISEffect, Effects as NBISEffects};
+use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt, TimerValue};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use restate_types::errors::{InvocationError, InvocationErrorCode, RestateErrorCode};
-use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
-use restate_types::journal::{
-    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Completion, CompletionResult,
-    Entry, GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
-};
-use std::fmt::{Debug, Formatter};
-use std::marker::PhantomData;
-use std::ops::Deref;
-use tracing::{debug, instrument, trace};
-
-use crate::partition::effects::Effects;
-use crate::partition::services::DeterministicBuiltInServiceInvoker;
-use crate::partition::types::{InvokerEffect, InvokerEffectKind, TimerValue};
-
-mod dedup;
-
-pub(crate) use dedup::DeduplicatingStateMachine;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
+use restate_types::errors::{InvocationError, InvocationErrorCode, RestateErrorCode};
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
 };
@@ -41,8 +27,22 @@ use restate_types::invocation::{
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
 };
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
+use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
+use restate_types::journal::{
+    BackgroundInvokeEntry, ClearStateEntry, Completion, CompletionResult, Entry, GetStateEntry,
+    InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry, SleepEntry,
+};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
+use std::fmt::{Debug, Formatter};
+use std::marker::PhantomData;
+use std::ops::Deref;
+use tracing::{debug, instrument, trace};
+
+mod dedup;
+
+use crate::partition::services::deterministic;
+pub(crate) use dedup::DeduplicatingStateMachine;
 
 const KILLED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
     InvocationErrorCode::Restate(RestateErrorCode::Killed),
@@ -67,6 +67,7 @@ pub(crate) enum Command {
     OutboxTruncation(MessageIndex),
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
+    BuiltInInvoker(NBISEffects),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -161,13 +162,13 @@ where
 
                 let fid = service_invocation.fid.clone();
 
-                if DeterministicBuiltInServiceInvoker::is_supported(
-                    fid.service_id.service_name.deref(),
-                ) {
+                if deterministic::ServiceInvoker::is_supported(fid.service_id.service_name.deref())
+                {
                     self.handle_deterministic_built_in_service_invocation(
                         service_invocation,
                         effects,
-                    );
+                    )
+                    .await;
                 } else if let InvocationStatus::Free = status {
                     effects.invoke_service(service_invocation);
                 } else {
@@ -199,7 +200,107 @@ where
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
             Command::Kill(iid) => self.try_kill_invocation(iid, state, effects).await,
+            Command::BuiltInInvoker(nbis_effects) => {
+                self.try_built_in_invoker_effect(effects, state, nbis_effects)
+                    .await
+            }
         }
+    }
+
+    async fn try_built_in_invoker_effect<State: StateReader>(
+        &mut self,
+        effects: &mut Effects,
+        state: &mut State,
+        nbis_effects: NBISEffects,
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        let (full_invocation_id, nbis_effects) = nbis_effects.into_inner();
+        let invocation_status = state
+            .get_invocation_status(&full_invocation_id.service_id)
+            .await?;
+
+        match invocation_status {
+            InvocationStatus::Invoked(invocation_metadata)
+                if invocation_metadata.invocation_uuid == full_invocation_id.invocation_uuid =>
+            {
+                let span_relation = invocation_metadata
+                    .journal_metadata
+                    .span_context
+                    .as_parent();
+
+                for nbis_effect in nbis_effects {
+                    self.on_built_in_invoker_effect(
+                        effects,
+                        state,
+                        &full_invocation_id,
+                        &invocation_metadata,
+                        nbis_effect,
+                    )
+                    .await?
+                }
+                Ok((Some(full_invocation_id), span_relation))
+            }
+            _ => {
+                trace!(
+                    "Received built in invoker effect for unknown invocation {}. Ignoring it.",
+                    full_invocation_id
+                );
+                Ok((Some(full_invocation_id), SpanRelation::None))
+            }
+        }
+    }
+
+    async fn on_built_in_invoker_effect<State: StateReader>(
+        &mut self,
+        effects: &mut Effects,
+        state: &mut State,
+        full_invocation_id: &FullInvocationId,
+        invocation_metadata: &InvocationMetadata,
+        nbis_effect: NBISEffect,
+    ) -> Result<(), Error> {
+        match nbis_effect {
+            NBISEffect::SetState { key, value } => {
+                effects.set_state(
+                    full_invocation_id.service_id.clone(),
+                    invocation_metadata.clone(),
+                    Bytes::from(key.into_owned()),
+                    value,
+                );
+            }
+            NBISEffect::ClearState(key) => {
+                effects.clear_state(
+                    full_invocation_id.service_id.clone(),
+                    invocation_metadata.clone(),
+                    Bytes::from(key.into_owned()),
+                );
+            }
+            NBISEffect::RegisterTimer => {
+                unimplemented!("Currently the built-in invoker does not support timers yet");
+            }
+            NBISEffect::OutboxMessage(msg) => {
+                self.send_message(msg, effects);
+            }
+            NBISEffect::End(None) => {
+                self.finish_invocation(
+                    effects,
+                    state,
+                    full_invocation_id.clone(),
+                    invocation_metadata.clone(),
+                )
+                .await?
+            }
+            NBISEffect::End(Some(e)) => {
+                self.fail_invocation(
+                    effects,
+                    state,
+                    full_invocation_id.clone(),
+                    invocation_metadata.clone(),
+                    e,
+                )
+                .await?
+            }
+        }
+
+        Ok(())
     }
 
     async fn try_kill_invocation<State: StateReader>(
@@ -422,13 +523,15 @@ where
     ) -> Result<(), Error> {
         let code = error.code();
         if let Some(response_sink) = &invocation_metadata.response_sink {
-            let outbox_message = Self::create_response(
-                &full_invocation_id,
-                response_sink.clone(),
-                ResponseResult::Failure(code.into(), error.message().into()),
-            );
             // TODO: We probably only need to send the response if we haven't send a response before
-            self.send_message(outbox_message, effects);
+            self.send_message(
+                OutboxMessage::from_response_sink(
+                    &full_invocation_id,
+                    response_sink.clone(),
+                    ResponseResult::Failure(code.into(), error.message().into()),
+                ),
+                effects,
+            );
         }
 
         let length = invocation_metadata.journal_metadata.length;
@@ -470,12 +573,14 @@ where
                             Codec::deserialize(&journal_entry)?
                     );
 
-                    let outbox_message = Self::create_response(
-                        &full_invocation_id,
-                        response_sink.clone(),
-                        result.into(),
+                    self.send_message(
+                        OutboxMessage::from_response_sink(
+                            &full_invocation_id,
+                            response_sink.clone(),
+                            result.into(),
+                        ),
+                        effects,
                     );
-                    self.send_message(outbox_message, effects);
                 }
             }
             EnrichedEntryHeader::GetState { is_completed } => {
@@ -501,7 +606,7 @@ where
                         Codec::deserialize(&journal_entry)?
                 );
 
-                effects.set_state(
+                effects.set_state_and_append_journal_entry(
                     full_invocation_id.service_id,
                     invocation_metadata,
                     key,
@@ -518,7 +623,7 @@ where
                     Entry::ClearState(ClearStateEntry { key }) =
                         Codec::deserialize(&journal_entry)?
                 );
-                effects.clear_state(
+                effects.clear_state_and_append_journal_entry(
                     full_invocation_id.service_id,
                     invocation_metadata,
                     key,
@@ -650,12 +755,14 @@ where
             } => {
                 let_assert!(Entry::CompleteAwakeable(entry) = Codec::deserialize(&journal_entry)?);
 
-                let response = Self::create_response_for_awakeable_entry(
-                    invocation_id.clone(),
-                    entry_index,
-                    entry,
+                self.send_message(
+                    OutboxMessage::from_awakeable_completion(
+                        invocation_id.clone(),
+                        entry_index,
+                        entry.result.into(),
+                    ),
+                    effects,
                 );
-                self.send_message(response, effects);
             }
             EnrichedEntryHeader::Custom { requires_ack, code } => {
                 if requires_ack {
@@ -759,25 +866,25 @@ where
         Ok((related_sid, span_relation))
     }
 
-    fn handle_deterministic_built_in_service_invocation(
+    async fn handle_deterministic_built_in_service_invocation(
         &mut self,
         invocation: ServiceInvocation,
         effects: &mut Effects,
     ) {
         // Invoke built-in service
-        let result = DeterministicBuiltInServiceInvoker::invoke(
+        for effect in deterministic::ServiceInvoker::invoke(
             &invocation.fid,
-            &mut self.outbox_seq_number,
-            effects,
             invocation.method_name.deref(),
             invocation.argument.clone(),
-        );
-
-        if let Some(response_sink) = invocation.response_sink {
-            // Write response in outbox
-            let outbox_message =
-                Self::create_response(&invocation.fid, response_sink, result.into());
-            self.send_message(outbox_message, effects);
+            invocation.response_sink.as_ref(),
+        )
+        .await
+        {
+            match effect {
+                deterministic::Effect::OutboxMessage(outbox_message) => {
+                    self.send_message(outbox_message, effects)
+                }
+            }
         }
     }
 
@@ -851,43 +958,6 @@ where
             span_context,
         }
     }
-
-    fn create_response_for_awakeable_entry(
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-        entry: CompleteAwakeableEntry,
-    ) -> OutboxMessage {
-        let CompleteAwakeableEntry { result, .. } = entry;
-        OutboxMessage::ServiceResponse(InvocationResponse {
-            entry_index,
-            result: result.into(),
-            id: MaybeFullInvocationId::Partial(invocation_id),
-        })
-    }
-
-    fn create_response(
-        callee: &FullInvocationId,
-        response_sink: ServiceInvocationResponseSink,
-        result: ResponseResult,
-    ) -> OutboxMessage {
-        match response_sink {
-            ServiceInvocationResponseSink::PartitionProcessor {
-                entry_index,
-                caller,
-            } => OutboxMessage::ServiceResponse(InvocationResponse {
-                id: MaybeFullInvocationId::Full(caller),
-                entry_index,
-                result,
-            }),
-            ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
-                OutboxMessage::IngressResponse {
-                    ingress_dispatcher_id,
-                    full_invocation_id: callee.clone(),
-                    response: result,
-                }
-            }
-        }
-    }
 }
 
 fn extract_span_relation(status: &InvocationStatus) -> SpanRelation {
@@ -913,6 +983,7 @@ mod tests {
     use restate_test_util::{assert_eq, let_assert, test};
     use restate_types::errors::UserErrorCode;
     use restate_types::identifiers::WithPartitionKey;
+    use restate_types::journal::CompleteAwakeableEntry;
     use restate_types::journal::{EntryResult, JournalMetadata};
     use std::collections::HashMap;
 

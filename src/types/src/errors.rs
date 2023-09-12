@@ -11,7 +11,7 @@
 use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
-use std::fmt::Formatter;
+use std::fmt::{Display, Formatter};
 
 /// This error code set matches the [gRPC error code set](https://github.com/grpc/grpc/blob/master/doc/statuscodes.md#status-codes-and-their-use-in-grpc),
 /// representing all the error codes visible to the user code. Note, it does not include the Ok
@@ -248,6 +248,14 @@ impl InvocationError {
         Self {
             code: code.into(),
             message: Cow::Owned(message),
+            description: None,
+        }
+    }
+
+    pub fn internal(message: impl Display) -> Self {
+        Self {
+            code: UserErrorCode::Internal.into(),
+            message: Cow::Owned(message.to_string()),
             description: None,
         }
     }

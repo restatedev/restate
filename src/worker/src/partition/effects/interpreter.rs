@@ -18,8 +18,10 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
 
+use crate::partition::services::non_deterministic;
+use bytestring::ByteString;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
-use restate_types::invocation::ServiceInvocation;
+use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{
     EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
@@ -43,6 +45,12 @@ pub(crate) enum ActuatorMessage {
     Invoke {
         full_invocation_id: FullInvocationId,
         invoke_input_journal: InvokeInputJournal,
+    },
+    InvokeBuiltInService {
+        full_invocation_id: FullInvocationId,
+        response_sink: Option<ServiceInvocationResponseSink>,
+        method: ByteString,
+        argument: Bytes,
     },
     NewOutboxMessage {
         seq_number: MessageIndex,
@@ -348,6 +356,14 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 )
                 .await?;
             }
+            Effect::SetStateOnly {
+                service_id,
+                key,
+                value,
+                ..
+            } => {
+                state_storage.store_state(&service_id, key, value).await?;
+            }
             Effect::ClearState {
                 service_id,
                 metadata,
@@ -366,6 +382,11 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     journal_entry,
                 )
                 .await?;
+            }
+            Effect::ClearStateOnly {
+                service_id, key, ..
+            } => {
+                state_storage.clear_state(&service_id, &key).await?;
             }
             Effect::GetStateAndAppendCompletedEntry {
                 key,
@@ -637,39 +658,61 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 InvocationStatus::Invoked(InvocationMetadata::new(
                     service_invocation.fid.invocation_uuid,
                     journal_metadata.clone(),
-                    service_invocation.response_sink,
+                    service_invocation.response_sink.clone(),
                     creation_time,
                     creation_time,
                 )),
             )
             .await?;
 
-        let_assert!(
-            restate_types::journal::raw::RawEntry {
-                header: RawEntryHeader::PollInputStream { is_completed },
-                entry
-            } = Codec::serialize_as_unary_input_entry(service_invocation.argument)
-        );
+        let service_id = service_invocation.fid.service_id.clone();
 
-        let input_entry =
-            EnrichedRawEntry::new(EnrichedEntryHeader::PollInputStream { is_completed }, entry);
+        let input_entry = if non_deterministic::ServiceInvoker::is_supported(
+            &service_invocation.fid.service_id.service_name,
+        ) {
+            collector.collect(ActuatorMessage::InvokeBuiltInService {
+                full_invocation_id: service_invocation.fid,
+                response_sink: service_invocation.response_sink,
+                method: service_invocation.method_name,
+                argument: service_invocation.argument.clone(),
+            });
 
-        let raw_bytes = input_entry.entry.clone();
+            // TODO clean up custom entry hack by allowing to store bytes directly?
+            EnrichedRawEntry::new(
+                EnrichedEntryHeader::Custom {
+                    code: 0,
+                    requires_ack: false,
+                },
+                service_invocation.argument,
+            )
+        } else {
+            let_assert!(
+                restate_types::journal::raw::RawEntry {
+                    header: RawEntryHeader::PollInputStream { is_completed },
+                    entry
+                } = Codec::serialize_as_unary_input_entry(service_invocation.argument.clone())
+            );
+
+            let raw_bytes = entry.clone();
+
+            collector.collect(ActuatorMessage::Invoke {
+                full_invocation_id: service_invocation.fid,
+                invoke_input_journal: InvokeInputJournal::CachedJournal(
+                    journal_metadata,
+                    vec![PlainRawEntry::new(
+                        RawEntryHeader::PollInputStream { is_completed },
+                        raw_bytes,
+                    )],
+                ),
+            });
+
+            EnrichedRawEntry::new(EnrichedEntryHeader::PollInputStream { is_completed }, entry)
+        };
 
         state_storage
-            .store_journal_entry(&service_invocation.fid.service_id, 0, input_entry)
+            .store_journal_entry(&service_id, 0, input_entry)
             .await?;
 
-        collector.collect(ActuatorMessage::Invoke {
-            full_invocation_id: service_invocation.fid,
-            invoke_input_journal: InvokeInputJournal::CachedJournal(
-                journal_metadata,
-                vec![PlainRawEntry::new(
-                    RawEntryHeader::PollInputStream { is_completed },
-                    raw_bytes,
-                )],
-            ),
-        });
         Ok(())
     }
 
