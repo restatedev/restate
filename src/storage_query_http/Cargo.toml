@@ -1,0 +1,35 @@
+[package]
+name = "restate_storage_query_http"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+options_schema = []
+
+[dependencies]
+axum = "0.6.18"
+base64 = { workspace = true }
+bytes = { workspace = true }
+codederror = { workspace = true }
+datafusion = { version = "27.0.0" }
+derive_builder = { workspace = true }
+drain = { workspace = true }
+futures = { workspace = true }
+hyper = { workspace = true, features = ["full"] }
+okapi-operation = { version = "0.2.1", features = ["axum-integration"] }
+restate_errors = { workspace = true }
+restate_schema_api = { workspace = true, features = ["service", "endpoint", "serde", "serde_schema"] }
+restate_storage_query_datafusion = { workspace = true }
+restate_worker_api = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+thiserror = { workspace = true }
+tower = { workspace = true, features = ["load-shed", "limit"] }
+tracing = { workspace = true }

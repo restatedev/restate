@@ -90,6 +90,7 @@ restate_service_protocol = { path = "src/service_protocol" }
 restate_storage_api = {path = "src/storage_api"}
 restate_storage_proto = {path = "src/storage_proto"}
 restate_storage_query_datafusion = {path = "src/storage_query_datafusion" }
+restate_storage_query_http = {path = "src/storage_query_http" }
 restate_storage_query_postgres = {path = "src/storage_query_postgres" }
 restate_storage_rocksdb = { path = "src/storage_rocksdb" }
 restate_test_util = { path = "src/test_util" }
