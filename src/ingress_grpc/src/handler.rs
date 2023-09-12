@@ -221,9 +221,8 @@ where
             let ingress_span_context = ingress_span.context().span().span_context().clone();
 
             async move {
-                let mut service_name = req_headers.service_name;
-                let mut method_name = req_headers.method_name;
-                let mut req_payload = req_payload;
+                let service_name = req_headers.service_name;
+                let method_name = req_headers.method_name;
 
                 // --- Health built-in service
                 if restate_pb::HEALTH_SERVICE_NAME == service_name {
@@ -270,19 +269,6 @@ where
                     return Err(Status::not_found("Not found"))
                 }
 
-                let mut wait_response = true;
-
-                // --- Ingress built-in service
-                if is_ingress_invoke(&service_name, &method_name) {
-                    let invoke_request = restate_pb::restate::InvokeRequest::decode(req_payload)
-                        .map_err(|e| Status::invalid_argument(e.to_string()))?;
-
-                    service_name = invoke_request.service;
-                    method_name = invoke_request.method;
-                    req_payload = invoke_request.argument;
-                    wait_response = false;
-                }
-
                 // Extract the key
                 let key = schemas
                     .extract(&service_name, &method_name, req_payload.clone())
@@ -299,30 +285,6 @@ where
 
                 let fid = FullInvocationId::generate(service_name, key);
                 let span_relation = SpanRelation::Parent(ingress_span_context);
-
-                // Ingress built-in service just sends a fire and forget and closes
-                if !wait_response {
-                    let id = fid.to_string();
-
-                    let (invocation, ack_rx) = IngressRequest::background_invocation(
-                        fid,
-                        method_name,
-                        req_payload,
-                        span_relation,
-                        None
-                    );
-                    if request_tx.send(invocation).is_err() {
-                        debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
-                        return Err(Status::unavailable("Unavailable"));
-                    }
-
-                    return ack_rx.await.map(|_| restate_pb::restate::InvokeResponse {
-                        id,
-                    }.encode_to_vec().into()).map_err(|_| {
-                        debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
-                        Status::unavailable("Unavailable")
-                    });
-                }
 
                 // Send the service invocation
                 let (invocation, response_rx) = IngressRequest::invocation(
@@ -382,10 +344,6 @@ fn span_relation(request_span: &SpanContext) -> SpanRelation {
     } else {
         SpanRelation::None
     }
-}
-
-fn is_ingress_invoke(service_name: &str, method_name: &str) -> bool {
-    "dev.restate.Ingress" == service_name && "Invoke" == method_name
 }
 
 fn encode_http_status_code(status_code: StatusCode) -> Response<BoxBody> {

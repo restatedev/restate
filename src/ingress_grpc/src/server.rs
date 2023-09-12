@@ -154,10 +154,8 @@ mod tests {
     use prost::Message;
     use restate_ingress_dispatcher::IngressRequest;
     use restate_test_util::{assert_eq, test};
-    use restate_types::identifiers::InvocationId;
     use serde_json::json;
     use std::net::SocketAddr;
-    use std::time::Duration;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
@@ -212,70 +210,6 @@ mod tests {
                 .unwrap(),
             "Igal"
         );
-
-        handle.close().await;
-    }
-
-    #[test(tokio::test)]
-    async fn test_ingress_service_http_connect_call() {
-        let (address, input, handle) = bootstrap_test().await;
-
-        // Send the request
-        let json_payload = json!({
-            "service": "greeter.Greeter",
-            "method": "Greet",
-            "argument": {
-                "person": "Francesco"
-            }
-        });
-        let http_response = tokio::spawn(async move {
-            hyper::Client::new()
-                .request(
-                    hyper::Request::post(format!("http://{address}/dev.restate.Ingress/Invoke"))
-                        .header(CONTENT_TYPE, "application/json")
-                        .body(Body::from(serde_json::to_vec(&json_payload).unwrap()))
-                        .unwrap(),
-                )
-                .await
-                .unwrap()
-        });
-        tokio::pin!(http_response);
-
-        // Get the function invocation and assert on it
-        let (fid, method_name, mut argument, _, ack_tx) =
-            input.await.unwrap().unwrap().expect_background_invocation();
-        assert_eq!(fid.service_id.service_name, "greeter.Greeter");
-        assert_eq!(method_name, "Greet");
-        let greeting_req =
-            restate_pb::mocks::greeter::GreetingRequest::decode(&mut argument).unwrap();
-        assert_eq!(&greeting_req.person, "Francesco");
-
-        // check that there is no response yet
-        let timed_out_http_response =
-            tokio::time::timeout(Duration::from_millis(10), &mut http_response);
-        assert!(timed_out_http_response.await.is_err());
-
-        // ack the request which should complete the response future
-        ack_tx.send(()).unwrap();
-
-        let http_response = http_response.await.unwrap();
-
-        assert_eq!(http_response.status(), StatusCode::OK);
-
-        // Read the http_response_future
-        let (_, response_body) = http_response.into_parts();
-
-        let response_bytes = hyper::body::to_bytes(response_body).await.unwrap();
-        let response_json_value: serde_json::Value =
-            serde_json::from_slice(&response_bytes).unwrap();
-        let id: InvocationId = response_json_value
-            .get("id")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(id, InvocationId::from(fid));
 
         handle.close().await;
     }
