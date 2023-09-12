@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use super::Schemas;
 
-use crate::Schemas;
 use bytes::Bytes;
 use restate_schema_api::key::extraction::Error;
 use restate_schema_api::key::KeyExtractor;
@@ -32,6 +31,7 @@ impl KeyExtractor for Schemas {
 pub(crate) mod extract_impls {
     use super::*;
 
+    use crate::schemas_impl::ServiceInstanceType;
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use prost::encoding::WireType::*;
     use prost::encoding::{
@@ -62,6 +62,22 @@ pub(crate) mod extract_impls {
                     .ok_or_else(|| Error::NotFound)?,
                 key_structure,
             ),
+            ServiceInstanceType::Unsupported => {
+                // We return NotFound here because one of the few reasons this error might pop up
+                // is that if a user invokes a service only exposed in the ingress.
+                Err(Error::NotFound)
+            }
+            ServiceInstanceType::Custom {
+                structure_per_method,
+            } => {
+                if let Some((root_key_field_number, structure)) =
+                    structure_per_method.get(service_method.as_ref())
+                {
+                    root_extract(payload, *root_key_field_number, structure)
+                } else {
+                    Ok(generate_random_key())
+                }
+            }
         }
     }
 

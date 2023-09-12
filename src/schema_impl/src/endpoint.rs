@@ -22,7 +22,7 @@ impl EndpointMetadataResolver for Schemas {
         let schemas = self.0.load();
         let service = schemas.services.get(service_name.as_ref())?;
         match &service.location {
-            ServiceLocation::IngressOnly => None,
+            ServiceLocation::BuiltIn { .. } => None,
             ServiceLocation::ServiceEndpoint {
                 latest_endpoint, ..
             } => schemas

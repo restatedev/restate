@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use super::Schemas;
 
-use crate::Schemas;
 use bytes::Bytes;
 use prost_reflect::DynamicMessage;
 use restate_schema_api::key::expansion::Error;
@@ -44,6 +43,7 @@ pub(crate) mod expand_impls {
     use super::*;
     use bytes::{BufMut, BytesMut};
 
+    use crate::schemas_impl::ServiceInstanceType;
     use prost::encoding::{encode_key, key_len};
     use prost_reflect::{DynamicMessage, MessageDescriptor};
 
@@ -89,7 +89,7 @@ pub(crate) mod expand_impls {
     mod tests {
         use super::*;
 
-        use key_extraction::extract_impls::extract;
+        use crate::key_extraction::extract_impls::extract;
         use prost::Message;
         use restate_pb::mocks::test::*;
         use restate_pb::mocks::DESCRIPTOR_POOL;
