@@ -18,8 +18,12 @@ use axum::response::IntoResponse;
 use axum::{http, Json};
 use base64::Engine;
 use bytes::Bytes;
-use datafusion::arrow::array::{Array, ArrayRef, AsArray, GenericStringArray, OffsetSizeTrait};
-use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
+use datafusion::arrow::array::{
+    Array, ArrayRef, AsArray, GenericStringArray, OffsetSizeTrait, StringArray,
+};
+use datafusion::arrow::datatypes::{
+    ArrowPrimitiveType, DataType, Field, FieldRef, Int64Type, Schema, SchemaRef, UInt64Type,
+};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::json::writer::record_batches_to_json_rows;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -77,7 +81,7 @@ pub async fn query(
         stream::once(future::ready(Ok(Bytes::from_static(b"["))))
             .chain(stream.map(move |batch| -> Result<Bytes, DataFusionError> {
                 // Binary types are not supported by record_batches_to_json_rows
-                let b64_batch = record_batch_bytes_to_b64(batch?)?;
+                let b64_batch = convert_record_batch(batch?)?;
                 for row in record_batches_to_json_rows(&[&b64_batch])? {
                     if is_first {
                         is_first = false
@@ -96,34 +100,32 @@ pub async fn query(
     Ok(([(http::header::CONTENT_TYPE, "application/json")], body))
 }
 
-fn record_batch_bytes_to_b64(batch: RecordBatch) -> Result<RecordBatch, ArrowError> {
+fn convert_record_batch(batch: RecordBatch) -> Result<RecordBatch, ArrowError> {
     let mut fields = Vec::with_capacity(batch.schema().fields.len());
     let mut columns = Vec::with_capacity(batch.columns().len());
     for (i, field) in batch.schema().fields.iter().enumerate() {
-        match field.data_type() {
-            DataType::LargeBinary => {
-                fields.push(FieldRef::new(Field::new(
-                    field.name(),
-                    DataType::LargeUtf8,
-                    field.is_nullable(),
-                )));
-                let arr = binary_array_to_b64::<i64>(batch.column(i));
-                columns.push(ArrayRef::from(arr));
-            }
-            DataType::Binary => {
-                fields.push(FieldRef::new(Field::new(
-                    field.name(),
-                    DataType::Utf8,
-                    field.is_nullable(),
-                )));
-                let arr = binary_array_to_b64::<i32>(batch.column(i));
-                columns.push(ArrayRef::from(arr));
-            }
+        let (data_type, transform): (DataType, Box<dyn Fn(_) -> _>) = match field.data_type() {
+            // Represent binary as base64
+            DataType::LargeBinary => (DataType::LargeUtf8, Box::new(binary_array_to_b64::<i64>)),
+            DataType::Binary => (DataType::Utf8, Box::new(binary_array_to_b64::<i32>)),
+            // Represent 64 bit ints as strings
+            DataType::UInt64 => (
+                DataType::Utf8,
+                Box::new(debug_primitive_array::<UInt64Type>),
+            ),
+            DataType::Int64 => (DataType::Utf8, Box::new(debug_primitive_array::<Int64Type>)),
             _ => {
                 fields.push(field.clone());
                 columns.push(batch.column(i).clone());
+                continue;
             }
-        }
+        };
+        fields.push(FieldRef::new(Field::new(
+            field.name(),
+            data_type,
+            field.is_nullable(),
+        )));
+        columns.push(ArrayRef::from(transform(batch.column(i))));
     }
     let schema = Schema::new_with_metadata(fields, batch.schema().metadata().clone());
     RecordBatch::try_new(SchemaRef::new(schema), columns)
@@ -134,6 +136,15 @@ fn binary_array_to_b64<OffsetSize: OffsetSizeTrait>(arr: &ArrayRef) -> Box<dyn A
         arr.as_binary::<OffsetSize>()
             .iter()
             .map(|b| -> Option<String> { Some(base64::prelude::BASE64_STANDARD.encode(b?)) })
+            .collect::<Vec<Option<String>>>(),
+    ))
+}
+
+fn debug_primitive_array<T: ArrowPrimitiveType>(arr: &ArrayRef) -> Box<dyn Array> {
+    Box::new(StringArray::from(
+        arr.as_primitive::<T>()
+            .iter()
+            .map(|b: Option<T::Native>| -> Option<String> { Some(format!("{:?}", b?)) })
             .collect::<Vec<Option<String>>>(),
     ))
 }
