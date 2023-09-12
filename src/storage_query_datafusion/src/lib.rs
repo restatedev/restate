@@ -9,18 +9,14 @@
 // by the Apache License, Version 2.0.
 
 mod analyzer;
-mod context;
-mod extended_query;
+pub mod context;
 mod generic_table;
-pub mod options;
-mod pgwire_server;
+mod options;
 mod physical_optimizer;
-pub mod service;
 mod state;
 mod status;
 mod table_macro;
 mod table_util;
 mod udfs;
 
-pub use options::{Options, OptionsBuilder, OptionsBuilderError};
-pub use service::Error;
+pub use crate::options::{BuildError, Options, OptionsBuilder, OptionsBuilderError};

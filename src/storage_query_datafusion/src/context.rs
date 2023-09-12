@@ -13,6 +13,7 @@ use datafusion::execution::context::SessionState;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
+
 use std::sync::Arc;
 
 pub struct QueryContext {

@@ -8,24 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::service::PostgresQueryService;
+use crate::context::QueryContext;
+use codederror::CodedError;
+use datafusion::error::DataFusionError;
 use restate_storage_rocksdb::RocksDBStorage;
-use std::net::SocketAddr;
 
-/// # Storage query options
+/// # Storage query datafusion options
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "options_schema", schemars(rename = "StorageQueryOptions"))]
+#[cfg_attr(
+    feature = "options_schema",
+    schemars(rename = "StorageQueryDatafusionOptions")
+)]
 pub struct Options {
-    /// # Bind address
-    ///
-    /// The address to bind for the psql service.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_bind_address")
-    )]
-    pub bind_address: SocketAddr,
-
     /// # Memory limit
     ///
     /// The total memory in bytes that can be used to preform sql queries
@@ -57,7 +52,6 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            bind_address: Options::default_bind_address(),
             memory_limit: Options::default_memory_limit(),
             temp_folder: Options::default_temp_folder(),
             query_parallelism: Options::default_query_parallelism(),
@@ -66,10 +60,6 @@ impl Default for Options {
 }
 
 impl Options {
-    fn default_bind_address() -> SocketAddr {
-        "0.0.0.0:5432".parse().unwrap()
-    }
-
     fn default_memory_limit() -> Option<usize> {
         None
     }
@@ -82,20 +72,24 @@ impl Options {
         None
     }
 
-    pub fn build(self, rocksdb: RocksDBStorage) -> PostgresQueryService {
+    pub fn build(self, rocksdb: RocksDBStorage) -> Result<QueryContext, BuildError> {
         let Options {
-            bind_address,
             memory_limit,
             temp_folder,
             query_parallelism,
         } = self;
 
-        PostgresQueryService {
-            bind_address,
-            rocksdb,
-            memory_limit,
-            temp_folder,
-            query_parallelism,
-        }
+        let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
+        crate::status::register_self(&ctx, rocksdb.clone())?;
+        crate::state::register_self(&ctx, rocksdb)?;
+
+        Ok(ctx)
     }
+}
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum BuildError {
+    #[error(transparent)]
+    #[code(unknown)]
+    Datafusion(#[from] DataFusionError),
 }

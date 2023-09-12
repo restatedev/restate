@@ -33,9 +33,9 @@ pub use restate_worker::{
     IngressOptions, IngressOptionsBuilder, IngressOptionsBuilderError, InvokerOptions,
     InvokerOptionsBuilder, InvokerOptionsBuilderError, Options as WorkerOptions,
     OptionsBuilder as WorkerOptionsBuilder, OptionsBuilderError as WorkerOptionsBuilderError,
-    RocksdbOptions, RocksdbOptionsBuilder, RocksdbOptionsBuilderError, StorageQueryOptions,
-    StorageQueryOptionsBuilder, StorageQueryOptionsBuilderError, TimerOptions, TimerOptionsBuilder,
-    TimerOptionsBuilderError,
+    RocksdbOptions, RocksdbOptionsBuilder, RocksdbOptionsBuilderError, StorageQueryPostgresOptions,
+    StorageQueryPostgresOptionsBuilder, StorageQueryPostgresOptionsBuilderError, TimerOptions,
+    TimerOptionsBuilder, TimerOptionsBuilderError,
 };
 
 /// # Restate configuration file

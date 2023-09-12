@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::context::QueryContext;
 use crate::pgwire_server::HandlerFactory;
 use codederror::CodedError;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_query_datafusion::context::QueryContext;
+
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -22,7 +22,9 @@ pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
-    #[error("failed binding to address '{0}' specified in 'worker.storage_query.bind_address'")]
+    #[error(
+        "failed binding to address '{0}' specified in 'worker.storage_query_postgres.bind_address'"
+    )]
     #[code(unknown)]
     AddrInUse(SocketAddr),
     #[error("error: {0:?}")]
@@ -32,20 +34,14 @@ pub enum Error {
 
 pub struct PostgresQueryService {
     pub bind_address: SocketAddr,
-    pub rocksdb: RocksDBStorage,
-    pub memory_limit: Option<usize>,
-    pub temp_folder: Option<String>,
-    pub query_parallelism: Option<usize>,
+    pub query_context: QueryContext,
 }
 
 impl PostgresQueryService {
     pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
         let PostgresQueryService {
             bind_address,
-            rocksdb,
-            memory_limit,
-            temp_folder,
-            query_parallelism,
+            query_context,
         } = self;
 
         let listener = TcpListener::bind(&bind_address).await.map_err(|e| {
@@ -59,11 +55,7 @@ impl PostgresQueryService {
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
 
-        let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
-        crate::status::register_self(&ctx, rocksdb.clone()).map_err(|e| Error::Other(e.into()))?;
-        crate::state::register_self(&ctx, rocksdb).map_err(|e| Error::Other(e.into()))?;
-
-        let factory = HandlerFactory::new(ctx);
+        let factory = HandlerFactory::new(query_context);
         loop {
             select! {
                 incoming_socket = listener.accept() => {
