@@ -4091,6 +4091,7 @@ name = "restate_storage_query_http"
 version = "0.2.2"
 dependencies = [
  "axum",
+ "base64 0.21.0",
  "bytes",
  "codederror",
  "datafusion",

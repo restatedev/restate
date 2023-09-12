@@ -8,12 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::StreamBody;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::{http, Json};
+use base64::Engine;
+use bytes::Bytes;
+use datafusion::arrow::array::{Array, ArrayRef, AsArray, GenericStringArray, OffsetSizeTrait};
+use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
+use datafusion::arrow::error::ArrowError;
+use datafusion::arrow::json::writer::record_batches_to_json_rows;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 use futures::StreamExt;
 use okapi_operation::*;
@@ -62,11 +70,60 @@ pub async fn query(
         .execute(payload.query.as_str())
         .await
         .map_err(StorageApiError::DataFusionError)?;
-    let body = StreamBody::new(stream.map(|batch| -> Result<Vec<u8>, DataFusionError> {
-        let mut buf = Vec::new();
-        let mut writer = datafusion::arrow::json::writer::ArrayWriter::new(&mut buf);
-        writer.write(&batch?)?;
-        Ok(buf)
+    let mut buf = Vec::new();
+    let body = StreamBody::new(stream.map(move |batch| -> Result<Bytes, DataFusionError> {
+        // Binary types are not supported by record_batches_to_json_rows
+        let b64_batch = record_batch_bytes_to_b64(batch?)?;
+        for row in record_batches_to_json_rows(&[&b64_batch])? {
+            serde_json::to_writer(&mut buf, &row)
+                .map_err(|error| ArrowError::JsonError(error.to_string()))?;
+            buf.write_all(b"\n")?;
+        }
+        let b = Bytes::copy_from_slice(buf.as_slice());
+        buf.clear();
+        Ok(b)
     }));
     Ok(([(http::header::CONTENT_TYPE, "application/json")], body))
+}
+
+fn record_batch_bytes_to_b64(batch: RecordBatch) -> Result<RecordBatch, ArrowError> {
+    let mut fields = Vec::with_capacity(batch.schema().fields.len());
+    let mut columns = Vec::with_capacity(batch.columns().len());
+    for (i, field) in batch.schema().fields.iter().enumerate() {
+        match field.data_type() {
+            DataType::LargeBinary => {
+                fields.push(FieldRef::new(Field::new(
+                    field.name(),
+                    DataType::LargeUtf8,
+                    field.is_nullable(),
+                )));
+                let arr = binary_array_to_b64::<i64>(batch.column(i));
+                columns.push(ArrayRef::from(arr));
+            }
+            DataType::Binary => {
+                fields.push(FieldRef::new(Field::new(
+                    field.name(),
+                    DataType::Utf8,
+                    field.is_nullable(),
+                )));
+                let arr = binary_array_to_b64::<i32>(batch.column(i));
+                columns.push(ArrayRef::from(arr));
+            }
+            _ => {
+                fields.push(field.clone());
+                columns.push(batch.column(i).clone());
+            }
+        }
+    }
+    let schema = Schema::new_with_metadata(fields, batch.schema().metadata().clone());
+    RecordBatch::try_new(SchemaRef::new(schema), columns)
+}
+
+fn binary_array_to_b64<OffsetSize: OffsetSizeTrait>(arr: &ArrayRef) -> Box<dyn Array> {
+    Box::new(GenericStringArray::<OffsetSize>::from(
+        arr.as_binary::<OffsetSize>()
+            .iter()
+            .map(|b| -> Option<String> { Some(base64::prelude::BASE64_STANDARD.encode(b?)) })
+            .collect::<Vec<Option<String>>>(),
+    ))
 }
