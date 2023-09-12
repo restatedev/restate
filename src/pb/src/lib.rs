@@ -33,6 +33,13 @@ pub mod restate {
     #![allow(clippy::all)]
     #![allow(unknown_lints)]
     include!(concat!(env!("OUT_DIR"), "/dev.restate.rs"));
+
+    pub mod internal {
+        #![allow(warnings)]
+        #![allow(clippy::all)]
+        #![allow(unknown_lints)]
+        include!(concat!(env!("OUT_DIR"), "/dev.restate.internal.rs"));
+    }
 }
 
 pub static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
@@ -57,6 +64,8 @@ pub const INGRESS_SERVICE_NAME: &str = "dev.restate.Ingress";
 pub const AWAKEABLES_SERVICE_NAME: &str = "dev.restate.Awakeables";
 pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1alpha.ServerReflection";
 pub const HEALTH_SERVICE_NAME: &str = "grpc.health.v1.Health";
+pub const PROXY_SERVICE_NAME: &str = "dev.restate.internal.Proxy";
+pub const PROXY_PROXY_THROUGH_METHOD_NAME: &str = "ProxyThrough";
 
 #[cfg(feature = "builtin-service")]
 pub mod builtin_service {

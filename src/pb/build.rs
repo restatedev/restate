@@ -237,6 +237,10 @@ fn main() -> std::io::Result<()> {
             MultiServiceGenerator::new()
                 .with_svc("dev.restate.Awakeables", Box::new(RestateBuiltInServiceGen))
                 .with_svc(
+                    "dev.restate.internal.Proxy",
+                    Box::new(RestateBuiltInServiceGen),
+                )
+                .with_svc(
                     "dev.restate.Ingress",
                     Box::<ManualResponseRestateBuiltInServiceGen>::default(),
                 )
@@ -253,6 +257,7 @@ fn main() -> std::io::Result<()> {
                 "proto/grpc/reflection/v1alpha/reflection.proto",
                 "proto/dev/restate/ext.proto",
                 "proto/dev/restate/services.proto",
+                "proto/dev/restate/internal/services.proto",
                 "proto/dev/restate/events.proto",
             ],
             &["proto"],
