@@ -83,12 +83,25 @@ pub(crate) enum Effect {
         journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
     },
+    // TODO unify SetState and SetStateOnly
+    SetStateOnly {
+        service_id: ServiceId,
+        metadata: InvocationMetadata,
+        key: Bytes,
+        value: Bytes,
+    },
     ClearState {
         service_id: ServiceId,
         metadata: InvocationMetadata,
         key: Bytes,
         journal_entry: EnrichedRawEntry,
         entry_index: EntryIndex,
+    },
+    // TODO unify ClearState and ClearStateOnly
+    ClearStateOnly {
+        service_id: ServiceId,
+        metadata: InvocationMetadata,
+        key: Bytes,
     },
     GetStateAndAppendCompletedEntry {
         service_id: ServiceId,
@@ -380,6 +393,29 @@ impl Effect {
                     "Effect: Set state"
                 )
             }
+            Effect::SetStateOnly {
+                service_id,
+                metadata,
+                key,
+                ..
+            } => {
+                info_span_if_leader!(
+                    is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
+                    metadata.journal_metadata.span_context.as_parent(),
+                    "set_state",
+                    otel.name = format!("set_state {key:?}"),
+                    restate.state.key = ?key,
+                    rpc.service = %service_id.service_name,
+                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                );
+
+                debug_if_leader!(
+                    is_leader,
+                    restate.state.key = ?key,
+                    "Effect: Set state"
+                )
+            }
             Effect::ClearState {
                 service_id,
                 metadata,
@@ -402,6 +438,28 @@ impl Effect {
                 debug_if_leader!(
                     is_leader,
                     restate.journal.index = entry_index,
+                    restate.state.key = ?key,
+                    "Effect: Clear state"
+                )
+            }
+            Effect::ClearStateOnly {
+                service_id,
+                metadata,
+                key,
+            } => {
+                info_span_if_leader!(
+                    is_leader,
+                    metadata.journal_metadata.span_context.is_sampled(),
+                    metadata.journal_metadata.span_context.as_parent(),
+                    "clear_state",
+                    otel.name = format!("clear_state {key:?}"),
+                    restate.state.key = ?key,
+                    rpc.service = %service_id.service_name,
+                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                );
+
+                debug_if_leader!(
+                    is_leader,
                     restate.state.key = ?key,
                     "Effect: Clear state"
                 )
@@ -736,7 +794,7 @@ impl Effects {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn set_state(
+    pub(crate) fn set_state_and_append_journal_entry(
         &mut self,
         service_id: ServiceId,
         metadata: InvocationMetadata,
@@ -755,7 +813,22 @@ impl Effects {
         })
     }
 
-    pub(crate) fn clear_state(
+    pub(crate) fn set_state(
+        &mut self,
+        service_id: ServiceId,
+        metadata: InvocationMetadata,
+        key: Bytes,
+        value: Bytes,
+    ) {
+        self.effects.push(Effect::SetStateOnly {
+            service_id,
+            metadata,
+            key,
+            value,
+        })
+    }
+
+    pub(crate) fn clear_state_and_append_journal_entry(
         &mut self,
         service_id: ServiceId,
         metadata: InvocationMetadata,
@@ -769,6 +842,19 @@ impl Effects {
             key,
             journal_entry,
             entry_index,
+        })
+    }
+
+    pub(crate) fn clear_state(
+        &mut self,
+        service_id: ServiceId,
+        metadata: InvocationMetadata,
+        key: Bytes,
+    ) {
+        self.effects.push(Effect::ClearStateOnly {
+            service_id,
+            metadata,
+            key,
         })
     }
 

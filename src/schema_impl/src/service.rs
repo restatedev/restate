@@ -47,14 +47,16 @@ fn map_to_service_metadata(
     service_schemas: &ServiceSchemas,
 ) -> Option<ServiceMetadata> {
     match &service_schemas.location {
-        ServiceLocation::IngressOnly => None, // We filter out from this interface ingress only services
+        ServiceLocation::BuiltIn { .. } => None, // We filter out from this interface ingress only services
         ServiceLocation::ServiceEndpoint {
             latest_endpoint,
             public,
         } => Some(ServiceMetadata {
             name: service_name.to_string(),
             methods: service_schemas.methods.keys().cloned().collect(),
-            instance_type: (&service_schemas.instance_type).into(),
+            instance_type: (&service_schemas.instance_type)
+                .try_into()
+                .expect("Checked in the line above whether this is a built-in service or not"),
             endpoint_id: latest_endpoint.clone(),
             revision: service_schemas.revision,
             public: *public,

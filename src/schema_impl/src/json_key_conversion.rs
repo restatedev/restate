@@ -10,6 +10,7 @@
 
 use super::*;
 
+use crate::schemas_impl::ServiceInstanceType;
 use crate::Schemas;
 use bytes::Bytes;
 use prost::Message;
@@ -50,7 +51,7 @@ fn key_to_json(
     method_descriptor: MethodDescriptor,
     key: Bytes,
 ) -> Result<Value, Error> {
-    Ok(match service_instance_type {
+    match service_instance_type {
         keyed @ ServiceInstanceType::Keyed {
             service_methods_key_field_root_number,
             ..
@@ -76,21 +77,24 @@ fn key_to_json(
                 "Protobuf -> JSON should never fail! This is a bug, please contact the developers",
             );
 
-            match json_message {
+            Ok(match json_message {
                     Value::Object(mut m) => {
                         m.remove(key_field.json_name()).expect("The json serialized message must contain the key field")
                     },
                     _ => panic!("This must be a map because the input schema of the protobuf conversion is always a message! This is a bug, please contact the developers")
-                }
+                })
         }
-        ServiceInstanceType::Unkeyed => Value::String(
+        ServiceInstanceType::Unkeyed => Ok(Value::String(
             uuid::Builder::from_slice(&key)
                 .unwrap()
                 .into_uuid()
                 .to_string(),
-        ),
-        ServiceInstanceType::Singleton => Value::Object(Map::new()),
-    })
+        )),
+        ServiceInstanceType::Singleton => Ok(Value::Object(Map::new())),
+        ServiceInstanceType::Unsupported => Err(Error::NotFound),
+        // TODO add support for Custom json_key_conversion
+        ServiceInstanceType::Custom { .. } => Err(Error::NotFound),
+    }
 }
 
 fn json_to_key(
@@ -133,6 +137,8 @@ fn json_to_key(
         }
         ServiceInstanceType::Singleton if key.is_null() => Ok(Bytes::default()),
         ServiceInstanceType::Singleton => Err(Error::UnexpectedNonNullSingletonKey),
+        // TODO support custom service
+        _ => Err(Error::NotFound),
     }
 }
 

@@ -223,37 +223,10 @@ impl SymbolsIndex {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub(super) struct ProtoSymbols {
     files: FilesIndex,
     symbols: SymbolsIndex,
-}
-
-impl Default for ProtoSymbols {
-    fn default() -> Self {
-        let mut symbols = ProtoSymbols {
-            files: Default::default(),
-            symbols: Default::default(),
-        };
-        symbols.add_service(
-            &"self_ingress".to_string(),
-            &restate_pb::get_service(restate_pb::REFLECTION_SERVICE_NAME),
-        );
-        symbols.add_service(
-            &"self_ingress".to_string(),
-            &restate_pb::get_service(restate_pb::INGRESS_SERVICE_NAME),
-        );
-        symbols.add_service(
-            &"self_ingress".to_string(),
-            &restate_pb::get_service(restate_pb::AWAKEABLES_SERVICE_NAME),
-        );
-        symbols.add_service(
-            &"self_ingress".to_string(),
-            &restate_pb::get_service(restate_pb::HEALTH_SERVICE_NAME),
-        );
-
-        symbols
-    }
 }
 
 impl ProtoSymbols {

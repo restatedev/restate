@@ -170,9 +170,8 @@ mod json_impl {
 mod tests {
     use super::*;
 
-    use crate::schemas_impl::{ServiceLocation, ServiceSchemas};
+    use crate::schemas_impl::{ServiceInstanceType, ServiceLocation, ServiceSchemas};
     use prost_reflect::{MethodDescriptor, ServiceDescriptor};
-    use restate_schema_api::key::ServiceInstanceType;
     use serde_json::json;
 
     fn greeter_service_descriptor() -> ServiceDescriptor {

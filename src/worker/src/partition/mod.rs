@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use futures::StreamExt;
+use restate_schema_impl::Schemas;
 use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -60,6 +61,8 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
 
     rocksdb_storage: RocksDBStorage,
 
+    schemas: Schemas,
+
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
@@ -83,6 +86,7 @@ where
         network_handle: NetworkHandle,
         ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
         rocksdb_storage: RocksDBStorage,
+        schemas: Schemas,
     ) -> Self {
         Self {
             peer_id,
@@ -97,6 +101,7 @@ where
             ack_tx,
             _entry_codec: Default::default(),
             rocksdb_storage,
+            schemas,
         }
     }
 
@@ -114,6 +119,7 @@ where
             proposal_tx,
             ack_tx,
             rocksdb_storage,
+            schemas,
             ..
         } = self;
 
@@ -173,7 +179,8 @@ where
 
                                 (actuator_stream, leadership_state) = leadership_state.become_leader(
                                     leader_epoch,
-                                    &partition_storage)
+                                    &partition_storage,
+                                    &schemas)
                                 .await?;
                             }
                             restate_consensus::Command::BecomeFollower => {
