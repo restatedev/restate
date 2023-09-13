@@ -104,47 +104,45 @@ fn convert_record_batch(batch: RecordBatch) -> Result<RecordBatch, ArrowError> {
     let mut fields = Vec::with_capacity(batch.schema().fields.len());
     let mut columns = Vec::with_capacity(batch.columns().len());
     for (i, field) in batch.schema().fields.iter().enumerate() {
-        let (data_type, transform): (DataType, Box<dyn Fn(_) -> _>) = match field.data_type() {
+        let transform: Box<dyn Fn(_) -> _> = match field.data_type() {
             // Represent binary as base64
-            DataType::LargeBinary => (DataType::LargeUtf8, Box::new(binary_array_to_b64::<i64>)),
-            DataType::Binary => (DataType::Utf8, Box::new(binary_array_to_b64::<i32>)),
+            DataType::LargeBinary => Box::new(binary_array_to_b64::<i64>),
+            DataType::Binary => Box::new(binary_array_to_b64::<i32>),
             // Represent 64 bit ints as strings
-            DataType::UInt64 => (
-                DataType::Utf8,
-                Box::new(debug_primitive_array::<UInt64Type>),
-            ),
-            DataType::Int64 => (DataType::Utf8, Box::new(debug_primitive_array::<Int64Type>)),
+            DataType::UInt64 => Box::new(debug_primitive_array::<UInt64Type>),
+            DataType::Int64 => Box::new(debug_primitive_array::<Int64Type>),
             _ => {
                 fields.push(field.clone());
                 columns.push(batch.column(i).clone());
                 continue;
             }
         };
+        let col = transform(batch.column(i));
         fields.push(FieldRef::new(Field::new(
             field.name(),
-            data_type,
+            col.data_type().clone(),
             field.is_nullable(),
         )));
-        columns.push(ArrayRef::from(transform(batch.column(i))));
+        columns.push(ArrayRef::from(col));
     }
     let schema = Schema::new_with_metadata(fields, batch.schema().metadata().clone());
     RecordBatch::try_new(SchemaRef::new(schema), columns)
 }
 
 fn binary_array_to_b64<OffsetSize: OffsetSizeTrait>(arr: &ArrayRef) -> Box<dyn Array> {
-    Box::new(GenericStringArray::<OffsetSize>::from(
+    Box::new(
         arr.as_binary::<OffsetSize>()
             .iter()
             .map(|b| -> Option<String> { Some(base64::prelude::BASE64_STANDARD.encode(b?)) })
-            .collect::<Vec<Option<String>>>(),
-    ))
+            .collect::<GenericStringArray<OffsetSize>>(),
+    )
 }
 
 fn debug_primitive_array<T: ArrowPrimitiveType>(arr: &ArrayRef) -> Box<dyn Array> {
-    Box::new(StringArray::from(
+    Box::new(
         arr.as_primitive::<T>()
             .iter()
             .map(|b: Option<T::Native>| -> Option<String> { Some(format!("{:?}", b?)) })
-            .collect::<Vec<Option<String>>>(),
-    ))
+            .collect::<StringArray>(),
+    )
 }
