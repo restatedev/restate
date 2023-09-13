@@ -15,8 +15,8 @@ options_schema = ["dep:schemars"]
 async-trait = { version = "0.1.68" }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-datafusion = { version = "27.0.0" }
-datafusion-expr = { version = "27.0.0" }
+datafusion = { workspace = true }
+datafusion-expr = { workspace = true }
 chrono = { version = "0.4.26", default-features = false, features = ["clock"] }
 pgwire = "0.15"
 derive_builder = { workspace = true }

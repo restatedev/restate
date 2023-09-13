@@ -11,7 +11,9 @@
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::joins::{HashJoinExec, SymmetricHashJoinExec};
+use datafusion::physical_plan::joins::{
+    HashJoinExec, StreamJoinPartitionMode, SymmetricHashJoinExec,
+};
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
@@ -41,6 +43,7 @@ impl PhysicalOptimizerRule for JoinRewrite {
                 hash_join.filter().cloned(),
                 hash_join.join_type(),
                 hash_join.null_equals_null(),
+                StreamJoinPartitionMode::Partitioned,
             ) else {
                 return Ok(Transformed::No(plan));
             };
