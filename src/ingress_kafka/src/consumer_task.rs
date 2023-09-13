@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use opentelemetry_api::trace::TraceContextExt;
 use prost::Message as _;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
@@ -18,9 +19,12 @@ use restate_ingress_dispatcher::{
     AckReceiver, IngressDeduplicationId, IngressRequest, IngressRequestSender,
 };
 use restate_types::identifiers::{FullInvocationId, InvocationUuid};
+use restate_types::invocation::SpanRelation;
 use std::collections::HashMap;
 use std::io::Write;
 use tokio::sync::oneshot;
+use tracing::{debug, info, info_span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -50,6 +54,18 @@ impl MessageDispatcherType {
         let dedup_id = Self::generate_deduplication_id(consumer_group_id, msg);
         let ordering_key = MessageDispatcherType::generate_ordering_key(consumer_group_id, msg);
 
+        // Prepare ingress span
+        let ingress_span = info_span!(
+            "kafka_ingress_consume",
+            otel.name = format!("kafka_ingress_consume {}", method_name),
+            messaging.system = "kafka",
+            messaging.operation = "receive",
+            messaging.source.name = msg.topic(),
+            messaging.destination.name = format!("{}/{}", service_name, method_name)
+        );
+        info!(parent: &ingress_span, "Processing Kafka ingress request");
+        let ingress_span_context = ingress_span.context().span().span_context().clone();
+
         Ok(match self {
             MessageDispatcherType::DispatchEvent {} => {
                 let pb_event = restate_pb::restate::Event {
@@ -67,7 +83,7 @@ impl MessageDispatcherType {
                     fid,
                     method_name,
                     pb_event.encode_to_vec(),
-                    Default::default(),
+                    SpanRelation::Parent(ingress_span_context),
                     Some(dedup_id),
                 )
             }
@@ -101,7 +117,7 @@ impl MessageDispatcherType {
                         input: pb_event.encode_to_vec().into(),
                     }
                     .encode_to_vec(),
-                    Default::default(),
+                    SpanRelation::Parent(ingress_span_context),
                     Some(dedup_id),
                 )
             }
@@ -225,6 +241,11 @@ impl ConsumerTask {
             .get("group.id")
             .expect("group.id must be set")
             .to_string();
+        debug!(
+            "Starting consumer for topics {:?} with configuration {:?}",
+            self.topics, self.client_config
+        );
+
         let consumer: MessageConsumer = self.client_config.create()?;
         let topics: Vec<&str> = self.topics.iter().map(|x| &**x).collect();
         consumer.subscribe(&topics)?;
