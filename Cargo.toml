@@ -32,6 +32,8 @@ derive_builder = "0.12.0"
 futures = "0.3.25"
 futures-sink = "0.3.25"
 futures-util = "0.3.25"
+datafusion = { version = "31.0.0" }
+datafusion-expr = { version = "31.0.0" }
 drain = "0.1.1"
 hyper = { version = "0.14.24", default-features = false }
 hyper-rustls = { version = "0.24.1", features = ["http2"] }

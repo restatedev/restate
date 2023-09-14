@@ -63,9 +63,9 @@ impl HTTPQueryService {
 
         // Setup the router
         let storage_api = axum_integration::Router::new()
-            .route("/query", post(openapi_handler!(query::query)))
+            .route("/api/query", post(openapi_handler!(query::query)))
             .route_openapi_specification(
-                "/openapi",
+                "/api/openapi",
                 OpenApiBuilder::new("Storage Query API", env!("CARGO_PKG_VERSION")),
             )
             .expect("Error when building the OpenAPI specification")

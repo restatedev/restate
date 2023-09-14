@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::any::Any;
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
@@ -23,7 +23,9 @@ use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::PhysicalSortExpr;
-use datafusion::physical_plan::{ExecutionPlan, Partitioning, SendableRecordBatchStream};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream,
+};
 pub use datafusion_expr::UserDefinedLogicalNode;
 use restate_types::identifiers::PartitionKey;
 
@@ -143,5 +145,15 @@ impl ExecutionPlan for GenericTableExecutionPlan {
 
     fn statistics(&self) -> Statistics {
         Statistics::default()
+    }
+}
+
+impl DisplayAs for GenericTableExecutionPlan {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "GenericTableExecutionPlan()",)
+            }
+        }
     }
 }
