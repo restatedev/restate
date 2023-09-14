@@ -3786,6 +3786,7 @@ dependencies = [
  "bytes",
  "derive_builder",
  "drain",
+ "opentelemetry_api",
  "prost",
  "rdkafka",
  "restate_errors",
@@ -3803,6 +3804,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
  "uuid",
 ]
 

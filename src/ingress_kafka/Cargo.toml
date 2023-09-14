@@ -15,6 +15,7 @@ options_schema = ["dep:schemars"]
 bytes = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }
+opentelemetry_api = { workspace = true }
 prost = { workspace = true }
 rdkafka = { version = "0.34", features = ["cmake-build"] }
 restate_errors = { workspace = true }
@@ -29,6 +30,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt"] }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

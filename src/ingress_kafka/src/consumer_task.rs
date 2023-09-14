@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use opentelemetry_api::trace::TraceContextExt;
 use prost::Message as _;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
@@ -17,10 +18,13 @@ use rdkafka::{ClientConfig, Message};
 use restate_ingress_dispatcher::{
     AckReceiver, IngressDeduplicationId, IngressRequest, IngressRequestSender,
 };
-use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::{FullInvocationId, InvocationUuid};
+use restate_types::invocation::SpanRelation;
 use std::collections::HashMap;
 use std::io::Write;
 use tokio::sync::oneshot;
+use tracing::{debug, info, info_span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -34,7 +38,7 @@ type MessageConsumer = StreamConsumer<DefaultConsumerContext>;
 
 #[derive(Debug, Clone)]
 pub enum MessageDispatcherType {
-    DispatchEvent { ordering_key_prefix: String },
+    DispatchEvent,
     DispatchKeyedEvent,
 }
 
@@ -47,14 +51,25 @@ impl MessageDispatcherType {
         consumer_group_id: &str,
         msg: &impl Message,
     ) -> Result<(IngressRequest, AckReceiver), Error> {
-        Ok(match self {
-            MessageDispatcherType::DispatchEvent {
-                ordering_key_prefix,
-            } => {
-                let key = MessageDispatcherType::generate_ordering_key(ordering_key_prefix, msg);
+        let dedup_id = Self::generate_deduplication_id(consumer_group_id, msg);
+        let ordering_key = MessageDispatcherType::generate_ordering_key(consumer_group_id, msg);
 
+        // Prepare ingress span
+        let ingress_span = info_span!(
+            "kafka_ingress_consume",
+            otel.name = format!("kafka_ingress_consume {}", method_name),
+            messaging.system = "kafka",
+            messaging.operation = "receive",
+            messaging.source.name = msg.topic(),
+            messaging.destination.name = format!("{}/{}", service_name, method_name)
+        );
+        info!(parent: &ingress_span, "Processing Kafka ingress request");
+        let ingress_span_context = ingress_span.context().span().span_context().clone();
+
+        Ok(match self {
+            MessageDispatcherType::DispatchEvent {} => {
                 let pb_event = restate_pb::restate::Event {
-                    ordering_key: key.clone(),
+                    ordering_key: ordering_key.clone(),
                     payload: Bytes::copy_from_slice(
                         msg.payload().expect("There must be a payload!"),
                     ),
@@ -62,22 +77,22 @@ impl MessageDispatcherType {
                     attributes: MessageDispatcherType::generate_events_attributes(msg),
                 };
 
-                let fid = FullInvocationId::generate(service_name, key);
+                let fid = FullInvocationId::generate(service_name, ordering_key);
 
                 IngressRequest::background_invocation(
                     fid,
                     method_name,
                     pb_event.encode_to_vec(),
-                    Default::default(),
-                    Some(Self::generate_deduplication_id(consumer_group_id, msg)),
+                    SpanRelation::Parent(ingress_span_context),
+                    Some(dedup_id),
                 )
             }
             MessageDispatcherType::DispatchKeyedEvent => {
-                let key =
+                let event_key =
                     MessageDispatcherType::generate_restate_key(msg.key().unwrap_or_default());
 
                 let pb_event = restate_pb::restate::KeyedEvent {
-                    key: key.clone(),
+                    key: event_key.clone(),
                     payload: Bytes::copy_from_slice(
                         msg.payload().expect("There must be a payload!"),
                     ),
@@ -85,20 +100,31 @@ impl MessageDispatcherType {
                     attributes: MessageDispatcherType::generate_events_attributes(msg),
                 };
 
-                let fid = FullInvocationId::generate(service_name, key);
+                // For keyed events, we dispatch them through the Proxy service, to avoid scattering the offset info throughout all the partitions
+                let proxy_fid =
+                    FullInvocationId::generate(restate_pb::PROXY_SERVICE_NAME, ordering_key);
 
                 IngressRequest::background_invocation(
-                    fid,
-                    method_name,
-                    pb_event.encode_to_vec(),
-                    Default::default(),
-                    Some(Self::generate_deduplication_id(consumer_group_id, msg)),
+                    proxy_fid,
+                    restate_pb::PROXY_PROXY_THROUGH_METHOD_NAME,
+                    restate_pb::restate::internal::ProxyThroughRequest {
+                        target_service: service_name.to_string(),
+                        target_method: method_name.to_string(),
+                        target_key: event_key,
+                        target_invocation_uuid: Bytes::copy_from_slice(
+                            InvocationUuid::now_v7().as_bytes(),
+                        ),
+                        input: pb_event.encode_to_vec().into(),
+                    }
+                    .encode_to_vec(),
+                    SpanRelation::Parent(ingress_span_context),
+                    Some(dedup_id),
                 )
             }
         })
     }
 
-    fn generate_ordering_key(ordering_key_prefix: &String, msg: &impl Message) -> Bytes {
+    fn generate_ordering_key(ordering_key_prefix: &str, msg: &impl Message) -> Bytes {
         let mut buf = BytesMut::new();
         write!(
             (&mut buf).writer(),
@@ -215,6 +241,11 @@ impl ConsumerTask {
             .get("group.id")
             .expect("group.id must be set")
             .to_string();
+        debug!(
+            "Starting consumer for topics {:?} with configuration {:?}",
+            self.topics, self.client_config
+        );
+
         let consumer: MessageConsumer = self.client_config.create()?;
         let topics: Vec<&str> = self.topics.iter().map(|x| &**x).collect();
         consumer.subscribe(&topics)?;
@@ -274,9 +305,7 @@ mod tests {
 
     #[test]
     fn generated_event_is_well_formed() {
-        let msg_dispatcher_type = MessageDispatcherType::DispatchEvent {
-            ordering_key_prefix: "my-consumer".to_string(),
-        };
+        let msg_dispatcher_type = MessageDispatcherType::DispatchEvent {};
         let schemas = schemas_mock();
         let msg = OwnedMessage::new(
             Some(b"123".to_vec()),
@@ -321,7 +350,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(actual_key, "my-consumer-abc-10");
+        assert_eq!(actual_key, "my-consumer-group-abc-10");
 
         // Event contains the original payload
         let actual_payload = restate_pb::restate::Event::decode(&mut payload)

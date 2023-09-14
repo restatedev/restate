@@ -247,6 +247,12 @@ impl Default for SchemasInner {
             ServiceInstanceType::Unkeyed,
             true,
         );
+        register_built_in(
+            restate_pb::PROXY_SERVICE_NAME,
+            // Key must be manually provided when invoking the proxy service
+            ServiceInstanceType::Unsupported,
+            false,
+        );
 
         inner
     }
