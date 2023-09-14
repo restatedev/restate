@@ -284,14 +284,21 @@ mod partition_integration {
 
     impl From<partition::IngressAckResponse> for restate_ingress_dispatcher::IngressDispatcherInput {
         fn from(value: partition::IngressAckResponse) -> Self {
-            match value.kind {
-                AckKind::Acknowledge(seq_number) => {
-                    restate_ingress_dispatcher::IngressDispatcherInput::message_ack(seq_number)
-                }
+            let seq_number = match value.kind {
+                AckKind::Acknowledge(seq_number) => seq_number,
                 AckKind::Duplicate { seq_number, .. } => {
                     // Ingress dispatcher doesn't currently support handling duplicates
-                    restate_ingress_dispatcher::IngressDispatcherInput::message_ack(seq_number)
+                    seq_number
                 }
+            };
+
+            if let Some(dedup_source) = value.dedup_source {
+                restate_ingress_dispatcher::IngressDispatcherInput::DedupMessageAck(
+                    dedup_source,
+                    seq_number,
+                )
+            } else {
+                restate_ingress_dispatcher::IngressDispatcherInput::MessageAck(seq_number)
             }
         }
     }

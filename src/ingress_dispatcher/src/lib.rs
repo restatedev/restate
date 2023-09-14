@@ -137,11 +137,16 @@ impl AckTarget {
 pub enum IngressDispatcherInput {
     Response(IngressResponseMessage),
     MessageAck(MessageIndex),
+    DedupMessageAck(String, MessageIndex),
 }
 
 impl IngressDispatcherInput {
     pub fn message_ack(seq_number: MessageIndex) -> Self {
         IngressDispatcherInput::MessageAck(seq_number)
+    }
+
+    pub fn dedup_message_ack(dedup_name: String, seq_number: MessageIndex) -> Self {
+        IngressDispatcherInput::DedupMessageAck(dedup_name, seq_number)
     }
 
     pub fn response(response: IngressResponseMessage) -> Self {

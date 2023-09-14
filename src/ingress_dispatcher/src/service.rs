@@ -177,6 +177,18 @@ impl DispatcherLoopHandler {
                 }
                 None
             }
+            IngressDispatcherInput::DedupMessageAck(dedup_name, dedup_seq_number) => {
+                trace!("Received dedup message ack: {dedup_name} {dedup_seq_number:?}.");
+
+                if let Some(ack_sender) = self
+                    .waiting_for_acks_with_custom_id
+                    .remove(&(dedup_name, dedup_seq_number))
+                {
+                    // Receivers might be gone if they are not longer interested in the ack notification
+                    let _ = ack_sender.send(());
+                }
+                None
+            }
         }
     }
 
