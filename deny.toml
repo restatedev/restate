@@ -5,12 +5,6 @@ vulnerability = "deny"
 unmaintained = "warn"
 yanked = "deny"
 notice = "warn"
-ignore = [
-    # Caused by arrow, and a workaround is applied in storage_query_datafusion,
-    # as described by the advisory description.
-    "RUSTSEC-2020-0071"
-]
-
 
 
 [licenses]
