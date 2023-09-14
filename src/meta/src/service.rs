@@ -316,7 +316,7 @@ where
         &mut self,
         worker_handle: &(impl restate_worker_api::Handle + Send + Sync + 'static),
     ) {
-        for subscription in self.schemas.list_subscriptions() {
+        for subscription in self.schemas.list_subscriptions(&[]) {
             // If the worker is closing, we can ignore this
             let _ = worker_handle
                 .subscription_controller_handle()

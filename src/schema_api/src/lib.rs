@@ -492,6 +492,12 @@ pub mod subscription {
         }
     }
 
+    impl PartialEq<&str> for Source {
+        fn eq(&self, other: &&str) -> bool {
+            self.to_string().as_str() == *other
+        }
+    }
+
     #[derive(Debug, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
@@ -510,6 +516,12 @@ pub mod subscription {
                     write!(f, "service://{}/{}", name, method)
                 }
             }
+        }
+    }
+
+    impl PartialEq<&str> for Sink {
+        fn eq(&self, other: &&str) -> bool {
+            self.to_string().as_str() == *other
         }
     }
 
@@ -559,10 +571,24 @@ pub mod subscription {
         }
     }
 
+    pub enum ListSubscriptionFilter {
+        ExactMatchSink(String),
+        ExactMatchSource(String),
+    }
+
+    impl ListSubscriptionFilter {
+        pub fn matches(&self, sub: &Subscription) -> bool {
+            match self {
+                ListSubscriptionFilter::ExactMatchSink(sink) => sub.sink == sink.as_str(),
+                ListSubscriptionFilter::ExactMatchSource(source) => sub.source == source.as_str(),
+            }
+        }
+    }
+
     pub trait SubscriptionResolver {
         fn get_subscription(&self, id: &str) -> Option<Subscription>;
 
-        fn list_subscriptions(&self) -> Vec<Subscription>;
+        fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription>;
     }
 
     pub trait SubscriptionValidator {
