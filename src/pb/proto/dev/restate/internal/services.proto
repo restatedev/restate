@@ -43,27 +43,17 @@ service RemoteContext {
   rpc Start(StartRequest) returns (StartResponse);
 
   // Send new messages to append to the message stream.
-  // This request can fail with the following error codes:
-  // - PERMISSION_DENIED: This means the provided stream_id is invalid,
-  //                      and it should not be reused, nor the client should create a new stream using Start().
-  //                      It can instead read the invocation result using GetResult.
-  // - Other error codes: These can be either errors in sent messages, or some other transient error.
-  //                      The client should consider the stream in an unrecoverable error state and it can retry
-  //                      by creating a new stream through Start() with a different stream_id.
-  //
-  // This method is not idempotent.
-  rpc Send(SendRequest) returns (google.protobuf.Empty);
+  // This method is not idempotent, and a request can fail for several reasons,
+  // including errors in sent messages, or some other transient error.
+  // The client should consider the stream in an unrecoverable error state and it can retry
+  // by creating a new stream through Start() with a different stream_id.
+  rpc Send(SendRequest) returns (SendResponse);
 
   // Receive new messages from the message stream.
-  // This request can fail with the following error codes:
-  // - PERMISSION_DENIED: This means the provided stream_id is invalid,
-  //                      and it should not be reused, nor the client should create a new stream using Start().
-  //                      It can instead read the invocation result using GetResult.
-  // - Other error codes: These can be either errors in sent messages, or some other transient error.
-  //                      The client should consider the stream in an unrecoverable error state and it can retry
-  //                      by creating a new stream through Start() with a different stream_id.
-  //
-  // This method is not idempotent.
+  // This method is not idempotent, and a request can fail for several reasons,
+  // including errors in sent messages, or some other transient error.
+  // The client should consider the stream in an unrecoverable error state and it can retry
+  // by creating a new stream through Start() with a different stream_id.
   rpc Recv(RecvRequest) returns (RecvResponse);
 
   // Get the result of the invocation.
@@ -115,6 +105,17 @@ message SendRequest {
   bytes messages = 3;
 }
 
+message SendResponse {
+  oneof response {
+    google.protobuf.Empty ok = 1;
+
+    // This means the provided stream_id is invalid, and it should not be reused,
+    // nor the client should create a new stream using Start().
+    // The client can instead read the invocation result using GetResult().
+    google.protobuf.Empty invalid_stream = 2;
+  }
+}
+
 message RecvRequest {
   // User provided operation id, this is used as idempotency key.
   string operation_id = 1 [(dev.restate.ext.field) = KEY];
@@ -125,8 +126,15 @@ message RecvRequest {
 }
 
 message RecvResponse {
-  // Contains the concatenated messages of the stream, encoded using the same framing used by service-protocol
-  bytes messages = 1;
+  oneof response {
+    // Contains the concatenated messages of the stream, encoded using the same framing used by service-protocol
+    bytes messages = 1;
+
+    // This means the provided stream_id is invalid, and it should not be reused,
+    // nor the client should create a new stream using Start().
+    // The client can instead read the invocation result using GetResult().
+    google.protobuf.Empty invalid_stream = 2;
+  }
 }
 
 message GetResultRequest {
