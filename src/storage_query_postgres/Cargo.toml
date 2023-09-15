@@ -19,6 +19,7 @@ datafusion = { workspace = true }
 datafusion-expr = { workspace = true }
 chrono = { version = "0.4.26", default-features = false, features = ["clock"] }
 pgwire = "0.15"
+postgres-types = "0.2.5"
 derive_builder = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }

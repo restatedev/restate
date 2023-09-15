@@ -8,13 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::{BufMut, BytesMut};
 use datafusion::arrow::array::{
-    Array, BinaryArray, BooleanArray, Date32Array, Date64Array, LargeBinaryArray, LargeStringArray,
-    PrimitiveArray, StringArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Date64Array, LargeBinaryArray,
+    LargeStringArray, ListArray, PrimitiveArray, StringArray,
 };
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::datatypes::Float32Type;
@@ -40,6 +42,8 @@ use pgwire::api::{ClientInfo, MakeHandler, StatelessMakeHandler, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use pgwire::tokio::process_socket;
+use pgwire::types::ToSqlText;
+use postgres_types::{IsNull, ToSql};
 use restate_storage_query_datafusion::context::QueryContext;
 use tracing::warn;
 
@@ -138,6 +142,16 @@ fn into_pg_type(df_type: &DataType) -> PgWireResult<Type> {
         DataType::Float64 => Type::FLOAT8,
         DataType::Utf8 => Type::VARCHAR,
         DataType::LargeUtf8 => Type::VARCHAR,
+        DataType::List(field) => match field.data_type() {
+            DataType::Utf8 => Type::VARCHAR_ARRAY,
+            _ => {
+                return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                    "ERROR".to_owned(),
+                    "XX000".to_owned(),
+                    format!("Unsupported Datatype {df_type}"),
+                ))));
+            }
+        },
         _ => {
             return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
                 "ERROR".to_owned(),
@@ -158,10 +172,9 @@ async fn arrow_to_pg_encoder<'a>(
             .iter()
             .map(|f| {
                 let pg_type = into_pg_type(f.data_type())?;
-                let format = if matches!(f.data_type(), DataType::Binary) {
-                    FieldFormat::Binary
-                } else {
-                    FieldFormat::Text
+                let format = match f.data_type() {
+                    DataType::Binary | DataType::LargeBinary => FieldFormat::Binary,
+                    _ => FieldFormat::Text,
                 };
 
                 Ok(FieldInfo::new(f.name().into(), None, None, pg_type, format))
@@ -288,6 +301,10 @@ fn get_large_binary_value(arr: &Arc<dyn Array>, idx: usize) -> &[u8] {
         .value(idx)
 }
 
+fn get_list_value(arr: &Arc<dyn Array>, idx: usize) -> ArrayRef {
+    arr.as_any().downcast_ref::<ListArray>().unwrap().value(idx)
+}
+
 fn encode_value(
     encoder: &mut DataRowEncoder,
     arr: &Arc<dyn Array>,
@@ -309,6 +326,40 @@ fn encode_value(
         DataType::LargeBinary => encoder.encode_field(&get_large_binary_value(arr, idx))?,
         DataType::Date64 => encoder.encode_field(&get_date64_value(arr, idx))?,
         DataType::Date32 => encoder.encode_field(&get_date32_value(arr, idx))?,
+        DataType::List(_) => {
+            let arr = &get_list_value(arr, idx);
+            match arr.data_type() {
+                DataType::Utf8 => {
+                    encoder.encode_field(&SQLVec(
+                        arr.as_any()
+                            .downcast_ref::<StringArray>()
+                            .unwrap()
+                            .iter()
+                            .collect(),
+                    ))?;
+                }
+                DataType::LargeUtf8 => {
+                    encoder.encode_field(&SQLVec(
+                        arr.as_any()
+                            .downcast_ref::<StringArray>()
+                            .unwrap()
+                            .iter()
+                            .collect(),
+                    ))?;
+                }
+                _ => {
+                    return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                        "ERROR".to_owned(),
+                        "XX000".to_owned(),
+                        format!(
+                            "Unsupported Datatype {} and array {:?}",
+                            arr.data_type(),
+                            &arr
+                        ),
+                    ))))
+                }
+            }
+        }
         _ => {
             return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
                 "ERROR".to_owned(),
@@ -322,4 +373,55 @@ fn encode_value(
         }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct SQLVec<T>(Vec<T>);
+
+impl<T: ToSqlText> ToSqlText for SQLVec<T> {
+    fn to_sql_text(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        out.put_slice(b"{");
+
+        for (i, v) in self.0.iter().enumerate() {
+            if i > 0 {
+                out.put_slice(b",");
+            }
+            match v.to_sql_text(ty, out)? {
+                IsNull::Yes => out.put_slice(b"NULL"),
+                IsNull::No => (),
+            }
+        }
+
+        out.put_slice(b"}");
+
+        Ok(IsNull::No)
+    }
+}
+
+impl<T: ToSql> ToSql for SQLVec<T> {
+    fn to_sql(&self, ty: &Type, out: &mut BytesMut) -> Result<IsNull, Box<dyn Error + Sync + Send>>
+    where
+        Self: Sized,
+    {
+        self.0.to_sql(ty, out)
+    }
+
+    fn accepts(ty: &Type) -> bool
+    where
+        Self: Sized,
+    {
+        Vec::<T>::accepts(ty)
+    }
+
+    fn to_sql_checked(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        self.0.to_sql_checked(ty, out)
+    }
 }

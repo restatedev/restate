@@ -8,7 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use datafusion::arrow::datatypes::{DataType, Field};
+use std::sync::Arc;
+
+// create enums that can be used as consts - makes it much easier to match in macros instead of trying
+// to match against variant constructors
+pub(crate) enum ExtendedDataType {
+    Utf8List,
+}
+
+impl From<ExtendedDataType> for DataType {
+    fn from(value: ExtendedDataType) -> Self {
+        match value {
+            ExtendedDataType::Utf8List => {
+                // must be nullable as the list builder simply defaults to creating nullable lists
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
+            }
+        }
+    }
+}
+
 macro_rules! define_builder {
+    (DataType::Boolean) => {
+        ::datafusion::arrow::array::BooleanBuilder
+    };
     (DataType::Utf8) => {
         ::datafusion::arrow::array::StringBuilder
     };
@@ -33,9 +56,15 @@ macro_rules! define_builder {
     (DataType::Date64) => {
         ::datafusion::arrow::array::Date64Builder
     };
+    (ExtendedDataType::Utf8List) => {
+        ::datafusion::arrow::array::ListBuilder<::datafusion::arrow::array::StringBuilder>
+    };
 }
 
 macro_rules! define_primitive_trait {
+    (DataType::Boolean) => {
+        bool
+    };
     (DataType::Utf8) => {
         impl AsRef<str>
     };
@@ -59,6 +88,9 @@ macro_rules! define_primitive_trait {
     };
     (DataType::UInt64) => {
         u64
+    };
+    (ExtendedDataType::Utf8List) => {
+        impl IntoIterator<Item = Option<String>>
     };
 }
 
@@ -246,10 +278,10 @@ macro_rules! define_primitive_trait {
 ///             (<[_]>::into_vec(
 ///                 #[rustc_box]
 ///                     ::alloc::boxed::Box::new([
-///                         (Field::new(stringify!( name ), DataType::Utf8, true)),
-///                         (Field::new(stringify!( age ), DataType::UInt32, true)),
-///                         (Field::new(stringify!( secret ), DataType::Binary, true)),
-///                         (Field::new(stringify!( birth_date ), DataType::Date64, true))])
+///                         (Field::new(stringify!( name ), DataType::Utf8.into(), true)),
+///                         (Field::new(stringify!( age ), DataType::UInt32.into(), true)),
+///                         (Field::new(stringify!( secret ), DataType::Binary.into(), true)),
+///                         (Field::new(stringify!( birth_date ), DataType::Date64.into(), true))])
 ///             )))
 ///         )
 ///     }
@@ -403,7 +435,7 @@ macro_rules! define_table {
             pub fn schema() -> ::datafusion::arrow::datatypes::SchemaRef {
                 std::sync::Arc::new(::datafusion::arrow::datatypes::Schema::new(
                     vec![
-                        $(::datafusion::arrow::datatypes::Field::new(stringify!($element), $ty, true),)+
+                        $(::datafusion::arrow::datatypes::Field::new(stringify!($element), $ty.into(), true),)+
                     ])
                 )
             }
