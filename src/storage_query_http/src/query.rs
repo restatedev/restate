@@ -9,31 +9,27 @@
 // by the Apache License, Version 2.0.
 
 use std::future;
-use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::StreamBody;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::{http, Json};
-use base64::Engine;
 use bytes::Bytes;
 use datafusion::arrow::array::{
-    Array, ArrayRef, AsArray, GenericStringArray, OffsetSizeTrait, StringArray,
+    Array, ArrayRef, AsArray, BinaryArray, GenericByteArray, StringArray,
 };
-use datafusion::arrow::datatypes::{
-    ArrowPrimitiveType, DataType, Field, FieldRef, Int64Type, Schema, SchemaRef, UInt64Type,
-};
+use datafusion::arrow::buffer::{OffsetBuffer, ScalarBuffer};
+use datafusion::arrow::datatypes::{ByteArrayType, DataType, Field, FieldRef, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::json::writer::record_batches_to_json_rows;
+use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{stream, StreamExt};
 use okapi_operation::*;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::map::Map as JsonMap;
-use serde_json::Value;
 use serde_with::serde_as;
 
 use crate::error::StorageApiError;
@@ -56,15 +52,7 @@ pub struct QueryRequest {
     description = "Query the storage API",
     operation_id = "query",
     tags = "storage",
-    responses(
-        ignore_return_type = true,
-        response(
-            status = "200",
-            description = "OK",
-            content = "Json<Vec<JsonMap<String, Value>>>",
-        ),
-        from_type = "StorageApiError",
-    )
+    responses(ignore_return_type = true, from_type = "StorageApiError")
 )]
 pub async fn query(
     State(state): State<Arc<EndpointState>>,
@@ -75,74 +63,126 @@ pub async fn query(
         .execute(payload.query.as_str())
         .await
         .map_err(StorageApiError::DataFusionError)?;
-    let mut buf = Vec::new();
-    let mut is_first = true;
-    let body = StreamBody::new(
-        stream::once(future::ready(Ok(Bytes::from_static(b"["))))
-            .chain(stream.map(move |batch| -> Result<Bytes, DataFusionError> {
-                // Binary types are not supported by record_batches_to_json_rows
-                let b64_batch = convert_record_batch(batch?)?;
-                for row in record_batches_to_json_rows(&[&b64_batch])? {
-                    if is_first {
-                        is_first = false
-                    } else {
-                        buf.write_all(b",")?;
-                    }
-                    serde_json::to_writer(&mut buf, &row)
-                        .map_err(|error| ArrowError::JsonError(error.to_string()))?;
-                }
-                let b = Bytes::copy_from_slice(buf.as_slice());
-                buf.clear();
-                Ok(b)
-            }))
-            .chain(stream::once(future::ready(Ok(Bytes::from_static(b"]"))))),
+
+    // create a stream without LargeUtf8 or LargeBinary as JS doesn't support these yet
+    let converted_schema = convert_schema(stream.schema());
+    let converted_schema_cloned = converted_schema.clone();
+    let converted_stream = RecordBatchStreamAdapter::new(
+        converted_schema.clone(),
+        stream.map(move |batch| {
+            let converted_schema = converted_schema_cloned.clone();
+            batch.and_then(|batch| {
+                convert_record_batch(converted_schema, batch).map_err(DataFusionError::ArrowError)
+            })
+        }),
     );
-    Ok(([(http::header::CONTENT_TYPE, "application/json")], body))
+
+    // create a stream with a labelled start and end
+    let labelled_stream = stream::once(future::ready(LabelledStream::Start))
+        .chain(converted_stream.map(LabelledStream::Batch))
+        .chain(stream::once(future::ready(LabelledStream::End)));
+
+    let mut stream_writer =
+        StreamWriter::try_new(Vec::<u8>::new(), converted_schema.clone().as_ref())
+            .map_err(DataFusionError::ArrowError)
+            .map_err(StorageApiError::DataFusionError)?;
+
+    let body = StreamBody::new(labelled_stream.map(
+        move |label| -> Result<Bytes, DataFusionError> {
+            match label {
+                LabelledStream::Start => {
+                    // starting bytes were already written during StreamWriter::try_new
+                    let b = Bytes::copy_from_slice(stream_writer.get_ref());
+                    stream_writer.get_mut().clear();
+                    Ok(b)
+                }
+                LabelledStream::Batch(batch) => {
+                    stream_writer.write(&batch?)?;
+                    let b = Bytes::copy_from_slice(stream_writer.get_ref());
+                    stream_writer.get_mut().clear();
+                    Ok(b)
+                }
+                LabelledStream::End => {
+                    stream_writer.finish()?;
+                    let b = Bytes::copy_from_slice(stream_writer.get_ref());
+                    stream_writer.get_mut().clear();
+                    Ok(b)
+                }
+            }
+        },
+    ));
+    Ok((
+        [(
+            http::header::CONTENT_TYPE,
+            "application/vnd.apache.arrow.stream",
+        )],
+        body,
+    ))
 }
 
-fn convert_record_batch(batch: RecordBatch) -> Result<RecordBatch, ArrowError> {
-    let mut fields = Vec::with_capacity(batch.schema().fields.len());
-    let mut columns = Vec::with_capacity(batch.columns().len());
-    for (i, field) in batch.schema().fields.iter().enumerate() {
-        let transform: Box<dyn Fn(_) -> _> = match field.data_type() {
+fn convert_schema(schema: SchemaRef) -> SchemaRef {
+    let mut fields = Vec::with_capacity(schema.fields.len());
+    for field in schema.fields.iter() {
+        let data_type = match field.data_type() {
             // Represent binary as base64
-            DataType::LargeBinary => Box::new(binary_array_to_b64::<i64>),
-            DataType::Binary => Box::new(binary_array_to_b64::<i32>),
-            // Represent 64 bit ints as strings
-            DataType::UInt64 => Box::new(debug_primitive_array::<UInt64Type>),
-            DataType::Int64 => Box::new(debug_primitive_array::<Int64Type>),
-            _ => {
-                fields.push(field.clone());
-                columns.push(batch.column(i).clone());
-                continue;
-            }
+            DataType::LargeBinary => DataType::Binary,
+            DataType::LargeUtf8 => DataType::Utf8,
+            other => other.clone(),
         };
-        let col = transform(batch.column(i));
         fields.push(FieldRef::new(Field::new(
             field.name(),
-            col.data_type().clone(),
+            data_type,
             field.is_nullable(),
         )));
-        columns.push(ArrayRef::from(col));
     }
-    let schema = Schema::new_with_metadata(fields, batch.schema().metadata().clone());
-    RecordBatch::try_new(SchemaRef::new(schema), columns)
+    SchemaRef::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }
 
-fn binary_array_to_b64<OffsetSize: OffsetSizeTrait>(arr: &ArrayRef) -> Box<dyn Array> {
-    Box::new(
-        arr.as_binary::<OffsetSize>()
-            .iter()
-            .map(|b| -> Option<String> { Some(base64::prelude::BASE64_STANDARD.encode(b?)) })
-            .collect::<GenericStringArray<OffsetSize>>(),
+fn convert_record_batch(
+    converted_schema: SchemaRef,
+    batch: RecordBatch,
+) -> Result<RecordBatch, ArrowError> {
+    let mut columns = Vec::with_capacity(batch.columns().len());
+    for (i, field) in batch.schema().fields.iter().enumerate() {
+        match field.data_type() {
+            // Represent binary as base64
+            DataType::LargeBinary => {
+                let col: BinaryArray = convert_array_offset(batch.column(i).as_binary::<i64>())?;
+                columns.push(ArrayRef::from(Box::new(col) as Box<dyn Array>));
+            }
+            DataType::LargeUtf8 => {
+                let col: StringArray = convert_array_offset(batch.column(i).as_string::<i64>())?;
+                columns.push(ArrayRef::from(Box::new(col) as Box<dyn Array>));
+            }
+            _ => {
+                columns.push(batch.column(i).clone());
+            }
+        };
+    }
+    RecordBatch::try_new(converted_schema, columns)
+}
+
+fn convert_array_offset<Before: ByteArrayType, After: ByteArrayType>(
+    array: &GenericByteArray<Before>,
+) -> Result<GenericByteArray<After>, ArrowError>
+where
+    After::Offset: TryFrom<Before::Offset>,
+{
+    let offsets = array
+        .offsets()
+        .iter()
+        .map(|&o| After::Offset::try_from(o))
+        .collect::<Result<ScalarBuffer<After::Offset>, _>>()
+        .map_err(|_| ArrowError::CastError("offset conversion failed".into()))?;
+    GenericByteArray::<After>::try_new(
+        OffsetBuffer::new(offsets),
+        array.values().clone(),
+        array.nulls().cloned(),
     )
 }
 
-fn debug_primitive_array<T: ArrowPrimitiveType>(arr: &ArrayRef) -> Box<dyn Array> {
-    Box::new(
-        arr.as_primitive::<T>()
-            .iter()
-            .map(|b: Option<T::Native>| -> Option<String> { Some(format!("{:?}", b?)) })
-            .collect::<StringArray>(),
-    )
+enum LabelledStream {
+    Start,
+    Batch(Result<RecordBatch, DataFusionError>),
+    End,
 }
