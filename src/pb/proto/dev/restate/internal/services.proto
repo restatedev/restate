@@ -14,6 +14,7 @@ syntax = "proto3";
  */
 package dev.restate.internal;
 
+import "dev/restate/ext.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
 
@@ -29,4 +30,127 @@ message ProxyThroughRequest {
   bytes target_invocation_uuid = 4;
 
   bytes input = 5;
+}
+
+// RemoteContext service to implement the embedded handler API
+service RemoteContext {
+  option (dev.restate.ext.service_type) = KEYED;
+
+  // Start a new invocation, or resume a previously existing one.
+  // If another client is already executing this invocation, it will be fenced off and this client will take precedence.
+  //
+  // This method is not idempotent.
+  rpc Start(StartRequest) returns (StartResponse);
+
+  // Send new messages to append to the message stream.
+  // This request can fail with the following error codes:
+  // - PERMISSION_DENIED: This means the provided stream_id is invalid,
+  //                      and it should not be reused, nor the client should create a new stream using Start().
+  //                      It can instead read the invocation result using GetResult.
+  // - Other error codes: These can be either errors in sent messages, or some other transient error.
+  //                      The client should consider the stream in an unrecoverable error state and it can retry
+  //                      by creating a new stream through Start() with a different stream_id.
+  //
+  // This method is not idempotent.
+  rpc Send(SendRequest) returns (google.protobuf.Empty);
+
+  // Receive new messages from the message stream.
+  // This request can fail with the following error codes:
+  // - PERMISSION_DENIED: This means the provided stream_id is invalid,
+  //                      and it should not be reused, nor the client should create a new stream using Start().
+  //                      It can instead read the invocation result using GetResult.
+  // - Other error codes: These can be either errors in sent messages, or some other transient error.
+  //                      The client should consider the stream in an unrecoverable error state and it can retry
+  //                      by creating a new stream through Start() with a different stream_id.
+  //
+  // This method is not idempotent.
+  rpc Recv(RecvRequest) returns (RecvResponse);
+
+  // Get the result of the invocation.
+  // In case another client is executing the invocation (through a sequence of Start/Send/Recv), this method will block
+  // until a response is computed.
+  // In case the response is already available, it will return immediately with the response.
+  // In case no client is executing the invocation, that is no client ever invoked Start() for the given operation_id,
+  // this method will return response.none.
+  //
+  // This method can be safely invoked by multiple clients and it's idempotent.
+  rpc GetResult(GetResultRequest) returns (GetResultResponse);
+}
+
+message StartRequest {
+  // User provided operation id, this is used as idempotency key.
+  string operation_id = 1 [(dev.restate.ext.field) = KEY];
+
+  // Stream id to uniquely identify a open stream between client and Restate.
+  // There can be at most one open stream at the same time.
+  string stream_id = 2;
+
+  // Retention period for the response in seconds.
+  // After the invocation completes, the response will be persisted for the given duration.
+  // Afterwards, the system will cleanup the response and treats any subsequent invocation with same operation_id as new.
+  //
+  // If not set, 30 minutes will be used as retention period.
+  uint32 retention_period_sec = 3;
+}
+
+message StartResponse {
+  oneof invocation_status {
+    // Contains the concatenated first messages of the stream, encoded using the same framing used by service-protocol
+    bytes executing = 1;
+
+    // Contains the result of the invocation
+    InvocationResponse completed = 2;
+  }
+}
+
+message SendRequest {
+  // User provided operation id, this is used as idempotency key.
+  string operation_id = 1 [(dev.restate.ext.field) = KEY];
+
+  // Stream id to uniquely identify a open stream between client and Restate.
+  // There can be at most one open stream at the same time.
+  string stream_id = 2;
+
+  // Contains the concatenated messages of the stream, encoded using the same framing used by service-protocol
+  bytes messages = 3;
+}
+
+message RecvRequest {
+  // User provided operation id, this is used as idempotency key.
+  string operation_id = 1 [(dev.restate.ext.field) = KEY];
+
+  // Stream id to uniquely identify a open stream between client and Restate.
+  // There can be at most one open stream at the same time.
+  string stream_id = 2;
+}
+
+message RecvResponse {
+  // Contains the concatenated messages of the stream, encoded using the same framing used by service-protocol
+  bytes messages = 1;
+}
+
+message GetResultRequest {
+  // User provided operation id, this is used as idempotency key.
+  string operation_id = 1 [(dev.restate.ext.field) = KEY];
+}
+
+message GetResultResponse {
+  oneof response {
+    // See GetResult documentation
+    google.protobuf.Empty none = 1;
+    bytes success = 2;
+    InvocationFailure failure = 3;
+  }
+}
+
+message InvocationFailure {
+  uint32 code = 1;
+  string message = 2;
+}
+
+message InvocationResponse {
+  oneof response {
+    bytes success = 1;
+    InvocationFailure failure = 2;
+  }
 }
