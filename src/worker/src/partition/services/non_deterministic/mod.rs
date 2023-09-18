@@ -49,7 +49,14 @@ pub(crate) enum Effect {
     },
     ClearState(Cow<'static, str>),
     OutboxMessage(OutboxMessage),
-    RegisterTimer,
+    DelayedInvoke {
+        target_fid: FullInvocationId,
+        target_method: String,
+        argument: Bytes,
+        response_sink: Option<ServiceInvocationResponseSink>,
+        time: MillisSinceEpoch,
+        timer_index: EntryIndex,
+    },
     End(
         // NBIS can optionally fail, depending on the context the error might or might not be used.
         Option<InvocationError>,
@@ -184,6 +191,26 @@ impl<S: StateReader> InvocationContext<'_, S> {
 
     fn clear_state<Serde>(&mut self, key: &StateKey<Serde>) {
         self.effects_buffer.push(Effect::ClearState(key.0.clone()))
+    }
+
+    fn delay_invoke(
+        &mut self,
+        target_fid: FullInvocationId,
+        target_method: String,
+        argument: Bytes,
+        response_sink: Option<ServiceInvocationResponseSink>,
+        time: MillisSinceEpoch,
+        timer_index: EntryIndex,
+    ) {
+        // Perhaps we can internally keep track of the timer index here?
+        self.effects_buffer.push(Effect::DelayedInvoke {
+            target_fid,
+            target_method,
+            argument,
+            response_sink,
+            time,
+            timer_index,
+        });
     }
 
     fn send_message(&mut self, msg: OutboxMessage) {
