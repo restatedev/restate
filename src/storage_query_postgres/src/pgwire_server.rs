@@ -14,10 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
-use datafusion::arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Date64Array, LargeBinaryArray,
-    LargeStringArray, ListArray, PrimitiveArray, StringArray,
-};
+use datafusion::arrow::array::{Array, AsArray};
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::datatypes::Float32Type;
 use datafusion::arrow::datatypes::Float64Type;
@@ -28,7 +25,7 @@ use datafusion::arrow::datatypes::Int8Type;
 use datafusion::arrow::datatypes::UInt32Type;
 use datafusion::arrow::datatypes::UInt64Type;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::arrow::temporal_conversions::{date32_to_datetime, date64_to_datetime};
+use datafusion::common::cast::{as_date32_array, as_date64_array};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use futures::{stream, StreamExt};
 use tokio::net::TcpStream;
@@ -135,7 +132,8 @@ fn into_pg_type(df_type: &DataType) -> PgWireResult<Type> {
         DataType::UInt64 => Type::INT8,
         DataType::Timestamp(_, _) => Type::TIMESTAMP,
         DataType::Time32(_) | DataType::Time64(_) => Type::TIME,
-        DataType::Date32 | DataType::Date64 => Type::VARCHAR,
+        DataType::Date32 => Type::DATE,
+        DataType::Date64 => Type::TIMESTAMP,
         DataType::Binary => Type::BYTEA,
         DataType::LargeBinary => Type::BYTEA,
         DataType::Float32 => Type::FLOAT4,
@@ -224,128 +222,47 @@ fn encode_row(
     encoder.finish()
 }
 
-fn get_bool_value(arr: &Arc<dyn Array>, idx: usize) -> bool {
-    arr.as_any()
-        .downcast_ref::<BooleanArray>()
-        .unwrap()
-        .value(idx)
-}
-
-fn get_date64_value(arr: &Arc<dyn Array>, idx: usize) -> String {
-    let value = arr
-        .as_any()
-        .downcast_ref::<Date64Array>()
-        .unwrap()
-        .value(idx);
-
-    let dt = date64_to_datetime(value).unwrap();
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
-}
-
-fn get_date32_value(arr: &Arc<dyn Array>, idx: usize) -> String {
-    let value = arr
-        .as_any()
-        .downcast_ref::<Date32Array>()
-        .unwrap()
-        .value(idx);
-
-    let dt = date32_to_datetime(value).unwrap();
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
-}
-
-macro_rules! get_primitive_value {
-    ($name:ident, $t:ty, $pt:ty) => {
-        fn $name(arr: &Arc<dyn Array>, idx: usize) -> $pt {
-            arr.as_any()
-                .downcast_ref::<PrimitiveArray<$t>>()
-                .unwrap()
-                .value(idx)
-        }
-    };
-}
-
-get_primitive_value!(get_i8_value, Int8Type, i8);
-get_primitive_value!(get_i16_value, Int16Type, i16);
-get_primitive_value!(get_i32_value, Int32Type, i32);
-get_primitive_value!(get_i64_value, Int64Type, i64);
-get_primitive_value!(get_u32_value, UInt32Type, u32);
-get_primitive_value!(get_u64_value, UInt64Type, u64);
-get_primitive_value!(get_f32_value, Float32Type, f32);
-get_primitive_value!(get_f64_value, Float64Type, f64);
-
-fn get_utf8_value(arr: &Arc<dyn Array>, idx: usize) -> &str {
-    arr.as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap()
-        .value(idx)
-}
-
-fn get_large_utf8_value(arr: &Arc<dyn Array>, idx: usize) -> &str {
-    arr.as_any()
-        .downcast_ref::<LargeStringArray>()
-        .unwrap()
-        .value(idx)
-}
-
-fn get_binary_value(arr: &Arc<dyn Array>, idx: usize) -> &[u8] {
-    arr.as_any()
-        .downcast_ref::<BinaryArray>()
-        .unwrap()
-        .value(idx)
-}
-
-fn get_large_binary_value(arr: &Arc<dyn Array>, idx: usize) -> &[u8] {
-    arr.as_any()
-        .downcast_ref::<LargeBinaryArray>()
-        .unwrap()
-        .value(idx)
-}
-
-fn get_list_value(arr: &Arc<dyn Array>, idx: usize) -> ArrayRef {
-    arr.as_any().downcast_ref::<ListArray>().unwrap().value(idx)
-}
-
 fn encode_value(
     encoder: &mut DataRowEncoder,
     arr: &Arc<dyn Array>,
     idx: usize,
 ) -> PgWireResult<()> {
     match arr.data_type() {
-        DataType::Boolean => encoder.encode_field(&get_bool_value(arr, idx))?,
-        DataType::Int8 => encoder.encode_field(&get_i8_value(arr, idx))?,
-        DataType::Int16 => encoder.encode_field(&get_i16_value(arr, idx))?,
-        DataType::Int32 => encoder.encode_field(&get_i32_value(arr, idx))?,
-        DataType::Int64 => encoder.encode_field(&get_i64_value(arr, idx))?,
-        DataType::UInt32 => encoder.encode_field(&get_u32_value(arr, idx))?,
-        DataType::UInt64 => encoder.encode_field(&(get_u64_value(arr, idx) as i64))?,
-        DataType::Float32 => encoder.encode_field(&get_f32_value(arr, idx))?,
-        DataType::Float64 => encoder.encode_field(&get_f64_value(arr, idx))?,
-        DataType::Utf8 => encoder.encode_field(&get_utf8_value(arr, idx))?,
-        DataType::LargeUtf8 => encoder.encode_field(&get_large_utf8_value(arr, idx))?,
-        DataType::Binary => encoder.encode_field(&get_binary_value(arr, idx))?,
-        DataType::LargeBinary => encoder.encode_field(&get_large_binary_value(arr, idx))?,
-        DataType::Date64 => encoder.encode_field(&get_date64_value(arr, idx))?,
-        DataType::Date32 => encoder.encode_field(&get_date32_value(arr, idx))?,
+        DataType::Boolean => encoder.encode_field(&arr.as_boolean().value(idx))?,
+        DataType::Int8 => encoder.encode_field(&arr.as_primitive::<Int8Type>().value(idx))?,
+        DataType::Int16 => encoder.encode_field(&arr.as_primitive::<Int16Type>().value(idx))?,
+        DataType::Int32 => encoder.encode_field(&arr.as_primitive::<Int32Type>().value(idx))?,
+        DataType::Int64 => encoder.encode_field(&arr.as_primitive::<Int64Type>().value(idx))?,
+        DataType::UInt32 => encoder.encode_field(&arr.as_primitive::<UInt32Type>().value(idx))?,
+        DataType::UInt64 => {
+            encoder.encode_field(&(arr.as_primitive::<UInt64Type>().value(idx) as i64))?
+        }
+        DataType::Float32 => encoder.encode_field(&arr.as_primitive::<Float32Type>().value(idx))?,
+        DataType::Float64 => encoder.encode_field(&arr.as_primitive::<Float64Type>().value(idx))?,
+        DataType::Utf8 => encoder.encode_field(&arr.as_string::<i32>().value(idx))?,
+        DataType::LargeUtf8 => encoder.encode_field(&arr.as_string::<i64>().value(idx))?,
+        DataType::Binary => encoder.encode_field(&arr.as_binary::<i32>().value(idx))?,
+        DataType::LargeBinary => encoder.encode_field(&arr.as_binary::<i64>().value(idx))?,
+        DataType::Date64 => encoder.encode_field(
+            &as_date64_array(arr)
+                .unwrap()
+                .value_as_datetime(idx)
+                .unwrap(),
+        )?,
+        DataType::Date32 => encoder.encode_field(
+            &as_date32_array(arr)
+                .unwrap()
+                .value_as_datetime(idx)
+                .unwrap(),
+        )?,
         DataType::List(_) => {
-            let arr = &get_list_value(arr, idx);
+            let arr = &arr.as_list::<i32>().value(idx);
             match arr.data_type() {
                 DataType::Utf8 => {
-                    encoder.encode_field(&SQLVec(
-                        arr.as_any()
-                            .downcast_ref::<StringArray>()
-                            .unwrap()
-                            .iter()
-                            .collect(),
-                    ))?;
+                    encoder.encode_field(&SQLVec(arr.as_string::<i32>().iter().collect()))?;
                 }
                 DataType::LargeUtf8 => {
-                    encoder.encode_field(&SQLVec(
-                        arr.as_any()
-                            .downcast_ref::<StringArray>()
-                            .unwrap()
-                            .iter()
-                            .collect(),
-                    ))?;
+                    encoder.encode_field(&SQLVec(arr.as_string::<i64>().iter().collect()))?;
                 }
                 _ => {
                     return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
