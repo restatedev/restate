@@ -11,5 +11,7 @@
 mod row;
 mod schema;
 mod table;
+mod udf;
 
 pub(crate) use table::register_self;
+pub(crate) use udf::register_udf;

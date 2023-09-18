@@ -12,6 +12,7 @@ use crate::context::QueryContext;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
 
+use restate_schema_api::key::RestateKeyConverter;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_storage_rocksdb::RocksDBStorage;
 use std::fmt::Debug;
@@ -75,7 +76,9 @@ impl Options {
         None
     }
 
-    pub fn build<EMR: ServiceMetadataResolver + Sync + Debug + Clone + Send + 'static>(
+    pub fn build<
+        EMR: ServiceMetadataResolver + RestateKeyConverter + Sync + Debug + Clone + Send + 'static,
+    >(
         self,
         rocksdb: RocksDBStorage,
         service_endpoint_registry: EMR,
@@ -87,7 +90,8 @@ impl Options {
         } = self;
 
         let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
-        crate::service::register_self(&ctx, service_endpoint_registry)?;
+        crate::service::register_self(&ctx, service_endpoint_registry.clone())?;
+        crate::service::register_udf(&ctx, service_endpoint_registry);
         crate::status::register_self(&ctx, rocksdb.clone())?;
         crate::state::register_self(&ctx, rocksdb)?;
 
