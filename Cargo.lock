@@ -4273,6 +4273,7 @@ dependencies = [
  "anyhow",
  "assert2",
  "async-trait",
+ "bincode",
  "bytes",
  "bytestring",
  "codederror",

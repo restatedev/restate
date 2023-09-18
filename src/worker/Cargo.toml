@@ -15,6 +15,7 @@ options_schema = ["dep:schemars", "restate_timer/options_schema", "restate_stora
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 assert2 = { workspace = true }
+bincode = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
