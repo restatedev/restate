@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::StateStorage;
+use super::*;
+
 use crate::partition::storage::PartitionStorage;
 use crate::partition::types::OutboxMessageExt;
 use bytes::Bytes;
@@ -18,11 +19,14 @@ use restate_schema_impl::Schemas;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::{InvocationError, UserErrorCode};
-use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::{EntryIndex, FullInvocationId};
 use restate_types::invocation::{ResponseResult, ServiceInvocationResponseSink};
+use restate_types::time::MillisSinceEpoch;
 use std::borrow::Cow;
 use std::ops::Deref;
 use tokio::sync::mpsc;
+
+mod ingress;
 
 #[derive(Debug)]
 pub(crate) struct Effects {
@@ -97,7 +101,7 @@ impl<'a> ServiceInvoker<'a> {
     ) {
         let mut invocation_context = InvocationContext {
             full_invocation_id: &full_invocation_id,
-            storage: self.storage,
+            state_reader: self.storage,
             schemas: self.schemas,
             effects_buffer: vec![],
             response_sink,
@@ -129,40 +133,57 @@ impl<'a> ServiceInvoker<'a> {
     }
 }
 
-struct InvocationContext<'a> {
+struct InvocationContext<'a, S> {
     full_invocation_id: &'a FullInvocationId,
     #[allow(unused)]
-    storage: &'a PartitionStorage<RocksDBStorage>,
+    state_reader: S,
     schemas: &'a Schemas,
     effects_buffer: Vec<Effect>,
     response_sink: Option<ServiceInvocationResponseSink>,
 }
 
-impl InvocationContext<'_> {
-    #[allow(unused)]
-    async fn load_state_raw(&self, key: &str) -> Result<Option<Bytes>, InvocationError> {
-        self.storage
-            .create_transaction()
-            // TODO modify the load_state interface to get rid of the Bytes for the key
-            .load_state(
-                &self.full_invocation_id.service_id,
-                &Bytes::copy_from_slice(key.as_bytes()),
-            )
+impl<S: StateReader> InvocationContext<'_, S> {
+    async fn load_state<Serde: StateSerde>(
+        &self,
+        key: &StateKey<Serde>,
+    ) -> Result<Option<Serde::MaterializedType>, InvocationError> {
+        self.state_reader
+            .read_state(&self.full_invocation_id.service_id, &key.0)
             .await
+            .map_err(InvocationError::internal)?
+            .map(|value| Serde::decode(value))
+            .transpose()
             .map_err(InvocationError::internal)
     }
 
-    #[allow(unused)]
-    fn store_state_raw(&mut self, key: impl Into<Cow<'static, str>>, value: Bytes) {
-        self.effects_buffer.push(Effect::SetState {
-            key: key.into(),
-            value,
+    async fn load_state_or_fail<Serde: StateSerde>(
+        &self,
+        key: &StateKey<Serde>,
+    ) -> Result<Serde::MaterializedType, InvocationError> {
+        self.load_state(key).await.and_then(|optional_value| {
+            optional_value.ok_or_else(|| {
+                InvocationError::internal(format!(
+                    "Expected {} state to be present. This is most likely a Restate bug.",
+                    key.0
+                ))
+            })
         })
     }
 
-    #[allow(unused)]
-    fn clear_state(&mut self, key: impl Into<Cow<'static, str>>) {
-        self.effects_buffer.push(Effect::ClearState(key.into()))
+    fn store_state<Serde: StateSerde>(
+        &mut self,
+        key: &StateKey<Serde>,
+        value: &Serde::MaterializedType,
+    ) -> Result<(), InvocationError> {
+        self.effects_buffer.push(Effect::SetState {
+            key: key.0.clone(),
+            value: Serde::encode(value).map_err(InvocationError::internal)?,
+        });
+        Ok(())
+    }
+
+    fn clear_state<Serde>(&mut self, key: &StateKey<Serde>) {
+        self.effects_buffer.push(Effect::ClearState(key.0.clone()))
     }
 
     fn send_message(&mut self, msg: OutboxMessage) {
@@ -181,54 +202,47 @@ impl InvocationContext<'_> {
     }
 }
 
-mod ingress {
+#[cfg(test)]
+mod tests {
     use super::*;
 
-    use restate_pb::builtin_service::ResponseSerializer;
-    use restate_pb::restate::*;
-    use restate_schema_api::key::KeyExtractor;
-    use restate_types::identifiers::InvocationUuid;
-    use restate_types::invocation::{ServiceInvocation, SpanRelation};
+    use crate::partition::services::tests::MockStateReader;
+    use restate_test_util::assert;
+    use std::fmt;
 
-    #[async_trait::async_trait]
-    impl<'a> IngressBuiltInService for &mut InvocationContext<'a> {
-        async fn invoke(
-            &mut self,
-            request: InvokeRequest,
-            response_serializer: ResponseSerializer<InvokeResponse>,
-        ) -> Result<(), InvocationError> {
-            // Extract the key
-            let key = self
-                .schemas
-                .extract(&request.service, &request.method, request.argument.clone())
-                .map_err(|err| match err {
-                    restate_schema_api::key::KeyExtractorError::NotFound => InvocationError::new(
-                        UserErrorCode::NotFound,
-                        format!(
-                            "Service method {}/{} not found",
-                            request.service, request.method
-                        ),
-                    ),
-                    err => InvocationError::new(UserErrorCode::InvalidArgument, err.to_string()),
-                })?;
+    impl MockStateReader {
+        pub(super) fn apply_effects(&mut self, effects: &[Effect]) {
+            for effect in effects {
+                match effect {
+                    Effect::SetState { key, value } => {
+                        self.0.insert(key.to_string(), value.clone());
+                    }
+                    Effect::ClearState(key) => {
+                        self.0.remove(&key.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
 
-            let fid = FullInvocationId::new(request.service, key, InvocationUuid::now_v7());
+        pub(super) fn assert_has_state<Serde: StateSerde + fmt::Debug>(
+            &self,
+            key: &StateKey<Serde>,
+        ) -> Serde::MaterializedType {
+            Serde::decode(
+                self.0
+                    .get(key.0.as_ref())
+                    .unwrap_or_else(|| panic!("{:?} must be non-empty", key))
+                    .clone(),
+            )
+            .unwrap_or_else(|_| panic!("{:?} must deserialize correctly", key))
+        }
 
-            // Respond to caller
-            self.reply_to_caller(response_serializer.serialize_success(InvokeResponse {
-                id: fid.to_string(),
-            }));
-
-            // Invoke service
-            self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
-                fid,
-                request.method,
-                request.argument,
-                None,
-                SpanRelation::None,
-            )));
-
-            Ok(())
+        pub(super) fn assert_has_not_state<Serde: StateSerde + fmt::Debug>(
+            &self,
+            key: &StateKey<Serde>,
+        ) {
+            assert!(self.0.get(key.0.as_ref()).is_none());
         }
     }
 }
