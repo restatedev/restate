@@ -43,9 +43,7 @@ impl<'a, State> InvocationContext<'a, State> {
 }
 
 #[async_trait::async_trait]
-impl<'a, State: StateReader + Send + Sync> IngressBuiltInService
-    for &mut InvocationContext<'a, State>
-{
+impl<'a, State: StateReader + Send + Sync> IngressBuiltInService for InvocationContext<'a, State> {
     async fn invoke(
         &mut self,
         request: InvokeRequest,

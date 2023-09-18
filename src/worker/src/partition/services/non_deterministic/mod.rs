@@ -106,36 +106,43 @@ impl<'a> ServiceInvoker<'a> {
         argument: Bytes,
         response_sink: Option<ServiceInvocationResponseSink>,
     ) {
-        let mut invocation_context = InvocationContext {
+        let mut out_effects = vec![];
+        let invocation_context = InvocationContext {
             full_invocation_id: &full_invocation_id,
             state_reader: self.storage,
             schemas: self.schemas,
-            effects_buffer: vec![],
-            response_sink,
+            effects_buffer: &mut out_effects,
+            response_sink: response_sink.as_ref(),
         };
 
-        let result: Result<(), InvocationError> =
-            match full_invocation_id.service_id.service_name.deref() {
-                restate_pb::INGRESS_SERVICE_NAME => {
-                    IngressInvoker(&mut invocation_context)
-                        .invoke_builtin(method, argument)
-                        .await
-                }
-                _ => Err(InvocationError::new(
-                    UserErrorCode::NotFound,
-                    format!("{} not found", full_invocation_id.service_id.service_name),
-                )),
-            };
-
-        // Add the end effect
-        let mut effects = invocation_context.effects_buffer;
-        effects.push(Effect::End(result.err()));
+        let result = match full_invocation_id.service_id.service_name.deref() {
+            restate_pb::INGRESS_SERVICE_NAME => {
+                IngressInvoker(invocation_context)
+                    .invoke_builtin(method, argument)
+                    .await
+            }
+            _ => Err(InvocationError::new(
+                UserErrorCode::NotFound,
+                format!("{} not found", full_invocation_id.service_id.service_name),
+            )),
+        };
+        match result {
+            Ok(()) => {
+                // Just append End
+                out_effects.push(Effect::End(None));
+            }
+            Err(e) => {
+                // Clear effects, and append end error
+                out_effects.clear();
+                out_effects.push(Effect::End(Some(e)))
+            }
+        }
 
         // Send the effects
         // the receiver channel should only be shut down if the system is shutting down
         let _ = self.effects_tx.send(Effects {
             full_invocation_id,
-            effects,
+            effects: out_effects,
         });
     }
 }
@@ -145,8 +152,8 @@ struct InvocationContext<'a, S> {
     #[allow(unused)]
     state_reader: S,
     schemas: &'a Schemas,
-    effects_buffer: Vec<Effect>,
-    response_sink: Option<ServiceInvocationResponseSink>,
+    effects_buffer: &'a mut Vec<Effect>,
+    response_sink: Option<&'a ServiceInvocationResponseSink>,
 }
 
 impl<S: StateReader> InvocationContext<'_, S> {
@@ -218,7 +225,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
     }
 
     fn reply_to_caller(&mut self, res: ResponseResult) {
-        if let Some(response_sink) = self.response_sink.as_ref() {
+        if let Some(response_sink) = self.response_sink {
             self.effects_buffer
                 .push(Effect::OutboxMessage(OutboxMessage::from_response_sink(
                     self.full_invocation_id,
