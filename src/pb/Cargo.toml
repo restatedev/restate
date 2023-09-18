@@ -24,3 +24,4 @@ tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
 [build-dependencies]
 prost-build = { workspace = true }
 tonic-build = { workspace = true }
+convert_case = "0.6"
