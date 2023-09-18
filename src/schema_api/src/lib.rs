@@ -199,6 +199,7 @@ pub mod endpoint {
 
 #[cfg(feature = "service")]
 pub mod service {
+    use prost_reflect::DescriptorPool;
     use restate_types::identifiers::{EndpointId, ServiceRevision};
 
     #[derive(Debug, Clone)]
@@ -246,6 +247,8 @@ pub mod service {
         /// If true, the service can be invoked through the ingress.
         /// If false, the service can be invoked only from another Restate service.
         pub public: bool,
+        #[serde(skip)]
+        pub descriptor_pool: DescriptorPool,
     }
 
     /// This API will return services registered by the user. It won't include built-in services.

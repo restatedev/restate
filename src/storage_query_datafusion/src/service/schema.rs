@@ -21,4 +21,5 @@ define_table!(service(
         endpoint_id: DataType::LargeUtf8,
         revision: DataType::UInt32,
         public: DataType::Boolean,
+        descriptor_pool: DataType::LargeBinary,
 ));

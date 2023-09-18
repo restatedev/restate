@@ -60,6 +60,13 @@ fn map_to_service_metadata(
             endpoint_id: latest_endpoint.clone(),
             revision: service_schemas.revision,
             public: *public,
+            descriptor_pool: service_schemas
+                .methods
+                .values()
+                .next()
+                .expect("Must have at least one method. This should have been checked in service discovery. This is a bug, please contact the developers")
+                .parent_pool()
+                .clone(),
         }),
     }
 }

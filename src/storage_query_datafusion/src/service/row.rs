@@ -16,6 +16,7 @@ pub(crate) fn append_service_row(builder: &mut ServiceBuilder, service_row: Serv
     let ServiceMetadata {
         name,
         methods,
+        descriptor_pool,
         instance_type,
         endpoint_id,
         revision,
@@ -29,4 +30,5 @@ pub(crate) fn append_service_row(builder: &mut ServiceBuilder, service_row: Serv
     row.endpoint_id(endpoint_id);
     row.revision(revision);
     row.public(public);
+    row.descriptor_pool(descriptor_pool.encode_to_vec());
 }
