@@ -4281,6 +4281,7 @@ dependencies = [
  "futures",
  "opentelemetry_api",
  "pin-project",
+ "prost",
  "prost-reflect",
  "restate_consensus",
  "restate_ingress_dispatcher",

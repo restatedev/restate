@@ -30,6 +30,7 @@ restate_invoker_api = { workspace = true }
 restate_invoker_impl = { workspace = true }
 restate_network = { workspace = true }
 pin-project = { workspace = true }
+prost = { workspace = true }
 prost-reflect = { workspace = true, features = ["serde"] }
 thiserror = { workspace = true }
 restate_timer = { workspace = true }

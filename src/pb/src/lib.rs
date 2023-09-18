@@ -105,44 +105,38 @@ pub mod builtin_service {
         }
     }
 
-    impl TryFrom<crate::restate::internal::InvocationResponse> for ResponseResult {
+    impl TryFrom<crate::restate::internal::ServiceInvocationSinkRequest> for ResponseResult {
         type Error = &'static str;
 
         fn try_from(
-            value: crate::restate::internal::InvocationResponse,
+            value: crate::restate::internal::ServiceInvocationSinkRequest,
         ) -> Result<Self, Self::Error> {
             match value.response {
-                Some(crate::restate::internal::invocation_response::Response::Success(s)) => {
-                    Ok(ResponseResult::Success(s))
-                }
-                Some(crate::restate::internal::invocation_response::Response::Failure(e)) => {
-                    Ok(ResponseResult::Failure(e.code.into(), e.message.into()))
-                }
+                Some(
+                    crate::restate::internal::service_invocation_sink_request::Response::Success(s),
+                ) => Ok(ResponseResult::Success(s)),
+                Some(
+                    crate::restate::internal::service_invocation_sink_request::Response::Failure(e),
+                ) => Ok(ResponseResult::Failure(e.code.into(), e.message.into())),
                 None => Err("response_result field must be set"),
             }
         }
     }
 
-    impl From<ResponseResult> for crate::restate::internal::InvocationResponse {
+    impl From<ResponseResult> for crate::restate::internal::service_invocation_sink_request::Response {
         fn from(value: ResponseResult) -> Self {
             match value {
-                ResponseResult::Success(s) => crate::restate::internal::InvocationResponse {
-                    response: Some(
-                        crate::restate::internal::invocation_response::Response::Success(s),
-                    ),
-                },
+                ResponseResult::Success(s) => {
+                    crate::restate::internal::service_invocation_sink_request::Response::Success(s)
+                }
 
                 ResponseResult::Failure(code, message) => {
-                    crate::restate::internal::InvocationResponse {
-                        response: Some(
-                            crate::restate::internal::invocation_response::Response::Failure(
-                                crate::restate::internal::invocation_response::Failure {
-                                    code: code.into(),
-                                    message: message.to_string(),
-                                },
-                            ),
-                        ),
-                    }
+                    crate::restate::internal::service_invocation_sink_request::Response::Failure(
+                        crate::restate::internal::service_invocation_sink_request::Failure {
+                            code: code.into(),
+                            message: message.to_string(),
+                        },
+                    )
                 }
             }
         }

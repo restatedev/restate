@@ -40,6 +40,7 @@ pub type EntryIndex = u32;
 pub type EndpointId = String;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IngressDispatcherId(pub std::net::SocketAddr);
 
 impl fmt::Display for IngressDispatcherId {
