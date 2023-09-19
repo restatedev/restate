@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListServiceMethodsResponse {
-    methods: Vec<String>,
+    methods: Vec<GetServiceMethodResponse>,
 }
 
 /// List discovered methods for service
@@ -44,7 +44,16 @@ pub async fn list_service_methods<S: ServiceMetadataResolver, W>(
         .resolve_latest_service_metadata(&service_name)
     {
         Some(metadata) => Ok(ListServiceMethodsResponse {
-            methods: metadata.methods,
+            methods: metadata
+                .methods
+                .into_iter()
+                .map(|method| GetServiceMethodResponse {
+                    service_name: service_name.clone(),
+                    method_name: method.name,
+                    input_type: method.input_type,
+                    output_type: method.output_type,
+                })
+                .collect(),
         }
         .into()),
         None => Err(MetaApiError::ServiceNotFound(service_name)),
@@ -55,6 +64,8 @@ pub async fn list_service_methods<S: ServiceMetadataResolver, W>(
 pub struct GetServiceMethodResponse {
     service_name: String,
     method_name: String,
+    input_type: String,
+    output_type: String,
 }
 
 /// Get an method of a service
@@ -84,11 +95,25 @@ pub async fn get_service_method<S: ServiceMetadataResolver, W>(
         .schemas()
         .resolve_latest_service_metadata(&service_name)
     {
-        Some(metadata) if metadata.methods.contains(&method_name) => Ok(GetServiceMethodResponse {
-            service_name,
-            method_name,
+        Some(metadata) => {
+            match metadata
+                .methods
+                .into_iter()
+                .find(|method| method.name == method_name)
+            {
+                Some(method) => Ok(GetServiceMethodResponse {
+                    service_name,
+                    method_name,
+                    input_type: method.input_type,
+                    output_type: method.output_type,
+                }
+                .into()),
+                _ => Err(MetaApiError::MethodNotFound {
+                    service_name,
+                    method_name,
+                }),
+            }
         }
-        .into()),
         _ => Err(MetaApiError::MethodNotFound {
             service_name,
             method_name,

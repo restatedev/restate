@@ -230,7 +230,7 @@ pub mod service {
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub struct ServiceMetadata {
         pub name: String,
-        pub methods: Vec<String>,
+        pub methods: Vec<MethodMetadata>,
         pub instance_type: InstanceType,
         /// # Endpoint Id
         ///
@@ -246,6 +246,15 @@ pub mod service {
         /// If true, the service can be invoked through the ingress.
         /// If false, the service can be invoked only from another Restate service.
         pub public: bool,
+    }
+
+    #[derive(Debug, Clone)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub struct MethodMetadata {
+        pub name: String,
+        pub input_type: String,
+        pub output_type: String,
     }
 
     /// This API will return services registered by the user. It won't include built-in services.
