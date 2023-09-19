@@ -253,7 +253,13 @@ pub mod service {
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub struct MethodMetadata {
         pub name: String,
+        /// # Input type
+        ///
+        /// Fully qualified message name of the input to the method
         pub input_type: String,
+        /// # Output type
+        ///
+        /// Fully qualified message name of the output of the method
         pub output_type: String,
     }
 
