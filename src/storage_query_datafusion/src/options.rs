@@ -11,6 +11,7 @@
 use crate::context::QueryContext;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
+use restate_schema_api::key::RestateKeyConverter;
 use restate_storage_rocksdb::RocksDBStorage;
 
 /// # Storage query datafusion options
@@ -72,7 +73,11 @@ impl Options {
         None
     }
 
-    pub fn build(self, rocksdb: RocksDBStorage) -> Result<QueryContext, BuildError> {
+    pub fn build(
+        self,
+        rocksdb: RocksDBStorage,
+        schema: impl RestateKeyConverter + Sync + Send + 'static,
+    ) -> Result<QueryContext, BuildError> {
         let Options {
             memory_limit,
             temp_folder,
@@ -82,6 +87,7 @@ impl Options {
         let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
         crate::status::register_self(&ctx, rocksdb.clone())?;
         crate::state::register_self(&ctx, rocksdb)?;
+        crate::service_key::register_udf(&ctx, schema);
 
         Ok(ctx)
     }

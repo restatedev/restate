@@ -438,7 +438,7 @@ pub mod key {
             fn key_to_json(
                 &self,
                 service_name: impl AsRef<str>,
-                key: Bytes,
+                key: impl AsRef<[u8]>,
             ) -> Result<Value, Error>;
             fn json_to_key(
                 &self,

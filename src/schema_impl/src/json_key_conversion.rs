@@ -23,7 +23,11 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 impl RestateKeyConverter for Schemas {
-    fn key_to_json(&self, service_name: impl AsRef<str>, key: Bytes) -> Result<Value, Error> {
+    fn key_to_json(
+        &self,
+        service_name: impl AsRef<str>,
+        key: impl AsRef<[u8]>,
+    ) -> Result<Value, Error> {
         self.use_service_schema(service_name, |service_schemas| {
             let (_, method_desc) = service_schemas.methods
                 .iter()
@@ -49,7 +53,7 @@ impl RestateKeyConverter for Schemas {
 fn key_to_json(
     service_instance_type: &ServiceInstanceType,
     method_descriptor: MethodDescriptor,
-    key: Bytes,
+    key: impl AsRef<[u8]>,
 ) -> Result<Value, Error> {
     match service_instance_type {
         keyed @ ServiceInstanceType::Keyed {
@@ -85,7 +89,7 @@ fn key_to_json(
                 })
         }
         ServiceInstanceType::Unkeyed => Ok(Value::String(
-            uuid::Builder::from_slice(&key)
+            uuid::Builder::from_slice(key.as_ref())
                 .unwrap()
                 .into_uuid()
                 .to_string(),
