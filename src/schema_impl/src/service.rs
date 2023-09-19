@@ -11,7 +11,7 @@
 use super::Schemas;
 
 use crate::schemas_impl::{ServiceLocation, ServiceSchemas};
-use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
+use restate_schema_api::service::{MethodMetadata, ServiceMetadata, ServiceMetadataResolver};
 
 impl ServiceMetadataResolver for Schemas {
     fn resolve_latest_service_metadata(
@@ -53,7 +53,15 @@ fn map_to_service_metadata(
             public,
         } => Some(ServiceMetadata {
             name: service_name.to_string(),
-            methods: service_schemas.methods.keys().cloned().collect(),
+            methods: service_schemas
+                .methods
+                .iter()
+                .map(|(name, method_desc)| MethodMetadata {
+                    name: name.clone(),
+                    input_type: method_desc.input().full_name().to_string(),
+                    output_type: method_desc.output().full_name().to_string(),
+                })
+                .collect(),
             instance_type: (&service_schemas.instance_type)
                 .try_into()
                 .expect("Checked in the line above whether this is a built-in service or not"),
