@@ -137,7 +137,7 @@ mod tests {
     use anyhow::Error;
     use std::collections::HashMap;
 
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     pub(super) struct MockStateReader(pub(super) HashMap<String, Bytes>);
 
     impl MockStateReader {

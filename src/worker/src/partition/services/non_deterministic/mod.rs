@@ -41,7 +41,7 @@ impl Effects {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Effect {
     SetState {
         key: Cow<'static, str>,
@@ -241,7 +241,9 @@ mod tests {
     use super::*;
 
     use crate::partition::services::tests::MockStateReader;
+    use futures::future::LocalBoxFuture;
     use restate_test_util::assert;
+    use restate_types::identifiers::{IngressDispatcherId, InvocationUuid};
     use std::fmt;
 
     impl MockStateReader {
@@ -277,6 +279,91 @@ mod tests {
             key: &StateKey<Serde>,
         ) {
             assert!(self.0.get(key.0.as_ref()).is_none());
+        }
+    }
+
+    #[derive(Clone)]
+    pub(super) struct TestInvocationContext {
+        full_invocation_id: FullInvocationId,
+        state_reader: MockStateReader,
+        schemas: Schemas,
+        response_sink: Option<ServiceInvocationResponseSink>,
+    }
+
+    impl TestInvocationContext {
+        pub(super) fn new(service_name: &str) -> Self {
+            Self::new_keyed(service_name, Bytes::new())
+        }
+
+        pub(super) fn new_keyed(service_name: &str, key: impl Into<Bytes>) -> Self {
+            Self {
+                full_invocation_id: FullInvocationId::generate(service_name, key),
+                state_reader: Default::default(),
+                schemas: Default::default(),
+                response_sink: Some(ServiceInvocationResponseSink::Ingress(
+                    IngressDispatcherId::mock(),
+                )),
+            }
+        }
+
+        pub(super) fn with_state_reader(mut self, state_reader: MockStateReader) -> Self {
+            self.state_reader = state_reader;
+            self
+        }
+
+        pub(super) fn with_schemas(mut self, schemas: Schemas) -> Self {
+            self.schemas = schemas;
+            self
+        }
+
+        pub(super) fn without_response_sink(mut self) -> Self {
+            self.response_sink = None;
+            self
+        }
+
+        pub(super) fn fid(&self) -> &FullInvocationId {
+            &self.full_invocation_id
+        }
+
+        pub(super) fn state(&self) -> &MockStateReader {
+            &self.state_reader
+        }
+
+        pub(super) fn state_mut(&mut self) -> &mut MockStateReader {
+            &mut self.state_reader
+        }
+
+        pub(super) fn reset_fid(&mut self) {
+            self.full_invocation_id = FullInvocationId::with_service_id(
+                self.full_invocation_id.service_id.clone(),
+                InvocationUuid::now_v7(),
+            );
+        }
+
+        pub(super) async fn invoke<
+            'this,
+            F: for<'fut> FnOnce(
+                &'fut mut InvocationContext<'fut, &'fut MockStateReader>,
+            ) -> LocalBoxFuture<'fut, Result<(), InvocationError>>,
+        >(
+            &'this mut self,
+            f: F,
+        ) -> Result<Vec<Effect>, InvocationError> {
+            let mut out_effects = vec![];
+            let mut invocation_ctx = InvocationContext {
+                full_invocation_id: &self.full_invocation_id,
+                state_reader: &self.state_reader,
+                schemas: &self.schemas,
+                effects_buffer: &mut out_effects,
+                response_sink: self.response_sink.as_ref(),
+            };
+
+            f(&mut invocation_ctx).await?;
+
+            // Apply effects
+            self.state_reader.apply_effects(&out_effects);
+
+            Ok(out_effects)
         }
     }
 }
