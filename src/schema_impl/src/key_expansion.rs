@@ -51,7 +51,7 @@ pub(crate) mod expand_impls {
         service_instance_type: &ServiceInstanceType,
         service_method: impl AsRef<str>,
         descriptor: MessageDescriptor,
-        restate_key: Bytes,
+        restate_key: impl AsRef<[u8]>,
     ) -> Result<DynamicMessage, Error> {
         if let ServiceInstanceType::Keyed {
             service_methods_key_field_root_number,
@@ -68,7 +68,7 @@ pub(crate) mod expand_impls {
                 .kind();
 
             // Prepare the buffer for the protobuf
-            let mut b = BytesMut::with_capacity(key_len(root_number) + restate_key.len());
+            let mut b = BytesMut::with_capacity(key_len(root_number) + restate_key.as_ref().len());
 
             // Encode the key of the protobuf field
             // Note: this assumes the root wire type is never a group, per extract algorithm above
@@ -76,7 +76,7 @@ pub(crate) mod expand_impls {
             encode_key(root_number, field_descriptor_kind.wire_type(), &mut b);
 
             // Append the restate key buffer
-            b.put(restate_key);
+            b.put(restate_key.as_ref());
 
             // Now this message should be a well formed protobuf message, we can create the DynamicMessage
             Ok(DynamicMessage::decode(descriptor, b.freeze())?)

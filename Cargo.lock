@@ -4076,6 +4076,7 @@ dependencies = [
  "futures",
  "paste",
  "prost",
+ "restate_schema_api",
  "restate_storage_api",
  "restate_storage_rocksdb",
  "restate_types",

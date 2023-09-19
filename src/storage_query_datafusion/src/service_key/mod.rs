@@ -8,16 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod analyzer;
-pub mod context;
-mod generic_table;
-mod options;
-mod physical_optimizer;
-mod service_key;
-mod state;
-mod status;
-mod table_macro;
-mod table_util;
-mod udfs;
+mod udf;
 
-pub use crate::options::{BuildError, Options, OptionsBuilder, OptionsBuilderError};
+pub(crate) use udf::register_udf;
