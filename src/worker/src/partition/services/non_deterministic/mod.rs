@@ -170,6 +170,19 @@ impl<S: StateReader> InvocationContext<'_, S> {
             .map_err(InvocationError::internal)
     }
 
+    async fn pop_state<Serde: StateSerde>(
+        &mut self,
+        key: &StateKey<Serde>,
+    ) -> Result<Option<Serde::MaterializedType>, InvocationError> {
+        let res = self.load_state(key).await;
+
+        if let Ok(Some(_)) = &res {
+            self.clear_state(key)
+        };
+
+        res
+    }
+
     async fn load_state_or_fail<Serde: StateSerde>(
         &self,
         key: &StateKey<Serde>,
@@ -184,7 +197,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
         })
     }
 
-    fn store_state<Serde: StateSerde>(
+    fn set_state<Serde: StateSerde>(
         &mut self,
         key: &StateKey<Serde>,
         value: &Serde::MaterializedType,
@@ -242,9 +255,7 @@ mod tests {
 
     use crate::partition::services::tests::MockStateReader;
     use futures::future::LocalBoxFuture;
-    use restate_test_util::assert;
     use restate_types::identifiers::{IngressDispatcherId, InvocationUuid};
-    use std::fmt;
 
     impl MockStateReader {
         pub(super) fn apply_effects(&mut self, effects: &[Effect]) {
@@ -260,31 +271,11 @@ mod tests {
                 }
             }
         }
-
-        pub(super) fn assert_has_state<Serde: StateSerde + fmt::Debug>(
-            &self,
-            key: &StateKey<Serde>,
-        ) -> Serde::MaterializedType {
-            Serde::decode(
-                self.0
-                    .get(key.0.as_ref())
-                    .unwrap_or_else(|| panic!("{:?} must be non-empty", key))
-                    .clone(),
-            )
-            .unwrap_or_else(|_| panic!("{:?} must deserialize correctly", key))
-        }
-
-        pub(super) fn assert_has_not_state<Serde: StateSerde + fmt::Debug>(
-            &self,
-            key: &StateKey<Serde>,
-        ) {
-            assert!(self.0.get(key.0.as_ref()).is_none());
-        }
     }
 
     #[derive(Clone)]
     pub(super) struct TestInvocationContext {
-        full_invocation_id: FullInvocationId,
+        service_id: ServiceId,
         state_reader: MockStateReader,
         schemas: Schemas,
         response_sink: Option<ServiceInvocationResponseSink>,
@@ -292,12 +283,12 @@ mod tests {
 
     impl TestInvocationContext {
         pub(super) fn new(service_name: &str) -> Self {
-            Self::new_keyed(service_name, Bytes::new())
+            Self::from_service_id(ServiceId::new(service_name, Bytes::new()))
         }
 
-        pub(super) fn new_keyed(service_name: &str, key: impl Into<Bytes>) -> Self {
+        pub(super) fn from_service_id(service_id: ServiceId) -> Self {
             Self {
-                full_invocation_id: FullInvocationId::generate(service_name, key),
+                service_id,
                 state_reader: Default::default(),
                 schemas: Default::default(),
                 response_sink: Some(ServiceInvocationResponseSink::Ingress(
@@ -321,10 +312,6 @@ mod tests {
             self
         }
 
-        pub(super) fn fid(&self) -> &FullInvocationId {
-            &self.full_invocation_id
-        }
-
         pub(super) fn state(&self) -> &MockStateReader {
             &self.state_reader
         }
@@ -333,25 +320,22 @@ mod tests {
             &mut self.state_reader
         }
 
-        pub(super) fn reset_fid(&mut self) {
-            self.full_invocation_id = FullInvocationId::with_service_id(
-                self.full_invocation_id.service_id.clone(),
-                InvocationUuid::now_v7(),
-            );
-        }
-
-        pub(super) async fn invoke<
-            'this,
+        pub(super) async fn invoke<'this, F>(
+            &'this mut self,
+            f: F,
+        ) -> Result<(FullInvocationId, Vec<Effect>), InvocationError>
+        where
             F: for<'fut> FnOnce(
                 &'fut mut InvocationContext<'fut, &'fut MockStateReader>,
             ) -> LocalBoxFuture<'fut, Result<(), InvocationError>>,
-        >(
-            &'this mut self,
-            f: F,
-        ) -> Result<Vec<Effect>, InvocationError> {
+        {
+            let fid = FullInvocationId::with_service_id(
+                self.service_id.clone(),
+                InvocationUuid::now_v7(),
+            );
             let mut out_effects = vec![];
             let mut invocation_ctx = InvocationContext {
-                full_invocation_id: &self.full_invocation_id,
+                full_invocation_id: &fid,
                 state_reader: &self.state_reader,
                 schemas: &self.schemas,
                 effects_buffer: &mut out_effects,
@@ -363,7 +347,7 @@ mod tests {
             // Apply effects
             self.state_reader.apply_effects(&out_effects);
 
-            Ok(out_effects)
+            Ok((fid, out_effects))
         }
     }
 }

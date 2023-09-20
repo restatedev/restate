@@ -15,6 +15,7 @@ use bytes::Bytes;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::ServiceId;
 use std::borrow::Cow;
+use std::fmt;
 use std::marker::PhantomData;
 
 pub(crate) mod deterministic;
@@ -109,24 +110,36 @@ impl<T: serde::Serialize + for<'de> serde::Deserialize<'de>> StateSerde for Binc
 }
 
 #[derive(Clone, Debug)]
-struct StateKey<Serde>(Cow<'static, str>, Serde);
+struct StateKey<Serde>(Cow<'static, str>, PhantomData<Serde>);
 
 impl StateKey<Raw> {
     #[allow(unused)]
     pub const fn new_raw(name: &'static str) -> StateKey<Raw> {
-        Self(Cow::Borrowed(name), Raw)
+        Self(Cow::Borrowed(name), PhantomData)
     }
 }
 
 impl<T> StateKey<Protobuf<T>> {
     pub const fn new_pb(name: &'static str) -> StateKey<Protobuf<T>> {
-        Self(Cow::Borrowed(name), Protobuf(PhantomData))
+        Self(Cow::Borrowed(name), PhantomData)
     }
 }
 
 impl<T> StateKey<Bincode<T>> {
     pub const fn new_bincode(name: &'static str) -> StateKey<Bincode<T>> {
-        Self(Cow::Borrowed(name), Bincode(PhantomData))
+        Self(Cow::Borrowed(name), PhantomData)
+    }
+}
+
+impl<S> fmt::Display for StateKey<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl<T> From<String> for StateKey<T> {
+    fn from(value: String) -> Self {
+        StateKey(value.into(), PhantomData)
     }
 }
 
@@ -135,20 +148,53 @@ mod tests {
     use super::*;
 
     use anyhow::Error;
+    use restate_test_util::assert;
     use std::collections::HashMap;
 
     #[derive(Clone, Default)]
     pub(super) struct MockStateReader(pub(super) HashMap<String, Bytes>);
 
     impl MockStateReader {
+        pub(super) fn set<Serde: StateSerde>(
+            &mut self,
+            k: &StateKey<Serde>,
+            val: Serde::MaterializedType,
+        ) {
+            self.0.insert(k.0.to_string(), Serde::encode(&val).unwrap());
+        }
+
         #[allow(dead_code)]
         pub(super) fn with<Serde: StateSerde>(
             mut self,
             k: &StateKey<Serde>,
             val: Serde::MaterializedType,
         ) -> Self {
-            self.0.insert(k.0.to_string(), Serde::encode(&val).unwrap());
+            self.set(k, val);
             self
+        }
+
+        pub(super) fn assert_has_state<Serde: StateSerde + fmt::Debug>(
+            &self,
+            key: &StateKey<Serde>,
+        ) -> Serde::MaterializedType {
+            Serde::decode(
+                self.0
+                    .get(key.0.as_ref())
+                    .unwrap_or_else(|| panic!("{:?} must be non-empty", key))
+                    .clone(),
+            )
+            .unwrap_or_else(|_| panic!("{:?} must deserialize correctly", key))
+        }
+
+        pub(super) fn assert_has_not_state<Serde: StateSerde + fmt::Debug>(
+            &self,
+            key: &StateKey<Serde>,
+        ) {
+            assert!(self.0.get(key.0.as_ref()).is_none());
+        }
+
+        pub(super) fn assert_is_empty(&self) {
+            assert!(self.0.is_empty());
         }
     }
 
