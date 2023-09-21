@@ -10,4 +10,9 @@ publish = false
 [dependencies]
 assert2 = { workspace = true }
 test-log = { version = "0.2.11", default-features = false, features = ["trace"] }
+googletest = { workspace = true }
 pretty_assertions = "1.3"
+prost = { workspace = true, optional = true }
+
+[dev-dependencies]
+prost-types = { workspace = true }
