@@ -261,6 +261,11 @@ pub mod service {
         ///
         /// Fully qualified message name of the output of the method
         pub output_type: String,
+        /// # Key field number
+        ///
+        /// If this is a keyed service, the field number of the key within the input type,
+        /// Otherwise None
+        pub key_field_number: Option<u32>,
     }
 
     /// This API will return services registered by the user. It won't include built-in services.

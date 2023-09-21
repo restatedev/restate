@@ -10,7 +10,7 @@
 
 use super::Schemas;
 
-use crate::schemas_impl::{ServiceLocation, ServiceSchemas};
+use crate::schemas_impl::{ServiceInstanceType, ServiceLocation, ServiceSchemas};
 use restate_schema_api::service::{MethodMetadata, ServiceMetadata, ServiceMetadataResolver};
 
 impl ServiceMetadataResolver for Schemas {
@@ -55,11 +55,22 @@ fn map_to_service_metadata(
             name: service_name.to_string(),
             methods: service_schemas
                 .methods
-                .iter()
-                .map(|(name, method_desc)| MethodMetadata {
-                    name: name.clone(),
+                .values()
+                .map(|method_desc| MethodMetadata {
+                    name: method_desc.name().to_string(),
                     input_type: method_desc.input().full_name().to_string(),
                     output_type: method_desc.output().full_name().to_string(),
+                    key_field_number: match &service_schemas.instance_type {
+                        ServiceInstanceType::Keyed {
+                            service_methods_key_field_root_number,
+                            ..
+                        } => Some(
+                            *service_methods_key_field_root_number
+                                .get(method_desc.name())
+                                .expect("Method must exist in the parsed service methods"),
+                        ),
+                        _ => None,
+                    },
                 })
                 .collect(),
             instance_type: (&service_schemas.instance_type)
