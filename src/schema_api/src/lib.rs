@@ -265,6 +265,7 @@ pub mod service {
         ///
         /// If this is a keyed service, the Protobuf field number of the key within the input type,
         /// Otherwise `null`.
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
         pub key_field_number: Option<u32>,
     }
 
