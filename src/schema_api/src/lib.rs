@@ -264,7 +264,7 @@ pub mod service {
         /// # Key field number
         ///
         /// If this is a keyed service, the field number of the key within the input type,
-        /// Otherwise None
+        /// Otherwise `null`.
         pub key_field_number: Option<u32>,
     }
 
