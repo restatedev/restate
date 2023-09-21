@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "codederror"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "codederror-impl",
  "thiserror",
@@ -3602,7 +3602,7 @@ dependencies = [
 
 [[package]]
 name = "restate"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "clap",
  "codederror",
@@ -3629,14 +3629,14 @@ dependencies = [
 
 [[package]]
 name = "restate_base64_util"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "base64 0.21.0",
 ]
 
 [[package]]
 name = "restate_benchmarks"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -3659,7 +3659,7 @@ dependencies = [
 
 [[package]]
 name = "restate_consensus"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -3675,7 +3675,7 @@ dependencies = [
 
 [[package]]
 name = "restate_errors"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "codederror",
  "paste",
@@ -3688,7 +3688,7 @@ dependencies = [
 
 [[package]]
 name = "restate_fs_util"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "tokio",
  "tracing",
@@ -3697,7 +3697,7 @@ dependencies = [
 
 [[package]]
 name = "restate_futures_util"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "futures",
  "pin-project",
@@ -3710,7 +3710,7 @@ dependencies = [
 
 [[package]]
 name = "restate_hyper_util"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "hyper",
  "thiserror",
@@ -3718,7 +3718,7 @@ dependencies = [
 
 [[package]]
 name = "restate_ingress_dispatcher"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "bytestring",
@@ -3734,7 +3734,7 @@ dependencies = [
 
 [[package]]
 name = "restate_ingress_grpc"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3778,7 +3778,7 @@ dependencies = [
 
 [[package]]
 name = "restate_ingress_kafka"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "base64 0.21.0",
  "bytes",
@@ -3808,7 +3808,7 @@ dependencies = [
 
 [[package]]
 name = "restate_invoker_api"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3821,7 +3821,7 @@ dependencies = [
 
 [[package]]
 name = "restate_invoker_impl"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3862,7 +3862,7 @@ dependencies = [
 
 [[package]]
 name = "restate_meta"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "axum",
  "bincode",
@@ -3900,7 +3900,7 @@ dependencies = [
 
 [[package]]
 name = "restate_network"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3917,7 +3917,7 @@ dependencies = [
 
 [[package]]
 name = "restate_pb"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "once_cell",
@@ -3932,7 +3932,7 @@ dependencies = [
 
 [[package]]
 name = "restate_queue"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bincode",
  "criterion",
@@ -3946,7 +3946,7 @@ dependencies = [
 
 [[package]]
 name = "restate_schema_api"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.21.0",
@@ -3966,7 +3966,7 @@ dependencies = [
 
 [[package]]
 name = "restate_schema_impl"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3993,7 +3993,7 @@ dependencies = [
 
 [[package]]
 name = "restate_serde_util"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "base64 0.21.0",
  "http",
@@ -4006,7 +4006,7 @@ dependencies = [
 
 [[package]]
 name = "restate_service_protocol"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "base64 0.21.0",
  "bytes",
@@ -4035,7 +4035,7 @@ dependencies = [
 
 [[package]]
 name = "restate_storage_api"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4047,7 +4047,7 @@ dependencies = [
 
 [[package]]
 name = "restate_storage_proto"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4063,7 +4063,7 @@ dependencies = [
 
 [[package]]
 name = "restate_storage_query_datafusion"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4090,7 +4090,7 @@ dependencies = [
 
 [[package]]
 name = "restate_storage_query_http"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "axum",
  "base64 0.21.0",
@@ -4117,7 +4117,7 @@ dependencies = [
 
 [[package]]
 name = "restate_storage_query_postgres"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4148,7 +4148,7 @@ dependencies = [
 
 [[package]]
 name = "restate_storage_rocksdb"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4177,7 +4177,7 @@ dependencies = [
 
 [[package]]
 name = "restate_test_util"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "assert2",
  "pretty_assertions",
@@ -4186,7 +4186,7 @@ dependencies = [
 
 [[package]]
 name = "restate_timer"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "derive_builder",
@@ -4206,7 +4206,7 @@ dependencies = [
 
 [[package]]
 name = "restate_timer_queue"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "futures",
  "tokio",
@@ -4214,7 +4214,7 @@ dependencies = [
 
 [[package]]
 name = "restate_tracing_instrumentation"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "console-subscriber",
  "derive_builder",
@@ -4235,7 +4235,7 @@ dependencies = [
 
 [[package]]
 name = "restate_types"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.21.0",
@@ -4259,7 +4259,7 @@ dependencies = [
 
 [[package]]
 name = "restate_worker"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "assert2",
@@ -4306,7 +4306,7 @@ dependencies = [
 
 [[package]]
 name = "restate_worker_api"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "restate_schema_api",
  "restate_types",
@@ -4654,7 +4654,7 @@ dependencies = [
 
 [[package]]
 name = "service_protocol_wireshark_dissector"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "mlua",
@@ -5912,7 +5912,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "drain",
