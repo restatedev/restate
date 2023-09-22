@@ -17,6 +17,8 @@ bytestring = { workspace = true }
 drain = { workspace = true }
 restate_futures_util = { workspace = true }
 restate_types = { workspace = true }
+restate_pb = { workspace = true, features = ["restate_types"] }
+prost = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -24,6 +26,7 @@ tracing = { workspace = true }
 restate_test_util = { workspace = true, optional = true }
 
 [dev-dependencies]
+googletest = { workspace = true }
 restate_types = { workspace = true, features = ["mocks"] }
-restate_test_util = { workspace = true }
+restate_test_util = { workspace = true, features = ["prost"] }
 tracing-subscriber = { workspace = true }
