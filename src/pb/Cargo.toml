@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-builtin-service = ["dep:restate_types", "dep:async-trait"]
+builtin-service = ["restate_types", "dep:async-trait"]
 mocks = []
 
 [dependencies]
