@@ -4306,6 +4306,7 @@ dependencies = [
  "derive_builder",
  "drain",
  "futures",
+ "googletest",
  "opentelemetry_api",
  "pin-project",
  "prost",

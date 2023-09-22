@@ -1,8 +1,17 @@
-/*
-  This package provides interfaces for built-in services
- */
+// Copyright (c) 2023 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
 syntax = "proto3";
 
+// Restate built-in services.
+// This package contains the definition of Restate built-in services.
+// To invoke them, check out the documentation: https://docs.restate.dev/services/invocation
 package dev.restate;
 
 import "google/protobuf/empty.proto";
@@ -21,14 +30,17 @@ service Ingress {
 message InvokeRequest {
   // Fully qualified name of the service, e.g. `counter.Counter`
   string service = 1;
+
   // Method name of the service to invoke, e.g. `Add`
   string method = 2;
+
   // Argument of the invocation.
-  // When executing requests to the ingress using Protobuf,
-  // this field must contain the serialized Protobuf matching the argument type of the target method.
-  // When executing requests to the ingress using JSON,
-  // this field must contain the JSON object representing the argument type of the target method.
-  bytes argument = 3;
+  // You can pass the invocation argument either as protobuf or as JSON.
+  // In case of JSON, the argument will be automatically transcoded to protobuf before sending it to the target service.
+  oneof argument {
+    bytes pb = 3;
+    google.protobuf.Struct json = 4 [json_name = "argument"];
+  }
 }
 
 message InvokeResponse {

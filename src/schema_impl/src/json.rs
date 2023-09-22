@@ -15,7 +15,7 @@ use prost::Message;
 use prost_reflect::{DeserializeOptions, DynamicMessage, MessageDescriptor, SerializeOptions};
 use restate_schema_api::json::{JsonMapperResolver, JsonToProtobufMapper, ProtobufToJsonMapper};
 
-pub struct JsonToProtobufConverter(json_impl::JsonToProtobufConverterInner);
+pub struct JsonToProtobufConverter(MessageDescriptor);
 pub struct ProtobufToJsonConverter(MessageDescriptor);
 
 impl JsonMapperResolver for Schemas {
@@ -29,21 +29,8 @@ impl JsonMapperResolver for Schemas {
     ) -> Option<(Self::JsonToProtobufMapper, Self::ProtobufToJsonMapper)> {
         self.use_service_schema(service_name, |service_schemas| {
             let method_desc = service_schemas.methods.get(method_name.as_ref())?;
-
-            let input_msg = method_desc.input();
-            let json_to_protobuf_mapper = if input_msg.full_name() == "dev.restate.InvokeRequest" {
-                JsonToProtobufConverter(
-                    json_impl::JsonToProtobufConverterInner::DevRestateInvokeMessage(
-                        input_msg,
-                        Clone::clone(self),
-                    ),
-                )
-            } else {
-                JsonToProtobufConverter(json_impl::JsonToProtobufConverterInner::Other(input_msg))
-            };
-
             Some((
-                json_to_protobuf_mapper,
+                JsonToProtobufConverter(method_desc.input()),
                 ProtobufToJsonConverter(method_desc.output()),
             ))
         })
@@ -53,24 +40,35 @@ impl JsonMapperResolver for Schemas {
 
 mod json_impl {
     use super::*;
-
-    use anyhow::anyhow;
-    use prost_reflect::Value;
-    use serde::de::IntoDeserializer;
-    use serde::Deserialize;
+    use anyhow::Error;
+    use serde_json::Value;
 
     impl JsonToProtobufMapper for JsonToProtobufConverter {
-        fn convert_to_protobuf(
+        fn json_to_protobuf(
             self,
             json: Bytes,
             deserialize_options: &DeserializeOptions,
         ) -> Result<Bytes, anyhow::Error> {
-            self.0.convert_to_protobuf(json, deserialize_options)
+            let mut deser = serde_json::Deserializer::from_reader(json.reader());
+            let dynamic_message =
+                DynamicMessage::deserialize_with_options(self.0, &mut deser, deserialize_options)?;
+            deser.end()?;
+            Ok(Bytes::from(dynamic_message.encode_to_vec()))
+        }
+
+        fn json_value_to_protobuf(
+            self,
+            json: Value,
+            deserialize_options: &DeserializeOptions,
+        ) -> Result<Bytes, Error> {
+            let dynamic_message =
+                DynamicMessage::deserialize_with_options(self.0, json, deserialize_options)?;
+            Ok(Bytes::from(dynamic_message.encode_to_vec()))
         }
     }
 
     impl ProtobufToJsonMapper for ProtobufToJsonConverter {
-        fn convert_to_json(
+        fn protobuf_to_json(
             self,
             protobuf: Bytes,
             serialize_options: &SerializeOptions,
@@ -80,89 +78,15 @@ mod json_impl {
             msg.serialize_with_options(&mut ser, serialize_options)?;
             Ok(ser.into_inner().into_inner().freeze())
         }
-    }
 
-    pub(super) enum JsonToProtobufConverterInner {
-        Other(MessageDescriptor),
-        DevRestateInvokeMessage(MessageDescriptor, Schemas),
-    }
-
-    impl JsonToProtobufMapper for JsonToProtobufConverterInner {
-        fn convert_to_protobuf(
+        fn protobuf_to_json_value(
             self,
-            json: Bytes,
-            deserialize_options: &DeserializeOptions,
-        ) -> Result<Bytes, anyhow::Error> {
-            Ok(match self {
-                JsonToProtobufConverterInner::Other(msg_desc) => {
-                    let mut deser = serde_json::Deserializer::from_reader(json.reader());
-                    let dynamic_message = DynamicMessage::deserialize_with_options(
-                        msg_desc,
-                        &mut deser,
-                        deserialize_options,
-                    )?;
-                    deser.end()?;
-                    Bytes::from(dynamic_message.encode_to_vec())
-                }
-                JsonToProtobufConverterInner::DevRestateInvokeMessage(
-                    invoke_request_msg_desc,
-                    schemas,
-                ) => Bytes::from(
-                    read_json_invoke_request(
-                        invoke_request_msg_desc,
-                        schemas,
-                        deserialize_options,
-                        json,
-                    )?
-                    .encode_to_vec(),
-                ),
-            })
+            protobuf: Bytes,
+            serialize_options: &SerializeOptions,
+        ) -> Result<Value, Error> {
+            let msg = DynamicMessage::decode(self.0, protobuf)?;
+            Ok(msg.serialize_with_options(serde_json::value::Serializer, serialize_options)?)
         }
-    }
-
-    fn read_json_invoke_request(
-        invoke_request_msg_desc: MessageDescriptor,
-        schemas: Schemas,
-        deserialize_options: &DeserializeOptions,
-        payload_buf: impl Buf + Sized,
-    ) -> Result<DynamicMessage, anyhow::Error> {
-        #[derive(Deserialize)]
-        struct InvokeRequestAdapter {
-            service: String,
-            method: String,
-            argument: serde_json::Value,
-        }
-
-        let adapter: InvokeRequestAdapter = serde_json::from_reader(payload_buf.reader())?;
-
-        // Load schemas
-        let descriptor = schemas
-            .use_service_schema(&adapter.service, |s| {
-                s.methods.get(&adapter.method).cloned()
-            })
-            .flatten()
-            .ok_or_else(|| {
-                // TODO Not great error propagation, we should probably return an adhoc error,
-                //  or at least something that can be used to downcast_ref
-                anyhow!("{}/{} not found", adapter.service, adapter.method)
-            })?;
-
-        let argument_dynamic_message = DynamicMessage::deserialize_with_options(
-            descriptor.input(),
-            adapter.argument.into_deserializer(),
-            deserialize_options,
-        )?;
-
-        let mut invoke_req_msg = DynamicMessage::new(invoke_request_msg_desc);
-        invoke_req_msg.set_field_by_name("service", Value::String(adapter.service));
-        invoke_req_msg.set_field_by_name("method", Value::String(adapter.method));
-        // TODO can skip this serialization by implementing prost::Message on InvokeRequestAdapter
-        invoke_req_msg.set_field_by_name(
-            "argument",
-            Value::Bytes(argument_dynamic_message.encode_to_vec().into()),
-        );
-
-        Ok(invoke_req_msg)
     }
 }
 
@@ -172,6 +96,7 @@ mod tests {
 
     use crate::schemas_impl::{ServiceInstanceType, ServiceLocation, ServiceSchemas};
     use prost_reflect::{MethodDescriptor, ServiceDescriptor};
+    use serde::Serialize;
     use serde_json::json;
 
     fn greeter_service_descriptor() -> ServiceDescriptor {
@@ -216,7 +141,7 @@ mod tests {
             .resolve_json_mapper_for_service("greeter.Greeter", "Greet")
             .unwrap();
         let protobuf = decoder
-            .convert_to_protobuf(
+            .json_to_protobuf(
                 json_payload.to_string().into(),
                 &DeserializeOptions::default(),
             )
@@ -246,10 +171,31 @@ mod tests {
             .resolve_json_mapper_for_service("dev.restate.Ingress", "Invoke")
             .unwrap();
         let protobuf = decoder
-            .convert_to_protobuf(
+            .json_to_protobuf(
                 json_payload.to_string().into(),
                 &DeserializeOptions::default(),
             )
+            .unwrap();
+
+        let mut dynamic_message_greeting_request =
+            DynamicMessage::new(greeter_greet_method_descriptor().input());
+        dynamic_message_greeting_request
+            .transcode_from(&restate_pb::mocks::greeter::GreetingRequest {
+                person: "Francesco".to_string(),
+            })
+            .unwrap();
+        let json_greeting_request = dynamic_message_greeting_request
+            .serialize(serde_json::value::Serializer)
+            .unwrap();
+        let struct_greeting_request: prost_reflect::prost_types::Struct =
+            DynamicMessage::deserialize(
+                prost_reflect::DescriptorPool::global()
+                    .get_message_by_name("google.protobuf.Struct")
+                    .unwrap(),
+                json_greeting_request,
+            )
+            .unwrap()
+            .transcode_to()
             .unwrap();
 
         assert_eq!(
@@ -257,11 +203,9 @@ mod tests {
             restate_pb::restate::InvokeRequest {
                 service: "greeter.Greeter".to_string(),
                 method: "Greet".to_string(),
-                argument: restate_pb::mocks::greeter::GreetingRequest {
-                    person: "Francesco".to_string(),
-                }
-                .encode_to_vec()
-                .into(),
+                argument: Some(restate_pb::restate::invoke_request::Argument::Json(
+                    struct_greeting_request
+                )),
             }
         );
     }
@@ -282,7 +226,7 @@ mod tests {
             .unwrap();
 
         let json_encoded = encoder
-            .convert_to_json(pb_response, &SerializeOptions::default())
+            .protobuf_to_json(pb_response, &SerializeOptions::default())
             .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&json_encoded).unwrap();
 
@@ -303,7 +247,7 @@ mod tests {
             .unwrap();
 
         let json_encoded = encoder
-            .convert_to_json(pb_response, &SerializeOptions::default())
+            .protobuf_to_json(pb_response, &SerializeOptions::default())
             .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&json_encoded).unwrap();
 
@@ -321,7 +265,7 @@ mod tests {
             .unwrap();
 
         let json_encoded = encoder
-            .convert_to_json(
+            .protobuf_to_json(
                 pb_response,
                 &SerializeOptions::new().skip_default_fields(false),
             )

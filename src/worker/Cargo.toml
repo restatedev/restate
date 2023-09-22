@@ -43,7 +43,7 @@ tracing-opentelemetry = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-restate_schema_api = { workspace = true, features = ["key_extraction"] }
+restate_schema_api = { workspace = true, features = ["key_extraction", "json_conversion"] }
 restate_schema_impl = { workspace = true }
 restate_service_protocol = { workspace = true, features = ["codec", "awakeable-id"] }
 restate_storage_api = { workspace = true}
@@ -55,7 +55,10 @@ restate_pb = { workspace = true, features = ["builtin-service"]}
 restate_worker_api = { workspace = true }
 
 [dev-dependencies]
+googletest = { workspace = true }
 restate_types = { workspace = true, features = ["mocks"] }
 restate_service_protocol = { workspace = true, features = ["mocks"] }
-restate_test_util = { workspace = true }
+restate_test_util = { workspace = true, features = ["prost"] }
 tracing-subscriber = { workspace = true }
+restate_pb = { workspace = true, features = ["mocks"] }
+restate_schema_api = { workspace = true, features = ["mocks"] }

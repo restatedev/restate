@@ -138,7 +138,7 @@ impl<JsonDecoder: JsonToProtobufMapper> Decoder<JsonDecoder> {
             }
             Decoder::Protobuf => Ok(collected_body),
             Decoder::Json(mapper) => mapper
-                .convert_to_protobuf(collected_body, json_deserialize_options)
+                .json_to_protobuf(collected_body, json_deserialize_options)
                 .map_err(|e| {
                     warn!("Error when parsing request: {}", e);
                     status::status_response(Status::invalid_argument(format!(
@@ -168,7 +168,7 @@ impl<JsonEncoder: ProtobufToJsonMapper> Encoder<JsonEncoder> {
                 .body(response_body.into())
                 .unwrap(),
             Encoder::Json(encoder) => {
-                match encoder.convert_to_json(response_body, json_serialize_options) {
+                match encoder.protobuf_to_json(response_body, json_serialize_options) {
                     Ok(b) => Response::builder()
                         .status(StatusCode::OK)
                         .header(CONTENT_TYPE, APPLICATION_JSON_HEADER)
