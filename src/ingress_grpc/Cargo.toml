@@ -16,7 +16,7 @@ options_schema = ["dep:schemars"]
 restate_types = { workspace = true, features = ["tonic_conversions"] }
 restate_errors = { workspace = true }
 restate_schema_api = { workspace = true, features = ["json_conversion", "key_extraction" ,"proto_symbol", "service"]}
-restate_pb = { workspace = true }
+restate_pb = { workspace = true, features = ["restate_types"] }
 restate_ingress_dispatcher = { workspace = true }
 
 # Encoding/Decoding

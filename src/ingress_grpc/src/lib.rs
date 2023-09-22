@@ -20,6 +20,7 @@ pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 use bytes::Bytes;
 use opentelemetry::Context;
 use restate_types::identifiers::FullInvocationId;
+use tonic::metadata::MetadataMap;
 use tonic::Status;
 
 // --- Data model used by handlers and protocol
@@ -29,19 +30,52 @@ struct IngressRequestHeaders {
     service_name: String,
     method_name: String,
     tracing_context: Context,
+    metadata: MetadataMap,
 }
 
 impl IngressRequestHeaders {
-    pub fn new(service_name: String, method_name: String, tracing_context: Context) -> Self {
+    pub fn new(
+        service_name: String,
+        method_name: String,
+        tracing_context: Context,
+        metadata: MetadataMap,
+    ) -> Self {
         Self {
             service_name,
             method_name,
             tracing_context,
+            metadata,
         }
     }
 }
 type HandlerRequest = (IngressRequestHeaders, Bytes);
-type HandlerResult = Result<Bytes, Status>;
+
+#[derive(Debug, Clone)]
+struct HandlerResponse {
+    metadata: MetadataMap,
+    body: Bytes,
+}
+
+impl HandlerResponse {
+    pub fn from_parts(metadata: MetadataMap, body: Bytes) -> Self {
+        Self { metadata, body }
+    }
+
+    pub fn from_message<T: prost::Message>(t: T) -> Self {
+        Self::from_parts(Default::default(), t.encode_to_vec().into())
+    }
+}
+
+impl From<Bytes> for HandlerResponse {
+    fn from(body: Bytes) -> Self {
+        HandlerResponse {
+            metadata: Default::default(),
+            body,
+        }
+    }
+}
+
+type HandlerResult = Result<HandlerResponse, Status>;
 
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]

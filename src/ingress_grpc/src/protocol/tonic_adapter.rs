@@ -18,7 +18,7 @@ use bytes::{Buf, BufMut, Bytes};
 use pin_project::pin_project;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 use tonic::server::UnaryService;
-use tonic::Status;
+use tonic::{Extensions, Status};
 
 // --- UnaryService adapter that can execute call only once
 
@@ -68,7 +68,9 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        Poll::Ready(ready!(this.0.poll(cx)).map(tonic::Response::new))
+        Poll::Ready(ready!(this.0.poll(cx)).map(|response| {
+            tonic::Response::from_parts(response.metadata, response.body, Extensions::default())
+        }))
     }
 }
 

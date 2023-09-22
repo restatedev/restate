@@ -83,8 +83,12 @@ impl Protocol {
             .extract(&opentelemetry_http::HeaderExtractor(req.headers()));
 
         // Create Ingress request headers
-        let ingress_request_headers =
-            IngressRequestHeaders::new(service_name, method_name, tracing_context);
+        let ingress_request_headers = IngressRequestHeaders::new(
+            service_name,
+            method_name,
+            tracing_context,
+            MetadataMap::from_headers(req.headers().clone()),
+        );
 
         match self {
             Protocol::Tonic => {
@@ -171,12 +175,19 @@ impl Protocol {
             Ok(c) => c,
             Err(res) => return res,
         };
-        let response = match handler_fn((ingress_request_headers, ingress_request_body)).await {
-            Ok(ingress_response_body) => ingress_response_body,
-            Err(error) => return connect_adapter::status::status_response(error),
-        };
+        let handler_response =
+            match handler_fn((ingress_request_headers, ingress_request_body)).await {
+                Ok(ingress_response_body) => ingress_response_body,
+                Err(error) => return connect_adapter::status::status_response(error),
+            };
 
-        encoder.encode_response(response, &json.to_serialize_options())
+        // Add headers
+        let mut response =
+            encoder.encode_response(handler_response.body, &json.to_serialize_options());
+        response
+            .headers_mut()
+            .extend(handler_response.metadata.into_headers());
+        response
     }
 }
 
@@ -207,11 +218,11 @@ mod tests {
         let person = restate_pb::mocks::greeter::GreetingRequest::decode(ingress_req.1)
             .unwrap()
             .person;
-        ok(restate_pb::mocks::greeter::GreetingResponse {
-            greeting: format!("Hello {person}"),
-        }
-        .encode_to_vec()
-        .into())
+        ok(HandlerResponse::from_message(
+            restate_pb::mocks::greeter::GreetingResponse {
+                greeting: format!("Hello {person}"),
+            },
+        ))
     }
 
     #[test(tokio::test)]
@@ -234,6 +245,7 @@ mod tests {
                 "greeter.Greeter".to_string(),
                 "Greet".to_string(),
                 Context::default(),
+                MetadataMap::default(),
             ),
             mocks::test_schemas(),
             JsonOptions::default(),
@@ -267,6 +279,7 @@ mod tests {
                 "greeter.Greeter".to_string(),
                 "Greet".to_string(),
                 Context::default(),
+                MetadataMap::default(),
             ),
             mocks::test_schemas(),
             JsonOptions::default(),
@@ -305,6 +318,7 @@ mod tests {
                 "greeter.Greeter".to_string(),
                 "Greet".to_string(),
                 Context::default(),
+                MetadataMap::default(),
             ),
             mocks::test_schemas(),
             JsonOptions::default(),

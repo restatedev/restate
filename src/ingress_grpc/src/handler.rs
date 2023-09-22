@@ -20,7 +20,7 @@ use http_body::Body;
 use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
-use restate_ingress_dispatcher::{IngressRequest, IngressRequestSender};
+use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest, IngressRequestSender};
 use restate_pb::grpc::health;
 use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
 use restate_schema_api::json::JsonMapperResolver;
@@ -30,7 +30,9 @@ use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::invocation::SpanRelation;
 use std::sync::Arc;
 use std::task::Poll;
+use std::time::Duration;
 use tokio::sync::Semaphore;
+use tonic::metadata::MetadataKey;
 use tonic_web::{GrpcWebLayer, GrpcWebService};
 use tower::{BoxError, Layer, Service};
 use tracing::{debug, info, info_span, trace, warn, Instrument};
@@ -237,9 +239,9 @@ where
                         if health_check_req.service.is_empty() {
                             // If unspecified, then just return ok
                             return Ok(
-                                health::HealthCheckResponse {
+                                HandlerResponse::from_message( health::HealthCheckResponse {
                                     status: health::health_check_response::ServingStatus::Serving.into()
-                                }.encode_to_vec().into()
+                                })
                             )
                         }
                         return match schemas.is_service_public(&health_check_req.service) {
@@ -251,16 +253,16 @@ where
                             }
                             Some(true) => {
                                 Ok(
-                                    health::HealthCheckResponse {
+                                    HandlerResponse::from_message(health::HealthCheckResponse {
                                         status: health::health_check_response::ServingStatus::Serving.into()
-                                    }.encode_to_vec().into()
+                                    })
                                 )
                             }
                             Some(false) => {
                                 Ok(
-                                    health::HealthCheckResponse {
+                                    HandlerResponse::from_message( health::HealthCheckResponse {
                                         status: health::health_check_response::ServingStatus::NotServing.into()
-                                    }.encode_to_vec().into()
+                                    })
                                 )
                             }
                         }
@@ -286,12 +288,16 @@ where
                 let fid = FullInvocationId::generate(service_name, key);
                 let span_relation = SpanRelation::Parent(ingress_span_context);
 
+                // Check if Idempotency-Key is available
+                let idempotency_mode = parse_idempotency_key_and_retention_period(req_headers.metadata)?;
+
                 // Send the service invocation
                 let (invocation, response_rx) = IngressRequest::invocation(
                     fid,
                     method_name,
                     req_payload,
-                    span_relation
+                    span_relation,
+                    idempotency_mode
                 );
                 if request_tx.send(invocation).is_err() {
                     debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
@@ -299,19 +305,31 @@ where
                 }
 
                 // Wait on response
-                match response_rx.await {
-                    Ok(Ok(response_payload)) => {
+                let response = if let Ok(response) = response_rx.await {
+                    response
+                } else {
+                    warn!("Response channel was closed");
+                    return Err(Status::unavailable("Unavailable"));
+                };
+
+                // Prepare response metadata
+                let mut metadata = MetadataMap::new();
+                if let Some(expire_time) = response.idempotency_expire_time() {
+                    metadata.insert(
+                        MetadataKey::from_static("idempotency-expires"),
+                        expire_time.parse().expect("A RFC3339 string should be valid!")
+                    );
+                }
+
+                match response.into() {
+                    Ok(response_payload) => {
                         trace!(rpc.response = ?response_payload, "Complete external gRPC request successfully");
-                        Ok(response_payload)
-                    }
-                    Ok(Err(error)) => {
-                        let status: Status = error.into();
+                        Ok(HandlerResponse::from_parts(metadata, response_payload))
+                    },
+                    Err(error) => {
+                        let status = Status::with_metadata(error.code().into(), error.message(), metadata);
                         info!(rpc.grpc.status_code = ?status.code(), rpc.grpc.status_message = ?status.message(), "Complete external gRPC request with a failure");
                         Err(status)
-                    }
-                    Err(_) => {
-                        warn!("Response channel was closed");
-                        Err(Status::unavailable("Unavailable"))
                     }
                 }
             }.instrument(ingress_span)
@@ -351,4 +369,37 @@ fn encode_http_status_code(status_code: StatusCode) -> Response<BoxBody> {
     let mut res = Response::new(hyper::Body::empty().map_err(Into::into).boxed_unsync());
     *res.status_mut() = status_code;
     res
+}
+
+fn parse_idempotency_key_and_retention_period(
+    headers: MetadataMap,
+) -> Result<IdempotencyMode, Status> {
+    let idempotency_key =
+        if let Some(idempotency_key) = headers.get(MetadataKey::from_static("idempotency-key")) {
+            idempotency_key.to_bytes().map_err(|e| {
+                Status::invalid_argument(format!("bad idempotency id format: {}", e))
+            })?
+        } else {
+            return Ok(IdempotencyMode::None);
+        };
+
+    if let Some(retention_period_sec) =
+        headers.get(MetadataKey::from_static("idempotency-retention-period"))
+    {
+        let retention_period = Duration::from_secs(
+            retention_period_sec
+                .to_str()
+                .map_err(|e| Status::invalid_argument(format!("bad idempotency id format: {}", e)))?
+                .parse()
+                .map_err(|e| {
+                    Status::invalid_argument(format!("bad idempotency id format: {}", e))
+                })?,
+        );
+        Ok(IdempotencyMode::key(
+            idempotency_key,
+            Some(retention_period),
+        ))
+    } else {
+        Ok(IdempotencyMode::key(idempotency_key, None))
+    }
 }
