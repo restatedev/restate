@@ -14,6 +14,7 @@ use super::*;
 
 use crate::errors::UserErrorCode;
 use crate::identifiers::EntryIndex;
+use crate::time::MillisSinceEpoch;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,44 @@ pub enum Entry {
     Awakeable(AwakeableEntry),
     CompleteAwakeable(CompleteAwakeableEntry),
     Custom(Bytes),
+}
+
+impl Entry {
+    pub fn output_stream(result: EntryResult) -> Self {
+        Entry::OutputStream(OutputStreamEntry { result })
+    }
+
+    pub fn get_state(key: impl Into<Bytes>, value: Option<GetStateValue>) -> Self {
+        Entry::GetState(GetStateEntry {
+            key: key.into(),
+            value,
+        })
+    }
+
+    pub fn set_state(key: impl Into<Bytes>, value: impl Into<Bytes>) -> Self {
+        Entry::SetState(SetStateEntry {
+            key: key.into(),
+            value: value.into(),
+        })
+    }
+
+    pub fn clear_state(key: impl Into<Bytes>) -> Self {
+        Entry::ClearState(ClearStateEntry { key: key.into() })
+    }
+
+    pub fn invoke(request: InvokeRequest, result: Option<EntryResult>) -> Self {
+        Entry::Invoke(InvokeEntry { request, result })
+    }
+
+    pub fn background_invoke(
+        request: InvokeRequest,
+        invoke_time: Option<MillisSinceEpoch>,
+    ) -> Self {
+        Entry::BackgroundInvoke(BackgroundInvokeEntry {
+            request,
+            invoke_time: invoke_time.map(|t| t.as_u64()).unwrap_or_default(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +216,20 @@ pub struct InvokeRequest {
     pub service_name: ByteString,
     pub method_name: ByteString,
     pub parameter: Bytes,
+}
+
+impl InvokeRequest {
+    pub fn new(
+        service_name: impl Into<ByteString>,
+        method_name: impl Into<ByteString>,
+        parameter: impl Into<Bytes>,
+    ) -> Self {
+        InvokeRequest {
+            service_name: service_name.into(),
+            method_name: method_name.into(),
+            parameter: parameter.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
