@@ -27,6 +27,7 @@ pub trait EntryHeader {
 
 /// This struct represents a serialized journal entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RawEntry<H> {
     // TODO can we get rid of these pub here?
     pub header: H,
@@ -51,6 +52,7 @@ impl<H: EntryHeader> RawEntry<H> {
 
 /// This struct represents headers as they are received from the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RawEntryHeader {
     PollInputStream { is_completed: bool },
     OutputStream,
