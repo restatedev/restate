@@ -66,6 +66,8 @@ pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1alpha.ServerReflect
 pub const HEALTH_SERVICE_NAME: &str = "grpc.health.v1.Health";
 pub const PROXY_SERVICE_NAME: &str = "dev.restate.internal.Proxy";
 pub const PROXY_PROXY_THROUGH_METHOD_NAME: &str = "ProxyThrough";
+pub const REMOTE_CONTEXT_SERVICE_NAME: &str = "dev.restate.internal.RemoteContext";
+pub const REMOTE_CONTEXT_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
 
 #[cfg(feature = "builtin-service")]
 pub mod builtin_service {
