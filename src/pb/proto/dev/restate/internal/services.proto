@@ -37,26 +37,34 @@ service RemoteContext {
   option (dev.restate.ext.service_type) = KEYED;
 
   // Start a new invocation, or resume a previously existing one.
+  //
   // If another client is already executing this invocation, it will be fenced off and this client will take precedence.
   //
   // This method is not idempotent.
   rpc Start(StartRequest) returns (StartResponse);
 
   // Send new messages to append to the message stream.
+  //
   // This method is not idempotent, and a request can fail for several reasons,
   // including errors in sent messages, or some other transient error.
   // The client should consider the stream in an unrecoverable error state and it can retry
   // by creating a new stream through Start() with a different stream_id.
+  //
+  // Once the invocation is completed, subsequent Send fail.
   rpc Send(SendRequest) returns (SendResponse);
 
   // Receive new messages from the message stream.
+  //
   // This method is not idempotent, and a request can fail for several reasons,
   // including errors in sent messages, or some other transient error.
   // The client should consider the stream in an unrecoverable error state and it can retry
   // by creating a new stream through Start() with a different stream_id.
+  //
+  // If the invocation is completed, Recv returns a response with messages field empty.
   rpc Recv(RecvRequest) returns (RecvResponse);
 
   // Get the result of the invocation.
+  //
   // In case another client is executing the invocation (through a sequence of Start/Send/Recv), this method will block
   // until a response is computed.
   // In case the response is already available, it will return immediately with the response.
@@ -65,6 +73,11 @@ service RemoteContext {
   //
   // This method can be safely invoked by multiple clients and it's idempotent.
   rpc GetResult(GetResultRequest) returns (GetResultResponse);
+
+  // Cleanup all the state of the invocation, excluding the user state.
+  //
+  // This is automatically executed when retention_period_sec is past, but it can be manually invoked before the expiry time elapsed.
+  rpc Cleanup(CleanupRequest) returns (google.protobuf.Empty);
 }
 
 message StartRequest {
@@ -81,6 +94,9 @@ message StartRequest {
   //
   // If not set, 30 minutes will be used as retention period.
   uint32 retention_period_sec = 3;
+
+  // Argument of the invocation
+  bytes argument = 4;
 }
 
 message StartResponse {
@@ -89,7 +105,7 @@ message StartResponse {
     bytes executing = 1;
 
     // Contains the result of the invocation
-    InvocationResponse completed = 2;
+    GetResultResponse completed = 2;
   }
 }
 
@@ -143,22 +159,24 @@ message GetResultRequest {
 }
 
 message GetResultResponse {
+  message InvocationFailure {
+    uint32 code = 1;
+    string message = 2;
+  }
+
   oneof response {
     // See GetResult documentation
     google.protobuf.Empty none = 1;
     bytes success = 2;
     InvocationFailure failure = 3;
   }
+
+  // Timestamp of the response expiry time in RFC3339.
+  // Empty if response = none
+  string expiry_time = 15;
 }
 
-message InvocationFailure {
-  uint32 code = 1;
-  string message = 2;
-}
-
-message InvocationResponse {
-  oneof response {
-    bytes success = 1;
-    InvocationFailure failure = 2;
-  }
+message CleanupRequest {
+  // User provided operation id, this is used as idempotency key.
+  string operation_id = 1 [(dev.restate.ext.field) = KEY];
 }
