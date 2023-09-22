@@ -95,17 +95,20 @@ fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeade
                 .try_into()
                 .expect("Protocol messages can't be larger than u32"),
         ),
-        ProtocolMessage::UnparsedEntry(entry) => match entry.header.is_completed() {
-            Some(completed_flag) => MessageHeader::new_completable_entry(
+        ProtocolMessage::UnparsedEntry(entry) => {
+            let completed_flag = entry.header.is_completed();
+            let requires_ack = if let RawEntryHeader::Custom { requires_ack, .. } = entry.header {
+                Some(requires_ack)
+            } else {
+                None
+            };
+            MessageHeader::new_entry_header(
                 raw_header_to_message_type(&entry.header),
                 completed_flag,
+                requires_ack,
                 entry.entry.len() as u32,
-            ),
-            None => MessageHeader::new(
-                raw_header_to_message_type(&entry.header),
-                entry.entry.len() as u32,
-            ),
-        },
+            )
+        }
     }
 }
 

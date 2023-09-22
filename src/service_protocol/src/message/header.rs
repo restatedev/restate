@@ -191,10 +191,23 @@ impl MessageHeader {
     }
 
     #[inline]
-    pub fn new_completable_entry(ty: MessageType, completed: bool, length: u32) -> Self {
-        debug_assert!(ty.has_completed_flag());
+    pub(super) fn new_entry_header(
+        ty: MessageType,
+        completed_flag: Option<bool>,
+        requires_ack_flag: Option<bool>,
+        length: u32,
+    ) -> Self {
+        debug_assert!(completed_flag.is_some() == ty.has_completed_flag());
+        debug_assert!(requires_ack_flag.is_some() == ty.has_requires_ack_flag());
 
-        Self::_new(ty, None, None, Some(completed), None, length)
+        MessageHeader {
+            ty,
+            length,
+            partial_state_flag: None,
+            protocol_version: None,
+            completed_flag,
+            requires_ack_flag,
+        }
     }
 
     #[inline]
@@ -330,6 +343,12 @@ impl From<MessageHeader> for u64 {
 mod tests {
 
     use super::{MessageKind::*, MessageType::*, *};
+
+    impl MessageHeader {
+        fn new_completable_entry(ty: MessageType, completed: bool, length: u32) -> Self {
+            Self::new_entry_header(ty, Some(completed), None, length)
+        }
+    }
 
     macro_rules! roundtrip_test {
         ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr) => {
