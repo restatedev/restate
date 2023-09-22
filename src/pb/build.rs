@@ -141,11 +141,38 @@ mod built_in_service_gen {
 }
 
 mod manual_response_built_in_service_gen {
-    use prost_build::Service;
+    use prost_build::{Method, Service};
 
     #[derive(Default)]
     pub struct ManualResponseRestateBuiltInServiceGen {
-        pub with_on_response: bool,
+        additional_methods: Vec<Method>,
+    }
+
+    impl ManualResponseRestateBuiltInServiceGen {
+        #[allow(dead_code)]
+        pub fn with_additional_method(
+            mut self,
+            proto_name: &str,
+            rust_input_type: &str,
+            rust_output_type: &str,
+        ) -> Self {
+            use convert_case::{Case, Casing};
+
+            self.additional_methods.push(Method {
+                name: proto_name.from_case(Case::UpperCamel).to_case(Case::Snake),
+                proto_name: proto_name.to_string(),
+                comments: Default::default(),
+                input_type: rust_input_type.to_string(),
+                output_type: rust_output_type.to_string(),
+                input_proto_type: "".to_string(),
+                output_proto_type: "".to_string(),
+                options: Default::default(),
+                client_streaming: false,
+                server_streaming: false,
+            });
+
+            self
+        }
     }
 
     impl prost_build::ServiceGenerator for ManualResponseRestateBuiltInServiceGen {
@@ -158,16 +185,11 @@ mod manual_response_built_in_service_gen {
 
             // --- Generate interface [SvcName]BuiltInService to implement
 
+            let mut methods_to_generate = service.methods.clone();
+            methods_to_generate.extend(self.additional_methods.clone());
+
             let svc_interface_name = format!("{}BuiltInService", service.name);
-            let mut svc_interface_method_signatures: Vec<_> = service.methods.iter().map(|m| format!("async fn {}(&mut self, request: {}, response_serializer: crate::builtin_service::ResponseSerializer<{}>) -> Result<(), restate_types::errors::InvocationError>;\n", m.name, m.input_type, m.output_type)).collect();
-            if self.with_on_response {
-                svc_interface_method_signatures.push(
-                    "async fn internal_on_response(&mut self, request: prost::bytes::Bytes) -> Result<(), restate_types::errors::InvocationError>;\n"
-                        .to_string(),
-                );
-            }
-            let svc_interface_method_signatures: String =
-                svc_interface_method_signatures.into_iter().collect();
+            let svc_interface_method_signatures: String = methods_to_generate.iter().map(|m| format!("async fn {}(&mut self, request: {}, response_serializer: crate::builtin_service::ResponseSerializer<{}>) -> Result<(), restate_types::errors::InvocationError>;\n", m.name, m.input_type, m.output_type)).collect();
 
             let interface_def = format!(
                 r#"
@@ -184,24 +206,13 @@ mod manual_response_built_in_service_gen {
             // --- Generate invoker [SvcName]Invoker to route invocations through service methods
 
             let invoker_name = format!("{}Invoker", service.name);
-            let mut impl_built_in_service_match_arms: Vec<_> = service.methods.iter().map(|m| format!(r#""{}" => {{
+            let impl_built_in_service_match_arms: String = methods_to_generate.iter().map(|m| format!(r#""{}" => {{
             use prost::Message;
 
-            let mut input_t = {}::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
+            let mut input_t = <{}>::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
             T::{}(&mut self.0, input_t, crate::builtin_service::ResponseSerializer::default()).await?;
             Ok(())
         }},"#, m.proto_name, m.input_type, m.name)).collect();
-            if self.with_on_response {
-                impl_built_in_service_match_arms.push(
-                    "crate::builtin_service::ON_RESPONSE_METHOD_NAME => {
-            T::internal_on_response(&mut self.0, input).await?;
-            Ok(())
-        },"
-                    .to_string(),
-                );
-            }
-            let impl_built_in_service_match_arms: String =
-                impl_built_in_service_match_arms.into_iter().collect();
             let invoker = format!(
                 r#"
             #[cfg(feature = "builtin-service")]
@@ -259,6 +270,7 @@ fn main() -> std::io::Result<()> {
                 "proto/dev/restate/services.proto",
                 "proto/dev/restate/internal/services.proto",
                 "proto/dev/restate/events.proto",
+                "proto/dev/restate/internal/messages.proto",
             ],
             &["proto"],
         )?;

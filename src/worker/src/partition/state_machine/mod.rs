@@ -273,8 +273,29 @@ where
                     Bytes::from(key.into_owned()),
                 );
             }
-            NBISEffect::RegisterTimer => {
-                unimplemented!("Currently the built-in invoker does not support timers yet");
+            NBISEffect::DelayedInvoke {
+                target_fid,
+                target_method,
+                argument,
+                response_sink,
+                time,
+                timer_index,
+            } => {
+                effects.register_timer(
+                    TimerValue::new_invoke(
+                        full_invocation_id.clone(),
+                        time,
+                        timer_index,
+                        ServiceInvocation::new(
+                            target_fid,
+                            target_method,
+                            argument,
+                            response_sink,
+                            SpanRelation::default(),
+                        ),
+                    ),
+                    ServiceInvocationSpanContext::empty(),
+                );
             }
             NBISEffect::OutboxMessage(msg) => {
                 self.send_message(msg, effects);

@@ -244,10 +244,10 @@ impl InvocationError {
         }
     }
 
-    pub fn new(code: impl Into<InvocationErrorCode>, message: String) -> Self {
+    pub fn new(code: impl Into<InvocationErrorCode>, message: impl Display) -> Self {
         Self {
             code: code.into(),
-            message: Cow::Owned(message),
+            message: Cow::Owned(message.to_string()),
             description: None,
         }
     }

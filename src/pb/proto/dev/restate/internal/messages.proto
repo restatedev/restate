@@ -1,0 +1,29 @@
+// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+syntax = "proto3";
+
+package dev.restate.internal;
+
+// This type is used when using the ServiceInvocationResponseSink::NewInvocation
+message ServiceInvocationSinkRequest {
+  message Failure {
+    uint32 code = 1;
+    string message = 2;
+  }
+
+  oneof response {
+    bytes success = 1;
+    Failure failure = 2;
+  }
+
+  // Additional context of the caller that can be attached in ServiceInvocationResponseSink::NewInvocation.context
+  bytes caller_context = 15;
+}

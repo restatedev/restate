@@ -109,7 +109,7 @@ fn fill_invocation_metadata(
         Some(ServiceInvocationResponseSink::Ingress(..)) => {
             row.invoked_by("ingress");
         }
-        None => {
+        _ => {
             row.invoked_by("unknown");
         }
     }

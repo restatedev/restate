@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use prost::Message;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{
     InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink,
+    ServiceInvocationResponseSink, SpanRelation,
 };
 use restate_types::time::MillisSinceEpoch;
 use std::cmp::Ordering;
@@ -181,6 +182,24 @@ impl OutboxMessageExt for OutboxMessage {
                     full_invocation_id: callee.clone(),
                     response: result,
                 }
+            }
+            ServiceInvocationResponseSink::NewInvocation {
+                target,
+                method,
+                caller_context,
+            } => {
+                OutboxMessage::ServiceInvocation(ServiceInvocation::new(
+                    target,
+                    method,
+                    // Methods receiving responses MUST accept this input type
+                    restate_pb::restate::internal::ServiceInvocationSinkRequest {
+                        response: Some(result.into()),
+                        caller_context,
+                    }
+                    .encode_to_vec(),
+                    None,
+                    SpanRelation::None,
+                ))
             }
         }
     }

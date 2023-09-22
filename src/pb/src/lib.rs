@@ -74,8 +74,6 @@ pub mod builtin_service {
     use restate_types::invocation::ResponseResult;
     use std::marker::PhantomData;
 
-    pub const ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
-
     #[async_trait::async_trait]
     pub trait BuiltInService {
         async fn invoke_builtin(
@@ -104,6 +102,43 @@ pub mod builtin_service {
 
         pub fn serialize_failure(&self, err: InvocationError) -> ResponseResult {
             ResponseResult::Failure(err.code().into(), err.message().into())
+        }
+    }
+
+    impl TryFrom<crate::restate::internal::ServiceInvocationSinkRequest> for ResponseResult {
+        type Error = &'static str;
+
+        fn try_from(
+            value: crate::restate::internal::ServiceInvocationSinkRequest,
+        ) -> Result<Self, Self::Error> {
+            match value.response {
+                Some(
+                    crate::restate::internal::service_invocation_sink_request::Response::Success(s),
+                ) => Ok(ResponseResult::Success(s)),
+                Some(
+                    crate::restate::internal::service_invocation_sink_request::Response::Failure(e),
+                ) => Ok(ResponseResult::Failure(e.code.into(), e.message.into())),
+                None => Err("response_result field must be set"),
+            }
+        }
+    }
+
+    impl From<ResponseResult> for crate::restate::internal::service_invocation_sink_request::Response {
+        fn from(value: ResponseResult) -> Self {
+            match value {
+                ResponseResult::Success(s) => {
+                    crate::restate::internal::service_invocation_sink_request::Response::Success(s)
+                }
+
+                ResponseResult::Failure(code, message) => {
+                    crate::restate::internal::service_invocation_sink_request::Response::Failure(
+                        crate::restate::internal::service_invocation_sink_request::Failure {
+                            code: code.into(),
+                            message: message.to_string(),
+                        },
+                    )
+                }
+            }
         }
     }
 }

@@ -36,7 +36,7 @@ pub mod storage {
                 OutboxIngressResponse, OutboxServiceInvocation, OutboxServiceInvocationResponse,
             };
             use crate::storage::v1::service_invocation_response_sink::{
-                Ingress, PartitionProcessor, ResponseSink,
+                Ingress, NewInvocation, PartitionProcessor, ResponseSink,
             };
             use crate::storage::v1::{
                 enriched_entry_header, invocation_resolution_result, invocation_status,
@@ -594,6 +594,20 @@ pub mod storage {
                                 ),
                             )
                         }
+                        ResponseSink::NewInvocation(new_invocation) => {
+                            let target = restate_types::identifiers::FullInvocationId::try_from(
+                                new_invocation
+                                    .target
+                                    .ok_or(ConversionError::missing_field("target"))?,
+                            )?;
+                            Some(
+                                restate_types::invocation::ServiceInvocationResponseSink::NewInvocation {
+                                    target,
+                                    method: new_invocation.method,
+                                    caller_context: new_invocation.caller_context,
+                                },
+                            )
+                        }
                         ResponseSink::None(_) => None,
                     };
 
@@ -621,7 +635,16 @@ pub mod storage {
                             ResponseSink::Ingress(Ingress {
                                 ingress_dispatcher_id: ingress_dispatcher_id.to_string(),
                             })
-                        }
+                        },
+                        Some(
+                            restate_types::invocation::ServiceInvocationResponseSink::NewInvocation {
+                               target, method, caller_context
+                            },
+                        ) => ResponseSink::NewInvocation(NewInvocation {
+                            method,
+                            target: Some(FullInvocationId::from(target)),
+                            caller_context
+                        }),
                         None => ResponseSink::None(Default::default()),
                     };
 
