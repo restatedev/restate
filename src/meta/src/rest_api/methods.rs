@@ -13,14 +13,14 @@ use super::state::*;
 use axum::extract::{Path, State};
 use axum::Json;
 use okapi_operation::*;
-use restate_schema_api::service::ServiceMetadataResolver;
+use restate_schema_api::service::{MethodMetadata, ServiceMetadataResolver};
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::sync::Arc;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListServiceMethodsResponse {
-    methods: Vec<GetServiceMethodResponse>,
+    methods: Vec<MethodMetadata>,
 }
 
 /// List discovered methods for service
@@ -44,28 +44,11 @@ pub async fn list_service_methods<S: ServiceMetadataResolver, W>(
         .resolve_latest_service_metadata(&service_name)
     {
         Some(metadata) => Ok(ListServiceMethodsResponse {
-            methods: metadata
-                .methods
-                .into_iter()
-                .map(|method| GetServiceMethodResponse {
-                    service_name: service_name.clone(),
-                    method_name: method.name,
-                    input_type: method.input_type,
-                    output_type: method.output_type,
-                })
-                .collect(),
+            methods: metadata.methods,
         }
         .into()),
         None => Err(MetaApiError::ServiceNotFound(service_name)),
     }
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct GetServiceMethodResponse {
-    service_name: String,
-    method_name: String,
-    input_type: String,
-    output_type: String,
 }
 
 /// Get an method of a service
@@ -90,7 +73,7 @@ pub struct GetServiceMethodResponse {
 pub async fn get_service_method<S: ServiceMetadataResolver, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
     Path((service_name, method_name)): Path<(String, String)>,
-) -> Result<Json<GetServiceMethodResponse>, MetaApiError> {
+) -> Result<Json<MethodMetadata>, MetaApiError> {
     match state
         .schemas()
         .resolve_latest_service_metadata(&service_name)
@@ -101,13 +84,7 @@ pub async fn get_service_method<S: ServiceMetadataResolver, W>(
                 .into_iter()
                 .find(|method| method.name == method_name)
             {
-                Some(method) => Ok(GetServiceMethodResponse {
-                    service_name,
-                    method_name,
-                    input_type: method.input_type,
-                    output_type: method.output_type,
-                }
-                .into()),
+                Some(method) => Ok(method.into()),
                 _ => Err(MetaApiError::MethodNotFound {
                     service_name,
                     method_name,
