@@ -15,6 +15,7 @@ use crate::partition::types::OutboxMessageExt;
 use bytes::Bytes;
 use restate_pb::builtin_service::ManualResponseBuiltInService;
 use restate_pb::restate::internal::RemoteContextInvoker;
+use restate_pb::restate::internal::IdempotentInvokerInvoker;
 use restate_pb::restate::IngressInvoker;
 use restate_schema_impl::Schemas;
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -30,6 +31,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use tokio::sync::mpsc;
 
+mod idempotent_invoker;
 mod ingress;
 mod remote_context;
 
@@ -135,6 +137,11 @@ impl<'a> ServiceInvoker<'a> {
                     .invoke_builtin(method, argument)
                     .await
             }
+            restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME => {
+                IdempotentInvokerInvoker(invocation_context)
+                    .invoke_builtin(method, argument)
+                    .await
+            }
             _ => Err(InvocationError::new(
                 UserErrorCode::NotFound,
                 format!("{} not found", full_invocation_id.service_id.service_name),
@@ -195,20 +202,25 @@ struct InvocationContext<'a, S> {
 }
 
 impl<S: StateReader> InvocationContext<'_, S> {
-    async fn load_state<Serde: StateSerde>(
+    async fn load_state_raw<Serde>(
         &self,
         key: &StateKey<Serde>,
-    ) -> Result<Option<Serde::MaterializedType>, InvocationError> {
-        let opt_val = if let Some(opt_val) = self.state_transitions.0.get(key.0.as_ref()) {
+    ) -> Result<Option<Bytes>, InvocationError> {
+        Ok(if let Some(opt_val) = self.state_transitions.0.get(key.0.as_ref()) {
             opt_val.clone()
         } else {
             self.state_reader
                 .read_state(&self.full_invocation_id.service_id, &key.0)
                 .await
                 .map_err(InvocationError::internal)?
-        };
+        })
+    }
 
-        opt_val
+    async fn load_state<Serde: StateSerde>(
+        &self,
+        key: &StateKey<Serde>,
+    ) -> Result<Option<Serde::MaterializedType>, InvocationError> {
+        self.load_state_raw(key)
             .map(|value| Serde::decode(value))
             .transpose()
             .map_err(InvocationError::internal)
@@ -358,6 +370,10 @@ mod tests {
 
         pub(super) fn state(&self) -> &MockStateReader {
             &self.state_reader
+        }
+
+        pub(super) fn response_sink(&self) -> Option<&ServiceInvocationResponseSink> {
+            self.response_sink.as_ref()
         }
 
         pub(super) fn state_mut(&mut self) -> &mut MockStateReader {

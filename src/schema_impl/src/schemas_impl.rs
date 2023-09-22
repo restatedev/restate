@@ -265,6 +265,11 @@ impl Default for SchemasInner {
             .into(),
             true,
         );
+        register_built_in(
+            restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME,
+            ServiceInstanceType::Unsupported,
+            false,
+        );
 
         inner
     }

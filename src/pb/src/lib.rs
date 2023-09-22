@@ -68,6 +68,7 @@ pub const PROXY_SERVICE_NAME: &str = "dev.restate.internal.Proxy";
 pub const PROXY_PROXY_THROUGH_METHOD_NAME: &str = "ProxyThrough";
 pub const REMOTE_CONTEXT_SERVICE_NAME: &str = "dev.restate.internal.RemoteContext";
 pub const REMOTE_CONTEXT_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
+pub const IDEMPOTENT_INVOKER_SERVICE_NAME: &str = "dev.restate.internal.IdempotentInvoker";
 
 #[cfg(feature = "builtin-service")]
 pub mod builtin_service {
@@ -75,6 +76,9 @@ pub mod builtin_service {
     use restate_types::errors::InvocationError;
     use restate_types::invocation::ResponseResult;
     use std::marker::PhantomData;
+
+    pub const IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
+    pub const IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME: &str = "InternalOnTimer";
 
     #[async_trait::async_trait]
     pub trait BuiltInService {
@@ -134,7 +138,7 @@ pub mod builtin_service {
 
                 ResponseResult::Failure(code, message) => {
                     crate::restate::internal::service_invocation_sink_request::Response::Failure(
-                        crate::restate::internal::service_invocation_sink_request::Failure {
+                        crate::restate::internal::InvocationFailure {
                             code: code.into(),
                             message: message.to_string(),
                         },

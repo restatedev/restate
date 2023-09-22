@@ -17,6 +17,7 @@ package dev.restate.internal;
 import "dev/restate/ext.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/struct.proto";
+import "dev/restate/internal/messages.proto";
 
 service Proxy {
   // Proxy invocation through this service. This service is mostly used for proxying invocations through a specific partition processor, e.g. to reuse the deduplication id map.
@@ -185,4 +186,46 @@ message GetResultResponse {
 message CleanupRequest {
   // User provided operation id, this is used as idempotency key.
   string operation_id = 1 [(dev.restate.ext.field) = KEY];
+}
+
+service IdempotentInvoker {
+  // Invoke a service in an idempotent fashion.
+  // If already invoked, this will return the cached response.
+  // The response will be cleaned up after a retention period.
+  rpc Invoke(IdempotentInvokeRequest) returns (IdempotentInvokeResponse);
+}
+
+message IdempotentInvokeRequest {
+  // Idempotency id.
+  bytes idempotency_id = 1;
+
+  // FullInvocationIdentifier
+  string service_name = 2;
+  bytes service_key = 3;
+  bytes invocation_uuid = 4;
+
+  // Method name of the service to invoke, e.g. `Add`
+  string method = 5;
+
+  // Argument of the invocation.
+  bytes argument = 6;
+
+  // Retention period for the response in seconds.
+  // After the invocation completes, the response will be persisted for the given duration.
+  // Afterwards, the system will cleanup the response and treats any subsequent invocation with same id as new.
+  //
+  // If not set, 30 minutes will be used as retention period.
+  uint32 retention_period_sec = 7;
+}
+
+message IdempotentInvokeResponse {
+  // Invocation response.
+  // The response will be provided in the same format used for the request.
+  oneof response {
+    bytes success = 1;
+    InvocationFailure failure = 2;
+  }
+
+  // Timestamp of the response expiry time in RFC3339.
+  string expiry_time = 3;
 }
