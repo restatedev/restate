@@ -282,19 +282,31 @@ pub mod json {
     use bytes::Bytes;
 
     pub trait JsonToProtobufMapper {
-        fn convert_to_protobuf(
+        fn json_to_protobuf(
             self,
             json: Bytes,
+            deserialize_options: &prost_reflect::DeserializeOptions,
+        ) -> Result<Bytes, anyhow::Error>;
+
+        fn json_value_to_protobuf(
+            self,
+            json: serde_json::Value,
             deserialize_options: &prost_reflect::DeserializeOptions,
         ) -> Result<Bytes, anyhow::Error>;
     }
 
     pub trait ProtobufToJsonMapper {
-        fn convert_to_json(
+        fn protobuf_to_json(
             self,
             protobuf: Bytes,
             serialize_options: &prost_reflect::SerializeOptions,
         ) -> Result<Bytes, anyhow::Error>;
+
+        fn protobuf_to_json_value(
+            self,
+            protobuf: Bytes,
+            serialize_options: &prost_reflect::SerializeOptions,
+        ) -> Result<serde_json::Value, anyhow::Error>;
     }
 
     pub trait JsonMapperResolver {

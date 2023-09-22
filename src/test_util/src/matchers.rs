@@ -70,7 +70,7 @@ mod prost {
 
         #[test]
         fn timestamp() {
-            let expected = Timestamp::date(2023, 09, 21).unwrap();
+            let expected = Timestamp::date(2023, 9, 21).unwrap();
 
             assert_that!(
                 bytes::Bytes::from(expected.encode_to_vec()),
