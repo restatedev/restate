@@ -14,6 +14,7 @@ use crate::partition::storage::PartitionStorage;
 use crate::partition::types::OutboxMessageExt;
 use bytes::Bytes;
 use restate_pb::builtin_service::ManualResponseBuiltInService;
+use restate_pb::restate::internal::RemoteContextInvoker;
 use restate_pb::restate::IngressInvoker;
 use restate_schema_impl::Schemas;
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -29,6 +30,7 @@ use std::ops::Deref;
 use tokio::sync::mpsc;
 
 mod ingress;
+mod remote_context;
 
 #[derive(Debug)]
 pub(crate) struct Effects {
@@ -122,6 +124,11 @@ impl<'a> ServiceInvoker<'a> {
         let result = match full_invocation_id.service_id.service_name.deref() {
             restate_pb::INGRESS_SERVICE_NAME => {
                 IngressInvoker(invocation_context)
+                    .invoke_builtin(method, argument)
+                    .await
+            }
+            restate_pb::REMOTE_CONTEXT_SERVICE_NAME => {
+                RemoteContextInvoker(invocation_context)
                     .invoke_builtin(method, argument)
                     .await
             }

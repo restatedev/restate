@@ -4028,7 +4028,9 @@ name = "restate_serde_util"
 version = "0.3.0"
 dependencies = [
  "base64 0.21.0",
+ "bytes",
  "http",
+ "prost",
  "schemars",
  "serde",
  "serde_json",
@@ -4307,6 +4309,7 @@ dependencies = [
  "drain",
  "futures",
  "googletest",
+ "humantime",
  "opentelemetry_api",
  "pin-project",
  "prost",
@@ -4321,6 +4324,7 @@ dependencies = [
  "restate_pb",
  "restate_schema_api",
  "restate_schema_impl",
+ "restate_serde_util",
  "restate_service_protocol",
  "restate_storage_api",
  "restate_storage_query_datafusion",
@@ -4334,6 +4338,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "serde_with",
  "thiserror",
  "tokio",
  "tokio-stream",

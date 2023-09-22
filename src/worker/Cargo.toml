@@ -24,6 +24,7 @@ derive_builder = { workspace = true }
 restate_consensus = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
+humantime = { workspace = true }
 restate_ingress_dispatcher = { workspace = true }
 restate_ingress_kafka = { workspace = true }
 restate_ingress_grpc = { workspace = true }
@@ -42,10 +43,12 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+serde_with = { workspace = true }
 serde_json = { workspace = true }
 restate_schema_api = { workspace = true, features = ["key_extraction", "json_conversion"] }
 restate_schema_impl = { workspace = true }
-restate_service_protocol = { workspace = true, features = ["codec", "awakeable-id"] }
+restate_serde_util = { workspace = true, features = ["proto"] }
+restate_service_protocol = { workspace = true, features = ["codec", "awakeable-id", "protocol", "message"] }
 restate_storage_api = { workspace = true}
 restate_storage_query_datafusion = { workspace = true}
 restate_storage_query_http = { workspace = true}
@@ -57,8 +60,8 @@ restate_worker_api = { workspace = true }
 [dev-dependencies]
 googletest = { workspace = true }
 restate_types = { workspace = true, features = ["mocks"] }
+restate_schema_api = { workspace = true, features = ["mocks"] }
 restate_service_protocol = { workspace = true, features = ["mocks"] }
+restate_pb = { workspace = true, features = ["mocks"]}
 restate_test_util = { workspace = true, features = ["prost"] }
 tracing-subscriber = { workspace = true }
-restate_pb = { workspace = true, features = ["mocks"] }
-restate_schema_api = { workspace = true, features = ["mocks"] }
