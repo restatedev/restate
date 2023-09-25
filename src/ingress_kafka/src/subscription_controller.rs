@@ -114,7 +114,7 @@ impl Service {
 
         // Options required by the business logic of our consumer,
         // see ConsumerTask::run
-        client_config.set("enable.auto.commit", "true");
+        client_config.set("enable.auto.commit", "false");
         client_config.set("enable.auto.offset.store", "false");
 
         // Infer message_dispatcher_type
@@ -159,7 +159,7 @@ mod task_orchestrator {
     use restate_timer_queue::TimerQueue;
     use restate_types::retries::{RetryIter, RetryPolicy};
     use std::collections::HashMap;
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
     use tokio::sync::oneshot;
     use tokio::task;
     use tokio::task::{JoinError, JoinSet};
@@ -332,9 +332,28 @@ mod task_orchestrator {
         }
 
         pub(super) async fn shutdown(&mut self) {
-            self.subscription_id_to_task_state.clear();
             // This will close all the channels
+            warn!("Shutdown!");
+            self.subscription_id_to_task_state.clear();
             self.running_tasks_to_subscriptions.clear();
+
+            let timeout = tokio::time::sleep(Duration::from_secs(5));
+            tokio::pin!(timeout);
+
+            loop {
+                tokio::select! {
+                    v = self.tasks.join_next() => {
+                        if v.is_none() {
+                              warn!("Shutdown done!");
+                            return
+                        }
+                    },
+                    _ = timeout.as_mut() => {
+                        break;
+                    }
+                }
+            }
+            warn!("Shutdown forced!");
             self.tasks.shutdown().await;
         }
     }

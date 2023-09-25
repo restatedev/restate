@@ -12,6 +12,7 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+anyhow = { workspace = true }
 bytes = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }

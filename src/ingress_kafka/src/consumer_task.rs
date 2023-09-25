@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use opentelemetry_api::trace::TraceContextExt;
 use prost::Message as _;
-use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
+use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::{ClientConfig, Message};
 use restate_ingress_dispatcher::{
     AckReceiver, IngressDeduplicationId, IngressRequest, IngressRequestSender,
@@ -22,14 +24,18 @@ use restate_types::identifiers::{FullInvocationId, InvocationUuid};
 use restate_types::invocation::SpanRelation;
 use std::collections::HashMap;
 use std::io::Write;
+use std::time::Duration;
 use tokio::sync::oneshot;
-use tracing::{debug, info, info_span};
+use tokio::time::Instant;
+use tracing::{debug, info, info_span, trace, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
     Kafka(#[from] KafkaError),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
     #[error("ingress dispatcher channel is closed")]
     IngressDispatcherClosed,
 }
@@ -241,15 +247,30 @@ impl ConsumerTask {
             .get("group.id")
             .expect("group.id must be set")
             .to_string();
+        let offset_commit_interval_ms = Duration::from_millis(
+            self.client_config
+                .get("auto.commit.interval.ms")
+                .unwrap_or("5000")
+                .parse()
+                .map_err(|e| anyhow!("Cannot parse auto.commit.interval.ms: {e}"))?,
+        );
         debug!(
             "Starting consumer for topics {:?} with configuration {:?}",
             self.topics, self.client_config
         );
 
+        // Let's remove the config option from client_config to disable it.
+        self.client_config.set("auto.commit.interval.ms", "0");
+        trace!("Using offset interval {:?}", offset_commit_interval_ms);
+
         let consumer: MessageConsumer = self.client_config.create()?;
         let topics: Vec<&str> = self.topics.iter().map(|x| &**x).collect();
         consumer.subscribe(&topics)?;
 
+        let mut interval = tokio::time::interval_at(
+            Instant::now() + offset_commit_interval_ms,
+            offset_commit_interval_ms,
+        );
         loop {
             tokio::select! {
                 res = consumer.recv() => {
@@ -260,12 +281,26 @@ impl ConsumerTask {
                     // rdkafka periodically commits these offsets asynchronously, with a period configurable
                     // with auto.commit.interval.ms
                     consumer.store_offset_from_message(&msg)?;
-                }
+                    drop(msg);
+                },
+                _ = interval.tick() => {
+                    trace!("Committing offsets");
+                    match consumer.commit_consumer_state(CommitMode::Sync) {
+                        Ok(_) =>  trace!("Offsets committed"),
+                        Err(KafkaError::ConsumerCommit(RDKafkaErrorCode::NoOffset)) => trace!("No offset to commit"),
+                        Err(e) => return Err(e.into())
+                    };
+                },
                 _ = &mut rx => {
-                    return Ok(());
+                    break;
                 }
             }
         }
+
+        warn!("Start shutdown!");
+        drop(consumer);
+        warn!("Shutdown done!");
+        return Ok(());
     }
 }
 
