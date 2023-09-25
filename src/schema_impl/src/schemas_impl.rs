@@ -728,8 +728,8 @@ mod tests {
     fn register_new_endpoint_updating_old_service() {
         let schemas = Schemas::default();
 
-        let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:8080");
-        let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:8081");
+        let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
+        let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:9081");
 
         let commands = schemas
             .compute_new_endpoint_updates(
@@ -783,8 +783,8 @@ mod tests {
     fn register_new_endpoint_updating_old_service_fails_with_different_instance_type() {
         let schemas = Schemas::default();
 
-        let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:8080");
-        let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:8081");
+        let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
+        let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:9081");
 
         schemas
             .apply_updates(
@@ -867,7 +867,7 @@ mod tests {
     fn cannot_override_existing_endpoint() {
         let schemas = Schemas::default();
 
-        let endpoint = EndpointMetadata::mock_with_uri("http://localhost:8080");
+        let endpoint = EndpointMetadata::mock();
         let services = vec![ServiceRegistrationRequest::new(
             mocks::GREETER_SERVICE_NAME.to_string(),
             ServiceInstanceType::Unkeyed,
@@ -890,8 +890,8 @@ mod tests {
     fn register_two_endpoints_then_remove_first() {
         let schemas = Schemas::default();
 
-        let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:8080");
-        let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:8081");
+        let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
+        let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:9081");
 
         schemas
             .apply_updates(

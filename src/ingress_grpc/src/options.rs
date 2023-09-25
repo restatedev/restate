@@ -164,7 +164,7 @@ impl Default for Options {
 
 impl Options {
     fn default_bind_address() -> SocketAddr {
-        "0.0.0.0:9090".parse().unwrap()
+        "0.0.0.0:8080".parse().unwrap()
     }
 
     fn default_concurrency_limit() -> usize {

@@ -7,7 +7,7 @@ The benchmarks crate contains currently the following benchmarks:
 
 ## Prerequisites
 
-The above-mentioned benchmarks require the [counter.Counter service](https://github.com/restatedev/e2e/blob/a500164a31d58c0ee65ae77a7f99a8a2ef1825cb/services/node-services/src/counter.ts) running on `localhost:8080`. 
+The above-mentioned benchmarks require the [counter.Counter service](https://github.com/restatedev/e2e/blob/a500164a31d58c0ee65ae77a7f99a8a2ef1825cb/services/node-services/src/counter.ts) running on `localhost:9080`. 
 You can use both the Java or the Node service.
 
 To start the Java service:

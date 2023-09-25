@@ -288,7 +288,7 @@ mod tests {
             .apply_updates(
                 schemas
                     .compute_new_endpoint_updates(
-                        EndpointMetadata::mock_with_uri("http://localhost:8080"),
+                        EndpointMetadata::mock(),
                         vec![ServiceRegistrationRequest::new(
                             EVENT_HANDLER_SERVICE_NAME.to_string(),
                             ServiceInstanceType::keyed_with_scalar_key([("Handle", 1)]),

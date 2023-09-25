@@ -25,18 +25,6 @@ jobs:
       RUST_BACKTRACE: full
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
-    services:
-      verifier:
-        image: ghcr.io/restatedev/e2e-node-services:latest
-        env:
-          SERVICES: interpreter.CommandInterpreter,verifier.CommandVerifier
-        ports:
-          - "8080:8080"
-        options: >-
-          --health-cmd "curl --http2-prior-knowledge 127.0.0.1:8080/health"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - uses: actions/checkout@v3
 

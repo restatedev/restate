@@ -124,7 +124,7 @@ pub mod endpoint {
         impl EndpointMetadata {
             pub fn mock() -> EndpointMetadata {
                 EndpointMetadata::new(
-                    "http://localhost:8080".parse().unwrap(),
+                    "http://localhost:9080".parse().unwrap(),
                     ProtocolType::BidiStream,
                     Default::default(),
                 )
@@ -147,14 +147,7 @@ pub mod endpoint {
 
         impl MockEndpointMetadataRegistry {
             pub fn mock_service(&mut self, name: &str) {
-                self.mock_service_with_metadata(
-                    name,
-                    EndpointMetadata::new(
-                        "http://localhost:8080".parse().unwrap(),
-                        ProtocolType::BidiStream,
-                        Default::default(),
-                    ),
-                );
+                self.mock_service_with_metadata(name, EndpointMetadata::mock());
             }
 
             pub fn mock_service_with_metadata(&mut self, name: &str, meta: EndpointMetadata) {

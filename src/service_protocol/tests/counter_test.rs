@@ -25,7 +25,7 @@ async fn counter_discovery() {
 
     let discovered_metadata = discovery
         .discover(
-            &Uri::from_static("http://localhost:8080"),
+            &Uri::from_static("http://localhost:9080"),
             &Default::default(),
         )
         .await
