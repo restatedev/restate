@@ -30,6 +30,8 @@ enum ServiceType {
 enum FieldType {
   // protolint:disable:next ENUM_FIELD_NAMES_ZERO_VALUE_END_WITH
   KEY = 0;
+  EVENT_PAYLOAD = 1;
+  EVENT_METADATA = 2;
 }
 
 extend google.protobuf.ServiceOptions {
