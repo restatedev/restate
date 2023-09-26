@@ -25,7 +25,6 @@ use restate_types::invocation::SpanRelation;
 use std::collections::HashMap;
 use std::io::Write;
 use std::time::Duration;
-use rdkafka::config::RDKafkaLogLevel;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::{debug, info, info_span, trace, warn};
@@ -264,8 +263,6 @@ impl ConsumerTask {
         self.client_config.set("auto.commit.interval.ms", "0");
         trace!("Using offset interval {:?}", offset_commit_interval_ms);
 
-        self.client_config.set_log_level(RDKafkaLogLevel::Debug);
-
         let consumer: MessageConsumer = self.client_config.create()?;
         let topics: Vec<&str> = self.topics.iter().map(|x| &**x).collect();
         consumer.subscribe(&topics)?;
@@ -300,9 +297,9 @@ impl ConsumerTask {
             }
         }
 
-        warn!("Start shutdown!");
+        trace!("Start shutdown!");
         drop(consumer);
-        warn!("Shutdown done!");
+        trace!("Shutdown done!");
         return Ok(());
     }
 }
