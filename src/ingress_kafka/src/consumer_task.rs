@@ -23,7 +23,7 @@ use restate_types::invocation::SpanRelation;
 use std::collections::HashMap;
 use std::io::Write;
 use tokio::sync::oneshot;
-use tracing::{debug, info, info_span};
+use tracing::{debug, info, info_span, Instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[derive(Debug, thiserror::Error)]
@@ -50,7 +50,7 @@ impl MessageDispatcherType {
         source_name: &str,
         consumer_group_id: &str,
         msg: &impl Message,
-    ) -> Result<(IngressRequest, AckReceiver), Error> {
+    ) -> Result<(Span, IngressRequest, AckReceiver), Error> {
         let dedup_id = Self::generate_deduplication_id(consumer_group_id, msg);
         let ordering_key = MessageDispatcherType::generate_ordering_key(consumer_group_id, msg);
 
@@ -66,7 +66,7 @@ impl MessageDispatcherType {
         info!(parent: &ingress_span, "Processing Kafka ingress request");
         let ingress_span_context = ingress_span.context().span().span_context().clone();
 
-        Ok(match self {
+        let (ingress_request, ack_receiver) = match self {
             MessageDispatcherType::DispatchEvent {} => {
                 let pb_event = restate_pb::restate::Event {
                     ordering_key: ordering_key.clone(),
@@ -121,7 +121,9 @@ impl MessageDispatcherType {
                     Some(dedup_id),
                 )
             }
-        })
+        };
+
+        Ok((ingress_span, ingress_request, ack_receiver))
     }
 
     fn generate_ordering_key(ordering_key_prefix: &str, msg: &impl Message) -> Bytes {
@@ -202,7 +204,7 @@ impl MessageSender {
         consumer_group_id: &str,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), Error> {
-        let (req, rx) = self.message_dispatcher_type.convert_to_service_invocation(
+        let (entered_span, req, rx) = self.message_dispatcher_type.convert_to_service_invocation(
             &self.service_name,
             &self.method_name,
             &self.source_name,
@@ -210,11 +212,16 @@ impl MessageSender {
             msg,
         )?;
 
-        self.tx
-            .send(req)
-            .map_err(|_| Error::IngressDispatcherClosed)?;
-        rx.await.map_err(|_| Error::IngressDispatcherClosed)?;
-        Ok(())
+        async {
+            self.tx
+                .send(req)
+                .map_err(|_| Error::IngressDispatcherClosed)?;
+            rx.await.map_err(|_| Error::IngressDispatcherClosed)?;
+
+            Ok(())
+        }
+        .instrument(entered_span)
+        .await
     }
 }
 
@@ -319,7 +326,7 @@ mod tests {
         let source_name = "my-source";
         let consumer_group = "my-consumer-group";
 
-        let (ingress_req, _) = msg_dispatcher_type
+        let (_, ingress_req, _) = msg_dispatcher_type
             .convert_to_service_invocation(
                 EVENT_HANDLER_SERVICE_NAME,
                 "Handle",

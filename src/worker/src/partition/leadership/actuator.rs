@@ -138,12 +138,19 @@ where
                 }
                 ActuatorMessage::InvokeBuiltInService {
                     full_invocation_id,
+                    span_context,
                     response_sink,
                     method,
                     argument,
                 } => {
                     non_deterministic_service_invoker
-                        .invoke(full_invocation_id, method.deref(), argument, response_sink)
+                        .invoke(
+                            full_invocation_id,
+                            method.deref(),
+                            span_context,
+                            response_sink,
+                            argument,
+                        )
                         .await;
                 }
             }

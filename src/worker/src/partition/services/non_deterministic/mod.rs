@@ -20,7 +20,9 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::{EntryIndex, FullInvocationId};
-use restate_types::invocation::{ResponseResult, ServiceInvocationResponseSink};
+use restate_types::invocation::{
+    ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+};
 use restate_types::time::MillisSinceEpoch;
 use std::borrow::Cow;
 use std::ops::Deref;
@@ -103,12 +105,14 @@ impl<'a> ServiceInvoker<'a> {
         &'a self,
         full_invocation_id: FullInvocationId,
         method: &'b str,
-        argument: Bytes,
+        span_context: ServiceInvocationSpanContext,
         response_sink: Option<ServiceInvocationResponseSink>,
+        argument: Bytes,
     ) {
         let mut out_effects = vec![];
         let invocation_context = InvocationContext {
             full_invocation_id: &full_invocation_id,
+            span_context: &span_context,
             state_reader: self.storage,
             schemas: self.schemas,
             effects_buffer: &mut out_effects,
@@ -148,12 +152,15 @@ impl<'a> ServiceInvoker<'a> {
 }
 
 struct InvocationContext<'a, S> {
+    // Invocation metadata
     full_invocation_id: &'a FullInvocationId,
+    span_context: &'a ServiceInvocationSpanContext,
+    response_sink: Option<&'a ServiceInvocationResponseSink>,
+
     #[allow(unused)]
     state_reader: S,
     schemas: &'a Schemas,
     effects_buffer: &'a mut Vec<Effect>,
-    response_sink: Option<&'a ServiceInvocationResponseSink>,
 }
 
 impl<S: StateReader> InvocationContext<'_, S> {
@@ -336,6 +343,7 @@ mod tests {
             let mut out_effects = vec![];
             let mut invocation_ctx = InvocationContext {
                 full_invocation_id: &fid,
+                span_context: &ServiceInvocationSpanContext::empty(),
                 state_reader: &self.state_reader,
                 schemas: &self.schemas,
                 effects_buffer: &mut out_effects,

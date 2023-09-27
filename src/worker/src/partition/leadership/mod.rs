@@ -288,7 +288,13 @@ where
             let response_sink = metadata.response_sink;
             let argument = input_entry.entry;
             built_in_service_invoker
-                .invoke(full_invocation_id, &method, argument, response_sink)
+                .invoke(
+                    full_invocation_id,
+                    &method,
+                    metadata.journal_metadata.span_context,
+                    response_sink,
+                    argument,
+                )
                 .await;
         }
 
