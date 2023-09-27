@@ -16,7 +16,7 @@ use restate_pb::restate::*;
 use restate_schema_api::json::{JsonMapperResolver, JsonToProtobufMapper, ProtobufToJsonMapper};
 use restate_schema_api::key::KeyExtractor;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::invocation::{ServiceInvocation, SpanRelation};
+use restate_types::invocation::ServiceInvocation;
 use serde::Serialize;
 use tracing::instrument;
 
@@ -143,7 +143,7 @@ impl<'a, State: StateReader + Send + Sync> IngressBuiltInService for InvocationC
             request.method,
             argument,
             None,
-            SpanRelation::None,
+            self.span_context.as_linked(),
         )));
 
         Ok(())

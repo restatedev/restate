@@ -12,7 +12,7 @@ use super::*;
 
 use restate_pb::restate::internal::*;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::invocation::{ServiceInvocation, SpanRelation};
+use restate_types::invocation::ServiceInvocation;
 
 #[async_trait::async_trait]
 impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
@@ -29,7 +29,7 @@ impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
             req.target_method,
             req.input,
             None,
-            SpanRelation::None,
+            self.span_context.as_parent(),
         )));
 
         Ok(())

@@ -21,7 +21,9 @@ use restate_storage_api::timer_table::Timer;
 use crate::partition::services::non_deterministic;
 use bytestring::ByteString;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
-use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink};
+use restate_types::invocation::{
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{
     EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
@@ -48,8 +50,9 @@ pub(crate) enum ActuatorMessage {
     },
     InvokeBuiltInService {
         full_invocation_id: FullInvocationId,
-        response_sink: Option<ServiceInvocationResponseSink>,
         method: ByteString,
+        span_context: ServiceInvocationSpanContext,
+        response_sink: Option<ServiceInvocationResponseSink>,
         argument: Bytes,
     },
     NewOutboxMessage {
@@ -672,6 +675,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         ) {
             collector.collect(ActuatorMessage::InvokeBuiltInService {
                 full_invocation_id: service_invocation.fid,
+                span_context: service_invocation.span_context,
                 response_sink: service_invocation.response_sink,
                 method: service_invocation.method_name,
                 argument: service_invocation.argument.clone(),

@@ -152,6 +152,8 @@ impl ServiceInvocationSpanContext {
 
     /// Create a [`SpanContext`] for this invocation, a [`Span`] which will be created
     /// when the invocation completes.
+    ///
+    /// This function is **deterministic**.
     pub fn start(
         full_invocation_id: &FullInvocationId,
         related_span: SpanRelation,
@@ -160,10 +162,7 @@ impl ServiceInvocationSpanContext {
             // don't waste any time or storage space on unsampled traces
             // sampling based on parent is default otel behaviour; we do the same for the
             // non-parent background invoke relationship
-            return ServiceInvocationSpanContext {
-                span_context: SpanContext::empty_context(),
-                cause: None,
-            };
+            return ServiceInvocationSpanContext::empty();
         }
 
         let (cause, new_span_context) = match &related_span {
@@ -296,6 +295,12 @@ impl ServiceInvocationSpanContext {
 
     pub fn trace_id(&self) -> TraceId {
         self.span_context.trace_id()
+    }
+}
+
+impl Default for ServiceInvocationSpanContext {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
