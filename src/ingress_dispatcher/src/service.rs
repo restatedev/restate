@@ -10,6 +10,7 @@
 
 use super::*;
 
+use bytes::{BufMut, BytesMut};
 use prost::Message;
 use restate_futures_util::pipe::{
     new_sender_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
@@ -273,11 +274,18 @@ impl DispatcherLoopHandler {
 
         let (service_invocation, map_response_action) =
             if let IdempotencyMode::Key(idempotency_key, retention_period) = idempotency {
+                // Use service name + user provided idempotency key for the actual idempotency key
+                let mut idempotency_fid_key = BytesMut::with_capacity(
+                    fid.service_id.service_name.len() + idempotency_key.len(),
+                );
+                idempotency_fid_key.put(fid.service_id.service_name.clone().into_bytes());
+                idempotency_fid_key.put(idempotency_key.clone());
+
                 (
                     ServiceInvocation {
                         fid: FullInvocationId::generate(
                             restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME,
-                            idempotency_key.clone(),
+                            idempotency_fid_key.freeze(),
                         ),
                         method_name: restate_pb::IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME
                             .to_string()
@@ -439,12 +447,12 @@ mod tests {
                 fid: pat!(FullInvocationId {
                     service_id: pat!(ServiceId {
                         service_name: displays_as(eq(restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME)),
-                        key: eq(idempotency_key.clone()),
+                        key: eq(Bytes::copy_from_slice(b"MySvc123")),
                     }),
                 }),
                 method_name: displays_as(eq(restate_pb::IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME)),
                 argument: protobuf_decoded(pat!(IdempotentInvokeRequest {
-                    idempotency_id: eq(idempotency_key.clone()),
+                    idempotency_id: eq(idempotency_key),
                     service_name: eq("MySvc"),
                     service_key: eq("MyKey"),
                     method: eq("pippo"),
