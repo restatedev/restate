@@ -16,7 +16,7 @@ use restate_pb::restate::AwakeablesInvoker;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::FullInvocationId;
-use restate_types::invocation::ServiceInvocationResponseSink;
+use restate_types::invocation::{ServiceInvocationResponseSink, ServiceInvocationSpanContext};
 use std::ops::Deref;
 
 mod awakeables;
@@ -30,6 +30,8 @@ pub(crate) enum Effect {
 /// Deterministic built-in services are executed by both leaders and followers, hence they must generate the same output.
 pub(crate) struct ServiceInvoker<'a> {
     fid: &'a FullInvocationId,
+    span_context: &'a ServiceInvocationSpanContext,
+
     effects: Vec<Effect>,
 }
 
@@ -42,11 +44,13 @@ impl<'a> ServiceInvoker<'a> {
     pub(crate) async fn invoke(
         fid: &'a FullInvocationId,
         method: &'a str,
+        span_context: &'a ServiceInvocationSpanContext,
+        response_sink: Option<&'a ServiceInvocationResponseSink>,
         argument: Bytes,
-        response_sink: Option<&ServiceInvocationResponseSink>,
     ) -> Vec<Effect> {
         let mut this: ServiceInvoker<'a> = Self {
             fid,
+            span_context,
             effects: vec![],
         };
 

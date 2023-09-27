@@ -896,8 +896,9 @@ where
         for effect in deterministic::ServiceInvoker::invoke(
             &invocation.fid,
             invocation.method_name.deref(),
-            invocation.argument.clone(),
+            &invocation.span_context,
             invocation.response_sink.as_ref(),
+            invocation.argument.clone(),
         )
         .await
         {

@@ -63,7 +63,7 @@ impl<'a, State: StateReader + Send + Sync> IngressBuiltInService for InvocationC
             request.method,
             request.argument,
             None,
-            SpanRelation::None,
+            self.span_context.as_linked(),
         )));
 
         Ok(())
