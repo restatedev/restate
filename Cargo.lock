@@ -3758,6 +3758,7 @@ dependencies = [
  "prost",
  "restate_futures_util",
  "restate_pb",
+ "restate_schema_api",
  "restate_test_util",
  "restate_types",
  "thiserror",
