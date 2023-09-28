@@ -1444,6 +1444,101 @@ mod tests {
         );
     }
 
+    #[test(tokio::test)]
+    async fn send_many_side_effects_at_once() {
+        let (mut ctx, operation_id, stream_id) = bootstrap_invocation_using_start().await;
+
+        let (fid, send_effects) = ctx
+            .invoke(|ctx| {
+                ctx.send(
+                    SendRequest {
+                        operation_id: operation_id.clone(),
+                        stream_id: stream_id.clone(),
+                        messages: encode_messages(vec![
+                            ProtocolMessage::UnparsedEntry(PlainRawEntry::new(
+                                RawEntryHeader::Custom {
+                                    code: 0xFC00,
+                                    requires_ack: true,
+                                },
+                                Bytes::copy_from_slice(b"123"),
+                            )),
+                            ProtocolMessage::UnparsedEntry(PlainRawEntry::new(
+                                RawEntryHeader::Custom {
+                                    code: 0xFC00,
+                                    requires_ack: true,
+                                },
+                                Bytes::copy_from_slice(b"456"),
+                            )),
+                            ProtocolMessage::UnparsedEntry(PlainRawEntry::new(
+                                RawEntryHeader::Custom {
+                                    code: 0xFC00,
+                                    requires_ack: true,
+                                },
+                                Bytes::copy_from_slice(b"789"),
+                            )),
+                        ]),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            send_effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        SendResponse {
+                            response: some(eq(send_response::Response::Ok(())))
+                        }
+                    ))))
+                }
+            ))))
+        );
+
+        let (fid, recv_effects) = ctx
+            .invoke(|ctx| {
+                ctx.recv(
+                    RecvRequest {
+                        operation_id: operation_id.clone(),
+                        stream_id: stream_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            recv_effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        RecvResponse {
+                            response: some(pat!(recv_response::Response::Messages(
+                                decoded_as_protocol_messages(elements_are![
+                                    eq(ProtocolMessage::from(Completion::new(
+                                        1,
+                                        CompletionResult::Ack,
+                                    ))),
+                                    eq(ProtocolMessage::from(Completion::new(
+                                        2,
+                                        CompletionResult::Ack,
+                                    ))),
+                                    eq(ProtocolMessage::from(Completion::new(
+                                        3,
+                                        CompletionResult::Ack,
+                                    )))
+                                ])
+                            )))
+                        }
+                    ))))
+                }
+            ))))
+        );
+    }
+
     // --- Recv tests
 
     #[test(tokio::test)]
@@ -1540,6 +1635,89 @@ mod tests {
                     }
                 ))))
             )
+        );
+    }
+
+    #[test(tokio::test)]
+    async fn recv_many_acks_at_once() {
+        let (mut ctx, operation_id, stream_id) = bootstrap_invocation_using_start().await;
+
+        for _ in 0..3 {
+            let (fid, send_effects) = ctx
+                .invoke(|ctx| {
+                    ctx.send(
+                        SendRequest {
+                            operation_id: operation_id.clone(),
+                            stream_id: stream_id.clone(),
+                            messages: encode_messages(vec![ProtocolMessage::UnparsedEntry(
+                                PlainRawEntry::new(
+                                    RawEntryHeader::Custom {
+                                        code: 0xFC00,
+                                        requires_ack: true,
+                                    },
+                                    Bytes::copy_from_slice(b"123"),
+                                ),
+                            )]),
+                        },
+                        Default::default(),
+                    )
+                })
+                .await
+                .unwrap();
+            assert_that!(
+                send_effects,
+                contains(pat!(Effect::OutboxMessage(pat!(
+                    OutboxMessage::IngressResponse {
+                        full_invocation_id: eq(fid),
+                        response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                            SendResponse {
+                                response: some(eq(send_response::Response::Ok(())))
+                            }
+                        ))))
+                    }
+                ))))
+            );
+        }
+
+        let (fid, recv_effects) = ctx
+            .invoke(|ctx| {
+                ctx.recv(
+                    RecvRequest {
+                        operation_id: operation_id.clone(),
+                        stream_id: stream_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            recv_effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        RecvResponse {
+                            response: some(pat!(recv_response::Response::Messages(
+                                decoded_as_protocol_messages(elements_are![
+                                    eq(ProtocolMessage::from(Completion::new(
+                                        1,
+                                        CompletionResult::Ack,
+                                    ))),
+                                    eq(ProtocolMessage::from(Completion::new(
+                                        2,
+                                        CompletionResult::Ack,
+                                    ))),
+                                    eq(ProtocolMessage::from(Completion::new(
+                                        3,
+                                        CompletionResult::Ack,
+                                    )))
+                                ])
+                            )))
+                        }
+                    ))))
+                }
+            ))))
         );
     }
 
