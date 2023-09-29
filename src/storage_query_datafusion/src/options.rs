@@ -88,7 +88,6 @@ impl Options {
         let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
         crate::status::register_self(&ctx, rocksdb.clone(), schema.clone())?;
         crate::state::register_self(&ctx, rocksdb, schema.clone())?;
-        crate::service_key::register_udf(&ctx, schema);
 
         Ok(ctx)
     }

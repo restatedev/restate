@@ -13,7 +13,6 @@ pub mod context;
 mod generic_table;
 mod options;
 mod physical_optimizer;
-mod service_key;
 mod state;
 mod status;
 mod table_macro;
