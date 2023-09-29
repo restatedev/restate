@@ -127,7 +127,7 @@ where
         let mut effects = Effects::with_capacity(2);
 
         let partition_storage =
-            PartitionStorage::new(partition_id, partition_key_range, rocksdb_storage);
+            PartitionStorage::new(partition_id, partition_key_range.clone(), rocksdb_storage);
 
         let (mut actuator_stream, mut leadership_state) = LeadershipState::follower(
             peer_id,
@@ -179,6 +179,7 @@ where
 
                                 (actuator_stream, leadership_state) = leadership_state.become_leader(
                                     leader_epoch,
+                                    partition_key_range.clone(),
                                     &partition_storage,
                                     &schemas)
                                 .await?;

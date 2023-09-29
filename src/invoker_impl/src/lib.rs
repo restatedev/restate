@@ -340,7 +340,8 @@ where
                     InputCommand::StoredEntryAck { partition, full_invocation_id, entry_index } => {
                         self.handle_stored_entry_ack(partition, full_invocation_id, entry_index).await;
                     },
-                    InputCommand::ReadStatus{ keys, cmd } => {
+                    InputCommand::ReadStatus(cmd) => {
+                        let keys = cmd.payload();
                         let statuses = self
                             .invocation_state_machine_manager
                             .registered_partitions_with_keys(keys.clone())

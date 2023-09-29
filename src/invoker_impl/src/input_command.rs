@@ -64,10 +64,12 @@ pub(crate) enum InputCommand {
     },
 
     // Read status
-    ReadStatus {
-        keys: RangeInclusive<PartitionKey>,
-        cmd: restate_futures_util::command::Command<(), Vec<InvocationStatusReport>>,
-    },
+    ReadStatus(
+        restate_futures_util::command::Command<
+            RangeInclusive<PartitionKey>,
+            Vec<InvocationStatusReport>,
+        >,
+    ),
 }
 
 // -- Handles implementations. This is just glue code between the Input<Command> and the interfaces
@@ -199,8 +201,8 @@ impl StatusHandle for ChannelStatusReader {
     type Future = BoxFuture<'static, Self::Iterator>;
 
     fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Future {
-        let (cmd, rx) = restate_futures_util::command::Command::prepare(());
-        if self.0.send(InputCommand::ReadStatus { keys, cmd }).is_err() {
+        let (cmd, rx) = restate_futures_util::command::Command::prepare(keys);
+        if self.0.send(InputCommand::ReadStatus(cmd)).is_err() {
             return std::future::ready(itertools::Either::Left(std::iter::empty::<
                 InvocationStatusReport,
             >()))
