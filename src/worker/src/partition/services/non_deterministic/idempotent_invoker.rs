@@ -112,9 +112,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
                     self.full_invocation_id.service_id.clone(),
                     InvocationUuid::now_v7(),
                 ),
-                method:
-                    restate_pb::builtin_service::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME
-                        .to_string(),
+                method: restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME.to_string(),
                 caller_context: Default::default(),
             }),
             SpanRelation::None,
@@ -175,8 +173,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
                 self.full_invocation_id.service_id.clone(),
                 InvocationUuid::now_v7(),
             ),
-            restate_pb::builtin_service::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME
-                .to_string(),
+            restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME.to_string(),
             Bytes::new(),
             None,
             expiry_time.into(),
@@ -306,9 +303,7 @@ mod tests {
                         target: pat!(FullInvocationId {
                             service_id: eq(expected_fid.service_id.clone())
                         }),
-                        method: eq(
-                            restate_pb::builtin_service::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME
-                        )
+                        method: eq(restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME)
                     }))
                 }))
             ))))
@@ -324,7 +319,8 @@ mod tests {
         // Now let's complete the execution
         let (_, effects) = ctx
             .invoke(|ctx| {
-                ctx.internal_on_response(
+                IdempotentInvokerBuiltInService::internal_on_response(
+                    ctx,
                     ServiceInvocationSinkRequest {
                         caller_context: Default::default(),
                         response: Some(
@@ -350,9 +346,11 @@ mod tests {
                         full_invocation_id: eq(expected_fid.clone()),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             IdempotentInvokeResponse {
-                                response: some(pat!(idempotent_invoke_response::Response::Success(
-                                    protobuf_decoded(eq(expected_res.clone()))
-                                )))
+                                response: some(pat!(
+                                    idempotent_invoke_response::Response::Success(
+                                        protobuf_decoded(eq(expected_res.clone()))
+                                    )
+                                ))
                             }
                         ))))
                     }
@@ -361,9 +359,7 @@ mod tests {
                     target_fid: pat!(FullInvocationId {
                         service_id: eq(expected_fid.service_id.clone())
                     }),
-                    target_method: eq(
-                        restate_pb::builtin_service::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME
-                    )
+                    target_method: eq(restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME)
                 }))
             )
         );

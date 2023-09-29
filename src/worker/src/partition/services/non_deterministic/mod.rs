@@ -14,8 +14,8 @@ use crate::partition::storage::PartitionStorage;
 use crate::partition::types::OutboxMessageExt;
 use bytes::Bytes;
 use restate_pb::builtin_service::ManualResponseBuiltInService;
-use restate_pb::restate::internal::RemoteContextInvoker;
 use restate_pb::restate::internal::IdempotentInvokerInvoker;
+use restate_pb::restate::internal::RemoteContextInvoker;
 use restate_pb::restate::IngressInvoker;
 use restate_schema_impl::Schemas;
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -206,14 +206,16 @@ impl<S: StateReader> InvocationContext<'_, S> {
         &self,
         key: &StateKey<Serde>,
     ) -> Result<Option<Bytes>, InvocationError> {
-        Ok(if let Some(opt_val) = self.state_transitions.0.get(key.0.as_ref()) {
-            opt_val.clone()
-        } else {
-            self.state_reader
-                .read_state(&self.full_invocation_id.service_id, &key.0)
-                .await
-                .map_err(InvocationError::internal)?
-        })
+        Ok(
+            if let Some(opt_val) = self.state_transitions.0.get(key.0.as_ref()) {
+                opt_val.clone()
+            } else {
+                self.state_reader
+                    .read_state(&self.full_invocation_id.service_id, &key.0)
+                    .await
+                    .map_err(InvocationError::internal)?
+            },
+        )
     }
 
     async fn load_state<Serde: StateSerde>(
@@ -221,6 +223,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
         key: &StateKey<Serde>,
     ) -> Result<Option<Serde::MaterializedType>, InvocationError> {
         self.load_state_raw(key)
+            .await?
             .map(|value| Serde::decode(value))
             .transpose()
             .map_err(InvocationError::internal)

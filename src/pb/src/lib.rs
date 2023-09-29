@@ -91,6 +91,8 @@ pub const REMOTE_CONTEXT_SERVICE_NAME: &str = "dev.restate.internal.RemoteContex
 pub const REMOTE_CONTEXT_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
 pub const IDEMPOTENT_INVOKER_SERVICE_NAME: &str = "dev.restate.internal.IdempotentInvoker";
 pub const IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME: &str = "Invoke";
+pub const IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
+pub const IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME: &str = "InternalOnTimer";
 
 #[cfg(feature = "builtin-service")]
 pub mod builtin_service {
@@ -98,9 +100,6 @@ pub mod builtin_service {
     use restate_types::errors::InvocationError;
     use restate_types::invocation::ResponseResult;
     use std::marker::PhantomData;
-
-    pub const IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
-    pub const IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME: &str = "InternalOnTimer";
 
     #[async_trait::async_trait]
     pub trait BuiltInService {
