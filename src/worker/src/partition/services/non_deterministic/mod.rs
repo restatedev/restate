@@ -14,6 +14,7 @@ use crate::partition::storage::PartitionStorage;
 use crate::partition::types::OutboxMessageExt;
 use bytes::Bytes;
 use restate_pb::builtin_service::ManualResponseBuiltInService;
+use restate_pb::restate::internal::RemoteContextInvoker;
 use restate_pb::restate::IngressInvoker;
 use restate_schema_impl::Schemas;
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -25,10 +26,12 @@ use restate_types::invocation::{
 };
 use restate_types::time::MillisSinceEpoch;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ops::Deref;
 use tokio::sync::mpsc;
 
 mod ingress;
+mod remote_context;
 
 #[derive(Debug)]
 pub(crate) struct Effects {
@@ -110,13 +113,15 @@ impl<'a> ServiceInvoker<'a> {
         argument: Bytes,
     ) {
         let mut out_effects = vec![];
+        let mut state_transitions = StateTransitions::default();
         let invocation_context = InvocationContext {
             full_invocation_id: &full_invocation_id,
             span_context: &span_context,
             state_reader: self.storage,
             schemas: self.schemas,
-            effects_buffer: &mut out_effects,
             response_sink: response_sink.as_ref(),
+            effects_buffer: &mut out_effects,
+            state_transitions: &mut state_transitions,
         };
 
         let result = match full_invocation_id.service_id.service_name.deref() {
@@ -125,11 +130,19 @@ impl<'a> ServiceInvoker<'a> {
                     .invoke_builtin(method, argument)
                     .await
             }
+            restate_pb::REMOTE_CONTEXT_SERVICE_NAME => {
+                RemoteContextInvoker(invocation_context)
+                    .invoke_builtin(method, argument)
+                    .await
+            }
             _ => Err(InvocationError::new(
                 UserErrorCode::NotFound,
                 format!("{} not found", full_invocation_id.service_id.service_name),
             )),
         };
+
+        // Fill effect buffers with set state and end effect
+        state_transitions.fill_effects_buffer(&mut out_effects);
         match result {
             Ok(()) => {
                 // Just append End
@@ -151,16 +164,34 @@ impl<'a> ServiceInvoker<'a> {
     }
 }
 
+#[derive(Clone, Default)]
+struct StateTransitions(HashMap<String, Option<Bytes>>);
+
+impl StateTransitions {
+    fn fill_effects_buffer(self, effects: &mut Vec<Effect>) {
+        for (key, opt_value) in self.0.into_iter() {
+            if let Some(value) = opt_value {
+                effects.push(Effect::SetState {
+                    key: key.into(),
+                    value,
+                })
+            } else {
+                effects.push(Effect::ClearState(key.into()))
+            }
+        }
+    }
+}
+
 struct InvocationContext<'a, S> {
     // Invocation metadata
     full_invocation_id: &'a FullInvocationId,
+    state_reader: S,
+    schemas: &'a Schemas,
     span_context: &'a ServiceInvocationSpanContext,
     response_sink: Option<&'a ServiceInvocationResponseSink>,
 
-    #[allow(unused)]
-    state_reader: S,
-    schemas: &'a Schemas,
     effects_buffer: &'a mut Vec<Effect>,
+    state_transitions: &'a mut StateTransitions,
 }
 
 impl<S: StateReader> InvocationContext<'_, S> {
@@ -168,10 +199,16 @@ impl<S: StateReader> InvocationContext<'_, S> {
         &self,
         key: &StateKey<Serde>,
     ) -> Result<Option<Serde::MaterializedType>, InvocationError> {
-        self.state_reader
-            .read_state(&self.full_invocation_id.service_id, &key.0)
-            .await
-            .map_err(InvocationError::internal)?
+        let opt_val = if let Some(opt_val) = self.state_transitions.0.get(key.0.as_ref()) {
+            opt_val.clone()
+        } else {
+            self.state_reader
+                .read_state(&self.full_invocation_id.service_id, &key.0)
+                .await
+                .map_err(InvocationError::internal)?
+        };
+
+        opt_val
             .map(|value| Serde::decode(value))
             .transpose()
             .map_err(InvocationError::internal)
@@ -209,15 +246,15 @@ impl<S: StateReader> InvocationContext<'_, S> {
         key: &StateKey<Serde>,
         value: &Serde::MaterializedType,
     ) -> Result<(), InvocationError> {
-        self.effects_buffer.push(Effect::SetState {
-            key: key.0.clone(),
-            value: Serde::encode(value).map_err(InvocationError::internal)?,
-        });
+        self.state_transitions.0.insert(
+            key.0.to_string(),
+            Some(Serde::encode(value).map_err(InvocationError::internal)?),
+        );
         Ok(())
     }
 
     fn clear_state<Serde>(&mut self, key: &StateKey<Serde>) {
-        self.effects_buffer.push(Effect::ClearState(key.0.clone()))
+        self.state_transitions.0.insert(key.0.to_string(), None);
     }
 
     fn delay_invoke(
@@ -341,18 +378,21 @@ mod tests {
                 InvocationUuid::now_v7(),
             );
             let mut out_effects = vec![];
+            let mut state_transitions = StateTransitions::default();
             let mut invocation_ctx = InvocationContext {
                 full_invocation_id: &fid,
                 span_context: &ServiceInvocationSpanContext::empty(),
                 state_reader: &self.state_reader,
                 schemas: &self.schemas,
-                effects_buffer: &mut out_effects,
                 response_sink: self.response_sink.as_ref(),
+                effects_buffer: &mut out_effects,
+                state_transitions: &mut state_transitions,
             };
 
             f(&mut invocation_ctx).await?;
 
             // Apply effects
+            state_transitions.fill_effects_buffer(&mut out_effects);
             self.state_reader.apply_effects(&out_effects);
 
             Ok((fid, out_effects))

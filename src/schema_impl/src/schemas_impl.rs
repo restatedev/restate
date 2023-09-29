@@ -253,6 +253,18 @@ impl Default for SchemasInner {
             ServiceInstanceType::Unsupported,
             false,
         );
+        register_built_in(
+            restate_pb::REMOTE_CONTEXT_SERVICE_NAME,
+            key::ServiceInstanceType::keyed_with_scalar_key([
+                ("Start", 1),
+                ("Send", 1),
+                ("Recv", 1),
+                ("GetResult", 1),
+                ("Cleanup", 1),
+            ])
+            .into(),
+            true,
+        );
 
         inner
     }

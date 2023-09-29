@@ -119,11 +119,15 @@ mod mocks {
 
     use crate::awakeable_id::AwakeableIdentifier;
     use crate::pb::protocol::{
-        complete_awakeable_entry_message, CompleteAwakeableEntryMessage, Failure,
-        PollInputStreamEntryMessage,
+        complete_awakeable_entry_message, get_state_entry_message, invoke_entry_message,
+        output_stream_entry_message, BackgroundInvokeEntryMessage, ClearStateEntryMessage,
+        CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage, InvokeEntryMessage,
+        OutputStreamEntryMessage, PollInputStreamEntryMessage, SetStateEntryMessage,
     };
     use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
-    use restate_types::journal::{CompleteAwakeableEntry, EntryResult, PollInputStreamEntry};
+    use restate_types::journal::{
+        CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateValue, PollInputStreamEntry,
+    };
 
     impl ProtobufRawEntryCodec {
         pub fn serialize(entry: Entry) -> PlainRawEntry {
@@ -131,6 +135,85 @@ mod mocks {
                 Entry::PollInputStream(entry) => PlainRawEntry::new(
                     RawEntryHeader::PollInputStream { is_completed: true },
                     Self::serialize_poll_input_stream_entry(entry),
+                ),
+                Entry::OutputStream(entry) => PlainRawEntry::new(
+                    RawEntryHeader::OutputStream,
+                    OutputStreamEntryMessage {
+                        result: Some(match entry.result {
+                            EntryResult::Success(s) => {
+                                output_stream_entry_message::Result::Value(s)
+                            }
+                            EntryResult::Failure(code, msg) => {
+                                output_stream_entry_message::Result::Failure(Failure {
+                                    code: code.into(),
+                                    message: msg.to_string(),
+                                })
+                            }
+                        }),
+                    }
+                    .encode_to_vec()
+                    .into(),
+                ),
+                Entry::GetState(entry) => PlainRawEntry::new(
+                    RawEntryHeader::GetState {
+                        is_completed: entry.is_completed(),
+                    },
+                    GetStateEntryMessage {
+                        key: entry.key,
+                        result: entry.value.map(|value| match value {
+                            GetStateValue::Empty => get_state_entry_message::Result::Empty(()),
+                            GetStateValue::Value(v) => get_state_entry_message::Result::Value(v),
+                        }),
+                    }
+                    .encode_to_vec()
+                    .into(),
+                ),
+                Entry::SetState(entry) => PlainRawEntry::new(
+                    RawEntryHeader::SetState,
+                    SetStateEntryMessage {
+                        key: entry.key,
+                        value: entry.value,
+                    }
+                    .encode_to_vec()
+                    .into(),
+                ),
+                Entry::ClearState(entry) => PlainRawEntry::new(
+                    RawEntryHeader::ClearState,
+                    ClearStateEntryMessage { key: entry.key }
+                        .encode_to_vec()
+                        .into(),
+                ),
+                Entry::Invoke(entry) => PlainRawEntry::new(
+                    RawEntryHeader::Invoke {
+                        is_completed: entry.is_completed(),
+                    },
+                    InvokeEntryMessage {
+                        service_name: entry.request.service_name.into(),
+                        method_name: entry.request.method_name.into(),
+                        parameter: entry.request.parameter,
+                        result: entry.result.map(|r| match r {
+                            EntryResult::Success(v) => invoke_entry_message::Result::Value(v),
+                            EntryResult::Failure(code, msg) => {
+                                invoke_entry_message::Result::Failure(Failure {
+                                    code: code.into(),
+                                    message: msg.to_string(),
+                                })
+                            }
+                        }),
+                    }
+                    .encode_to_vec()
+                    .into(),
+                ),
+                Entry::BackgroundInvoke(entry) => PlainRawEntry::new(
+                    RawEntryHeader::BackgroundInvoke,
+                    BackgroundInvokeEntryMessage {
+                        service_name: entry.request.service_name.into(),
+                        method_name: entry.request.method_name.into(),
+                        parameter: entry.request.parameter,
+                        invoke_time: entry.invoke_time,
+                    }
+                    .encode_to_vec()
+                    .into(),
                 ),
                 Entry::CompleteAwakeable(entry) => PlainRawEntry::new(
                     RawEntryHeader::CompleteAwakeable,

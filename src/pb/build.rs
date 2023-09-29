@@ -255,6 +255,16 @@ fn main() -> std::io::Result<()> {
                     "dev.restate.Ingress",
                     Box::<ManualResponseRestateBuiltInServiceGen>::default(),
                 )
+                .with_svc(
+                    "dev.restate.internal.RemoteContext",
+                    Box::new(
+                        ManualResponseRestateBuiltInServiceGen::default().with_additional_method(
+                            "InternalOnResponse",
+                            "crate::restate::internal::ServiceInvocationSinkRequest",
+                            "()",
+                        ),
+                    ),
+                )
                 .with_fallback(
                     tonic_build::configure()
                         .build_client(false)

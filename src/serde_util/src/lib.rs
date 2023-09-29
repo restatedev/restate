@@ -9,7 +9,11 @@
 // by the Apache License, Version 2.0.
 
 mod header_map;
+#[cfg(feature = "proto")]
+mod proto;
 mod uuid;
 
 pub use crate::uuid::{SerdeableUuid, UuidAsStringOrBytesOrBase64};
 pub use header_map::SerdeableHeaderHashMap;
+#[cfg(feature = "proto")]
+pub use proto::ProtobufEncoded;
