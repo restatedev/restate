@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_schema_api::key::RestateKeyConverter;
 use uuid::Uuid;
 
 #[inline]
@@ -35,4 +36,16 @@ pub(crate) fn try_decode_restate_key_as_uuid<'a>(
     }
     let uuid = Uuid::from_slice(key_slice).ok()?;
     Some(uuid.simple().encode_lower(temp_buffer))
+}
+
+#[inline]
+pub(crate) fn try_decode_restate_key_as_json(
+    service_name: &str,
+    key_slice: &[u8],
+    resolver: impl RestateKeyConverter,
+) -> Option<String> {
+    resolver
+        .key_to_json(service_name, key_slice)
+        .map(|value| format!("{value}"))
+        .ok()
 }
