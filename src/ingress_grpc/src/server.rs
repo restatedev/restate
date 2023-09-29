@@ -152,19 +152,21 @@ mod tests {
     use http::StatusCode;
     use hyper::Body;
     use prost::Message;
-    use restate_ingress_dispatcher::IngressRequest;
+    use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest};
     use restate_test_util::{assert_eq, test};
     use serde_json::json;
     use std::net::SocketAddr;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
+    use tonic::metadata::{AsciiMetadataValue, MetadataKey};
+    use tonic::Request;
 
     #[test(tokio::test)]
     async fn test_http_connect_call() {
         let (address, input, handle) = bootstrap_test().await;
         let process_fut = tokio::spawn(async move {
             // Get the function invocation and assert on it
-            let (fid, method_name, mut argument, _, response_tx) =
+            let (fid, method_name, mut argument, _, _, response_tx) =
                 input.await.unwrap().unwrap().expect_invocation();
             assert_eq!(fid.service_id.service_name, "greeter.Greeter");
             assert_eq!(method_name, "Greet");
@@ -173,11 +175,14 @@ mod tests {
             assert_eq!(&greeting_req.person, "Francesco");
 
             response_tx
-                .send(Ok(restate_pb::mocks::greeter::GreetingResponse {
-                    greeting: "Igal".to_string(),
-                }
-                .encode_to_vec()
-                .into()))
+                .send(
+                    Ok(restate_pb::mocks::greeter::GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    }
+                    .encode_to_vec()
+                    .into())
+                    .into(),
+                )
                 .unwrap();
         });
 
@@ -223,14 +228,16 @@ mod tests {
 
         let (address, input, handle) = bootstrap_test().await;
         let process_fut = tokio::spawn(async move {
-            let (fid, method_name, mut argument, _, response_tx) =
+            let (fid, method_name, mut argument, _, _, response_tx) =
                 input.await.unwrap().unwrap().expect_invocation();
             assert_eq!(fid.service_id.service_name, "greeter.Greeter");
             assert_eq!(method_name, "Greet");
             let greeting_req =
                 restate_pb::mocks::greeter::GreetingRequest::decode(&mut argument).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
-            response_tx.send(Ok(encoded_greeting_response)).unwrap();
+            response_tx
+                .send(Ok(encoded_greeting_response).into())
+                .unwrap();
         });
 
         let mut client = restate_pb::mocks::greeter::greeter_client::GreeterClient::connect(
@@ -245,6 +252,57 @@ mod tests {
             })
             .await
             .unwrap();
+
+        // Check that the input processing completed
+        process_fut.await.unwrap();
+
+        // Read the http_response_future
+        let greeting_res = response.into_inner();
+        assert_eq!(greeting_res, expected_greeting_response);
+
+        handle.close().await;
+    }
+
+    #[test(tokio::test)]
+    async fn idempotency_key_parsing() {
+        let expected_greeting_response = restate_pb::mocks::greeter::GreetingResponse {
+            greeting: "Igal".to_string(),
+        };
+        let encoded_greeting_response = Bytes::from(expected_greeting_response.encode_to_vec());
+
+        let (address, input, handle) = bootstrap_test().await;
+        let process_fut = tokio::spawn(async move {
+            let (fid, method_name, mut argument, _, idempotency_mode, response_tx) =
+                input.await.unwrap().unwrap().expect_invocation();
+            assert_eq!(fid.service_id.service_name, "greeter.Greeter");
+            assert_eq!(method_name, "Greet");
+            let greeting_req =
+                restate_pb::mocks::greeter::GreetingRequest::decode(&mut argument).unwrap();
+            assert_eq!(&greeting_req.person, "Francesco");
+            assert_eq!(
+                idempotency_mode,
+                IdempotencyMode::key(Bytes::from_static(b"123456"), None)
+            );
+            response_tx
+                .send(Ok(encoded_greeting_response).into())
+                .unwrap();
+        });
+
+        let mut client = restate_pb::mocks::greeter::greeter_client::GreeterClient::connect(
+            format!("http://{address}"),
+        )
+        .await
+        .unwrap();
+
+        let mut request = Request::new(restate_pb::mocks::greeter::GreetingRequest {
+            person: "Francesco".to_string(),
+        });
+        request.metadata_mut().insert(
+            MetadataKey::from_static("idempotency-key"),
+            AsciiMetadataValue::from_static("123456"),
+        );
+
+        let response = client.greet(request).await.unwrap();
 
         // Check that the input processing completed
         process_fut.await.unwrap();

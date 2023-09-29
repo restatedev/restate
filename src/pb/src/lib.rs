@@ -38,7 +38,28 @@ pub mod restate {
         #![allow(warnings)]
         #![allow(clippy::all)]
         #![allow(unknown_lints)]
+
         include!(concat!(env!("OUT_DIR"), "/dev.restate.internal.rs"));
+
+        #[cfg(feature = "restate_types")]
+        mod conversions {
+            use super::*;
+
+            impl From<InvocationFailure> for restate_types::errors::InvocationError {
+                fn from(value: InvocationFailure) -> Self {
+                    restate_types::errors::InvocationError::new(value.code, value.message)
+                }
+            }
+
+            impl From<restate_types::errors::InvocationError> for InvocationFailure {
+                fn from(value: restate_types::errors::InvocationError) -> Self {
+                    Self {
+                        code: value.code().into(),
+                        message: value.message().to_string(),
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -68,6 +89,10 @@ pub const PROXY_SERVICE_NAME: &str = "dev.restate.internal.Proxy";
 pub const PROXY_PROXY_THROUGH_METHOD_NAME: &str = "ProxyThrough";
 pub const REMOTE_CONTEXT_SERVICE_NAME: &str = "dev.restate.internal.RemoteContext";
 pub const REMOTE_CONTEXT_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
+pub const IDEMPOTENT_INVOKER_SERVICE_NAME: &str = "dev.restate.internal.IdempotentInvoker";
+pub const IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME: &str = "Invoke";
+pub const IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
+pub const IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME: &str = "InternalOnTimer";
 
 #[cfg(feature = "builtin-service")]
 pub mod builtin_service {
@@ -134,7 +159,7 @@ pub mod builtin_service {
 
                 ResponseResult::Failure(code, message) => {
                     crate::restate::internal::service_invocation_sink_request::Response::Failure(
-                        crate::restate::internal::service_invocation_sink_request::Failure {
+                        crate::restate::internal::InvocationFailure {
                             code: code.into(),
                             message: message.to_string(),
                         },

@@ -149,7 +149,6 @@ mod manual_response_built_in_service_gen {
     }
 
     impl ManualResponseRestateBuiltInServiceGen {
-        #[allow(dead_code)]
         pub fn with_additional_method(
             mut self,
             proto_name: &str,
@@ -263,6 +262,18 @@ fn main() -> std::io::Result<()> {
                             "crate::restate::internal::ServiceInvocationSinkRequest",
                             "()",
                         ),
+                    ),
+                )
+                .with_svc(
+                    "dev.restate.internal.IdempotentInvoker",
+                    Box::new(
+                        ManualResponseRestateBuiltInServiceGen::default()
+                            .with_additional_method(
+                                "InternalOnResponse",
+                                "crate::restate::internal::ServiceInvocationSinkRequest",
+                                "()",
+                            )
+                            .with_additional_method("InternalOnTimer", "()", "()"),
                     ),
                 )
                 .with_fallback(

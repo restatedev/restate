@@ -77,7 +77,7 @@ impl<'a, State> InvocationContext<'a, State> {
         .map_err(InvocationError::internal)
     }
 
-    pub(super) fn generate_fid(
+    fn generate_fid(
         &self,
         service_name: String,
         method_name: &str,

@@ -14,16 +14,16 @@ package dev.restate.internal;
 
 // This type is used when using the ServiceInvocationResponseSink::NewInvocation
 message ServiceInvocationSinkRequest {
-  message Failure {
-    uint32 code = 1;
-    string message = 2;
-  }
-
   oneof response {
     bytes success = 1;
-    Failure failure = 2;
+    InvocationFailure failure = 2;
   }
 
   // Additional context of the caller that can be attached in ServiceInvocationResponseSink::NewInvocation.context
   bytes caller_context = 15;
+}
+
+message InvocationFailure {
+  uint32 code = 1;
+  string message = 2;
 }

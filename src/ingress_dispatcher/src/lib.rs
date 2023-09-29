@@ -14,6 +14,7 @@ use restate_types::errors::InvocationError;
 use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PeerId};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext, SpanRelation};
 use restate_types::message::{AckKind, MessageIndex};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 // -- Re-export dispatcher service
@@ -31,6 +32,18 @@ pub type IngressResponseReceiver = oneshot::Receiver<IngressResponse>;
 pub type AckSender = oneshot::Sender<()>;
 pub type AckReceiver = oneshot::Receiver<()>;
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum IdempotencyMode {
+    Key(Bytes, Option<Duration>),
+    None,
+}
+
+impl IdempotencyMode {
+    pub fn key(key: impl Into<Bytes>, retention_period: Option<Duration>) -> Self {
+        Self::Key(key.into(), retention_period)
+    }
+}
+
 #[derive(Debug)]
 pub struct IngressRequest {
     fid: FullInvocationId,
@@ -38,9 +51,35 @@ pub struct IngressRequest {
     argument: Bytes,
     span_context: ServiceInvocationSpanContext,
     request_mode: IngressRequestMode,
+    idempotency: IdempotencyMode,
 }
 
-pub type IngressResponse = Result<Bytes, InvocationError>;
+#[derive(Debug, Clone)]
+pub struct IngressResponse {
+    idempotency_expiry_time: Option<String>,
+    result: Result<Bytes, InvocationError>,
+}
+
+impl IngressResponse {
+    pub fn idempotency_expire_time(&self) -> Option<&String> {
+        self.idempotency_expiry_time.as_ref()
+    }
+}
+
+impl From<IngressResponse> for Result<Bytes, InvocationError> {
+    fn from(value: IngressResponse) -> Self {
+        value.result
+    }
+}
+
+impl From<Result<Bytes, InvocationError>> for IngressResponse {
+    fn from(value: Result<Bytes, InvocationError>) -> Self {
+        Self {
+            idempotency_expiry_time: None,
+            result: value,
+        }
+    }
+}
 
 pub type IngressDeduplicationId = (String, MessageIndex);
 
@@ -57,6 +96,7 @@ impl IngressRequest {
         method_name: impl Into<ByteString>,
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
+        idempotency: IdempotencyMode,
     ) -> (Self, IngressResponseReceiver) {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         let (result_tx, result_rx) = oneshot::channel();
@@ -68,6 +108,7 @@ impl IngressRequest {
                 argument: argument.into(),
                 request_mode: IngressRequestMode::RequestResponse(result_tx),
                 span_context,
+                idempotency,
             },
             result_rx,
         )
@@ -93,6 +134,7 @@ impl IngressRequest {
                     None => IngressRequestMode::FireAndForget(ack_tx),
                     Some(dedup_id) => IngressRequestMode::DedupFireAndForget(dedup_id, ack_tx),
                 },
+                idempotency: IdempotencyMode::None,
             },
             ack_rx,
         )
@@ -107,7 +149,7 @@ pub type IngressDispatcherInputSender = mpsc::Sender<IngressDispatcherInput>;
 #[derive(Debug, Clone)]
 pub struct IngressResponseMessage {
     pub full_invocation_id: FullInvocationId,
-    pub result: IngressResponse,
+    pub result: Result<Bytes, InvocationError>,
     pub ack_target: AckTarget,
 }
 
@@ -205,6 +247,7 @@ pub mod mocks {
             ByteString,
             Bytes,
             ServiceInvocationSpanContext,
+            IdempotencyMode,
             IngressResponseSender,
         ) {
             let_assert!(
@@ -213,7 +256,9 @@ pub mod mocks {
                     method_name,
                     argument,
                     span_context,
-                    request_mode: IngressRequestMode::RequestResponse(ingress_response_sender)
+                    request_mode: IngressRequestMode::RequestResponse(ingress_response_sender),
+                    idempotency,
+                    ..
                 } = self
             );
             (
@@ -221,6 +266,7 @@ pub mod mocks {
                 method_name,
                 argument,
                 span_context,
+                idempotency,
                 ingress_response_sender,
             )
         }
@@ -240,7 +286,8 @@ pub mod mocks {
                     method_name,
                     argument,
                     span_context,
-                    request_mode: IngressRequestMode::FireAndForget(ack_sender)
+                    request_mode: IngressRequestMode::FireAndForget(ack_sender),
+                    ..
                 } = self
             );
             (fid, method_name, argument, span_context, ack_sender)
@@ -262,7 +309,8 @@ pub mod mocks {
                     method_name,
                     argument,
                     span_context,
-                    request_mode: IngressRequestMode::DedupFireAndForget(dedup_id, ack_sender)
+                    request_mode: IngressRequestMode::DedupFireAndForget(dedup_id, ack_sender),
+                    ..
                 } = self
             );
             (

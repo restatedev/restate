@@ -10,9 +10,14 @@
 
 use super::*;
 
+use bytes::{BufMut, BytesMut};
+use prost::Message;
 use restate_futures_util::pipe::{
     new_sender_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
     UnboundedReceiverPipeInput,
+};
+use restate_pb::restate::internal::{
+    idempotent_invoke_response, IdempotentInvokeRequest, IdempotentInvokeResponse,
 };
 use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::IngressDispatcherId;
@@ -124,13 +129,58 @@ impl Service {
     }
 }
 
+enum MapResponseAction {
+    // We need to map the output type from IdempotentInvokeResponse
+    IdempotentInvokerResponse,
+    // No need to map the output type
+    None,
+}
+
+impl MapResponseAction {
+    fn map(&self, buf: Bytes) -> IngressResponse {
+        match self {
+            MapResponseAction::IdempotentInvokerResponse => {
+                use idempotent_invoke_response::Response;
+                let idempotent_invoke_response = match IdempotentInvokeResponse::decode(buf) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return IngressResponse {
+                            idempotency_expiry_time: None,
+                            result: Err(InvocationError::internal(
+                                "Unexpected response from IdempotentInvoker",
+                            )),
+                        }
+                    }
+                };
+
+                let result = match idempotent_invoke_response.response {
+                    None => Err(InvocationError::internal(
+                        "Unexpected response from IdempotentInvoker",
+                    )),
+                    Some(Response::Success(v)) => Ok(v),
+                    Some(Response::Failure(v)) => Err(v.into()),
+                };
+
+                IngressResponse {
+                    idempotency_expiry_time: Some(idempotent_invoke_response.expiry_time),
+                    result,
+                }
+            }
+            MapResponseAction::None => IngressResponse {
+                idempotency_expiry_time: None,
+                result: Ok(buf),
+            },
+        }
+    }
+}
+
 struct DispatcherLoopHandler {
     ingress_dispatcher_id: IngressDispatcherId,
     msg_index: MessageIndex,
 
     // This map can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
-    waiting_responses: HashMap<FullInvocationId, IngressResponseSender>,
+    waiting_responses: HashMap<FullInvocationId, (MapResponseAction, IngressResponseSender)>,
     waiting_for_acks: HashMap<MessageIndex, AckSender>,
     waiting_for_acks_with_custom_id: HashMap<IngressDeduplicationId, AckSender>,
 }
@@ -152,8 +202,17 @@ impl DispatcherLoopHandler {
     ) -> Option<IngressDispatcherOutput> {
         match input {
             IngressDispatcherInput::Response(response) => {
-                if let Some(sender) = self.waiting_responses.remove(&response.full_invocation_id) {
-                    if let Err(Ok(response)) = sender.send(response.result.map_err(Into::into)) {
+                if let Some((map_response_action, sender)) =
+                    self.waiting_responses.remove(&response.full_invocation_id)
+                {
+                    let mapped_response = match response.result {
+                        Ok(v) => map_response_action.map(v),
+                        Err(e) => IngressResponse {
+                            idempotency_expiry_time: None,
+                            result: Err(e),
+                        },
+                    };
+                    if let Err(response) = sender.send(mapped_response) {
                         debug!(
                             "Failed to send response '{:?}' because the handler has been closed, \
                     probably caused by the client connection that went away",
@@ -202,40 +261,88 @@ impl DispatcherLoopHandler {
             argument,
             span_context,
             request_mode,
+            idempotency,
         } = ingress_request;
 
-        let (response_sink, dedup_source, msg_index) = match request_mode {
-            IngressRequestMode::RequestResponse(response_sender) => {
-                self.waiting_responses.insert(fid.clone(), response_sender);
+        let response_sink = if matches!(request_mode, IngressRequestMode::RequestResponse(_)) {
+            Some(ServiceInvocationResponseSink::Ingress(
+                self.ingress_dispatcher_id,
+            ))
+        } else {
+            None
+        };
+
+        let (service_invocation, map_response_action) =
+            if let IdempotencyMode::Key(idempotency_key, retention_period) = idempotency {
+                // Use service name + user provided idempotency key for the actual idempotency key
+                let mut idempotency_fid_key = BytesMut::with_capacity(
+                    fid.service_id.service_name.len() + idempotency_key.len(),
+                );
+                idempotency_fid_key.put(fid.service_id.service_name.clone().into_bytes());
+                idempotency_fid_key.put(idempotency_key.clone());
+
                 (
-                    Some(ServiceInvocationResponseSink::Ingress(
-                        self.ingress_dispatcher_id,
-                    )),
-                    None,
-                    self.get_and_increment_msg_index(),
+                    ServiceInvocation {
+                        fid: FullInvocationId::generate(
+                            restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME,
+                            idempotency_fid_key.freeze(),
+                        ),
+                        method_name: restate_pb::IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME
+                            .to_string()
+                            .into(),
+                        argument: IdempotentInvokeRequest {
+                            idempotency_id: idempotency_key,
+                            service_name: fid.service_id.service_name.into(),
+                            service_key: fid.service_id.key,
+                            invocation_uuid: Bytes::copy_from_slice(fid.invocation_uuid.as_bytes()),
+                            method: method_name.into(),
+                            argument,
+                            retention_period_sec: retention_period.unwrap_or_default().as_secs()
+                                as u32,
+                        }
+                        .encode_to_vec()
+                        .into(),
+                        response_sink,
+                        span_context,
+                    },
+                    MapResponseAction::IdempotentInvokerResponse,
                 )
+            } else {
+                (
+                    ServiceInvocation {
+                        fid,
+                        method_name,
+                        argument,
+                        response_sink,
+                        span_context,
+                    },
+                    MapResponseAction::None,
+                )
+            };
+
+        let (dedup_source, msg_index) = match request_mode {
+            IngressRequestMode::RequestResponse(response_sender) => {
+                self.waiting_responses.insert(
+                    service_invocation.fid.clone(),
+                    (map_response_action, response_sender),
+                );
+                (None, self.get_and_increment_msg_index())
             }
             IngressRequestMode::FireAndForget(ack_sender) => {
                 let msg_index = self.get_and_increment_msg_index();
                 self.msg_index += 1;
                 self.waiting_for_acks.insert(msg_index, ack_sender);
-                (None, None, msg_index)
+                (None, msg_index)
             }
             IngressRequestMode::DedupFireAndForget(dedup_id, ack_sender) => {
                 self.waiting_for_acks_with_custom_id
                     .insert(dedup_id.clone(), ack_sender);
-                (None, Some(dedup_id.0), dedup_id.1)
+                (Some(dedup_id.0), dedup_id.1)
             }
         };
 
         IngressDispatcherOutput::service_invocation(
-            ServiceInvocation {
-                fid,
-                method_name,
-                argument,
-                response_sink,
-                span_context,
-            },
+            service_invocation,
             self.ingress_dispatcher_id,
             dedup_source,
             msg_index,
@@ -253,8 +360,10 @@ impl DispatcherLoopHandler {
 mod tests {
     use super::*;
 
-    use restate_test_util::test;
+    use googletest::{assert_that, pat};
+    use restate_test_util::{let_assert, matchers::*, test};
     use restate_types::identifiers::IngressDispatcherId;
+    use restate_types::identifiers::ServiceId;
     use restate_types::invocation::SpanRelation;
 
     #[test(tokio::test)]
@@ -272,8 +381,13 @@ mod tests {
 
         // Ask for a response, then drop the receiver
         let fid = FullInvocationId::generate("MySvc", "MyKey");
-        let (invocation, response_rx) =
-            IngressRequest::invocation(fid.clone(), "pippo", Bytes::default(), SpanRelation::None);
+        let (invocation, response_rx) = IngressRequest::invocation(
+            fid.clone(),
+            "pippo",
+            Bytes::default(),
+            SpanRelation::None,
+            IdempotencyMode::None,
+        );
         command_sender.send(invocation).unwrap();
         drop(response_rx);
 
@@ -290,5 +404,91 @@ mod tests {
         // Close and check it did not panic
         drain_signal.drain().await;
         loop_handle.await.unwrap().unwrap()
+    }
+
+    #[test(tokio::test)]
+    async fn idempotent_invoke() {
+        let (output_tx, mut output_rx) = mpsc::channel(2);
+
+        let ingress_dispatcher =
+            Service::new(IngressDispatcherId("127.0.0.1:0".parse().unwrap()), 1);
+        let handler_tx = ingress_dispatcher.create_ingress_request_sender();
+        let network_tx = ingress_dispatcher.create_ingress_dispatcher_input_sender();
+
+        // Start the dispatcher loop
+        let (drain_signal, watch) = drain::channel();
+        tokio::spawn(ingress_dispatcher.run(output_tx, watch));
+
+        // Ask for a response, then drop the receiver
+        let fid = FullInvocationId::generate("MySvc", "MyKey");
+        let argument = Bytes::from_static(b"nbfjksdfs");
+        let idempotency_key = Bytes::copy_from_slice(b"123");
+        let (invocation, res) = IngressRequest::invocation(
+            fid.clone(),
+            "pippo",
+            argument.clone(),
+            SpanRelation::None,
+            IdempotencyMode::key(idempotency_key.clone(), None),
+        );
+        handler_tx.send(invocation).unwrap();
+
+        // Let's check we correct have a response
+        let output_message = output_rx.recv().await.unwrap();
+
+        let_assert!(
+            IngressDispatcherOutput::Invocation {
+                service_invocation,
+                ..
+            } = output_message
+        );
+        assert_that!(
+            service_invocation,
+            pat!(ServiceInvocation {
+                fid: pat!(FullInvocationId {
+                    service_id: pat!(ServiceId {
+                        service_name: displays_as(eq(restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME)),
+                        key: eq(Bytes::copy_from_slice(b"MySvc123")),
+                    }),
+                }),
+                method_name: displays_as(eq(restate_pb::IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME)),
+                argument: protobuf_decoded(pat!(IdempotentInvokeRequest {
+                    idempotency_id: eq(idempotency_key),
+                    service_name: eq("MySvc"),
+                    service_key: eq("MyKey"),
+                    method: eq("pippo"),
+                    argument: eq(argument),
+                    retention_period_sec: eq(0)
+                }))
+            })
+        );
+
+        // Now check we get the response is routed back to the handler correctly
+        let response = Bytes::from_static(b"vmoaifnuei");
+        let expiry_time = "2023-09-25T07:47:58.661309Z".to_string();
+        network_tx
+            .send(IngressDispatcherInput::Response(IngressResponseMessage {
+                full_invocation_id: service_invocation.fid,
+                result: Ok(IdempotentInvokeResponse {
+                    expiry_time: expiry_time.clone(),
+                    response: Some(idempotent_invoke_response::Response::Success(
+                        response.clone(),
+                    )),
+                }
+                .encode_to_vec()
+                .into()),
+                ack_target: AckTarget::new(0, 0),
+            }))
+            .await
+            .unwrap();
+
+        assert_that!(
+            res.await.unwrap(),
+            pat!(IngressResponse {
+                idempotency_expiry_time: some(eq(expiry_time)),
+                result: ok(eq(response))
+            })
+        );
+
+        drain_signal.drain().await;
     }
 }
