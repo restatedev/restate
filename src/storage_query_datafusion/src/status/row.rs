@@ -67,6 +67,7 @@ pub(crate) fn append_status_row(
         if let Some(key) = restate_keys::try_decode_restate_key_as_json(
             &status_row.service,
             &status_row.service_key,
+            output,
             resolver,
         ) {
             row.service_key_json(key);

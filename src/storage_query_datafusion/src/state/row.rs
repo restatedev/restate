@@ -17,6 +17,7 @@ use uuid::Uuid;
 #[inline]
 pub(crate) fn append_state_row(
     builder: &mut StateBuilder,
+    output: &mut String,
     state_row: OwnedStateRow,
     resolver: impl RestateKeyConverter,
 ) {
@@ -50,7 +51,7 @@ pub(crate) fn append_state_row(
     }
     if row.is_service_key_json_defined() {
         if let Some(key) =
-            restate_keys::try_decode_restate_key_as_json(&service, &service_key, resolver)
+            restate_keys::try_decode_restate_key_as_json(&service, &service_key, output, resolver)
         {
             row.service_key_json(key);
         }

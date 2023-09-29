@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_schema_api::key::RestateKeyConverter;
+use std::fmt::Write;
 use uuid::Uuid;
 
 #[inline]
@@ -39,13 +40,18 @@ pub(crate) fn try_decode_restate_key_as_uuid<'a>(
 }
 
 #[inline]
-pub(crate) fn try_decode_restate_key_as_json(
+pub(crate) fn try_decode_restate_key_as_json<'a>(
     service_name: &str,
     key_slice: &[u8],
+    output: &'a mut String,
     resolver: impl RestateKeyConverter,
-) -> Option<String> {
+) -> Option<&'a str> {
     resolver
         .key_to_json(service_name, key_slice)
-        .map(|value| format!("{value}"))
+        .map(|value| {
+            output.clear();
+            write!(output, "{}", value).expect("Error occurred while trying to write in String");
+            output.as_str()
+        })
         .ok()
 }

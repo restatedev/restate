@@ -77,8 +77,9 @@ fn for_each_state<'a, I>(
     I: Iterator<Item = OwnedStateRow> + 'a,
 {
     let mut builder = StateBuilder::new(schema.clone());
+    let mut temp = String::new();
     for row in rows {
-        append_state_row(&mut builder, row, resolver.clone());
+        append_state_row(&mut builder, &mut temp, row, resolver.clone());
         if builder.full() {
             let batch = builder.finish();
             if tx.blocking_send(Ok(batch)).is_err() {
