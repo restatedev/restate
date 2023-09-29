@@ -496,10 +496,10 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 retention_period_sec
             }
             InvocationStatus::Done { .. } => {
-                return Err(InvocationError::new(
-                    UserErrorCode::FailedPrecondition,
-                    "Invocation is done, collect the result with GetResult",
-                ))
+                self.reply_to_caller(response_serializer.serialize_success(SendResponse {
+                    response: Some(send_response::Response::InvocationCompleted(())),
+                }));
+                return Ok(());
             }
         };
 
@@ -549,10 +549,10 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 }
             }
             InvocationStatus::Done { .. } => {
-                return Err(InvocationError::new(
-                    UserErrorCode::FailedPrecondition,
-                    "Invocation is done, collect the result with GetResult",
-                ))
+                self.reply_to_caller(response_serializer.serialize_success(RecvResponse {
+                    response: Some(recv_response::Response::InvocationCompleted(())),
+                }));
+                return Ok(());
             }
         };
 
@@ -1230,7 +1230,7 @@ mod tests {
     }
 
     #[test(tokio::test)]
-    async fn send_when_done_is_invalid() {
+    async fn send_when_invocation_completed() {
         let mut ctx = TestInvocationContext::new(REMOTE_CONTEXT_SERVICE_NAME);
         ctx.state_mut().set(
             &STATUS,
@@ -1240,7 +1240,7 @@ mod tests {
             )),
         );
 
-        let err = ctx
+        let (fid, effects) = ctx
             .invoke(|ctx| {
                 ctx.send(
                     SendRequest {
@@ -1254,11 +1254,20 @@ mod tests {
                 )
             })
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert_eq!(
-            err.code(),
-            InvocationErrorCode::from(UserErrorCode::FailedPrecondition)
+        assert_that!(
+            effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        SendResponse {
+                            response: some(eq(send_response::Response::InvocationCompleted(())))
+                        }
+                    ))))
+                }
+            ))))
         );
     }
 
@@ -1714,6 +1723,45 @@ mod tests {
                                     )))
                                 ])
                             )))
+                        }
+                    ))))
+                }
+            ))))
+        );
+    }
+
+    #[test(tokio::test)]
+    async fn recv_when_invocation_completed() {
+        let mut ctx = TestInvocationContext::new(REMOTE_CONTEXT_SERVICE_NAME);
+        ctx.state_mut().set(
+            &STATUS,
+            InvocationStatus::Done(to_get_result_response(
+                ResponseResult::Success(Bytes::new()),
+                String::new(),
+            )),
+        );
+
+        let (fid, effects) = ctx
+            .invoke(|ctx| {
+                ctx.recv(
+                    RecvRequest {
+                        stream_id: "my-stream".to_string(),
+                        operation_id: "my-operation".to_string(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_that!(
+            effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        RecvResponse {
+                            response: some(eq(recv_response::Response::InvocationCompleted(())))
                         }
                     ))))
                 }

@@ -129,6 +129,9 @@ message SendResponse {
     // nor the client should create a new stream using Start().
     // The client can instead read the invocation result using GetResult().
     google.protobuf.Empty invalid_stream = 2;
+
+    // This means the invocation is completed, and the result should be collected using GetResult
+    google.protobuf.Empty invocation_completed = 3;
   }
 }
 
@@ -150,6 +153,9 @@ message RecvResponse {
     // nor the client should create a new stream using Start().
     // The client can instead read the invocation result using GetResult().
     google.protobuf.Empty invalid_stream = 2;
+
+    // This means the invocation is completed, and the result should be collected using GetResult
+    google.protobuf.Empty invocation_completed = 3;
   }
 }
 
