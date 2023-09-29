@@ -44,7 +44,7 @@ struct StatusScanner<S>(S);
 impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> RangeScanner for StatusScanner<S> {
     fn scan(
         &self,
-        _range: RangeInclusive<PartitionKey>, // TODO
+        range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
     ) -> SendableRecordBatchStream {
         let status = self.0.clone();
@@ -52,7 +52,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> RangeScanner for S
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
         let tx = stream_builder.tx();
         let background_task = async move {
-            let rows = status.read_status().await;
+            let rows = status.read_status(range).await;
             for_each_state(schema, tx, rows).await;
         };
         stream_builder.spawn(background_task);
