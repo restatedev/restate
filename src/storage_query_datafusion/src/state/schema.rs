@@ -21,6 +21,7 @@ define_table!(state(
     service_key_utf8: DataType::LargeUtf8,
     service_key_int32: DataType::Int32,
     service_key_uuid: DataType::LargeUtf8,
+    service_key_json: DataType::LargeUtf8,
     key: DataType::LargeUtf8,
     value_utf8: DataType::LargeUtf8,
     value: DataType::LargeBinary,

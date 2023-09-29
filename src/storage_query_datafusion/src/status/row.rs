@@ -10,6 +10,7 @@
 
 use crate::status::schema::{StatusBuilder, StatusRowBuilder};
 use crate::udfs::restate_keys;
+use restate_schema_api::key::RestateKeyConverter;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_rocksdb::status_table::OwnedStatusRow;
 use restate_types::identifiers::InvocationId;
@@ -23,6 +24,7 @@ pub(crate) fn append_status_row(
     builder: &mut StatusBuilder,
     output: &mut String,
     status_row: OwnedStatusRow,
+    resolver: impl RestateKeyConverter,
 ) {
     let mut row = builder.row();
     let metadata = match status_row.invocation_status {
@@ -59,6 +61,16 @@ pub(crate) fn append_status_row(
             restate_keys::try_decode_restate_key_as_uuid(&status_row.service_key, &mut buffer)
         {
             row.service_key_uuid(key);
+        }
+    }
+    if row.is_service_key_json_defined() {
+        if let Some(key) = restate_keys::try_decode_restate_key_as_json(
+            &status_row.service,
+            &status_row.service_key,
+            output,
+            resolver,
+        ) {
+            row.service_key_json(key);
         }
     }
     if let Some(metadata) = metadata {

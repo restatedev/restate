@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_schema_api::key::RestateKeyConverter;
+use std::fmt::Write;
 use uuid::Uuid;
 
 #[inline]
@@ -35,4 +37,21 @@ pub(crate) fn try_decode_restate_key_as_uuid<'a>(
     }
     let uuid = Uuid::from_slice(key_slice).ok()?;
     Some(uuid.simple().encode_lower(temp_buffer))
+}
+
+#[inline]
+pub(crate) fn try_decode_restate_key_as_json<'a>(
+    service_name: &str,
+    key_slice: &[u8],
+    output: &'a mut String,
+    resolver: impl RestateKeyConverter,
+) -> Option<&'a str> {
+    resolver
+        .key_to_json(service_name, key_slice)
+        .map(|value| {
+            output.clear();
+            write!(output, "{}", value).expect("Error occurred while trying to write in String");
+            output.as_str()
+        })
+        .ok()
 }

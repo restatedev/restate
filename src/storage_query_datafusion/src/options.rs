@@ -13,6 +13,7 @@ use codederror::CodedError;
 use datafusion::error::DataFusionError;
 use restate_schema_api::key::RestateKeyConverter;
 use restate_storage_rocksdb::RocksDBStorage;
+use std::fmt::Debug;
 
 /// # Storage query datafusion options
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
@@ -76,7 +77,7 @@ impl Options {
     pub fn build(
         self,
         rocksdb: RocksDBStorage,
-        schema: impl RestateKeyConverter + Sync + Send + 'static,
+        schema: impl RestateKeyConverter + Sync + Send + Clone + Debug + 'static,
     ) -> Result<QueryContext, BuildError> {
         let Options {
             memory_limit,
@@ -85,9 +86,8 @@ impl Options {
         } = self;
 
         let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
-        crate::status::register_self(&ctx, rocksdb.clone())?;
-        crate::state::register_self(&ctx, rocksdb)?;
-        crate::service_key::register_udf(&ctx, schema);
+        crate::status::register_self(&ctx, rocksdb.clone(), schema.clone())?;
+        crate::state::register_self(&ctx, rocksdb, schema.clone())?;
 
         Ok(ctx)
     }

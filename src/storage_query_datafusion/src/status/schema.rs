@@ -22,6 +22,7 @@ define_table!(status(
     service_key_utf8: DataType::LargeUtf8,
     service_key_int32: DataType::Int32,
     service_key_uuid: DataType::LargeUtf8,
+    service_key_json: DataType::LargeUtf8,
     status: DataType::LargeUtf8,
     id: DataType::LargeUtf8,
     invoked_by: DataType::LargeUtf8,
