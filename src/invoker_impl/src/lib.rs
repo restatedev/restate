@@ -32,7 +32,7 @@ use restate_queue::SegmentQueue;
 use restate_schema_api::endpoint::EndpointMetadataResolver;
 use restate_timer_queue::TimerQueue;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EndpointId, FullInvocationId};
+use restate_types::identifiers::{EndpointId, FullInvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::Completion;
@@ -40,6 +40,7 @@ use restate_types::retries::RetryPolicy;
 use status_store::InvocationStatusStore;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime};
@@ -324,8 +325,8 @@ where
                         segmented_input_queue.enqueue(invoke_command).await;
                     },
                     // --- Other commands (they don't go through the segment queue)
-                    InputCommand::RegisterPartition { partition, sender } => {
-                        self.handle_register_partition(partition, sender);
+                    InputCommand::RegisterPartition { partition, partition_key_range, sender } => {
+                        self.handle_register_partition(partition, partition_key_range, sender);
                     },
                     InputCommand::Abort { partition, full_invocation_id } => {
                         self.handle_abort_invocation(partition, full_invocation_id);
@@ -339,8 +340,14 @@ where
                     InputCommand::StoredEntryAck { partition, full_invocation_id, entry_index } => {
                         self.handle_stored_entry_ack(partition, full_invocation_id, entry_index).await;
                     },
-                    InputCommand::ReadStatus(cmd) => {
-                        let _ = cmd.reply(self.status_store.iter().collect());
+                    InputCommand::ReadStatus{ keys, cmd } => {
+                        let statuses = self
+                            .invocation_state_machine_manager
+                            .registered_partitions_with_keys(keys.clone())
+                            .flat_map(|partition| self.status_store.status_for_partition(partition))
+                            .filter(|status| keys.contains(&status.full_invocation_id().partition_key()))
+                            .collect();
+                        let _ = cmd.reply(statuses);
                     }
                 }
             },
@@ -418,10 +425,14 @@ where
     fn handle_register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
+        partition_key_range: RangeInclusive<PartitionKey>,
         sender: mpsc::Sender<Effect>,
     ) {
-        self.invocation_state_machine_manager
-            .register_partition(partition, sender);
+        self.invocation_state_machine_manager.register_partition(
+            partition,
+            partition_key_range,
+            sender,
+        );
     }
 
     #[instrument(
@@ -962,7 +973,7 @@ mod tests {
             ITR: InvocationTaskRunner,
         {
             let (partition_tx, partition_rx) = mpsc::channel(1024);
-            self.handle_register_partition(MOCK_PARTITION, partition_tx);
+            self.handle_register_partition(MOCK_PARTITION, RangeInclusive::new(0, 0), partition_tx);
             partition_rx
         }
     }
@@ -1035,7 +1046,7 @@ mod tests {
         let (output_tx, mut output_rx) = mpsc::channel(1);
 
         handle
-            .register_partition(partition_leader_epoch, output_tx)
+            .register_partition(partition_leader_epoch, RangeInclusive::new(0, 0), output_tx)
             .await
             .unwrap();
         handle

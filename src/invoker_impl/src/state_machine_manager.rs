@@ -9,8 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
+use std::ops::RangeInclusive;
 
 use restate_invoker_api::Effect;
+use restate_types::identifiers::PartitionKey;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
 #[derive(Debug, Default)]
@@ -22,6 +24,7 @@ pub(super) struct InvocationStateMachineManager {
 struct PartitionInvocationStateMachineCoordinator {
     output_tx: mpsc::Sender<Effect>,
     invocation_state_machines: HashMap<FullInvocationId, InvocationStateMachine>,
+    partition_key_range: RangeInclusive<PartitionKey>,
 }
 
 impl InvocationStateMachineManager {
@@ -78,6 +81,7 @@ impl InvocationStateMachineManager {
     pub(super) fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
+        partition_key_range: RangeInclusive<PartitionKey>,
         sender: mpsc::Sender<Effect>,
     ) {
         self.partitions.insert(
@@ -85,6 +89,7 @@ impl InvocationStateMachineManager {
             PartitionInvocationStateMachineCoordinator {
                 output_tx: sender,
                 invocation_state_machines: Default::default(),
+                partition_key_range,
             },
         );
     }
@@ -105,6 +110,24 @@ impl InvocationStateMachineManager {
     #[inline]
     pub(super) fn registered_partitions(&self) -> Vec<PartitionLeaderEpoch> {
         self.partitions.keys().cloned().collect()
+    }
+
+    pub(super) fn registered_partitions_with_keys(
+        &self,
+        keys: RangeInclusive<PartitionKey>,
+    ) -> impl Iterator<Item = PartitionLeaderEpoch> + '_ {
+        self.partitions
+            .iter()
+            .filter_map(move |(partition_leader_epoch, coordinator)| {
+                // check that there is some intersection
+                if coordinator.partition_key_range.start() <= keys.end()
+                    && keys.start() <= coordinator.partition_key_range.end()
+                {
+                    Some(*partition_leader_epoch)
+                } else {
+                    None
+                }
+            })
     }
 
     #[inline]

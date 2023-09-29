@@ -10,12 +10,13 @@
 
 use super::Effect;
 
-use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
+use restate_types::identifiers::{FullInvocationId, PartitionKey};
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
 use restate_types::journal::JournalMetadata;
 use std::future::Future;
+use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Default)]
@@ -72,6 +73,7 @@ pub trait ServiceHandle {
     fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
+        partition_key_range: RangeInclusive<PartitionKey>,
         sender: mpsc::Sender<Effect>,
     ) -> Self::Future;
 }

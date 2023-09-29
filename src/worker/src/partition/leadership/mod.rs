@@ -17,6 +17,7 @@ use restate_invoker_api::{InvokeInputJournal, ServiceNotRunning};
 use restate_network::NetworkNotRunning;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
+
 use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -235,7 +236,11 @@ where
         let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
 
         invoker_handle
-            .register_partition(partition_leader_epoch, invoker_tx)
+            .register_partition(
+                partition_leader_epoch,
+                partition_storage.partition_key_range().clone(),
+                invoker_tx,
+            )
             .await?;
 
         let mut transaction = partition_storage.create_transaction();

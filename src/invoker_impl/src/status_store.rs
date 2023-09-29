@@ -11,6 +11,7 @@
 use super::*;
 
 use restate_invoker_api::status_handle::{InvocationStatusReport, InvocationStatusReportInner};
+
 use std::time::SystemTime;
 
 #[derive(Default, Debug)]
@@ -19,16 +20,16 @@ pub(super) struct InvocationStatusStore(
 );
 
 impl InvocationStatusStore {
-    pub(super) fn iter(&self) -> impl Iterator<Item = InvocationStatusReport> + '_ {
+    pub(super) fn status_for_partition(
+        &self,
+        partition_leader_epoch: PartitionLeaderEpoch,
+    ) -> impl Iterator<Item = InvocationStatusReport> + '_ {
         self.0
-            .iter()
-            .flat_map(|(partition_leader_epoch, inner_map)| {
-                inner_map.iter().map(move |(fid, report)| {
-                    InvocationStatusReport::new(
-                        fid.clone(),
-                        *partition_leader_epoch,
-                        report.clone(),
-                    )
+            .get(&partition_leader_epoch)
+            .into_iter()
+            .flat_map(move |hash| {
+                hash.iter().map(move |(fid, report)| {
+                    InvocationStatusReport::new(fid.clone(), partition_leader_epoch, report.clone())
                 })
             })
     }

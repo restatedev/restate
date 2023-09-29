@@ -62,6 +62,10 @@ where
         }
     }
 
+    pub(super) fn partition_key_range(&self) -> &RangeInclusive<PartitionKey> {
+        &self.partition_key_range
+    }
+
     pub(super) fn create_transaction(&self) -> Transaction<Storage::TransactionType<'_>> {
         Transaction::new(
             self.partition_id,

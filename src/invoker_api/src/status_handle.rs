@@ -10,10 +10,11 @@
 
 use codederror::Code;
 use restate_types::errors::{InvocationError, InvocationErrorCode};
-use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::{FullInvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use std::fmt;
 use std::future::Future;
+use std::ops::RangeInclusive;
 use std::time::SystemTime;
 
 // -- Status data structure
@@ -114,8 +115,9 @@ pub trait StatusHandle {
     type Iterator: Iterator<Item = InvocationStatusReport>;
     type Future: Future<Output = Self::Iterator>;
 
-    /// This method returns a snapshot of the status of all the invocations currently being processed by this invoker.
+    /// This method returns a snapshot of the status of all the invocations currently being processed by this invoker,
+    /// filtered by the partition key range
     ///
     /// The data returned by this method is eventually consistent.
-    fn read_status(&self) -> Self::Future;
+    fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Future;
 }
