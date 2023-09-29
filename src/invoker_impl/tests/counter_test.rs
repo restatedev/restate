@@ -142,7 +142,7 @@ async fn bidi_stream() {
     endpoint_metadata_registry.mock_service_with_metadata(
         &fid.service_id.service_name,
         EndpointMetadata::new(
-            Uri::from_static("http://localhost:8080"),
+            Uri::from_static("http://localhost:9080"),
             ProtocolType::BidiStream,
             DeliveryOptions::default(),
         ),

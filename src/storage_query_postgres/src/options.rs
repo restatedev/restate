@@ -40,7 +40,7 @@ impl Default for Options {
 
 impl Options {
     fn default_bind_address() -> SocketAddr {
-        "0.0.0.0:5432".parse().unwrap()
+        "0.0.0.0:9071".parse().unwrap()
     }
 
     pub fn build(self, query_context: QueryContext) -> PostgresQueryService {

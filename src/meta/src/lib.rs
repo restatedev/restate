@@ -83,7 +83,7 @@ impl Default for Options {
 
 impl Options {
     fn default_rest_address() -> SocketAddr {
-        "0.0.0.0:8081".parse().unwrap()
+        "0.0.0.0:9070".parse().unwrap()
     }
 
     fn default_rest_concurrency_limit() -> usize {

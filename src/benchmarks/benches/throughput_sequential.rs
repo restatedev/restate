@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 //! This benchmark requires the [counter.Counter service](https://github.com/restatedev/e2e/blob/a500164a31d58c0ee65ae77a7f99a8a2ef1825cb/services/node-services/src/counter.ts)
-//! running on localhost:8080 in order to run.
+//! running on localhost:9080 in order to run.
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use hyper::Uri;
@@ -29,11 +29,11 @@ fn throughput_benchmark(criterion: &mut Criterion) {
 
     restate_benchmarks::discover_endpoint(
         &current_thread_rt,
-        Uri::from_static("http://localhost:8080"),
+        Uri::from_static("http://localhost:9080"),
     );
 
     let counter_client = current_thread_rt.block_on(async {
-        CounterClient::connect("http://localhost:9090")
+        CounterClient::connect("http://localhost:8080")
             .await
             .expect("should be able to connect to Restate gRPC ingress")
     });

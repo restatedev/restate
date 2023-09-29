@@ -172,7 +172,7 @@ mod tests {
         // Generate some commands for a new endpoint, with new services
         let commands_1 = schemas
             .compute_new_endpoint_updates(
-                EndpointMetadata::mock_with_uri("http://localhost:8080"),
+                EndpointMetadata::mock_with_uri("http://localhost:9080"),
                 vec![ServiceRegistrationRequest::new(
                     mocks::GREETER_SERVICE_NAME.to_string(),
                     ServiceInstanceType::Unkeyed,
@@ -189,7 +189,7 @@ mod tests {
         schemas.apply_updates(commands_1.clone()).unwrap();
         let commands_2 = schemas
             .compute_new_endpoint_updates(
-                EndpointMetadata::mock_with_uri("http://localhost:8081"),
+                EndpointMetadata::mock_with_uri("http://localhost:9081"),
                 vec![
                     ServiceRegistrationRequest::new(
                         mocks::GREETER_SERVICE_NAME.to_string(),

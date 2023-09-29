@@ -34,7 +34,7 @@ pub fn discover_endpoint(current_thread_rt: &Runtime, address: Uri) {
             .retry_operation(|| {
                 hyper::Client::new()
                     .request(
-                        hyper::Request::post("http://localhost:8081/endpoints")
+                        hyper::Request::post("http://localhost:9070/endpoints")
                             .header(CONTENT_TYPE, "application/json")
                             .body(Body::from(discovery_payload.clone()))
                             .expect("building discovery request should not fail"),
