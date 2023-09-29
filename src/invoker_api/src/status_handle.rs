@@ -105,15 +105,15 @@ impl InvocationErrorReport {
         self.doc_error_code
     }
 
-    pub fn display_err(&self) -> impl fmt::Debug + '_ {
+    pub fn display_err(&self) -> impl fmt::Display + '_ {
         &self.err
     }
 }
 
 /// Struct to access the status of the invocations currently handled by the invoker
 pub trait StatusHandle {
-    type Iterator: Iterator<Item = InvocationStatusReport>;
-    type Future: Future<Output = Self::Iterator>;
+    type Iterator: Iterator<Item = InvocationStatusReport> + Send;
+    type Future: Future<Output = Self::Iterator> + Send;
 
     /// This method returns a snapshot of the status of all the invocations currently being processed by this invoker,
     /// filtered by the partition key range

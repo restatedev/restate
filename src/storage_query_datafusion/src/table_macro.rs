@@ -33,6 +33,9 @@ macro_rules! define_builder {
     (DataType::Date64) => {
         ::datafusion::arrow::array::Date64Builder
     };
+    (DataType::Boolean) => {
+        ::datafusion::arrow::array::BooleanBuilder
+    };
 }
 
 macro_rules! define_primitive_trait {
@@ -59,6 +62,9 @@ macro_rules! define_primitive_trait {
     };
     (DataType::UInt64) => {
         u64
+    };
+    (DataType::Boolean) => {
+        bool
     };
 }
 

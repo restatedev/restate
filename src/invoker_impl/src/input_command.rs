@@ -191,6 +191,7 @@ impl ServiceHandle for ChannelServiceHandle {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ChannelStatusReader(pub(super) mpsc::UnboundedSender<InputCommand>);
 
 impl StatusHandle for ChannelStatusReader {

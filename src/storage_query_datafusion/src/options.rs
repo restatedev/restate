@@ -11,6 +11,7 @@
 use crate::context::QueryContext;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
+use restate_invoker_api::StatusHandle;
 use restate_schema_api::key::RestateKeyConverter;
 use restate_storage_rocksdb::RocksDBStorage;
 use std::fmt::Debug;
@@ -78,6 +79,7 @@ impl Options {
         self,
         rocksdb: RocksDBStorage,
         schema: impl RestateKeyConverter + Sync + Send + Clone + Debug + 'static,
+        status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
     ) -> Result<QueryContext, BuildError> {
         let Options {
             memory_limit,
@@ -88,6 +90,7 @@ impl Options {
         let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
         crate::status::register_self(&ctx, rocksdb.clone(), schema.clone())?;
         crate::state::register_self(&ctx, rocksdb, schema.clone())?;
+        crate::invocation_state::register_self(&ctx, status)?;
 
         Ok(ctx)
     }
