@@ -14,8 +14,11 @@ use restate_invoker_api::{
     Effect, InvocationStatusReport, InvokeInputJournal, ServiceHandle, ServiceNotRunning,
     StatusHandle,
 };
-use restate_types::identifiers::{EntryIndex, FullInvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::{
+    EntryIndex, FullInvocationId, PartitionKey, PartitionLeaderEpoch,
+};
 use restate_types::journal::Completion;
+use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 
 // -- Input messages
@@ -56,11 +59,17 @@ pub(crate) enum InputCommand {
     // needed for dynamic registration at Invoker
     RegisterPartition {
         partition: PartitionLeaderEpoch,
+        partition_key_range: RangeInclusive<PartitionKey>,
         sender: mpsc::Sender<Effect>,
     },
 
     // Read status
-    ReadStatus(restate_futures_util::command::Command<(), Vec<InvocationStatusReport>>),
+    ReadStatus(
+        restate_futures_util::command::Command<
+            RangeInclusive<PartitionKey>,
+            Vec<InvocationStatusReport>,
+        >,
+    ),
 }
 
 // -- Handles implementations. This is just glue code between the Input<Command> and the interfaces
@@ -167,11 +176,16 @@ impl ServiceHandle for ChannelServiceHandle {
     fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
+        partition_key_range: RangeInclusive<PartitionKey>,
         sender: mpsc::Sender<Effect>,
     ) -> Self::Future {
         futures::future::ready(
             self.input
-                .send(InputCommand::RegisterPartition { partition, sender })
+                .send(InputCommand::RegisterPartition {
+                    partition,
+                    partition_key_range,
+                    sender,
+                })
                 .map_err(|_| ServiceNotRunning),
         )
     }
@@ -186,8 +200,8 @@ impl StatusHandle for ChannelStatusReader {
     >;
     type Future = BoxFuture<'static, Self::Iterator>;
 
-    fn read_status(&self) -> Self::Future {
-        let (cmd, rx) = restate_futures_util::command::Command::prepare(());
+    fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Future {
+        let (cmd, rx) = restate_futures_util::command::Command::prepare(keys);
         if self.0.send(InputCommand::ReadStatus(cmd)).is_err() {
             return std::future::ready(itertools::Either::Left(std::iter::empty::<
                 InvocationStatusReport,

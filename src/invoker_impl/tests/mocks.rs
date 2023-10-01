@@ -15,6 +15,7 @@ use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::Duration;
 use std::vec::IntoIter;
@@ -70,7 +71,10 @@ where
 {
     pub async fn new(journals: InMemoryJournalStorage, mut in_tx: InvokerInput) -> Self {
         let (out_tx, out_rx) = mpsc::channel(100);
-        in_tx.register_partition((0, 0), out_tx).await.unwrap();
+        in_tx
+            .register_partition((0, 0), RangeInclusive::new(0, 0), out_tx)
+            .await
+            .unwrap();
 
         Self {
             journals,

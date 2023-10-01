@@ -17,6 +17,8 @@ use restate_invoker_api::{InvokeInputJournal, ServiceNotRunning};
 use restate_network::NetworkNotRunning;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
+use std::ops::RangeInclusive;
+
 use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -31,7 +33,7 @@ pub(crate) use actuator::{ActuatorMessageCollector, ActuatorOutput, ActuatorStre
 use restate_schema_impl::Schemas;
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::{FullInvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
 use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::EntryType;
@@ -129,6 +131,7 @@ where
     pub(crate) async fn become_leader(
         self,
         leader_epoch: LeaderEpoch,
+        partition_key_range: RangeInclusive<PartitionKey>,
         partition_storage: &'a PartitionStorage,
         schemas: &'a Schemas,
     ) -> Result<
@@ -139,13 +142,23 @@ where
         Error,
     > {
         if let LeadershipState::Follower { .. } = self {
-            self.unchecked_become_leader(leader_epoch, partition_storage, schemas)
-                .await
+            self.unchecked_become_leader(
+                leader_epoch,
+                partition_key_range,
+                partition_storage,
+                schemas,
+            )
+            .await
         } else {
             let (_, follower_state) = self.become_follower().await?;
 
             follower_state
-                .unchecked_become_leader(leader_epoch, partition_storage, schemas)
+                .unchecked_become_leader(
+                    leader_epoch,
+                    partition_key_range,
+                    partition_storage,
+                    schemas,
+                )
                 .await
         }
     }
@@ -153,6 +166,7 @@ where
     async fn unchecked_become_leader(
         self,
         leader_epoch: LeaderEpoch,
+        partition_key_range: RangeInclusive<PartitionKey>,
         partition_storage: &'a PartitionStorage,
         schemas: &'a Schemas,
     ) -> Result<
@@ -170,6 +184,7 @@ where
                 &mut follower_state.invoker_tx,
                 &mut service_invoker,
                 (follower_state.partition_id, leader_epoch),
+                partition_key_range,
                 partition_storage,
                 follower_state.channel_size,
             )
@@ -229,13 +244,14 @@ where
         invoker_handle: &mut InvokerInputSender,
         built_in_service_invoker: &mut non_deterministic::ServiceInvoker<'_>,
         partition_leader_epoch: PartitionLeaderEpoch,
+        partition_key_range: RangeInclusive<PartitionKey>,
         partition_storage: &PartitionStorage,
         channel_size: usize,
     ) -> Result<mpsc::Receiver<restate_invoker_api::Effect>, Error> {
         let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
 
         invoker_handle
-            .register_partition(partition_leader_epoch, invoker_tx)
+            .register_partition(partition_leader_epoch, partition_key_range, invoker_tx)
             .await?;
 
         let mut transaction = partition_storage.create_transaction();
