@@ -11,6 +11,7 @@
 use crate::invocation_state::schema::StateBuilder;
 use crate::udfs::restate_keys;
 use restate_invoker_api::InvocationStatusReport;
+use restate_schema_api::key::RestateKeyConverter;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
 use std::fmt;
@@ -22,6 +23,7 @@ pub(crate) fn append_state_row(
     builder: &mut StateBuilder,
     output: &mut String,
     status_row: InvocationStatusReport,
+    resolver: impl RestateKeyConverter,
 ) {
     let mut row = builder.row();
 
@@ -50,6 +52,16 @@ pub(crate) fn append_state_row(
             restate_keys::try_decode_restate_key_as_uuid(&invocation_id.service_id.key, &mut buffer)
         {
             row.service_key_uuid(key);
+        }
+    }
+    if row.is_service_key_json_defined() {
+        if let Some(key) = restate_keys::try_decode_restate_key_as_json(
+            &invocation_id.service_id.service_name,
+            &invocation_id.service_id.key,
+            output,
+            resolver,
+        ) {
+            row.service_key_json(key);
         }
     }
     if row.is_id_defined() {

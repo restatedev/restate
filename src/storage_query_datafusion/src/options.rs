@@ -90,7 +90,7 @@ impl Options {
         let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
         crate::status::register_self(&ctx, rocksdb.clone(), schema.clone())?;
         crate::state::register_self(&ctx, rocksdb, schema.clone())?;
-        crate::invocation_state::register_self(&ctx, status)?;
+        crate::invocation_state::register_self(&ctx, status, schema)?;
 
         Ok(ctx)
     }

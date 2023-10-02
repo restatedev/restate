@@ -23,15 +23,19 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
 use restate_invoker_api::{InvocationStatusReport, StatusHandle};
+use restate_schema_api::key::RestateKeyConverter;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
     status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
+    resolver: impl RestateKeyConverter + Send + Sync + Debug + Clone + 'static,
 ) -> datafusion::common::Result<()> {
-    let status_table =
-        GenericTableProvider::new(StateBuilder::schema(), Arc::new(StatusScanner(status)));
+    let status_table = GenericTableProvider::new(
+        StateBuilder::schema(),
+        Arc::new(StatusScanner(status, resolver)),
+    );
 
     ctx.as_ref()
         .register_table("sys_invocation_state", Arc::new(status_table))
@@ -39,9 +43,13 @@ pub(crate) fn register_self(
 }
 
 #[derive(Debug, Clone)]
-struct StatusScanner<S>(S);
+struct StatusScanner<S, R>(S, R);
 
-impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> RangeScanner for StatusScanner<S> {
+impl<
+        S: StatusHandle + Send + Sync + Debug + Clone + 'static,
+        R: RestateKeyConverter + Send + Sync + Debug + Clone + 'static,
+    > RangeScanner for StatusScanner<S, R>
+{
     fn scan(
         &self,
         range: RangeInclusive<PartitionKey>,
@@ -49,11 +57,12 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> RangeScanner for S
     ) -> SendableRecordBatchStream {
         let status = self.0.clone();
         let schema = projection.clone();
+        let resolver = self.1.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
         let tx = stream_builder.tx();
         let background_task = async move {
             let rows = status.read_status(range).await;
-            for_each_state(schema, tx, rows).await;
+            for_each_state(schema, tx, rows, resolver).await;
         };
         stream_builder.spawn(background_task);
         stream_builder.build()
@@ -64,13 +73,14 @@ async fn for_each_state<'a, I>(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     rows: I,
+    resolver: impl RestateKeyConverter + Clone,
 ) where
     I: Iterator<Item = InvocationStatusReport> + 'a,
 {
     let mut builder = StateBuilder::new(schema.clone());
     let mut temp = String::new();
     for row in rows {
-        append_state_row(&mut builder, &mut temp, row);
+        append_state_row(&mut builder, &mut temp, row, resolver.clone());
         if builder.full() {
             let batch = builder.finish();
             if tx.send(Ok(batch)).await.is_err() {
