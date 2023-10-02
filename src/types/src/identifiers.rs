@@ -327,6 +327,12 @@ impl fmt::Display for FullInvocationId {
 
 impl From<FullInvocationId> for InvocationId {
     fn from(value: FullInvocationId) -> Self {
+        InvocationId::from(&value)
+    }
+}
+
+impl From<&FullInvocationId> for InvocationId {
+    fn from(value: &FullInvocationId) -> Self {
         Self {
             partition_key: value.partition_key(),
             invocation_uuid: value.invocation_uuid,

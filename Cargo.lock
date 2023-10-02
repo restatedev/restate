@@ -4113,6 +4113,7 @@ dependencies = [
  "futures",
  "paste",
  "prost",
+ "restate_invoker_api",
  "restate_schema_api",
  "restate_storage_api",
  "restate_storage_rocksdb",
