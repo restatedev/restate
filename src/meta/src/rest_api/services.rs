@@ -14,6 +14,8 @@ use super::state::*;
 use axum::extract::{Path, State};
 use axum::Json;
 use okapi_operation::*;
+use prost::Message;
+use restate_pb::grpc::reflection::FileDescriptorResponse;
 use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -101,4 +103,33 @@ pub async fn modify_service<S: ServiceMetadataResolver, W>(
         .resolve_latest_service_metadata(&service_name)
         .map(Into::into)
         .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
+}
+
+/// List service descriptors
+#[openapi(
+    summary = "List service descriptors",
+    description = "List file descriptors for the service.",
+    operation_id = "list_service_descriptors",
+    tags = "service",
+    parameters(path(
+        name = "service",
+        description = "Fully qualified service name.",
+        schema = "std::string::String"
+    )),
+    responses(ignore_return_type = true, from_type = "MetaApiError",)
+)]
+pub async fn list_service_descriptors<S: ServiceMetadataResolver, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
+    Path(service_name): Path<String>,
+) -> Result<Vec<u8>, MetaApiError> {
+    state
+        .schemas()
+        .descriptors(&service_name)
+        .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
+        .map(|descriptors| {
+            FileDescriptorResponse {
+                file_descriptor_proto: descriptors,
+            }
+            .encode_to_vec()
+        })
 }

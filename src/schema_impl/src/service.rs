@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use super::Schemas;
+use bytes::Bytes;
+use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 
 use crate::schemas_impl::{ServiceInstanceType, ServiceLocation, ServiceSchemas};
 use restate_schema_api::service::{MethodMetadata, ServiceMetadata, ServiceMetadataResolver};
@@ -22,6 +24,10 @@ impl ServiceMetadataResolver for Schemas {
             map_to_service_metadata(service_name.as_ref(), service_schemas)
         })
         .flatten()
+    }
+
+    fn descriptors(&self, service_name: impl AsRef<str>) -> Option<Vec<Bytes>> {
+        self.get_file_descriptors_by_symbol_name(service_name.as_ref())
     }
 
     fn list_services(&self) -> Vec<ServiceMetadata> {
