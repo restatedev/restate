@@ -65,10 +65,7 @@ pub(crate) fn append_state_row(
         }
     }
     if row.is_id_defined() {
-        row.id(format_using(
-            output,
-            &InvocationId::new(invocation_id.partition_key(), invocation_id.invocation_uuid),
-        ));
+        row.id(format_using(output, &InvocationId::from(invocation_id)));
     }
     row.in_flight(status_row.in_flight());
     row.retry_count(status_row.retry_count() as u64);
@@ -77,7 +74,10 @@ pub(crate) fn append_state_row(
         row.last_failure(format_using(
             output,
             &last_retry_attempt_failure.display_err(),
-        ))
+        ));
+        if let Some(doc_error_code) = last_retry_attempt_failure.doc_error_code() {
+            row.last_error_code(doc_error_code.code())
+        }
     }
 }
 

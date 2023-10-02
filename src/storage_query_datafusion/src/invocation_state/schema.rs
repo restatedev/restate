@@ -27,4 +27,5 @@ define_table!(state(
     retry_count: DataType::UInt64,
     last_start_at: DataType::Date64,
     last_failure: DataType::LargeUtf8,
+    last_error_code: DataType::LargeUtf8,
 ));
