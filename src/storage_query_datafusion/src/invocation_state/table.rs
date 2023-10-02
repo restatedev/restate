@@ -24,7 +24,7 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
 use restate_invoker_api::{InvocationStatusReport, StatusHandle};
 use restate_schema_api::key::RestateKeyConverter;
-use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use tokio::sync::mpsc::Sender;
 
 pub(crate) fn register_self(
@@ -79,6 +79,9 @@ async fn for_each_state<'a, I>(
 {
     let mut builder = StateBuilder::new(schema.clone());
     let mut temp = String::new();
+    let mut rows = rows.collect::<Vec<_>>();
+    // need to be ordered by partition key for symmetric joins
+    rows.sort_unstable_by_key(|row| row.full_invocation_id().service_id.partition_key());
     for row in rows {
         append_state_row(&mut builder, &mut temp, row, resolver.clone());
         if builder.full() {
