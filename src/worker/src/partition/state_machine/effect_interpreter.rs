@@ -19,7 +19,7 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
+use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, JournalMetadata};
 use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocation;
@@ -271,7 +271,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             }
             Effect::SetState {
                 service_id,
-                metadata,
+                previous_invocation_status,
                 key,
                 value,
                 journal_entry,
@@ -281,9 +281,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
 
                 Self::append_journal_entry(
                     state_storage,
-                    collector,
                     service_id,
-                    metadata,
+                    previous_invocation_status,
                     entry_index,
                     journal_entry,
                 )
@@ -299,7 +298,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             }
             Effect::ClearState {
                 service_id,
-                metadata,
+                previous_invocation_status,
                 key,
                 journal_entry,
                 entry_index,
@@ -308,9 +307,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
 
                 Self::append_journal_entry(
                     state_storage,
-                    collector,
                     service_id,
-                    metadata,
+                    previous_invocation_status,
                     entry_index,
                     journal_entry,
                 )
@@ -324,7 +322,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             Effect::GetStateAndAppendCompletedEntry {
                 key,
                 service_id,
-                metadata,
+                previous_invocation_status,
                 mut journal_entry,
                 entry_index,
             } => {
@@ -336,14 +334,17 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
 
                 Codec::write_completion(&mut journal_entry, completion_result.clone())?;
 
-                let full_invocation_id =
-                    FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid);
+                let full_invocation_id = FullInvocationId::with_service_id(
+                    service_id.clone(),
+                    previous_invocation_status
+                        .invocation_uuid()
+                        .expect("There must be an invocation uuid now"),
+                );
 
-                Self::unchecked_append_journal_entry(
+                Self::append_journal_entry(
                     state_storage,
-                    collector,
                     service_id,
-                    metadata,
+                    previous_invocation_status,
                     entry_index,
                     journal_entry,
                 )
@@ -384,10 +385,10 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 mut metadata,
             } => {
                 debug_assert_eq!(
-                    metadata.journal_metadata.endpoint_id, None,
+                    metadata.endpoint_id, None,
                     "No endpoint_id should be fixed for the current invocation"
                 );
-                metadata.journal_metadata.endpoint_id = Some(endpoint_id);
+                metadata.endpoint_id = Some(endpoint_id);
                 // We recreate the InvocationStatus in Invoked state as the invoker can notify the
                 // chosen endpoint_id only when the invocation is in-flight.
                 state_storage
@@ -396,71 +397,18 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             }
             Effect::AppendJournalEntry {
                 service_id,
-                metadata,
+                previous_invocation_status,
                 entry_index,
                 journal_entry,
             } => {
                 Self::append_journal_entry(
                     state_storage,
-                    collector,
                     service_id,
-                    metadata,
+                    previous_invocation_status,
                     entry_index,
                     journal_entry,
                 )
                 .await?;
-            }
-            Effect::AppendAwakeableEntry {
-                service_id,
-                metadata,
-                entry_index,
-                mut journal_entry,
-            } => {
-                // check whether the completion has arrived first
-                if let Some(completion_result) = state_storage
-                    .load_completion_result(&service_id, entry_index)
-                    .await?
-                {
-                    Codec::write_completion(&mut journal_entry, completion_result)?;
-                }
-
-                Self::unchecked_append_journal_entry(
-                    state_storage,
-                    collector,
-                    service_id,
-                    metadata,
-                    entry_index,
-                    journal_entry,
-                )
-                .await?;
-            }
-            Effect::AppendJournalEntryAndAck {
-                service_id,
-                metadata,
-                journal_entry,
-                entry_index,
-            } => {
-                let full_invocation_id =
-                    FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid);
-
-                Self::append_journal_entry(
-                    state_storage,
-                    collector,
-                    service_id,
-                    metadata,
-                    entry_index,
-                    journal_entry,
-                )
-                .await?;
-
-                // storage is acked by sending an empty completion
-                collector.collect(Action::ForwardCompletion {
-                    full_invocation_id,
-                    completion: Completion {
-                        entry_index,
-                        result: CompletionResult::Ack,
-                    },
-                })
             }
             Effect::TruncateOutbox(outbox_sequence_number) => {
                 state_storage
@@ -544,6 +492,43 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     unreachable!("There must be an entry that is completed if we want to resume");
                 }
             }
+            Effect::ForwardCompletion {
+                full_invocation_id,
+                completion,
+            } => {
+                collector.collect(ActuatorMessage::ForwardCompletion {
+                    full_invocation_id,
+                    completion,
+                });
+            }
+            Effect::CreateVirtualJournal {
+                service_id,
+                invocation_uuid,
+                span_context,
+                notification_target,
+            } => {
+                state_storage
+                    .store_invocation_status(
+                        &service_id,
+                        InvocationStatus::Virtual {
+                            invocation_uuid,
+                            journal_metadata: JournalMetadata::initialize(span_context),
+                            completion_notification_target: notification_target,
+                        },
+                    )
+                    .await?;
+            }
+            Effect::NotifyVirtualJournalCompletion {
+                target_service,
+                method_name,
+                invocation_uuid,
+                completion,
+            } => collector.collect(ActuatorMessage::NotifyVirtualJournalCompletion {
+                target_service,
+                method_name,
+                invocation_uuid,
+                completion,
+            }),
             Effect::DropJournalAndPopInbox {
                 service_id,
                 inbox_sequence_number,
@@ -568,6 +553,12 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             Effect::AbortInvocation(full_invocation_id) => {
                 collector.collect(Action::AbortInvocation(full_invocation_id))
             }
+            Effect::SendStoredEntryAckToInvoker(full_invocation_id, entry_index) => {
+                collector.collect(ActuatorMessage::AckStoredEntry {
+                    full_invocation_id,
+                    entry_index,
+                });
+            }
         }
 
         Ok(())
@@ -580,9 +571,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     ) -> Result<(), Error> {
         let creation_time = MillisSinceEpoch::now();
         let journal_metadata = JournalMetadata::new(
-            service_invocation.method_name.clone(),
-            service_invocation.span_context.clone(),
             1, // initial length is 1, because we store the poll input stream entry
+            service_invocation.span_context.clone(),
         );
 
         state_storage
@@ -591,6 +581,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 InvocationStatus::Invoked(InvocationMetadata::new(
                     service_invocation.fid.invocation_uuid,
                     journal_metadata.clone(),
+                    None,
+                    service_invocation.method_name.clone(),
                     service_invocation.response_sink.clone(),
                     creation_time,
                     creation_time,
@@ -632,7 +624,12 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             collector.collect(Action::Invoke {
                 full_invocation_id: service_invocation.fid,
                 invoke_input_journal: InvokeInputJournal::CachedJournal(
-                    journal_metadata,
+                    restate_invoker_api::JournalMetadata::new(
+                        journal_metadata.length,
+                        journal_metadata.span_context,
+                        service_invocation.method_name.clone(),
+                        None,
+                    ),
                     vec![PlainRawEntry::new(
                         RawEntryHeader::PollInputStream { is_completed },
                         raw_bytes,
@@ -692,66 +689,51 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         }
     }
 
-    async fn append_journal_entry<S: StateStorage, C: ActionCollector>(
+    async fn append_journal_entry<S: StateStorage>(
         state_storage: &mut S,
-        collector: &mut C,
         service_id: ServiceId,
-        metadata: InvocationMetadata,
+        mut previous_invocation_status: InvocationStatus,
         entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
+        mut journal_entry: EnrichedRawEntry,
     ) -> Result<(), Error> {
-        debug_assert!(
-            state_storage
+        if journal_entry.ty() == EntryType::Awakeable {
+            // check whether the completion has arrived first
+            if let Some(completion_result) = state_storage
                 .load_completion_result(&service_id, entry_index)
                 .await?
-                .is_none(),
-            "Only awakeable journal entries can have a completion result already stored"
-        );
+            {
+                Codec::write_completion(&mut journal_entry, completion_result)?;
+            }
+        } else {
+            // If this is not awakeable, then we never expect a completion to be present.
+            debug_assert!(
+                state_storage
+                    .load_completion_result(&service_id, entry_index)
+                    .await?
+                    .is_none(),
+                "Only awakeable journal entries can have a completion result already stored"
+            );
+        }
 
-        Self::unchecked_append_journal_entry(
-            state_storage,
-            collector,
-            service_id,
-            metadata,
-            entry_index,
-            journal_entry,
-        )
-        .await
-    }
-
-    async fn unchecked_append_journal_entry<S: StateStorage, C: ActionCollector>(
-        state_storage: &mut S,
-        collector: &mut C,
-        service_id: ServiceId,
-        mut metadata: InvocationMetadata,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    ) -> Result<(), Error> {
+        // Store journal entry
         state_storage
             .store_journal_entry(&service_id, entry_index, journal_entry)
             .await?;
 
-        let full_invocation_id =
-            FullInvocationId::with_service_id(service_id, metadata.invocation_uuid);
-
-        // update the journal metadata
+        // update the journal metadata length
+        let journal_meta = previous_invocation_status
+            .get_journal_metadata_mut()
+            .expect("At this point there must be a journal");
         debug_assert_eq!(
-            metadata.journal_metadata.length, entry_index,
+            journal_meta.length, entry_index,
             "journal should not have gaps"
         );
-        metadata.journal_metadata.length = entry_index + 1;
+        journal_meta.length = entry_index + 1;
 
+        // Store invocation status
         state_storage
-            .store_invocation_status(
-                &full_invocation_id.service_id,
-                InvocationStatus::Invoked(metadata),
-            )
+            .store_invocation_status(&service_id, previous_invocation_status)
             .await?;
-
-        collector.collect(Action::AckStoredEntry {
-            full_invocation_id,
-            entry_index,
-        });
 
         Ok(())
     }

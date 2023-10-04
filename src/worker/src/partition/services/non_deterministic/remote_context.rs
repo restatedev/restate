@@ -16,22 +16,25 @@ use prost::Message;
 use restate_pb::builtin_service::ResponseSerializer;
 use restate_pb::restate::internal::get_result_response::InvocationFailure;
 use restate_pb::restate::internal::{
-    get_result_response, recv_response, send_response, start_response, CleanupRequest,
-    GetResultRequest, GetResultResponse, RecvRequest, RecvResponse, RemoteContextBuiltInService,
-    SendRequest, SendResponse, ServiceInvocationSinkRequest, StartRequest, StartResponse,
+    get_result_response, journal_completion_notification_request, recv_response, send_response,
+    start_response, CleanupRequest, GetResultRequest, GetResultResponse,
+    JournalCompletionNotificationRequest, RecvRequest, RecvResponse, RemoteContextBuiltInService,
+    SendRequest, SendResponse, StartRequest, StartResponse,
 };
-use restate_pb::REMOTE_CONTEXT_INTERNAL_ON_RESPONSE_METHOD_NAME;
+use restate_pb::REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME;
 use restate_schema_api::key::KeyExtractor;
+use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, ProtocolMessage,
 };
-use restate_types::identifiers::InvocationUuid;
+use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext};
+use restate_types::journal::enriched::{EnrichedEntryHeader, ResolutionResult};
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use restate_types::journal::{
-    BackgroundInvokeEntry, ClearStateEntry, Entry, EntryResult, GetStateEntry, InvokeEntry,
-    InvokeRequest, OutputStreamEntry, SetStateEntry,
+    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Entry, EntryResult,
+    GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry,
 };
 use restate_types::journal::{Completion, CompletionResult};
 use serde::{Deserialize, Serialize};
@@ -42,6 +45,7 @@ use tracing::{debug, instrument, trace, warn};
 #[derive(Serialize, Deserialize, Debug)]
 enum InvocationStatus {
     Executing {
+        invocation_uuid: InvocationUuid,
         stream_id: String,
         retention_period_sec: u32,
     },
@@ -63,10 +67,6 @@ type SinksState = Vec<(FullInvocationId, ServiceInvocationResponseSink)>;
 const PENDING_GET_RESULT_SINKS: StateKey<Bincode<SinksState>> =
     StateKey::new_bincode("_internal_result_sinks");
 
-// TODO we should reuse the journal storage of the partition processor
-type JournalState = Vec<PlainRawEntry>;
-const JOURNAL: StateKey<Bincode<JournalState>> = StateKey::new_bincode("_internal_journal");
-
 #[derive(Serialize, Deserialize, Debug)]
 struct InvokeEntryContext {
     operation_id: String,
@@ -76,12 +76,14 @@ struct InvokeEntryContext {
 const DEFAULT_RETENTION_PERIOD: u32 = 30 * 60;
 
 impl<'a, State: StateReader> InvocationContext<'a, State> {
+    #[allow(clippy::too_many_arguments)]
     async fn handle_protocol_message(
         &mut self,
         operation_id: &str,
         stream_id: &str,
         retention_period_sec: u32,
-        journal: &mut JournalState,
+        entry_index: EntryIndex,
+        journal_span_context: ServiceInvocationSpanContext,
         header: MessageHeader,
         message: ProtocolMessage,
     ) -> Result<(), InvocationError> {
@@ -108,8 +110,14 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 Ok(())
             }
             ProtocolMessage::UnparsedEntry(entry) => {
-                self.handle_entry(operation_id, retention_period_sec, journal, entry)
-                    .await
+                self.handle_entry(
+                    operation_id,
+                    retention_period_sec,
+                    entry_index,
+                    journal_span_context,
+                    entry,
+                )
+                .await
             }
         }
     }
@@ -118,11 +126,11 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         &mut self,
         operation_id: &str,
         retention_period_sec: u32,
-        journal: &mut JournalState,
+        entry_index: EntryIndex,
+        journal_span_context: ServiceInvocationSpanContext,
         mut entry: PlainRawEntry,
     ) -> Result<(), InvocationError> {
-        let entry_index: EntryIndex = journal.len() as EntryIndex;
-        match entry.header.clone() {
+        let enriched_entry = match entry.header {
             RawEntryHeader::OutputStream => {
                 let_assert!(
                     Entry::OutputStream(OutputStreamEntry { result }) =
@@ -167,7 +175,8 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     None,
                     expiry_time.into(),
                     entry_index,
-                )
+                );
+                EnrichedRawEntry::new(EnrichedEntryHeader::OutputStream, entry.entry)
             }
             RawEntryHeader::GetState { is_completed } => {
                 let_assert!(
@@ -193,6 +202,10 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     self.enqueue_protocol_message(ProtocolMessage::from(completion))
                         .await?;
                 }
+                EnrichedRawEntry::new(
+                    EnrichedEntryHeader::GetState { is_completed: true },
+                    entry.entry,
+                )
             }
             RawEntryHeader::SetState => {
                 let_assert!(
@@ -202,6 +215,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 );
                 let state_key = check_state_key(key)?;
                 self.set_state(&state_key, &value)?;
+                EnrichedRawEntry::new(EnrichedEntryHeader::SetState, entry.entry)
             }
             RawEntryHeader::ClearState => {
                 let_assert!(
@@ -211,6 +225,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 );
                 let state_key = check_state_key(key)?;
                 self.clear_state(&state_key);
+                EnrichedRawEntry::new(EnrichedEntryHeader::ClearState, entry.entry)
             }
             RawEntryHeader::Invoke { is_completed } => {
                 if !is_completed {
@@ -221,9 +236,11 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     );
 
                     let fid = self.generate_fid_from_invoke_request(&request)?;
+                    let span_context =
+                        ServiceInvocationSpanContext::start(&fid, journal_span_context.as_parent());
 
                     self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation {
-                        fid,
+                        fid: fid.clone(),
                         method_name: request.method_name,
                         argument: request.parameter,
                         response_sink: Some(ServiceInvocationResponseSink::NewInvocation {
@@ -231,15 +248,35 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                                 self.full_invocation_id.service_id.clone(),
                                 InvocationUuid::now_v7(),
                             ),
-                            method: REMOTE_CONTEXT_INTERNAL_ON_RESPONSE_METHOD_NAME.to_string(),
+                            method: REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME.to_string(),
                             caller_context: Bincode::encode(&InvokeEntryContext {
                                 operation_id: operation_id.to_string(),
                                 entry_index,
                             })
                             .map_err(InvocationError::internal)?,
                         }),
-                        span_context: ServiceInvocationSpanContext::empty(),
+                        span_context: span_context.clone(),
                     }));
+
+                    EnrichedRawEntry::new(
+                        EnrichedEntryHeader::Invoke {
+                            is_completed,
+                            resolution_result: Some(ResolutionResult {
+                                invocation_uuid: fid.invocation_uuid,
+                                service_key: fid.service_id.key,
+                                span_context,
+                            }),
+                        },
+                        entry.entry,
+                    )
+                } else {
+                    EnrichedRawEntry::new(
+                        EnrichedEntryHeader::Invoke {
+                            is_completed,
+                            resolution_result: None,
+                        },
+                        entry.entry,
+                    )
                 }
             }
             RawEntryHeader::BackgroundInvoke => {
@@ -252,10 +289,12 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 );
 
                 let fid = self.generate_fid_from_invoke_request(&request)?;
+                let span_context =
+                    ServiceInvocationSpanContext::start(&fid, journal_span_context.as_linked());
 
                 if invoke_time != 0 {
                     self.delay_invoke(
-                        fid,
+                        fid.clone(),
                         request.method_name.into(),
                         request.parameter,
                         None,
@@ -264,15 +303,47 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     )
                 } else {
                     self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation {
-                        fid,
+                        fid: fid.clone(),
                         method_name: request.method_name,
                         argument: request.parameter,
                         response_sink: None,
-                        span_context: ServiceInvocationSpanContext::empty(),
+                        span_context: span_context.clone(),
                     }))
                 }
+                EnrichedRawEntry::new(
+                    EnrichedEntryHeader::BackgroundInvoke {
+                        resolution_result: ResolutionResult {
+                            invocation_uuid: fid.invocation_uuid,
+                            service_key: fid.service_id.key,
+                            span_context,
+                        },
+                    },
+                    entry.entry,
+                )
             }
-            RawEntryHeader::Custom { requires_ack, .. } => {
+            RawEntryHeader::Awakeable { is_completed } => {
+                EnrichedRawEntry::new(EnrichedEntryHeader::Awakeable { is_completed }, entry.entry)
+            }
+            RawEntryHeader::CompleteAwakeable => {
+                let_assert!(
+                    Entry::CompleteAwakeable(CompleteAwakeableEntry { id, .. }) =
+                        ProtobufRawEntryCodec::deserialize(&entry)
+                            .map_err(InvocationError::internal)?
+                );
+
+                let (invocation_id, entry_index) = AwakeableIdentifier::decode(id)
+                    .map_err(InvocationError::internal)?
+                    .into_inner();
+
+                EnrichedRawEntry::new(
+                    EnrichedEntryHeader::CompleteAwakeable {
+                        invocation_id,
+                        entry_index,
+                    },
+                    entry.entry,
+                )
+            }
+            RawEntryHeader::Custom { requires_ack, code } => {
                 if requires_ack {
                     self.enqueue_protocol_message(ProtocolMessage::from(Completion::new(
                         entry_index,
@@ -280,6 +351,13 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     )))
                     .await?;
                 }
+                EnrichedRawEntry::new(
+                    EnrichedEntryHeader::Custom {
+                        code,
+                        requires_ack: false,
+                    },
+                    entry.entry,
+                )
             }
             RawEntryHeader::PollInputStream { .. } => {
                 return Err(InvocationError::new(
@@ -287,9 +365,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     "Unexpected PollInputStream entry received",
                 ))
             }
-            RawEntryHeader::Sleep { .. }
-            | RawEntryHeader::Awakeable { .. }
-            | RawEntryHeader::CompleteAwakeable => {
+            RawEntryHeader::Sleep { .. } => {
                 return Err(InvocationError::new(
                     UserErrorCode::Unimplemented,
                     "Unsupported entry type",
@@ -297,7 +373,11 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             }
         };
 
-        journal.push(entry);
+        self.store_journal_entry(
+            journal_service_id(operation_id.to_string()),
+            entry_index,
+            enriched_entry,
+        );
         Ok(())
     }
 
@@ -424,10 +504,38 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         self.close_pending_recv(recv_response::Response::InvalidStream(()))
             .await?;
 
+        // Make sure we have a journal
+        let journal_service_id = journal_service_id(request.operation_id.clone());
+        let (invocation_uuid, length, journal_entries) =
+            if let Some((invocation_uuid, journal_metadata, journal_entries)) =
+                self.load_journal(&journal_service_id).await?
+            {
+                (invocation_uuid, journal_metadata.length, journal_entries)
+            } else {
+                // If there isn't any journal, let's create one
+                let input_entry = EnrichedRawEntry::new(
+                    EnrichedEntryHeader::PollInputStream { is_completed: true },
+                    ProtobufRawEntryCodec::serialize_as_unary_input_entry(request.argument).entry,
+                );
+                let invocation_uuid = InvocationUuid::now_v7();
+                self.create_journal(
+                    journal_service_id.clone(),
+                    invocation_uuid,
+                    self.span_context.clone(),
+                    CompletionNotificationTarget {
+                        service: self.full_invocation_id.service_id.clone(),
+                        method: REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME.to_string(),
+                    },
+                );
+                self.store_journal_entry(journal_service_id, 0, input_entry.clone());
+                (invocation_uuid, 1, vec![input_entry])
+            };
+
         // We're now the leading client, let's write the status
         self.set_state(
             &STATUS,
             &InvocationStatus::Executing {
+                invocation_uuid,
                 stream_id: request.stream_id,
                 retention_period_sec: if request.retention_period_sec == 0 {
                     request.retention_period_sec
@@ -437,28 +545,19 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
             },
         )?;
 
-        let journal = if let Some(journal) = self.load_state(&JOURNAL).await? {
-            journal
-        } else {
-            // If there isn't any journal, let's create one
-            let new_journal = vec![ProtobufRawEntryCodec::serialize_as_unary_input_entry(
-                request.argument,
-            )];
-            self.set_state(&JOURNAL, &new_journal)?;
-            new_journal
-        };
-
         // Let's create the messages and write them to a buffer
-        let mut messages = Vec::with_capacity(journal.len() + 1);
+        let mut messages = Vec::with_capacity((length + 1) as usize);
+        let invocation_id =
+            InvocationId::new(self.full_invocation_id.partition_key(), invocation_uuid);
         messages.push(ProtocolMessage::new_start_message(
-            Bytes::new(),              // TODO
-            "unspecified".to_string(), // TODO
-            journal.len() as u32,
+            Bytes::copy_from_slice(&invocation_id.as_bytes()),
+            invocation_id.to_string(),
+            length,
             true, // TODO add eager state
             iter::empty(),
         ));
-        for entry in journal {
-            messages.push(ProtocolMessage::from(entry));
+        for entry in journal_entries {
+            messages.push(ProtocolMessage::from(PlainRawEntry::from(entry)));
         }
         let stream_buffer = encode_messages(messages);
 
@@ -486,6 +585,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
             InvocationStatus::Executing {
                 stream_id,
                 retention_period_sec,
+                ..
             } => {
                 if stream_id != request.stream_id {
                     self.reply_to_caller(response_serializer.serialize_success(SendResponse {
@@ -503,7 +603,11 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
             }
         };
 
-        let mut journal = self.load_state(&JOURNAL).await?.unwrap_or_default();
+        let journal_service_id = journal_service_id(request.operation_id.clone());
+        let (_, mut journal_metadata) = self
+            .load_journal_metadata(&journal_service_id)
+            .await?
+            .ok_or_else(|| InvocationError::internal("There must be a journal at this point"))?;
         for (message_header, message) in decode_messages(request.messages)
             .map_err(|e| InvocationError::new(UserErrorCode::FailedPrecondition, e))?
         {
@@ -511,13 +615,14 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 &request.operation_id,
                 &request.stream_id,
                 retention_period_sec,
-                &mut journal,
+                journal_metadata.length,
+                journal_metadata.span_context.clone(),
                 message_header,
                 message,
             )
             .await?;
+            journal_metadata.length += 1;
         }
-        self.set_state(&JOURNAL, &journal)?;
 
         self.reply_to_caller(response_serializer.serialize_success(SendResponse {
             response: Some(send_response::Response::Ok(())),
@@ -613,55 +718,71 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         level = "trace",
         skip_all,
         fields(
-            restate.remote_context.operation_id = %_request.operation_id
+            restate.remote_context.operation_id = %request.operation_id
         )
     )]
     async fn cleanup(
         &mut self,
-        _request: CleanupRequest,
+        request: CleanupRequest,
         response_serializer: ResponseSerializer<()>,
     ) -> Result<(), InvocationError> {
         self.clear_state(&STATUS);
-        self.clear_state(&JOURNAL);
         self.clear_state(&PENDING_RECV_STREAM);
         self.clear_state(&PENDING_RECV_SINK);
         self.clear_state(&PENDING_GET_RESULT_SINKS);
+
+        // Drop journal
+        let journal_service_id = journal_service_id(request.operation_id);
+        if let Some((_, journal_meta)) = self.load_journal_metadata(&journal_service_id).await? {
+            self.drop_journal(journal_service_id, journal_meta.length)
+        }
+
         self.reply_to_caller(response_serializer.serialize_success(()));
         Ok(())
     }
 
     #[instrument(level = "trace", skip_all)]
-    async fn internal_on_response(
+    async fn internal_on_completion(
         &mut self,
-        request: ServiceInvocationSinkRequest,
+        request: JournalCompletionNotificationRequest,
         response_serializer: ResponseSerializer<()>,
     ) -> Result<(), InvocationError> {
-        let ctx: InvokeEntryContext =
-            Bincode::decode(request.caller_context.clone()).map_err(InvocationError::internal)?;
-
-        if let Some(mut journal) = self.load_state(&JOURNAL).await? {
-            if let Some(raw_entry) = journal.get_mut(ctx.entry_index as usize) {
-                let completion_result = CompletionResult::from(
-                    ResponseResult::try_from(request).map_err(InvocationError::internal)?,
-                );
-                ProtobufRawEntryCodec::write_completion(raw_entry, completion_result.clone())
-                    .map_err(InvocationError::internal)?;
-                self.set_state(&JOURNAL, &journal)?;
+        match self.load_state(&STATUS).await? {
+            Some(InvocationStatus::Executing {
+                invocation_uuid, ..
+            }) if invocation_uuid.as_bytes() == request.invocation_uuid => {
                 self.enqueue_protocol_message(ProtocolMessage::from(Completion::new(
-                    ctx.entry_index,
-                    completion_result,
+                    request.entry_index,
+                    match request.result.ok_or_else(|| {
+                        InvocationError::internal("Completion notification must be non empty")
+                    })? {
+                        journal_completion_notification_request::Result::Empty(()) => {
+                            CompletionResult::Empty
+                        }
+                        journal_completion_notification_request::Result::Success(s) => {
+                            CompletionResult::Success(s)
+                        }
+                        journal_completion_notification_request::Result::Failure(failure) => {
+                            CompletionResult::Failure(failure.code.into(), failure.message.into())
+                        }
+                    },
                 )))
                 .await?;
-            } else {
-                // TODO we should assign a unique invocation id for each time we see the operation id.
-                // this to avoid cases where i'm executing again with the same operation id, but the invocations are different.
-                // This can also address a bunch of other issues.
             }
-        } else {
-            debug!(
-                "Discarding response received with fid {:?} because there is no journal.",
-                self.full_invocation_id
-            );
+            Some(InvocationStatus::Executing {
+                invocation_uuid, ..
+            }) => {
+                debug!(
+                    "Discarding response received with fid {:?} because the journal has a different invocation_uuid: {} != {}.",
+                    self.full_invocation_id, invocation_uuid, InvocationUuid::from_slice(&request.invocation_uuid).unwrap()
+                );
+            }
+            _ => {
+                debug!(
+                    "Discarding response received with fid {:?} because there is no journal.",
+                    self.full_invocation_id
+                );
+            }
         }
 
         self.reply_to_caller(response_serializer.serialize_success(()));
@@ -688,21 +809,6 @@ fn encode_messages(messages: Vec<ProtocolMessage>) -> Bytes {
     buf.freeze()
 }
 
-fn to_get_result_response(res: ResponseResult, expiry_time: String) -> GetResultResponse {
-    GetResultResponse {
-        response: Some(match res {
-            ResponseResult::Success(res) => get_result_response::Response::Success(res),
-            ResponseResult::Failure(code, msg) => {
-                get_result_response::Response::Failure(get_result_response::InvocationFailure {
-                    code: code.into(),
-                    message: msg.to_string(),
-                })
-            }
-        }),
-        expiry_time,
-    }
-}
-
 fn check_state_key(key: Bytes) -> Result<StateKey<Raw>, InvocationError> {
     if key.starts_with(b"_internal") {
         return Err(InvocationError::new(
@@ -713,6 +819,10 @@ fn check_state_key(key: Bytes) -> Result<StateKey<Raw>, InvocationError> {
     Ok(StateKey::<Raw>::from(
         String::from_utf8(key.to_vec()).map_err(InvocationError::internal)?,
     ))
+}
+
+fn journal_service_id(operation_id: String) -> ServiceId {
+    ServiceId::new("EmbeddedHandler", operation_id)
 }
 
 #[cfg(test)]
@@ -727,9 +837,7 @@ mod tests {
     use prost::Message;
     use restate_pb::mocks::greeter::{GreetingRequest, GreetingResponse};
     use restate_pb::mocks::GREETER_SERVICE_NAME;
-    use restate_pb::restate::internal::{
-        get_result_response, service_invocation_sink_request, start_response, CleanupRequest,
-    };
+    use restate_pb::restate::internal::{get_result_response, start_response, CleanupRequest};
     use restate_pb::REMOTE_CONTEXT_SERVICE_NAME;
     use restate_schema_api::endpoint::EndpointMetadata;
     use restate_schema_api::key::ServiceInstanceType;
@@ -788,6 +896,21 @@ mod tests {
         ProtocolMessageDecodeMatcher { inner }
     }
 
+    fn to_get_result_response(res: ResponseResult, expiry_time: String) -> GetResultResponse {
+        GetResultResponse {
+            response: Some(match res {
+                ResponseResult::Success(res) => get_result_response::Response::Success(res),
+                ResponseResult::Failure(code, msg) => {
+                    get_result_response::Response::Failure(InvocationFailure {
+                        code: code.into(),
+                        message: msg.to_string(),
+                    })
+                }
+            }),
+            expiry_time,
+        }
+    }
+
     // --- Start tests
 
     #[test(tokio::test)]
@@ -813,11 +936,8 @@ mod tests {
             })
         );
         assert_that!(
-            ctx.state().assert_has_state(&JOURNAL),
-            elements_are![property!(
-                PlainRawEntry.ty(),
-                eq(EntryType::PollInputStream)
-            )]
+            ctx.state().assert_has_journal_entry(0),
+            property!(EnrichedRawEntry.ty(), eq(EntryType::PollInputStream))
         );
         assert_that!(
             effects,
@@ -948,17 +1068,9 @@ mod tests {
     #[test(tokio::test)]
     async fn new_invocation_start_replay_existing_journal() {
         let mut ctx = TestInvocationContext::new(REMOTE_CONTEXT_SERVICE_NAME);
-        ctx.state_mut().set(
-            &JOURNAL,
-            vec![
-                ProtobufRawEntryCodec::serialize_as_unary_input_entry(Bytes::copy_from_slice(
-                    b"123",
-                )),
-                ProtobufRawEntryCodec::serialize(Entry::clear_state(Bytes::copy_from_slice(
-                    b"abc",
-                ))),
-            ],
-        );
+        ctx.state_mut()
+            .append_journal_entry(Entry::poll_input_stream(Bytes::copy_from_slice(b"123")))
+            .append_journal_entry(Entry::clear_state(Bytes::copy_from_slice(b"abc")));
         let (fid, effects) = ctx
             .invoke(|ctx| {
                 ctx.start(
@@ -979,10 +1091,10 @@ mod tests {
             })
         );
         assert_that!(
-            ctx.state().assert_has_state(&JOURNAL),
+            ctx.state().assert_has_journal_entries(0..2),
             elements_are![
-                property!(PlainRawEntry.ty(), eq(EntryType::PollInputStream)),
-                property!(PlainRawEntry.ty(), eq(EntryType::ClearState))
+                property!(EnrichedRawEntry.ty(), eq(EntryType::PollInputStream)),
+                property!(EnrichedRawEntry.ty(), eq(EntryType::ClearState))
             ]
         );
         assert_that!(
@@ -1322,22 +1434,26 @@ mod tests {
                 None,
             ))
             .into(),
-            |ctx, operation_id, _| {
+            |ctx, _, _| {
                 let response = response.clone();
+                let (invocation_uuid, _, _) = ctx.state().assert_has_journal();
+                ctx.state_mut().complete_entry(Completion::new(
+                    1,
+                    CompletionResult::Success(response.clone()),
+                ));
 
-                async {
+                async move {
                     // Invoke internal_on_response to complete the request
                     ctx.invoke(|ctx| {
-                        ctx.internal_on_response(
-                            ServiceInvocationSinkRequest {
-                                caller_context: Bincode::encode(&InvokeEntryContext {
-                                    operation_id: operation_id.to_string(),
-                                    entry_index: 1,
-                                })
-                                .unwrap(),
-                                response: Some(service_invocation_sink_request::Response::Success(
-                                    response,
-                                )),
+                        ctx.internal_on_completion(
+                            JournalCompletionNotificationRequest {
+                                entry_index: 1,
+                                invocation_uuid: Bytes::copy_from_slice(invocation_uuid.as_bytes()),
+                                result: Some(
+                                    journal_completion_notification_request::Result::Success(
+                                        response,
+                                    ),
+                                ),
                             },
                             Default::default(),
                         )
@@ -1372,7 +1488,7 @@ mod tests {
                                 service_name: displays_as(eq(REMOTE_CONTEXT_SERVICE_NAME))
                             })
                         }),
-                        method: displays_as(eq(REMOTE_CONTEXT_INTERNAL_ON_RESPONSE_METHOD_NAME)),
+                        method: displays_as(eq(REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME)),
                         caller_context: eq(Bincode::encode(&InvokeEntryContext {
                             operation_id: operation_id.to_string(),
                             entry_index: 1,
@@ -1896,7 +2012,8 @@ mod tests {
                 String::new(),
             )),
         );
-        ctx.state_mut().set(&JOURNAL, JournalState::default());
+        ctx.state_mut()
+            .append_journal_entry(Entry::poll_input_stream(Bytes::from_static(b"123")));
         ctx.state_mut()
             .set(&USER_STATE, Bytes::copy_from_slice(b"123"));
         let _ = ctx
@@ -1912,8 +2029,8 @@ mod tests {
             .unwrap();
 
         ctx.state().assert_has_state(&USER_STATE);
-        ctx.state().assert_has_not_state(&JOURNAL);
         ctx.state().assert_has_not_state(&STATUS);
+        ctx.state().assert_has_no_journal();
     }
 
     // -- Helpers
@@ -1963,6 +2080,7 @@ mod tests {
                 stream_id: eq("my-stream")
             })
         );
+        ctx.state().assert_has_journal();
 
         (ctx, "my-operation-id".to_string(), "my-stream".to_string())
     }
@@ -1970,7 +2088,7 @@ mod tests {
     async fn send_then_receive_test<F, M>(
         send_msg: ProtocolMessage,
         action_between_send_and_recv: F,
-        matcher: M,
+        recv_messages_matcher: M,
     ) -> (String, String, Vec<Effect>, Vec<Effect>)
     where
         F: for<'a> FnOnce(
@@ -2031,7 +2149,7 @@ mod tests {
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         RecvResponse {
                             response: some(pat!(recv_response::Response::Messages(
-                                decoded_as_protocol_messages(elements_are![matcher])
+                                decoded_as_protocol_messages(elements_are![recv_messages_matcher])
                             )))
                         }
                     ))))

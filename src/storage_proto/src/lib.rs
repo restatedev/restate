@@ -24,14 +24,15 @@ pub mod storage {
                 Awakeable, BackgroundCall, ClearState, CompleteAwakeable, Custom, GetState, Invoke,
                 OutputStream, PollInputStream, SetState, Sleep,
             };
-            use crate::storage::v1::invocation_status::{Free, Invoked, Suspended};
+            use crate::storage::v1::invocation_status::{
+                invoked, suspended, Free, Invoked, Suspended, Virtual,
+            };
             use crate::storage::v1::journal_entry::completion_result::{
                 Ack, Empty, Failure, Success,
             };
             use crate::storage::v1::journal_entry::{
                 completion_result, CompletionResult, Entry, Kind,
             };
-            use crate::storage::v1::journal_meta::EndpointId;
             use crate::storage::v1::outbox_message::{
                 OutboxIngressResponse, OutboxServiceInvocation, OutboxServiceInvocationResponse,
             };
@@ -40,7 +41,7 @@ pub mod storage {
             };
             use crate::storage::v1::{
                 enriched_entry_header, invocation_resolution_result, invocation_status,
-                outbox_message, outbox_message::outbox_service_invocation_response,
+                journal_meta, outbox_message, outbox_message::outbox_service_invocation_response,
                 response_result, span_relation, timer, BackgroundCallResolutionResult,
                 EnrichedEntryHeader, FullInvocationId, InboxEntry, InvocationResolutionResult,
                 InvocationStatus, JournalEntry, JournalMeta, OutboxMessage, ResponseResult,
@@ -52,6 +53,7 @@ pub mod storage {
             use bytestring::ByteString;
             use opentelemetry_api::trace::TraceState;
             use restate_storage_api::StorageError;
+            use restate_types::identifiers::ServiceId;
             use restate_types::invocation::MaybeFullInvocationId;
             use restate_types::time::MillisSinceEpoch;
             use std::collections::{HashSet, VecDeque};
@@ -107,6 +109,15 @@ pub mod storage {
                                 waiting_for_completed_entries,
                             }
                         }
+                        invocation_status::Status::Virtual(r#virtual) => {
+                            let (invocation_uuid, journal_metadata, completion_notification_target) =
+                                r#virtual.try_into()?;
+                            restate_storage_api::status_table::InvocationStatus::Virtual {
+                                invocation_uuid,
+                                journal_metadata,
+                                completion_notification_target,
+                            }
+                        }
                         invocation_status::Status::Free(_) => {
                             restate_storage_api::status_table::InvocationStatus::Free
                         }
@@ -129,6 +140,15 @@ pub mod storage {
                             metadata,
                             waiting_for_completed_entries,
                         ))),
+                        restate_storage_api::status_table::InvocationStatus::Virtual {
+                            invocation_uuid,
+                            journal_metadata,
+                            completion_notification_target,
+                        } => invocation_status::Status::Virtual(Virtual::from((
+                            invocation_uuid,
+                            journal_metadata,
+                            completion_notification_target,
+                        ))),
                         restate_storage_api::status_table::InvocationStatus::Free => {
                             invocation_status::Status::Free(Free {})
                         }
@@ -145,11 +165,43 @@ pub mod storage {
 
                 fn try_from(value: Invoked) -> Result<Self, Self::Error> {
                     let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
-                    let journal_metadata = restate_types::journal::JournalMetadata::try_from(
+
+                    // TODO Cleanup old field after 0.4 release
+                    let pb_journal_meta = value
+                        .journal_meta
+                        .ok_or(ConversionError::missing_field("journal_meta"))?;
+                    let method_name = if !pb_journal_meta.method_name.is_empty() {
+                        pb_journal_meta.method_name.clone()
+                    } else {
+                        value.method_name
+                    }
+                    .try_into()
+                    .map_err(|e| {
+                        ConversionError::InvalidData(anyhow!(
+                            "Cannot decode method_name string {e}"
+                        ))
+                    })?;
+                    let endpoint_id = if pb_journal_meta.endpoint_id.is_some() {
+                        pb_journal_meta
+                            .endpoint_id
+                            .clone()
+                            .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
+                                journal_meta::EndpointId::None(_) => None,
+                                journal_meta::EndpointId::Value(id) => Some(id),
+                            })
+                    } else {
                         value
-                            .journal_meta
-                            .ok_or(ConversionError::missing_field("journal_meta"))?,
-                    )?;
+                            .endpoint_id
+                            .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
+                                invocation_status::invoked::EndpointId::None(_) => None,
+                                invocation_status::invoked::EndpointId::Value(id) => Some(id),
+                            })
+                    };
+
+                    let journal_metadata =
+                        restate_storage_api::status_table::JournalMetadata::try_from(
+                            pb_journal_meta,
+                        )?;
                     let response_sink = Option::<
                         restate_types::invocation::ServiceInvocationResponseSink,
                     >::try_from(
@@ -161,6 +213,8 @@ pub mod storage {
                     Ok(restate_storage_api::status_table::InvocationMetadata::new(
                         invocation_uuid,
                         journal_metadata,
+                        endpoint_id,
+                        method_name,
                         response_sink,
                         MillisSinceEpoch::new(value.creation_time),
                         MillisSinceEpoch::new(value.modification_time),
@@ -172,6 +226,8 @@ pub mod storage {
                 fn from(value: restate_storage_api::status_table::InvocationMetadata) -> Self {
                     let restate_storage_api::status_table::InvocationMetadata {
                         invocation_uuid,
+                        endpoint_id,
+                        method,
                         response_sink,
                         journal_metadata,
                         creation_time,
@@ -181,6 +237,13 @@ pub mod storage {
                     Invoked {
                         response_sink: Some(ServiceInvocationResponseSink::from(response_sink)),
                         invocation_uuid: invocation_uuid_to_bytes(&invocation_uuid),
+                        method_name: method.into_bytes(),
+                        endpoint_id: Some(match endpoint_id {
+                            None => invocation_status::invoked::EndpointId::None(()),
+                            Some(endpoint_id) => {
+                                invocation_status::invoked::EndpointId::Value(endpoint_id)
+                            }
+                        }),
                         journal_meta: Some(JournalMeta::from(journal_metadata)),
                         creation_time: creation_time.as_u64(),
                         modification_time: modification_time.as_u64(),
@@ -198,11 +261,43 @@ pub mod storage {
 
                 fn try_from(value: Suspended) -> Result<Self, Self::Error> {
                     let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
-                    let journal_metadata = restate_types::journal::JournalMetadata::try_from(
+
+                    // TODO Cleanup old field after 0.4 release
+                    let pb_journal_meta = value
+                        .journal_meta
+                        .ok_or(ConversionError::missing_field("journal_meta"))?;
+                    let method_name = if !pb_journal_meta.method_name.is_empty() {
+                        pb_journal_meta.method_name.clone()
+                    } else {
+                        value.method_name
+                    }
+                    .try_into()
+                    .map_err(|e| {
+                        ConversionError::InvalidData(anyhow!(
+                            "Cannot decode method_name string {e}"
+                        ))
+                    })?;
+                    let endpoint_id = if pb_journal_meta.endpoint_id.is_some() {
+                        pb_journal_meta
+                            .endpoint_id
+                            .clone()
+                            .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
+                                journal_meta::EndpointId::None(_) => None,
+                                journal_meta::EndpointId::Value(id) => Some(id),
+                            })
+                    } else {
                         value
-                            .journal_meta
-                            .ok_or(ConversionError::missing_field("journal_meta"))?,
-                    )?;
+                            .endpoint_id
+                            .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
+                                invocation_status::suspended::EndpointId::None(_) => None,
+                                invocation_status::suspended::EndpointId::Value(id) => Some(id),
+                            })
+                    };
+
+                    let journal_metadata =
+                        restate_storage_api::status_table::JournalMetadata::try_from(
+                            pb_journal_meta,
+                        )?;
                     let response_sink = Option::<
                         restate_types::invocation::ServiceInvocationResponseSink,
                     >::try_from(
@@ -218,6 +313,8 @@ pub mod storage {
                         restate_storage_api::status_table::InvocationMetadata::new(
                             invocation_uuid,
                             journal_metadata,
+                            endpoint_id,
+                            method_name,
                             response_sink,
                             MillisSinceEpoch::new(value.creation_time),
                             MillisSinceEpoch::new(value.modification_time),
@@ -249,6 +346,13 @@ pub mod storage {
                         invocation_uuid,
                         response_sink: Some(response_sink),
                         journal_meta: Some(journal_meta),
+                        method_name: metadata.method.into_bytes(),
+                        endpoint_id: Some(match metadata.endpoint_id {
+                            None => invocation_status::suspended::EndpointId::None(()),
+                            Some(endpoint_id) => {
+                                invocation_status::suspended::EndpointId::Value(endpoint_id)
+                            }
+                        }),
                         creation_time: metadata.creation_time.as_u64(),
                         modification_time: metadata.modification_time.as_u64(),
                         waiting_for_completed_entries,
@@ -256,53 +360,103 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<JournalMeta> for restate_types::journal::JournalMetadata {
+            impl TryFrom<Virtual>
+                for (
+                    restate_types::identifiers::InvocationUuid,
+                    restate_storage_api::status_table::JournalMetadata,
+                    restate_storage_api::status_table::CompletionNotificationTarget,
+                )
+            {
+                type Error = ConversionError;
+
+                fn try_from(value: Virtual) -> Result<Self, Self::Error> {
+                    let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
+                    let journal_metadata =
+                        restate_storage_api::status_table::JournalMetadata::try_from(
+                            value
+                                .journal_meta
+                                .ok_or(ConversionError::missing_field("journal_meta"))?,
+                        )?;
+                    let completion_notification_target =
+                        restate_storage_api::status_table::CompletionNotificationTarget {
+                            service: ServiceId::new(
+                                value.completion_notification_target_service_name,
+                                value.completion_notification_target_service_key,
+                            ),
+                            method: value.completion_notification_target_method,
+                        };
+
+                    Ok((
+                        invocation_uuid,
+                        journal_metadata,
+                        completion_notification_target,
+                    ))
+                }
+            }
+
+            impl
+                From<(
+                    restate_types::identifiers::InvocationUuid,
+                    restate_storage_api::status_table::JournalMetadata,
+                    restate_storage_api::status_table::CompletionNotificationTarget,
+                )> for Virtual
+            {
+                fn from(
+                    (invocation_uuid, journal_metadata, completion_notification_target): (
+                        restate_types::identifiers::InvocationUuid,
+                        restate_storage_api::status_table::JournalMetadata,
+                        restate_storage_api::status_table::CompletionNotificationTarget,
+                    ),
+                ) -> Self {
+                    let invocation_uuid = invocation_uuid_to_bytes(&invocation_uuid);
+                    let journal_meta = JournalMeta::from(journal_metadata);
+
+                    Virtual {
+                        invocation_uuid,
+                        journal_meta: Some(journal_meta),
+                        completion_notification_target_service_name: completion_notification_target
+                            .service
+                            .service_name
+                            .to_string(),
+                        completion_notification_target_service_key: completion_notification_target
+                            .service
+                            .key,
+                        completion_notification_target_method: completion_notification_target
+                            .method,
+                    }
+                }
+            }
+
+            impl TryFrom<JournalMeta> for restate_storage_api::status_table::JournalMetadata {
                 type Error = ConversionError;
 
                 fn try_from(value: JournalMeta) -> Result<Self, Self::Error> {
                     let length = value.length;
-                    // TODO: replace with ByteString to avoid allocation of String
-                    let method = String::from_utf8(value.method_name.to_vec())
-                        .map_err(ConversionError::invalid_data)?;
                     let span_context =
                         restate_types::invocation::ServiceInvocationSpanContext::try_from(
                             value
                                 .span_context
                                 .ok_or(ConversionError::missing_field("span_context"))?,
                         )?;
-                    let endpoint_id =
-                        value
-                            .endpoint_id
-                            .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
-                                EndpointId::None(_) => None,
-                                EndpointId::Value(id) => Some(id),
-                            });
-                    Ok(restate_types::journal::JournalMetadata {
-                        endpoint_id,
+                    Ok(restate_storage_api::status_table::JournalMetadata {
                         length,
-                        method,
                         span_context,
                     })
                 }
             }
 
-            impl From<restate_types::journal::JournalMetadata> for JournalMeta {
-                fn from(value: restate_types::journal::JournalMetadata) -> Self {
-                    let restate_types::journal::JournalMetadata {
+            impl From<restate_storage_api::status_table::JournalMetadata> for JournalMeta {
+                fn from(value: restate_storage_api::status_table::JournalMetadata) -> Self {
+                    let restate_storage_api::status_table::JournalMetadata {
                         span_context,
                         length,
-                        method,
-                        endpoint_id,
                     } = value;
 
                     JournalMeta {
                         length,
-                        method_name: Bytes::from(method.into_bytes()),
                         span_context: Some(SpanContext::from(span_context)),
-                        endpoint_id: Some(match endpoint_id {
-                            None => EndpointId::None(()),
-                            Some(endpoint_id) => EndpointId::Value(endpoint_id),
-                        }),
+                        endpoint_id: None,
+                        method_name: Bytes::default(),
                     }
                 }
             }

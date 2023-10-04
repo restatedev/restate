@@ -68,6 +68,7 @@ pub(crate) struct FollowerState<I, N> {
     invoker_tx: I,
     network_handle: N,
     ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
+    self_proposal_tx: IdentitySender<StateMachineAckCommand>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,6 +97,7 @@ where
     InvokerInputSender: restate_invoker_api::ServiceHandle,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn follower(
         peer_id: PeerId,
         partition_id: PartitionId,
@@ -104,6 +106,7 @@ where
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
         ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
+        self_proposal_tx: IdentitySender<StateMachineAckCommand>,
     ) -> (ActionEffectStream, Self) {
         (
             ActionEffectStream::Follower,
@@ -115,6 +118,7 @@ where
                 invoker_tx,
                 network_handle,
                 ack_tx,
+                self_proposal_tx,
             }),
         )
     }
@@ -295,7 +299,7 @@ where
 
             let_assert!(InvocationStatus::Invoked(metadata) = status);
 
-            let method = metadata.journal_metadata.method;
+            let method = metadata.method;
             let response_sink = metadata.response_sink;
             let argument = input_entry.entry;
             built_in_service_invoker
@@ -333,6 +337,7 @@ where
                     mut invoker_tx,
                     network_handle,
                     ack_tx,
+                    self_proposal_tx,
                 },
             leader_state:
                 LeaderState {
@@ -365,6 +370,7 @@ where
                 invoker_tx,
                 network_handle,
                 ack_tx,
+                self_proposal_tx,
             ))
         } else {
             Ok((ActionEffectStream::Follower, self))

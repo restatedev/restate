@@ -18,6 +18,6 @@ pub mod status_handle;
 pub use effects::*;
 pub use entry_enricher::EntryEnricher;
 pub use handle::*;
-pub use journal_reader::JournalReader;
+pub use journal_reader::{JournalMetadata, JournalReader};
 pub use state_reader::{EagerState, StateReader};
 pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};

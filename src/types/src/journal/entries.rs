@@ -38,6 +38,12 @@ pub enum Entry {
 }
 
 impl Entry {
+    pub fn poll_input_stream(result: impl Into<Bytes>) -> Self {
+        Entry::PollInputStream(PollInputStreamEntry {
+            result: result.into(),
+        })
+    }
+
     pub fn output_stream(result: EntryResult) -> Self {
         Entry::OutputStream(OutputStreamEntry { result })
     }

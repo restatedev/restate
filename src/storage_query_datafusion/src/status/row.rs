@@ -36,6 +36,10 @@ pub(crate) fn append_status_row(
             row.status("suspended");
             Some(metadata)
         }
+        InvocationStatus::Virtual { .. } => {
+            row.status("virtual");
+            None // TODO
+        }
         InvocationStatus::Free => {
             row.status("free");
             None
@@ -101,7 +105,7 @@ fn fill_invocation_metadata(
 
     row.created_at(creation_time.as_u64() as i64);
     row.modified_at(modification_time.as_u64() as i64);
-    row.method(journal_metadata.method);
+    row.method(meta.method);
 
     if row.is_trace_id_defined() {
         let tid = journal_metadata.span_context.trace_id();

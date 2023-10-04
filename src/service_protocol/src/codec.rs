@@ -241,6 +241,21 @@ mod mocks {
                         Self::serialize_complete_awakeable_entry(entry),
                     )
                 }
+                Entry::SetState(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::SetState,
+                    SetStateEntryMessage {
+                        key: entry.key,
+                        value: entry.value,
+                    }
+                    .encode_to_vec()
+                    .into(),
+                ),
+                Entry::ClearState(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::ClearState,
+                    ClearStateEntryMessage { key: entry.key }
+                        .encode_to_vec()
+                        .into(),
+                ),
                 _ => unimplemented!(),
             }
         }

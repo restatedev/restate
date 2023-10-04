@@ -137,6 +137,7 @@ where
             invoker_tx,
             network_handle,
             ack_tx,
+            proposal_tx.clone(),
         );
 
         let mut state_machine =
@@ -174,7 +175,9 @@ where
                                     leader_epoch,
                                     partition_key_range.clone(),
                                     &partition_storage,
-                                    &schemas)
+                                    &schemas,
+
+                                )
                                 .await?;
                             }
                             restate_consensus::Command::BecomeFollower => {

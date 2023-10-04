@@ -10,10 +10,10 @@
 
 use super::*;
 
-use prost_reflect::{DeserializeOptions, DynamicMessage, ReflectMessage, SerializeOptions};
+use prost_reflect::{DeserializeOptions, ReflectMessage};
 use restate_pb::builtin_service::ResponseSerializer;
 use restate_pb::restate::*;
-use restate_schema_api::json::{JsonMapperResolver, JsonToProtobufMapper, ProtobufToJsonMapper};
+use restate_schema_api::json::{JsonMapperResolver, JsonToProtobufMapper};
 use restate_schema_api::key::KeyExtractor;
 use restate_types::identifiers::InvocationUuid;
 use restate_types::invocation::ServiceInvocation;
@@ -45,36 +45,6 @@ impl<'a, State> InvocationContext<'a, State> {
         json_to_proto
             .json_value_to_protobuf(serde_json_value, &DeserializeOptions::default())
             .map_err(|e| InvocationError::new(UserErrorCode::FailedPrecondition, e))
-    }
-
-    // Convert a protobuf encoded message to google.protobuf.Struct type
-    fn pb_to_pb_struct(
-        &self,
-        service_name: &str,
-        method_name: &str,
-        bytes: Bytes,
-    ) -> Result<prost_reflect::prost_types::Struct, InvocationError> {
-        let (_, proto_to_json) = self
-            .schemas
-            .resolve_json_mapper_for_service(service_name, method_name)
-            .ok_or_else(|| {
-                InvocationError::new(
-                    UserErrorCode::NotFound,
-                    format!("Service method {}/{} not found", service_name, method_name),
-                )
-            })?;
-
-        let json_value = proto_to_json
-            .protobuf_to_json_value(bytes, &SerializeOptions::default())
-            .map_err(|e| InvocationError::new(UserErrorCode::FailedPrecondition, e))?;
-
-        DynamicMessage::deserialize(
-            prost_reflect::prost_types::Struct::default().descriptor(),
-            json_value,
-        )
-        .map_err(InvocationError::internal)?
-        .transcode_to()
-        .map_err(InvocationError::internal)
     }
 
     fn generate_fid(
@@ -158,6 +128,7 @@ mod tests {
     use googletest::assert_that;
     use googletest::{all, pat};
     use prost::Message;
+    use prost_reflect::DynamicMessage;
     use restate_schema_api::endpoint::EndpointMetadata;
     use restate_schema_api::key::ServiceInstanceType;
     use restate_schema_impl::ServiceRegistrationRequest;

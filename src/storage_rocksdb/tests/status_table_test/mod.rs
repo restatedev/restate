@@ -9,19 +9,22 @@
 // by the Apache License, Version 2.0.
 
 use crate::{assert_stream_eq, uuid_str};
-use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, StatusTable};
+use restate_storage_api::status_table::{
+    InvocationMetadata, InvocationStatus, JournalMetadata, StatusTable,
+};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocationSpanContext;
-use restate_types::journal::JournalMetadata;
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 
 fn invoked_status(invocation_id: impl Into<InvocationUuid>) -> InvocationStatus {
     InvocationStatus::Invoked(InvocationMetadata::new(
         invocation_id.into(),
-        JournalMetadata::new("service", ServiceInvocationSpanContext::empty(), 0),
+        JournalMetadata::new(0, ServiceInvocationSpanContext::empty()),
+        None,
+        "service".into(),
         None,
         MillisSinceEpoch::new(0),
         MillisSinceEpoch::new(0),
@@ -32,7 +35,9 @@ fn suspended_status(invocation_id: impl Into<InvocationUuid>) -> InvocationStatu
     InvocationStatus::Suspended {
         metadata: InvocationMetadata::new(
             invocation_id.into(),
-            JournalMetadata::new("service", ServiceInvocationSpanContext::empty(), 0),
+            JournalMetadata::new(0, ServiceInvocationSpanContext::empty()),
+            None,
+            "service".into(),
             None,
             MillisSinceEpoch::new(0),
             MillisSinceEpoch::new(0),
