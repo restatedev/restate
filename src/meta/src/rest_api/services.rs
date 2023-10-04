@@ -8,18 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::error::*;
-use super::state::*;
+use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::http::{header, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
+use okapi_operation::okapi::openapi3::MediaType;
+use okapi_operation::okapi::Map;
 use okapi_operation::*;
 use prost::Message;
-use restate_pb::grpc::reflection::FileDescriptorResponse;
-use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+
+use restate_pb::grpc::reflection::FileDescriptorResponse;
+use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
+
+use super::error::*;
+use super::state::*;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListServicesResponse {
@@ -116,12 +122,16 @@ pub async fn modify_service<S: ServiceMetadataResolver, W>(
         description = "Fully qualified service name.",
         schema = "std::string::String"
     )),
-    responses(ignore_return_type = true, from_type = "MetaApiError",)
+    responses(
+        ignore_return_type = true,
+        response(status = "200", description = "OK", content = "okapi_operation::Empty"),
+        from_type = "MetaApiError",
+    )
 )]
 pub async fn list_service_descriptors<S: ServiceMetadataResolver, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
     Path(service_name): Path<String>,
-) -> Result<Vec<u8>, MetaApiError> {
+) -> Result<Proto<FileDescriptorResponse>, MetaApiError> {
     state
         .schemas()
         .descriptors(&service_name)
@@ -130,6 +140,39 @@ pub async fn list_service_descriptors<S: ServiceMetadataResolver, W>(
             FileDescriptorResponse {
                 file_descriptor_proto: descriptors,
             }
-            .encode_to_vec()
+            .into()
         })
 }
+
+pub struct Proto<T>(pub T);
+
+impl<T> From<T> for Proto<T> {
+    fn from(inner: T) -> Self {
+        Self(inner)
+    }
+}
+
+impl<T: Message> IntoResponse for Proto<T> {
+    fn into_response(self) -> Response {
+        (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/x-protobuf"),
+            )],
+            self.0.encode_to_vec(),
+        )
+            .into_response()
+    }
+}
+
+impl<T> ToMediaTypes for Proto<T> {
+    fn generate(_components: &mut Components) -> Result<Map<String, MediaType>, anyhow::Error> {
+        Ok(okapi::map! {
+            "application/x-protobuf".into() => {
+                MediaType { ..Default::default() }
+            }
+        })
+    }
+}
+
+impl_to_responses_for_wrapper!(Proto<T>);
