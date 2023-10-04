@@ -3906,6 +3906,7 @@ dependencies = [
  "futures",
  "hyper",
  "okapi-operation",
+ "prost",
  "prost-reflect",
  "restate_errors",
  "restate_fs_util",

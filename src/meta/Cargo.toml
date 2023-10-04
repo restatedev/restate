@@ -39,9 +39,11 @@ restate_fs_util = { workspace = true }
 
 restate_service_protocol = { workspace = true, features = ["discovery"] }
 restate_worker_api = { workspace = true }
+prost = { workspace = true }
 prost-reflect = { workspace = true }
 restate_schema_api = { workspace = true, features = ["service", "endpoint", "serde", "serde_schema"] }
 restate_schema_impl = { workspace = true }
+restate_pb = { workspace = true }
 
 # Others
 derive_builder = { workspace = true }

@@ -192,6 +192,7 @@ pub mod endpoint {
 
 #[cfg(feature = "service")]
 pub mod service {
+    use bytes::Bytes;
     use restate_types::identifiers::{EndpointId, ServiceRevision};
 
     #[derive(Debug, Clone)]
@@ -268,6 +269,8 @@ pub mod service {
             &self,
             service_name: impl AsRef<str>,
         ) -> Option<ServiceMetadata>;
+
+        fn descriptors(&self, service_name: impl AsRef<str>) -> Option<Vec<Bytes>>;
 
         fn list_services(&self) -> Vec<ServiceMetadata>;
 
