@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::{Action, StateStorage, StateStorageError};
 use crate::partition::shuffle::Shuffle;
-use crate::partition::{shuffle, storage, AckResponse, TimerValue};
+use crate::partition::{shuffle, storage, StateMachineAckResponse, TimerValue};
 use assert2::let_assert;
 use futures::{future, Stream, StreamExt};
 use restate_invoker_api::{InvokeInputJournal, ServiceNotRunning};
@@ -28,8 +27,8 @@ use tokio::task::JoinError;
 mod action_collector;
 
 use crate::partition::services::non_deterministic;
-use crate::partition::state_machine::{StateReader, StateReaderError};
-pub(crate) use action_collector::{LeaderAwareActionCollector, ActionEffect, ActionEffectStream};
+use crate::partition::state_machine::{Action, StateReader, StateStorage};
+pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareActionCollector};
 use restate_schema_impl::Schemas;
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -56,7 +55,7 @@ pub(crate) struct LeaderState<'a> {
     shutdown_signal: drain::Signal,
     shuffle_hint_tx: mpsc::Sender<shuffle::NewOutboxMessage>,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
-    message_buffer: Vec<Action>,
+    actions_buffer: Vec<Action>,
     timer_service: Pin<Box<TimerService<'a>>>,
     non_deterministic_service_invoker: non_deterministic::ServiceInvoker<'a>,
 }
@@ -68,7 +67,7 @@ pub(crate) struct FollowerState<I, N> {
     channel_size: usize,
     invoker_tx: I,
     network_handle: N,
-    ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
+    ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,10 +80,6 @@ pub(crate) enum Error {
     FailedShuffleTask(#[from] anyhow::Error),
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
-    #[error(transparent)]
-    StateStorage(#[from] StateStorageError),
-    #[error(transparent)]
-    StateReader(#[from] StateReaderError),
 }
 
 pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle> {
@@ -108,7 +103,7 @@ where
         channel_size: usize,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
-        ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
+        ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
     ) -> (ActionEffectStream, Self) {
         (
             ActionEffectStream::Follower,
@@ -231,7 +226,7 @@ where
                         non_deterministic_service_invoker: service_invoker,
                         // The max number of actuator messages should be 2 atm (e.g. RegisterTimer and
                         // AckStoredEntry)
-                        message_buffer: Vec::with_capacity(2),
+                        actions_buffer: Vec::with_capacity(2),
                     },
                 },
             ))
@@ -392,12 +387,14 @@ where
         self,
     ) -> LeaderAwareActionCollector<'a, InvokerInputSender, NetworkHandle> {
         match self {
-            LeadershipState::Follower(follower_state) => LeaderAwareActionCollector::Follower(follower_state),
+            LeadershipState::Follower(follower_state) => {
+                LeaderAwareActionCollector::Follower(follower_state)
+            }
             LeadershipState::Leader {
                 follower_state,
                 mut leader_state,
             } => {
-                leader_state.message_buffer.clear();
+                leader_state.actions_buffer.clear();
                 LeaderAwareActionCollector::Leader {
                     follower_state,
                     leader_state,

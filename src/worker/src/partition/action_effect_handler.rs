@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::leadership::ActionEffect;
-use super::{AckCommand, Command};
+use crate::partition::state_machine::{AckCommand, Command};
 use crate::util::IdentitySender;
 
 /// Responsible for proposing [ActionEffect].

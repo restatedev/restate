@@ -19,13 +19,8 @@ use std::vec::Drain;
 use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
 use types::TimerKeyDisplay;
 
-mod interpreter;
-
-use crate::partition::{types, AckResponse, TimerValue};
-pub(crate) use interpreter::{
-    Action, CommitError, Committable, Interpreter, ActionMessageCollector, StateStorage,
-    StateStorageError,
-};
+use crate::partition::state_machine::commands::AckResponse;
+use crate::partition::{types, TimerValue};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::InvocationMetadata;
 use restate_storage_api::timer_table::Timer;
@@ -721,7 +716,7 @@ impl<'a> fmt::Display for CompletionResultFmt<'a> {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct Effects {
+pub struct Effects {
     effects: Vec<Effect>,
 }
 

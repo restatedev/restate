@@ -8,8 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::{Effect, Effects};
-use crate::partition::{AckResponse, TimerValue};
+use super::{Effects, Error};
+
+use crate::partition::services::non_deterministic;
+use crate::partition::state_machine::actions::Action;
+use crate::partition::state_machine::effects::Effect;
+use crate::partition::{CommitError, Committable};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
@@ -17,148 +21,95 @@ use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
-
-use crate::partition::services::non_deterministic;
-use bytestring::ByteString;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
-use restate_types::invocation::{
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
-};
+use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
-use restate_types::journal::raw::{
-    EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
-};
+use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use restate_types::journal::{Completion, CompletionResult, EntryType, JournalMetadata};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use std::marker::PhantomData;
 use tracing::{debug, warn};
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum Error {
-    #[error("failed to read state while interpreting effects: {0}")]
-    State(#[from] StateStorageError),
-    #[error("failed to decode entry while interpreting effects: {0}")]
-    Codec(#[from] RawEntryCodecError),
-}
-
-#[derive(Debug)]
-pub(crate) enum Action {
-    Invoke {
-        full_invocation_id: FullInvocationId,
-        invoke_input_journal: InvokeInputJournal,
-    },
-    InvokeBuiltInService {
-        full_invocation_id: FullInvocationId,
-        method: ByteString,
-        span_context: ServiceInvocationSpanContext,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        argument: Bytes,
-    },
-    NewOutboxMessage {
-        seq_number: MessageIndex,
-        message: OutboxMessage,
-    },
-    RegisterTimer {
-        timer_value: TimerValue,
-    },
-    AckStoredEntry {
-        full_invocation_id: FullInvocationId,
-        entry_index: EntryIndex,
-    },
-    ForwardCompletion {
-        full_invocation_id: FullInvocationId,
-        completion: Completion,
-    },
-    SendAckResponse(AckResponse),
-    AbortInvocation(FullInvocationId),
-}
-
-pub(crate) trait ActionMessageCollector {
+pub trait ActionCollector {
     fn collect(&mut self, message: Action);
 }
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum StateStorageError {
-    #[error(transparent)]
-    Storage(#[from] restate_storage_api::StorageError),
-}
-
-pub(crate) trait StateStorage {
+pub trait StateStorage {
     // Invocation status
     fn store_invocation_status<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         status: InvocationStatus,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn drop_journal<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         journal_length: EntryIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn store_journal_entry<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn store_completion_result<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
         completion_result: CompletionResult,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     // TODO: Replace with async trait or proper future
     fn load_completion_result<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<CompletionResult>, StateStorageError>>;
+    ) -> BoxFuture<Result<Option<CompletionResult>, restate_storage_api::StorageError>>;
 
     // TODO: Replace with async trait or proper future
     fn load_journal_entry<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<EnrichedRawEntry>, StateStorageError>>;
+    ) -> BoxFuture<Result<Option<EnrichedRawEntry>, restate_storage_api::StorageError>>;
 
     // In-/outbox
     fn enqueue_into_inbox(
         &mut self,
         seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn enqueue_into_outbox(
         &mut self,
         seq_number: MessageIndex,
         message: OutboxMessage,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn store_inbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn store_outbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn truncate_outbox(
         &mut self,
         outbox_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn truncate_inbox<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         inbox_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     // State
     fn store_state<'a>(
@@ -166,20 +117,20 @@ pub(crate) trait StateStorage {
         service_id: &'a ServiceId,
         key: Bytes,
         value: Bytes,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     // TODO: Replace with async trait or proper future
     fn load_state<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         key: &'a Bytes,
-    ) -> BoxFuture<Result<Option<Bytes>, StateStorageError>>;
+    ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>>;
 
     fn clear_state<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         key: &'a Bytes,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     // Timer
     fn store_timer(
@@ -188,39 +139,18 @@ pub(crate) trait StateStorage {
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         timer: Timer,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn delete_timer(
         &mut self,
         full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("failed committing results: {source:?}")]
-pub(crate) struct CommitError {
-    source: Option<anyhow::Error>,
-}
-
-impl CommitError {
-    pub(crate) fn with_source(source: impl Into<anyhow::Error>) -> Self {
-        CommitError {
-            source: Some(source.into()),
-        }
-    }
-}
-
-pub(crate) trait Committable {
-    // TODO: Replace with async trait or proper future
-    fn commit<'a>(self) -> BoxFuture<'a, Result<(), CommitError>>
-    where
-        Self: 'a;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 }
 
 #[must_use = "Don't forget to commit the interpretation result"]
-pub(crate) struct InterpretationResult<Txn, Collector> {
+pub struct InterpretationResult<Txn, Collector> {
     txn: Txn,
     collector: Collector,
 }
@@ -233,7 +163,7 @@ where
         Self { txn, collector }
     }
 
-    pub(crate) async fn commit(self) -> Result<Collector, CommitError> {
+    pub async fn commit(self) -> Result<Collector, CommitError> {
         let Self { txn, collector } = self;
 
         txn.commit().await?;
@@ -241,12 +171,12 @@ where
     }
 }
 
-pub(crate) struct Interpreter<Codec> {
+pub(crate) struct EffectInterpreter<Codec> {
     _codec: PhantomData<Codec>,
 }
 
-impl<Codec: RawEntryCodec> Interpreter<Codec> {
-    pub(crate) async fn interpret_effects<S: StateStorage + Committable, C: ActionMessageCollector>(
+impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
+    pub(crate) async fn interpret_effects<S: StateStorage + Committable, C: ActionCollector>(
         effects: &mut Effects,
         mut state_storage: S,
         mut message_collector: C,
@@ -258,7 +188,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         Ok(InterpretationResult::new(state_storage, message_collector))
     }
 
-    async fn interpret_effect<S: StateStorage, C: ActionMessageCollector>(
+    async fn interpret_effect<S: StateStorage, C: ActionCollector>(
         effect: Effect,
         state_storage: &mut S,
         collector: &mut C,
@@ -643,7 +573,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         Ok(())
     }
 
-    async fn invoke_service<S: StateStorage, C: ActionMessageCollector>(
+    async fn invoke_service<S: StateStorage, C: ActionCollector>(
         state_storage: &mut S,
         collector: &mut C,
         service_invocation: ServiceInvocation,
@@ -762,7 +692,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         }
     }
 
-    async fn append_journal_entry<S: StateStorage, C: ActionMessageCollector>(
+    async fn append_journal_entry<S: StateStorage, C: ActionCollector>(
         state_storage: &mut S,
         collector: &mut C,
         service_id: ServiceId,
@@ -789,7 +719,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         .await
     }
 
-    async fn unchecked_append_journal_entry<S: StateStorage, C: ActionMessageCollector>(
+    async fn unchecked_append_journal_entry<S: StateStorage, C: ActionCollector>(
         state_storage: &mut S,
         collector: &mut C,
         service_id: ServiceId,

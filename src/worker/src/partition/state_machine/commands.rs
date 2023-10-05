@@ -8,19 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition;
-use restate_types::identifiers::{IngressDispatcherId, PartitionId, PeerId};
+use crate::partition::services::non_deterministic::Effects as NBISEffects;
+use crate::partition::types::{InvokerEffect, TimerValue};
+use restate_types::identifiers::{IngressDispatcherId, InvocationId, PartitionId, PeerId};
+use restate_types::invocation::{InvocationResponse, ServiceInvocation};
 use restate_types::message::{AckKind, MessageIndex};
 
 /// Envelope for [`partition::Command`] that might require an explicit acknowledge.
 #[derive(Debug)]
-pub(crate) struct AckCommand {
-    cmd: partition::Command,
+pub struct AckCommand {
+    cmd: Command,
     ack_mode: AckMode,
 }
 
 #[derive(Debug)]
-pub(crate) enum AckMode {
+pub enum AckMode {
     Ack(AckTarget),
     Dedup(DeduplicationSource),
     None,
@@ -28,7 +30,7 @@ pub(crate) enum AckMode {
 
 impl AckCommand {
     /// Create a command that requires an acknowledgement upon reception.
-    pub(crate) fn ack(cmd: partition::Command, ack_target: AckTarget) -> Self {
+    pub fn ack(cmd: Command, ack_target: AckTarget) -> Self {
         Self {
             cmd,
             ack_mode: AckMode::Ack(ack_target),
@@ -37,10 +39,7 @@ impl AckCommand {
 
     /// Create a command that should be de-duplicated with respect to the `producer_id` and the
     /// `seq_number` by the receiver.
-    pub(crate) fn dedup(
-        cmd: partition::Command,
-        deduplication_source: DeduplicationSource,
-    ) -> Self {
+    pub fn dedup(cmd: Command, deduplication_source: DeduplicationSource) -> Self {
         Self {
             cmd,
             ack_mode: AckMode::Dedup(deduplication_source),
@@ -48,20 +47,20 @@ impl AckCommand {
     }
 
     /// Create a command that should not be acknowledged.
-    pub(crate) fn no_ack(cmd: partition::Command) -> Self {
+    pub fn no_ack(cmd: Command) -> Self {
         Self {
             cmd,
             ack_mode: AckMode::None,
         }
     }
 
-    pub(super) fn into_inner(self) -> (partition::Command, AckMode) {
+    pub fn into_inner(self) -> (Command, AckMode) {
         (self.cmd, self.ack_mode)
     }
 }
 
 #[derive(Debug)]
-pub(crate) enum DeduplicationSource {
+pub enum DeduplicationSource {
     Shuffle {
         producing_partition_id: PartitionId,
         shuffle_id: PeerId,
@@ -76,7 +75,7 @@ pub(crate) enum DeduplicationSource {
 }
 
 impl DeduplicationSource {
-    pub(crate) fn shuffle(
+    pub fn shuffle(
         shuffle_id: PeerId,
         producing_partition_id: PartitionId,
         seq_number: MessageIndex,
@@ -88,7 +87,7 @@ impl DeduplicationSource {
         }
     }
 
-    pub(crate) fn ingress(
+    pub fn ingress(
         ingress_dispatcher_id: IngressDispatcherId,
         source_id: String,
         seq_number: MessageIndex,
@@ -122,7 +121,7 @@ impl DeduplicationSource {
         }
     }
 
-    pub(crate) fn duplicate(self, last_known_seq_number: MessageIndex) -> AckResponse {
+    pub fn duplicate(self, last_known_seq_number: MessageIndex) -> AckResponse {
         match self {
             DeduplicationSource::Shuffle {
                 shuffle_id,
@@ -152,7 +151,7 @@ impl DeduplicationSource {
 }
 
 #[derive(Debug)]
-pub(crate) enum AckTarget {
+pub enum AckTarget {
     Ingress {
         ingress_dispatcher_id: IngressDispatcherId,
         seq_number: MessageIndex,
@@ -160,17 +159,14 @@ pub(crate) enum AckTarget {
 }
 
 impl AckTarget {
-    pub(crate) fn ingress(
-        ingress_dispatcher_id: IngressDispatcherId,
-        seq_number: MessageIndex,
-    ) -> Self {
+    pub fn ingress(ingress_dispatcher_id: IngressDispatcherId, seq_number: MessageIndex) -> Self {
         AckTarget::Ingress {
             ingress_dispatcher_id,
             seq_number,
         }
     }
 
-    pub(super) fn acknowledge(self) -> AckResponse {
+    pub fn acknowledge(self) -> AckResponse {
         match self {
             AckTarget::Ingress {
                 ingress_dispatcher_id,
@@ -185,20 +181,32 @@ impl AckTarget {
 }
 
 #[derive(Debug)]
-pub(crate) enum AckResponse {
+pub enum AckResponse {
     Shuffle(ShuffleDeduplicationResponse),
     Ingress(IngressAckResponse),
 }
 
 #[derive(Debug)]
-pub(crate) struct ShuffleDeduplicationResponse {
+pub struct ShuffleDeduplicationResponse {
     pub(crate) shuffle_target: PeerId,
     pub(crate) kind: AckKind,
 }
 
 #[derive(Debug)]
-pub(crate) struct IngressAckResponse {
+pub struct IngressAckResponse {
     pub(crate) _ingress_dispatcher_id: IngressDispatcherId,
     pub(crate) dedup_source: Option<String>,
     pub(crate) kind: AckKind,
+}
+
+/// State machine input commands
+#[derive(Debug)]
+pub enum Command {
+    Kill(InvocationId),
+    Invoker(InvokerEffect),
+    Timer(TimerValue),
+    OutboxTruncation(MessageIndex),
+    Invocation(ServiceInvocation),
+    Response(InvocationResponse),
+    BuiltInInvoker(NBISEffects),
 }

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 #![allow(dead_code)] // TODO remove this once we start using all the infra
 
-use crate::partition::effects::StateStorage;
+use crate::partition::state_machine::StateStorage;
 use crate::partition::storage::PartitionStorage;
 use bytes::Bytes;
 use restate_storage_rocksdb::RocksDBStorage;

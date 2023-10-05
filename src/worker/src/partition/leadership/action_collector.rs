@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::{Action, ActionMessageCollector};
 use crate::partition::leadership::{FollowerState, LeaderState, LeadershipState, TimerService};
 use crate::partition::services::non_deterministic;
 use crate::partition::services::non_deterministic::ServiceInvoker;
-use crate::partition::{shuffle, AckResponse, TimerValue};
+use crate::partition::state_machine::{Action, ActionCollector};
+use crate::partition::{shuffle, StateMachineAckResponse, TimerValue};
 use futures::{Stream, StreamExt};
 use restate_invoker_api::{ServiceHandle, ServiceNotRunning};
 use restate_types::identifiers::PartitionLeaderEpoch;
@@ -36,7 +36,7 @@ pub(crate) enum LeaderAwareActionCollectorError {
     #[error(transparent)]
     Invoker(#[from] ServiceNotRunning),
     #[error("failed to send ack response: {0}")]
-    Ack(#[from] mpsc::error::SendError<AckResponse>),
+    Ack(#[from] mpsc::error::SendError<StateMachineAckResponse>),
 }
 
 impl<'a, I, N> LeaderAwareActionCollector<'a, I, N>
@@ -44,13 +44,15 @@ where
     I: ServiceHandle,
     N: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
-    pub(crate) async fn send(self) -> Result<LeadershipState<'a, I, N>, LeaderAwareActionCollectorError> {
+    pub(crate) async fn send(
+        self,
+    ) -> Result<LeadershipState<'a, I, N>, LeaderAwareActionCollectorError> {
         match self {
             LeaderAwareActionCollector::Leader {
                 mut follower_state,
                 mut leader_state,
             } => {
-                for message in leader_state.message_buffer.drain(..) {
+                for message in leader_state.actions_buffer.drain(..) {
                     trace!(?message, "Handle action");
                     Self::handle_action(
                         message,
@@ -82,7 +84,7 @@ where
         shuffle_hint_tx: &mut mpsc::Sender<shuffle::NewOutboxMessage>,
         mut timer_service: Pin<&mut TimerService<'a>>,
         non_deterministic_service_invoker: &ServiceInvoker<'a>,
-        ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
+        ack_tx: &restate_network::PartitionProcessorSender<StateMachineAckResponse>,
     ) -> Result<(), LeaderAwareActionCollectorError> {
         match action {
             Action::Invoke {
@@ -155,11 +157,15 @@ where
     }
 }
 
-impl<'a, I, N> ActionMessageCollector for LeaderAwareActionCollector<'a, I, N> {
+impl<'a, I, N> ActionCollector for LeaderAwareActionCollector<'a, I, N> {
     fn collect(&mut self, message: Action) {
         match self {
             LeaderAwareActionCollector::Leader {
-                leader_state: LeaderState { message_buffer, .. },
+                leader_state:
+                    LeaderState {
+                        actions_buffer: message_buffer,
+                        ..
+                    },
                 ..
             } => {
                 message_buffer.push(message);
