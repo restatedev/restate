@@ -20,6 +20,21 @@ To setup these on Fedora, run:
 sudo dnf install clang lld lldb libcxx cmake openssl-devel rocksdb-devel protobuf-compiler
 ```
 
+On MacOS, you can use [homebrew](https://brew.sh)
+```
+brew install cmake protobuf node just
+```
+
+Optionally, you can install node and Java for supporting tools and examples:
+```
+brew install node openjdk
+```
+If you choose to install OpenJDK via homebrew, you'll also need to link it so that it's available through the system-level wrappers.
+
+```shell
+sudo ln -sfn /opt/homebrew/opt/openjdk/libexec/openjdk.jdk /Library/Java/JavaVirtualMachines/openjdk.jdk
+```
+
 ## Speeding builds up via sccache
 
 In order to speed up the build process, one can install the [sccache](https://github.com/mozilla/sccache) which caches build artifacts of `rustc`.
