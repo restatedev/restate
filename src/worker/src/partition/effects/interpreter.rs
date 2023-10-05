@@ -43,7 +43,7 @@ pub(crate) enum Error {
 }
 
 #[derive(Debug)]
-pub(crate) enum ActuatorMessage {
+pub(crate) enum Action {
     Invoke {
         full_invocation_id: FullInvocationId,
         invoke_input_journal: InvokeInputJournal,
@@ -74,8 +74,8 @@ pub(crate) enum ActuatorMessage {
     AbortInvocation(FullInvocationId),
 }
 
-pub(crate) trait MessageCollector {
-    fn collect(&mut self, message: ActuatorMessage);
+pub(crate) trait ActionMessageCollector {
+    fn collect(&mut self, message: Action);
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -246,7 +246,7 @@ pub(crate) struct Interpreter<Codec> {
 }
 
 impl<Codec: RawEntryCodec> Interpreter<Codec> {
-    pub(crate) async fn interpret_effects<S: StateStorage + Committable, C: MessageCollector>(
+    pub(crate) async fn interpret_effects<S: StateStorage + Committable, C: ActionMessageCollector>(
         effects: &mut Effects,
         mut state_storage: S,
         mut message_collector: C,
@@ -258,7 +258,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         Ok(InterpretationResult::new(state_storage, message_collector))
     }
 
-    async fn interpret_effect<S: StateStorage, C: MessageCollector>(
+    async fn interpret_effect<S: StateStorage, C: ActionMessageCollector>(
         effect: Effect,
         state_storage: &mut S,
         collector: &mut C,
@@ -277,7 +277,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .store_invocation_status(&service_id, InvocationStatus::Invoked(metadata))
                     .await?;
 
-                collector.collect(ActuatorMessage::Invoke {
+                collector.collect(Action::Invoke {
                     full_invocation_id: FullInvocationId {
                         service_id,
                         invocation_uuid: invocation_id,
@@ -334,7 +334,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .store_outbox_seq_number(seq_number + 1)
                     .await?;
 
-                collector.collect(ActuatorMessage::NewOutboxMessage {
+                collector.collect(Action::NewOutboxMessage {
                     seq_number,
                     message,
                 });
@@ -419,7 +419,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 )
                 .await?;
 
-                collector.collect(ActuatorMessage::ForwardCompletion {
+                collector.collect(Action::ForwardCompletion {
                     full_invocation_id,
                     completion: Completion {
                         entry_index,
@@ -437,7 +437,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     )
                     .await?;
 
-                collector.collect(ActuatorMessage::RegisterTimer { timer_value });
+                collector.collect(Action::RegisterTimer { timer_value });
             }
             Effect::DeleteTimer {
                 full_invocation_id,
@@ -524,7 +524,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 .await?;
 
                 // storage is acked by sending an empty completion
-                collector.collect(ActuatorMessage::ForwardCompletion {
+                collector.collect(Action::ForwardCompletion {
                     full_invocation_id,
                     completion: Completion {
                         entry_index,
@@ -567,7 +567,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 )
                 .await?
                 {
-                    collector.collect(ActuatorMessage::ForwardCompletion {
+                    collector.collect(Action::ForwardCompletion {
                         full_invocation_id,
                         completion: Completion {
                             entry_index,
@@ -606,7 +606,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                         )
                         .await?;
 
-                    collector.collect(ActuatorMessage::Invoke {
+                    collector.collect(Action::Invoke {
                         full_invocation_id,
                         invoke_input_journal: InvokeInputJournal::NoCachedJournal,
                     });
@@ -633,17 +633,17 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 // these effects are only needed for span creation
             }
             Effect::SendAckResponse(ack_response) => {
-                collector.collect(ActuatorMessage::SendAckResponse(ack_response))
+                collector.collect(Action::SendAckResponse(ack_response))
             }
             Effect::AbortInvocation(full_invocation_id) => {
-                collector.collect(ActuatorMessage::AbortInvocation(full_invocation_id))
+                collector.collect(Action::AbortInvocation(full_invocation_id))
             }
         }
 
         Ok(())
     }
 
-    async fn invoke_service<S: StateStorage, C: MessageCollector>(
+    async fn invoke_service<S: StateStorage, C: ActionMessageCollector>(
         state_storage: &mut S,
         collector: &mut C,
         service_invocation: ServiceInvocation,
@@ -673,7 +673,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         let input_entry = if non_deterministic::ServiceInvoker::is_supported(
             &service_invocation.fid.service_id.service_name,
         ) {
-            collector.collect(ActuatorMessage::InvokeBuiltInService {
+            collector.collect(Action::InvokeBuiltInService {
                 full_invocation_id: service_invocation.fid,
                 span_context: service_invocation.span_context,
                 response_sink: service_invocation.response_sink,
@@ -699,7 +699,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
             let raw_bytes = entry.clone();
 
-            collector.collect(ActuatorMessage::Invoke {
+            collector.collect(Action::Invoke {
                 full_invocation_id: service_invocation.fid,
                 invoke_input_journal: InvokeInputJournal::CachedJournal(
                     journal_metadata,
@@ -762,7 +762,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         }
     }
 
-    async fn append_journal_entry<S: StateStorage, C: MessageCollector>(
+    async fn append_journal_entry<S: StateStorage, C: ActionMessageCollector>(
         state_storage: &mut S,
         collector: &mut C,
         service_id: ServiceId,
@@ -789,7 +789,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         .await
     }
 
-    async fn unchecked_append_journal_entry<S: StateStorage, C: MessageCollector>(
+    async fn unchecked_append_journal_entry<S: StateStorage, C: ActionMessageCollector>(
         state_storage: &mut S,
         collector: &mut C,
         service_id: ServiceId,
@@ -818,7 +818,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             )
             .await?;
 
-        collector.collect(ActuatorMessage::AckStoredEntry {
+        collector.collect(Action::AckStoredEntry {
             full_invocation_id,
             entry_index,
         });

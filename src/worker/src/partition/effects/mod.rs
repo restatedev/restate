@@ -23,7 +23,7 @@ mod interpreter;
 
 use crate::partition::{types, AckResponse, TimerValue};
 pub(crate) use interpreter::{
-    ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
+    Action, CommitError, Committable, Interpreter, ActionMessageCollector, StateStorage,
     StateStorageError,
 };
 use restate_storage_api::outbox_table::OutboxMessage;

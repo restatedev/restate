@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::{ActuatorMessage, StateStorage, StateStorageError};
+use crate::partition::effects::{Action, StateStorage, StateStorageError};
 use crate::partition::shuffle::Shuffle;
 use crate::partition::{shuffle, storage, AckResponse, TimerValue};
 use assert2::let_assert;
@@ -25,11 +25,11 @@ use tokio::sync::mpsc;
 use tokio::task;
 use tokio::task::JoinError;
 
-mod actuator;
+mod action_collector;
 
 use crate::partition::services::non_deterministic;
 use crate::partition::state_machine::{StateReader, StateReaderError};
-pub(crate) use actuator::{ActuatorMessageCollector, ActuatorOutput, ActuatorStream};
+pub(crate) use action_collector::{LeaderAwareActionCollector, ActionEffect, ActionEffectStream};
 use restate_schema_impl::Schemas;
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -56,7 +56,7 @@ pub(crate) struct LeaderState<'a> {
     shutdown_signal: drain::Signal,
     shuffle_hint_tx: mpsc::Sender<shuffle::NewOutboxMessage>,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
-    message_buffer: Vec<ActuatorMessage>,
+    message_buffer: Vec<Action>,
     timer_service: Pin<Box<TimerService<'a>>>,
     non_deterministic_service_invoker: non_deterministic::ServiceInvoker<'a>,
 }
@@ -109,9 +109,9 @@ where
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
         ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
-    ) -> (ActuatorStream, Self) {
+    ) -> (ActionEffectStream, Self) {
         (
-            ActuatorStream::Follower,
+            ActionEffectStream::Follower,
             Self::Follower(FollowerState {
                 peer_id,
                 partition_id,
@@ -136,7 +136,7 @@ where
         schemas: &'a Schemas,
     ) -> Result<
         (
-            ActuatorStream,
+            ActionEffectStream,
             LeadershipState<'a, InvokerInputSender, NetworkHandle>,
         ),
         Error,
@@ -171,7 +171,7 @@ where
         schemas: &'a Schemas,
     ) -> Result<
         (
-            ActuatorStream,
+            ActionEffectStream,
             LeadershipState<'a, InvokerInputSender, NetworkHandle>,
         ),
         Error,
@@ -219,7 +219,7 @@ where
             let shuffle_handle = tokio::spawn(shuffle.run(shutdown_watch));
 
             Ok((
-                ActuatorStream::leader(invoker_rx, shuffle_rx, service_invoker_output_rx),
+                ActionEffectStream::leader(invoker_rx, shuffle_rx, service_invoker_output_rx),
                 LeadershipState::Leader {
                     follower_state,
                     leader_state: LeaderState {
@@ -323,7 +323,7 @@ where
         self,
     ) -> Result<
         (
-            ActuatorStream,
+            ActionEffectStream,
             LeadershipState<'a, InvokerInputSender, NetworkHandle>,
         ),
         Error,
@@ -372,7 +372,7 @@ where
                 ack_tx,
             ))
         } else {
-            Ok((ActuatorStream::Follower, self))
+            Ok((ActionEffectStream::Follower, self))
         }
     }
 
@@ -390,17 +390,15 @@ where
 
     pub(crate) fn into_message_collector(
         self,
-    ) -> ActuatorMessageCollector<'a, InvokerInputSender, NetworkHandle> {
+    ) -> LeaderAwareActionCollector<'a, InvokerInputSender, NetworkHandle> {
         match self {
-            LeadershipState::Follower(follower_state) => {
-                ActuatorMessageCollector::Follower(follower_state)
-            }
+            LeadershipState::Follower(follower_state) => LeaderAwareActionCollector::Follower(follower_state),
             LeadershipState::Leader {
                 follower_state,
                 mut leader_state,
             } => {
                 leader_state.message_buffer.clear();
-                ActuatorMessageCollector::Leader {
+                LeaderAwareActionCollector::Leader {
                     follower_state,
                     leader_state,
                 }

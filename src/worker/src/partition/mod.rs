@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, instrument};
 
 pub mod ack;
-mod actuator_output_handler;
+mod action_effect_handler;
 mod effects;
 mod leadership;
 mod services;
@@ -31,9 +31,9 @@ pub(super) use crate::partition::ack::{
     AckCommand, AckResponse, AckTarget, DeduplicationSource, IngressAckResponse,
     ShuffleDeduplicationResponse,
 };
-use crate::partition::actuator_output_handler::ActuatorOutputHandler;
+use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::effects::{Effects, Interpreter};
-use crate::partition::leadership::{ActuatorOutput, LeadershipState, TaskResult};
+use crate::partition::leadership::{ActionEffect, LeadershipState, TaskResult};
 use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -142,7 +142,7 @@ where
         let mut state_machine =
             Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?;
 
-        let actuator_output_handler = ActuatorOutputHandler::new(proposal_tx);
+        let actuator_output_handler = ActionEffectHandler::new(proposal_tx);
 
         loop {
             tokio::select! {
@@ -206,7 +206,7 @@ where
                 task_result = leadership_state.run_tasks() => {
                     match task_result {
                         TaskResult::Timer(timer) => {
-                            actuator_output_handler.handle(ActuatorOutput::Timer(timer)).await;
+                            actuator_output_handler.handle(ActionEffect::Timer(timer)).await;
                         },
                         TaskResult::TerminatedTask(result) => {
                             Err(result)?
