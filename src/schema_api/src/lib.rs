@@ -279,6 +279,92 @@ pub mod service {
     }
 }
 
+#[cfg(feature = "discovery")]
+pub mod discovery {
+    use std::collections::HashMap;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub enum FieldAnnotation {
+        Key,
+        EventPayload,
+        EventMetadata,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub enum DiscoveredInstanceType {
+        Keyed(super::key::KeyStructure),
+        Unkeyed,
+        Singleton,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct DiscoveredMethodMetadata {
+        pub input_fields_annotations: HashMap<FieldAnnotation, u32>,
+    }
+
+    impl DiscoveredMethodMetadata {
+        pub fn new(input_fields_annotations: HashMap<FieldAnnotation, u32>) -> Self {
+            Self {
+                input_fields_annotations,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct ServiceRegistrationRequest {
+        pub name: String,
+        pub instance_type: DiscoveredInstanceType,
+        pub methods: HashMap<String, DiscoveredMethodMetadata>,
+    }
+
+    impl ServiceRegistrationRequest {
+        pub fn new(
+            name: String,
+            instance_type: DiscoveredInstanceType,
+            methods: HashMap<String, DiscoveredMethodMetadata>,
+        ) -> Self {
+            Self {
+                name,
+                instance_type,
+                methods,
+            }
+        }
+    }
+
+    #[cfg(feature = "mocks")]
+    pub mod mocks {
+        use super::*;
+
+        impl ServiceRegistrationRequest {
+            pub fn unkeyed_without_annotations(name: String, methods: &[&str]) -> Self {
+                Self {
+                    name,
+                    instance_type: DiscoveredInstanceType::Unkeyed,
+                    methods: methods
+                        .iter()
+                        .map(|n| (n.to_string(), DiscoveredMethodMetadata::default()))
+                        .collect(),
+                }
+            }
+
+            pub fn singleton_without_annotations(name: String, methods: &[&str]) -> Self {
+                Self {
+                    name,
+                    instance_type: DiscoveredInstanceType::Singleton,
+                    methods: methods
+                        .iter()
+                        .map(|n| (n.to_string(), DiscoveredMethodMetadata::default()))
+                        .collect(),
+                }
+            }
+        }
+    }
+}
+
 #[cfg(feature = "json_conversion")]
 pub mod json {
     use bytes::Bytes;
@@ -329,6 +415,7 @@ pub mod json {
     feature = "json_key_conversion"
 ))]
 pub mod key {
+    // TODO we can move this back in schema_impl
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub enum ServiceInstanceType {

@@ -27,6 +27,7 @@ impl KeyExpander for Schemas {
                 .methods
                 .get(service_method.as_ref())
                 .ok_or(Error::NotFound)?
+                .descriptor()
                 .input();
             expand_impls::expand(
                 &service_schema.instance_type,

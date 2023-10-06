@@ -36,7 +36,7 @@ prost-reflect = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
 restate_errors = { workspace = true, optional = true }
 restate_hyper_util = { workspace = true, optional = true }
-restate_schema_api = { workspace = true, optional = true, features = ["key_extraction", "endpoint"] }
+restate_schema_api = { workspace = true, optional = true, features = ["endpoint", "discovery"] }
 tokio = { workspace = true, optional = true, features = ["time"] }
 
 size = { version = "0.4.1", optional = true }

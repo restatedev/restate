@@ -47,29 +47,27 @@ impl fmt::Display for KafkaDeduplicationId {
 
 impl DeduplicationId for KafkaDeduplicationId {
     fn requires_proxying(subscription: &Subscription) -> bool {
-        match (subscription.source(), subscription.sink()) {
+        !matches!(
+            (subscription.source(), subscription.sink()),
             (
                 Source::Kafka {
                     ordering_key_format: KafkaOrderingKeyFormat::ConsumerGroupTopicPartition,
                     ..
                 },
                 Sink::Service {
-                    instance_type:
-                        EventReceiverServiceInstanceType::Keyed {
-                            ordering_key_is_key: true,
-                        },
+                    instance_type: EventReceiverServiceInstanceType::Keyed {
+                        ordering_key_is_key: true,
+                    },
                     ..
                 },
-            ) => false,
-            (
+            ) | (
                 _,
                 Sink::Service {
                     instance_type: EventReceiverServiceInstanceType::Singleton,
                     ..
                 },
-            ) => false,
-            _ => true,
-        }
+            )
+        )
     }
 }
 
@@ -89,13 +87,9 @@ impl MessageSender {
         consumer_group_id: &str,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), Error> {
-        let &Sink::Service {
-            ref name,
-            ref method,
-            ..
-        } = self.subscription.sink();
-        let &Source::Kafka {
-            ref ordering_key_format,
+        let Sink::Service { name, method, .. } = self.subscription.sink();
+        let Source::Kafka {
+            ordering_key_format,
             ..
         } = self.subscription.source();
 

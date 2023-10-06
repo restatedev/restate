@@ -10,6 +10,7 @@
 
 use super::Schemas;
 use bytes::Bytes;
+use restate_schema_api::discovery::FieldAnnotation;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 
 use crate::schemas_impl::{ServiceInstanceType, ServiceLocation, ServiceSchemas};
@@ -63,16 +64,13 @@ fn map_to_service_metadata(
                 .methods
                 .values()
                 .map(|method_desc| MethodMetadata {
-                    name: method_desc.name().to_string(),
-                    input_type: method_desc.input().full_name().to_string(),
-                    output_type: method_desc.output().full_name().to_string(),
+                    name: method_desc.descriptor().name().to_string(),
+                    input_type: method_desc.descriptor().input().full_name().to_string(),
+                    output_type: method_desc.descriptor().output().full_name().to_string(),
                     key_field_number: match &service_schemas.instance_type {
-                        ServiceInstanceType::Keyed {
-                            service_methods_key_field_root_number,
-                            ..
-                        } => Some(
-                            *service_methods_key_field_root_number
-                                .get(method_desc.name())
+                        ServiceInstanceType::Keyed { .. } => Some(
+                            method_desc
+                                .input_field_annotated(FieldAnnotation::Key)
                                 .expect("Method must exist in the parsed service methods"),
                         ),
                         _ => None,

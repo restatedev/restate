@@ -122,10 +122,11 @@ mod tests {
     use googletest::assert_that;
     use googletest::{all, pat};
     use prost::Message;
+    use restate_schema_api::discovery::{
+        DiscoveredInstanceType, DiscoveredMethodMetadata, ServiceRegistrationRequest,
+    };
     use prost_reflect::DynamicMessage;
     use restate_schema_api::endpoint::EndpointMetadata;
-    use restate_schema_api::key::ServiceInstanceType;
-    use restate_schema_impl::ServiceRegistrationRequest;
     use restate_test_util::matchers::*;
     use restate_test_util::test;
     use restate_types::invocation::ServiceInvocation;
@@ -140,7 +141,11 @@ mod tests {
                         EndpointMetadata::mock(),
                         vec![ServiceRegistrationRequest::new(
                             restate_pb::mocks::GREETER_SERVICE_NAME.to_string(),
-                            ServiceInstanceType::Unkeyed,
+                            DiscoveredInstanceType::Unkeyed,
+                            HashMap::from([(
+                                "Greet".to_string(),
+                                DiscoveredMethodMetadata::default(),
+                            )]),
                         )],
                         restate_pb::mocks::DESCRIPTOR_POOL.clone(),
                         false,
