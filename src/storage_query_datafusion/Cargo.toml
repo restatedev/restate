@@ -27,6 +27,7 @@ prost = {workspace = true}
 restate_storage_rocksdb = {workspace = true }
 restate_types = { workspace = true }
 restate_schema_api = {workspace = true, features = ["key_extraction"]}
+restate_service_protocol = {workspace = true}
 restate_storage_api = {workspace = true}
 restate_invoker_api = {workspace = true}
 paste = { workspace = true}

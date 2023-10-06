@@ -4117,6 +4117,7 @@ dependencies = [
  "prost",
  "restate_invoker_api",
  "restate_schema_api",
+ "restate_service_protocol",
  "restate_storage_api",
  "restate_storage_rocksdb",
  "restate_types",

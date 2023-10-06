@@ -10,8 +10,11 @@
 
 use crate::codec::ProtoValue;
 use crate::keys::define_table_key;
+use crate::keys::TableKey;
+use crate::owned_iter::OwnedIterator;
+use crate::scan::TableScan::PartitionKeyRange;
 use crate::TableKind::Journal;
-use crate::{GetFuture, PutFuture, RocksDBTransaction};
+use crate::{GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -21,6 +24,7 @@ use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{EntryIndex, PartitionKey, ServiceId, WithPartitionKey};
+use std::ops::RangeInclusive;
 
 define_table_key!(
     Journal,
@@ -113,6 +117,36 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
             self.delete_key(k);
         }
         ready()
+    }
+}
+
+#[derive(Debug)]
+pub struct OwnedJournalRow {
+    pub partition_key: PartitionKey,
+    pub service: ByteString,
+    pub service_key: Bytes,
+    pub journal_index: u32,
+    pub journal_entry: JournalEntry,
+}
+
+impl RocksDBStorage {
+    pub fn all_journal(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Iterator<Item = OwnedJournalRow> + '_ {
+        let iter = self.iterator_from(PartitionKeyRange::<JournalKey>(range));
+        OwnedIterator::new(iter).map(|(mut key, value)| {
+            let journal_key = JournalKey::deserialize_from(&mut key).unwrap();
+            let journal_entry = storage::v1::JournalEntry::decode(value).unwrap();
+            let journal_entry = JournalEntry::try_from(journal_entry).unwrap();
+            OwnedJournalRow {
+                partition_key: journal_key.partition_key.unwrap(),
+                service: journal_key.service_name.unwrap(),
+                service_key: journal_key.service_key.unwrap(),
+                journal_index: journal_key.journal_index.unwrap(),
+                journal_entry,
+            }
+        })
     }
 }
 
