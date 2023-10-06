@@ -564,10 +564,11 @@ fn get_annotated_field(
 ) -> Result<Option<FieldDescriptor>, ServiceDiscoveryError> {
     let message_desc = method_descriptor.input();
     let mut iter = message_desc.fields().filter(|f| {
-        f.options()
-            .get_extension(restate_field_extension)
-            .as_enum_number()
-            == Some(extension_value)
+        f.options().has_extension(restate_field_extension)
+            && f.options()
+                .get_extension(restate_field_extension)
+                .as_enum_number()
+                == Some(extension_value)
     });
 
     let field = iter.next();
