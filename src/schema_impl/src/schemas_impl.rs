@@ -561,7 +561,7 @@ impl SchemasInner {
                         let key_field_kind = method_schemas.descriptor.input().get_field(
                             method_schemas.input_field_annotated(FieldAnnotation::Key).expect("There must be a key field for every method input type")
                         ).unwrap().kind();
-                        if key_field_kind == Kind::String || key_field_kind == Kind::Bytes {
+                        if key_field_kind != Kind::String && key_field_kind != Kind::Bytes {
                             return Err(RegistrationError::InvalidSubscription(anyhow!(
                                 "Key type {:?} for sink {} is invalid, only bytes and string are supported.",
                                 key_field_kind, sink
