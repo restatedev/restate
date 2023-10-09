@@ -161,7 +161,7 @@ where
                                 let message_collector = leadership_state.into_message_collector();
 
                                 // Tick state machine
-                                let tick_result = state_machine.tick(ackable_command, &mut effects, transaction, message_collector, is_leader).await?;
+                                let tick_result = state_machine.apply(ackable_command, &mut effects, transaction, message_collector, is_leader).await?;
 
                                 // Commit actuator messages
                                 let message_collector = tick_result.commit().await?;

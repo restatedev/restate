@@ -50,7 +50,7 @@ impl<Codec> StateMachine<Codec> {
 }
 
 impl<Codec: RawEntryCodec> StateMachine<Codec> {
-    pub async fn tick<
+    pub async fn apply<
         TransactionType: restate_storage_api::Transaction + Send,
         Collector: ActionCollector,
     >(
@@ -134,10 +134,10 @@ mod tests {
             }
         }
 
-        pub async fn tick(&mut self, command: AckCommand) -> Vec<Action> {
+        pub async fn apply(&mut self, command: AckCommand) -> Vec<Action> {
             let transaction = self.rocksdb_storage.transaction();
             self.state_machine
-                .tick(
+                .apply(
                     command,
                     &mut self.effects_buffer,
                     Transaction::new(0, 0..=PartitionKey::MAX, transaction),
@@ -163,7 +163,7 @@ mod tests {
         let fid = FullInvocationId::generate("MySvc", Bytes::default());
 
         let actions = state_machine
-            .tick(AckCommand::no_ack(Command::Invocation(ServiceInvocation {
+            .apply(AckCommand::no_ack(Command::Invocation(ServiceInvocation {
                 fid: fid.clone(),
                 method_name: ByteString::from("MyMethod"),
                 argument: Default::default(),

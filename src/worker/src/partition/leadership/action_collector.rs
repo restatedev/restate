@@ -161,14 +161,10 @@ impl<'a, I, N> ActionCollector for LeaderAwareActionCollector<'a, I, N> {
     fn collect(&mut self, message: Action) {
         match self {
             LeaderAwareActionCollector::Leader {
-                leader_state:
-                    LeaderState {
-                        actions_buffer: message_buffer,
-                        ..
-                    },
+                leader_state: LeaderState { actions_buffer, .. },
                 ..
             } => {
-                message_buffer.push(message);
+                actions_buffer.push(message);
             }
             LeaderAwareActionCollector::Follower(..) => {}
         }
