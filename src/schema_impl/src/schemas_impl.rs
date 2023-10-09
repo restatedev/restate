@@ -546,7 +546,6 @@ impl SchemasInner {
                     None
                 } else {
                     Some(InputEventRemap {
-                        ordering_key_index: None,
                         key_index: method_schemas.input_field_annotated(FieldAnnotation::Key),
                         payload_index: method_schemas
                             .input_field_annotated(FieldAnnotation::EventPayload),

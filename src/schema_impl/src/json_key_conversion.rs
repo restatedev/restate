@@ -45,7 +45,7 @@ impl RestateKeyConverter for Schemas {
                 .next()
                 .expect("Must have at least one method. This should have been checked in service discovery. This is a bug, please contact the developers");
 
-            json_to_key(&service_schemas.instance_type,method_desc.descriptor().clone(), key)
+            json_to_key(&service_schemas.instance_type, method_desc.descriptor().clone(), key)
         }).ok_or(Error::NotFound)?
     }
 }

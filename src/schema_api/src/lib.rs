@@ -632,8 +632,6 @@ pub mod subscription {
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub struct InputEventRemap {
-        /// If != 0, index to remap the event.ordering_key field
-        pub ordering_key_index: Option<u32>,
         /// If != 0, index to remap the event.key field
         pub key_index: Option<u32>,
         /// If != 0, index to remap the event.payload field

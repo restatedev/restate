@@ -21,13 +21,6 @@ impl Message for MappedEvent<'_> {
     where
         B: bytes::BufMut,
     {
-        if self.1.ordering_key_index.is_some() && !self.0.ordering_key.is_empty() {
-            encoding::bytes::encode(
-                self.1.ordering_key_index.unwrap(),
-                &self.0.ordering_key,
-                buf,
-            );
-        }
         if self.1.key_index.is_some() && !self.0.key.is_empty() {
             encoding::bytes::encode(self.1.key_index.unwrap(), &self.0.key, buf);
         }
@@ -59,17 +52,14 @@ impl Message for MappedEvent<'_> {
     {
         unimplemented!("This method should not be used!")
     }
+
     #[inline]
     fn encoded_len(&self) -> usize {
-        (if self.1.ordering_key_index.is_some() && !self.0.ordering_key.is_empty() {
-            encoding::bytes::encoded_len(self.1.ordering_key_index.unwrap(), &self.0.ordering_key)
-        } else {
-            0
-        }) + if self.1.key_index.is_some() && !self.0.key.is_empty() {
+        (if self.1.key_index.is_some() && !self.0.key.is_empty() {
             encoding::bytes::encoded_len(self.1.key_index.unwrap(), &self.0.key)
         } else {
             0
-        } + if self.1.payload_index.is_some() && !self.0.payload.is_empty() {
+        }) + if self.1.payload_index.is_some() && !self.0.payload.is_empty() {
             encoding::bytes::encoded_len(self.1.payload_index.unwrap(), &self.0.payload)
         } else {
             0
