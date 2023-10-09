@@ -13,9 +13,11 @@ use super::*;
 use restate_pb::restate::internal::*;
 use restate_types::identifiers::InvocationUuid;
 use restate_types::invocation::ServiceInvocation;
+use tracing::{instrument, trace};
 
 #[async_trait::async_trait]
 impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
+    #[instrument(level = "trace", skip(self))]
     async fn proxy_through(&mut self, req: ProxyThroughRequest) -> Result<(), InvocationError> {
         let target_fid = FullInvocationId::new(
             req.target_service,
@@ -23,6 +25,7 @@ impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
             InvocationUuid::from_slice(&req.target_invocation_uuid)
                 .map_err(InvocationError::internal)?,
         );
+        trace!(restate.invocation.id = %target_fid, "Proxying");
 
         self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
             target_fid,
