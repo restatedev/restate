@@ -18,7 +18,6 @@ use crate::services::Services;
 use codederror::CodedError;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use partition::ack::AckCommand;
 use partition::shuffle;
 use restate_consensus::Consensus;
 use restate_ingress_dispatcher::Service as IngressDispatcherService;
@@ -86,7 +85,7 @@ pub use restate_storage_query_postgres::{
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
 
-type PartitionProcessorCommand = AckCommand;
+type PartitionProcessorCommand = partition::StateMachineAckCommand;
 type ConsensusCommand = restate_consensus::Command<PartitionProcessorCommand>;
 type ConsensusMsg = PeerTarget<PartitionProcessorCommand>;
 type PartitionProcessor = partition::PartitionProcessor<
@@ -381,7 +380,7 @@ impl Worker {
         proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: InvokerChannelServiceHandle,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-        ack_sender: PartitionProcessorSender<partition::AckResponse>,
+        ack_sender: PartitionProcessorSender<partition::StateMachineAckResponse>,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {

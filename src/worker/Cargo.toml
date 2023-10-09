@@ -64,4 +64,5 @@ restate_schema_api = { workspace = true, features = ["mocks"] }
 restate_service_protocol = { workspace = true, features = ["mocks"] }
 restate_pb = { workspace = true, features = ["mocks"]}
 restate_test_util = { workspace = true, features = ["prost"] }
+tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }

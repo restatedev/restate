@@ -8,8 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::partition::action_effect_handler::ActionEffectHandler;
+use crate::partition::leadership::{ActionEffect, LeadershipState, TaskResult};
+use crate::partition::state_machine::{Effects, StateMachine};
+use crate::partition::storage::PartitionStorage;
+use crate::util::IdentitySender;
+use futures::future::BoxFuture;
 use futures::StreamExt;
 use restate_schema_impl::Schemas;
+use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -17,9 +24,7 @@ use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 use tracing::{debug, info, instrument};
 
-pub mod ack;
-mod actuator_output_handler;
-mod effects;
+mod action_effect_handler;
 mod leadership;
 mod services;
 pub mod shuffle;
@@ -27,18 +32,13 @@ mod state_machine;
 pub mod storage;
 mod types;
 
-pub(super) use crate::partition::ack::{
-    AckCommand, AckResponse, AckTarget, DeduplicationSource, IngressAckResponse,
-    ShuffleDeduplicationResponse,
+pub use state_machine::{
+    AckCommand as StateMachineAckCommand, AckResponse as StateMachineAckResponse,
+    AckTarget as StateMachineAckTarget, Command as StateMachineCommand,
+    DeduplicationSource as StateMachineDeduplicationSource,
+    IngressAckResponse as StateMachineIngressAckResponse,
+    ShuffleDeduplicationResponse as StateMachineShuffleDeduplicationResponse,
 };
-use crate::partition::actuator_output_handler::ActuatorOutputHandler;
-use crate::partition::effects::{Effects, Interpreter};
-use crate::partition::leadership::{ActuatorOutput, LeadershipState, TaskResult};
-use crate::partition::storage::PartitionStorage;
-use crate::util::IdentitySender;
-use restate_storage_rocksdb::RocksDBStorage;
-pub(crate) use state_machine::Command;
-use state_machine::DeduplicatingStateMachine;
 pub(super) use types::TimerValue;
 
 #[derive(Debug)]
@@ -50,14 +50,14 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
     timer_service_options: restate_timer::Options,
     channel_size: usize,
 
-    command_rx: mpsc::Receiver<restate_consensus::Command<AckCommand>>,
-    proposal_tx: IdentitySender<AckCommand>,
+    command_rx: mpsc::Receiver<restate_consensus::Command<StateMachineAckCommand>>,
+    proposal_tx: IdentitySender<StateMachineAckCommand>,
 
     invoker_tx: InvokerInputSender,
 
     network_handle: NetworkHandle,
 
-    ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
+    ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
 
     rocksdb_storage: RocksDBStorage,
 
@@ -80,11 +80,11 @@ where
         partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
         channel_size: usize,
-        command_stream: mpsc::Receiver<restate_consensus::Command<AckCommand>>,
-        proposal_sender: IdentitySender<AckCommand>,
+        command_stream: mpsc::Receiver<restate_consensus::Command<StateMachineAckCommand>>,
+        proposal_sender: IdentitySender<StateMachineAckCommand>,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
-        ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
+        ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
     ) -> Self {
@@ -142,7 +142,7 @@ where
         let mut state_machine =
             Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?;
 
-        let actuator_output_handler = ActuatorOutputHandler::new(proposal_tx);
+        let actuator_output_handler = ActionEffectHandler::new(proposal_tx);
 
         loop {
             tokio::select! {
@@ -154,24 +154,17 @@ where
                                 effects.clear();
 
                                 // Prepare transaction
-                                let mut transaction = partition_storage.create_transaction();
-
-                                // Handle the command, returns the span_relation to use to log effects
-                                let (fid, span_relation) = state_machine.on_apply(ackable_command, &mut effects, &mut transaction).await?;
-
-                                let is_leader = leadership_state.is_leader();
-
-                                // Log the effects
-                                effects.log(is_leader, fid, span_relation);
+                                let transaction = partition_storage.create_transaction();
 
                                 // Prepare message collector
+                                let is_leader = leadership_state.is_leader();
                                 let message_collector = leadership_state.into_message_collector();
 
-                                // Interpret effects
-                                let result = Interpreter::<RawEntryCodec>::interpret_effects(&mut effects, transaction, message_collector).await?;
+                                // Tick state machine
+                                let tick_result = state_machine.apply(ackable_command, &mut effects, transaction, message_collector, is_leader).await?;
 
                                 // Commit actuator messages
-                                let message_collector = result.commit().await?;
+                                let message_collector = tick_result.commit().await?;
                                 leadership_state = message_collector.send().await?;
                             }
                             restate_consensus::Command::BecomeLeader(leader_epoch) => {
@@ -206,7 +199,7 @@ where
                 task_result = leadership_state.run_tasks() => {
                     match task_result {
                         TaskResult::Timer(timer) => {
-                            actuator_output_handler.handle(ActuatorOutput::Timer(timer)).await;
+                            actuator_output_handler.handle(ActionEffect::Timer(timer)).await;
                         },
                         TaskResult::TerminatedTask(result) => {
                             Err(result)?
@@ -224,7 +217,7 @@ where
 
     async fn create_state_machine<Codec, Storage>(
         partition_storage: &PartitionStorage<Storage>,
-    ) -> Result<DeduplicatingStateMachine<Codec>, restate_storage_api::StorageError>
+    ) -> Result<StateMachine<Codec>, restate_storage_api::StorageError>
     where
         Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
         Storage: restate_storage_api::Storage,
@@ -234,9 +227,29 @@ where
         let outbox_seq_number = transaction.load_outbox_seq_number().await?;
         transaction.commit().await?;
 
-        let state_machine =
-            state_machine::create_deduplicating_state_machine(inbox_seq_number, outbox_seq_number);
+        let state_machine = StateMachine::new(inbox_seq_number, outbox_seq_number);
 
         Ok(state_machine)
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed committing results: {source:?}")]
+pub struct CommitError {
+    source: Option<anyhow::Error>,
+}
+
+impl CommitError {
+    pub fn with_source(source: impl Into<anyhow::Error>) -> Self {
+        CommitError {
+            source: Some(source.into()),
+        }
+    }
+}
+
+pub trait Committable {
+    // TODO: Replace with async trait or proper future
+    fn commit<'a>(self) -> BoxFuture<'a, Result<(), CommitError>>
+    where
+        Self: 'a;
 }

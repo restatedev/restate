@@ -36,7 +36,7 @@ mod ingress;
 mod remote_context;
 
 #[derive(Debug)]
-pub(crate) struct Effects {
+pub struct Effects {
     full_invocation_id: FullInvocationId,
     effects: Vec<Effect>,
 }

@@ -8,30 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::leadership::ActuatorOutput;
-use super::{AckCommand, Command};
+use super::leadership::ActionEffect;
+use crate::partition::state_machine::{AckCommand, Command};
 use crate::util::IdentitySender;
 
-/// Responsible for proposing [ActuatorOutput].
-pub(super) struct ActuatorOutputHandler {
+/// Responsible for proposing [ActionEffect].
+pub(super) struct ActionEffectHandler {
     proposal_tx: IdentitySender<AckCommand>,
 }
 
-impl ActuatorOutputHandler {
+impl ActionEffectHandler {
     pub(super) fn new(proposal_tx: IdentitySender<AckCommand>) -> Self {
         Self { proposal_tx }
     }
 
-    pub(super) async fn handle(&self, actuator_output: ActuatorOutput) {
+    pub(super) async fn handle(&self, actuator_output: ActionEffect) {
         match actuator_output {
-            ActuatorOutput::Invoker(invoker_output) => {
+            ActionEffect::Invoker(invoker_output) => {
                 // Err only if the consensus module is shutting down
                 let _ = self
                     .proposal_tx
                     .send(AckCommand::no_ack(Command::Invoker(invoker_output)))
                     .await;
             }
-            ActuatorOutput::Shuffle(outbox_truncation) => {
+            ActionEffect::Shuffle(outbox_truncation) => {
                 // Err only if the consensus module is shutting down
                 let _ = self
                     .proposal_tx
@@ -40,14 +40,14 @@ impl ActuatorOutputHandler {
                     )))
                     .await;
             }
-            ActuatorOutput::Timer(timer) => {
+            ActionEffect::Timer(timer) => {
                 // Err only if the consensus module is shutting down
                 let _ = self
                     .proposal_tx
                     .send(AckCommand::no_ack(Command::Timer(timer)))
                     .await;
             }
-            ActuatorOutput::BuiltInInvoker(invoker_output) => {
+            ActionEffect::BuiltInInvoker(invoker_output) => {
                 // Err only if the consensus module is shutting down
                 let _ = self
                     .proposal_tx

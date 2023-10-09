@@ -16,7 +16,7 @@ use crate::partition::shuffle;
 use crate::partitioning_scheme::FixedConsecutivePartitions;
 
 pub(super) type Network = restate_network::Network<
-    partition::AckCommand,
+    partition::StateMachineAckCommand,
     shuffle::ShuffleInput,
     shuffle::ShuffleOutput,
     shuffle_integration::ShuffleToConsensus,
@@ -25,15 +25,16 @@ pub(super) type Network = restate_network::Network<
     ingress_integration::IngressToConsensus,
     ingress_integration::IngressToShuffle,
     restate_ingress_dispatcher::IngressDispatcherInput,
-    partition::AckResponse,
-    partition::ShuffleDeduplicationResponse,
-    partition::IngressAckResponse,
+    partition::StateMachineAckResponse,
+    partition::StateMachineShuffleDeduplicationResponse,
+    partition::StateMachineIngressAckResponse,
     FixedConsecutivePartitions,
 >;
 
 mod ingress_integration {
+
     use crate::partition;
-    use crate::partition::{shuffle, DeduplicationSource};
+    use crate::partition::shuffle;
     use restate_network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
     use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{IngressDispatcherId, PartitionKey, PeerId};
@@ -83,7 +84,7 @@ mod ingress_integration {
         }
     }
 
-    impl From<IngressToConsensus> for partition::AckCommand {
+    impl From<IngressToConsensus> for partition::StateMachineAckCommand {
         fn from(ingress_to_consensus: IngressToConsensus) -> Self {
             let IngressToConsensus {
                 service_invocation,
@@ -92,16 +93,20 @@ mod ingress_integration {
                 msg_index,
             } = ingress_to_consensus;
 
-            let cmd = partition::Command::Invocation(service_invocation);
+            let cmd = partition::StateMachineCommand::Invocation(service_invocation);
 
             match deduplication_source {
-                None => partition::AckCommand::ack(
+                None => partition::StateMachineAckCommand::ack(
                     cmd,
-                    partition::AckTarget::ingress(ingress_dispatcher_id, msg_index),
+                    partition::StateMachineAckTarget::ingress(ingress_dispatcher_id, msg_index),
                 ),
-                Some(source_id) => partition::AckCommand::dedup(
+                Some(source_id) => partition::StateMachineAckCommand::dedup(
                     cmd,
-                    DeduplicationSource::ingress(ingress_dispatcher_id, source_id, msg_index),
+                    partition::StateMachineDeduplicationSource::ingress(
+                        ingress_dispatcher_id,
+                        source_id,
+                        msg_index,
+                    ),
                 ),
             }
         }
@@ -155,7 +160,7 @@ mod shuffle_integration {
         }
     }
 
-    impl From<ShuffleToConsensus> for partition::AckCommand {
+    impl From<ShuffleToConsensus> for partition::StateMachineAckCommand {
         fn from(value: ShuffleToConsensus) -> Self {
             let ShuffleToConsensus {
                 msg,
@@ -164,20 +169,25 @@ mod shuffle_integration {
                 msg_index,
             } = value;
 
-            let deduplication_source =
-                partition::DeduplicationSource::shuffle(shuffle_id, partition_id, msg_index);
+            let deduplication_source = partition::StateMachineDeduplicationSource::shuffle(
+                shuffle_id,
+                partition_id,
+                msg_index,
+            );
 
             match msg {
                 shuffle::InvocationOrResponse::Invocation(invocation) => {
-                    partition::AckCommand::dedup(
-                        partition::Command::Invocation(invocation),
+                    partition::StateMachineAckCommand::dedup(
+                        partition::StateMachineCommand::Invocation(invocation),
                         deduplication_source,
                     )
                 }
-                shuffle::InvocationOrResponse::Response(response) => partition::AckCommand::dedup(
-                    partition::Command::Response(response),
-                    deduplication_source,
-                ),
+                shuffle::InvocationOrResponse::Response(response) => {
+                    partition::StateMachineAckCommand::dedup(
+                        partition::StateMachineCommand::Response(response),
+                        deduplication_source,
+                    )
+                }
             }
         }
     }
@@ -253,37 +263,43 @@ mod partition_integration {
 
     impl
         TargetShuffleOrIngress<
-            partition::ShuffleDeduplicationResponse,
-            partition::IngressAckResponse,
-        > for partition::AckResponse
+            partition::StateMachineShuffleDeduplicationResponse,
+            partition::StateMachineIngressAckResponse,
+        > for partition::StateMachineAckResponse
     {
         fn target(
             self,
         ) -> ShuffleOrIngressTarget<
-            partition::ShuffleDeduplicationResponse,
-            partition::IngressAckResponse,
+            partition::StateMachineShuffleDeduplicationResponse,
+            partition::StateMachineIngressAckResponse,
         > {
             match self {
-                partition::AckResponse::Shuffle(ack) => ShuffleOrIngressTarget::Shuffle(ack),
-                partition::AckResponse::Ingress(ack) => ShuffleOrIngressTarget::Ingress(ack),
+                partition::StateMachineAckResponse::Shuffle(ack) => {
+                    ShuffleOrIngressTarget::Shuffle(ack)
+                }
+                partition::StateMachineAckResponse::Ingress(ack) => {
+                    ShuffleOrIngressTarget::Ingress(ack)
+                }
             }
         }
     }
 
-    impl From<partition::ShuffleDeduplicationResponse> for shuffle::ShuffleInput {
-        fn from(value: partition::ShuffleDeduplicationResponse) -> Self {
+    impl From<partition::StateMachineShuffleDeduplicationResponse> for shuffle::ShuffleInput {
+        fn from(value: partition::StateMachineShuffleDeduplicationResponse) -> Self {
             shuffle::ShuffleInput(value.kind)
         }
     }
 
-    impl TargetShuffle for partition::ShuffleDeduplicationResponse {
+    impl TargetShuffle for partition::StateMachineShuffleDeduplicationResponse {
         fn shuffle_target(&self) -> PeerId {
             self.shuffle_target
         }
     }
 
-    impl From<partition::IngressAckResponse> for restate_ingress_dispatcher::IngressDispatcherInput {
-        fn from(value: partition::IngressAckResponse) -> Self {
+    impl From<partition::StateMachineIngressAckResponse>
+        for restate_ingress_dispatcher::IngressDispatcherInput
+    {
+        fn from(value: partition::StateMachineIngressAckResponse) -> Self {
             let seq_number = match value.kind {
                 AckKind::Acknowledge(seq_number) => seq_number,
                 AckKind::Duplicate { seq_number, .. } => {

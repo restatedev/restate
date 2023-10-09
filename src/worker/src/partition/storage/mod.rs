@@ -8,13 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::{CommitError, Committable, StateStorage, StateStorageError};
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
-use crate::partition::state_machine::{StateReader, StateReaderError};
+use crate::partition::{CommitError, Committable, TimerValue};
 use bytes::{Buf, Bytes};
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
+use restate_storage_api::deduplication_table::SequenceNumberSource;
+use restate_storage_api::inbox_table::InboxEntry;
+use restate_storage_api::journal_table::JournalEntry;
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::status_table::InvocationStatus;
+use restate_storage_api::timer_table::{Timer, TimerKey};
+use restate_storage_api::{PutFuture, Transaction as OtherTransaction};
+use restate_timer::TimerReader;
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
     WithPartitionKey,
@@ -28,16 +35,6 @@ use restate_types::time::MillisSinceEpoch;
 use std::ops::RangeInclusive;
 
 pub mod invoker;
-
-use crate::partition::TimerValue;
-use restate_storage_api::deduplication_table::SequenceNumberSource;
-use restate_storage_api::inbox_table::InboxEntry;
-use restate_storage_api::journal_table::JournalEntry;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::status_table::InvocationStatus;
-use restate_storage_api::timer_table::{Timer, TimerKey};
-use restate_storage_api::{PutFuture, Transaction as OtherTransaction};
-use restate_timer::TimerReader;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PartitionStorage<Storage> {
@@ -71,7 +68,7 @@ where
     }
 }
 
-pub(crate) struct Transaction<TransactionType> {
+pub struct Transaction<TransactionType> {
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
     inner: TransactionType,
@@ -153,7 +150,7 @@ where
         &mut self,
         seq_number: MessageIndex,
         state_id: u64,
-    ) -> BoxFuture<'_, Result<(), StateStorageError>> {
+    ) -> BoxFuture<'_, Result<(), restate_storage_api::StorageError>> {
         async move {
             let bytes = Bytes::copy_from_slice(&seq_number.to_be_bytes());
             self.inner.put(self.partition_id, state_id, &bytes).await;
@@ -198,14 +195,14 @@ where
     }
 }
 
-impl<TransactionType> StateReader for Transaction<TransactionType>
+impl<TransactionType> super::state_machine::StateReader for Transaction<TransactionType>
 where
     TransactionType: restate_storage_api::Transaction + Send,
 {
     fn get_invocation_status<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
-    ) -> BoxFuture<Result<InvocationStatus, StateReaderError>> {
+    ) -> BoxFuture<Result<InvocationStatus, restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
         async {
             Ok(self
@@ -220,7 +217,10 @@ where
     fn resolve_invocation_status_from_invocation_id<'a>(
         &'a mut self,
         invocation_id: &'a InvocationId,
-    ) -> BoxFuture<'a, Result<(FullInvocationId, InvocationStatus), StateReaderError>> {
+    ) -> BoxFuture<
+        'a,
+        Result<(FullInvocationId, InvocationStatus), restate_storage_api::StorageError>,
+    > {
         self.assert_invocation_id(invocation_id);
         async {
             let (service_id, status) = match self
@@ -250,15 +250,9 @@ where
     fn peek_inbox<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
-    ) -> BoxFuture<Result<Option<InboxEntry>, StateReaderError>> {
+    ) -> BoxFuture<Result<Option<InboxEntry>, restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
-        async {
-            self.inner
-                .peek_inbox(service_id)
-                .await
-                .map_err(StateReaderError::Storage)
-        }
-        .boxed()
+        async { self.inner.peek_inbox(service_id).await }.boxed()
     }
 
     // Returns true if the entry is a completable journal entry and is completed,
@@ -268,7 +262,7 @@ where
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<bool, StateReaderError>> {
+    ) -> BoxFuture<Result<bool, restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
         async move {
             Ok(self
@@ -287,7 +281,7 @@ where
     }
 }
 
-impl<TransactionType> StateStorage for Transaction<TransactionType>
+impl<TransactionType> super::state_machine::StateStorage for Transaction<TransactionType>
 where
     TransactionType: restate_storage_api::Transaction + Send,
 {
@@ -295,7 +289,7 @@ where
         &'a mut self,
         service_id: &'a ServiceId,
         status: InvocationStatus,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
         async {
             self.inner.put_invocation_status(service_id, status).await;
@@ -308,7 +302,7 @@ where
         &'a mut self,
         service_id: &'a ServiceId,
         journal_length: EntryIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
         async move {
             self.inner.delete_journal(service_id, journal_length).await;
@@ -322,7 +316,7 @@ where
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
         async move {
             self.inner
@@ -339,7 +333,7 @@ where
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
         completion_result: CompletionResult,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
         async move {
             self.inner
@@ -358,7 +352,7 @@ where
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<CompletionResult>, StateStorageError>> {
+    ) -> BoxFuture<Result<Option<CompletionResult>, restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
         async move {
             let result = self
@@ -378,7 +372,7 @@ where
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<EnrichedRawEntry>, StateStorageError>> {
+    ) -> BoxFuture<Result<Option<EnrichedRawEntry>, restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
         async move {
             let result = self
@@ -398,7 +392,7 @@ where
         &mut self,
         seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.assert_service_id(&service_invocation.fid.service_id);
         async move {
             // TODO: Avoid cloning when moving this logic into the RocksDB storage impl
@@ -417,7 +411,7 @@ where
         &mut self,
         seq_number: MessageIndex,
         message: OutboxMessage,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         async move {
             self.inner
                 .add_message(self.partition_id, seq_number, message)
@@ -431,21 +425,21 @@ where
     fn store_inbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.store_seq_number(seq_number, fsm_variable::INBOX_SEQ_NUMBER)
     }
 
     fn store_outbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.store_seq_number(seq_number, fsm_variable::OUTBOX_SEQ_NUMBER)
     }
 
     fn truncate_outbox(
         &mut self,
         outbox_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         async move {
             self.inner
                 .truncate_outbox(
@@ -463,7 +457,7 @@ where
         &'a mut self,
         service_id: &'a ServiceId,
         inbox_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         async move {
             self.inner
                 .delete_invocation(service_id, inbox_sequence_number)
@@ -478,7 +472,7 @@ where
         service_id: &'a ServiceId,
         key: Bytes,
         value: Bytes,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
         async move {
             self.inner.put_user_state(service_id, &key, &value).await;
@@ -492,16 +486,16 @@ where
         &'a mut self,
         service_id: &'a ServiceId,
         key: &'a Bytes,
-    ) -> BoxFuture<Result<Option<Bytes>, StateStorageError>> {
+    ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
-        async move { Ok(self.inner.get_user_state(service_id, key).await?) }.boxed()
+        async move { self.inner.get_user_state(service_id, key).await }.boxed()
     }
 
     fn clear_state<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         key: &'a Bytes,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.assert_service_id(service_id);
         async move {
             self.inner.delete_user_state(service_id, key).await;
@@ -516,7 +510,7 @@ where
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         timer: Timer,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.assert_service_id(&full_invocation_id.service_id);
         async move {
             let timer_key = TimerKey {
@@ -538,7 +532,7 @@ where
         full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>> {
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>> {
         self.assert_service_id(&full_invocation_id.service_id);
         async move {
             let timer_key = TimerKey {
