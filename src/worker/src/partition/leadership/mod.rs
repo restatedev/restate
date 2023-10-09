@@ -9,7 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::shuffle::Shuffle;
-use crate::partition::{shuffle, storage, StateMachineAckResponse, TimerValue};
+use crate::partition::{
+    shuffle, storage, StateMachineAckCommand, StateMachineAckResponse, TimerValue,
+};
 use assert2::let_assert;
 use futures::{future, Stream, StreamExt};
 use restate_invoker_api::{InvokeInputJournal, ServiceNotRunning};
@@ -28,6 +30,7 @@ mod action_collector;
 
 use crate::partition::services::non_deterministic;
 use crate::partition::state_machine::{Action, StateReader, StateStorage};
+use crate::util::IdentitySender;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareActionCollector};
 use restate_schema_impl::Schemas;
 use restate_storage_api::status_table::InvocationStatus;

@@ -25,7 +25,7 @@ use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryHeader};
-use restate_types::journal::{Completion, CompletionResult, EntryType, JournalMetadata};
+use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use std::marker::PhantomData;
@@ -496,7 +496,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 full_invocation_id,
                 completion,
             } => {
-                collector.collect(ActuatorMessage::ForwardCompletion {
+                collector.collect(Action::ForwardCompletion {
                     full_invocation_id,
                     completion,
                 });
@@ -523,7 +523,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 method_name,
                 invocation_uuid,
                 completion,
-            } => collector.collect(ActuatorMessage::NotifyVirtualJournalCompletion {
+            } => collector.collect(Action::NotifyVirtualJournalCompletion {
                 target_service,
                 method_name,
                 invocation_uuid,
@@ -554,7 +554,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 collector.collect(Action::AbortInvocation(full_invocation_id))
             }
             Effect::SendStoredEntryAckToInvoker(full_invocation_id, entry_index) => {
-                collector.collect(ActuatorMessage::AckStoredEntry {
+                collector.collect(Action::AckStoredEntry {
                     full_invocation_id,
                     entry_index,
                 });
