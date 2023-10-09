@@ -43,6 +43,13 @@ pub struct Effects {
 }
 
 impl Effects {
+    pub(crate) fn new(full_invocation_id: FullInvocationId, effects: Vec<Effect>) -> Self {
+        Self {
+            full_invocation_id,
+            effects,
+        }
+    }
+
     pub(crate) fn into_inner(self) -> (FullInvocationId, Vec<Effect>) {
         (self.full_invocation_id, self.effects)
     }
@@ -182,10 +189,9 @@ impl<'a> ServiceInvoker<'a> {
 
         // Send the effects
         // the receiver channel should only be shut down if the system is shutting down
-        let _ = self.effects_tx.send(Effects {
-            full_invocation_id,
-            effects: out_effects,
-        });
+        let _ = self
+            .effects_tx
+            .send(Effects::new(full_invocation_id, out_effects));
     }
 }
 
