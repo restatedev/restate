@@ -136,14 +136,25 @@ impl RocksDBStorage {
     ) -> impl Iterator<Item = OwnedJournalRow> + '_ {
         let iter = self.iterator_from(PartitionKeyRange::<JournalKey>(range));
         OwnedIterator::new(iter).map(|(mut key, value)| {
-            let journal_key = JournalKey::deserialize_from(&mut key).unwrap();
-            let journal_entry = storage::v1::JournalEntry::decode(value).unwrap();
-            let journal_entry = JournalEntry::try_from(journal_entry).unwrap();
+            let journal_key = JournalKey::deserialize_from(&mut key)
+                .expect("journal key must deserialize into JournalKey");
+            let journal_entry = storage::v1::JournalEntry::decode(value)
+                .expect("journal entry must deserialize into JournalEntry");
+            let journal_entry = JournalEntry::try_from(journal_entry)
+                .expect("journal entry must convert from proto");
             OwnedJournalRow {
-                partition_key: journal_key.partition_key.unwrap(),
-                service: journal_key.service_name.unwrap(),
-                service_key: journal_key.service_key.unwrap(),
-                journal_index: journal_key.journal_index.unwrap(),
+                partition_key: journal_key
+                    .partition_key
+                    .expect("journal key must have a partition key"),
+                service: journal_key
+                    .service_name
+                    .expect("journal key must have a service name"),
+                service_key: journal_key
+                    .service_key
+                    .expect("journal key must have a service key"),
+                journal_index: journal_key
+                    .journal_index
+                    .expect("journal key must have an index"),
                 journal_entry,
             }
         })

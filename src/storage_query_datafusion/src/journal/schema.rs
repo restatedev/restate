@@ -23,7 +23,7 @@ define_table!(journal(
     service_key_uuid: DataType::LargeUtf8,
     service_key_json: DataType::LargeUtf8,
     index: DataType::UInt32,
-    header: DataType::LargeUtf8,
+    entry_type: DataType::LargeUtf8,
     completed: DataType::Boolean,
     completion_result: DataType::LargeUtf8,
     completion_failure_code: DataType::UInt32,

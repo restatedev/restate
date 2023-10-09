@@ -67,7 +67,7 @@ pub(crate) fn append_journal_row(
 
     match journal_row.journal_entry {
         JournalEntry::Entry(entry) => {
-            row.header(format_using(output, &entry.header.to_entry_type()));
+            row.entry_type(format_using(output, &entry.header.to_entry_type()));
             if let Some(completed) = entry.header.is_completed() {
                 row.completed(completed);
 
