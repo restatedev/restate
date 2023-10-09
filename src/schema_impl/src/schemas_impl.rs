@@ -540,19 +540,19 @@ impl SchemasInner {
                     ))
                 })?;
 
-                let input_event_remap = if method_schemas.descriptor().name() == "dev.restate.Event"
-                {
-                    // No remapping needed
-                    None
-                } else {
-                    Some(InputEventRemap {
-                        key_index: method_schemas.input_field_annotated(FieldAnnotation::Key),
-                        payload_index: method_schemas
-                            .input_field_annotated(FieldAnnotation::EventPayload),
-                        attributes_index: method_schemas
-                            .input_field_annotated(FieldAnnotation::EventMetadata),
-                    })
-                };
+                let input_event_remap =
+                    if method_schemas.descriptor().input().full_name() == "dev.restate.Event" {
+                        // No remapping needed
+                        None
+                    } else {
+                        Some(InputEventRemap {
+                            key_index: method_schemas.input_field_annotated(FieldAnnotation::Key),
+                            payload_index: method_schemas
+                                .input_field_annotated(FieldAnnotation::EventPayload),
+                            attributes_index: method_schemas
+                                .input_field_annotated(FieldAnnotation::EventMetadata),
+                        })
+                    };
 
                 let instance_type = match service_schemas.instance_type {
                     ServiceInstanceType::Keyed { .. } => {
