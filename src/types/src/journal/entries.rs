@@ -79,6 +79,13 @@ impl Entry {
             invoke_time: invoke_time.map(|t| t.as_u64()).unwrap_or_default(),
         })
     }
+
+    pub fn complete_awakeable(id: impl Into<ByteString>, result: EntryResult) -> Self {
+        Entry::CompleteAwakeable(CompleteAwakeableEntry {
+            id: id.into(),
+            result,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

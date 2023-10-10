@@ -328,7 +328,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             }
             RawEntryHeader::CompleteAwakeable => {
                 let_assert!(
-                    Entry::CompleteAwakeable(CompleteAwakeableEntry { id, .. }) =
+                    Entry::CompleteAwakeable(CompleteAwakeableEntry { id, result }) =
                         ProtobufRawEntryCodec::deserialize(&entry)
                             .map_err(InvocationError::internal)?
                 );
@@ -336,6 +336,12 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 let (invocation_id, entry_index) = AwakeableIdentifier::decode(id)
                     .map_err(InvocationError::internal)?
                     .into_inner();
+
+                self.send_message(OutboxMessage::from_awakeable_completion(
+                    invocation_id.clone(),
+                    entry_index,
+                    result.into(),
+                ));
 
                 EnrichedRawEntry::new(
                     EnrichedEntryHeader::CompleteAwakeable {
@@ -856,6 +862,7 @@ mod tests {
     use restate_test_util::matchers::*;
     use restate_test_util::{assert_eq, test};
     use restate_types::errors::InvocationErrorCode;
+    use restate_types::invocation::{InvocationResponse, MaybeFullInvocationId};
     use restate_types::journal::{Entry, EntryResult, EntryType};
 
     const USER_STATE: StateKey<Raw> = StateKey::new_raw("my-state");
@@ -1684,6 +1691,34 @@ mod tests {
                         }
                     ))))
                 }
+            ))))
+        );
+    }
+
+    #[test(tokio::test)]
+    async fn send_complete_awakeable() {
+        let awakeable_id = AwakeableIdentifier::new(InvocationId::mock_random(), 10);
+        let entry_result = EntryResult::Success(Bytes::copy_from_slice(b"456"));
+
+        let (_, _, _, _, effects) = send_test(
+            ProtobufRawEntryCodec::serialize(Entry::complete_awakeable(
+                awakeable_id.encode(),
+                entry_result.clone(),
+            ))
+            .into(),
+        )
+        .await;
+
+        let (awakeable_invocation_id, awakeable_entry_index) = awakeable_id.into_inner();
+
+        assert_that!(
+            effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::ServiceResponse(pat!(InvocationResponse {
+                    id: pat!(MaybeFullInvocationId::Partial(eq(awakeable_invocation_id))),
+                    entry_index: eq(awakeable_entry_index),
+                    result: eq(ResponseResult::from(entry_result))
+                }))
             ))))
         );
     }
