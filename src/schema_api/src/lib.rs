@@ -627,15 +627,24 @@ pub mod subscription {
         }
     }
 
+    #[derive(Debug, Clone, Eq, PartialEq, Default)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum FieldRemapType {
+        #[default]
+        Bytes,
+        String,
+    }
+
     /// Defines how to remap the Event to the target.
     #[derive(Debug, Clone, Eq, PartialEq, Default)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub struct InputEventRemap {
-        /// If != 0, index to remap the event.key field
-        pub key_index: Option<u32>,
-        /// If != 0, index to remap the event.payload field
-        pub payload_index: Option<u32>,
+        /// Index and type to remap the event.key field
+        pub key: Option<(u32, FieldRemapType)>,
+        /// Index and type to remap the event.payload field
+        pub payload: Option<(u32, FieldRemapType)>,
         /// If != 0, index to remap the event.metadata field
         pub attributes_index: Option<u32>,
     }

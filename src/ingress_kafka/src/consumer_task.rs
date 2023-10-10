@@ -14,7 +14,9 @@ use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::{ClientConfig, Message};
-use restate_ingress_dispatcher::{DeduplicationId, IngressRequest, IngressRequestSender};
+use restate_ingress_dispatcher::{
+    DeduplicationId, EventError, IngressRequest, IngressRequestSender,
+};
 use restate_pb::restate::Event;
 use restate_schema_api::subscription::{
     EventReceiverServiceInstanceType, KafkaOrderingKeyFormat, Sink, Source, Subscription,
@@ -31,6 +33,16 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 pub enum Error {
     #[error(transparent)]
     Kafka(#[from] KafkaError),
+    #[error(
+        "error processing message topic {topic} partition {partition} offset {offset}: {cause}"
+    )]
+    Event {
+        topic: String,
+        partition: i32,
+        offset: i64,
+        #[source]
+        cause: EventError,
+    },
     #[error("ingress dispatcher channel is closed")]
     IngressDispatcherClosed,
 }
@@ -125,7 +137,13 @@ impl MessageSender {
             event,
             SpanRelation::Parent(ingress_span_context),
             Some(Self::generate_deduplication_id(consumer_group_id, msg)),
-        );
+        )
+        .map_err(|cause| Error::Event {
+            topic: msg.topic().to_string(),
+            partition: msg.partition(),
+            offset: msg.offset(),
+            cause,
+        })?;
 
         async {
             self.tx

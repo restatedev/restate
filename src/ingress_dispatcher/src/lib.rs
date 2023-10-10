@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 mod event_remapping;
 mod service;
 
+pub use event_remapping::Error as EventError;
 pub use service::Error as ServiceError;
 pub use service::Service;
 
@@ -155,7 +156,7 @@ impl IngressRequest {
         mut event: Event,
         related_span: SpanRelation,
         deduplication: Option<(D, MessageIndex)>,
-    ) -> (Self, AckReceiver) {
+    ) -> Result<(Self, AckReceiver), EventError> {
         let (ack_tx, ack_rx) = oneshot::channel();
 
         // Check if we need to proxy or not
@@ -204,12 +205,12 @@ impl IngressRequest {
 
         // Perform event remapping
         let argument = Bytes::from(if let Some(event_remap) = input_event_remap.as_ref() {
-            event_remapping::MappedEvent(&mut event, event_remap).encode_to_vec()
+            event_remapping::MappedEvent::new(&mut event, event_remap)?.encode_to_vec()
         } else {
             event.encode_to_vec()
         });
 
-        if let Some(proxying_key) = proxying_key {
+        Ok(if let Some(proxying_key) = proxying_key {
             // For keyed events, we dispatch them through the Proxy service, to avoid scattering the offset info throughout all the partitions
             let proxy_fid =
                 FullInvocationId::generate(restate_pb::PROXY_SERVICE_NAME, proxying_key);
@@ -249,7 +250,7 @@ impl IngressRequest {
                 },
                 ack_rx,
             )
-        }
+        })
     }
 }
 

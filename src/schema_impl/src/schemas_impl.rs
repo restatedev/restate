@@ -19,7 +19,7 @@ use restate_schema_api::discovery::{
 use restate_schema_api::key::KeyStructure;
 use restate_schema_api::service::InstanceType;
 use restate_schema_api::subscription::{
-    EventReceiverServiceInstanceType, InputEventRemap, Sink, Source,
+    EventReceiverServiceInstanceType, FieldRemapType, InputEventRemap, Sink, Source,
 };
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 use std::collections::hash_map::Entry;
@@ -540,19 +540,44 @@ impl SchemasInner {
                     ))
                 })?;
 
-                let input_event_remap =
-                    if method_schemas.descriptor().input().full_name() == "dev.restate.Event" {
-                        // No remapping needed
-                        None
+                let input_type = method_schemas.descriptor().input();
+                let input_event_remap = if input_type.full_name() == "dev.restate.Event" {
+                    // No remapping needed
+                    None
+                } else {
+                    let key = if let Some(index) =
+                        method_schemas.input_field_annotated(FieldAnnotation::Key)
+                    {
+                        let kind = input_type.get_field(index).unwrap().kind();
+                        if kind == Kind::String {
+                            Some((index, FieldRemapType::String))
+                        } else {
+                            Some((index, FieldRemapType::Bytes))
+                        }
                     } else {
-                        Some(InputEventRemap {
-                            key_index: method_schemas.input_field_annotated(FieldAnnotation::Key),
-                            payload_index: method_schemas
-                                .input_field_annotated(FieldAnnotation::EventPayload),
-                            attributes_index: method_schemas
-                                .input_field_annotated(FieldAnnotation::EventMetadata),
-                        })
+                        None
                     };
+
+                    let payload = if let Some(index) =
+                        method_schemas.input_field_annotated(FieldAnnotation::EventPayload)
+                    {
+                        let kind = input_type.get_field(index).unwrap().kind();
+                        if kind == Kind::String {
+                            Some((index, FieldRemapType::String))
+                        } else {
+                            Some((index, FieldRemapType::Bytes))
+                        }
+                    } else {
+                        None
+                    };
+
+                    Some(InputEventRemap {
+                        key,
+                        payload,
+                        attributes_index: method_schemas
+                            .input_field_annotated(FieldAnnotation::EventMetadata),
+                    })
+                };
 
                 let instance_type = match service_schemas.instance_type {
                     ServiceInstanceType::Keyed { .. } => {
