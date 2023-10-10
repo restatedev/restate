@@ -551,7 +551,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
             &InvocationStatus::Executing {
                 invocation_uuid,
                 stream_id: request.stream_id,
-                retention_period_sec: if request.retention_period_sec == 0 {
+                retention_period_sec: if request.retention_period_sec != 0 {
                     request.retention_period_sec
                 } else {
                     DEFAULT_RETENTION_PERIOD_SEC
@@ -963,7 +963,8 @@ mod tests {
         assert_that!(
             ctx.state().assert_has_state(&STATUS),
             pat!(InvocationStatus::Executing {
-                stream_id: eq("my-stream")
+                stream_id: eq("my-stream"),
+                retention_period_sec: eq(DEFAULT_RETENTION_PERIOD_SEC)
             })
         );
         assert_that!(
@@ -998,6 +999,32 @@ mod tests {
                     ))))
                 }
             ))))
+        );
+    }
+
+    #[test(tokio::test)]
+    async fn new_invocation_start_with_custom_retention_period() {
+        let mut ctx = TestInvocationContext::new(REMOTE_CONTEXT_SERVICE_NAME);
+        let _ = ctx
+            .invoke(|ctx| {
+                ctx.start(
+                    StartRequest {
+                        stream_id: "my-stream".to_string(),
+                        retention_period_sec: 1,
+                        ..Default::default()
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_that!(
+            ctx.state().assert_has_state(&STATUS),
+            pat!(InvocationStatus::Executing {
+                stream_id: eq("my-stream"),
+                retention_period_sec: eq(1)
+            })
         );
     }
 
