@@ -10,6 +10,7 @@
 
 use crate::journal::schema::JournalBuilder;
 use crate::udfs::restate_keys;
+use std::cell::OnceCell;
 
 use bytestring::ByteString;
 use restate_schema_api::key::RestateKeyConverter;
@@ -25,6 +26,7 @@ use serde::Serialize;
 use std::fmt;
 use std::fmt::Write;
 
+use restate_types::journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
 use uuid::Uuid;
 
 #[inline]
@@ -32,7 +34,7 @@ pub(crate) fn append_journal_row(
     builder: &mut JournalBuilder,
     output: &mut String,
     journal_row: OwnedJournalRow,
-    resolver: impl RestateKeyConverter,
+    resolver: impl RestateKeyConverter + Clone,
 ) {
     let mut row = builder.row();
 
@@ -62,7 +64,7 @@ pub(crate) fn append_journal_row(
             &journal_row.service,
             &journal_row.service_key,
             output,
-            resolver,
+            resolver.clone(),
         ) {
             row.service_key_json(key);
         }
@@ -73,6 +75,12 @@ pub(crate) fn append_journal_row(
     match journal_row.journal_entry {
         JournalEntry::Entry(entry) => {
             row.entry_type(format_using(output, &entry.header.to_entry_type()));
+
+            if let Some(completed) = entry.header.is_completed() {
+                row.completed(completed);
+            }
+
+            let decoded_entry = OnceCell::new();
 
             match &entry.header {
                 EnrichedEntryHeader::Invoke {
@@ -95,20 +103,51 @@ pub(crate) fn append_journal_row(
                             &InvocationId::new(partition_key, resolution_result.invocation_uuid),
                         ));
                     }
+
+                    if row.is_invoked_service_defined()
+                        || row.is_invoked_method_defined()
+                            | row.is_invoked_service_key_json_defined()
+                    {
+                        let decoded_entry = decoded_entry.get_or_init(|| {
+                            ProtobufRawEntryCodec::deserialize(&entry)
+                                .expect("journal entry must deserialize")
+                        });
+                        debug_assert!(matches!(
+                            decoded_entry,
+                            Entry::Invoke(_) | Entry::BackgroundInvoke(_)
+                        ));
+                        match decoded_entry {
+                            Entry::Invoke(InvokeEntry { request, .. })
+                            | Entry::BackgroundInvoke(BackgroundInvokeEntry { request, .. }) => {
+                                row.invoked_service(&request.service_name);
+                                row.invoked_method(&request.method_name);
+
+                                if row.is_invoked_service_key_json_defined() {
+                                    if let Some(key) = restate_keys::try_decode_restate_key_as_json(
+                                        &request.service_name,
+                                        &resolution_result.service_key,
+                                        output,
+                                        resolver,
+                                    ) {
+                                        row.invoked_service_key_json(key)
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 _ => {}
             }
 
             if row.is_entry_json_defined() {
-                let decoded_entry = ProtobufRawEntryCodec::deserialize(&entry)
-                    .expect("journal entry must deserialize");
+                let decoded_entry = decoded_entry.get_or_init(|| {
+                    ProtobufRawEntryCodec::deserialize(&entry)
+                        .expect("journal entry must deserialize")
+                });
                 row.entry_json(
                     format_json(output, &decoded_entry).expect("journal entry must serialize"),
                 );
-            }
-
-            if let Some(completed) = entry.header.is_completed() {
-                row.completed(completed);
             }
         }
         JournalEntry::Completion(completion) => {
