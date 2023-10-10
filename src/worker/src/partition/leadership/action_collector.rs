@@ -174,6 +174,8 @@ where
                     "Virtual Journal completions doesn't support acks"
                 );
 
+                // We need this to agree on the invocation uuid, which is randomly generated
+                // We could get rid of it if invocation uuids are deterministically generated.
                 let _ = self_proposal_tx.send(StateMachineAckCommand::no_ack(StateMachineCommand::Invocation(ServiceInvocation::new(
                     FullInvocationId::with_service_id(target_service, InvocationUuid::now_v7()),
                     method_name,
