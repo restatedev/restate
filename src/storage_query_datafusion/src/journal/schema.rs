@@ -24,8 +24,8 @@ define_table!(journal(
     service_key_json: DataType::LargeUtf8,
     index: DataType::UInt32,
     entry_type: DataType::LargeUtf8,
+    entry_json: DataType::LargeUtf8,
+    invoked_id: DataType::LargeUtf8,
+    invoked_service_key: DataType::LargeBinary,
     completed: DataType::Boolean,
-    completion_result: DataType::LargeUtf8,
-    completion_failure_code: DataType::UInt32,
-    completion_failure_message: DataType::LargeUtf8,
 ));

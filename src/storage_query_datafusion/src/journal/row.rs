@@ -10,16 +10,21 @@
 
 use crate::journal::schema::JournalBuilder;
 use crate::udfs::restate_keys;
-use prost::Message;
+
+use bytestring::ByteString;
 use restate_schema_api::key::RestateKeyConverter;
-use restate_service_protocol::pb::protocol;
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
+
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_rocksdb::journal_table::OwnedJournalRow;
+use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
 use restate_types::journal::enriched::EnrichedEntryHeader;
-use restate_types::journal::raw::EntryHeader;
-use restate_types::journal::CompletionResult;
+use restate_types::journal::raw::{EntryHeader, RawEntryCodec};
+
+use serde::Serialize;
 use std::fmt;
 use std::fmt::Write;
+
 use uuid::Uuid;
 
 #[inline]
@@ -68,64 +73,54 @@ pub(crate) fn append_journal_row(
     match journal_row.journal_entry {
         JournalEntry::Entry(entry) => {
             row.entry_type(format_using(output, &entry.header.to_entry_type()));
-            if let Some(completed) = entry.header.is_completed() {
-                row.completed(completed);
 
-                if completed {
-                    match entry.header {
-                        EnrichedEntryHeader::Custom { .. } => {
-                            row.completion_result("ack");
-                        }
-                        _ => {
-                            if row.is_completion_result_defined()
-                                || row.is_completion_failure_code_defined()
-                                || row.is_completion_failure_message_defined()
-                            {
-                                match Completion::decode(entry.entry).unwrap().result {
-                                    Some(protocol::completion_message::Result::Value(_)) => {
-                                        row.completion_result("success");
-                                    }
-                                    Some(protocol::completion_message::Result::Failure(
-                                        protocol::Failure { code, message },
-                                    )) => {
-                                        row.completion_result("failure");
-                                        row.completion_failure_code(code);
-                                        row.completion_failure_message(message)
-                                    }
-                                    Some(protocol::completion_message::Result::Empty(())) => {
-                                        row.completion_result("empty");
-                                    }
-                                    None => {}
-                                }
-                            }
-                        }
+            match &entry.header {
+                EnrichedEntryHeader::Invoke {
+                    resolution_result: Some(resolution_result),
+                    ..
+                }
+                | EnrichedEntryHeader::BackgroundInvoke { resolution_result } => {
+                    row.invoked_service_key(&resolution_result.service_key);
+
+                    if row.is_invoked_id_defined() {
+                        // we don't need to decode the entry for the service name to produce a partition key; use empty name
+                        let partition_key = ServiceId::new(
+                            ByteString::new(),
+                            resolution_result.service_key.clone(),
+                        )
+                        .partition_key();
+
+                        row.invoked_id(format_using(
+                            output,
+                            &InvocationId::new(partition_key, resolution_result.invocation_uuid),
+                        ));
                     }
                 }
+                _ => {}
+            }
+
+            if row.is_entry_json_defined() {
+                let decoded_entry = ProtobufRawEntryCodec::deserialize(&entry)
+                    .expect("journal entry must deserialize");
+                row.entry_json(
+                    format_json(output, &decoded_entry).expect("journal entry must serialize"),
+                );
+            }
+
+            if let Some(completed) = entry.header.is_completed() {
+                row.completed(completed);
             }
         }
-        JournalEntry::Completion(completion_result) => match completion_result {
-            CompletionResult::Ack => {
-                row.completion_result("ack");
+        JournalEntry::Completion(completion) => {
+            row.entry_type("CompletionResult");
+            row.completed(true);
+            if row.is_entry_json_defined() {
+                row.entry_json(
+                    format_json(output, &completion).expect("completion must serialize"),
+                );
             }
-            CompletionResult::Empty => {
-                row.completion_result("empty");
-            }
-            CompletionResult::Success(_) => {
-                row.completion_result("success");
-            }
-            CompletionResult::Failure(code, message) => {
-                row.completion_result("failure");
-                row.completion_failure_code(code.into());
-                row.completion_failure_message(message)
-            }
-        },
+        }
     };
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct Completion {
-    #[prost(oneof = "protocol::completion_message::Result", tags = "13, 14, 15")]
-    pub result: Option<protocol::completion_message::Result>,
 }
 
 #[inline]
@@ -133,4 +128,15 @@ fn format_using<'a>(output: &'a mut String, what: &impl fmt::Display) -> &'a str
     output.clear();
     write!(output, "{}", what).expect("Error occurred while trying to write in String");
     output
+}
+
+#[inline]
+fn format_json<'a>(
+    output: &'a mut String,
+    what: &impl Serialize,
+) -> Result<&'a str, serde_json::Error> {
+    output.clear();
+    // SAFETY: serde_json always outputs valid utf8
+    serde_json::to_writer(unsafe { output.as_mut_vec() }, &what)?;
+    Ok(output)
 }

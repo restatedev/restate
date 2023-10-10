@@ -15,9 +15,13 @@ use super::*;
 use crate::errors::UserErrorCode;
 use crate::identifiers::EntryIndex;
 use crate::time::MillisSinceEpoch;
+use serde::Serialize;
+use serde_with::base64::Base64;
+use serde_with::serde_as;
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
 pub enum Entry {
     // IO
     PollInputStream(PollInputStreamEntry),
@@ -34,7 +38,7 @@ pub enum Entry {
     BackgroundInvoke(BackgroundInvokeEntry),
     Awakeable(AwakeableEntry),
     CompleteAwakeable(CompleteAwakeableEntry),
-    Custom(Bytes),
+    Custom(#[serde(skip)] Bytes),
 }
 
 impl Entry {
@@ -103,11 +107,11 @@ impl Completion {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum CompletionResult {
     Ack,
     Empty,
-    Success(Bytes),
+    Success(#[serde(skip)] Bytes),
     Failure(UserErrorCode, ByteString),
 }
 
@@ -143,9 +147,9 @@ impl fmt::Display for EntryType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum EntryResult {
-    Success(Bytes),
+    Success(#[serde(skip)] Bytes),
     Failure(UserErrorCode, ByteString),
 }
 
@@ -173,25 +177,29 @@ mod private {
     impl Sealed for AwakeableEntry {}
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PollInputStreamEntry {
+    #[serde(skip)]
     pub result: Bytes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OutputStreamEntry {
     pub result: EntryResult,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum GetStateValue {
     Empty,
-    Value(Bytes),
+    Value(#[serde(skip)] Bytes),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GetStateEntry {
+    #[serde_as(as = "Base64")]
     pub key: Bytes,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<GetStateValue>,
 }
 
@@ -201,18 +209,23 @@ impl CompletableEntry for GetStateEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SetStateEntry {
+    #[serde_as(as = "Base64")]
     pub key: Bytes,
+    #[serde(skip)]
     pub value: Bytes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClearStateEntry {
+    #[serde_as(as = "Base64")]
     pub key: Bytes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SleepEntry {
     pub wake_up_time: u64,
     pub fired: bool,
@@ -224,10 +237,11 @@ impl CompletableEntry for SleepEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InvokeRequest {
     pub service_name: ByteString,
     pub method_name: ByteString,
+    #[serde(skip)]
     pub parameter: Bytes,
 }
 
@@ -245,9 +259,10 @@ impl InvokeRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InvokeEntry {
     pub request: InvokeRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<EntryResult>,
 }
 
@@ -257,14 +272,15 @@ impl CompletableEntry for InvokeEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BackgroundInvokeEntry {
     pub request: InvokeRequest,
     pub invoke_time: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AwakeableEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<EntryResult>,
 }
 
@@ -274,7 +290,7 @@ impl CompletableEntry for AwakeableEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CompleteAwakeableEntry {
     pub id: ByteString,
     pub result: EntryResult,
