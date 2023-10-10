@@ -73,7 +73,9 @@ struct InvokeEntryContext {
     entry_index: EntryIndex,
 }
 
-const DEFAULT_RETENTION_PERIOD: u32 = 30 * 60;
+const DEFAULT_RETENTION_PERIOD_SEC: u32 = 30 * 60;
+
+const PROTOCOL_VERSION: u16 = 0;
 
 impl<'a, State: StateReader> InvocationContext<'a, State> {
     #[allow(clippy::too_many_arguments)]
@@ -425,15 +427,15 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         &mut self,
         msg: ProtocolMessage,
     ) -> Result<(), InvocationError> {
+        let encoder = Encoder::new(PROTOCOL_VERSION);
+
         if let Some((fid, recv_sink)) = self.pop_state(&PENDING_RECV_SINK).await? {
             trace!(restate.protocol.message = ?msg, "Sending message");
             self.send_message(OutboxMessage::from_response_sink(
                 &fid,
                 recv_sink,
                 ResponseSerializer::<RecvResponse>::default().serialize_success(RecvResponse {
-                    response: Some(recv_response::Response::Messages(encode_messages(vec![
-                        msg,
-                    ]))),
+                    response: Some(recv_response::Response::Messages(encoder.encode(msg))),
                 }),
             ));
         } else {
@@ -443,11 +445,17 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 .load_state(&PENDING_RECV_STREAM)
                 .await?
                 .unwrap_or_default();
-            let new_msg_encoded = encode_messages(vec![msg]);
+
+            let encoder = Encoder::new(PROTOCOL_VERSION);
             let mut new_pending_recv_stream =
-                BytesMut::with_capacity(pending_recv_stream.len() + new_msg_encoded.len());
+                BytesMut::with_capacity(pending_recv_stream.len() + encoder.encoded_len(&msg));
             new_pending_recv_stream.put(pending_recv_stream);
-            new_pending_recv_stream.put(new_msg_encoded);
+            encoder
+                .encode_to_buf_mut(&mut new_pending_recv_stream, msg)
+                .expect(
+                    "Encoding messages to a BytesMut should be infallible, unless OOM is reached.",
+                );
+
             self.set_state(&PENDING_RECV_STREAM, &new_pending_recv_stream.freeze())?;
         }
         Ok(())
@@ -540,29 +548,43 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 retention_period_sec: if request.retention_period_sec == 0 {
                     request.retention_period_sec
                 } else {
-                    DEFAULT_RETENTION_PERIOD
+                    DEFAULT_RETENTION_PERIOD_SEC
                 },
             },
         )?;
 
         // Let's create the messages and write them to a buffer
-        let mut messages = Vec::with_capacity((length + 1) as usize);
         let invocation_id =
             InvocationId::new(self.full_invocation_id.partition_key(), invocation_uuid);
-        messages.push(ProtocolMessage::new_start_message(
-            Bytes::copy_from_slice(&invocation_id.as_bytes()),
-            invocation_id.to_string(),
-            length,
-            true, // TODO add eager state
-            iter::empty(),
-        ));
+        let encoder = Encoder::new(PROTOCOL_VERSION);
+        let mut stream_buffer = BytesMut::new();
+        encoder
+            .encode_to_buf_mut(
+                &mut stream_buffer,
+                ProtocolMessage::new_start_message(
+                    Bytes::copy_from_slice(&invocation_id.as_bytes()),
+                    invocation_id.to_string(),
+                    length,
+                    true, // TODO add eager state
+                    iter::empty(),
+                ),
+            )
+            .expect("Encoding messages to a BytesMut should be infallible, unless OOM is reached.");
         for entry in journal_entries {
-            messages.push(ProtocolMessage::from(PlainRawEntry::from(entry)));
+            encoder
+                .encode_to_buf_mut(
+                    &mut stream_buffer,
+                    ProtocolMessage::from(PlainRawEntry::from(entry)),
+                )
+                .expect(
+                    "Encoding messages to a BytesMut should be infallible, unless OOM is reached.",
+                );
         }
-        let stream_buffer = encode_messages(messages);
 
         self.reply_to_caller(response_serializer.serialize_success(StartResponse {
-            invocation_status: Some(start_response::InvocationStatus::Executing(stream_buffer)),
+            invocation_status: Some(start_response::InvocationStatus::Executing(
+                stream_buffer.freeze(),
+            )),
         }));
         Ok(())
     }
@@ -797,18 +819,6 @@ fn decode_messages(buf: Bytes) -> Result<Vec<(MessageHeader, ProtocolMessage)>, 
     iter::from_fn(|| decoder.consume_next().transpose()).collect()
 }
 
-fn encode_messages(messages: Vec<ProtocolMessage>) -> Bytes {
-    let encoder = Encoder::new(0);
-
-    let mut buf = BytesMut::new();
-    for msg in messages {
-        trace!(restate.protocol.message = ?msg, "Sending message");
-        buf.put(encoder.encode(msg))
-    }
-
-    buf.freeze()
-}
-
 fn check_state_key(key: Bytes) -> Result<StateKey<Raw>, InvocationError> {
     if key.starts_with(b"_internal") {
         return Err(InvocationError::new(
@@ -849,6 +859,20 @@ mod tests {
     use restate_types::journal::{Entry, EntryResult, EntryType};
 
     const USER_STATE: StateKey<Raw> = StateKey::new_raw("my-state");
+
+    fn encode_messages(messages: Vec<ProtocolMessage>) -> Bytes {
+        let encoder = Encoder::new(PROTOCOL_VERSION);
+
+        let mut buf = BytesMut::new();
+        for msg in messages {
+            trace!(restate.protocol.message = ?msg, "Sending message");
+            encoder.encode_to_buf_mut(&mut buf, msg).expect(
+                "Encoding messages to a BytesMut should be infallible, unless OOM is reached.",
+            )
+        }
+
+        buf.freeze()
+    }
 
     fn encode_entries(entries: Vec<Entry>) -> Bytes {
         encode_messages(

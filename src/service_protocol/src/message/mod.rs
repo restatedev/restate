@@ -63,6 +63,19 @@ impl ProtocolMessage {
             },
         }
     }
+
+    pub(crate) fn encoded_len(&self) -> usize {
+        match self {
+            ProtocolMessage::Start { inner, .. } => inner.encoded_len(),
+            ProtocolMessage::Completion(m) => m.encoded_len(),
+
+            ProtocolMessage::Suspension(m) => m.encoded_len(),
+
+            ProtocolMessage::Error(m) => m.encoded_len(),
+
+            ProtocolMessage::UnparsedEntry(entry) => entry.entry.len(),
+        }
+    }
 }
 
 impl From<Completion> for ProtocolMessage {
