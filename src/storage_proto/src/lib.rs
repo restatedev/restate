@@ -41,7 +41,7 @@ pub mod storage {
             };
             use crate::storage::v1::{
                 enriched_entry_header, invocation_resolution_result, invocation_status,
-                journal_meta, outbox_message, outbox_message::outbox_service_invocation_response,
+                outbox_message, outbox_message::outbox_service_invocation_response,
                 response_result, span_relation, timer, BackgroundCallResolutionResult,
                 EnrichedEntryHeader, FullInvocationId, InboxEntry, InvocationResolutionResult,
                 InvocationStatus, JournalEntry, JournalMeta, OutboxMessage, ResponseResult,
@@ -173,41 +173,24 @@ pub mod storage {
                 fn try_from(value: Invoked) -> Result<Self, Self::Error> {
                     let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
 
-                    // TODO Cleanup old field after 0.4 release
-                    let pb_journal_meta = value
-                        .journal_meta
-                        .ok_or(ConversionError::missing_field("journal_meta"))?;
-                    let method_name = if !pb_journal_meta.method_name.is_empty() {
-                        pb_journal_meta.method_name.clone()
-                    } else {
-                        value.method_name
-                    }
-                    .try_into()
-                    .map_err(|e| {
+                    let method_name = value.method_name.try_into().map_err(|e| {
                         ConversionError::InvalidData(anyhow!(
                             "Cannot decode method_name string {e}"
                         ))
                     })?;
-                    let endpoint_id = if pb_journal_meta.endpoint_id.is_some() {
-                        pb_journal_meta
-                            .endpoint_id
-                            .clone()
-                            .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
-                                journal_meta::EndpointId::None(_) => None,
-                                journal_meta::EndpointId::Value(id) => Some(id),
-                            })
-                    } else {
+                    let endpoint_id =
                         value
                             .endpoint_id
                             .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
                                 invocation_status::invoked::EndpointId::None(_) => None,
                                 invocation_status::invoked::EndpointId::Value(id) => Some(id),
-                            })
-                    };
+                            });
 
                     let journal_metadata =
                         restate_storage_api::status_table::JournalMetadata::try_from(
-                            pb_journal_meta,
+                            value
+                                .journal_meta
+                                .ok_or(ConversionError::missing_field("journal_meta"))?,
                         )?;
                     let response_sink = Option::<
                         restate_types::invocation::ServiceInvocationResponseSink,
@@ -270,41 +253,24 @@ pub mod storage {
                 fn try_from(value: Suspended) -> Result<Self, Self::Error> {
                     let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
 
-                    // TODO Cleanup old field after 0.4 release
-                    let pb_journal_meta = value
-                        .journal_meta
-                        .ok_or(ConversionError::missing_field("journal_meta"))?;
-                    let method_name = if !pb_journal_meta.method_name.is_empty() {
-                        pb_journal_meta.method_name.clone()
-                    } else {
-                        value.method_name
-                    }
-                    .try_into()
-                    .map_err(|e| {
+                    let method_name = value.method_name.try_into().map_err(|e| {
                         ConversionError::InvalidData(anyhow!(
                             "Cannot decode method_name string {e}"
                         ))
                     })?;
-                    let endpoint_id = if pb_journal_meta.endpoint_id.is_some() {
-                        pb_journal_meta
-                            .endpoint_id
-                            .clone()
-                            .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
-                                journal_meta::EndpointId::None(_) => None,
-                                journal_meta::EndpointId::Value(id) => Some(id),
-                            })
-                    } else {
+                    let endpoint_id =
                         value
                             .endpoint_id
                             .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
                                 invocation_status::suspended::EndpointId::None(_) => None,
                                 invocation_status::suspended::EndpointId::Value(id) => Some(id),
-                            })
-                    };
+                            });
 
                     let journal_metadata =
                         restate_storage_api::status_table::JournalMetadata::try_from(
-                            pb_journal_meta,
+                            value
+                                .journal_meta
+                                .ok_or(ConversionError::missing_field("journal_meta"))?,
                         )?;
                     let response_sink = Option::<
                         restate_types::invocation::ServiceInvocationResponseSink,
@@ -475,8 +441,6 @@ pub mod storage {
                     JournalMeta {
                         length,
                         span_context: Some(SpanContext::from(span_context)),
-                        endpoint_id: None,
-                        method_name: Bytes::default(),
                     }
                 }
             }

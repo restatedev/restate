@@ -19,13 +19,8 @@ message FullInvocationId {
 // ---------------------------------------------------------------------
 
 message JournalMeta {
-    bytes method_name = 1; // TODO remove this after release 0.4
-    uint32 length = 2;
-    SpanContext span_context = 4;
-    oneof endpoint_id { // TODO remove this after release 0.4
-        google.protobuf.Empty none = 5;
-        string value = 6;
-    }
+    uint32 length = 1;
+    SpanContext span_context = 2;
 }
 
 message InvocationStatus {
