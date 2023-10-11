@@ -122,10 +122,10 @@ mod tests {
     use googletest::assert_that;
     use googletest::{all, pat};
     use prost::Message;
+    use prost_reflect::DynamicMessage;
     use restate_schema_api::discovery::{
         DiscoveredInstanceType, DiscoveredMethodMetadata, ServiceRegistrationRequest,
     };
-    use prost_reflect::DynamicMessage;
     use restate_schema_api::endpoint::EndpointMetadata;
     use restate_test_util::matchers::*;
     use restate_test_util::test;
