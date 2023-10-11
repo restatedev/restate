@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::Serialize;
 use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
@@ -17,7 +16,7 @@ use std::fmt::{Display, Formatter};
 /// This error code set matches the [gRPC error code set](https://github.com/grpc/grpc/blob/master/doc/statuscodes.md#status-codes-and-their-use-in-grpc),
 /// representing all the error codes visible to the user code. Note, it does not include the Ok
 /// variant because only error cases are contained.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u16)]
 pub enum UserErrorCode {
     /// The operation was cancelled.

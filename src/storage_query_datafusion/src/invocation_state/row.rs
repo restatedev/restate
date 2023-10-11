@@ -9,13 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use crate::invocation_state::schema::StateBuilder;
+use crate::table_util::format_using;
 use crate::udfs::restate_keys;
 use restate_invoker_api::InvocationStatusReport;
 use restate_schema_api::key::RestateKeyConverter;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
-use std::fmt;
-use std::fmt::Write;
+
+
 use uuid::Uuid;
 
 #[inline]
@@ -79,11 +80,4 @@ pub(crate) fn append_state_row(
             row.last_error_code(doc_error_code.code())
         }
     }
-}
-
-#[inline]
-fn format_using<'a>(output: &'a mut String, what: &impl fmt::Display) -> &'a str {
-    output.clear();
-    write!(output, "{}", what).expect("Error occurred while trying to write in String");
-    output
 }

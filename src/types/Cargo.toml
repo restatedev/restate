@@ -25,7 +25,7 @@ rand = { workspace = true, optional = true }
 restate_base64_util = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
-serde_with = { workspace = true, optional = true, features = ["base64"] }
+serde_with = { workspace = true, optional = true }
 humantime = { workspace = true }
 uuid = { workspace = true }
 opentelemetry_api = { workspace = true }

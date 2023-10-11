@@ -11,6 +11,7 @@
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::physical_expr::expressions::col;
 use datafusion::physical_expr::PhysicalSortExpr;
+use std::fmt::Write;
 
 pub(crate) fn compute_ordering(schema: SchemaRef) -> Option<Vec<PhysicalSortExpr>> {
     let ordering = vec![PhysicalSortExpr {
@@ -19,4 +20,11 @@ pub(crate) fn compute_ordering(schema: SchemaRef) -> Option<Vec<PhysicalSortExpr
     }];
 
     Some(ordering)
+}
+
+#[inline]
+pub(crate) fn format_using<'a>(output: &'a mut String, what: &impl std::fmt::Display) -> &'a str {
+    output.clear();
+    write!(output, "{}", what).expect("Error occurred while trying to write in String");
+    output
 }

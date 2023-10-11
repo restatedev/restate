@@ -22,10 +22,11 @@ use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
 use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec};
 
-use serde::Serialize;
-use std::fmt;
-use std::fmt::Write;
 
+
+
+
+use crate::table_util::format_using;
 use restate_types::journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
 use uuid::Uuid;
 
@@ -139,43 +140,10 @@ pub(crate) fn append_journal_row(
                 }
                 _ => {}
             }
-
-            if row.is_entry_json_defined() {
-                let decoded_entry = decoded_entry.get_or_init(|| {
-                    ProtobufRawEntryCodec::deserialize(&entry)
-                        .expect("journal entry must deserialize")
-                });
-                row.entry_json(
-                    format_json(output, &decoded_entry).expect("journal entry must serialize"),
-                );
-            }
         }
-        JournalEntry::Completion(completion) => {
+        JournalEntry::Completion(_completion) => {
             row.entry_type("CompletionResult");
             row.completed(true);
-            if row.is_entry_json_defined() {
-                row.entry_json(
-                    format_json(output, &completion).expect("completion must serialize"),
-                );
-            }
         }
     };
-}
-
-#[inline]
-fn format_using<'a>(output: &'a mut String, what: &impl fmt::Display) -> &'a str {
-    output.clear();
-    write!(output, "{}", what).expect("Error occurred while trying to write in String");
-    output
-}
-
-#[inline]
-fn format_json<'a>(
-    output: &'a mut String,
-    what: &impl Serialize,
-) -> Result<&'a str, serde_json::Error> {
-    output.clear();
-    // SAFETY: serde_json always outputs valid utf8
-    serde_json::to_writer(unsafe { output.as_mut_vec() }, &what)?;
-    Ok(output)
 }

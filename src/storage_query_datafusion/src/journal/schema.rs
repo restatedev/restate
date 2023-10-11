@@ -30,5 +30,4 @@ define_table!(journal(
     invoked_method: DataType::LargeUtf8,
     invoked_service_key: DataType::LargeBinary,
     invoked_service_key_json: DataType::LargeUtf8,
-    entry_json: DataType::LargeUtf8,
 ));
