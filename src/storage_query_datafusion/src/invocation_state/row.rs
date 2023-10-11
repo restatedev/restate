@@ -16,7 +16,6 @@ use restate_schema_api::key::RestateKeyConverter;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
 
-
 use uuid::Uuid;
 
 #[inline]

@@ -142,6 +142,7 @@ message InvocationResolutionResult {
     message Success {
         bytes invocation_uuid = 1;
         bytes service_key = 2;
+        bytes service_name = 4;
         SpanContext span_context = 3;
     }
 
@@ -154,6 +155,7 @@ message InvocationResolutionResult {
 message BackgroundCallResolutionResult {
     bytes invocation_uuid = 1;
     bytes service_key = 2;
+    bytes service_name = 4;
     SpanContext span_context = 3;
 }
 message EnrichedEntryHeader {

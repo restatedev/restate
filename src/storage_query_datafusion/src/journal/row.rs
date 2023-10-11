@@ -10,24 +10,18 @@
 
 use crate::journal::schema::JournalBuilder;
 use crate::udfs::restate_keys;
-use std::cell::OnceCell;
 
-use bytestring::ByteString;
 use restate_schema_api::key::RestateKeyConverter;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_rocksdb::journal_table::OwnedJournalRow;
 use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
-use restate_types::journal::enriched::EnrichedEntryHeader;
+use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec};
 
-
-
-
-
 use crate::table_util::format_using;
-use restate_types::journal::{BackgroundInvokeEntry, Entry, InvokeEntry};
+use restate_types::journal::{BackgroundInvokeEntry, Entry, InvokeEntry, InvokeRequest};
 use uuid::Uuid;
 
 #[inline]
@@ -81,8 +75,6 @@ pub(crate) fn append_journal_row(
                 row.completed(completed);
             }
 
-            let decoded_entry = OnceCell::new();
-
             match &entry.header {
                 EnrichedEntryHeader::Invoke {
                     resolution_result: Some(resolution_result),
@@ -91,10 +83,22 @@ pub(crate) fn append_journal_row(
                 | EnrichedEntryHeader::BackgroundInvoke { resolution_result } => {
                     row.invoked_service_key(&resolution_result.service_key);
 
+                    row.invoked_service(&resolution_result.service_name);
+
+                    if row.is_invoked_service_key_json_defined() {
+                        if let Some(key) = restate_keys::try_decode_restate_key_as_json(
+                            &resolution_result.service_name,
+                            &resolution_result.service_key,
+                            output,
+                            resolver,
+                        ) {
+                            row.invoked_service_key_json(key)
+                        }
+                    }
+
                     if row.is_invoked_id_defined() {
-                        // we don't need to decode the entry for the service name to produce a partition key; use empty name
                         let partition_key = ServiceId::new(
-                            ByteString::new(),
+                            resolution_result.service_name.clone(),
                             resolution_result.service_key.clone(),
                         )
                         .partition_key();
@@ -105,36 +109,9 @@ pub(crate) fn append_journal_row(
                         ));
                     }
 
-                    if row.is_invoked_service_defined()
-                        || row.is_invoked_method_defined()
-                            | row.is_invoked_service_key_json_defined()
-                    {
-                        let decoded_entry = decoded_entry.get_or_init(|| {
-                            ProtobufRawEntryCodec::deserialize(&entry)
-                                .expect("journal entry must deserialize")
-                        });
-                        debug_assert!(matches!(
-                            decoded_entry,
-                            Entry::Invoke(_) | Entry::BackgroundInvoke(_)
-                        ));
-                        match decoded_entry {
-                            Entry::Invoke(InvokeEntry { request, .. })
-                            | Entry::BackgroundInvoke(BackgroundInvokeEntry { request, .. }) => {
-                                row.invoked_service(&request.service_name);
-                                row.invoked_method(&request.method_name);
-
-                                if row.is_invoked_service_key_json_defined() {
-                                    if let Some(key) = restate_keys::try_decode_restate_key_as_json(
-                                        &request.service_name,
-                                        &resolution_result.service_key,
-                                        output,
-                                        resolver,
-                                    ) {
-                                        row.invoked_service_key_json(key)
-                                    }
-                                }
-                            }
-                            _ => {}
+                    if row.is_invoked_method_defined() {
+                        if let Some(request) = deserialize_invocation_request(&entry) {
+                            row.invoked_method(&request.method_name);
                         }
                     }
                 }
@@ -146,4 +123,19 @@ pub(crate) fn append_journal_row(
             row.completed(true);
         }
     };
+}
+
+fn deserialize_invocation_request(entry: &EnrichedRawEntry) -> Option<InvokeRequest> {
+    let decoded_entry =
+        ProtobufRawEntryCodec::deserialize(entry).expect("journal entry must deserialize");
+
+    debug_assert!(matches!(
+        decoded_entry,
+        Entry::Invoke(_) | Entry::BackgroundInvoke(_)
+    ));
+    match decoded_entry {
+        Entry::Invoke(InvokeEntry { request, .. })
+        | Entry::BackgroundInvoke(BackgroundInvokeEntry { request, .. }) => Some(request),
+        _ => None,
+    }
 }

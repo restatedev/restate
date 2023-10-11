@@ -60,6 +60,7 @@ pub mod mocks {
                             resolution_result: Some(ResolutionResult {
                                 invocation_uuid: Default::default(),
                                 service_key: Default::default(),
+                                service_name: Default::default(),
                                 span_context: invocation_span_context.clone(),
                             }),
                         }
@@ -75,6 +76,7 @@ pub mod mocks {
                     resolution_result: ResolutionResult {
                         invocation_uuid: Default::default(),
                         service_key: Default::default(),
+                        service_name: Default::default(),
                         span_context: invocation_span_context.clone(),
                     },
                 },

@@ -266,6 +266,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                             resolution_result: Some(ResolutionResult {
                                 invocation_uuid: fid.invocation_uuid,
                                 service_key: fid.service_id.key,
+                                service_name: fid.service_id.service_name,
                                 span_context,
                             }),
                         },
@@ -317,6 +318,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         resolution_result: ResolutionResult {
                             invocation_uuid: fid.invocation_uuid,
                             service_key: fid.service_id.key,
+                            service_name: fid.service_id.service_name,
                             span_context,
                         },
                     },

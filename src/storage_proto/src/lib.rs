@@ -1105,11 +1105,14 @@ pub mod storage {
                             let invocation_uuid =
                                 try_bytes_into_invocation_uuid(success.invocation_uuid)?;
                             let service_key = success.service_key;
+                            let service_name = ByteString::try_from(success.service_name)
+                                .map_err(ConversionError::invalid_data)?;
 
                             Some(restate_types::journal::enriched::ResolutionResult {
                                 span_context,
                                 invocation_uuid,
                                 service_key,
+                                service_name,
                             })
                         }
                     };
@@ -1128,11 +1131,13 @@ pub mod storage {
                             restate_types::journal::enriched::ResolutionResult {
                                 invocation_uuid,
                                 service_key,
+                                service_name,
                                 span_context,
                             } => invocation_resolution_result::Result::Success(
                                 invocation_resolution_result::Success {
                                     invocation_uuid: invocation_uuid_to_bytes(&invocation_uuid),
                                     service_key,
+                                    service_name: service_name.into_bytes(),
                                     span_context: Some(SpanContext::from(span_context)),
                                 },
                             ),
@@ -1159,11 +1164,14 @@ pub mod storage {
                         )?;
                     let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
                     let service_key = value.service_key;
+                    let service_name = ByteString::try_from(value.service_name)
+                        .map_err(ConversionError::invalid_data)?;
 
                     Ok(restate_types::journal::enriched::ResolutionResult {
                         span_context,
                         invocation_uuid,
                         service_key,
+                        service_name,
                     })
                 }
             }
@@ -1173,6 +1181,7 @@ pub mod storage {
                     BackgroundCallResolutionResult {
                         invocation_uuid: invocation_uuid_to_bytes(&value.invocation_uuid),
                         service_key: value.service_key,
+                        service_name: value.service_name.into_bytes(),
                         span_context: Some(SpanContext::from(value.span_context)),
                     }
                 }
