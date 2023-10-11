@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
-const PARTIAL_STATE_MASK: u64 = 0x0400_0000_0000;
 const VERSION_MASK: u64 = 0x03FF_0000_0000;
 const COMPLETED_MASK: u64 = 0x0001_0000_0000;
 const REQUIRES_ACK_MASK: u64 = 0x0001_0000_0000;
@@ -77,10 +76,6 @@ impl MessageType {
     }
 
     fn has_protocol_version(&self) -> bool {
-        *self == MessageType::Start
-    }
-
-    fn has_partial_state_flag(&self) -> bool {
         *self == MessageType::Start
     }
 
@@ -161,8 +156,6 @@ pub struct MessageHeader {
     length: u32,
 
     // --- Flags
-    /// Only `StartMessage` has `PARTIAL_STATE`.
-    partial_state_flag: Option<bool>,
     /// Only `StartMessage` has protocol_version.
     protocol_version: Option<u16>,
 
@@ -175,14 +168,13 @@ pub struct MessageHeader {
 impl MessageHeader {
     #[inline]
     pub fn new(ty: MessageType, length: u32) -> Self {
-        Self::_new(ty, None, None, None, None, length)
+        Self::_new(ty, None, None, None, length)
     }
 
     #[inline]
-    pub fn new_start(partial_state: bool, protocol_version: u16, length: u32) -> Self {
+    pub fn new_start(protocol_version: u16, length: u32) -> Self {
         Self::_new(
             MessageType::Start,
-            Some(partial_state),
             Some(protocol_version),
             None,
             None,
@@ -203,7 +195,6 @@ impl MessageHeader {
         MessageHeader {
             ty,
             length,
-            partial_state_flag: None,
             protocol_version: None,
             completed_flag,
             requires_ack_flag,
@@ -213,7 +204,6 @@ impl MessageHeader {
     #[inline]
     fn _new(
         ty: MessageType,
-        partial_state_flag: Option<bool>,
         protocol_version: Option<u16>,
         completed_flag: Option<bool>,
         requires_ack_flag: Option<bool>,
@@ -222,7 +212,6 @@ impl MessageHeader {
         MessageHeader {
             ty,
             length,
-            partial_state_flag,
             protocol_version,
             completed_flag,
             requires_ack_flag,
@@ -237,11 +226,6 @@ impl MessageHeader {
     #[inline]
     pub fn message_type(&self) -> MessageType {
         self.ty
-    }
-
-    #[inline]
-    pub fn partial_state(&self) -> Option<bool> {
-        self.partial_state_flag
     }
 
     #[inline]
@@ -283,8 +267,6 @@ impl TryFrom<u64> for MessageHeader {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let ty_code = (value >> 48) as u16;
         let ty: MessageType = ty_code.try_into()?;
-        let partial_state_flag =
-            read_flag_if!(ty.has_partial_state_flag(), value, PARTIAL_STATE_MASK);
         let protocol_version = if ty.has_protocol_version() {
             Some(((value & VERSION_MASK) >> 32) as u16)
         } else {
@@ -296,7 +278,6 @@ impl TryFrom<u64> for MessageHeader {
 
         Ok(MessageHeader::_new(
             ty,
-            partial_state_flag,
             protocol_version,
             completed_flag,
             requires_ack_flag,
@@ -320,11 +301,6 @@ impl From<MessageHeader> for u64 {
         let mut res =
             ((u16::from(message_header.ty) as u64) << 48) | (message_header.length as u64);
 
-        write_flag!(
-            message_header.partial_state_flag,
-            &mut res,
-            PARTIAL_STATE_MASK
-        );
         if let Some(protocol_version) = message_header.protocol_version {
             res |= (protocol_version as u64) << 32;
         }
@@ -408,16 +384,7 @@ mod tests {
 
     roundtrip_test!(
         start,
-        MessageHeader::new_start(false, 1, 25),
-        Start,
-        Core,
-        25,
-        version: 1
-    );
-
-    roundtrip_test!(
-        start_with_partial_state,
-        MessageHeader::new_start(true, 1, 25),
+        MessageHeader::new_start(1, 25),
         Start,
         Core,
         25,
@@ -470,7 +437,7 @@ mod tests {
 
     roundtrip_test!(
         custom_entry_with_requires_ack,
-        MessageHeader::_new(MessageType::Custom(0xFC00), None, None, None, Some(true), 10341),
+        MessageHeader::_new(MessageType::Custom(0xFC00), None, None, Some(true), 10341),
         MessageType::Custom(0xFC00),
         MessageKind::Custom,
         10341,

@@ -981,13 +981,11 @@ mod tests {
                             invocation_status: some(pat!(
                                 start_response::InvocationStatus::Executing(
                                     decoded_as_protocol_messages(elements_are![
-                                        pat!(ProtocolMessage::Start {
-                                            inner: pat!(
-                                        restate_service_protocol::pb::protocol::StartMessage {
-                                            known_entries: eq(1)
-                                        }
-                                    )
-                                        }),
+                                        pat!(ProtocolMessage::Start(pat!(
+                                            restate_service_protocol::pb::protocol::StartMessage {
+                                                known_entries: eq(1)
+                                            }
+                                        ))),
                                         pat!(ProtocolMessage::UnparsedEntry(property!(
                                             PlainRawEntry.ty(),
                                             eq(EntryType::PollInputStream)
@@ -1165,13 +1163,11 @@ mod tests {
                             invocation_status: some(pat!(
                                 start_response::InvocationStatus::Executing(
                                     decoded_as_protocol_messages(elements_are![
-                                        pat!(ProtocolMessage::Start {
-                                            inner: pat!(
-                                        restate_service_protocol::pb::protocol::StartMessage {
-                                            known_entries: eq(2)
-                                        }
-                                    )
-                                        }),
+                                        pat!(ProtocolMessage::Start(pat!(
+                                            restate_service_protocol::pb::protocol::StartMessage {
+                                                known_entries: eq(2)
+                                            }
+                                        ))),
                                         pat!(ProtocolMessage::UnparsedEntry(property!(
                                             PlainRawEntry.ty(),
                                             eq(EntryType::PollInputStream)
