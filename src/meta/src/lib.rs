@@ -109,7 +109,12 @@ impl Options {
             schemas.clone(),
             FileMetaStorage::new(self.storage_path.into()),
             // Total duration roughly 102 seconds
-            RetryPolicy::exponential(Duration::from_millis(100), 2.0, 9, None),
+            RetryPolicy::exponential(
+                Duration::from_millis(100),
+                2.0,
+                9,
+                Some(Duration::from_secs(20)),
+            ),
             self.proxy_uri,
         );
 

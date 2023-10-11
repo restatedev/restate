@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use codederror::CodedError;
 use hyper::header::{ACCEPT, CONTENT_TYPE};
+use hyper::http::response::Parts;
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, Client, Method, Request, Uri};
 use hyper_rustls::HttpsConnectorBuilder;
@@ -21,7 +22,7 @@ use prost_reflect::{
     DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind, MethodDescriptor,
     ServiceDescriptor,
 };
-use restate_errors::{META0001, META0002, META0003};
+use restate_errors::{warn_it, META0001, META0002, META0003};
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_schema_api::endpoint::ProtocolType;
 use restate_schema_api::key::{KeyStructure, ServiceInstanceType};
@@ -194,47 +195,8 @@ impl ServiceDiscovery {
         uri: &Uri,
         additional_headers: &HashMap<HeaderName, HeaderValue>,
     ) -> Result<DiscoveredEndpointMetadata, ServiceDiscoveryError> {
-        let connector = HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .https_or_http()
-            .enable_http2()
-            .build();
-        let client = Client::builder()
-            .http2_only(true)
-            .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
-        let uri = append_discover(uri)?;
-
         let (mut parts, body) = self
-            .retry_policy
-            .clone()
-            .retry_operation(move || {
-                let client = client.clone();
-
-                let mut request_builder = Request::builder()
-                    .method(Method::POST)
-                    .uri(uri.clone())
-                    .header(CONTENT_TYPE, APPLICATION_PROTO)
-                    .header(ACCEPT, APPLICATION_PROTO);
-                request_builder
-                    .headers_mut()
-                    .unwrap()
-                    .extend(additional_headers.clone().into_iter());
-
-                let request = request_builder
-                    .body(Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()))
-                    .expect("Building the request is not supposed to fail");
-
-                async move {
-                    let response = client.request(request).await?;
-                    let (parts, body) = response.into_parts();
-
-                    if !parts.status.is_success() {
-                        return Err(ServiceDiscoveryError::BadStatusCode(parts.status.as_u16()));
-                    }
-
-                    Ok((parts, hyper::body::to_bytes(body).await?))
-                }
-            })
+            .invoke_discovery_endpoint(uri, additional_headers)
             .await?;
 
         // Validate response parts.
@@ -307,6 +269,72 @@ impl ServiceDiscovery {
                 }
             },
         })
+    }
+
+    async fn invoke_discovery_endpoint(
+        &self,
+        uri: &Uri,
+        additional_headers: &HashMap<HeaderName, HeaderValue>,
+    ) -> Result<(Parts, Bytes), ServiceDiscoveryError> {
+        let connector = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_or_http()
+            .enable_http2()
+            .build();
+        let client = Client::builder()
+            .http2_only(true)
+            .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
+        let uri = append_discover(uri)?;
+
+        let mut retry_iter = self.retry_policy.clone().into_iter();
+        loop {
+            let mut request_builder = Request::builder()
+                .method(Method::POST)
+                .uri(uri.clone())
+                .header(CONTENT_TYPE, APPLICATION_PROTO)
+                .header(ACCEPT, APPLICATION_PROTO);
+            request_builder
+                .headers_mut()
+                .unwrap()
+                .extend(additional_headers.clone().into_iter());
+
+            let request = request_builder
+                .body(Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()))
+                .expect("Building the request is not supposed to fail");
+
+            let response_fut = client.request(request);
+            let response = async {
+                let (parts, body) = response_fut.await?.into_parts();
+
+                if !parts.status.is_success() {
+                    return Err(ServiceDiscoveryError::BadStatusCode(parts.status.as_u16()));
+                }
+
+                Ok((parts, hyper::body::to_bytes(body).await?))
+            };
+
+            let e = match response.await {
+                Ok(response) => {
+                    // Discovery succeeded
+                    return Ok(response);
+                }
+                Err(e) => e,
+            };
+
+            // Discovery failed
+            if let Some(next_retry_interval) = retry_iter.next() {
+                warn_it!(
+                    e,
+                    "Error when discovering service endpoint at uri '{}'. Retrying in {} seconds",
+                    uri,
+                    next_retry_interval.as_secs()
+                );
+                tokio::time::sleep(next_retry_interval).await;
+            } else {
+                warn_it!(e, "Error when discovering service endpoint '{}'", uri);
+                return Err(e);
+            }
+        }
     }
 }
 
