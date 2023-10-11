@@ -14,6 +14,9 @@ mod protocol;
 mod reflection;
 mod server;
 
+use std::net::{IpAddr, SocketAddr};
+
+use hyper::server::conn::AddrStream;
 pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
@@ -76,6 +79,28 @@ impl From<Bytes> for HandlerResponse {
 }
 
 type HandlerResult = Result<HandlerResponse, Status>;
+
+// --- Extensions injected into request/response
+
+/// Client connection information for a given RPC request
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ConnectInfo {
+    remote: SocketAddr,
+}
+
+impl ConnectInfo {
+    fn new(socket: &AddrStream) -> Self {
+        Self {
+            remote: socket.remote_addr(),
+        }
+    }
+    fn address(&self) -> IpAddr {
+        self.remote.ip()
+    }
+    fn port(&self) -> u16 {
+        self.remote.port()
+    }
+}
 
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]

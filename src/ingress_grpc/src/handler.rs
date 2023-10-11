@@ -198,6 +198,9 @@ where
         // Encapsulate in this closure the remaining part of the processing
         let schemas = self.schemas.clone();
         let request_tx = self.request_tx.clone();
+
+        let client_connect_info = req.extensions().get::<ConnectInfo>().cloned();
+
         let ingress_request_handler = move |handler_request: HandlerRequest| {
             let (req_headers, req_payload) = handler_request;
 
@@ -206,13 +209,20 @@ where
             // Another span is created later by the ServiceInvocationFactory, for the ServiceInvocation itself,
             // which is used by the Restate components to correctly link to a single parent span
             // to commit intermediate results of the processing.
+            let (client_addr, client_port) = client_connect_info
+                .map(|c| (c.address().to_string(), c.port()))
+                .unwrap_or_default();
+
             let ingress_span = info_span!(
                 "ingress_invoke",
                 otel.name = format!("ingress_invoke {}", req_headers.method_name),
                 rpc.system = "grpc",
                 rpc.service = %req_headers.service_name,
-                rpc.method = %req_headers.method_name
+                rpc.method = %req_headers.method_name,
+                client.socket.address = %client_addr,
+                client.socket.port = %client_port,
             );
+
             // Attach this ingress_span to the parent parsed from the headers, if any.
             span_relation(req_headers.tracing_context.span().span_context())
                 .attach_to_span(&ingress_span);
