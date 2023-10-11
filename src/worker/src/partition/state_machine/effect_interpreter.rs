@@ -20,7 +20,7 @@ use futures::future::BoxFuture;
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{
-    InvocationMetadata, InvocationStatus, JournalMetadata, StatusStatistics,
+    InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
 use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
@@ -203,7 +203,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 service_id,
                 mut metadata,
             } => {
-                metadata.stats.update();
+                metadata.timestamps.update();
                 let invocation_id = metadata.invocation_uuid;
                 state_storage
                     .store_invocation_status(&service_id, InvocationStatus::Invoked(metadata))
@@ -222,7 +222,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 mut metadata,
                 waiting_for_completed_entries,
             } => {
-                metadata.stats.update();
+                metadata.timestamps.update();
                 state_storage
                     .store_invocation_status(
                         &service_id,
@@ -478,7 +478,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 )
                 .await?
                 {
-                    metadata.stats.update();
+                    metadata.timestamps.update();
                     state_storage
                         .store_invocation_status(
                             &full_invocation_id.service_id,
@@ -516,7 +516,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                             invocation_uuid,
                             journal_metadata: JournalMetadata::initialize(span_context),
                             completion_notification_target: notification_target,
-                            stats: StatusStatistics::default(),
+                            timestamps: StatusTimestamps::now(),
                         },
                     )
                     .await?;
@@ -586,7 +586,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     None,
                     service_invocation.method_name.clone(),
                     service_invocation.response_sink.clone(),
-                    StatusStatistics::default(),
+                    StatusTimestamps::now(),
                 )),
             )
             .await?;
@@ -731,8 +731,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         );
         journal_meta.length = entry_index + 1;
 
-        // Update stats
-        previous_invocation_status.update_stats();
+        // Update timestamps
+        previous_invocation_status.update_timestamps();
 
         // Store invocation status
         state_storage

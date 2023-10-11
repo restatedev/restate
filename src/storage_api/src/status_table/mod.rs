@@ -18,19 +18,23 @@ use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 use std::ops::RangeInclusive;
 
-/// Holds statistics of the [`InvocationStatus`].
+/// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct StatusStatistics {
+pub struct StatusTimestamps {
     creation_time: MillisSinceEpoch,
     modification_time: MillisSinceEpoch,
 }
 
-impl StatusStatistics {
+impl StatusTimestamps {
     pub fn new(creation_time: MillisSinceEpoch, modification_time: MillisSinceEpoch) -> Self {
         Self {
             creation_time,
             modification_time,
         }
+    }
+
+    pub fn now() -> Self {
+        StatusTimestamps::new(MillisSinceEpoch::now(), MillisSinceEpoch::now())
     }
 
     /// Update the statistics with an updated [`Self::modification_time()`].
@@ -55,12 +59,6 @@ impl StatusStatistics {
     }
 }
 
-impl Default for StatusStatistics {
-    fn default() -> Self {
-        StatusStatistics::new(MillisSinceEpoch::now(), MillisSinceEpoch::now())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletionNotificationTarget {
     pub service: ServiceId,
@@ -78,7 +76,7 @@ pub enum InvocationStatus {
     Virtual {
         invocation_uuid: InvocationUuid,
         journal_metadata: JournalMetadata,
-        stats: StatusStatistics,
+        timestamps: StatusTimestamps,
         completion_notification_target: CompletionNotificationTarget,
     },
     /// Service instance is currently not invoked
@@ -136,20 +134,20 @@ impl InvocationStatus {
     }
 
     #[inline]
-    pub fn get_stats(&self) -> Option<&StatusStatistics> {
+    pub fn get_timestamps(&self) -> Option<&StatusTimestamps> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(&metadata.stats),
-            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.stats),
+            InvocationStatus::Invoked(metadata) => Some(&metadata.timestamps),
+            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.timestamps),
             InvocationStatus::Free => None,
-            InvocationStatus::Virtual { stats: stat, .. } => Some(stat),
+            InvocationStatus::Virtual { timestamps, .. } => Some(timestamps),
         }
     }
 
-    pub fn update_stats(&mut self) {
+    pub fn update_timestamps(&mut self) {
         match self {
-            InvocationStatus::Invoked(metadata) => metadata.stats.update(),
-            InvocationStatus::Suspended { metadata, .. } => metadata.stats.update(),
-            InvocationStatus::Virtual { stats: stat, .. } => stat.update(),
+            InvocationStatus::Invoked(metadata) => metadata.timestamps.update(),
+            InvocationStatus::Suspended { metadata, .. } => metadata.timestamps.update(),
+            InvocationStatus::Virtual { timestamps, .. } => timestamps.update(),
             InvocationStatus::Free => {}
         }
     }
@@ -182,7 +180,7 @@ pub struct InvocationMetadata {
     pub endpoint_id: Option<EndpointId>,
     pub method: ByteString,
     pub response_sink: Option<ServiceInvocationResponseSink>,
-    pub stats: StatusStatistics,
+    pub timestamps: StatusTimestamps,
 }
 
 impl InvocationMetadata {
@@ -192,7 +190,7 @@ impl InvocationMetadata {
         endpoint_id: Option<String>,
         method: ByteString,
         response_sink: Option<ServiceInvocationResponseSink>,
-        stats: StatusStatistics,
+        timestamps: StatusTimestamps,
     ) -> Self {
         Self {
             invocation_uuid,
@@ -200,7 +198,7 @@ impl InvocationMetadata {
             endpoint_id,
             method,
             response_sink,
-            stats,
+            timestamps,
         }
     }
 }

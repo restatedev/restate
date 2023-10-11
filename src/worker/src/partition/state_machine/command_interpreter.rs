@@ -1017,7 +1017,7 @@ mod tests {
     use restate_invoker_api::EffectKind;
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
-    use restate_storage_api::status_table::JournalMetadata;
+    use restate_storage_api::status_table::{JournalMetadata, StatusTimestamps};
     use restate_test_util::{assert_eq, let_assert, test};
     use restate_types::errors::UserErrorCode;
     use restate_types::identifiers::WithPartitionKey;
@@ -1043,7 +1043,7 @@ mod tests {
                     endpoint_id: None,
                     method: ByteString::from("".to_string()),
                     response_sink: None,
-                    stats: Default::default(),
+                    timestamps: StatusTimestamps::now(),
                 }),
             );
         }

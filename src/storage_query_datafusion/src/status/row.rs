@@ -12,7 +12,7 @@ use crate::status::schema::{StatusBuilder, StatusRowBuilder};
 use crate::udfs::restate_keys;
 use restate_schema_api::key::RestateKeyConverter;
 use restate_storage_api::status_table::{
-    InvocationMetadata, InvocationStatus, JournalMetadata, StatusStatistics,
+    InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
 use restate_storage_rocksdb::status_table::OwnedStatusRow;
 use restate_types::identifiers::InvocationId;
@@ -78,8 +78,8 @@ pub(crate) fn append_status_row(
     }
 
     // Stat
-    if let Some(stats) = status_row.invocation_status.get_stats() {
-        fill_stats(&mut row, stats);
+    if let Some(timestamps) = status_row.invocation_status.get_timestamps() {
+        fill_timestamps(&mut row, timestamps);
     }
 
     // Additional invocation metadata
@@ -132,7 +132,7 @@ fn fill_invocation_metadata(
 }
 
 #[inline]
-fn fill_stats(row: &mut StatusRowBuilder, stat: &StatusStatistics) {
+fn fill_timestamps(row: &mut StatusRowBuilder, stat: &StatusTimestamps) {
     row.created_at(stat.creation_time().as_u64() as i64);
     row.modified_at(stat.modification_time().as_u64() as i64);
 }
