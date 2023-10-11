@@ -19,7 +19,9 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, JournalMetadata};
+use restate_storage_api::status_table::{
+    InvocationMetadata, InvocationStatus, JournalMetadata, StatusStatistics,
+};
 use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocation;
@@ -201,7 +203,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 service_id,
                 mut metadata,
             } => {
-                metadata.modification_time = MillisSinceEpoch::now();
+                metadata.stats.update();
                 let invocation_id = metadata.invocation_uuid;
                 state_storage
                     .store_invocation_status(&service_id, InvocationStatus::Invoked(metadata))
@@ -220,7 +222,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 mut metadata,
                 waiting_for_completed_entries,
             } => {
-                metadata.modification_time = MillisSinceEpoch::now();
+                metadata.stats.update();
                 state_storage
                     .store_invocation_status(
                         &service_id,
@@ -476,7 +478,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 )
                 .await?
                 {
-                    metadata.modification_time = MillisSinceEpoch::now();
+                    metadata.stats.update();
                     state_storage
                         .store_invocation_status(
                             &full_invocation_id.service_id,
@@ -514,6 +516,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                             invocation_uuid,
                             journal_metadata: JournalMetadata::initialize(span_context),
                             completion_notification_target: notification_target,
+                            stats: StatusStatistics::default(),
                         },
                     )
                     .await?;
@@ -569,7 +572,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         collector: &mut C,
         service_invocation: ServiceInvocation,
     ) -> Result<(), Error> {
-        let creation_time = MillisSinceEpoch::now();
         let journal_metadata = JournalMetadata::new(
             1, // initial length is 1, because we store the poll input stream entry
             service_invocation.span_context.clone(),
@@ -584,8 +586,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     None,
                     service_invocation.method_name.clone(),
                     service_invocation.response_sink.clone(),
-                    creation_time,
-                    creation_time,
+                    StatusStatistics::default(),
                 )),
             )
             .await?;
@@ -729,6 +730,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             "journal should not have gaps"
         );
         journal_meta.length = entry_index + 1;
+
+        // Update stats
+        previous_invocation_status.update_stats();
 
         // Store invocation status
         state_storage

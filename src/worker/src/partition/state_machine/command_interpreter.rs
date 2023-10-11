@@ -1043,8 +1043,7 @@ mod tests {
                     endpoint_id: None,
                     method: ByteString::from("".to_string()),
                     response_sink: None,
-                    creation_time: MillisSinceEpoch::now(),
-                    modification_time: MillisSinceEpoch::now(),
+                    stats: Default::default(),
                 }),
             );
         }

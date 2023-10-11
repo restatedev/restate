@@ -18,6 +18,49 @@ use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 use std::ops::RangeInclusive;
 
+/// Holds statistics of the [`InvocationStatus`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusStatistics {
+    creation_time: MillisSinceEpoch,
+    modification_time: MillisSinceEpoch,
+}
+
+impl StatusStatistics {
+    pub fn new(creation_time: MillisSinceEpoch, modification_time: MillisSinceEpoch) -> Self {
+        Self {
+            creation_time,
+            modification_time,
+        }
+    }
+
+    /// Update the statistics with an updated [`Self::modification_time()`].
+    pub fn update(&mut self) {
+        self.modification_time = MillisSinceEpoch::now()
+    }
+
+    /// Creation time of the [`InvocationStatus`].
+    ///
+    /// Note: The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it for business logic, but only for observability purposes.
+    pub fn creation_time(&self) -> MillisSinceEpoch {
+        self.creation_time
+    }
+
+    /// Modification time of the [`InvocationStatus`].
+    ///
+    /// Note: The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it for business logic, but only for observability purposes.
+    pub fn modification_time(&self) -> MillisSinceEpoch {
+        self.modification_time
+    }
+}
+
+impl Default for StatusStatistics {
+    fn default() -> Self {
+        StatusStatistics::new(MillisSinceEpoch::now(), MillisSinceEpoch::now())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletionNotificationTarget {
     pub service: ServiceId,
@@ -32,14 +75,15 @@ pub enum InvocationStatus {
         metadata: InvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
-    /// Service instance is currently not invoked
-    #[default]
-    Free,
     Virtual {
         invocation_uuid: InvocationUuid,
         journal_metadata: JournalMetadata,
+        stats: StatusStatistics,
         completion_notification_target: CompletionNotificationTarget,
     },
+    /// Service instance is currently not invoked
+    #[default]
+    Free,
 }
 
 impl InvocationStatus {
@@ -90,6 +134,25 @@ impl InvocationStatus {
             } => Some(journal_metadata),
         }
     }
+
+    #[inline]
+    pub fn get_stats(&self) -> Option<&StatusStatistics> {
+        match self {
+            InvocationStatus::Invoked(metadata) => Some(&metadata.stats),
+            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.stats),
+            InvocationStatus::Free => None,
+            InvocationStatus::Virtual { stats: stat, .. } => Some(stat),
+        }
+    }
+
+    pub fn update_stats(&mut self) {
+        match self {
+            InvocationStatus::Invoked(metadata) => metadata.stats.update(),
+            InvocationStatus::Suspended { metadata, .. } => metadata.stats.update(),
+            InvocationStatus::Virtual { stats: stat, .. } => stat.update(),
+            InvocationStatus::Free => {}
+        }
+    }
 }
 
 /// Metadata associated with a journal
@@ -119,8 +182,7 @@ pub struct InvocationMetadata {
     pub endpoint_id: Option<EndpointId>,
     pub method: ByteString,
     pub response_sink: Option<ServiceInvocationResponseSink>,
-    pub creation_time: MillisSinceEpoch,
-    pub modification_time: MillisSinceEpoch,
+    pub stats: StatusStatistics,
 }
 
 impl InvocationMetadata {
@@ -130,8 +192,7 @@ impl InvocationMetadata {
         endpoint_id: Option<String>,
         method: ByteString,
         response_sink: Option<ServiceInvocationResponseSink>,
-        creation_time: MillisSinceEpoch,
-        modification_time: MillisSinceEpoch,
+        stats: StatusStatistics,
     ) -> Self {
         Self {
             invocation_uuid,
@@ -139,8 +200,7 @@ impl InvocationMetadata {
             endpoint_id,
             method,
             response_sink,
-            creation_time,
-            modification_time,
+            stats,
         }
     }
 }

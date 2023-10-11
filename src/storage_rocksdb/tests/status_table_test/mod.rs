@@ -10,7 +10,7 @@
 
 use crate::{assert_stream_eq, uuid_str};
 use restate_storage_api::status_table::{
-    InvocationMetadata, InvocationStatus, JournalMetadata, StatusTable,
+    InvocationMetadata, InvocationStatus, JournalMetadata, StatusStatistics, StatusTable,
 };
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -26,8 +26,7 @@ fn invoked_status(invocation_id: impl Into<InvocationUuid>) -> InvocationStatus 
         None,
         "service".into(),
         None,
-        MillisSinceEpoch::new(0),
-        MillisSinceEpoch::new(0),
+        StatusStatistics::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
     ))
 }
 
@@ -39,8 +38,7 @@ fn suspended_status(invocation_id: impl Into<InvocationUuid>) -> InvocationStatu
             None,
             "service".into(),
             None,
-            MillisSinceEpoch::new(0),
-            MillisSinceEpoch::new(0),
+            StatusStatistics::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
         ),
         waiting_for_completed_entries: HashSet::default(),
     }

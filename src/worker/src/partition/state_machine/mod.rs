@@ -100,7 +100,6 @@ mod tests {
         FullInvocationId, InvocationUuid, PartitionKey, ServiceId, WithPartitionKey,
     };
     use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext};
-    use restate_types::time::MillisSinceEpoch;
     use tempfile::tempdir;
     use tracing::info;
 
@@ -233,6 +232,7 @@ mod tests {
         use super::*;
 
         use googletest::{all, assert_that, elements_are, pat};
+        use restate_storage_api::status_table::StatusStatistics;
         use restate_test_util::test;
         use restate_types::identifiers::InvocationId;
         use restate_types::invocation::{
@@ -269,8 +269,7 @@ mod tests {
                     None,
                     ByteString::from_static("OtherMethod"),
                     None,
-                    MillisSinceEpoch::now(),
-                    MillisSinceEpoch::now(),
+                    StatusStatistics::default(),
                 )),
             )
             .await;
@@ -356,6 +355,7 @@ mod tests {
                         length: 0,
                         span_context: Default::default(),
                     },
+                    stats: Default::default(),
                     completion_notification_target: notification_service_target.clone(),
                 },
             )
@@ -368,8 +368,7 @@ mod tests {
                     None,
                     ByteString::from_static("OtherMethod"),
                     None,
-                    MillisSinceEpoch::now(),
-                    MillisSinceEpoch::now(),
+                    StatusStatistics::default(),
                 )),
             )
             .await;

@@ -66,6 +66,8 @@ message InvocationStatus {
         string completion_notification_target_service_name = 3;
         bytes completion_notification_target_service_key = 4;
         string completion_notification_target_method = 5;
+        uint64 creation_time = 6;
+        uint64 modification_time = 7;
     }
 
     oneof status {

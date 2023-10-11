@@ -11,7 +11,9 @@
 use crate::status::schema::{StatusBuilder, StatusRowBuilder};
 use crate::udfs::restate_keys;
 use restate_schema_api::key::RestateKeyConverter;
-use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
+use restate_storage_api::status_table::{
+    InvocationMetadata, InvocationStatus, JournalMetadata, StatusStatistics,
+};
 use restate_storage_rocksdb::status_table::OwnedStatusRow;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ServiceInvocationResponseSink;
@@ -27,24 +29,6 @@ pub(crate) fn append_status_row(
     resolver: impl RestateKeyConverter,
 ) {
     let mut row = builder.row();
-    let metadata = match status_row.invocation_status {
-        InvocationStatus::Invoked(metadata) => {
-            row.status("invoked");
-            Some(metadata)
-        }
-        InvocationStatus::Suspended { metadata, .. } => {
-            row.status("suspended");
-            Some(metadata)
-        }
-        InvocationStatus::Virtual { .. } => {
-            row.status("virtual");
-            None // TODO
-        }
-        InvocationStatus::Free => {
-            row.status("free");
-            None
-        }
-    };
 
     row.partition_key(status_row.partition_key);
     row.service(&status_row.service);
@@ -77,14 +61,47 @@ pub(crate) fn append_status_row(
             row.service_key_json(key);
         }
     }
-    if let Some(metadata) = metadata {
-        if row.is_id_defined() {
+
+    // Invocation id
+    if row.is_id_defined() {
+        if let Some(invocation_uuid) = status_row.invocation_status.invocation_uuid() {
             row.id(format_using(
                 output,
-                &InvocationId::new(status_row.partition_key, metadata.invocation_uuid),
+                &InvocationId::new(status_row.partition_key, invocation_uuid),
             ));
         }
+    }
 
+    // Journal metadata
+    if let Some(journal_metadata) = status_row.invocation_status.get_journal_metadata() {
+        fill_journal_metadata(&mut row, output, journal_metadata)
+    }
+
+    // Stat
+    if let Some(stats) = status_row.invocation_status.get_stats() {
+        fill_stats(&mut row, stats);
+    }
+
+    // Additional invocation metadata
+    let metadata = match status_row.invocation_status {
+        InvocationStatus::Invoked(metadata) => {
+            row.status("invoked");
+            Some(metadata)
+        }
+        InvocationStatus::Suspended { metadata, .. } => {
+            row.status("suspended");
+            Some(metadata)
+        }
+        InvocationStatus::Virtual { .. } => {
+            row.status("virtual");
+            None
+        }
+        InvocationStatus::Free => {
+            row.status("free");
+            None
+        }
+    };
+    if let Some(metadata) = metadata {
         fill_invocation_metadata(&mut row, output, metadata);
     }
 }
@@ -95,26 +112,9 @@ fn fill_invocation_metadata(
     output: &mut String,
     meta: InvocationMetadata,
 ) {
-    let InvocationMetadata {
-        journal_metadata,
-        response_sink,
-        creation_time,
-        modification_time,
-        ..
-    } = meta;
-
-    row.created_at(creation_time.as_u64() as i64);
-    row.modified_at(modification_time.as_u64() as i64);
+    // journal_metadata and stats are filled by other functions
     row.method(meta.method);
-
-    if row.is_trace_id_defined() {
-        let tid = journal_metadata.span_context.trace_id();
-        row.trace_id(format_using(output, &tid));
-    }
-
-    row.journal_size(journal_metadata.length);
-
-    match response_sink {
+    match meta.response_sink {
         Some(ServiceInvocationResponseSink::PartitionProcessor { caller, .. }) => {
             row.invoked_by("service");
             row.invoked_by_service(&caller.service_id.service_name);
@@ -129,6 +129,26 @@ fn fill_invocation_metadata(
             row.invoked_by("unknown");
         }
     }
+}
+
+#[inline]
+fn fill_stats(row: &mut StatusRowBuilder, stat: &StatusStatistics) {
+    row.created_at(stat.creation_time().as_u64() as i64);
+    row.modified_at(stat.modification_time().as_u64() as i64);
+}
+
+#[inline]
+fn fill_journal_metadata(
+    row: &mut StatusRowBuilder,
+    output: &mut String,
+    journal_metadata: &JournalMetadata,
+) {
+    if row.is_trace_id_defined() {
+        let tid = journal_metadata.span_context.trace_id();
+        row.trace_id(format_using(output, &tid));
+    }
+
+    row.journal_size(journal_metadata.length);
 }
 
 #[inline]

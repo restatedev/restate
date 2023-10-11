@@ -1093,7 +1093,7 @@ impl Effects {
     ) {
         self.effects.push(Effect::NotifyInvocationResult {
             full_invocation_id,
-            creation_time: invocation_metadata.creation_time,
+            creation_time: invocation_metadata.stats.creation_time(),
             service_method: invocation_metadata.method,
             span_context: invocation_metadata.journal_metadata.span_context,
             result,

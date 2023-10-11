@@ -110,12 +110,17 @@ pub mod storage {
                             }
                         }
                         invocation_status::Status::Virtual(r#virtual) => {
-                            let (invocation_uuid, journal_metadata, completion_notification_target) =
-                                r#virtual.try_into()?;
+                            let (
+                                invocation_uuid,
+                                journal_metadata,
+                                completion_notification_target,
+                                stats,
+                            ) = r#virtual.try_into()?;
                             restate_storage_api::status_table::InvocationStatus::Virtual {
                                 invocation_uuid,
                                 journal_metadata,
                                 completion_notification_target,
+                                stats,
                             }
                         }
                         invocation_status::Status::Free(_) => {
@@ -144,10 +149,12 @@ pub mod storage {
                             invocation_uuid,
                             journal_metadata,
                             completion_notification_target,
+                            stats,
                         } => invocation_status::Status::Virtual(Virtual::from((
                             invocation_uuid,
                             journal_metadata,
                             completion_notification_target,
+                            stats,
                         ))),
                         restate_storage_api::status_table::InvocationStatus::Free => {
                             invocation_status::Status::Free(Free {})
@@ -216,8 +223,10 @@ pub mod storage {
                         endpoint_id,
                         method_name,
                         response_sink,
-                        MillisSinceEpoch::new(value.creation_time),
-                        MillisSinceEpoch::new(value.modification_time),
+                        restate_storage_api::status_table::StatusStatistics::new(
+                            MillisSinceEpoch::new(value.creation_time),
+                            MillisSinceEpoch::new(value.modification_time),
+                        ),
                     ))
                 }
             }
@@ -230,8 +239,7 @@ pub mod storage {
                         method,
                         response_sink,
                         journal_metadata,
-                        creation_time,
-                        modification_time,
+                        stats,
                     } = value;
 
                     Invoked {
@@ -245,8 +253,8 @@ pub mod storage {
                             }
                         }),
                         journal_meta: Some(JournalMeta::from(journal_metadata)),
-                        creation_time: creation_time.as_u64(),
-                        modification_time: modification_time.as_u64(),
+                        creation_time: stats.creation_time().as_u64(),
+                        modification_time: stats.modification_time().as_u64(),
                     }
                 }
             }
@@ -316,8 +324,10 @@ pub mod storage {
                             endpoint_id,
                             method_name,
                             response_sink,
-                            MillisSinceEpoch::new(value.creation_time),
-                            MillisSinceEpoch::new(value.modification_time),
+                            restate_storage_api::status_table::StatusStatistics::new(
+                                MillisSinceEpoch::new(value.creation_time),
+                                MillisSinceEpoch::new(value.modification_time),
+                            ),
                         ),
                         waiting_for_completed_entries,
                     ))
@@ -353,8 +363,8 @@ pub mod storage {
                                 invocation_status::suspended::EndpointId::Value(endpoint_id)
                             }
                         }),
-                        creation_time: metadata.creation_time.as_u64(),
-                        modification_time: metadata.modification_time.as_u64(),
+                        creation_time: metadata.stats.creation_time().as_u64(),
+                        modification_time: metadata.stats.modification_time().as_u64(),
                         waiting_for_completed_entries,
                     }
                 }
@@ -365,6 +375,7 @@ pub mod storage {
                     restate_types::identifiers::InvocationUuid,
                     restate_storage_api::status_table::JournalMetadata,
                     restate_storage_api::status_table::CompletionNotificationTarget,
+                    restate_storage_api::status_table::StatusStatistics,
                 )
             {
                 type Error = ConversionError;
@@ -385,11 +396,16 @@ pub mod storage {
                             ),
                             method: value.completion_notification_target_method,
                         };
+                    let stats = restate_storage_api::status_table::StatusStatistics::new(
+                        MillisSinceEpoch::new(value.creation_time),
+                        MillisSinceEpoch::new(value.modification_time),
+                    );
 
                     Ok((
                         invocation_uuid,
                         journal_metadata,
                         completion_notification_target,
+                        stats,
                     ))
                 }
             }
@@ -399,13 +415,15 @@ pub mod storage {
                     restate_types::identifiers::InvocationUuid,
                     restate_storage_api::status_table::JournalMetadata,
                     restate_storage_api::status_table::CompletionNotificationTarget,
+                    restate_storage_api::status_table::StatusStatistics,
                 )> for Virtual
             {
                 fn from(
-                    (invocation_uuid, journal_metadata, completion_notification_target): (
+                    (invocation_uuid, journal_metadata, completion_notification_target, stats): (
                         restate_types::identifiers::InvocationUuid,
                         restate_storage_api::status_table::JournalMetadata,
                         restate_storage_api::status_table::CompletionNotificationTarget,
+                        restate_storage_api::status_table::StatusStatistics,
                     ),
                 ) -> Self {
                     let invocation_uuid = invocation_uuid_to_bytes(&invocation_uuid);
@@ -423,6 +441,8 @@ pub mod storage {
                             .key,
                         completion_notification_target_method: completion_notification_target
                             .method,
+                        creation_time: stats.creation_time().as_u64(),
+                        modification_time: stats.modification_time().as_u64(),
                     }
                 }
             }
