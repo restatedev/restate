@@ -224,6 +224,39 @@ where
         nbis_effect: NBISEffect,
     ) -> Result<(), Error> {
         match nbis_effect {
+            NBISEffect::CreateJournal {
+                service_id,
+                invocation_uuid,
+                span_context,
+                notification_target,
+            } => {
+                effects.create_virtual_journal(
+                    service_id,
+                    invocation_uuid,
+                    span_context,
+                    notification_target,
+                );
+            }
+            NBISEffect::StoreEntry {
+                service_id,
+                entry_index,
+                journal_entry,
+            } => {
+                let invocation_status = state.get_invocation_status(&service_id).await?;
+
+                effects.append_journal_entry(
+                    service_id,
+                    invocation_status,
+                    entry_index,
+                    journal_entry,
+                );
+            }
+            NBISEffect::DropJournal {
+                service_id,
+                journal_length,
+            } => {
+                effects.drop_journal_and_free_service(service_id, journal_length);
+            }
             NBISEffect::SetState { key, value } => {
                 effects.set_state(
                     full_invocation_id.service_id.clone(),
@@ -578,12 +611,15 @@ where
                     );
 
                     effects.get_state_and_append_completed_entry(
-                        full_invocation_id.service_id,
-                        invocation_metadata,
+                        full_invocation_id.service_id.clone(),
+                        InvocationStatus::Invoked(invocation_metadata),
                         key,
                         entry_index,
                         journal_entry,
                     );
+                    effects.send_stored_ack_to_invoker(full_invocation_id, entry_index);
+                    // get_state_and_append_completed_entry includes append journal entry in order to avoid unnecessary clones.
+                    // That's why we must return here.
                     return Ok(());
                 }
             }
@@ -594,13 +630,14 @@ where
                 );
 
                 effects.set_state_and_append_journal_entry(
-                    full_invocation_id.service_id,
-                    invocation_metadata,
+                    full_invocation_id.service_id.clone(),
+                    InvocationStatus::Invoked(invocation_metadata),
                     key,
                     value,
                     journal_entry,
                     entry_index,
                 );
+                effects.send_stored_ack_to_invoker(full_invocation_id, entry_index);
                 // set_state includes append journal entry in order to avoid unnecessary clones.
                 // That's why we must return here.
                 return Ok(());
@@ -611,12 +648,13 @@ where
                         Codec::deserialize(&journal_entry)?
                 );
                 effects.clear_state_and_append_journal_entry(
-                    full_invocation_id.service_id,
-                    invocation_metadata,
+                    full_invocation_id.service_id.clone(),
+                    InvocationStatus::Invoked(invocation_metadata),
                     key,
                     journal_entry,
                     entry_index,
                 );
+                effects.send_stored_ack_to_invoker(full_invocation_id, entry_index);
                 // clear_state includes append journal entry in order to avoid unnecessary clones.
                 // That's why we must return here.
                 return Ok(());
@@ -725,16 +763,8 @@ where
                     );
                 }
             }
-            // special handling because we can have a completion present
             EnrichedEntryHeader::Awakeable { is_completed } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
-                effects.append_awakeable_entry(
-                    full_invocation_id.service_id,
-                    invocation_metadata,
-                    entry_index,
-                    journal_entry,
-                );
-                return Ok(());
             }
             EnrichedEntryHeader::CompleteAwakeable {
                 ref invocation_id,
@@ -758,23 +788,24 @@ where
                         code,
                         requires_ack: false,
                     };
-                    effects.append_journal_entry_and_ack_storage(
-                        full_invocation_id.service_id,
-                        invocation_metadata,
-                        entry_index,
-                        journal_entry,
+                    effects.forward_completion(
+                        full_invocation_id.clone(),
+                        Completion {
+                            entry_index,
+                            result: CompletionResult::Ack,
+                        },
                     );
-                    return Ok(());
                 }
             }
         }
 
         effects.append_journal_entry(
-            full_invocation_id.service_id,
-            invocation_metadata,
+            full_invocation_id.service_id.clone(),
+            InvocationStatus::Invoked(invocation_metadata),
             entry_index,
             journal_entry,
         );
+        effects.send_stored_ack_to_invoker(full_invocation_id, entry_index);
 
         Ok(())
     }
@@ -847,6 +878,19 @@ where
                     ?completion,
                     "Ignoring completion for invocation that is no longer running."
                 )
+            }
+            InvocationStatus::Virtual {
+                invocation_uuid,
+                completion_notification_target,
+                ..
+            } => {
+                effects.store_completion(full_invocation_id.clone(), completion.clone());
+                effects.notify_virtual_journal_completion(
+                    completion_notification_target.service,
+                    completion_notification_target.method,
+                    invocation_uuid,
+                    completion,
+                );
             }
         }
 
@@ -954,6 +998,9 @@ fn extract_span_relation(status: &InvocationStatus) -> SpanRelation {
         InvocationStatus::Suspended { metadata, .. } => {
             metadata.journal_metadata.span_context.as_parent()
         }
+        InvocationStatus::Virtual {
+            journal_metadata, ..
+        } => journal_metadata.span_context.as_parent(),
         InvocationStatus::Free => SpanRelation::None,
     }
 }
@@ -964,16 +1011,18 @@ mod tests {
 
     use crate::partition::state_machine::command_interpreter::StateReader;
     use crate::partition::state_machine::effects::Effect;
+    use bytestring::ByteString;
     use futures::future::ok;
     use futures::FutureExt;
     use restate_invoker_api::EffectKind;
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
+    use restate_storage_api::status_table::{JournalMetadata, StatusTimestamps};
     use restate_test_util::{assert_eq, let_assert, test};
     use restate_types::errors::UserErrorCode;
     use restate_types::identifiers::WithPartitionKey;
+    use restate_types::journal::EntryResult;
     use restate_types::journal::{CompleteAwakeableEntry, Entry};
-    use restate_types::journal::{EntryResult, JournalMetadata};
     use std::collections::HashMap;
 
     #[derive(Default)]
@@ -988,14 +1037,13 @@ mod tests {
                 InvocationStatus::Invoked(InvocationMetadata {
                     invocation_uuid: fid.invocation_uuid,
                     journal_metadata: JournalMetadata {
-                        endpoint_id: None,
                         length,
-                        method: "".to_string(),
                         span_context: ServiceInvocationSpanContext::empty(),
                     },
+                    endpoint_id: None,
+                    method: ByteString::from("".to_string()),
                     response_sink: None,
-                    creation_time: MillisSinceEpoch::now(),
-                    modification_time: MillisSinceEpoch::now(),
+                    timestamps: StatusTimestamps::now(),
                 }),
             );
         }

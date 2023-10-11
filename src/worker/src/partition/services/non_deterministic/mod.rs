@@ -19,9 +19,10 @@ use restate_pb::restate::internal::RemoteContextInvoker;
 use restate_pb::restate::IngressInvoker;
 use restate_schema_impl::Schemas;
 use restate_storage_api::outbox_table::OutboxMessage;
+use restate_storage_api::status_table::CompletionNotificationTarget;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::{InvocationError, UserErrorCode};
-use restate_types::identifiers::{EntryIndex, FullInvocationId};
+use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationUuid};
 use restate_types::invocation::{
     ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
@@ -42,19 +43,42 @@ pub struct Effects {
 }
 
 impl Effects {
+    pub(crate) fn new(full_invocation_id: FullInvocationId, effects: Vec<Effect>) -> Self {
+        Self {
+            full_invocation_id,
+            effects,
+        }
+    }
+
     pub(crate) fn into_inner(self) -> (FullInvocationId, Vec<Effect>) {
         (self.full_invocation_id, self.effects)
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum Effect {
+    CreateJournal {
+        service_id: ServiceId,
+        invocation_uuid: InvocationUuid,
+        span_context: ServiceInvocationSpanContext,
+        notification_target: CompletionNotificationTarget,
+    },
+    StoreEntry {
+        service_id: ServiceId,
+        entry_index: EntryIndex,
+        journal_entry: EnrichedRawEntry,
+    },
+    DropJournal {
+        service_id: ServiceId,
+        journal_length: EntryIndex,
+    },
+
     SetState {
         key: Cow<'static, str>,
         value: Bytes,
     },
     ClearState(Cow<'static, str>),
+
     OutboxMessage(OutboxMessage),
     DelayedInvoke {
         target_fid: FullInvocationId,
@@ -64,6 +88,7 @@ pub(crate) enum Effect {
         time: MillisSinceEpoch,
         timer_index: EntryIndex,
     },
+
     End(
         // NBIS can optionally fail, depending on the context the error might or might not be used.
         Option<InvocationError>,
@@ -164,10 +189,9 @@ impl<'a> ServiceInvoker<'a> {
 
         // Send the effects
         // the receiver channel should only be shut down if the system is shutting down
-        let _ = self.effects_tx.send(Effects {
-            full_invocation_id,
-            effects: out_effects,
-        });
+        let _ = self
+            .effects_tx
+            .send(Effects::new(full_invocation_id, out_effects));
     }
 }
 
@@ -202,6 +226,81 @@ struct InvocationContext<'a, S> {
 }
 
 impl<S: StateReader> InvocationContext<'_, S> {
+    async fn load_journal_metadata(
+        &self,
+        service_id: &ServiceId,
+    ) -> Result<Option<(InvocationUuid, JournalMetadata)>, InvocationError> {
+        self.state_reader
+            .read_virtual_journal_metadata(service_id)
+            .await
+            .map_err(InvocationError::internal)
+    }
+
+    async fn load_journal(
+        &self,
+        service_id: &ServiceId,
+    ) -> Result<Option<(InvocationUuid, JournalMetadata, Vec<EnrichedRawEntry>)>, InvocationError>
+    {
+        if let Some((invocation_uuid, journal_metadata)) = self
+            .state_reader
+            .read_virtual_journal_metadata(service_id)
+            .await
+            .map_err(InvocationError::internal)?
+        {
+            let mut vec = Vec::with_capacity(journal_metadata.length as usize);
+            for i in 0..journal_metadata.length {
+                vec.insert(
+                    i as usize,
+                    self.state_reader
+                        .read_virtual_journal_entry(service_id, i)
+                        .await
+                        .map_err(InvocationError::internal)?
+                        .ok_or_else(|| {
+                            InvocationError::internal(format!("Missing journal entry {}", i))
+                        })?,
+                );
+            }
+            Ok(Some((invocation_uuid, journal_metadata, vec)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn create_journal(
+        &mut self,
+        service_id: ServiceId,
+        invocation_uuid: InvocationUuid,
+        span_context: ServiceInvocationSpanContext,
+        notification_target: CompletionNotificationTarget,
+    ) {
+        self.effects_buffer.push(Effect::CreateJournal {
+            service_id,
+            invocation_uuid,
+            span_context,
+            notification_target,
+        });
+    }
+
+    fn store_journal_entry(
+        &mut self,
+        service_id: ServiceId,
+        entry_index: EntryIndex,
+        journal_entry: EnrichedRawEntry,
+    ) {
+        self.effects_buffer.push(Effect::StoreEntry {
+            service_id,
+            entry_index,
+            journal_entry,
+        });
+    }
+
+    fn drop_journal(&mut self, service_id: ServiceId, journal_length: EntryIndex) {
+        self.effects_buffer.push(Effect::DropJournal {
+            service_id,
+            journal_length,
+        });
+    }
+
     async fn load_state_raw<Serde>(
         &self,
         key: &StateKey<Serde>,
@@ -326,6 +425,30 @@ mod tests {
                     Effect::ClearState(key) => {
                         self.0.remove(&key.to_string());
                     }
+                    Effect::CreateJournal {
+                        span_context,
+                        invocation_uuid,
+                        ..
+                    } => {
+                        self.1 = Some((
+                            *invocation_uuid,
+                            JournalMetadata::new(0, span_context.clone()),
+                            Vec::default(),
+                        ));
+                    }
+                    Effect::StoreEntry {
+                        journal_entry,
+                        entry_index,
+                        ..
+                    } => {
+                        let (_, meta, v) = self.1.as_mut().unwrap();
+                        meta.length += 1;
+                        v.insert(*entry_index as usize, journal_entry.clone())
+                    }
+                    Effect::DropJournal { journal_length, .. } => {
+                        assert_eq!(self.1.as_ref().unwrap().1.length, *journal_length);
+                        self.1 = None
+                    }
                     _ => {}
                 }
             }
@@ -356,18 +479,8 @@ mod tests {
             }
         }
 
-        pub(super) fn with_state_reader(mut self, state_reader: MockStateReader) -> Self {
-            self.state_reader = state_reader;
-            self
-        }
-
         pub(super) fn with_schemas(mut self, schemas: Schemas) -> Self {
             self.schemas = schemas;
-            self
-        }
-
-        pub(super) fn without_response_sink(mut self) -> Self {
-            self.response_sink = None;
             self
         }
 

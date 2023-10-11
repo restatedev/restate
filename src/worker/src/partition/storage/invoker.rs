@@ -11,7 +11,7 @@
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
-use restate_invoker_api::EagerState;
+use restate_invoker_api::{EagerState, JournalMetadata};
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
@@ -20,7 +20,6 @@ use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::ServiceId;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
-use restate_types::journal::JournalMetadata;
 use std::vec::IntoIter;
 
 #[derive(Debug, thiserror::Error)]
@@ -55,7 +54,12 @@ where
             let invocation_status = transaction.get_invocation_status(&fid.service_id).await?;
 
             if let Some(InvocationStatus::Invoked(invoked_status)) = invocation_status {
-                let journal_metadata = invoked_status.journal_metadata;
+                let journal_metadata = JournalMetadata::new(
+                    invoked_status.journal_metadata.length,
+                    invoked_status.journal_metadata.span_context,
+                    invoked_status.method,
+                    invoked_status.endpoint_id,
+                );
                 let journal_stream = transaction
                     .get_journal(&fid.service_id, journal_metadata.length)
                     .map(|entry| {

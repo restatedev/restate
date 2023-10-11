@@ -12,6 +12,8 @@ syntax = "proto3";
 
 package dev.restate.internal;
 
+import "google/protobuf/empty.proto";
+
 // This type is used when using the ServiceInvocationResponseSink::NewInvocation
 message ServiceInvocationSinkRequest {
   oneof response {
@@ -26,4 +28,16 @@ message ServiceInvocationSinkRequest {
 message InvocationFailure {
   uint32 code = 1;
   string message = 2;
+}
+
+// This type is used by when delivering completions to CompletionNotificationTarget
+message JournalCompletionNotificationRequest {
+  uint32 entry_index = 1;
+  bytes invocation_uuid = 2;
+
+  oneof result {
+    google.protobuf.Empty empty = 13;
+    bytes success = 14;
+    InvocationFailure failure = 15;
+  }
 }

@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use super::Effect;
+use super::JournalMetadata;
 
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::identifiers::{FullInvocationId, PartitionKey};
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
-use restate_types::journal::JournalMetadata;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;

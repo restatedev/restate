@@ -258,8 +258,8 @@ fn main() -> std::io::Result<()> {
                     "dev.restate.internal.RemoteContext",
                     Box::new(
                         ManualResponseRestateBuiltInServiceGen::default().with_additional_method(
-                            "InternalOnResponse",
-                            "crate::restate::internal::ServiceInvocationSinkRequest",
+                            "InternalOnCompletion",
+                            "crate::restate::internal::JournalCompletionNotificationRequest",
                             "()",
                         ),
                     ),

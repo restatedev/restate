@@ -8,14 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::leadership::{FollowerState, LeaderState, LeadershipState, TimerService};
+use super::{FollowerState, LeaderState, LeadershipState, TimerService};
+
 use crate::partition::services::non_deterministic;
 use crate::partition::services::non_deterministic::ServiceInvoker;
 use crate::partition::state_machine::{Action, ActionCollector};
-use crate::partition::{shuffle, StateMachineAckResponse, TimerValue};
+use crate::partition::{
+    shuffle, StateMachineAckCommand, StateMachineAckResponse, StateMachineCommand, TimerValue,
+};
+use crate::util::IdentitySender;
+use bytes::Bytes;
 use futures::{Stream, StreamExt};
+use prost::Message;
 use restate_invoker_api::{ServiceHandle, ServiceNotRunning};
-use restate_types::identifiers::PartitionLeaderEpoch;
+use restate_types::identifiers::{FullInvocationId, InvocationUuid, PartitionLeaderEpoch};
+use restate_types::invocation::{ServiceInvocation, SpanRelation};
+use restate_types::journal::CompletionResult;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -62,6 +70,7 @@ where
                         leader_state.timer_service.as_mut(),
                         &leader_state.non_deterministic_service_invoker,
                         &follower_state.ack_tx,
+                        &mut follower_state.self_proposal_tx,
                     )
                     .await?;
                 }
@@ -77,6 +86,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_action(
         action: Action,
         partition_leader_epoch: PartitionLeaderEpoch,
@@ -85,6 +95,7 @@ where
         mut timer_service: Pin<&mut TimerService<'a>>,
         non_deterministic_service_invoker: &ServiceInvoker<'a>,
         ack_tx: &restate_network::PartitionProcessorSender<StateMachineAckResponse>,
+        self_proposal_tx: &mut IdentitySender<StateMachineAckCommand>,
     ) -> Result<(), LeaderAwareActionCollectorError> {
         match action {
             Action::Invoke {
@@ -150,6 +161,44 @@ where
                         argument,
                     )
                     .await;
+            }
+            Action::NotifyVirtualJournalCompletion {
+                target_service,
+                method_name,
+                invocation_uuid,
+                completion,
+            } => {
+                debug_assert_ne!(
+                    completion.result,
+                    CompletionResult::Ack,
+                    "Virtual Journal completions doesn't support acks"
+                );
+
+                // We need this to agree on the invocation uuid, which is randomly generated
+                // We could get rid of it if invocation uuids are deterministically generated.
+                let _ = self_proposal_tx.send(StateMachineAckCommand::no_ack(StateMachineCommand::Invocation(ServiceInvocation::new(
+                    FullInvocationId::with_service_id(target_service, InvocationUuid::now_v7()),
+                    method_name,
+                    restate_pb::restate::internal::JournalCompletionNotificationRequest {
+                        entry_index: completion.entry_index,
+                        invocation_uuid: Bytes::copy_from_slice(invocation_uuid.as_bytes()),
+                        result: Some(match completion.result {
+                            CompletionResult::Empty =>
+                                restate_pb::restate::internal::journal_completion_notification_request::Result::Empty(()),
+                            CompletionResult::Success(s) =>
+                                restate_pb::restate::internal::journal_completion_notification_request::Result::Success(s),
+                            CompletionResult::Failure(code, msg) =>               restate_pb::restate::internal::journal_completion_notification_request::Result::Failure(
+                                restate_pb::restate::internal::InvocationFailure {
+                                    code: code.into(),
+                                    message: msg.to_string(),
+                                }
+                            ),
+                            CompletionResult::Ack => { unreachable!() }
+                        }),
+                    }.encode_to_vec(),
+                    None,
+                    SpanRelation::None
+                )))).await;
             }
         }
 

@@ -14,6 +14,7 @@ mocks = []
 [dependencies]
 anyhow = { workspace = true }
 bytes = { workspace = true }
+bytestring = { workspace = true }
 codederror = { workspace = true }
 futures = { workspace = true }
 restate_types = { workspace = true }
