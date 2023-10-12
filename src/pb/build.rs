@@ -257,11 +257,17 @@ fn main() -> std::io::Result<()> {
                 .with_svc(
                     "dev.restate.internal.RemoteContext",
                     Box::new(
-                        ManualResponseRestateBuiltInServiceGen::default().with_additional_method(
-                            "InternalOnCompletion",
-                            "crate::restate::internal::JournalCompletionNotificationRequest",
-                            "()",
-                        ),
+                        ManualResponseRestateBuiltInServiceGen::default()
+                            .with_additional_method(
+                                "InternalOnCompletion",
+                                "crate::restate::internal::JournalCompletionNotificationRequest",
+                                "()",
+                            )
+                            .with_additional_method(
+                                "InternalOnInactivityTimer",
+                                "InactivityTimeoutTimerRequest",
+                                "()",
+                            ),
                     ),
                 )
                 .with_svc(
