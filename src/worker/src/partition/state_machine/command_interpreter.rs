@@ -74,6 +74,13 @@ pub trait StateReader {
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<bool, restate_storage_api::StorageError>>;
+
+    // TODO: Replace with async trait or proper future
+    fn load_state<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        key: &'a Bytes,
+    ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>>;
 }
 
 pub(crate) struct CommandInterpreter<Codec> {
@@ -260,7 +267,8 @@ where
             NBISEffect::SetState { key, value } => {
                 effects.set_state(
                     full_invocation_id.service_id.clone(),
-                    invocation_metadata.clone(),
+                    full_invocation_id.clone().into(),
+                    invocation_metadata.journal_metadata.span_context.clone(),
                     Bytes::from(key.into_owned()),
                     value,
                 );
@@ -268,7 +276,8 @@ where
             NBISEffect::ClearState(key) => {
                 effects.clear_state(
                     full_invocation_id.service_id.clone(),
-                    invocation_metadata.clone(),
+                    full_invocation_id.clone().into(),
+                    invocation_metadata.journal_metadata.span_context.clone(),
                     Bytes::from(key.into_owned()),
                 );
             }
@@ -469,6 +478,7 @@ where
             InvokerEffectKind::JournalEntry { entry_index, entry } => {
                 self.handle_journal_entry(
                     effects,
+                    state,
                     full_invocation_id,
                     entry_index,
                     entry,
@@ -565,9 +575,10 @@ where
             .await
     }
 
-    async fn handle_journal_entry(
+    async fn handle_journal_entry<State: StateReader>(
         &mut self,
         effects: &mut Effects,
+        state: &mut State,
         full_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
         mut journal_entry: EnrichedRawEntry,
@@ -610,17 +621,20 @@ where
                             Codec::deserialize(&journal_entry)?
                     );
 
-                    effects.get_state_and_append_completed_entry(
-                        full_invocation_id.service_id.clone(),
-                        InvocationStatus::Invoked(invocation_metadata),
-                        key,
-                        entry_index,
-                        journal_entry,
+                    // Load state and write completion
+                    let value = state
+                        .load_state(&full_invocation_id.service_id, &key)
+                        .await?;
+                    let completion_result = value
+                        .map(CompletionResult::Success)
+                        .unwrap_or(CompletionResult::Empty);
+                    Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+
+                    // We can already forward the completion
+                    effects.forward_completion(
+                        full_invocation_id.clone(),
+                        Completion::new(entry_index, completion_result),
                     );
-                    effects.send_stored_ack_to_invoker(full_invocation_id, entry_index);
-                    // get_state_and_append_completed_entry includes append journal entry in order to avoid unnecessary clones.
-                    // That's why we must return here.
-                    return Ok(());
                 }
             }
             EnrichedEntryHeader::SetState => {
@@ -629,35 +643,25 @@ where
                         Codec::deserialize(&journal_entry)?
                 );
 
-                effects.set_state_and_append_journal_entry(
+                effects.set_state(
                     full_invocation_id.service_id.clone(),
-                    InvocationStatus::Invoked(invocation_metadata),
+                    InvocationId::from(&full_invocation_id),
+                    invocation_metadata.journal_metadata.span_context.clone(),
                     key,
                     value,
-                    journal_entry,
-                    entry_index,
                 );
-                effects.send_stored_ack_to_invoker(full_invocation_id, entry_index);
-                // set_state includes append journal entry in order to avoid unnecessary clones.
-                // That's why we must return here.
-                return Ok(());
             }
             EnrichedEntryHeader::ClearState => {
                 let_assert!(
                     Entry::ClearState(ClearStateEntry { key }) =
                         Codec::deserialize(&journal_entry)?
                 );
-                effects.clear_state_and_append_journal_entry(
+                effects.clear_state(
                     full_invocation_id.service_id.clone(),
-                    InvocationStatus::Invoked(invocation_metadata),
+                    InvocationId::from(&full_invocation_id),
+                    invocation_metadata.journal_metadata.span_context.clone(),
                     key,
-                    journal_entry,
-                    entry_index,
                 );
-                effects.send_stored_ack_to_invoker(full_invocation_id, entry_index);
-                // clear_state includes append journal entry in order to avoid unnecessary clones.
-                // That's why we must return here.
-                return Ok(());
             }
             EnrichedEntryHeader::Sleep { is_completed } => {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
@@ -833,7 +837,8 @@ where
         match status {
             InvocationStatus::Invoked(metadata) => {
                 if metadata.invocation_uuid == full_invocation_id.invocation_uuid {
-                    effects.store_and_forward_completion(full_invocation_id.clone(), completion);
+                    effects.store_completion(full_invocation_id.clone(), completion.clone());
+                    effects.forward_completion(full_invocation_id.clone(), completion);
                     related_sid = Some(full_invocation_id);
                     span_relation = metadata.journal_metadata.span_context.as_parent();
                 } else {
@@ -851,15 +856,10 @@ where
             } => {
                 if metadata.invocation_uuid == full_invocation_id.invocation_uuid {
                     span_relation = metadata.journal_metadata.span_context.as_parent();
+                    effects.store_completion(full_invocation_id.clone(), completion.clone());
 
                     if waiting_for_completed_entries.contains(&completion.entry_index) {
-                        effects.store_completion_and_resume(
-                            full_invocation_id.service_id.clone(),
-                            metadata,
-                            completion,
-                        );
-                    } else {
-                        effects.store_completion(full_invocation_id.clone(), completion);
+                        effects.resume_service(full_invocation_id.service_id.clone(), metadata);
                     }
                     related_sid = Some(full_invocation_id);
                 } else {
@@ -1014,10 +1014,12 @@ mod tests {
     use bytestring::ByteString;
     use futures::future::ok;
     use futures::FutureExt;
+    use googletest::{all, assert_that, pat};
     use restate_invoker_api::EffectKind;
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::status_table::{JournalMetadata, StatusTimestamps};
+    use restate_test_util::matchers::*;
     use restate_test_util::{assert_eq, let_assert, test};
     use restate_types::errors::UserErrorCode;
     use restate_types::identifiers::WithPartitionKey;
@@ -1095,6 +1097,14 @@ mod tests {
             _service_id: &'a ServiceId,
             _entry_index: EntryIndex,
         ) -> BoxFuture<Result<bool, restate_storage_api::StorageError>> {
+            todo!()
+        }
+
+        fn load_state<'a>(
+            &'a mut self,
+            _service_id: &'a ServiceId,
+            _key: &'a Bytes,
+        ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>> {
             todo!()
         }
     }
@@ -1218,12 +1228,18 @@ mod tests {
             .on_apply(cmd, &mut effects, &mut state_reader)
             .await
             .unwrap();
-        let_assert!(
-            Effect::StoreCompletionAndForward {
-                full_invocation_id,
-                ..
-            } = effects.drain().next().unwrap()
+        assert_that!(
+            effects.drain().collect::<Vec<_>>(),
+            all!(
+                contains(pat!(Effect::StoreCompletion {
+                    full_invocation_id: eq(fid.clone()),
+                    completion: pat!(Completion { entry_index: eq(1) })
+                })),
+                contains(pat!(Effect::ForwardCompletion {
+                    full_invocation_id: eq(fid),
+                    completion: pat!(Completion { entry_index: eq(1) })
+                }))
+            )
         );
-        assert_eq!(full_invocation_id, fid);
     }
 }
