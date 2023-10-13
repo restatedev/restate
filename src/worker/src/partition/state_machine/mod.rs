@@ -80,11 +80,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     use crate::partition::services::non_deterministic::{Effect, Effects as NBISEffects};
+    use crate::partition::types::{InvokerEffect, InvokerEffectKind};
     use bytes::Bytes;
     use bytestring::ByteString;
-    use googletest::{all, assert_that, pat};
+    use googletest::{all, assert_that, pat, property};
     use restate_invoker_api::InvokeInputJournal;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::journal_table::{JournalEntry, JournalTable};
@@ -99,7 +101,14 @@ mod tests {
     use restate_types::identifiers::{
         FullInvocationId, InvocationUuid, PartitionKey, ServiceId, WithPartitionKey,
     };
-    use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext};
+    use restate_types::invocation::{
+        InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
+        ServiceInvocationSpanContext,
+    };
+    use restate_types::journal::enriched::EnrichedRawEntry;
+    use restate_types::journal::raw::EntryHeader;
+    use restate_types::journal::{Completion, CompletionResult};
+    use restate_types::journal::{Entry, EntryType};
     use tempfile::tempdir;
     use tracing::info;
 
@@ -226,6 +235,100 @@ mod tests {
                 invocation_uuid: eq(fid.invocation_uuid)
             })))
         )
+    }
+
+    #[test(tokio::test)]
+    async fn awakeable_completion_received_before_entry() {
+        let mut state_machine = MockStateMachine::default();
+
+        let fid = FullInvocationId::generate("MySvc", Bytes::default());
+
+        let _ = state_machine
+            .apply_cmd(Command::Invocation(ServiceInvocation {
+                fid: fid.clone(),
+                method_name: ByteString::from("MyMethod"),
+                argument: Default::default(),
+                response_sink: None,
+                span_context: Default::default(),
+            }))
+            .await;
+
+        // Send completion first
+        let _ = state_machine
+            .apply_cmd(Command::Response(InvocationResponse {
+                id: MaybeFullInvocationId::Full(fid.clone()),
+                entry_index: 1,
+                result: ResponseResult::Success(Bytes::default()),
+            }))
+            .await;
+
+        // A couple of notes here:
+        // * There can't be a deadlock wrt suspensions.
+        //   Proof by contradiction: Assume InvocationStatus == Suspended with entry index X deadlocks due to having only the completion for X, but not the entry.
+        //   To end up in the Suspended state, the SDK sent a SuspensionMessage containing suspension index X, and X is not resumable (see StorageReader::is_entry_resumable).
+        //   Because in the invoker we check that suspension indexes are within the range of known journal entries,
+        //   it means that all the X + 1 entries have been already received and processed by the PP beforehand, due to the ordering requirement of the protocol.
+        //   In order to receive a completion for an awakeable, the SDK must have generated in these X + 1 entries the corresponding awakeable entry, and sent it to the runtime.
+        //   But this means that once the awakeable entry X is received, it will be merged with completion X and thus X is resumable,
+        //   contradicting the condition to end up in the Suspended state.
+
+        // * In case of a crash of the service endpoint:
+        //   * If the awakeable entry has been received, everything goes through the regular flow of the journal reader.
+        //   * If the awakeable entry has not been received yet, when receiving it the completion will be sent through.
+
+        let actions = state_machine
+            .apply_cmd(Command::Invoker(InvokerEffect {
+                full_invocation_id: fid.clone(),
+                kind: InvokerEffectKind::JournalEntry {
+                    entry_index: 1,
+                    entry: ProtobufRawEntryCodec::serialize_enriched(Entry::awakeable(None)),
+                },
+            }))
+            .await;
+
+        // At this point we expect the completion to be forwarded to the invoker
+        assert_that!(
+            actions,
+            contains(pat!(Action::ForwardCompletion {
+                full_invocation_id: eq(fid.clone()),
+                completion: eq(Completion::new(
+                    1,
+                    CompletionResult::Success(Bytes::default())
+                ))
+            }))
+        );
+
+        // The entry should be in storage
+        let entry = state_machine
+            .rocksdb_storage
+            .transaction()
+            .get_journal_entry(&fid.service_id, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_that!(
+            entry,
+            pat!(JournalEntry::Entry(all!(
+                property!(EnrichedRawEntry.ty(), eq(EntryType::Awakeable)),
+                predicate(|e: &EnrichedRawEntry| e.header.is_completed() == Some(true))
+            )))
+        );
+
+        let actions = state_machine
+            .apply_cmd(Command::Invoker(InvokerEffect {
+                full_invocation_id: fid.clone(),
+                kind: InvokerEffectKind::Suspended {
+                    waiting_for_completed_entries: HashSet::from([1]),
+                },
+            }))
+            .await;
+
+        assert_that!(
+            actions,
+            contains(pat!(Action::Invoke {
+                full_invocation_id: eq(fid.clone()),
+            }))
+        );
     }
 
     mod virtual_invocation {

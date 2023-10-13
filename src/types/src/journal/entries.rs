@@ -86,6 +86,10 @@ impl Entry {
             result,
         })
     }
+
+    pub fn awakeable(result: Option<EntryResult>) -> Self {
+        Entry::Awakeable(AwakeableEntry { result })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
