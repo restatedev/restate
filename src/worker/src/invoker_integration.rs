@@ -58,13 +58,18 @@ where
 
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(
-            &FullInvocationId::new(request.service_name, service_key.clone(), invocation_id),
+            &FullInvocationId::new(
+                request.service_name.clone(),
+                service_key.clone(),
+                invocation_id,
+            ),
             span_relation,
         );
 
         Ok(ResolutionResult {
             invocation_uuid: invocation_id,
             service_key,
+            service_name: request.service_name,
             span_context,
         })
     }

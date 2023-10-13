@@ -685,6 +685,7 @@ where
                     service_key,
                     invocation_uuid: invocation_id,
                     span_context,
+                    ..
                 }) = resolution_result
                 {
                     let_assert!(
@@ -714,6 +715,7 @@ where
                     service_key,
                     invocation_uuid: invocation_id,
                     span_context,
+                    ..
                 } = resolution_result;
 
                 let_assert!(
