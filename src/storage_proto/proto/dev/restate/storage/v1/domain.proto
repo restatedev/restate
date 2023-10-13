@@ -63,6 +63,9 @@ message InvocationStatus {
         string completion_notification_target_method = 5;
         uint64 creation_time = 6;
         uint64 modification_time = 7;
+        string kill_notification_target_service_name = 8;
+        bytes kill_notification_target_service_key = 9;
+        string kill_notification_target_method = 10;
     }
 
     oneof status {

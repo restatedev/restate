@@ -315,6 +315,13 @@ impl From<anyhow::Error> for InvocationError {
     }
 }
 
+// -- Some known errors
+
+pub const KILLED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
+    InvocationErrorCode::Restate(RestateErrorCode::Killed),
+    "killed",
+);
+
 #[cfg(feature = "tonic_conversions")]
 mod tonic_conversions_impl {
     use super::{InvocationError, InvocationErrorCode};

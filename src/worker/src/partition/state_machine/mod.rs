@@ -91,7 +91,7 @@ mod tests {
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::journal_table::{JournalEntry, JournalTable};
     use restate_storage_api::status_table::{
-        CompletionNotificationTarget, InvocationMetadata, JournalMetadata,
+        InvocationMetadata, JournalMetadata, NotificationTarget,
     };
     use restate_storage_api::status_table::{InvocationStatus, StatusTable};
     use restate_storage_api::Transaction;
@@ -353,7 +353,7 @@ mod tests {
             // Notification receiving service
             let notification_service_service_id =
                 ServiceId::new("NotificationReceiver", Bytes::copy_from_slice(b"456"));
-            let notification_service_target = CompletionNotificationTarget {
+            let notification_service_target = NotificationTarget {
                 service: notification_service_service_id.clone(),
                 method: "InternalMethod".to_string(),
             };
@@ -390,7 +390,8 @@ mod tests {
                         service_id: virtual_invocation_service_id.clone(),
                         invocation_uuid: virtual_invocation_invocation_uuid,
                         span_context: Default::default(),
-                        notification_target: notification_service_target.clone(),
+                        completion_notification_target: notification_service_target.clone(),
+                        kill_notification_target: notification_service_target.clone(),
                     }],
                 )))
                 .await;
@@ -439,7 +440,7 @@ mod tests {
             // Notification receiving service
             let notification_service_service_id =
                 ServiceId::new("NotificationReceiver", Bytes::copy_from_slice(b"456"));
-            let notification_service_target = CompletionNotificationTarget {
+            let notification_service_target = NotificationTarget {
                 service: notification_service_service_id.clone(),
                 method: "Handle".to_string(),
             };
@@ -460,6 +461,7 @@ mod tests {
                     },
                     timestamps: StatusTimestamps::now(),
                     completion_notification_target: notification_service_target.clone(),
+                    kill_notification_target: notification_service_target.clone(),
                 },
             )
             .await;

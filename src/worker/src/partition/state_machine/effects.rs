@@ -12,9 +12,7 @@ use bytes::Bytes;
 
 use bytestring::ByteString;
 use opentelemetry_api::trace::SpanId;
-use restate_storage_api::status_table::{
-    CompletionNotificationTarget, InvocationStatus, JournalMetadata,
-};
+use restate_storage_api::status_table::{InvocationStatus, JournalMetadata, NotificationTarget};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::{Completion, CompletionResult};
@@ -125,11 +123,14 @@ pub(crate) enum Effect {
         full_invocation_id: FullInvocationId,
         completion: Completion,
     },
+
+    // Virtual journal
     CreateVirtualJournal {
         service_id: ServiceId,
         invocation_uuid: InvocationUuid,
         span_context: ServiceInvocationSpanContext,
-        notification_target: CompletionNotificationTarget,
+        completion_notification_target: NotificationTarget,
+        kill_notification_target: NotificationTarget,
     },
     NotifyVirtualJournalCompletion {
         target_service: ServiceId,
@@ -137,6 +138,12 @@ pub(crate) enum Effect {
         // TODO perhaps we should rename this type JournalId
         invocation_uuid: InvocationUuid,
         completion: Completion,
+    },
+    NotifyVirtualJournalKill {
+        target_service: ServiceId,
+        method_name: String,
+        // TODO perhaps we should rename this type JournalId
+        invocation_uuid: InvocationUuid,
     },
 
     // Effects used only for tracing purposes
@@ -516,6 +523,18 @@ impl Effect {
                     method_name
                 )
             }
+            Effect::NotifyVirtualJournalKill {
+                target_service,
+                method_name,
+                ..
+            } => {
+                debug_if_leader!(
+                    is_leader,
+                    "Effect: Notify virtual journal kill to service {:?} method {}",
+                    target_service,
+                    method_name
+                )
+            }
             Effect::BackgroundInvoke {
                 full_invocation_id,
                 service_method,
@@ -801,13 +820,15 @@ impl Effects {
         service_id: ServiceId,
         invocation_uuid: InvocationUuid,
         span_context: ServiceInvocationSpanContext,
-        notification_target: CompletionNotificationTarget,
+        completion_notification_target: NotificationTarget,
+        kill_notification_target: NotificationTarget,
     ) {
         self.effects.push(Effect::CreateVirtualJournal {
             service_id,
             invocation_uuid,
             span_context,
-            notification_target,
+            completion_notification_target,
+            kill_notification_target,
         })
     }
 
@@ -823,6 +844,19 @@ impl Effects {
             method_name,
             invocation_uuid,
             completion,
+        });
+    }
+
+    pub(crate) fn notify_virtual_journal_kill(
+        &mut self,
+        target_service: ServiceId,
+        method_name: String,
+        invocation_uuid: InvocationUuid,
+    ) {
+        self.effects.push(Effect::NotifyVirtualJournalKill {
+            target_service,
+            method_name,
+            invocation_uuid,
         });
     }
 

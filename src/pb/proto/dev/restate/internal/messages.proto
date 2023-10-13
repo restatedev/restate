@@ -32,12 +32,17 @@ message InvocationFailure {
 
 // This type is used by when delivering completions to CompletionNotificationTarget
 message JournalCompletionNotificationRequest {
-  uint32 entry_index = 1;
-  bytes invocation_uuid = 2;
+  bytes invocation_uuid = 1;
+  uint32 entry_index = 2;
 
   oneof result {
     google.protobuf.Empty empty = 13;
     bytes success = 14;
     InvocationFailure failure = 15;
   }
+}
+
+// This type is used by when delivering completions to KillNotificationTarget
+message KillNotificationRequest {
+  bytes invocation_uuid = 1;
 }

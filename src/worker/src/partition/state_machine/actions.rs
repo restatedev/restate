@@ -38,6 +38,11 @@ pub enum Action {
         invocation_uuid: InvocationUuid,
         completion: Completion,
     },
+    NotifyVirtualJournalKill {
+        target_service: ServiceId,
+        method_name: String,
+        invocation_uuid: InvocationUuid,
+    },
     NewOutboxMessage {
         seq_number: MessageIndex,
         message: OutboxMessage,

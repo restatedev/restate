@@ -269,6 +269,11 @@ fn main() -> std::io::Result<()> {
                                 "InternalOnInactivityTimer",
                                 "InactivityTimeoutTimerRequest",
                                 "()",
+                            )
+                            .with_additional_method(
+                                "InternalOnKill",
+                                "crate::restate::internal::KillNotificationRequest",
+                                "()",
                             ),
                     ),
                 )

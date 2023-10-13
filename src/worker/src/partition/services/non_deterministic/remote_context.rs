@@ -19,24 +19,27 @@ use restate_pb::restate::internal::get_result_response::InvocationFailure;
 use restate_pb::restate::internal::{
     get_result_response, journal_completion_notification_request, recv_response, send_response,
     start_response, CleanupRequest, GetResultRequest, GetResultResponse,
-    InactivityTimeoutTimerRequest, JournalCompletionNotificationRequest, PingRequest, RecvRequest,
-    RecvResponse, RemoteContextBuiltInService, SendRequest, SendResponse, StartRequest,
-    StartResponse,
+    InactivityTimeoutTimerRequest, JournalCompletionNotificationRequest, KillNotificationRequest,
+    PingRequest, RecvRequest, RecvResponse, RemoteContextBuiltInService, SendRequest, SendResponse,
+    StartRequest, StartResponse,
 };
-use restate_pb::REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME;
+use restate_pb::{
+    REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME, REMOTE_CONTEXT_INTERNAL_ON_KILL_METHOD_NAME,
+};
 use restate_schema_api::key::KeyExtractor;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, ProtocolMessage,
 };
+use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{EnrichedEntryHeader, ResolutionResult};
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use restate_types::journal::{
-    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Entry, EntryResult,
-    GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry,
+    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Entry, GetStateEntry,
+    InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry,
 };
 use restate_types::journal::{Completion, CompletionResult};
 use serde::{Deserialize, Serialize};
@@ -155,8 +158,13 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                             .map_err(InvocationError::internal)?
                 );
 
-                self.complete_invocation(operation_id, retention_period_sec, entry_index, result)
-                    .await?;
+                self.complete_invocation(
+                    operation_id,
+                    retention_period_sec,
+                    entry_index,
+                    result.into(),
+                )
+                .await?;
                 EnrichedRawEntry::new(EnrichedEntryHeader::OutputStream, entry.entry)
             }
             RawEntryHeader::GetState { is_completed } => {
@@ -449,15 +457,15 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         operation_id: &str,
         retention_period_sec: u32,
         entry_index: EntryIndex,
-        result: EntryResult,
+        result: ResponseResult,
     ) -> Result<(), InvocationError> {
         let expiry_time = SystemTime::now() + Duration::from_secs(retention_period_sec as u64);
 
         let get_result_response = GetResultResponse {
             expiry_time: humantime::format_rfc3339(expiry_time).to_string(),
             response: Some(match result {
-                EntryResult::Success(s) => get_result_response::Response::Success(s),
-                EntryResult::Failure(code, msg) => {
+                ResponseResult::Success(s) => get_result_response::Response::Success(s),
+                ResponseResult::Failure(code, msg) => {
                     get_result_response::Response::Failure(InvocationFailure {
                         code: code.into(),
                         message: msg.to_string(),
@@ -614,9 +622,13 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                     journal_service_id.clone(),
                     invocation_uuid,
                     self.span_context.clone(),
-                    CompletionNotificationTarget {
+                    NotificationTarget {
                         service: self.full_invocation_id.service_id.clone(),
                         method: REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME.to_string(),
+                    },
+                    NotificationTarget {
+                        service: self.full_invocation_id.service_id.clone(),
+                        method: REMOTE_CONTEXT_INTERNAL_ON_KILL_METHOD_NAME.to_string(),
                     },
                 );
                 self.store_journal_entry(journal_service_id, 0, input_entry.clone());
@@ -968,6 +980,36 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                         }
                     }
                 }
+            }
+        }
+
+        self.reply_to_caller(response_serializer.serialize_success(()));
+        Ok(())
+    }
+
+    #[instrument(level = "trace", skip_all)]
+    async fn internal_on_kill(
+        &mut self,
+        request: KillNotificationRequest,
+        response_serializer: ResponseSerializer<()>,
+    ) -> Result<(), InvocationError> {
+        if let Some(InvocationStatus::Executing {
+            invocation_uuid,
+            retention_period_sec,
+            ..
+        }) = self.load_state(&STATUS).await?
+        {
+            if invocation_uuid.as_bytes() == request.invocation_uuid {
+                self.complete_invocation(
+                    // It's ok to not set the operation_id here, because this is used for the CleanupRequest,
+                    // and it's used only for observability purposes.
+                    // The delivery of the cleanup request is hardwired with the service id, so it won't go through key extraction.
+                    "",
+                    retention_period_sec,
+                    0,
+                    KILLED_INVOCATION_ERROR.into(),
+                )
+                .await?;
             }
         }
 

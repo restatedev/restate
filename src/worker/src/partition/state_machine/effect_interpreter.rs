@@ -365,7 +365,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 service_id,
                 invocation_uuid,
                 span_context,
-                notification_target,
+                completion_notification_target,
+                kill_notification_target,
             } => {
                 state_storage
                     .store_invocation_status(
@@ -373,8 +374,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                         InvocationStatus::Virtual {
                             invocation_uuid,
                             journal_metadata: JournalMetadata::initialize(span_context),
-                            completion_notification_target: notification_target,
+                            completion_notification_target,
                             timestamps: StatusTimestamps::now(),
+                            kill_notification_target,
                         },
                     )
                     .await?;
@@ -389,6 +391,15 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 method_name,
                 invocation_uuid,
                 completion,
+            }),
+            Effect::NotifyVirtualJournalKill {
+                target_service,
+                method_name,
+                invocation_uuid,
+            } => collector.collect(Action::NotifyVirtualJournalKill {
+                target_service,
+                method_name,
+                invocation_uuid,
             }),
             Effect::DropJournalAndPopInbox {
                 service_id,
