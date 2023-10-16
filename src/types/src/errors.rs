@@ -11,7 +11,7 @@
 use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
 
 /// This error code set matches the [gRPC error code set](https://github.com/grpc/grpc/blob/master/doc/statuscodes.md#status-codes-and-their-use-in-grpc),
 /// representing all the error codes visible to the user code. Note, it does not include the Ok
@@ -68,8 +68,8 @@ pub enum UserErrorCode {
     Unauthenticated = 16,
 }
 
-impl fmt::Display for UserErrorCode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Display for UserErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
@@ -120,8 +120,8 @@ pub enum RestateErrorCode {
     Killed = 64,
 }
 
-impl fmt::Display for RestateErrorCode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Display for RestateErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
@@ -141,7 +141,7 @@ pub enum InvocationErrorCode {
 }
 
 impl fmt::Debug for InvocationErrorCode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InvocationErrorCode::User(c) => fmt::Debug::fmt(c, f),
             InvocationErrorCode::Restate(c) => fmt::Debug::fmt(c, f),
@@ -150,8 +150,8 @@ impl fmt::Debug for InvocationErrorCode {
     }
 }
 
-impl fmt::Display for InvocationErrorCode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Display for InvocationErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
@@ -223,8 +223,8 @@ impl Default for InvocationError {
     }
 }
 
-impl fmt::Display for InvocationError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Display for InvocationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{:?}] {}", self.code(), self.message())?;
         if self.description.is_some() {
             write!(f, ".\n{}", self.description().unwrap())?;
@@ -260,16 +260,40 @@ impl InvocationError {
         }
     }
 
-    pub fn new_with_description(
-        code: impl Into<InvocationErrorCode>,
-        message: String,
-        description: String,
-    ) -> Self {
+    pub fn service_not_found(service: impl Display) -> Self {
         Self {
-            code: code.into(),
-            message: Cow::Owned(message),
-            description: Some(Cow::Owned(description)),
+            code: UserErrorCode::NotFound.into(),
+            message: Cow::Owned(format!("Service '{}' not found. Check whether the service endpoint containing the service is registered.", service)),
+            description: None,
         }
+    }
+
+    pub fn service_method_not_found(service: impl Display, method: impl Display) -> Self {
+        Self {
+            code: UserErrorCode::NotFound.into(),
+            message: Cow::Owned(format!("Service method '{}/{}' not found. Check whether you've registered the correct version of your service.", service, method)),
+            description: None,
+        }
+    }
+
+    pub fn with_static_message(mut self, message: &'static str) -> InvocationError {
+        self.message = Cow::Borrowed(message);
+        self
+    }
+
+    pub fn with_message(mut self, message: impl Display) -> InvocationError {
+        self.message = Cow::Owned(message.to_string());
+        self
+    }
+
+    pub fn with_static_description(mut self, description: &'static str) -> InvocationError {
+        self.description = Some(Cow::Borrowed(description));
+        self
+    }
+
+    pub fn with_description(mut self, description: impl Display) -> InvocationError {
+        self.description = Some(Cow::Owned(description.to_string()));
+        self
     }
 
     pub fn code(&self) -> InvocationErrorCode {
@@ -282,6 +306,12 @@ impl InvocationError {
 
     pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
+    }
+}
+
+impl From<anyhow::Error> for InvocationError {
+    fn from(error: anyhow::Error) -> Self {
+        InvocationError::internal(error)
     }
 }
 

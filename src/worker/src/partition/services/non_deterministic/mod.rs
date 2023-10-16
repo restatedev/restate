@@ -167,9 +167,8 @@ impl<'a> ServiceInvoker<'a> {
                     .invoke_builtin(method, argument)
                     .await
             }
-            _ => Err(InvocationError::new(
-                UserErrorCode::NotFound,
-                format!("{} not found", full_invocation_id.service_id.service_name),
+            _ => Err(InvocationError::service_not_found(
+                &full_invocation_id.service_id.service_name,
             )),
         };
 

@@ -35,12 +35,7 @@ impl<'a, State> InvocationContext<'a, State> {
         let (json_to_proto, _) = self
             .schemas
             .resolve_json_mapper_for_service(service_name, method_name)
-            .ok_or_else(|| {
-                InvocationError::new(
-                    UserErrorCode::NotFound,
-                    format!("Service method {}/{} not found", service_name, method_name),
-                )
-            })?;
+            .ok_or_else(|| InvocationError::service_method_not_found(service_name, method_name))?;
 
         json_to_proto
             .json_value_to_protobuf(serde_json_value, &DeserializeOptions::default())
@@ -57,10 +52,9 @@ impl<'a, State> InvocationContext<'a, State> {
             .schemas
             .extract(&service_name, method_name, argument.clone())
             .map_err(|err| match err {
-                restate_schema_api::key::KeyExtractorError::NotFound => InvocationError::new(
-                    UserErrorCode::NotFound,
-                    format!("Service method {}/{} not found", service_name, method_name),
-                ),
+                restate_schema_api::key::KeyExtractorError::NotFound => {
+                    InvocationError::service_method_not_found(&service_name, method_name)
+                }
                 err => InvocationError::new(UserErrorCode::InvalidArgument, err.to_string()),
             })?;
 

@@ -15,6 +15,7 @@ use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
 use prost_reflect::{DeserializeOptions, SerializeOptions};
 use restate_schema_api::json::{JsonMapperResolver, JsonToProtobufMapper, ProtobufToJsonMapper};
+use restate_types::errors::InvocationError;
 use tonic::{Code, Status};
 use tracing::warn;
 
@@ -93,7 +94,15 @@ impl ConnectBodyType {
                         &ingress_request_header.service_name,
                         &ingress_request_header.method_name,
                     )
-                    .ok_or_else(|| status::code_response(Code::NotFound))?;
+                    .ok_or_else(|| {
+                        status::status_response(
+                            InvocationError::service_method_not_found(
+                                &ingress_request_header.service_name,
+                                &ingress_request_header.method_name,
+                            )
+                            .into(),
+                        )
+                    })?;
 
                 Ok((Decoder::Json(json_decoder), Encoder::Json(json_encoder)))
             }
@@ -103,7 +112,15 @@ impl ConnectBodyType {
                         &ingress_request_header.service_name,
                         &ingress_request_header.method_name,
                     )
-                    .ok_or_else(|| status::code_response(Code::NotFound))?;
+                    .ok_or_else(|| {
+                        status::status_response(
+                            InvocationError::service_method_not_found(
+                                &ingress_request_header.service_name,
+                                &ingress_request_header.method_name,
+                            )
+                            .into(),
+                        )
+                    })?;
 
                 Ok((Decoder::Empty, Encoder::Json(json_encoder)))
             }

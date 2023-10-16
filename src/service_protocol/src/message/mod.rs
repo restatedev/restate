@@ -106,7 +106,7 @@ impl From<pb::protocol::ErrorMessage> for InvocationError {
         if value.description.is_empty() {
             InvocationError::new(value.code, value.message)
         } else {
-            InvocationError::new_with_description(value.code, value.message, value.description)
+            InvocationError::new(value.code, value.message).with_description(value.description)
         }
     }
 }
