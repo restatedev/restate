@@ -20,7 +20,7 @@ use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
-use restate_storage_api::{PutFuture, Transaction as OtherTransaction};
+use restate_storage_api::{PutFuture, StorageError, Transaction as OtherTransaction};
 use restate_timer::TimerReader;
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
@@ -286,6 +286,14 @@ where
         key: &'a Bytes,
     ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>> {
         super::state_machine::StateStorage::load_state(self, service_id, key)
+    }
+
+    fn load_completion_result<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        entry_index: EntryIndex,
+    ) -> BoxFuture<Result<Option<CompletionResult>, StorageError>> {
+        super::state_machine::StateStorage::load_completion_result(self, service_id, entry_index)
     }
 }
 

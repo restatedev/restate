@@ -537,6 +537,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 .await?;
             Ok(true)
         } else {
+            // In case we don't have the journal entry (only awakeables case),
+            // we'll send the completion afterward once we receive the entry.
             state_storage
                 .store_completion_result(
                     &full_invocation_id.service_id,
@@ -553,27 +555,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         service_id: ServiceId,
         mut previous_invocation_status: InvocationStatus,
         entry_index: EntryIndex,
-        mut journal_entry: EnrichedRawEntry,
+        journal_entry: EnrichedRawEntry,
     ) -> Result<(), Error> {
-        if journal_entry.ty() == EntryType::Awakeable {
-            // check whether the completion has arrived first
-            if let Some(completion_result) = state_storage
-                .load_completion_result(&service_id, entry_index)
-                .await?
-            {
-                Codec::write_completion(&mut journal_entry, completion_result)?;
-            }
-        } else {
-            // If this is not awakeable, then we never expect a completion to be present.
-            debug_assert!(
-                state_storage
-                    .load_completion_result(&service_id, entry_index)
-                    .await?
-                    .is_none(),
-                "Only awakeable journal entries can have a completion result already stored"
-            );
-        }
-
         // Store journal entry
         state_storage
             .store_journal_entry(&service_id, entry_index, journal_entry)

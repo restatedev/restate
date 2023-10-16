@@ -81,6 +81,13 @@ pub trait StateReader {
         service_id: &'a ServiceId,
         key: &'a Bytes,
     ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>>;
+
+    // TODO: Replace with async trait or proper future
+    fn load_completion_result<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        entry_index: EntryIndex,
+    ) -> BoxFuture<Result<Option<CompletionResult>, restate_storage_api::StorageError>>;
 }
 
 pub(crate) struct CommandInterpreter<Codec> {
@@ -771,6 +778,20 @@ where
             }
             EnrichedEntryHeader::Awakeable { is_completed } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
+                // Check the awakeable_completion_received_before_entry test in state_machine/mod.rs for more details
+
+                // If completion is already here, let's merge it and forward it.
+                if let Some(completion_result) = state
+                    .load_completion_result(&full_invocation_id.service_id, entry_index)
+                    .await?
+                {
+                    Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+
+                    effects.forward_completion(
+                        full_invocation_id.clone(),
+                        Completion::new(entry_index, completion_result),
+                    );
+                }
             }
             EnrichedEntryHeader::CompleteAwakeable {
                 ref invocation_id,
@@ -1021,6 +1042,7 @@ mod tests {
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::status_table::{JournalMetadata, StatusTimestamps};
+    use restate_storage_api::StorageError;
     use restate_test_util::matchers::*;
     use restate_test_util::{assert_eq, let_assert, test};
     use restate_types::errors::UserErrorCode;
@@ -1107,6 +1129,14 @@ mod tests {
             _service_id: &'a ServiceId,
             _key: &'a Bytes,
         ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>> {
+            todo!()
+        }
+
+        fn load_completion_result<'a>(
+            &'a mut self,
+            _service_id: &'a ServiceId,
+            _entry_index: EntryIndex,
+        ) -> BoxFuture<Result<Option<CompletionResult>, StorageError>> {
             todo!()
         }
     }
