@@ -108,11 +108,11 @@ impl Options {
         let service = MetaService::new(
             schemas.clone(),
             FileMetaStorage::new(self.storage_path.into()),
-            // Total duration roughly 102 seconds
+            // Total duration roughly 66 seconds
             RetryPolicy::exponential(
                 Duration::from_millis(100),
                 2.0,
-                9,
+                10,
                 Some(Duration::from_secs(20)),
             ),
             self.proxy_uri,
