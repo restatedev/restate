@@ -267,7 +267,14 @@ impl FromStr for InvocationId {
         let mut encoded_id = EncodedInvocationId::default();
 
         // Length check will be performed by the base64 lib directly
-        restate_base64_util::URL_SAFE.decode_slice(str, &mut encoded_id)?;
+        restate_base64_util::URL_SAFE.decode_slice(
+            &str.as_bytes()[0..11],
+            &mut encoded_id[0..size_of::<PartitionKey>()],
+        )?;
+        restate_base64_util::URL_SAFE.decode_slice(
+            &str.as_bytes()[11..],
+            &mut encoded_id[size_of::<PartitionKey>()..],
+        )?;
 
         encoded_id.try_into()
     }
