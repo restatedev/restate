@@ -105,9 +105,9 @@ impl ConnectInfo {
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
+    use restate_schema_api::discovery::ServiceRegistrationRequest;
     use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
-    use restate_schema_api::key::ServiceInstanceType;
-    use restate_schema_impl::{Schemas, ServiceRegistrationRequest};
+    use restate_schema_impl::Schemas;
 
     pub(super) fn test_schemas() -> Schemas {
         let schemas = Schemas::default();
@@ -121,9 +121,9 @@ mod mocks {
                             ProtocolType::BidiStream,
                             DeliveryOptions::default(),
                         ),
-                        vec![ServiceRegistrationRequest::new(
+                        vec![ServiceRegistrationRequest::singleton_without_annotations(
                             "greeter.Greeter".to_string(),
-                            ServiceInstanceType::Singleton,
+                            &["Greet"],
                         )],
                         restate_pb::mocks::DESCRIPTOR_POOL.clone(),
                         false,

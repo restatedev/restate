@@ -11,11 +11,16 @@
 use super::*;
 
 use anyhow::anyhow;
-use prost_reflect::{DescriptorPool, MethodDescriptor, ServiceDescriptor};
+use prost_reflect::{DescriptorPool, Kind, MethodDescriptor, ServiceDescriptor};
 use proto_symbol::ProtoSymbols;
+use restate_schema_api::discovery::{
+    DiscoveredInstanceType, FieldAnnotation, ServiceRegistrationRequest,
+};
 use restate_schema_api::key::KeyStructure;
 use restate_schema_api::service::InstanceType;
-use restate_schema_api::subscription::{Sink, Source};
+use restate_schema_api::subscription::{
+    EventReceiverServiceInstanceType, FieldRemapType, InputEventRemap, Sink, Source,
+};
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -44,9 +49,35 @@ pub(crate) struct SchemasInner {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct MethodSchemas {
+    descriptor: MethodDescriptor,
+    input_fields_annotations: HashMap<FieldAnnotation, u32>,
+}
+
+impl MethodSchemas {
+    pub(crate) fn new(
+        descriptor: MethodDescriptor,
+        input_fields_annotations: HashMap<FieldAnnotation, u32>,
+    ) -> Self {
+        Self {
+            descriptor,
+            input_fields_annotations,
+        }
+    }
+
+    pub(crate) fn descriptor(&self) -> &MethodDescriptor {
+        &self.descriptor
+    }
+
+    pub(crate) fn input_field_annotated(&self, annotation: FieldAnnotation) -> Option<u32> {
+        self.input_fields_annotations.get(&annotation).cloned()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ServiceSchemas {
     pub(crate) revision: ServiceRevision,
-    pub(crate) methods: HashMap<String, MethodDescriptor>,
+    pub(crate) methods: HashMap<String, MethodSchemas>,
     pub(crate) instance_type: ServiceInstanceType,
     pub(crate) location: ServiceLocation,
 }
@@ -125,13 +156,13 @@ impl TryFrom<&ServiceInstanceType> for InstanceType {
 impl ServiceSchemas {
     fn new(
         revision: ServiceRevision,
-        svc_desc: &ServiceDescriptor,
+        methods: HashMap<String, MethodSchemas>,
         instance_type: ServiceInstanceType,
         latest_endpoint: EndpointId,
     ) -> Self {
         Self {
             revision,
-            methods: Self::compute_service_methods(svc_desc),
+            methods,
             instance_type,
             location: ServiceLocation::ServiceEndpoint {
                 latest_endpoint,
@@ -147,16 +178,42 @@ impl ServiceSchemas {
     ) -> Self {
         Self {
             revision: 0,
-            methods: Self::compute_service_methods(svc_desc),
+            methods: svc_desc
+                .methods()
+                .map(|descriptor| {
+                    (
+                        descriptor.name().to_string(),
+                        MethodSchemas {
+                            descriptor,
+                            input_fields_annotations: Default::default(),
+                        },
+                    )
+                })
+                .collect(),
             instance_type,
             location: ServiceLocation::BuiltIn { ingress_available },
         }
     }
 
-    fn compute_service_methods(svc_desc: &ServiceDescriptor) -> HashMap<String, MethodDescriptor> {
+    fn compute_service_methods(
+        svc_desc: &ServiceDescriptor,
+        method_meta: &HashMap<String, DiscoveredMethodMetadata>,
+    ) -> HashMap<String, MethodSchemas> {
         svc_desc
             .methods()
-            .map(|method_desc| (method_desc.name().to_string(), method_desc))
+            .map(|descriptor| {
+                let method_name = descriptor.name().to_string();
+                let input_fields_annotations = method_meta
+                    .get(&method_name)
+                    .cloned()
+                    .unwrap_or_default()
+                    .input_fields_annotations;
+
+                (
+                    method_name,
+                    MethodSchemas::new(descriptor, input_fields_annotations),
+                )
+            })
             .collect()
     }
 
@@ -165,6 +222,7 @@ impl ServiceSchemas {
             .values()
             .next()
             .expect("A service should have at least one method")
+            .descriptor
             .parent_service()
     }
 }
@@ -308,22 +366,44 @@ impl SchemasInner {
         }
 
         // Compute service revision numbers
-        let mut computed_revisions = HashMap::with_capacity(services.len());
+        let mut computed_revisions_and_instance_types = HashMap::with_capacity(services.len());
         for service_meta in &services {
             check_is_reserved(&service_meta.name)?;
 
+            let instance_type = match service_meta.instance_type.clone() {
+                DiscoveredInstanceType::Keyed(key_structure) => key::ServiceInstanceType::Keyed {
+                    key_structure,
+                    service_methods_key_field_root_number: service_meta
+                        .methods
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                *v.input_fields_annotations
+                                    .get(&FieldAnnotation::Key)
+                                    .expect(
+                                        "At this point there must be a field annotated with key",
+                                    ),
+                            )
+                        })
+                        .collect(),
+                },
+                DiscoveredInstanceType::Unkeyed => key::ServiceInstanceType::Unkeyed,
+                DiscoveredInstanceType::Singleton => key::ServiceInstanceType::Singleton,
+            };
+
             // For the time being when updating we overwrite existing data
-            let revision = if let Some(service_schemas) = self.services.get(service_meta.name()) {
+            let revision = if let Some(service_schemas) = self.services.get(&service_meta.name) {
                 // Check instance type
-                if service_schemas.instance_type != service_meta.instance_type {
+                if service_schemas.instance_type != instance_type {
                     if allow_overwrite {
                         warn!(
                             restate.service_endpoint.id = %endpoint_id,
                             restate.service_endpoint.url = %endpoint_metadata.address(),
                             "Going to overwrite service instance type {} due to a forced service endpoint update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
-                            service_meta.name(),
+                            service_meta.name,
                             service_schemas.instance_type,
-                            service_meta.instance_type
+                            instance_type
                         );
                     } else {
                         return Err(RegistrationError::DifferentServiceInstanceType(
@@ -336,7 +416,8 @@ impl SchemasInner {
             } else {
                 1
             };
-            computed_revisions.insert(service_meta.name().to_string(), revision);
+            computed_revisions_and_instance_types
+                .insert(service_meta.name.clone(), (revision, instance_type));
         }
 
         // Create the InsertEndpoint command
@@ -345,12 +426,15 @@ impl SchemasInner {
             services: services
                 .into_iter()
                 .map(|service_meta| {
-                    let revision = *computed_revisions.get(service_meta.name()).unwrap();
+                    let (revision, instance_type) = computed_revisions_and_instance_types
+                        .remove(&service_meta.name)
+                        .unwrap();
 
                     InsertServiceUpdateCommand {
                         name: service_meta.name,
                         revision,
-                        instance_type: service_meta.instance_type,
+                        instance_type,
+                        methods: service_meta.methods,
                     }
                 })
                 .collect(),
@@ -421,6 +505,7 @@ impl SchemasInner {
                 Source::Kafka {
                     cluster: cluster_name.to_string(),
                     topic: topic_name.to_string(),
+                    ordering_key_format: Default::default(),
                 }
             }
             _ => {
@@ -441,39 +526,80 @@ impl SchemasInner {
                 )))?.as_str();
                 let method_name = &sink.path()[1..];
 
-                // Lookup the service in the registry to find what's the input type.
-                let method_input_type = self
-                    .services
-                    .get(service_name)
-                    .ok_or_else(|| {
-                        RegistrationError::InvalidSubscription(anyhow!(
-                            "cannot find service specified in the sink URI. Was '{}'",
-                            sink
-                        ))
-                    })?
-                    .methods
-                    .get(method_name)
-                    .ok_or_else(|| {
-                        RegistrationError::InvalidSubscription(anyhow!(
-                            "cannot find service method specified in the sink URI. Was '{}'",
-                            sink
-                        ))
-                    })?
-                    .input();
-                let is_input_type_keyed = match method_input_type.full_name() {
-                    "dev.restate.KeyedEvent" | "dev.restate.StringKeyedEvent" => {
-                        // Because on the wire KeyedEvent and StringKeyedEvent are the same,
-                        // we don't need to specify this difference in the subscription data model.
-                        true
-                    },
-                    "dev.restate.Event" => {
-                        false
-                    },
-                    _ => {
+                // Retrieve service and method in the schema registry
+                let service_schemas = self.services.get(service_name).ok_or_else(|| {
+                    RegistrationError::InvalidSubscription(anyhow!(
+                        "cannot find service specified in the sink URI. Was '{}'",
+                        sink
+                    ))
+                })?;
+                let method_schemas = service_schemas.methods.get(method_name).ok_or_else(|| {
+                    RegistrationError::InvalidSubscription(anyhow!(
+                        "cannot find service method specified in the sink URI. Was '{}'",
+                        sink
+                    ))
+                })?;
+
+                let input_type = method_schemas.descriptor().input();
+                let input_event_remap = if input_type.full_name() == "dev.restate.Event" {
+                    // No remapping needed
+                    None
+                } else {
+                    let key = if let Some(index) =
+                        method_schemas.input_field_annotated(FieldAnnotation::Key)
+                    {
+                        let kind = input_type.get_field(index).unwrap().kind();
+                        if kind == Kind::String {
+                            Some((index, FieldRemapType::String))
+                        } else {
+                            Some((index, FieldRemapType::Bytes))
+                        }
+                    } else {
+                        None
+                    };
+
+                    let payload = if let Some(index) =
+                        method_schemas.input_field_annotated(FieldAnnotation::EventPayload)
+                    {
+                        let kind = input_type.get_field(index).unwrap().kind();
+                        if kind == Kind::String {
+                            Some((index, FieldRemapType::String))
+                        } else {
+                            Some((index, FieldRemapType::Bytes))
+                        }
+                    } else {
+                        None
+                    };
+
+                    Some(InputEventRemap {
+                        key,
+                        payload,
+                        attributes_index: method_schemas
+                            .input_field_annotated(FieldAnnotation::EventMetadata),
+                    })
+                };
+
+                let instance_type = match service_schemas.instance_type {
+                    ServiceInstanceType::Keyed { .. } => {
+                        // Verify the type is supported!
+                        let key_field_kind = method_schemas.descriptor.input().get_field(
+                            method_schemas.input_field_annotated(FieldAnnotation::Key).expect("There must be a key field for every method input type")
+                        ).unwrap().kind();
+                        if key_field_kind != Kind::String && key_field_kind != Kind::Bytes {
+                            return Err(RegistrationError::InvalidSubscription(anyhow!(
+                                "Key type {:?} for sink {} is invalid, only bytes and string are supported.",
+                                key_field_kind, sink
+                            )));
+                        }
+
+                        EventReceiverServiceInstanceType::Keyed { ordering_key_is_key: false }
+                    }
+                    ServiceInstanceType::Unkeyed => EventReceiverServiceInstanceType::Unkeyed,
+                    ServiceInstanceType::Singleton => EventReceiverServiceInstanceType::Singleton,
+                    ServiceInstanceType::Unsupported | ServiceInstanceType::Custom { .. } => {
                         return Err(RegistrationError::InvalidSubscription(anyhow!(
-                            "the specified service method in the sink URI '{}' has an incompatible input type '{}'. Only dev.restate.Event or dev.restate.KeyedEvent can be used as input types of event handler methods",
-                            sink,
-                            method_input_type.full_name()
+                            "trying to use a built-in service as sink {}. This is currently unsupported.",
+                            sink
                         )))
                     }
                 };
@@ -481,7 +607,8 @@ impl SchemasInner {
                 Sink::Service {
                     name: service_name.to_string(),
                     method: method_name.to_string(),
-                    is_input_type_keyed,
+                    input_event_remap,
+                    instance_type,
                 }
             }
             _ => {
@@ -543,6 +670,7 @@ impl SchemasInner {
                     name,
                     revision,
                     instance_type,
+                    methods,
                 } in services
                 {
                     let endpoint_address = metadata.address().clone();
@@ -575,8 +703,10 @@ impl SchemasInner {
 
                             service_schemas.revision = revision;
                             service_schemas.instance_type = instance_type.clone().into();
-                            service_schemas.methods =
-                                ServiceSchemas::compute_service_methods(&service_descriptor);
+                            service_schemas.methods = ServiceSchemas::compute_service_methods(
+                                &service_descriptor,
+                                &methods,
+                            );
                             if let ServiceLocation::ServiceEndpoint {
                                 latest_endpoint, ..
                             } = &mut service_schemas.location
@@ -591,7 +721,10 @@ impl SchemasInner {
                         .or_insert_with(|| {
                             ServiceSchemas::new(
                                 revision,
-                                &service_descriptor,
+                                ServiceSchemas::compute_service_methods(
+                                    &service_descriptor,
+                                    &methods,
+                                ),
                                 instance_type.clone().into(),
                                 endpoint_id.clone(),
                             )
@@ -691,7 +824,6 @@ mod tests {
 
     use restate_pb::mocks;
     use restate_schema_api::endpoint::EndpointMetadataResolver;
-    use restate_schema_api::key::ServiceInstanceType;
     use restate_schema_api::service::ServiceMetadataResolver;
     use restate_test_util::{assert, assert_eq, let_assert, test};
 
@@ -723,9 +855,9 @@ mod tests {
         let commands = schemas
             .compute_new_endpoint_updates(
                 endpoint.clone(),
-                vec![ServiceRegistrationRequest::new(
+                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                     mocks::GREETER_SERVICE_NAME.to_string(),
-                    ServiceInstanceType::Unkeyed,
+                    &["Greet"],
                 )],
                 mocks::DESCRIPTOR_POOL.clone(),
                 false,
@@ -751,9 +883,9 @@ mod tests {
         let commands = schemas
             .compute_new_endpoint_updates(
                 endpoint_1.clone(),
-                vec![ServiceRegistrationRequest::new(
+                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                     mocks::GREETER_SERVICE_NAME.to_string(),
-                    ServiceInstanceType::Unkeyed,
+                    &["Greet"],
                 )],
                 mocks::DESCRIPTOR_POOL.clone(),
                 false,
@@ -771,13 +903,13 @@ mod tests {
             .compute_new_endpoint_updates(
                 endpoint_2.clone(),
                 vec![
-                    ServiceRegistrationRequest::new(
+                    ServiceRegistrationRequest::unkeyed_without_annotations(
                         mocks::GREETER_SERVICE_NAME.to_string(),
-                        ServiceInstanceType::Unkeyed,
+                        &["Greet"],
                     ),
-                    ServiceRegistrationRequest::new(
+                    ServiceRegistrationRequest::unkeyed_without_annotations(
                         mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
-                        ServiceInstanceType::Unkeyed,
+                        &["Greet"],
                     ),
                 ],
                 mocks::DESCRIPTOR_POOL.clone(),
@@ -808,9 +940,9 @@ mod tests {
                 schemas
                     .compute_new_endpoint_updates(
                         endpoint_1.clone(),
-                        vec![ServiceRegistrationRequest::new(
+                        vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                             mocks::GREETER_SERVICE_NAME.to_string(),
-                            ServiceInstanceType::Unkeyed,
+                            &["Greet"],
                         )],
                         mocks::DESCRIPTOR_POOL.clone(),
                         false,
@@ -823,9 +955,9 @@ mod tests {
 
         let compute_result = schemas.compute_new_endpoint_updates(
             endpoint_2,
-            vec![ServiceRegistrationRequest::new(
+            vec![ServiceRegistrationRequest::singleton_without_annotations(
                 mocks::GREETER_SERVICE_NAME.to_string(),
-                ServiceInstanceType::Singleton,
+                &["Greet"],
             )],
             mocks::DESCRIPTOR_POOL.clone(),
             false,
@@ -843,13 +975,13 @@ mod tests {
             .compute_new_endpoint_updates(
                 endpoint.clone(),
                 vec![
-                    ServiceRegistrationRequest::new(
+                    ServiceRegistrationRequest::unkeyed_without_annotations(
                         mocks::GREETER_SERVICE_NAME.to_string(),
-                        ServiceInstanceType::Unkeyed,
+                        &["Greet"],
                     ),
-                    ServiceRegistrationRequest::new(
+                    ServiceRegistrationRequest::unkeyed_without_annotations(
                         mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
-                        ServiceInstanceType::Unkeyed,
+                        &["Greet"],
                     ),
                 ],
                 mocks::DESCRIPTOR_POOL.clone(),
@@ -864,9 +996,9 @@ mod tests {
         let commands = schemas
             .compute_new_endpoint_updates(
                 endpoint.clone(),
-                vec![ServiceRegistrationRequest::new(
+                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                     mocks::GREETER_SERVICE_NAME.to_string(),
-                    ServiceInstanceType::Unkeyed,
+                    &["Greet"],
                 )],
                 mocks::DESCRIPTOR_POOL.clone(),
                 true,
@@ -885,9 +1017,9 @@ mod tests {
         let schemas = Schemas::default();
 
         let endpoint = EndpointMetadata::mock();
-        let services = vec![ServiceRegistrationRequest::new(
+        let services = vec![ServiceRegistrationRequest::unkeyed_without_annotations(
             mocks::GREETER_SERVICE_NAME.to_string(),
-            ServiceInstanceType::Unkeyed,
+            &["Greet"],
         )];
 
         let commands = schemas
@@ -916,13 +1048,13 @@ mod tests {
                     .compute_new_endpoint_updates(
                         endpoint_1.clone(),
                         vec![
-                            ServiceRegistrationRequest::new(
+                            ServiceRegistrationRequest::unkeyed_without_annotations(
                                 mocks::GREETER_SERVICE_NAME.to_string(),
-                                ServiceInstanceType::Unkeyed,
+                                &["Greet"],
                             ),
-                            ServiceRegistrationRequest::new(
+                            ServiceRegistrationRequest::unkeyed_without_annotations(
                                 mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
-                                ServiceInstanceType::Unkeyed,
+                                &["Greet"],
                             ),
                         ],
                         mocks::DESCRIPTOR_POOL.clone(),
@@ -936,9 +1068,9 @@ mod tests {
                 schemas
                     .compute_new_endpoint_updates(
                         endpoint_2.clone(),
-                        vec![ServiceRegistrationRequest::new(
+                        vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                             mocks::GREETER_SERVICE_NAME.to_string(),
-                            ServiceInstanceType::Unkeyed,
+                            &["Greet"],
                         )],
                         mocks::DESCRIPTOR_POOL.clone(),
                         false,
@@ -986,9 +1118,9 @@ mod tests {
                 schemas
                     .compute_new_endpoint_updates(
                         endpoint.clone(),
-                        vec![ServiceRegistrationRequest::new(
+                        vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                             svc_name.to_string(),
-                            ServiceInstanceType::Unkeyed,
+                            &["Greet"],
                         )],
                         mocks::DESCRIPTOR_POOL.clone(),
                         false,
@@ -1004,9 +1136,9 @@ mod tests {
                 schemas
                     .compute_new_endpoint_updates(
                         endpoint,
-                        vec![ServiceRegistrationRequest::new(
+                        vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                             svc_name.to_string(),
-                            ServiceInstanceType::Unkeyed,
+                            &["Greet"],
                         )],
                         mocks::DESCRIPTOR_POOL.clone(),
                         true,

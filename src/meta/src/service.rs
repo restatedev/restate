@@ -10,9 +10,6 @@
 
 use super::storage::{MetaStorage, MetaStorageError};
 
-use std::collections::HashMap;
-use std::future::Future;
-
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
 use restate_errors::warn_it;
@@ -22,12 +19,13 @@ use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
 use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
 use restate_schema_impl::{
     InsertServiceUpdateCommand, RegistrationError, Schemas, SchemasUpdateCommand,
-    ServiceRegistrationRequest,
 };
 use restate_service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
+use std::collections::HashMap;
+use std::future::Future;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
@@ -346,13 +344,7 @@ where
                 discovered_metadata.protocol_type,
                 DeliveryOptions::new(additional_headers),
             ),
-            discovered_metadata
-                .services
-                .into_iter()
-                .map(|(svc_name, instance_type)| {
-                    ServiceRegistrationRequest::new(svc_name, instance_type)
-                })
-                .collect::<Vec<_>>(),
+            discovered_metadata.services,
             discovered_metadata.descriptor_pool,
             force,
         )?;

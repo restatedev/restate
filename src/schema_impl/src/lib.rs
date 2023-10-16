@@ -11,6 +11,7 @@
 use arc_swap::ArcSwap;
 use http::Uri;
 use prost_reflect::DescriptorPool;
+use restate_schema_api::discovery::{DiscoveredMethodMetadata, ServiceRegistrationRequest};
 use restate_schema_api::endpoint::EndpointMetadata;
 use restate_schema_api::key;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
@@ -28,29 +29,6 @@ mod proto_symbol;
 mod schemas_impl;
 mod service;
 mod subscriptions;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceRegistrationRequest {
-    name: String,
-    instance_type: key::ServiceInstanceType,
-}
-
-impl ServiceRegistrationRequest {
-    pub fn new(name: String, instance_type: key::ServiceInstanceType) -> Self {
-        Self {
-            name,
-            instance_type,
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn instance_type(&self) -> &key::ServiceInstanceType {
-        &self.instance_type
-    }
-}
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(unknown)]
@@ -89,6 +67,7 @@ pub struct InsertServiceUpdateCommand {
     pub name: String,
     pub revision: ServiceRevision,
     pub instance_type: key::ServiceInstanceType,
+    pub methods: HashMap<String, DiscoveredMethodMetadata>,
 }
 
 /// Represents an update command to update the [`Schemas`] object. See [`Schemas::apply_updates`] for more info.

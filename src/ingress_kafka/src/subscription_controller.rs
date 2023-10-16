@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::consumer_task::{MessageDispatcherType, MessageSender};
+use super::consumer_task::MessageSender;
 use super::options::Options;
 use super::*;
 
 use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use rdkafka::error::KafkaError;
 use restate_ingress_dispatcher::IngressRequestSender;
-use restate_schema_api::subscription::{Sink, Source, Subscription};
+use restate_schema_api::subscription::{Source, Subscription};
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -95,7 +95,7 @@ impl Service {
     ) {
         let mut client_config = rdkafka::ClientConfig::new();
 
-        let Source::Kafka { cluster, topic } = subscription.source();
+        let Source::Kafka { cluster, topic, .. } = subscription.source();
 
         // Copy cluster options and subscription metadata into client_config
         let cluster_options = self
@@ -117,32 +117,16 @@ impl Service {
         client_config.set("enable.auto.commit", "true");
         client_config.set("enable.auto.offset.store", "false");
 
-        // Infer message_dispatcher_type
-        let Sink::Service {
-            name,
-            method,
-            is_input_type_keyed,
-        } = subscription.sink();
-        let message_dispatcher_type = if *is_input_type_keyed {
-            MessageDispatcherType::DispatchKeyedEvent
-        } else {
-            MessageDispatcherType::DispatchEvent
-        };
+        let subscription_id = subscription.id().to_string();
 
         // Create the consumer task
         let consumer_task = consumer_task::ConsumerTask::new(
             client_config,
             vec![topic.to_string()],
-            MessageSender::new(
-                name.to_string(),
-                method.to_string(),
-                subscription.id().to_string(),
-                message_dispatcher_type,
-                self.ingress_tx.clone(),
-            ),
+            MessageSender::new(subscription, self.ingress_tx.clone()),
         );
 
-        task_orchestrator.start(subscription.id().to_string(), consumer_task);
+        task_orchestrator.start(subscription_id, consumer_task);
     }
 
     fn handle_stop_subscription(

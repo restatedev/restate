@@ -279,6 +279,92 @@ pub mod service {
     }
 }
 
+#[cfg(feature = "discovery")]
+pub mod discovery {
+    use std::collections::HashMap;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub enum FieldAnnotation {
+        Key,
+        EventPayload,
+        EventMetadata,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub enum DiscoveredInstanceType {
+        Keyed(super::key::KeyStructure),
+        Unkeyed,
+        Singleton,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct DiscoveredMethodMetadata {
+        pub input_fields_annotations: HashMap<FieldAnnotation, u32>,
+    }
+
+    impl DiscoveredMethodMetadata {
+        pub fn new(input_fields_annotations: HashMap<FieldAnnotation, u32>) -> Self {
+            Self {
+                input_fields_annotations,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct ServiceRegistrationRequest {
+        pub name: String,
+        pub instance_type: DiscoveredInstanceType,
+        pub methods: HashMap<String, DiscoveredMethodMetadata>,
+    }
+
+    impl ServiceRegistrationRequest {
+        pub fn new(
+            name: String,
+            instance_type: DiscoveredInstanceType,
+            methods: HashMap<String, DiscoveredMethodMetadata>,
+        ) -> Self {
+            Self {
+                name,
+                instance_type,
+                methods,
+            }
+        }
+    }
+
+    #[cfg(feature = "mocks")]
+    pub mod mocks {
+        use super::*;
+
+        impl ServiceRegistrationRequest {
+            pub fn unkeyed_without_annotations(name: String, methods: &[&str]) -> Self {
+                Self {
+                    name,
+                    instance_type: DiscoveredInstanceType::Unkeyed,
+                    methods: methods
+                        .iter()
+                        .map(|n| (n.to_string(), DiscoveredMethodMetadata::default()))
+                        .collect(),
+                }
+            }
+
+            pub fn singleton_without_annotations(name: String, methods: &[&str]) -> Self {
+                Self {
+                    name,
+                    instance_type: DiscoveredInstanceType::Singleton,
+                    methods: methods
+                        .iter()
+                        .map(|n| (n.to_string(), DiscoveredMethodMetadata::default()))
+                        .collect(),
+                }
+            }
+        }
+    }
+}
+
 #[cfg(feature = "json_conversion")]
 pub mod json {
     use bytes::Bytes;
@@ -329,6 +415,7 @@ pub mod json {
     feature = "json_key_conversion"
 ))]
 pub mod key {
+    // TODO we can move this back in schema_impl
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub enum ServiceInstanceType {
@@ -504,17 +591,30 @@ pub mod subscription {
     use std::collections::HashMap;
     use std::fmt;
 
+    #[derive(Debug, Clone, Eq, PartialEq, Default)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum KafkaOrderingKeyFormat {
+        #[default]
+        ConsumerGroupTopicPartition,
+        ConsumerGroupTopicPartitionKey,
+    }
+
     #[derive(Debug, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub enum Source {
-        Kafka { cluster: String, topic: String },
+        Kafka {
+            cluster: String,
+            topic: String,
+            ordering_key_format: KafkaOrderingKeyFormat,
+        },
     }
 
     impl fmt::Display for Source {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                Source::Kafka { cluster, topic } => {
+                Source::Kafka { cluster, topic, .. } => {
                     write!(f, "kafka://{}/{}", cluster, topic)
                 }
             }
@@ -527,6 +627,41 @@ pub mod subscription {
         }
     }
 
+    #[derive(Debug, Clone, Eq, PartialEq, Default)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum FieldRemapType {
+        #[default]
+        Bytes,
+        String,
+    }
+
+    /// Defines how to remap the Event to the target.
+    #[derive(Debug, Clone, Eq, PartialEq, Default)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub struct InputEventRemap {
+        /// Index and type to remap the event.key field
+        pub key: Option<(u32, FieldRemapType)>,
+        /// Index and type to remap the event.payload field
+        pub payload: Option<(u32, FieldRemapType)>,
+        /// If != 0, index to remap the event.metadata field
+        pub attributes_index: Option<u32>,
+    }
+
+    /// Specialized version of [super::key::ServiceInstanceType]
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum EventReceiverServiceInstanceType {
+        Keyed {
+            // If true, event.ordering_key is the key, otherwise event.key is the key
+            ordering_key_is_key: bool,
+        },
+        Unkeyed,
+        Singleton,
+    }
+
     #[derive(Debug, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
@@ -534,7 +669,9 @@ pub mod subscription {
         Service {
             name: String,
             method: String,
-            is_input_type_keyed: bool,
+            // If none, the dev.restate.Event will be delivered as is.
+            input_event_remap: Option<InputEventRemap>,
+            instance_type: EventReceiverServiceInstanceType,
         },
     }
 
@@ -637,11 +774,13 @@ pub mod subscription {
                     source: Source::Kafka {
                         cluster: "my-cluster".to_string(),
                         topic: "my-topic".to_string(),
+                        ordering_key_format: Default::default(),
                     },
                     sink: Sink::Service {
                         name: "MySvc".to_string(),
                         method: "MyMethod".to_string(),
-                        is_input_type_keyed: false,
+                        input_event_remap: None,
+                        instance_type: EventReceiverServiceInstanceType::Unkeyed,
                     },
                     metadata: Default::default(),
                 }
