@@ -273,25 +273,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             }
             Effect::SetState {
                 service_id,
-                previous_invocation_status,
-                key,
-                value,
-                journal_entry,
-                entry_index,
-            } => {
-                state_storage.store_state(&service_id, key, value).await?;
-
-                Self::append_journal_entry(
-                    state_storage,
-                    service_id,
-                    previous_invocation_status,
-                    entry_index,
-                    journal_entry,
-                )
-                .await?;
-            }
-            Effect::SetStateOnly {
-                service_id,
                 key,
                 value,
                 ..
@@ -299,66 +280,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 state_storage.store_state(&service_id, key, value).await?;
             }
             Effect::ClearState {
-                service_id,
-                previous_invocation_status,
-                key,
-                journal_entry,
-                entry_index,
-            } => {
-                state_storage.clear_state(&service_id, &key).await?;
-
-                Self::append_journal_entry(
-                    state_storage,
-                    service_id,
-                    previous_invocation_status,
-                    entry_index,
-                    journal_entry,
-                )
-                .await?;
-            }
-            Effect::ClearStateOnly {
                 service_id, key, ..
             } => {
                 state_storage.clear_state(&service_id, &key).await?;
-            }
-            Effect::GetStateAndAppendCompletedEntry {
-                key,
-                service_id,
-                previous_invocation_status,
-                mut journal_entry,
-                entry_index,
-            } => {
-                let value = state_storage.load_state(&service_id, &key).await?;
-
-                let completion_result = value
-                    .map(CompletionResult::Success)
-                    .unwrap_or(CompletionResult::Empty);
-
-                Codec::write_completion(&mut journal_entry, completion_result.clone())?;
-
-                let full_invocation_id = FullInvocationId::with_service_id(
-                    service_id.clone(),
-                    previous_invocation_status
-                        .invocation_uuid()
-                        .expect("There must be an invocation uuid now"),
-                );
-
-                Self::append_journal_entry(
-                    state_storage,
-                    service_id,
-                    previous_invocation_status,
-                    entry_index,
-                    journal_entry,
-                )
-                .await?;
-
-                collector.collect(Action::ForwardCompletion {
-                    full_invocation_id,
-                    completion: Completion {
-                        entry_index,
-                        result: completion_result,
-                    },
-                })
             }
             Effect::RegisterTimer { timer_value, .. } => {
                 state_storage
@@ -427,72 +351,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             } => {
                 Self::store_completion(state_storage, &full_invocation_id, entry_index, result)
                     .await?;
-            }
-            Effect::StoreCompletionAndForward {
-                full_invocation_id,
-                completion:
-                    Completion {
-                        entry_index,
-                        result,
-                    },
-            } => {
-                if Self::store_completion(
-                    state_storage,
-                    &full_invocation_id,
-                    entry_index,
-                    // We need to give ownership because storing the completion requires creating
-                    // a protobuf message. However, cloning should be "cheap" because
-                    // CompletionResult uses Bytes.
-                    result.clone(),
-                )
-                .await?
-                {
-                    collector.collect(Action::ForwardCompletion {
-                        full_invocation_id,
-                        completion: Completion {
-                            entry_index,
-                            result,
-                        },
-                    });
-                }
-            }
-            Effect::StoreCompletionAndResume {
-                service_id,
-                mut metadata,
-                completion:
-                    Completion {
-                        entry_index,
-                        result,
-                    },
-            } => {
-                let full_invocation_id =
-                    FullInvocationId::with_service_id(service_id, metadata.invocation_uuid);
-                if Self::store_completion(
-                    state_storage,
-                    &full_invocation_id,
-                    entry_index,
-                    // We need to give ownership because storing the completion requires creating
-                    // a protobuf message. However, cloning should be "cheap" because
-                    // CompletionResult uses Bytes.
-                    result.clone(),
-                )
-                .await?
-                {
-                    metadata.timestamps.update();
-                    state_storage
-                        .store_invocation_status(
-                            &full_invocation_id.service_id,
-                            InvocationStatus::Invoked(metadata),
-                        )
-                        .await?;
-
-                    collector.collect(Action::Invoke {
-                        full_invocation_id,
-                        invoke_input_journal: InvokeInputJournal::NoCachedJournal,
-                    });
-                } else {
-                    unreachable!("There must be an entry that is completed if we want to resume");
-                }
             }
             Effect::ForwardCompletion {
                 full_invocation_id,

@@ -279,6 +279,14 @@ where
         }
         .boxed()
     }
+
+    fn load_state<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        key: &'a Bytes,
+    ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>> {
+        super::state_machine::StateStorage::load_state(self, service_id, key)
+    }
 }
 
 impl<TransactionType> super::state_machine::StateStorage for Transaction<TransactionType>

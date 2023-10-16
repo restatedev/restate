@@ -30,7 +30,7 @@ use restate_storage_api::status_table::InvocationMetadata;
 use restate_storage_api::timer_table::Timer;
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{
-    EndpointId, EntryIndex, FullInvocationId, InvocationUuid, ServiceId,
+    EndpointId, EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
 };
 use restate_types::invocation::{
     InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext,
@@ -78,39 +78,16 @@ pub(crate) enum Effect {
     // State
     SetState {
         service_id: ServiceId,
-        previous_invocation_status: InvocationStatus,
-        key: Bytes,
-        value: Bytes,
-        journal_entry: EnrichedRawEntry,
-        entry_index: EntryIndex,
-    },
-    // TODO unify SetState and SetStateOnly
-    SetStateOnly {
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
         key: Bytes,
         value: Bytes,
     },
     ClearState {
         service_id: ServiceId,
-        previous_invocation_status: InvocationStatus,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
         key: Bytes,
-        journal_entry: EnrichedRawEntry,
-        entry_index: EntryIndex,
-    },
-    // TODO unify ClearState and ClearStateOnly
-    ClearStateOnly {
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
-        key: Bytes,
-    },
-    // TODO we could get rid of this
-    GetStateAndAppendCompletedEntry {
-        service_id: ServiceId,
-        previous_invocation_status: InvocationStatus,
-        key: Bytes,
-        journal_entry: EnrichedRawEntry,
-        entry_index: EntryIndex,
     },
 
     // Timers
@@ -145,16 +122,6 @@ pub(crate) enum Effect {
     },
     ForwardCompletion {
         full_invocation_id: FullInvocationId,
-        completion: Completion,
-    },
-    // TODO we could get rid of this
-    StoreCompletionAndForward {
-        full_invocation_id: FullInvocationId,
-        completion: Completion,
-    },
-    StoreCompletionAndResume {
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
         completion: Completion,
     },
     CreateVirtualJournal {
@@ -382,51 +349,20 @@ impl Effect {
             }
             Effect::SetState {
                 service_id,
-                previous_invocation_status,
-                key,
-                entry_index,
-                ..
-            } => {
-                let invocation_uuid = previous_invocation_status
-                    .invocation_uuid()
-                    .expect("There must be an invocation uuid at this point");
-                let journal_metadata = previous_invocation_status
-                    .get_journal_metadata()
-                    .expect("There must be journal metadata at this point");
-                info_span_if_leader!(
-                    is_leader,
-                    journal_metadata.span_context.is_sampled(),
-                    journal_metadata.span_context.as_parent(),
-                    "set_state",
-                    otel.name = format!("set_state {key:?}"),
-                    restate.journal.index = entry_index,
-                    restate.state.key = ?key,
-                    rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), invocation_uuid),
-                );
-
-                debug_if_leader!(
-                    is_leader,
-                    restate.journal.index = entry_index,
-                    restate.state.key = ?key,
-                    "Effect: Set state"
-                )
-            }
-            Effect::SetStateOnly {
-                service_id,
-                metadata,
+                invocation_id,
+                span_context,
                 key,
                 ..
             } => {
                 info_span_if_leader!(
                     is_leader,
-                    metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_parent(),
+                    span_context.is_sampled(),
+                    span_context.as_parent(),
                     "set_state",
                     otel.name = format!("set_state {key:?}"),
                     restate.state.key = ?key,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                    restate.invocation.id = %invocation_id,
                 );
 
                 debug_if_leader!(
@@ -437,89 +373,25 @@ impl Effect {
             }
             Effect::ClearState {
                 service_id,
-                previous_invocation_status,
-                key,
-                entry_index,
-                ..
-            } => {
-                let invocation_uuid = previous_invocation_status
-                    .invocation_uuid()
-                    .expect("There must be an invocation uuid at this point");
-                let journal_metadata = previous_invocation_status
-                    .get_journal_metadata()
-                    .expect("There must be journal metadata at this point");
-
-                info_span_if_leader!(
-                    is_leader,
-                    journal_metadata.span_context.is_sampled(),
-                    journal_metadata.span_context.as_parent(),
-                    "clear_state",
-                    otel.name = format!("clear_state {key:?}"),
-                    restate.journal.index = entry_index,
-                    restate.state.key = ?key,
-                    rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), invocation_uuid),
-                );
-
-                debug_if_leader!(
-                    is_leader,
-                    restate.journal.index = entry_index,
-                    restate.state.key = ?key,
-                    "Effect: Clear state"
-                )
-            }
-            Effect::ClearStateOnly {
-                service_id,
-                metadata,
+                invocation_id,
+                span_context,
                 key,
             } => {
                 info_span_if_leader!(
                     is_leader,
-                    metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_parent(),
+                    span_context.is_sampled(),
+                    span_context.as_parent(),
                     "clear_state",
                     otel.name = format!("clear_state {key:?}"),
                     restate.state.key = ?key,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                    restate.invocation.id = %invocation_id,
                 );
 
                 debug_if_leader!(
                     is_leader,
                     restate.state.key = ?key,
                     "Effect: Clear state"
-                )
-            }
-            Effect::GetStateAndAppendCompletedEntry {
-                service_id,
-                previous_invocation_status,
-                key,
-                entry_index,
-                ..
-            } => {
-                let invocation_uuid = previous_invocation_status
-                    .invocation_uuid()
-                    .expect("There must be an invocation uuid at this point");
-                let journal_metadata = previous_invocation_status
-                    .get_journal_metadata()
-                    .expect("There must be journal metadata at this point");
-                info_span_if_leader!(
-                    is_leader,
-                    journal_metadata.span_context.is_sampled(),
-                    journal_metadata.span_context.as_parent(),
-                    "get_state",
-                    otel.name = format!("get_state {key:?}"),
-                    restate.state.key = ?key,
-                    restate.journal.index = entry_index,
-                    rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), invocation_uuid),
-                );
-
-                debug_if_leader!(
-                    is_leader,
-                    restate.journal.index = entry_index,
-                    restate.state.key = ?key,
-                    "Effect: Get state"
                 )
             }
             Effect::RegisterTimer {
@@ -599,19 +471,6 @@ impl Effect {
                 "Effect: Store completion {}",
                 CompletionResultFmt(result)
             ),
-            Effect::StoreCompletionAndForward {
-                completion:
-                    Completion {
-                        entry_index,
-                        result,
-                    },
-                ..
-            } => debug_if_leader!(
-                is_leader,
-                restate.journal.index = entry_index,
-                "Effect: Store completion {} and forward to service endpoint",
-                CompletionResultFmt(result)
-            ),
             Effect::ForwardCompletion {
                 completion:
                     Completion {
@@ -625,33 +484,6 @@ impl Effect {
                 "Effect: Forward completion {} to service endpoint",
                 CompletionResultFmt(result)
             ),
-            Effect::StoreCompletionAndResume {
-                service_id,
-                metadata,
-                completion:
-                    Completion {
-                        entry_index,
-                        result,
-                    },
-                ..
-            } => {
-                info_span_if_leader!(
-                    is_leader,
-                    metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_parent(),
-                    "resume",
-                    restate.journal.index = entry_index,
-                    rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
-                );
-
-                debug_if_leader!(
-                    is_leader,
-                    restate.journal.index = entry_index,
-                    "Effect: Store completion {} and resume invocation",
-                    CompletionResultFmt(result)
-                )
-            }
             Effect::NotifyVirtualJournalCompletion {
                 target_service,
                 method_name,
@@ -840,85 +672,35 @@ impl Effects {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn set_state_and_append_journal_entry(
-        &mut self,
-        service_id: ServiceId,
-        previous_invocation_status: InvocationStatus,
-        key: Bytes,
-        value: Bytes,
-        journal_entry: EnrichedRawEntry,
-        entry_index: EntryIndex,
-    ) {
-        self.effects.push(Effect::SetState {
-            service_id,
-            previous_invocation_status,
-            key,
-            value,
-            journal_entry,
-            entry_index,
-        })
-    }
-
     pub(crate) fn set_state(
         &mut self,
         service_id: ServiceId,
-        metadata: InvocationMetadata,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
         key: Bytes,
         value: Bytes,
     ) {
-        self.effects.push(Effect::SetStateOnly {
+        self.effects.push(Effect::SetState {
             service_id,
-            metadata,
+            invocation_id,
+            span_context,
             key,
             value,
-        })
-    }
-
-    pub(crate) fn clear_state_and_append_journal_entry(
-        &mut self,
-        service_id: ServiceId,
-        previous_invocation_status: InvocationStatus,
-        key: Bytes,
-        journal_entry: EnrichedRawEntry,
-        entry_index: EntryIndex,
-    ) {
-        self.effects.push(Effect::ClearState {
-            service_id,
-            previous_invocation_status,
-            key,
-            journal_entry,
-            entry_index,
         })
     }
 
     pub(crate) fn clear_state(
         &mut self,
         service_id: ServiceId,
-        metadata: InvocationMetadata,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
         key: Bytes,
     ) {
-        self.effects.push(Effect::ClearStateOnly {
+        self.effects.push(Effect::ClearState {
             service_id,
-            metadata,
+            invocation_id,
+            span_context,
             key,
-        })
-    }
-
-    pub(crate) fn get_state_and_append_completed_entry(
-        &mut self,
-        service_id: ServiceId,
-        previous_invocation_status: InvocationStatus,
-        key: Bytes,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    ) {
-        self.effects.push(Effect::GetStateAndAppendCompletedEntry {
-            service_id,
-            previous_invocation_status,
-            key,
-            entry_index,
-            journal_entry,
         })
     }
 
@@ -997,30 +779,6 @@ impl Effects {
     ) {
         self.effects.push(Effect::ForwardCompletion {
             full_invocation_id,
-            completion,
-        });
-    }
-
-    pub(crate) fn store_and_forward_completion(
-        &mut self,
-        full_invocation_id: FullInvocationId,
-        completion: Completion,
-    ) {
-        self.effects.push(Effect::StoreCompletionAndForward {
-            full_invocation_id,
-            completion,
-        });
-    }
-
-    pub(crate) fn store_completion_and_resume(
-        &mut self,
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
-        completion: Completion,
-    ) {
-        self.effects.push(Effect::StoreCompletionAndResume {
-            service_id,
-            metadata,
             completion,
         });
     }
