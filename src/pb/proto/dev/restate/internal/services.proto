@@ -64,6 +64,11 @@ service RemoteContext {
   // If the invocation is completed, Recv returns a response with messages field empty.
   rpc Recv(RecvRequest) returns (RecvResponse);
 
+  // Send a ping to keep alive the current stream_id.
+  //
+  // Same as Send with empty messages.
+  rpc Ping(PingRequest) returns (SendResponse);
+
   // Get the result of the invocation.
   //
   // In case another client is executing the invocation (through a sequence of Start/Send/Recv), this method will block
@@ -108,6 +113,12 @@ message StartResponse {
     // Contains the result of the invocation
     GetResultResponse completed = 2;
   }
+
+  // Stream timeout.
+  //
+  // Timeout for which this service considers the stream no longer available.
+  // This timer is reset on each Send/Recv/Ping requests with the same stream_id.
+  uint32 stream_timeout_sec = 3;
 }
 
 message SendRequest {
@@ -118,7 +129,8 @@ message SendRequest {
   // There can be at most one open stream at the same time.
   string stream_id = 2;
 
-  // Contains the concatenated messages of the stream, encoded using the same framing used by service-protocol
+  // Contains the concatenated messages of the stream, encoded using the same framing used by service-protocol.
+  // It can be empty if there are no new messages.
   bytes messages = 3;
 }
 
@@ -160,6 +172,15 @@ message RecvResponse {
   }
 }
 
+message PingRequest {
+  // User provided operation id, this is used as idempotency key.
+  string operation_id = 1 [(dev.restate.ext.field) = KEY];
+
+  // Stream id to uniquely identify a open stream between client and Restate.
+  // There can be at most one open stream at the same time.
+  string stream_id = 2;
+}
+
 message GetResultRequest {
   // User provided operation id, this is used as idempotency key.
   string operation_id = 1 [(dev.restate.ext.field) = KEY];
@@ -186,6 +207,18 @@ message GetResultResponse {
 message CleanupRequest {
   // User provided operation id, this is used as idempotency key.
   string operation_id = 1 [(dev.restate.ext.field) = KEY];
+}
+
+message InactivityTimeoutTimerRequest {
+  // User provided operation id, this is used as idempotency key.
+  string operation_id = 1 [(dev.restate.ext.field) = KEY];
+
+  // Stream id to uniquely identify a open stream between client and Restate.
+  // There can be at most one open stream at the same time.
+  string stream_id = 2;
+
+  // See the RemoteContext implementation for more details
+  uint64 inactivity_timer_index = 3;
 }
 
 service IdempotentInvoker {

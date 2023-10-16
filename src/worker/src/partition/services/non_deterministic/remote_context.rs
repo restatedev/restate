@@ -12,14 +12,16 @@ use super::*;
 
 use assert2::let_assert;
 use bytes::{BufMut, BytesMut};
+use bytestring::ByteString;
 use prost::Message;
 use restate_pb::builtin_service::ResponseSerializer;
 use restate_pb::restate::internal::get_result_response::InvocationFailure;
 use restate_pb::restate::internal::{
     get_result_response, journal_completion_notification_request, recv_response, send_response,
     start_response, CleanupRequest, GetResultRequest, GetResultResponse,
-    JournalCompletionNotificationRequest, RecvRequest, RecvResponse, RemoteContextBuiltInService,
-    SendRequest, SendResponse, StartRequest, StartResponse,
+    InactivityTimeoutTimerRequest, JournalCompletionNotificationRequest, PingRequest, RecvRequest,
+    RecvResponse, RemoteContextBuiltInService, SendRequest, SendResponse, StartRequest,
+    StartResponse,
 };
 use restate_pb::REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME;
 use restate_schema_api::key::KeyExtractor;
@@ -76,6 +78,19 @@ struct InvokeEntryContext {
 const DEFAULT_RETENTION_PERIOD_SEC: u32 = 30 * 60;
 
 const PROTOCOL_VERSION: u16 = 0;
+
+const STREAM_TIMEOUT_SEC: u32 = 60;
+
+// TODO perhaps it makes sense to promote this to a "interval timer feature",
+//  and include it directly in the PP timer support.
+//  It could be used for a bunch of other things, such as cron scheduling,
+//  and from the user itself to track inactivity (e.g. users inactivity!)
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct InactivityTracker {
+    timer_index: u64,
+}
+const INACTIVITY_TRACKER: StateKey<Bincode<InactivityTracker>> =
+    StateKey::new_bincode("_inactivity");
 
 impl<'a, State: StateReader> InvocationContext<'a, State> {
     #[allow(clippy::too_many_arguments)]
@@ -140,44 +155,8 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                             .map_err(InvocationError::internal)?
                 );
 
-                let expiry_time =
-                    SystemTime::now() + Duration::from_secs(retention_period_sec as u64);
-
-                let get_result_response = GetResultResponse {
-                    expiry_time: humantime::format_rfc3339(expiry_time).to_string(),
-                    response: Some(match result {
-                        EntryResult::Success(s) => get_result_response::Response::Success(s),
-                        EntryResult::Failure(code, msg) => {
-                            get_result_response::Response::Failure(InvocationFailure {
-                                code: code.into(),
-                                message: msg.to_string(),
-                            })
-                        }
-                    }),
-                };
-
-                self.set_state(
-                    &STATUS,
-                    &InvocationStatus::Done(get_result_response.clone()),
-                )?;
-                self.close_pending_recv(recv_response::Response::Messages(Bytes::new()))
+                self.complete_invocation(operation_id, retention_period_sec, entry_index, result)
                     .await?;
-                self.close_pending_get_result(get_result_response).await?;
-                self.delay_invoke(
-                    FullInvocationId::with_service_id(
-                        self.full_invocation_id.service_id.clone(),
-                        InvocationUuid::now_v7(),
-                    ),
-                    "Cleanup".to_string(),
-                    CleanupRequest {
-                        operation_id: operation_id.to_string(),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                    None,
-                    expiry_time.into(),
-                    entry_index,
-                );
                 EnrichedRawEntry::new(EnrichedEntryHeader::OutputStream, entry.entry)
             }
             RawEntryHeader::GetState { is_completed } => {
@@ -469,6 +448,95 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         Ok(())
     }
 
+    async fn complete_invocation(
+        &mut self,
+        operation_id: &str,
+        retention_period_sec: u32,
+        entry_index: EntryIndex,
+        result: EntryResult,
+    ) -> Result<(), InvocationError> {
+        let expiry_time = SystemTime::now() + Duration::from_secs(retention_period_sec as u64);
+
+        let get_result_response = GetResultResponse {
+            expiry_time: humantime::format_rfc3339(expiry_time).to_string(),
+            response: Some(match result {
+                EntryResult::Success(s) => get_result_response::Response::Success(s),
+                EntryResult::Failure(code, msg) => {
+                    get_result_response::Response::Failure(InvocationFailure {
+                        code: code.into(),
+                        message: msg.to_string(),
+                    })
+                }
+            }),
+        };
+
+        self.set_state(
+            &STATUS,
+            &InvocationStatus::Done(get_result_response.clone()),
+        )?;
+        self.close_pending_recv(recv_response::Response::Messages(Bytes::new()))
+            .await?;
+        self.close_pending_get_result(get_result_response).await?;
+        self.delay_invoke(
+            FullInvocationId::with_service_id(
+                self.full_invocation_id.service_id.clone(),
+                InvocationUuid::now_v7(),
+            ),
+            "Cleanup".to_string(),
+            CleanupRequest {
+                operation_id: operation_id.to_string(),
+            }
+            .encode_to_vec()
+            .into(),
+            None,
+            expiry_time.into(),
+            entry_index,
+        );
+
+        Ok(())
+    }
+
+    async fn reset_inactivity_timer(
+        &mut self,
+        operation_id: &str,
+        stream_id: &str,
+    ) -> Result<(), InvocationError> {
+        let mut inactivity_tracker = self
+            .load_state(&INACTIVITY_TRACKER)
+            .await?
+            .unwrap_or_default();
+        inactivity_tracker.timer_index += 1;
+
+        // TODO the timer support doesn't have any way to delete pending timers,
+        //  and it's unclear whether writing a timer with same id will overwrite the previous one.
+        self.delay_invoke(
+            FullInvocationId::with_service_id(
+                self.full_invocation_id.service_id.clone(),
+                InvocationUuid::now_v7(),
+            ),
+            "InternalOnInactivityTimer".to_string(),
+            InactivityTimeoutTimerRequest {
+                operation_id: operation_id.to_string(),
+                stream_id: stream_id.to_string(),
+                // We add an incremental index every time we set this timer,
+                // so once it fires we can use that to check if it's the current timer or not.
+                inactivity_timer_index: inactivity_tracker.timer_index,
+            }
+            .encode_to_vec()
+            .into(),
+            None,
+            (SystemTime::now() + Duration::from_secs(STREAM_TIMEOUT_SEC as u64)).into(),
+            // The timer index is per "timer registrar", in this case the FID of the RemoteContext invocation.
+            // The reason we use 0 is that no other delay_invoke is scheduled on 0 index.
+            //
+            // Should we get rid of this assumption?
+            0,
+        );
+
+        self.set_state(&INACTIVITY_TRACKER, &inactivity_tracker)?;
+        Ok(())
+    }
+
     fn generate_fid_from_invoke_request(
         &self,
         request: &InvokeRequest,
@@ -513,11 +581,15 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 invocation_status: Some(start_response::InvocationStatus::Completed(
                     get_result_response,
                 )),
+                ..StartResponse::default()
             }));
             return Ok(());
         }
 
         self.close_pending_recv(recv_response::Response::InvalidStream(()))
+            .await?;
+
+        self.reset_inactivity_timer(&request.operation_id, &request.stream_id)
             .await?;
 
         // Make sure we have a journal
@@ -590,6 +662,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         }
 
         self.reply_to_caller(response_serializer.serialize_success(StartResponse {
+            stream_timeout_sec: STREAM_TIMEOUT_SEC,
             invocation_status: Some(start_response::InvocationStatus::Executing(
                 stream_buffer.freeze(),
             )),
@@ -632,6 +705,9 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 return Ok(());
             }
         };
+
+        self.reset_inactivity_timer(&request.operation_id, &request.stream_id)
+            .await?;
 
         let journal_service_id = journal_service_id(request.operation_id.clone());
         let (_, mut journal_metadata) = self
@@ -691,6 +767,9 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
             }
         };
 
+        self.reset_inactivity_timer(&request.operation_id, &request.stream_id)
+            .await?;
+
         if let Some(pending_stream) = self.pop_state(&PENDING_RECV_STREAM).await? {
             self.reply_to_caller(response_serializer.serialize_success(RecvResponse {
                 response: Some(recv_response::Response::Messages(pending_stream)),
@@ -706,6 +785,31 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         }
 
         Ok(())
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.remote_context.operation_id = %request.operation_id,
+            restate.remote_context.stream_id = %request.stream_id,
+        )
+    )]
+    async fn ping(
+        &mut self,
+        request: PingRequest,
+        response_serializer: ResponseSerializer<SendResponse>,
+    ) -> Result<(), InvocationError> {
+        RemoteContextBuiltInService::send(
+            self,
+            SendRequest {
+                operation_id: request.operation_id,
+                stream_id: request.stream_id,
+                messages: Default::default(),
+            },
+            response_serializer,
+        )
+        .await
     }
 
     #[instrument(
@@ -812,6 +916,56 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                     "Discarding response received with fid {:?} because there is no journal.",
                     self.full_invocation_id
                 );
+            }
+        }
+
+        self.reply_to_caller(response_serializer.serialize_success(()));
+        Ok(())
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.remote_context.operation_id = %request.operation_id,
+            restate.remote_context.stream_id = %request.stream_id,
+        )
+    )]
+    async fn internal_on_inactivity_timer(
+        &mut self,
+        request: InactivityTimeoutTimerRequest,
+        response_serializer: ResponseSerializer<()>,
+    ) -> Result<(), InvocationError> {
+        if let Some(InvocationStatus::Executing { stream_id, .. }) =
+            self.load_state(&STATUS).await?
+        {
+            if stream_id == request.stream_id {
+                if let Some(inactivity_tracker) = self.load_state(&INACTIVITY_TRACKER).await? {
+                    if inactivity_tracker.timer_index == request.inactivity_timer_index {
+                        // Fail both pending get results and recv for inactivity
+                        let response = ResponseResult::Failure(
+                            UserErrorCode::DeadlineExceeded,
+                            ByteString::from_static("Closing due to leader inactivity"),
+                        );
+                        for (fid, sink) in self
+                            .pop_state(&PENDING_GET_RESULT_SINKS)
+                            .await?
+                            .unwrap_or_default()
+                            .into_iter()
+                            .chain(self.pop_state(&PENDING_RECV_SINK).await?.into_iter())
+                        {
+                            trace!(
+                                "Closing the previously listening client with {:?} for inactivity",
+                                response
+                            );
+                            self.send_message(OutboxMessage::from_response_sink(
+                                &fid,
+                                sink,
+                                response.clone(),
+                            ));
+                        }
+                    }
+                }
             }
         }
 
@@ -2115,6 +2269,89 @@ mod tests {
         ctx.state().assert_has_state(&USER_STATE);
         ctx.state().assert_has_not_state(&STATUS);
         ctx.state().assert_has_no_journal();
+    }
+
+    // -- Inactivity timeout
+
+    #[test(tokio::test)]
+    async fn fire_inactivity_timeout() {
+        let (mut ctx, operation_id, stream_id) = bootstrap_invocation_using_start().await;
+
+        // Create pending recv and pending get result
+        let (recv_fid, effects) = ctx
+            .invoke(|ctx| {
+                ctx.recv(
+                    RecvRequest {
+                        operation_id: operation_id.clone(),
+                        stream_id: stream_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            effects,
+            not(contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(recv_fid.clone()),
+                }
+            )))))
+        );
+        let (get_result_fid, _) = ctx
+            .invoke(|ctx| {
+                ctx.get_result(
+                    GetResultRequest {
+                        operation_id: operation_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            effects,
+            not(contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(get_result_fid.clone()),
+                }
+            )))))
+        );
+
+        let inactivity_tracker = ctx.state().assert_has_state(&INACTIVITY_TRACKER);
+
+        // Fire inactivity timer
+        let (_, effects) = ctx
+            .invoke(|ctx| {
+                ctx.internal_on_inactivity_timer(
+                    InactivityTimeoutTimerRequest {
+                        operation_id,
+                        stream_id,
+                        inactivity_timer_index: inactivity_tracker.timer_index,
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_that!(
+            effects,
+            all!(
+                contains(pat!(Effect::OutboxMessage(pat!(
+                    OutboxMessage::IngressResponse {
+                        full_invocation_id: eq(recv_fid),
+                        response: pat!(ResponseResult::Failure(_, _))
+                    }
+                )))),
+                contains(pat!(Effect::OutboxMessage(pat!(
+                    OutboxMessage::IngressResponse {
+                        full_invocation_id: eq(get_result_fid),
+                        response: pat!(ResponseResult::Failure(_, _))
+                    }
+                ))))
+            )
+        );
     }
 
     // -- Helpers
