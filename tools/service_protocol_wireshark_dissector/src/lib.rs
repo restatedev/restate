@@ -51,8 +51,8 @@ fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Tabl
             "ty_name" => format_message_type(header.message_type()),
             "len" => header.frame_length(),
             "message" => match message {
-                ProtocolMessage::Start{ inner, .. } => {
-                    format!("{:#?}", inner)
+                ProtocolMessage::Start(m) => {
+                    format!("{:#?}", m)
                 }
                 ProtocolMessage::Completion(c) => {
                     format!("{:#?}", c)
@@ -78,9 +78,6 @@ fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Tabl
         }
         if let Some(requires_ack) = header.requires_ack() {
             set_table_values!(message_table, "requires_ack" => requires_ack);
-        }
-        if let Some(partial_state) = header.partial_state() {
-            set_table_values!(message_table, "partial_state" => partial_state);
         }
 
         result_messages.push(message_table)?;
