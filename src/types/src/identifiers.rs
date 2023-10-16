@@ -11,6 +11,7 @@
 //! Restate uses many identifiers to uniquely identify its components and entities.
 
 use base64::display::Base64Display;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -382,12 +383,15 @@ fn display_invocation_id(
     invocation_uuid: &InvocationUuid,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
+    // encode the two ids separately so that it is possible to do a string prefix search for a
+    // partition key using the first 11 characters. this has the cost of an additional character
     write!(
         f,
-        "{}",
+        "{}{}",
+        Base64Display::new(&partition_key.to_be_bytes(), &BASE64_URL_SAFE_NO_PAD),
         Base64Display::new(
-            &encode_invocation_id(partition_key, invocation_uuid),
-            &restate_base64_util::URL_SAFE
+            invocation_uuid.0.as_bytes().as_slice(),
+            &BASE64_URL_SAFE_NO_PAD
         ),
     )
 }
