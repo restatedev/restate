@@ -263,7 +263,7 @@ impl InvocationError {
     pub fn service_not_found(service: impl Display) -> Self {
         Self {
             code: UserErrorCode::NotFound.into(),
-            message: Cow::Owned(format!("Service {} not found. Check whether the service endpoint containing the service is registered.", service)),
+            message: Cow::Owned(format!("Service '{}' not found. Check whether the service endpoint containing the service is registered.", service)),
             description: None,
         }
     }
@@ -271,7 +271,7 @@ impl InvocationError {
     pub fn service_method_not_found(service: impl Display, method: impl Display) -> Self {
         Self {
             code: UserErrorCode::NotFound.into(),
-            message: Cow::Owned(format!("Service method {}/{} not found. Check whether you've registered the correct version of your service.", service, method)),
+            message: Cow::Owned(format!("Service method '{}/{}' not found. Check whether you've registered the correct version of your service.", service, method)),
             description: None,
         }
     }
