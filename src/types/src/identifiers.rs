@@ -15,6 +15,7 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
+use std::cell::OnceCell;
 use std::fmt;
 use std::mem::size_of;
 use std::str::FromStr;
@@ -260,19 +261,28 @@ pub enum InvocationIdParseError {
     Base64(#[from] base64::DecodeSliceError),
 }
 
+const PARTITION_KEY_ENCODED_LENGTH: OnceCell<usize> = OnceCell::new();
+
 impl FromStr for InvocationId {
     type Err = InvocationIdParseError;
 
     fn from_str(str: &str) -> Result<Self, Self::Err> {
         let mut encoded_id = EncodedInvocationId::default();
 
+        let key_length = PARTITION_KEY_ENCODED_LENGTH
+            .get_or_init(|| {
+                base64::encoded_len(size_of::<PartitionKey>(), false)
+                    .expect("partition key must fit in usize bytes")
+            })
+            .clone();
+
         // Length check will be performed by the base64 lib directly
         restate_base64_util::URL_SAFE.decode_slice(
-            &str.as_bytes()[0..11],
+            &str.as_bytes()[0..key_length],
             &mut encoded_id[0..size_of::<PartitionKey>()],
         )?;
         restate_base64_util::URL_SAFE.decode_slice(
-            &str.as_bytes()[11..],
+            &str.as_bytes()[key_length..],
             &mut encoded_id[size_of::<PartitionKey>()..],
         )?;
 
