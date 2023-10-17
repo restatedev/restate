@@ -519,9 +519,9 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "base64"
-version = "0.21.0"
+version = "0.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a4ddaa51a5bc52a6948f74c06d20aaaddb71924eab79b8c97a8c556e942d6a"
+checksum = "9ba43ea6f343b788c8764558649e08df62f86c6ef251fdaeb1ffd010a9ae50a2"
 
 [[package]]
 name = "base64ct"
@@ -1448,7 +1448,7 @@ dependencies = [
  "arrow-array",
  "arrow-buffer",
  "arrow-schema",
- "base64 0.21.0",
+ "base64 0.21.4",
  "blake2",
  "blake3",
  "chrono",
@@ -2994,7 +2994,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "arrow-select",
- "base64 0.21.0",
+ "base64 0.21.4",
  "brotli",
  "bytes",
  "chrono",
@@ -3064,7 +3064,7 @@ version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b13fe415cdf3c8e44518e18a7c95a13431d9bdf6d15367d82b23c377fdd441a"
 dependencies = [
- "base64 0.21.0",
+ "base64 0.21.4",
  "serde",
 ]
 
@@ -3091,7 +3091,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2de42ee35f9694def25c37c15f564555411d9904b48e33680618ee7359080dc"
 dependencies = [
  "async-trait",
- "base64 0.21.0",
+ "base64 0.21.4",
  "bytes",
  "chrono",
  "derive-new",
@@ -3222,7 +3222,7 @@ version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78b7fa9f396f51dffd61546fd8573ee20592287996568e6175ceb0f8699ad75d"
 dependencies = [
- "base64 0.21.0",
+ "base64 0.21.4",
  "byteorder",
  "bytes",
  "fallible-iterator",
@@ -3429,7 +3429,7 @@ version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "000e1e05ebf7b26e1eba298e66fe4eee6eb19c567d0ffb35e0dd34231cdac4c8"
 dependencies = [
- "base64 0.21.0",
+ "base64 0.21.4",
  "once_cell",
  "prost",
  "prost-types",
@@ -3603,7 +3603,7 @@ version = "0.11.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27b71749df584b7f4cac2c426c127a7c785a5106cc98f7a8feb044115f0fa254"
 dependencies = [
- "base64 0.21.0",
+ "base64 0.21.4",
  "bytes",
  "encoding_rs",
  "futures-core",
@@ -3662,7 +3662,7 @@ dependencies = [
 name = "restate_base64_util"
 version = "0.3.0"
 dependencies = [
- "base64 0.21.0",
+ "base64 0.21.4",
 ]
 
 [[package]]
@@ -3815,7 +3815,7 @@ dependencies = [
 name = "restate_ingress_kafka"
 version = "0.3.0"
 dependencies = [
- "base64 0.21.0",
+ "base64 0.21.4",
  "bytes",
  "derive_builder",
  "drain",
@@ -3987,7 +3987,7 @@ name = "restate_schema_api"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "base64 0.21.0",
+ "base64 0.21.4",
  "bytes",
  "http",
  "prost",
@@ -4033,7 +4033,7 @@ dependencies = [
 name = "restate_serde_util"
 version = "0.3.0"
 dependencies = [
- "base64 0.21.0",
+ "base64 0.21.4",
  "bytes",
  "http",
  "prost",
@@ -4048,7 +4048,7 @@ dependencies = [
 name = "restate_service_protocol"
 version = "0.3.0"
 dependencies = [
- "base64 0.21.0",
+ "base64 0.21.4",
  "bytes",
  "bytes-utils",
  "codederror",
@@ -4136,7 +4136,7 @@ name = "restate_storage_query_http"
 version = "0.3.0"
 dependencies = [
  "axum",
- "base64 0.21.0",
+ "base64 0.21.4",
  "bytes",
  "codederror",
  "datafusion",
@@ -4284,7 +4284,7 @@ name = "restate_types"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "base64 0.21.0",
+ "base64 0.21.4",
  "bytes",
  "bytestring",
  "humantime",
@@ -4465,7 +4465,7 @@ version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d194b56d58803a43635bdc398cd17e383d6f71f9182b9a192c127ca42494a59b"
 dependencies = [
- "base64 0.21.0",
+ "base64 0.21.4",
 ]
 
 [[package]]
@@ -5296,7 +5296,7 @@ checksum = "3082666a3a6433f7f511c7192923fa1fe07c69332d3c6a2e6bb040b569199d5a"
 dependencies = [
  "async-trait",
  "axum",
- "base64 0.21.0",
+ "base64 0.21.4",
  "bytes",
  "futures-core",
  "futures-util",
@@ -5335,7 +5335,7 @@ version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "21b00ec4842256d1fe0a46176e2ef5bc357664c66e7d91aff5a7d43d83a65f47"
 dependencies = [
- "base64 0.21.0",
+ "base64 0.21.4",
  "bytes",
  "futures-core",
  "http",
