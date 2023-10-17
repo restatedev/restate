@@ -257,28 +257,36 @@ pub enum InvocationIdParseError {
     BadSliceLength,
     #[error("cannot parse the invocation id uuid: {0}")]
     Uuid(#[from] uuid::Error),
+    #[error("cannot parse the invocation id encoded as base64: bad length")]
+    BadBase64Length,
     #[error("cannot parse the invocation id encoded as base64: {0}")]
-    Base64(#[from] base64::DecodeSliceError),
+    Base64(#[from] base64::DecodeError),
 }
 
 impl FromStr for InvocationId {
     type Err = InvocationIdParseError;
 
     fn from_str(str: &str) -> Result<Self, Self::Err> {
-        let mut encoded_id = EncodedInvocationId::default();
-
         const PARTITION_KEY_ENCODED_LENGTH: usize =
             match base64::encoded_len(size_of::<PartitionKey>(), false) {
                 Some(length) => length,
                 None => panic!("partition key must fit in usize bytes"),
             };
 
-        // Length check will be performed by the base64 lib directly
-        restate_base64_util::URL_SAFE.decode_slice(
+        // check input length is appropriate
+        if str.len() < PARTITION_KEY_ENCODED_LENGTH {
+            return Err(InvocationIdParseError::BadBase64Length);
+        }
+
+        let mut encoded_id = EncodedInvocationId::default();
+
+        // base64 library can overestimate the number of bytes needed by up to 2 due to rounding
+        // so we have to use the unchecked version of this
+        restate_base64_util::URL_SAFE.decode_slice_unchecked(
             &str.as_bytes()[0..PARTITION_KEY_ENCODED_LENGTH],
-            &mut encoded_id[0..size_of::<PartitionKey>()],
+            &mut encoded_id[..size_of::<PartitionKey>()],
         )?;
-        restate_base64_util::URL_SAFE.decode_slice(
+        restate_base64_util::URL_SAFE.decode_slice_unchecked(
             &str.as_bytes()[PARTITION_KEY_ENCODED_LENGTH..],
             &mut encoded_id[size_of::<PartitionKey>()..],
         )?;
@@ -456,5 +464,13 @@ mod tests {
             expected,
             InvocationId::from_slice(&expected.as_bytes()).unwrap()
         )
+    }
+
+    #[test]
+    fn roundtrip_invocation_id_str() {
+        let expected = InvocationId::new(92, InvocationUuid::now_v7());
+        let parsed = InvocationId::from_str(&expected.to_string()).unwrap();
+
+        assert_eq!(expected, parsed)
     }
 }
