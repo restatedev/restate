@@ -251,7 +251,7 @@ impl fmt::Display for InvocationId {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum InvocationIdParseError {
     #[error("cannot parse the invocation id, bad slice length")]
     BadSliceLength,
@@ -272,9 +272,14 @@ impl FromStr for InvocationId {
                 Some(length) => length,
                 None => panic!("partition key must fit in usize bytes"),
             };
+        const UUID_ENCODED_LENGTH: usize =
+            match base64::encoded_len(size_of::<uuid::Bytes>(), false) {
+                Some(length) => length,
+                None => panic!("uuid must fit in usize bytes"),
+            };
 
         // check input length is appropriate
-        if str.len() < PARTITION_KEY_ENCODED_LENGTH {
+        if str.len() != PARTITION_KEY_ENCODED_LENGTH + UUID_ENCODED_LENGTH {
             return Err(InvocationIdParseError::BadBase64Length);
         }
 
@@ -468,6 +473,34 @@ mod tests {
 
     #[test]
     fn roundtrip_invocation_id_str() {
+        let expected = InvocationId::new(92, InvocationUuid::now_v7());
+        let parsed = InvocationId::from_str(&expected.to_string()).unwrap();
+
+        assert_eq!(expected, parsed)
+    }
+
+    #[test]
+    fn bad_invocation_id_str() {
+        let bad_strs = [
+            ("", InvocationIdParseError::BadBase64Length),
+            (
+                "mxvgUOrwIb8cYrGPHkAAKSKY3O!6IEy_g",
+                InvocationIdParseError::Base64(base64::DecodeError::InvalidByte(15, 33)),
+            ),
+            ("mxvgUOrwIb8", InvocationIdParseError::BadBase64Length),
+            (
+                "mxvgUOrwIb8cYrGPHkAAKSKY3Oo6IEy_",
+                InvocationIdParseError::BadBase64Length,
+            ),
+            (
+                "mxvgUOrwIb8cYrGPHkAAKSKY3Oo6IEiYV",
+                InvocationIdParseError::Base64(base64::DecodeError::InvalidLastSymbol(21, 86)),
+            ),
+        ];
+
+        for (bad, error) in bad_strs {
+            assert_eq!(error, InvocationId::from_str(&bad).unwrap_err())
+        }
         let expected = InvocationId::new(92, InvocationUuid::now_v7());
         let parsed = InvocationId::from_str(&expected.to_string()).unwrap();
 
