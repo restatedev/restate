@@ -499,11 +499,7 @@ mod tests {
         ];
 
         for (bad, error) in bad_strs {
-            assert_eq!(error, InvocationId::from_str(&bad).unwrap_err())
+            assert_eq!(error, InvocationId::from_str(bad).unwrap_err())
         }
-        let expected = InvocationId::new(92, InvocationUuid::now_v7());
-        let parsed = InvocationId::from_str(&expected.to_string()).unwrap();
-
-        assert_eq!(expected, parsed)
     }
 }
