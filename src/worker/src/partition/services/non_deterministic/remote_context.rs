@@ -994,7 +994,12 @@ fn check_state_key(key: Bytes) -> Result<StateKey<Raw>, InvocationError> {
 }
 
 fn journal_service_id(operation_id: String) -> ServiceId {
-    ServiceId::new("EmbeddedHandler", operation_id)
+    let mut buf = Vec::with_capacity(
+        prost::encoding::encoded_len_varint(operation_id.len() as u64) + operation_id.len(),
+    );
+    prost::encoding::encode_varint(operation_id.len() as u64, &mut buf);
+    buf.put_slice(operation_id.as_bytes());
+    ServiceId::new("EmbeddedHandler", buf)
 }
 
 #[cfg(test)]
@@ -1103,12 +1108,21 @@ mod tests {
 
     #[test(tokio::test)]
     async fn new_invocation_start() {
-        let mut ctx = TestInvocationContext::new(REMOTE_CONTEXT_SERVICE_NAME);
+        // Generate operation id and key
+        let operation_id = "my-operation-id".to_string();
+        let mut remote_context_service_key = Vec::new();
+        prost::encoding::encode_varint(operation_id.len() as u64, &mut remote_context_service_key);
+        remote_context_service_key.put_slice(operation_id.as_bytes());
+        let remote_context_service_id =
+            ServiceId::new(REMOTE_CONTEXT_SERVICE_NAME, remote_context_service_key);
+
+        let mut ctx = TestInvocationContext::from_service_id(remote_context_service_id.clone());
         let (fid, effects) = ctx
             .invoke(|ctx| {
                 ctx.start(
                     StartRequest {
                         stream_id: "my-stream".to_string(),
+                        operation_id,
                         ..Default::default()
                     },
                     Default::default(),
@@ -1130,30 +1144,38 @@ mod tests {
         );
         assert_that!(
             effects,
-            contains(pat!(Effect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
-                    full_invocation_id: eq(fid),
-                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
-                        StartResponse {
-                            invocation_status: some(pat!(
-                                start_response::InvocationStatus::Executing(
-                                    decoded_as_protocol_messages(elements_are![
-                                        pat!(ProtocolMessage::Start(pat!(
+            all!(
+                contains(pat!(Effect::CreateJournal {
+                    service_id: property!(
+                        ServiceId.partition_key(),
+                        eq(remote_context_service_id.partition_key())
+                    )
+                })),
+                contains(pat!(Effect::OutboxMessage(pat!(
+                    OutboxMessage::IngressResponse {
+                        full_invocation_id: eq(fid),
+                        response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                            StartResponse {
+                                invocation_status: some(pat!(
+                                    start_response::InvocationStatus::Executing(
+                                        decoded_as_protocol_messages(elements_are![
+                                            pat!(ProtocolMessage::Start(pat!(
                                             restate_service_protocol::pb::protocol::StartMessage {
                                                 known_entries: eq(1)
                                             }
                                         ))),
-                                        pat!(ProtocolMessage::UnparsedEntry(property!(
-                                            PlainRawEntry.ty(),
-                                            eq(EntryType::PollInputStream)
-                                        )))
-                                    ])
-                                )
-                            ))
-                        }
-                    ))))
-                }
-            ))))
+                                            pat!(ProtocolMessage::UnparsedEntry(property!(
+                                                PlainRawEntry.ty(),
+                                                eq(EntryType::PollInputStream)
+                                            )))
+                                        ])
+                                    )
+                                ))
+                            }
+                        ))))
+                    }
+                ))))
+            )
         );
     }
 

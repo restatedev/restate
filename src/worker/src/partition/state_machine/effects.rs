@@ -15,6 +15,7 @@ use opentelemetry_api::trace::SpanId;
 use restate_storage_api::status_table::{
     CompletionNotificationTarget, InvocationStatus, JournalMetadata,
 };
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::{Completion, CompletionResult};
 use std::collections::HashSet;
@@ -484,6 +485,18 @@ impl Effect {
                 "Effect: Forward completion {} to service endpoint",
                 CompletionResultFmt(result)
             ),
+            Effect::CreateVirtualJournal {
+                service_id,
+                invocation_uuid,
+                ..
+            } => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.service.id = ?service_id,
+                    restate.invocation.id = %InvocationId::new(service_id.partition_key(), *invocation_uuid),
+                    "Effect: Create virtual journal"
+                )
+            }
             Effect::NotifyVirtualJournalCompletion {
                 target_service,
                 method_name,
@@ -578,7 +591,7 @@ impl Effect {
             Effect::AbortInvocation(_) => {
                 debug_if_leader!(is_leader, "Effect: Abort unknown invocation");
             }
-            Effect::CreateVirtualJournal { .. } | Effect::SendStoredEntryAckToInvoker(_, _) => {
+            Effect::SendStoredEntryAckToInvoker(_, _) => {
                 // We can ignore these
             }
         }
