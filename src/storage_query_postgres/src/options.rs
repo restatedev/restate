@@ -19,30 +19,23 @@ use std::net::SocketAddr;
     feature = "options_schema",
     schemars(rename = "StorageQueryPostgresOptions")
 )]
+#[cfg_attr(feature = "options_schema", schemars(default))]
 pub struct Options {
     /// # Bind address
     ///
     /// The address to bind for the psql service.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_bind_address")
-    )]
     pub bind_address: SocketAddr,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            bind_address: Options::default_bind_address(),
+            bind_address: "0.0.0.0:9071".parse().unwrap(),
         }
     }
 }
 
 impl Options {
-    fn default_bind_address() -> SocketAddr {
-        "0.0.0.0:9071".parse().unwrap()
-    }
-
     pub fn build(self, query_context: QueryContext) -> PostgresQueryService {
         let Options { bind_address } = self;
 

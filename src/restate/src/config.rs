@@ -51,6 +51,7 @@ pub use restate_worker::{
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "options_schema", schemars(default))]
 #[builder(default)]
 pub struct Configuration {
     /// # Shutdown grace timeout
@@ -59,28 +60,18 @@ pub struct Configuration {
     ///
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(
-            with = "String",
-            default = "Configuration::default_shutdown_grace_period"
-        )
-    )]
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     pub shutdown_grace_period: humantime::Duration,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     pub observability: restate_tracing_instrumentation::Options,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     pub meta: restate_meta::Options,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     pub worker: WorkerOptions,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     pub tokio_runtime: crate::rt::Options,
 }
 
 impl Default for Configuration {
     fn default() -> Self {
         Self {
-            shutdown_grace_period: Configuration::default_shutdown_grace_period(),
+            shutdown_grace_period: Duration::from_secs(60).into(),
             observability: Default::default(),
             meta: Default::default(),
             worker: Default::default(),
@@ -95,10 +86,6 @@ impl Default for Configuration {
 pub struct Error(#[from] figment::Error);
 
 impl Configuration {
-    fn default_shutdown_grace_period() -> humantime::Duration {
-        Duration::from_secs(60).into()
-    }
-
     /// Load [`Configuration`] from yaml with overwrites from environment variables.
     pub fn load<P: AsRef<Path>>(config_file: P) -> Result<Self, Error> {
         Self::load_with_default(Configuration::default(), Some(config_file.as_ref()))

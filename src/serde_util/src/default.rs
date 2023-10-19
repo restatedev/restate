@@ -8,14 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod header_map;
-#[cfg(feature = "proto")]
-mod proto;
-mod uuid;
-
-pub mod default;
-
-pub use crate::uuid::{SerdeableUuid, UuidAsStringOrBytesOrBase64};
-pub use header_map::SerdeableHeaderHashMap;
-#[cfg(feature = "proto")]
-pub use proto::ProtobufEncoded;
+/// This method can be used to define inline the default values for serde attributes. E.g.:
+///
+/// ```
+// #[derive(Debug, Deserialize, JsonSchema)]
+// pub struct MyStruct {
+//     #[serde(default = "restate_serde_util::default::bool::<true>")]
+//     pub my_bool: bool,
+// }
+/// ```
+pub const fn bool<const V: bool>() -> bool {
+    V
+}

@@ -30,34 +30,22 @@ use tracing::{debug, error};
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "options_schema", schemars(rename = "MetaOptions"))]
+#[cfg_attr(feature = "options_schema", schemars(rename = "MetaOptions", default))]
 #[builder(default)]
 pub struct Options {
     /// # Rest endpoint address
     ///
     /// Address to bind for the Meta Operational REST APIs.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_rest_address")
-    )]
     rest_address: SocketAddr,
 
     /// # Rest concurrency limit
     ///
     /// Concurrency limit for the Meta Operational REST APIs.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_rest_concurrency_limit")
-    )]
     rest_concurrency_limit: usize,
 
     /// # Storage path
     ///
     /// Root path for Meta storage.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_storage_path")
-    )]
     storage_path: String,
 
     /// # Proxy URI
@@ -65,7 +53,6 @@ pub struct Options {
     /// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with the `Host` header set to the service endpoint URI.    
     /// HTTPS proxy URIs are supported, but only HTTP endpoint traffic will be proxied currently.
     /// Can be overridden by the `HTTP_PROXY` environment variable.
-    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
     proxy_uri: Option<Proxy>,
 }
@@ -73,27 +60,15 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            rest_address: Options::default_rest_address(),
-            rest_concurrency_limit: Options::default_rest_concurrency_limit(),
-            storage_path: Options::default_storage_path(),
+            rest_address: "0.0.0.0:9070".parse().unwrap(),
+            rest_concurrency_limit: 1000,
+            storage_path: "target/meta/".to_string(),
             proxy_uri: None,
         }
     }
 }
 
 impl Options {
-    fn default_rest_address() -> SocketAddr {
-        "0.0.0.0:9070".parse().unwrap()
-    }
-
-    fn default_rest_concurrency_limit() -> usize {
-        1000
-    }
-
-    fn default_storage_path() -> String {
-        "target/meta/".to_string()
-    }
-
     pub fn rest_address(&self) -> SocketAddr {
         self.rest_address
     }

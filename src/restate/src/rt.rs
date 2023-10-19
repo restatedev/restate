@@ -19,18 +19,18 @@ use tokio::runtime::{Builder, Runtime};
 #[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[builder(default)]
+#[cfg_attr(feature = "options_schema", schemars(default))]
 pub struct Options {
     /// # Worker threads
     ///
     /// Configure the number of [worker threads](https://docs.rs/tokio/latest/tokio/runtime/struct.Builder.html#method.worker_threads) of the Tokio runtime.
     /// If not set, it uses the Tokio default, where worker_threads is equal to number of cores.
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     worker_threads: Option<usize>,
+
     /// # Max blocking threads
     ///
     /// Configure the number of [max blocking threads](https://docs.rs/tokio/latest/tokio/runtime/struct.Builder.html#method.max_blocking_threads) of the Tokio runtime.
     /// If not set, it uses the Tokio default 512.
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     max_blocking_threads: Option<usize>,
 }
 
