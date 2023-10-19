@@ -114,7 +114,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             bind_address: "0.0.0.0:8080".parse().unwrap(),
-            concurrency_limit: 1000,
+            concurrency_limit: 10_000_000,
             json: Default::default(),
         }
     }
