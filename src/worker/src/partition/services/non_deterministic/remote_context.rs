@@ -951,8 +951,6 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                             .pop_state(&PENDING_GET_RESULT_SINKS)
                             .await?
                             .unwrap_or_default()
-                            .into_iter()
-                            .chain(self.pop_state(&PENDING_RECV_SINK).await?.into_iter())
                         {
                             trace!(
                                 "Closing the previously listening client with {:?} for inactivity",
@@ -2339,12 +2337,12 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(Effect::OutboxMessage(pat!(
+                not(contains(pat!(Effect::OutboxMessage(pat!(
                     OutboxMessage::IngressResponse {
                         full_invocation_id: eq(recv_fid),
                         response: pat!(ResponseResult::Failure(_, _))
                     }
-                )))),
+                ))))),
                 contains(pat!(Effect::OutboxMessage(pat!(
                     OutboxMessage::IngressResponse {
                         full_invocation_id: eq(get_result_fid),
