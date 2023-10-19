@@ -97,48 +97,36 @@ type PartitionProcessor = partition::PartitionProcessor<
 /// # Worker options
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "options_schema", schemars(rename = "WorkerOptions"))]
+#[cfg_attr(
+    feature = "options_schema",
+    schemars(rename = "WorkerOptions", default)
+)]
 #[builder(default)]
 pub struct Options {
     /// # Bounded channel size
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_channel_size")
-    )]
     channel_size: usize,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     timers: TimerOptions,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     storage_query_datafusion: StorageQueryDatafusionOptions,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     storage_query_http: StorageQueryHttpOptions,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     storage_query_postgres: StorageQueryPostgresOptions,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     storage_rocksdb: RocksdbOptions,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     ingress_grpc: IngressOptions,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     kafka: KafkaIngressOptions,
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     invoker: InvokerOptions,
+
     /// # Partitions
     ///
     /// Number of partitions to be used to process messages.
     ///
     /// Note: This config entry **will be removed** in future Restate releases,
     /// as the partitions number will be dynamically configured depending on the load.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_partitions")
-    )]
     partitions: u64,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            channel_size: Options::default_channel_size(),
+            channel_size: 64,
             timers: Default::default(),
             storage_query_datafusion: Default::default(),
             storage_query_http: Default::default(),
@@ -147,7 +135,7 @@ impl Default for Options {
             ingress_grpc: Default::default(),
             kafka: Default::default(),
             invoker: Default::default(),
-            partitions: Options::default_partitions(),
+            partitions: 1024,
         }
     }
 }
@@ -169,14 +157,6 @@ pub enum BuildError {
 }
 
 impl Options {
-    fn default_channel_size() -> usize {
-        64
-    }
-
-    fn default_partitions() -> u64 {
-        1024
-    }
-
     pub fn storage_path(&self) -> &str {
         &self.storage_rocksdb.path
     }

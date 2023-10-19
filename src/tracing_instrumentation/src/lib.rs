@@ -187,34 +187,29 @@ pub enum LogFormat {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[builder(default)]
+#[cfg_attr(feature = "options_schema", schemars(default))]
 pub struct LogOptions {
     /// # Filter
     ///
     /// Log filter configuration. Can be overridden by the `RUST_LOG` environment variable.
     /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "LogOptions::default_filter")
-    )]
     filter: String,
 
     /// # Log format
     ///
     /// Format to use when logging.
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     format: LogFormat,
 
     /// # Disable ANSI log
     ///
     /// Disable ANSI terminal codes for logs. This is useful when the log collector doesn't support processing ANSI terminal codes.
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     disable_ansi_codes: bool,
 }
 
 impl Default for LogOptions {
     fn default() -> Self {
         Self {
-            filter: LogOptions::default_filter(),
+            filter: "warn,restate=info".to_string(),
             format: Default::default(),
             disable_ansi_codes: false,
         }
@@ -222,10 +217,6 @@ impl Default for LogOptions {
 }
 
 impl LogOptions {
-    fn default_filter() -> String {
-        "warn,restate=info".to_string()
-    }
-
     #[allow(clippy::type_complexity)]
     fn build_layer<S>(
         &self,
@@ -264,14 +255,16 @@ impl LogOptions {
 /// # Observability options
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "options_schema", schemars(rename = "ObservabilityOptions"))]
+#[cfg_attr(
+    feature = "options_schema",
+    schemars(rename = "ObservabilityOptions", default)
+)]
 pub struct Options {
     /// # Tracing options
     #[builder(default)]
     tracing: Option<TracingOptions>,
 
     /// # Logging options
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     #[builder(default)]
     log: LogOptions,
 }

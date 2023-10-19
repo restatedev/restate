@@ -34,7 +34,7 @@ bincode = { workspace = true }
 
 # Service discovery and metadata
 restate_types = { workspace = true, features = ["serde", "serde_schema"] }
-restate_hyper_util = { workspace = true }
+restate_hyper_util = { workspace = true, features = ["serde"] }
 restate_fs_util = { workspace = true }
 
 restate_service_protocol = { workspace = true, features = ["discovery"] }

@@ -100,89 +100,53 @@ pub enum TableKind {
 /// # Storage options
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "options_schema", schemars(rename = "StorageOptions"))]
+#[cfg_attr(
+    feature = "options_schema",
+    schemars(rename = "StorageOptions", default)
+)]
 #[builder(default)]
 pub struct Options {
     /// # Storage path
     ///
     /// The root path to use for the Rocksdb storage.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_path")
-    )]
     pub path: String,
 
     /// # Threads
     ///
     /// The number of threads to reserve to Rocksdb background tasks.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_threads")
-    )]
     pub threads: usize,
 
     /// # Write Buffer size
     ///
     /// The size of a single memtable. Once memtable exceeds this size, it is marked immutable and a new one is created.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_write_buffer_size")
-    )]
     pub write_buffer_size: usize,
 
     /// # Maximum total WAL size
     ///
     /// Max WAL size, that after this Rocksdb start flushing mem tables to disk.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_max_total_wal_size")
-    )]
     pub max_total_wal_size: u64,
 
     /// # Maximum cache size
     ///
     /// The memory size used for rocksdb caches.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_cache_size")
-    )]
     pub cache_size: usize,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            path: Options::default_path(),
-            threads: Options::default_threads(),
-            write_buffer_size: Options::default_write_buffer_size(),
-            max_total_wal_size: Options::default_max_total_wal_size(),
-            cache_size: Options::default_cache_size(),
+            path: "target/db/".to_string(),
+            threads: 10,
+            write_buffer_size: 0,
+            max_total_wal_size: 2 * (1 << 30), // 2 GiB
+            cache_size: 1 << 30,               // 1 GB
         }
     }
 }
 
 impl Options {
-    fn default_path() -> String {
-        "target/db/".to_string()
-    }
-
-    fn default_threads() -> usize {
-        10
-    }
-
     pub fn build(self) -> std::result::Result<RocksDBStorage, BuildError> {
         RocksDBStorage::new(self)
-    }
-    fn default_write_buffer_size() -> usize {
-        0
-    }
-
-    fn default_max_total_wal_size() -> u64 {
-        2 * (1 << 30) // 2 GiB
-    }
-
-    fn default_cache_size() -> usize {
-        1 << 30 // 1 GB
     }
 }
 

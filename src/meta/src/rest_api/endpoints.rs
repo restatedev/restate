@@ -44,14 +44,8 @@ pub struct RegisterServiceEndpointRequest {
     /// By default, this is `true` but it might change in future to `false`.
     ///
     /// See the [versioning documentation](https://docs.restate.dev/services/upgrades-removal) for more information.
-    #[serde(default = "RegisterServiceEndpointRequest::default_force")]
+    #[serde(default = "restate_serde_util::default::bool::<true>")]
     pub force: bool,
-}
-
-impl RegisterServiceEndpointRequest {
-    fn default_force() -> bool {
-        true
-    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

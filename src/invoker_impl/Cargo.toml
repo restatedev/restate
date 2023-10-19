@@ -28,7 +28,7 @@ opentelemetry-http = { workspace = true }
 restate_errors = { workspace = true }
 restate_fs_util = { workspace = true }
 restate_futures_util = { workspace = true }
-restate_hyper_util = { workspace = true }
+restate_hyper_util = { workspace = true, features = ["serde"] }
 restate_invoker_api = { workspace = true }
 restate_queue = { workspace = true }
 restate_schema_api = { workspace = true, features = ["endpoint"] }
