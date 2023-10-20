@@ -18,5 +18,6 @@ bytestring = { workspace = true }
 codederror = { workspace = true }
 futures = { workspace = true }
 restate_types = { workspace = true }
+restate_errors = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

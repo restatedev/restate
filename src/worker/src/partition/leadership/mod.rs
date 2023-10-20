@@ -14,8 +14,7 @@ use crate::partition::{
 };
 use assert2::let_assert;
 use futures::{future, Stream, StreamExt};
-use restate_invoker_api::{InvokeInputJournal, ServiceNotRunning};
-use restate_network::NetworkNotRunning;
+use restate_invoker_api::InvokeInputJournal;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
@@ -32,6 +31,7 @@ use crate::partition::services::non_deterministic;
 use crate::partition::state_machine::{Action, StateReader, StateStorage};
 use crate::util::IdentitySender;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareActionCollector};
+use restate_errors::NotRunningError;
 use restate_schema_impl::Schemas;
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -76,10 +76,8 @@ pub(crate) struct FollowerState<I, N> {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Invoker(#[from] ServiceNotRunning),
-    #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Network(#[from] NetworkNotRunning),
+    #[error("invoker or network is unreachable. This indicates a bug or the system is shutting down: {0}")]
+    NotRunning(#[from] NotRunningError),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
     FailedShuffleTask(#[from] anyhow::Error),
     #[error(transparent)]

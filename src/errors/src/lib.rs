@@ -38,3 +38,16 @@ declare_restate_error_codes!(
     RT0001, RT0002, RT0003, RT0004, RT0005, RT0006, META0001, META0002, META0003, META0004,
     META0005, META0006, META0007, META0008
 );
+
+// -- Some commonly used errors
+
+#[derive(Debug, Clone, Copy)]
+pub struct NotRunningError;
+
+impl std::fmt::Display for NotRunningError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "not running")
+    }
+}
+
+impl std::error::Error for NotRunningError {}

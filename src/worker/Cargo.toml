@@ -20,6 +20,7 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 restate_types = { workspace = true }
+restate_errors = { workspace = true }
 derive_builder = { workspace = true }
 restate_consensus = { workspace = true }
 drain = { workspace = true }
