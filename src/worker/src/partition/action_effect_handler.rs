@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::leadership::ActionEffect;
+use crate::partition::services::non_deterministic::Effects as NBISEffects;
 use crate::partition::state_machine::{AckCommand, Command};
 use crate::util::IdentitySender;
 
@@ -48,11 +49,23 @@ impl ActionEffectHandler {
                     .await;
             }
             ActionEffect::BuiltInInvoker(invoker_output) => {
-                // Err only if the consensus module is shutting down
-                let _ = self
-                    .proposal_tx
-                    .send(AckCommand::no_ack(Command::BuiltInInvoker(invoker_output)))
-                    .await;
+                // TODO Super BAD code to mitigate https://github.com/restatedev/restate/issues/851
+                //  until we properly fix it.
+                //  By proposing the effects one by one we avoid the read your own writes issue,
+                //  because for each proposal the state machine goes through a transaction commit,
+                //  to make sure the next command can see the effects of the previous one.
+                //  A problematic example case is a sequence of CreateVirtualJournal and AppendJournalEntry:
+                //  to append a journal entry we must have stored the JournalMetadata first.
+                let (fid, effects) = invoker_output.into_inner();
+                for effect in effects {
+                    // Err only if the consensus module is shutting down
+                    let _ = self
+                        .proposal_tx
+                        .send(AckCommand::no_ack(Command::BuiltInInvoker(
+                            NBISEffects::new(fid.clone(), vec![effect]),
+                        )))
+                        .await;
+                }
             }
         };
     }
