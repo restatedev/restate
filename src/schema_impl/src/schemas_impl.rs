@@ -13,10 +13,10 @@ use super::*;
 use anyhow::anyhow;
 use prost_reflect::{DescriptorPool, Kind, MethodDescriptor, ServiceDescriptor};
 use proto_symbol::ProtoSymbols;
+use restate_schema_api::discovery::KeyStructure;
 use restate_schema_api::discovery::{
     DiscoveredInstanceType, FieldAnnotation, ServiceRegistrationRequest,
 };
-use restate_schema_api::key::KeyStructure;
 use restate_schema_api::service::InstanceType;
 use restate_schema_api::subscription::{
     EventReceiverServiceInstanceType, FieldRemapType, InputEventRemap, Sink, Source,
@@ -78,13 +78,12 @@ impl MethodSchemas {
 pub(crate) struct ServiceSchemas {
     pub(crate) revision: ServiceRevision,
     pub(crate) methods: HashMap<String, MethodSchemas>,
-    pub(crate) instance_type: ServiceInstanceType,
+    pub(crate) instance_type: InstanceTypeMetadata,
     pub(crate) location: ServiceLocation,
 }
 
-// Expanded version of restate_schema_api::key::ServiceInstanceType to support built-in services
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) enum ServiceInstanceType {
+pub(crate) enum InstanceTypeMetadata {
     Keyed {
         key_structure: KeyStructure,
         service_methods_key_field_root_number: HashMap<String, u32>,
@@ -99,55 +98,52 @@ pub(crate) enum ServiceInstanceType {
     },
 }
 
-impl PartialEq<key::ServiceInstanceType> for ServiceInstanceType {
-    fn eq(&self, other: &key::ServiceInstanceType) -> bool {
-        match (self, other) {
-            (
-                ServiceInstanceType::Keyed {
-                    key_structure,
-                    service_methods_key_field_root_number,
-                },
-                key::ServiceInstanceType::Keyed {
-                    key_structure: other_key_structure,
-                    service_methods_key_field_root_number:
-                        other_service_methods_key_field_root_number,
-                },
-            ) => {
-                key_structure == other_key_structure
-                    && service_methods_key_field_root_number
-                        == other_service_methods_key_field_root_number
-            }
-            (ServiceInstanceType::Unkeyed, key::ServiceInstanceType::Unkeyed) => true,
-            (ServiceInstanceType::Singleton, key::ServiceInstanceType::Singleton) => true,
-            _ => false,
+impl InstanceTypeMetadata {
+    pub(crate) fn keyed_with_scalar_key<'a>(
+        methods: impl IntoIterator<Item = (&'a str, u32)>,
+    ) -> Self {
+        Self::Keyed {
+            key_structure: KeyStructure::Scalar,
+            service_methods_key_field_root_number: methods
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
         }
     }
-}
 
-impl From<key::ServiceInstanceType> for ServiceInstanceType {
-    fn from(value: key::ServiceInstanceType) -> Self {
-        match value {
-            key::ServiceInstanceType::Keyed {
+    pub(crate) fn from_discovered_metadata(
+        instance_type: DiscoveredInstanceType,
+        methods: &HashMap<String, DiscoveredMethodMetadata>,
+    ) -> Self {
+        match instance_type.clone() {
+            DiscoveredInstanceType::Keyed(key_structure) => InstanceTypeMetadata::Keyed {
                 key_structure,
-                service_methods_key_field_root_number,
-            } => ServiceInstanceType::Keyed {
-                key_structure,
-                service_methods_key_field_root_number,
+                service_methods_key_field_root_number: methods
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            *v.input_fields_annotations
+                                .get(&FieldAnnotation::Key)
+                                .expect("At this point there must be a field annotated with key"),
+                        )
+                    })
+                    .collect(),
             },
-            key::ServiceInstanceType::Unkeyed => ServiceInstanceType::Unkeyed,
-            key::ServiceInstanceType::Singleton => ServiceInstanceType::Singleton,
+            DiscoveredInstanceType::Unkeyed => InstanceTypeMetadata::Unkeyed,
+            DiscoveredInstanceType::Singleton => InstanceTypeMetadata::Singleton,
         }
     }
 }
 
-impl TryFrom<&ServiceInstanceType> for InstanceType {
+impl TryFrom<&InstanceTypeMetadata> for InstanceType {
     type Error = ();
 
-    fn try_from(value: &ServiceInstanceType) -> Result<Self, Self::Error> {
+    fn try_from(value: &InstanceTypeMetadata) -> Result<Self, Self::Error> {
         match value {
-            ServiceInstanceType::Keyed { .. } => Ok(InstanceType::Keyed),
-            ServiceInstanceType::Unkeyed => Ok(InstanceType::Unkeyed),
-            ServiceInstanceType::Singleton => Ok(InstanceType::Singleton),
+            InstanceTypeMetadata::Keyed { .. } => Ok(InstanceType::Keyed),
+            InstanceTypeMetadata::Unkeyed => Ok(InstanceType::Unkeyed),
+            InstanceTypeMetadata::Singleton => Ok(InstanceType::Singleton),
             _ => Err(()),
         }
     }
@@ -157,7 +153,7 @@ impl ServiceSchemas {
     fn new(
         revision: ServiceRevision,
         methods: HashMap<String, MethodSchemas>,
-        instance_type: ServiceInstanceType,
+        instance_type: InstanceTypeMetadata,
         latest_endpoint: EndpointId,
     ) -> Self {
         Self {
@@ -173,7 +169,7 @@ impl ServiceSchemas {
 
     fn new_built_in(
         svc_desc: &ServiceDescriptor,
-        instance_type: ServiceInstanceType,
+        instance_type: InstanceTypeMetadata,
         ingress_available: bool,
     ) -> Self {
         Self {
@@ -267,65 +263,74 @@ impl Default for SchemasInner {
         };
 
         // Register built-in services
-        let mut register_built_in = |svc_name: &'static str,
-                                     service_instance_type: ServiceInstanceType,
-                                     ingress_available: bool| {
-            inner.services.insert(
-                svc_name.to_string(),
-                ServiceSchemas::new_built_in(
-                    &restate_pb::get_service(svc_name),
-                    service_instance_type,
-                    ingress_available,
-                ),
-            );
-            if ingress_available {
-                inner.proto_symbols.add_service(
-                    &"self_ingress".to_string(),
-                    &restate_pb::get_service(svc_name),
-                )
-            }
-        };
+        let mut register_built_in =
+            |svc_name: &'static str,
+             service_instance_type: InstanceTypeMetadata,
+             ingress_available: bool,
+             reflections_available: bool| {
+                assert!(!reflections_available || ingress_available);
+                inner.services.insert(
+                    svc_name.to_string(),
+                    ServiceSchemas::new_built_in(
+                        &restate_pb::get_service(svc_name),
+                        service_instance_type,
+                        ingress_available,
+                    ),
+                );
+                if reflections_available {
+                    inner.proto_symbols.add_service(
+                        &"self_ingress".to_string(),
+                        &restate_pb::get_service(svc_name),
+                    )
+                }
+            };
         register_built_in(
             restate_pb::REFLECTION_SERVICE_NAME,
-            ServiceInstanceType::Unsupported,
+            InstanceTypeMetadata::Unsupported,
+            true,
             true,
         );
         register_built_in(
             restate_pb::HEALTH_SERVICE_NAME,
-            ServiceInstanceType::Unsupported,
+            InstanceTypeMetadata::Unsupported,
+            true,
             true,
         );
         register_built_in(
             restate_pb::INGRESS_SERVICE_NAME,
-            ServiceInstanceType::Unkeyed,
+            InstanceTypeMetadata::Unkeyed,
+            true,
             true,
         );
         register_built_in(
             restate_pb::AWAKEABLES_SERVICE_NAME,
-            ServiceInstanceType::Unkeyed,
+            InstanceTypeMetadata::Unkeyed,
+            true,
             true,
         );
         register_built_in(
             restate_pb::PROXY_SERVICE_NAME,
             // Key must be manually provided when invoking the proxy service
-            ServiceInstanceType::Unsupported,
+            InstanceTypeMetadata::Unsupported,
+            false,
             false,
         );
         register_built_in(
             restate_pb::REMOTE_CONTEXT_SERVICE_NAME,
-            key::ServiceInstanceType::keyed_with_scalar_key([
+            InstanceTypeMetadata::keyed_with_scalar_key([
                 ("Start", 1),
                 ("Send", 1),
                 ("Recv", 1),
                 ("GetResult", 1),
                 ("Cleanup", 1),
-            ])
-            .into(),
+            ]),
             true,
+            false,
         );
         register_built_in(
             restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME,
-            ServiceInstanceType::Unsupported,
+            InstanceTypeMetadata::Unsupported,
+            false,
             false,
         );
 
@@ -366,31 +371,14 @@ impl SchemasInner {
         }
 
         // Compute service revision numbers
-        let mut computed_revisions_and_instance_types = HashMap::with_capacity(services.len());
+        let mut computed_revisions = HashMap::with_capacity(services.len());
         for service_meta in &services {
             check_is_reserved(&service_meta.name)?;
 
-            let instance_type = match service_meta.instance_type.clone() {
-                DiscoveredInstanceType::Keyed(key_structure) => key::ServiceInstanceType::Keyed {
-                    key_structure,
-                    service_methods_key_field_root_number: service_meta
-                        .methods
-                        .iter()
-                        .map(|(k, v)| {
-                            (
-                                k.clone(),
-                                *v.input_fields_annotations
-                                    .get(&FieldAnnotation::Key)
-                                    .expect(
-                                        "At this point there must be a field annotated with key",
-                                    ),
-                            )
-                        })
-                        .collect(),
-                },
-                DiscoveredInstanceType::Unkeyed => key::ServiceInstanceType::Unkeyed,
-                DiscoveredInstanceType::Singleton => key::ServiceInstanceType::Singleton,
-            };
+            let instance_type = InstanceTypeMetadata::from_discovered_metadata(
+                service_meta.instance_type.clone(),
+                &service_meta.methods,
+            );
 
             // For the time being when updating we overwrite existing data
             let revision = if let Some(service_schemas) = self.services.get(&service_meta.name) {
@@ -416,8 +404,7 @@ impl SchemasInner {
             } else {
                 1
             };
-            computed_revisions_and_instance_types
-                .insert(service_meta.name.clone(), (revision, instance_type));
+            computed_revisions.insert(service_meta.name.clone(), revision);
         }
 
         // Create the InsertEndpoint command
@@ -426,14 +413,12 @@ impl SchemasInner {
             services: services
                 .into_iter()
                 .map(|service_meta| {
-                    let (revision, instance_type) = computed_revisions_and_instance_types
-                        .remove(&service_meta.name)
-                        .unwrap();
+                    let revision = computed_revisions.remove(&service_meta.name).unwrap();
 
                     InsertServiceUpdateCommand {
                         name: service_meta.name,
                         revision,
-                        instance_type,
+                        instance_type: service_meta.instance_type,
                         methods: service_meta.methods,
                     }
                 })
@@ -580,7 +565,7 @@ impl SchemasInner {
                 };
 
                 let instance_type = match service_schemas.instance_type {
-                    ServiceInstanceType::Keyed { .. } => {
+                    InstanceTypeMetadata::Keyed { .. } => {
                         // Verify the type is supported!
                         let key_field_kind = method_schemas.descriptor.input().get_field(
                             method_schemas.input_field_annotated(FieldAnnotation::Key).expect("There must be a key field for every method input type")
@@ -594,9 +579,9 @@ impl SchemasInner {
 
                         EventReceiverServiceInstanceType::Keyed { ordering_key_is_key: false }
                     }
-                    ServiceInstanceType::Unkeyed => EventReceiverServiceInstanceType::Unkeyed,
-                    ServiceInstanceType::Singleton => EventReceiverServiceInstanceType::Singleton,
-                    ServiceInstanceType::Unsupported | ServiceInstanceType::Custom { .. } => {
+                    InstanceTypeMetadata::Unkeyed => EventReceiverServiceInstanceType::Unkeyed,
+                    InstanceTypeMetadata::Singleton => EventReceiverServiceInstanceType::Singleton,
+                    InstanceTypeMetadata::Unsupported | InstanceTypeMetadata::Custom { .. } => {
                         return Err(RegistrationError::InvalidSubscription(anyhow!(
                             "trying to use a built-in service as sink {}. This is currently unsupported.",
                             sink
@@ -702,7 +687,11 @@ impl SchemasInner {
                             info!(rpc.service = name, "Overwriting existing service schemas");
 
                             service_schemas.revision = revision;
-                            service_schemas.instance_type = instance_type.clone().into();
+                            service_schemas.instance_type =
+                                InstanceTypeMetadata::from_discovered_metadata(
+                                    instance_type.clone(),
+                                    &methods,
+                                );
                             service_schemas.methods = ServiceSchemas::compute_service_methods(
                                 &service_descriptor,
                                 &methods,
@@ -725,7 +714,10 @@ impl SchemasInner {
                                     &service_descriptor,
                                     &methods,
                                 ),
-                                instance_type.clone().into(),
+                                InstanceTypeMetadata::from_discovered_metadata(
+                                    instance_type.clone(),
+                                    &methods,
+                                ),
                                 endpoint_id.clone(),
                             )
                         });

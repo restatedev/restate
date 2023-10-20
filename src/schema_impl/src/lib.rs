@@ -11,9 +11,10 @@
 use arc_swap::ArcSwap;
 use http::Uri;
 use prost_reflect::DescriptorPool;
-use restate_schema_api::discovery::{DiscoveredMethodMetadata, ServiceRegistrationRequest};
+use restate_schema_api::discovery::{
+    DiscoveredInstanceType, DiscoveredMethodMetadata, ServiceRegistrationRequest,
+};
 use restate_schema_api::endpoint::EndpointMetadata;
-use restate_schema_api::key;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 use serde::{Deserialize, Serialize};
@@ -66,7 +67,7 @@ pub enum RegistrationError {
 pub struct InsertServiceUpdateCommand {
     pub name: String,
     pub revision: ServiceRevision,
-    pub instance_type: key::ServiceInstanceType,
+    pub instance_type: DiscoveredInstanceType,
     pub methods: HashMap<String, DiscoveredMethodMetadata>,
 }
 

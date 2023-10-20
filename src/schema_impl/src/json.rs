@@ -98,7 +98,7 @@ mod tests {
     use super::*;
 
     use crate::schemas_impl::{
-        MethodSchemas, ServiceInstanceType, ServiceLocation, ServiceSchemas,
+        InstanceTypeMetadata, MethodSchemas, ServiceLocation, ServiceSchemas,
     };
     use prost_reflect::{MethodDescriptor, ServiceDescriptor};
     use serde::Serialize;
@@ -130,7 +130,7 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
-                instance_type: ServiceInstanceType::Unkeyed,
+                instance_type: InstanceTypeMetadata::Unkeyed,
                 location: ServiceLocation::ServiceEndpoint {
                     latest_endpoint: "".to_string(),
                     public: true,

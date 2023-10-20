@@ -25,10 +25,10 @@ use prost_reflect::{
 use restate_errors::{warn_it, META0001, META0002, META0003, META0007, META0008};
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_schema_api::discovery::{
-    DiscoveredInstanceType, DiscoveredMethodMetadata, FieldAnnotation, ServiceRegistrationRequest,
+    DiscoveredInstanceType, DiscoveredMethodMetadata, FieldAnnotation, KeyStructure,
+    ServiceRegistrationRequest,
 };
 use restate_schema_api::endpoint::ProtocolType;
-use restate_schema_api::key::KeyStructure;
 use restate_types::retries::RetryPolicy;
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.

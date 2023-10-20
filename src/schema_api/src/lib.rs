@@ -204,21 +204,6 @@ pub mod service {
         Singleton,
     }
 
-    #[cfg(any(
-        feature = "key_extraction",
-        feature = "key_expansion",
-        feature = "json_key_conversion"
-    ))]
-    impl From<&crate::key::ServiceInstanceType> for InstanceType {
-        fn from(value: &crate::key::ServiceInstanceType) -> Self {
-            match value {
-                crate::key::ServiceInstanceType::Keyed { .. } => InstanceType::Keyed,
-                crate::key::ServiceInstanceType::Unkeyed => InstanceType::Unkeyed,
-                crate::key::ServiceInstanceType::Singleton => InstanceType::Singleton,
-            }
-        }
-    }
-
     #[derive(Debug, Clone)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
@@ -291,10 +276,18 @@ pub mod discovery {
         EventMetadata,
     }
 
+    /// This structure provides the directives to the key parser to parse nested messages.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub enum KeyStructure {
+        Scalar,
+        Nested(std::collections::BTreeMap<u32, KeyStructure>),
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub enum DiscoveredInstanceType {
-        Keyed(super::key::KeyStructure),
+        Keyed(KeyStructure),
         Unkeyed,
         Singleton,
     }
@@ -415,53 +408,6 @@ pub mod json {
     feature = "json_key_conversion"
 ))]
 pub mod key {
-    // TODO we can move this back in schema_impl
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    pub enum ServiceInstanceType {
-        Keyed {
-            /// The `key_structure` of the key field. Every method in a keyed service MUST have the same key type,
-            /// hence the key structure is the same.
-            key_structure: KeyStructure,
-            /// Each method request message might represent the key with a different field number. E.g.
-            ///
-            /// ```protobuf
-            /// message SayHelloRequest {
-            ///   Person person = 1 [(dev.restate.ext.field) = KEY];
-            /// }
-            ///
-            /// message SayByeRequest {
-            ///   Person person = 2 [(dev.restate.ext.field) = KEY];
-            /// }
-            /// ```
-            service_methods_key_field_root_number: std::collections::HashMap<String, u32>,
-        },
-        Unkeyed,
-        Singleton,
-    }
-
-    impl ServiceInstanceType {
-        pub fn keyed_with_scalar_key<'a>(
-            methods: impl IntoIterator<Item = (&'a str, u32)>,
-        ) -> Self {
-            Self::Keyed {
-                key_structure: KeyStructure::Scalar,
-                service_methods_key_field_root_number: methods
-                    .into_iter()
-                    .map(|(k, v)| (k.to_string(), v))
-                    .collect(),
-            }
-        }
-    }
-
-    /// This structure provides the directives to the key parser to parse nested messages.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    pub enum KeyStructure {
-        Scalar,
-        Nested(std::collections::BTreeMap<u32, KeyStructure>),
-    }
-
     #[cfg(feature = "key_extraction")]
     pub mod extraction {
         use bytes::Bytes;
