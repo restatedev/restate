@@ -40,7 +40,7 @@ http-body = "0.4"
 hyper = { workspace = true, features = ["http1", "http2", "server", "tcp", "stream", "runtime"] }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
-tonic-web = "0.9.2"
+tonic-web = "0.10.2"
 
 # Tracing
 opentelemetry = { workspace = true }

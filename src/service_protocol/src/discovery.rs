@@ -292,10 +292,10 @@ impl ServiceDiscovery {
         Ok(DiscoveredEndpointMetadata {
             services,
             descriptor_pool,
-            protocol_type: match pb::ProtocolMode::from_i32(response.protocol_mode) {
-                Some(pb::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
-                Some(pb::ProtocolMode::RequestResponse) => ProtocolType::RequestResponse,
-                None => {
+            protocol_type: match pb::ProtocolMode::try_from(response.protocol_mode) {
+                Ok(pb::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
+                Ok(pb::ProtocolMode::RequestResponse) => ProtocolType::RequestResponse,
+                Err(_) => {
                     return Err(ServiceDiscoveryError::BadResponse(
                         "cannot decode protocol_mode",
                     ))

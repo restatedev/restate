@@ -151,6 +151,7 @@ impl TracingOptions {
         let tracer = SpanModifyingTracer::new(provider.versioned_tracer(
             "opentelemetry-otlp",
             Some(env!("CARGO_PKG_VERSION")),
+            None::<&'static str>,
             None,
         ));
         let _ = opentelemetry::global::set_tracer_provider(provider);

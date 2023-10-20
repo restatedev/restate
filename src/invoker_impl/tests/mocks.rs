@@ -237,11 +237,7 @@ impl InMemoryJournalStorage {
 
         meta.length += 1;
 
-        // TODO workaround because we cannot implement From<EnrichedRawEntry> for PlainRawEntry due
-        //  to https://github.com/restatedev/restate/issues/420
-        let entry = PlainRawEntry::new(entry.header.into(), entry.entry);
-
-        journal.push(entry);
+        journal.push(entry.into());
     }
 
     pub async fn complete_entry<Codec>(
