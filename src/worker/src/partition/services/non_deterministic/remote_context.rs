@@ -165,7 +165,9 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     result.into(),
                 )
                 .await?;
-                EnrichedRawEntry::new(EnrichedEntryHeader::OutputStream, entry.entry)
+
+                // We don't store the entry, as we drop the journal in complete_invocation
+                return Ok(());
             }
             RawEntryHeader::GetState { is_completed } => {
                 let_assert!(
@@ -474,13 +476,24 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             }),
         };
 
+        // Save the done state
         self.set_state(
             &STATUS,
             &InvocationStatus::Done(get_result_response.clone()),
         )?;
+
+        // Cleanup the journal
+        let journal_service_id = self.journal_service_id();
+        if let Some((_, journal_meta)) = self.load_journal_metadata(&journal_service_id).await? {
+            self.drop_journal(self.journal_service_id(), journal_meta.length)
+        }
+
+        // Close pending recv and get result
         self.close_pending_recv(recv_response::Response::Messages(Bytes::new()))
             .await?;
         self.close_pending_get_result(get_result_response).await?;
+
+        // Schedule the cleanup
         self.delay_invoke(
             FullInvocationId::with_service_id(
                 self.full_invocation_id.service_id.clone(),
@@ -881,7 +894,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         self.clear_state(&PENDING_RECV_SINK);
         self.clear_state(&PENDING_GET_RESULT_SINKS);
 
-        // Drop journal
+        // We still need to drop the journal here, because cleanup might have been invoked from outside.
         let journal_service_id = self.journal_service_id();
         if let Some((_, journal_meta)) = self.load_journal_metadata(&journal_service_id).await? {
             self.drop_journal(journal_service_id, journal_meta.length)
@@ -1495,6 +1508,8 @@ mod tests {
                 response: some(eq(get_result_response::Response::Success(result)))
             })))
         );
+        ctx.state().assert_has_no_journal();
+
         assert_that!(
             effects,
             contains(pat!(Effect::DelayedInvoke {
@@ -1576,6 +1591,7 @@ mod tests {
                 response: some(eq(get_result_response::Response::Success(output.clone())))
             })))
         );
+        ctx.state().assert_has_no_journal();
 
         // Effects should contain responses for send, recv and get_result
         assert_that!(
@@ -2495,6 +2511,7 @@ mod tests {
                 )))
             })))
         );
+        ctx.state().assert_has_no_journal();
 
         // Effects should contain responses for recv and get_result
         assert_that!(

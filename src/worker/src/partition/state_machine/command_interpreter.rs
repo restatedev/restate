@@ -356,7 +356,6 @@ where
                 Ok((Some(fid), related_span))
             }
             InvocationStatus::Virtual {
-                journal_metadata,
                 kill_notification_target,
                 invocation_uuid,
                 ..
@@ -366,13 +365,8 @@ where
                     kill_notification_target.method,
                     invocation_uuid,
                 );
-                self.complete_invocation(
-                    full_invocation_id.clone(),
-                    state,
-                    journal_metadata.length,
-                    effects,
-                )
-                .await?;
+                // We don't need to drop the journal here,
+                // it's up to the registered notification service to take care of it.
                 Ok((Some(full_invocation_id), SpanRelation::None))
             }
             _ => {
