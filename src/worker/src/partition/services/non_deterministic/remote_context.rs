@@ -1010,6 +1010,12 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                     KILLED_INVOCATION_ERROR.into(),
                 )
                 .await?;
+            } else {
+                trace!(
+                    "Ignoring kill because invocation uuid don't match: {:?} != {:?}",
+                    invocation_uuid.as_bytes(),
+                    request.invocation_uuid
+                )
             }
         }
 
@@ -2409,6 +2415,144 @@ mod tests {
                     }
                 ))))
             )
+        );
+    }
+
+    // -- Kill command
+
+    #[test(tokio::test)]
+    async fn kill_invocation() {
+        let (mut ctx, operation_id, stream_id) = bootstrap_invocation_using_start().await;
+
+        // Create a pending recv
+        let (recv_fid, effects) = ctx
+            .invoke(|ctx| {
+                ctx.recv(
+                    RecvRequest {
+                        operation_id: operation_id.clone(),
+                        stream_id: stream_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            effects,
+            not(contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(recv_fid.clone()),
+                }
+            )))))
+        );
+
+        // Create pending get_result
+        let (get_result_fid, effects) = ctx
+            .invoke(|ctx| {
+                ctx.get_result(
+                    GetResultRequest {
+                        operation_id: operation_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            effects,
+            not(contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(get_result_fid.clone()),
+                }
+            )))))
+        );
+
+        // Get invocation_uuid
+        let (invocation_uuid, _, _) = ctx.state().assert_has_journal();
+
+        // Kill request
+        let (_, effects) = ctx
+            .invoke(|ctx| {
+                ctx.internal_on_kill(
+                    KillNotificationRequest {
+                        invocation_uuid: invocation_uuid.as_bytes().to_vec().into(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+
+        let expected_invocation_failure = InvocationFailure {
+            code: UserErrorCode::from(KILLED_INVOCATION_ERROR.code()).into(),
+            message: KILLED_INVOCATION_ERROR.message().to_string(),
+        };
+        assert_that!(
+            ctx.state().assert_has_state(&STATUS),
+            pat!(InvocationStatus::Done(pat!(GetResultResponse {
+                response: some(eq(get_result_response::Response::Failure(
+                    expected_invocation_failure.clone()
+                )))
+            })))
+        );
+
+        // Effects should contain responses for recv and get_result
+        assert_that!(
+            effects,
+            all!(
+                contains(pat!(Effect::OutboxMessage(pat!(
+                    OutboxMessage::IngressResponse {
+                        full_invocation_id: eq(recv_fid),
+                        // No special handling for blocked recv and kill: Once receiving empty bytes,
+                        // the client will go through GetResult and get the killed status.
+                        response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                            RecvResponse {
+                                response: some(eq(recv_response::Response::Messages(Bytes::new())))
+                            }
+                        ))))
+                    }
+                )))),
+                contains(pat!(Effect::OutboxMessage(pat!(
+                    OutboxMessage::IngressResponse {
+                        full_invocation_id: eq(get_result_fid),
+                        response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                            GetResultResponse {
+                                response: some(eq(get_result_response::Response::Failure(
+                                    expected_invocation_failure.clone()
+                                )))
+                            }
+                        ))))
+                    }
+                ))))
+            )
+        );
+
+        // Subsequent get result returns the killed status
+        let (get_result_fid, effects) = ctx
+            .invoke(|ctx| {
+                ctx.get_result(
+                    GetResultRequest {
+                        operation_id: operation_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(get_result_fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        GetResultResponse {
+                            response: some(eq(get_result_response::Response::Failure(
+                                expected_invocation_failure.clone()
+                            )))
+                        }
+                    ))))
+                }
+            ))))
         );
     }
 
