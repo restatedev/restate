@@ -2544,7 +2544,7 @@ mod tests {
             )
         );
 
-        // Subsequent get result returns the killed status
+        // Subsequent get result and start returns the killed status
         let (get_result_fid, effects) = ctx
             .invoke(|ctx| {
                 ctx.get_result(
@@ -2566,6 +2566,39 @@ mod tests {
                             response: some(eq(get_result_response::Response::Failure(
                                 expected_invocation_failure.clone()
                             )))
+                        }
+                    ))))
+                }
+            ))))
+        );
+        let (start_fid, effects) = ctx
+            .invoke(|ctx| {
+                ctx.start(
+                    StartRequest {
+                        operation_id: operation_id.clone(),
+                        ..Default::default()
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(start_fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        StartResponse {
+                            invocation_status: some(pat!(
+                                start_response::InvocationStatus::Completed(pat!(
+                                    GetResultResponse {
+                                        response: some(eq(get_result_response::Response::Failure(
+                                            expected_invocation_failure.clone()
+                                        )))
+                                    }
+                                ))
+                            ))
                         }
                     ))))
                 }
