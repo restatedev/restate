@@ -262,58 +262,59 @@ impl Default for SchemasInner {
             proto_symbols: Default::default(),
         };
 
+        enum Visibility {
+            Public,
+            IngressAvailable,
+            Internal,
+        }
+
         // Register built-in services
-        let mut register_built_in =
-            |svc_name: &'static str,
-             service_instance_type: InstanceTypeMetadata,
-             ingress_available: bool,
-             reflections_available: bool| {
-                assert!(!reflections_available || ingress_available);
-                inner.services.insert(
-                    svc_name.to_string(),
-                    ServiceSchemas::new_built_in(
-                        &restate_pb::get_service(svc_name),
-                        service_instance_type,
-                        ingress_available,
+        let mut register_built_in = |svc_name: &'static str,
+                                     service_instance_type: InstanceTypeMetadata,
+                                     visibility: Visibility| {
+            inner.services.insert(
+                svc_name.to_string(),
+                ServiceSchemas::new_built_in(
+                    &restate_pb::get_service(svc_name),
+                    service_instance_type,
+                    matches!(
+                        visibility,
+                        Visibility::Public | Visibility::IngressAvailable
                     ),
-                );
-                if reflections_available {
-                    inner.proto_symbols.add_service(
-                        &"self_ingress".to_string(),
-                        &restate_pb::get_service(svc_name),
-                    )
-                }
-            };
+                ),
+            );
+            if matches!(visibility, Visibility::Public) {
+                inner.proto_symbols.add_service(
+                    &"self_ingress".to_string(),
+                    &restate_pb::get_service(svc_name),
+                )
+            }
+        };
         register_built_in(
             restate_pb::REFLECTION_SERVICE_NAME,
             InstanceTypeMetadata::Unsupported,
-            true,
-            true,
+            Visibility::Public,
         );
         register_built_in(
             restate_pb::HEALTH_SERVICE_NAME,
             InstanceTypeMetadata::Unsupported,
-            true,
-            true,
+            Visibility::Public,
         );
         register_built_in(
             restate_pb::INGRESS_SERVICE_NAME,
             InstanceTypeMetadata::Unkeyed,
-            true,
-            true,
+            Visibility::Public,
         );
         register_built_in(
             restate_pb::AWAKEABLES_SERVICE_NAME,
             InstanceTypeMetadata::Unkeyed,
-            true,
-            true,
+            Visibility::Public,
         );
         register_built_in(
             restate_pb::PROXY_SERVICE_NAME,
             // Key must be manually provided when invoking the proxy service
             InstanceTypeMetadata::Unsupported,
-            false,
-            false,
+            Visibility::Internal,
         );
         register_built_in(
             restate_pb::REMOTE_CONTEXT_SERVICE_NAME,
@@ -324,14 +325,12 @@ impl Default for SchemasInner {
                 ("GetResult", 1),
                 ("Cleanup", 1),
             ]),
-            true,
-            false,
+            Visibility::IngressAvailable,
         );
         register_built_in(
             restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME,
             InstanceTypeMetadata::Unsupported,
-            false,
-            false,
+            Visibility::Internal,
         );
 
         inner
