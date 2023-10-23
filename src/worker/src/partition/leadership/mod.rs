@@ -76,8 +76,10 @@ pub(crate) struct FollowerState<I, N> {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    #[error("invoker or network is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    NotRunning(#[from] NotRunningError),
+    #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
+    Invoker(NotRunningError),
+    #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
+    Network(NotRunningError),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
     FailedShuffleTask(#[from] anyhow::Error),
     #[error(transparent)]
@@ -210,7 +212,8 @@ where
             follower_state
                 .network_handle
                 .register_shuffle(shuffle.peer_id(), shuffle.create_network_sender())
-                .await?;
+                .await
+                .map_err(Error::Network)?;
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
 
@@ -252,7 +255,8 @@ where
 
         invoker_handle
             .register_partition(partition_leader_epoch, partition_key_range, invoker_tx)
-            .await?;
+            .await
+            .map_err(Error::Invoker)?;
 
         let mut transaction = partition_storage.create_transaction();
 
@@ -274,7 +278,8 @@ where
                             full_invocation_id,
                             InvokeInputJournal::NoCachedJournal,
                         )
-                        .await?;
+                        .await
+                        .map_err(Error::Invoker)?;
                 } else {
                     built_in_invoked_services.push(full_invocation_id);
                 }
@@ -358,8 +363,8 @@ where
                 network_handle.unregister_shuffle(peer_id),
             );
 
-            abort_result?;
-            network_unregister_result?;
+            abort_result.map_err(Error::Invoker)?;
+            network_unregister_result.map_err(Error::Network)?;
 
             Self::unwrap_task_result(shuffle_result)?;
 
