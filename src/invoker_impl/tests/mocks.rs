@@ -237,7 +237,7 @@ impl InMemoryJournalStorage {
 
         meta.length += 1;
 
-        journal.push(entry.into());
+        journal.push(PlainRawEntry::from(entry));
     }
 
     pub async fn complete_entry<Codec>(
