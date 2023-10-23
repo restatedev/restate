@@ -362,11 +362,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             }
         };
 
-        self.store_journal_entry(
-            journal_service_id(operation_id.to_string()),
-            entry_index,
-            enriched_entry,
-        );
+        self.store_journal_entry(self.journal_service_id(), entry_index, enriched_entry);
         Ok(())
     }
 
@@ -555,6 +551,14 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             service_key,
         ))
     }
+
+    fn journal_service_id(&self) -> ServiceId {
+        // We use the same service key of the remote context to make sure the partition key is the same
+        ServiceId::new(
+            "dev.restate.EmbeddedHandlerJournal",
+            self.full_invocation_id.service_id.key.clone(),
+        )
+    }
 }
 
 #[async_trait::async_trait]
@@ -593,7 +597,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
             .await?;
 
         // Make sure we have a journal
-        let journal_service_id = journal_service_id(request.operation_id.clone());
+        let journal_service_id = self.journal_service_id();
         let (invocation_uuid, length, journal_entries) =
             if let Some((invocation_uuid, journal_metadata, journal_entries)) =
                 self.load_journal(&journal_service_id).await?
@@ -709,7 +713,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         self.reset_inactivity_timer(&request.operation_id, &request.stream_id)
             .await?;
 
-        let journal_service_id = journal_service_id(request.operation_id.clone());
+        let journal_service_id = self.journal_service_id();
         let (_, mut journal_metadata) = self
             .load_journal_metadata(&journal_service_id)
             .await?
@@ -852,12 +856,12 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         level = "trace",
         skip_all,
         fields(
-            restate.remote_context.operation_id = %request.operation_id
+            restate.remote_context.operation_id = %_request.operation_id
         )
     )]
     async fn cleanup(
         &mut self,
-        request: CleanupRequest,
+        _request: CleanupRequest,
         response_serializer: ResponseSerializer<()>,
     ) -> Result<(), InvocationError> {
         self.clear_state(&STATUS);
@@ -866,7 +870,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         self.clear_state(&PENDING_GET_RESULT_SINKS);
 
         // Drop journal
-        let journal_service_id = journal_service_id(request.operation_id);
+        let journal_service_id = self.journal_service_id();
         if let Some((_, journal_meta)) = self.load_journal_metadata(&journal_service_id).await? {
             self.drop_journal(journal_service_id, journal_meta.length)
         }
@@ -991,15 +995,6 @@ fn check_state_key(key: Bytes) -> Result<StateKey<Raw>, InvocationError> {
     Ok(StateKey::<Raw>::from(
         String::from_utf8(key.to_vec()).map_err(InvocationError::internal)?,
     ))
-}
-
-fn journal_service_id(operation_id: String) -> ServiceId {
-    let mut buf = Vec::with_capacity(
-        prost::encoding::encoded_len_varint(operation_id.len() as u64) + operation_id.len(),
-    );
-    prost::encoding::encode_varint(operation_id.len() as u64, &mut buf);
-    buf.put_slice(operation_id.as_bytes());
-    ServiceId::new("EmbeddedHandler", buf)
 }
 
 #[cfg(test)]
