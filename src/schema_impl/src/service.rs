@@ -13,7 +13,7 @@ use bytes::Bytes;
 use restate_schema_api::discovery::FieldAnnotation;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 
-use crate::schemas_impl::{ServiceInstanceType, ServiceLocation, ServiceSchemas};
+use crate::schemas_impl::{InstanceTypeMetadata, ServiceLocation, ServiceSchemas};
 use restate_schema_api::service::{MethodMetadata, ServiceMetadata, ServiceMetadataResolver};
 
 impl ServiceMetadataResolver for Schemas {
@@ -68,7 +68,7 @@ fn map_to_service_metadata(
                     input_type: method_desc.descriptor().input().full_name().to_string(),
                     output_type: method_desc.descriptor().output().full_name().to_string(),
                     key_field_number: match &service_schemas.instance_type {
-                        ServiceInstanceType::Keyed { .. } => Some(
+                        InstanceTypeMetadata::Keyed { .. } => Some(
                             method_desc
                                 .input_field_annotated(FieldAnnotation::Key)
                                 .expect("Method must exist in the parsed service methods"),
