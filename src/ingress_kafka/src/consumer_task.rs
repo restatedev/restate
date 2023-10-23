@@ -177,7 +177,10 @@ impl MessageSender {
         buf.freeze()
     }
 
-    fn generate_events_attributes(msg: &impl Message, src: &str) -> HashMap<String, String> {
+    fn generate_events_attributes(
+        msg: &impl Message,
+        subscription_id: &str,
+    ) -> HashMap<String, String> {
         let mut attributes = HashMap::with_capacity(3);
         attributes.insert("kafka.offset".to_string(), msg.offset().to_string());
         attributes.insert("kafka.topic".to_string(), msg.topic().to_string());
@@ -185,7 +188,10 @@ impl MessageSender {
         if let Some(timestamp) = msg.timestamp().to_millis() {
             attributes.insert("kafka.timestamp".to_string(), timestamp.to_string());
         }
-        attributes.insert("restate.source".to_string(), src.to_string());
+        attributes.insert(
+            "restate.subscription.id".to_string(),
+            subscription_id.to_string(),
+        );
         attributes
     }
 
