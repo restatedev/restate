@@ -19,24 +19,27 @@ use restate_pb::restate::internal::get_result_response::InvocationFailure;
 use restate_pb::restate::internal::{
     get_result_response, journal_completion_notification_request, recv_response, send_response,
     start_response, CleanupRequest, GetResultRequest, GetResultResponse,
-    InactivityTimeoutTimerRequest, JournalCompletionNotificationRequest, PingRequest, RecvRequest,
-    RecvResponse, RemoteContextBuiltInService, SendRequest, SendResponse, StartRequest,
-    StartResponse,
+    InactivityTimeoutTimerRequest, JournalCompletionNotificationRequest, KillNotificationRequest,
+    PingRequest, RecvRequest, RecvResponse, RemoteContextBuiltInService, SendRequest, SendResponse,
+    StartRequest, StartResponse,
 };
-use restate_pb::REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME;
+use restate_pb::{
+    REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME, REMOTE_CONTEXT_INTERNAL_ON_KILL_METHOD_NAME,
+};
 use restate_schema_api::key::KeyExtractor;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, ProtocolMessage,
 };
+use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{EnrichedEntryHeader, ResolutionResult};
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
 use restate_types::journal::{
-    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Entry, EntryResult,
-    GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry,
+    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Entry, GetStateEntry,
+    InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry,
 };
 use restate_types::journal::{Completion, CompletionResult};
 use serde::{Deserialize, Serialize};
@@ -155,9 +158,16 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                             .map_err(InvocationError::internal)?
                 );
 
-                self.complete_invocation(operation_id, retention_period_sec, entry_index, result)
-                    .await?;
-                EnrichedRawEntry::new(EnrichedEntryHeader::OutputStream, entry.entry)
+                self.complete_invocation(
+                    operation_id,
+                    retention_period_sec,
+                    entry_index,
+                    result.into(),
+                )
+                .await?;
+
+                // We don't store the entry, as we drop the journal in complete_invocation
+                return Ok(());
             }
             RawEntryHeader::GetState { is_completed } => {
                 let_assert!(
@@ -449,15 +459,15 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         operation_id: &str,
         retention_period_sec: u32,
         entry_index: EntryIndex,
-        result: EntryResult,
+        result: ResponseResult,
     ) -> Result<(), InvocationError> {
         let expiry_time = SystemTime::now() + Duration::from_secs(retention_period_sec as u64);
 
         let get_result_response = GetResultResponse {
             expiry_time: humantime::format_rfc3339(expiry_time).to_string(),
             response: Some(match result {
-                EntryResult::Success(s) => get_result_response::Response::Success(s),
-                EntryResult::Failure(code, msg) => {
+                ResponseResult::Success(s) => get_result_response::Response::Success(s),
+                ResponseResult::Failure(code, msg) => {
                     get_result_response::Response::Failure(InvocationFailure {
                         code: code.into(),
                         message: msg.to_string(),
@@ -466,13 +476,24 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             }),
         };
 
+        // Save the done state
         self.set_state(
             &STATUS,
             &InvocationStatus::Done(get_result_response.clone()),
         )?;
+
+        // Cleanup the journal
+        let journal_service_id = self.journal_service_id();
+        if let Some((_, journal_meta)) = self.load_journal_metadata(&journal_service_id).await? {
+            self.drop_journal(self.journal_service_id(), journal_meta.length)
+        }
+
+        // Close pending recv and get result
         self.close_pending_recv(recv_response::Response::Messages(Bytes::new()))
             .await?;
         self.close_pending_get_result(get_result_response).await?;
+
+        // Schedule the cleanup
         self.delay_invoke(
             FullInvocationId::with_service_id(
                 self.full_invocation_id.service_id.clone(),
@@ -614,9 +635,13 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                     journal_service_id.clone(),
                     invocation_uuid,
                     self.span_context.clone(),
-                    CompletionNotificationTarget {
+                    NotificationTarget {
                         service: self.full_invocation_id.service_id.clone(),
                         method: REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME.to_string(),
+                    },
+                    NotificationTarget {
+                        service: self.full_invocation_id.service_id.clone(),
+                        method: REMOTE_CONTEXT_INTERNAL_ON_KILL_METHOD_NAME.to_string(),
                     },
                 );
                 self.store_journal_entry(journal_service_id, 0, input_entry.clone());
@@ -869,7 +894,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         self.clear_state(&PENDING_RECV_SINK);
         self.clear_state(&PENDING_GET_RESULT_SINKS);
 
-        // Drop journal
+        // We still need to drop the journal here, because cleanup might have been invoked from outside.
         let journal_service_id = self.journal_service_id();
         if let Some((_, journal_meta)) = self.load_journal_metadata(&journal_service_id).await? {
             self.drop_journal(journal_service_id, journal_meta.length)
@@ -968,6 +993,42 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                         }
                     }
                 }
+            }
+        }
+
+        self.reply_to_caller(response_serializer.serialize_success(()));
+        Ok(())
+    }
+
+    #[instrument(level = "trace", skip_all)]
+    async fn internal_on_kill(
+        &mut self,
+        request: KillNotificationRequest,
+        response_serializer: ResponseSerializer<()>,
+    ) -> Result<(), InvocationError> {
+        if let Some(InvocationStatus::Executing {
+            invocation_uuid,
+            retention_period_sec,
+            ..
+        }) = self.load_state(&STATUS).await?
+        {
+            if invocation_uuid.as_bytes() == request.invocation_uuid {
+                self.complete_invocation(
+                    // It's ok to not set the operation_id here, because this is used for the CleanupRequest,
+                    // and it's used only for observability purposes.
+                    // The delivery of the cleanup request is hardwired with the service id, so it won't go through key extraction.
+                    "",
+                    retention_period_sec,
+                    0,
+                    KILLED_INVOCATION_ERROR.into(),
+                )
+                .await?;
+            } else {
+                trace!(
+                    "Ignoring kill because invocation uuid don't match: {:?} != {:?}",
+                    invocation_uuid.as_bytes(),
+                    request.invocation_uuid
+                )
             }
         }
 
@@ -1447,6 +1508,8 @@ mod tests {
                 response: some(eq(get_result_response::Response::Success(result)))
             })))
         );
+        ctx.state().assert_has_no_journal();
+
         assert_that!(
             effects,
             contains(pat!(Effect::DelayedInvoke {
@@ -1528,6 +1591,7 @@ mod tests {
                 response: some(eq(get_result_response::Response::Success(output.clone())))
             })))
         );
+        ctx.state().assert_has_no_journal();
 
         // Effects should contain responses for send, recv and get_result
         assert_that!(
@@ -2367,6 +2431,178 @@ mod tests {
                     }
                 ))))
             )
+        );
+    }
+
+    // -- Kill command
+
+    #[test(tokio::test)]
+    async fn kill_invocation() {
+        let (mut ctx, operation_id, stream_id) = bootstrap_invocation_using_start().await;
+
+        // Create a pending recv
+        let (recv_fid, effects) = ctx
+            .invoke(|ctx| {
+                ctx.recv(
+                    RecvRequest {
+                        operation_id: operation_id.clone(),
+                        stream_id: stream_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            effects,
+            not(contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(recv_fid.clone()),
+                }
+            )))))
+        );
+
+        // Create pending get_result
+        let (get_result_fid, effects) = ctx
+            .invoke(|ctx| {
+                ctx.get_result(
+                    GetResultRequest {
+                        operation_id: operation_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            effects,
+            not(contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(get_result_fid.clone()),
+                }
+            )))))
+        );
+
+        // Get invocation_uuid
+        let (invocation_uuid, _, _) = ctx.state().assert_has_journal();
+
+        // Kill request
+        let (_, effects) = ctx
+            .invoke(|ctx| {
+                ctx.internal_on_kill(
+                    KillNotificationRequest {
+                        invocation_uuid: invocation_uuid.as_bytes().to_vec().into(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+
+        let expected_invocation_failure = InvocationFailure {
+            code: UserErrorCode::from(KILLED_INVOCATION_ERROR.code()).into(),
+            message: KILLED_INVOCATION_ERROR.message().to_string(),
+        };
+        assert_that!(
+            ctx.state().assert_has_state(&STATUS),
+            pat!(InvocationStatus::Done(pat!(GetResultResponse {
+                response: some(eq(get_result_response::Response::Failure(
+                    expected_invocation_failure.clone()
+                )))
+            })))
+        );
+        ctx.state().assert_has_no_journal();
+
+        // Effects should contain responses for recv and get_result
+        assert_that!(
+            effects,
+            all!(
+                contains(pat!(Effect::OutboxMessage(pat!(
+                    OutboxMessage::IngressResponse {
+                        full_invocation_id: eq(recv_fid),
+                        // No special handling for blocked recv and kill: Once receiving empty bytes,
+                        // the client will go through GetResult and get the killed status.
+                        response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                            RecvResponse {
+                                response: some(eq(recv_response::Response::Messages(Bytes::new())))
+                            }
+                        ))))
+                    }
+                )))),
+                contains(pat!(Effect::OutboxMessage(pat!(
+                    OutboxMessage::IngressResponse {
+                        full_invocation_id: eq(get_result_fid),
+                        response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                            GetResultResponse {
+                                response: some(eq(get_result_response::Response::Failure(
+                                    expected_invocation_failure.clone()
+                                )))
+                            }
+                        ))))
+                    }
+                ))))
+            )
+        );
+
+        // Subsequent get result and start returns the killed status
+        let (get_result_fid, effects) = ctx
+            .invoke(|ctx| {
+                ctx.get_result(
+                    GetResultRequest {
+                        operation_id: operation_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(get_result_fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        GetResultResponse {
+                            response: some(eq(get_result_response::Response::Failure(
+                                expected_invocation_failure.clone()
+                            )))
+                        }
+                    ))))
+                }
+            ))))
+        );
+        let (start_fid, effects) = ctx
+            .invoke(|ctx| {
+                ctx.start(
+                    StartRequest {
+                        operation_id: operation_id.clone(),
+                        ..Default::default()
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(start_fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        StartResponse {
+                            invocation_status: some(pat!(
+                                start_response::InvocationStatus::Completed(pat!(
+                                    GetResultResponse {
+                                        response: some(eq(get_result_response::Response::Failure(
+                                            expected_invocation_failure.clone()
+                                        )))
+                                    }
+                                ))
+                            ))
+                        }
+                    ))))
+                }
+            ))))
         );
     }
 

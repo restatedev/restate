@@ -114,12 +114,14 @@ pub mod storage {
                                 invocation_uuid,
                                 journal_metadata,
                                 completion_notification_target,
+                                kill_notification_target,
                                 timestamps,
                             ) = r#virtual.try_into()?;
                             restate_storage_api::status_table::InvocationStatus::Virtual {
                                 invocation_uuid,
                                 journal_metadata,
                                 completion_notification_target,
+                                kill_notification_target,
                                 timestamps,
                             }
                         }
@@ -149,11 +151,13 @@ pub mod storage {
                             invocation_uuid,
                             journal_metadata,
                             completion_notification_target,
+                            kill_notification_target,
                             timestamps,
                         } => invocation_status::Status::Virtual(Virtual::from((
                             invocation_uuid,
                             journal_metadata,
                             completion_notification_target,
+                            kill_notification_target,
                             timestamps,
                         ))),
                         restate_storage_api::status_table::InvocationStatus::Free => {
@@ -340,7 +344,8 @@ pub mod storage {
                 for (
                     restate_types::identifiers::InvocationUuid,
                     restate_storage_api::status_table::JournalMetadata,
-                    restate_storage_api::status_table::CompletionNotificationTarget,
+                    restate_storage_api::status_table::NotificationTarget,
+                    restate_storage_api::status_table::NotificationTarget,
                     restate_storage_api::status_table::StatusTimestamps,
                 )
             {
@@ -355,12 +360,20 @@ pub mod storage {
                                 .ok_or(ConversionError::missing_field("journal_meta"))?,
                         )?;
                     let completion_notification_target =
-                        restate_storage_api::status_table::CompletionNotificationTarget {
+                        restate_storage_api::status_table::NotificationTarget {
                             service: ServiceId::new(
                                 value.completion_notification_target_service_name,
                                 value.completion_notification_target_service_key,
                             ),
                             method: value.completion_notification_target_method,
+                        };
+                    let kill_notification_target =
+                        restate_storage_api::status_table::NotificationTarget {
+                            service: ServiceId::new(
+                                value.kill_notification_target_service_name,
+                                value.kill_notification_target_service_key,
+                            ),
+                            method: value.kill_notification_target_method,
                         };
                     let timestamps = restate_storage_api::status_table::StatusTimestamps::new(
                         MillisSinceEpoch::new(value.creation_time),
@@ -371,6 +384,7 @@ pub mod storage {
                         invocation_uuid,
                         journal_metadata,
                         completion_notification_target,
+                        kill_notification_target,
                         timestamps,
                     ))
                 }
@@ -380,15 +394,23 @@ pub mod storage {
                 From<(
                     restate_types::identifiers::InvocationUuid,
                     restate_storage_api::status_table::JournalMetadata,
-                    restate_storage_api::status_table::CompletionNotificationTarget,
+                    restate_storage_api::status_table::NotificationTarget,
+                    restate_storage_api::status_table::NotificationTarget,
                     restate_storage_api::status_table::StatusTimestamps,
                 )> for Virtual
             {
                 fn from(
-                    (invocation_uuid, journal_metadata, completion_notification_target, timestamps): (
+                    (
+                        invocation_uuid,
+                        journal_metadata,
+                        completion_notification_target,
+                        kill_notification_target,
+                        timestamps,
+                    ): (
                         restate_types::identifiers::InvocationUuid,
                         restate_storage_api::status_table::JournalMetadata,
-                        restate_storage_api::status_table::CompletionNotificationTarget,
+                        restate_storage_api::status_table::NotificationTarget,
+                        restate_storage_api::status_table::NotificationTarget,
                         restate_storage_api::status_table::StatusTimestamps,
                     ),
                 ) -> Self {
@@ -407,6 +429,12 @@ pub mod storage {
                             .key,
                         completion_notification_target_method: completion_notification_target
                             .method,
+                        kill_notification_target_service_name: kill_notification_target
+                            .service
+                            .service_name
+                            .to_string(),
+                        kill_notification_target_service_key: kill_notification_target.service.key,
+                        kill_notification_target_method: kill_notification_target.method,
                         creation_time: timestamps.creation_time().as_u64(),
                         modification_time: timestamps.modification_time().as_u64(),
                     }

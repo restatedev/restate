@@ -60,7 +60,7 @@ impl StatusTimestamps {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct CompletionNotificationTarget {
+pub struct NotificationTarget {
     pub service: ServiceId,
     pub method: String,
 }
@@ -77,7 +77,8 @@ pub enum InvocationStatus {
         invocation_uuid: InvocationUuid,
         journal_metadata: JournalMetadata,
         timestamps: StatusTimestamps,
-        completion_notification_target: CompletionNotificationTarget,
+        completion_notification_target: NotificationTarget,
+        kill_notification_target: NotificationTarget,
     },
     /// Service instance is currently not invoked
     #[default]

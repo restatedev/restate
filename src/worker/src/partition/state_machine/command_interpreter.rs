@@ -23,7 +23,7 @@ use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
-use restate_types::errors::{InvocationError, InvocationErrorCode, RestateErrorCode};
+use restate_types::errors::{InvocationError, InvocationErrorCode, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
 };
@@ -40,11 +40,6 @@ use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::Deref;
 use tracing::{debug, instrument, trace};
-
-const KILLED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
-    InvocationErrorCode::Restate(RestateErrorCode::Killed),
-    "killed",
-);
 
 pub trait StateReader {
     // TODO: Replace with async trait or proper future
@@ -242,13 +237,15 @@ where
                 service_id,
                 invocation_uuid,
                 span_context,
-                notification_target,
+                completion_notification_target,
+                kill_notification_target,
             } => {
                 effects.create_virtual_journal(
                     service_id,
                     invocation_uuid,
                     span_context,
-                    notification_target,
+                    completion_notification_target,
+                    kill_notification_target,
                 );
             }
             NBISEffect::StoreEntry {
@@ -357,6 +354,20 @@ where
                     .kill_invocation(full_invocation_id, metadata, state, effects)
                     .await?;
                 Ok((Some(fid), related_span))
+            }
+            InvocationStatus::Virtual {
+                kill_notification_target,
+                invocation_uuid,
+                ..
+            } => {
+                effects.notify_virtual_journal_kill(
+                    kill_notification_target.service,
+                    kill_notification_target.method,
+                    invocation_uuid,
+                );
+                // We don't need to drop the journal here,
+                // it's up to the registered notification service to take care of it.
+                Ok((Some(full_invocation_id), SpanRelation::None))
             }
             _ => {
                 trace!(

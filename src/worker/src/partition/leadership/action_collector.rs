@@ -201,6 +201,31 @@ where
                     SpanRelation::None
                 )))).await;
             }
+            Action::NotifyVirtualJournalKill {
+                target_service,
+                method_name,
+                invocation_uuid,
+            } => {
+                // We need this to agree on the invocation uuid, which is randomly generated
+                // We could get rid of it if invocation uuids are deterministically generated.
+                let _ = self_proposal_tx
+                    .send(StateMachineAckCommand::no_ack(
+                        StateMachineCommand::Invocation(ServiceInvocation::new(
+                            FullInvocationId::with_service_id(
+                                target_service,
+                                InvocationUuid::now_v7(),
+                            ),
+                            method_name,
+                            restate_pb::restate::internal::KillNotificationRequest {
+                                invocation_uuid: Bytes::copy_from_slice(invocation_uuid.as_bytes()),
+                            }
+                            .encode_to_vec(),
+                            None,
+                            SpanRelation::None,
+                        )),
+                    ))
+                    .await;
+            }
         }
 
         Ok(())

@@ -19,7 +19,7 @@ use restate_pb::restate::internal::RemoteContextInvoker;
 use restate_pb::restate::IngressInvoker;
 use restate_schema_impl::Schemas;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::status_table::CompletionNotificationTarget;
+use restate_storage_api::status_table::NotificationTarget;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationUuid};
@@ -61,7 +61,8 @@ pub(crate) enum Effect {
         service_id: ServiceId,
         invocation_uuid: InvocationUuid,
         span_context: ServiceInvocationSpanContext,
-        notification_target: CompletionNotificationTarget,
+        completion_notification_target: NotificationTarget,
+        kill_notification_target: NotificationTarget,
     },
     StoreEntry {
         service_id: ServiceId,
@@ -270,13 +271,15 @@ impl<S: StateReader> InvocationContext<'_, S> {
         service_id: ServiceId,
         invocation_uuid: InvocationUuid,
         span_context: ServiceInvocationSpanContext,
-        notification_target: CompletionNotificationTarget,
+        completion_notification_target: NotificationTarget,
+        kill_notification_target: NotificationTarget,
     ) {
         self.effects_buffer.push(Effect::CreateJournal {
             service_id,
             invocation_uuid,
             span_context,
-            notification_target,
+            completion_notification_target,
+            kill_notification_target,
         });
     }
 

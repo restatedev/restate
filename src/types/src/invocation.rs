@@ -102,8 +102,14 @@ impl From<Result<Bytes, InvocationError>> for ResponseResult {
     fn from(value: Result<Bytes, InvocationError>) -> Self {
         match value {
             Ok(v) => ResponseResult::Success(v),
-            Err(e) => ResponseResult::Failure(e.code().into(), e.message().into()),
+            Err(e) => ResponseResult::from(e),
         }
+    }
+}
+
+impl From<InvocationError> for ResponseResult {
+    fn from(e: InvocationError) -> Self {
+        ResponseResult::Failure(e.code().into(), e.message().into())
     }
 }
 
