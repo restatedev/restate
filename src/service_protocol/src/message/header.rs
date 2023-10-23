@@ -263,7 +263,7 @@ impl TryFrom<u64> for MessageHeader {
     type Error = UnknownMessageType;
 
     /// Deserialize the protocol header.
-    /// TODO link protocol spec.
+    /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#message-header
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let ty_code = (value >> 48) as u16;
         let ty: MessageType = ty_code.try_into()?;
@@ -296,7 +296,7 @@ macro_rules! write_flag {
 
 impl From<MessageHeader> for u64 {
     /// Serialize the protocol header.
-    /// TODO link protocol spec.
+    /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#message-header
     fn from(message_header: MessageHeader) -> Self {
         let mut res =
             ((u16::from(message_header.ty) as u64) << 48) | (message_header.length as u64);
