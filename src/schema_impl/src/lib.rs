@@ -55,7 +55,7 @@ pub enum RegistrationError {
     #[error("unknown subscription id {0}")]
     UnknownSubscription(String),
     #[error("invalid subscription: {0}")]
-    // TODO add error code to describe how to set sink and source
+    #[code(restate_errors::META0009)]
     InvalidSubscription(anyhow::Error),
     #[error("a subscription with the same id {0} already exists in the registry")]
     OverrideSubscription(EndpointId),
