@@ -14,8 +14,7 @@ use crate::partition::{
 };
 use assert2::let_assert;
 use futures::{future, Stream, StreamExt};
-use restate_invoker_api::{InvokeInputJournal, ServiceNotRunning};
-use restate_network::NetworkNotRunning;
+use restate_invoker_api::InvokeInputJournal;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
@@ -32,6 +31,7 @@ use crate::partition::services::non_deterministic;
 use crate::partition::state_machine::{Action, StateReader, StateStorage};
 use crate::util::IdentitySender;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareActionCollector};
+use restate_errors::NotRunningError;
 use restate_schema_impl::Schemas;
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -77,9 +77,9 @@ pub(crate) struct FollowerState<I, N> {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Invoker(#[from] ServiceNotRunning),
+    Invoker(NotRunningError),
     #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Network(#[from] NetworkNotRunning),
+    Network(NotRunningError),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
     FailedShuffleTask(#[from] anyhow::Error),
     #[error(transparent)]
@@ -212,7 +212,8 @@ where
             follower_state
                 .network_handle
                 .register_shuffle(shuffle.peer_id(), shuffle.create_network_sender())
-                .await?;
+                .await
+                .map_err(Error::Network)?;
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
 
@@ -254,7 +255,8 @@ where
 
         invoker_handle
             .register_partition(partition_leader_epoch, partition_key_range, invoker_tx)
-            .await?;
+            .await
+            .map_err(Error::Invoker)?;
 
         let mut transaction = partition_storage.create_transaction();
 
@@ -276,7 +278,8 @@ where
                             full_invocation_id,
                             InvokeInputJournal::NoCachedJournal,
                         )
-                        .await?;
+                        .await
+                        .map_err(Error::Invoker)?;
                 } else {
                     built_in_invoked_services.push(full_invocation_id);
                 }
@@ -360,8 +363,8 @@ where
                 network_handle.unregister_shuffle(peer_id),
             );
 
-            abort_result?;
-            network_unregister_result?;
+            abort_result.map_err(Error::Invoker)?;
+            network_unregister_result.map_err(Error::Network)?;
 
             Self::unwrap_task_result(shuffle_result)?;
 

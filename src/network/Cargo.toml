@@ -13,6 +13,7 @@ publish = false
 anyhow = { workspace = true }
 bytes = { workspace = true }
 restate_types = { workspace = true }
+restate_errors = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 pin-project = { workspace = true }

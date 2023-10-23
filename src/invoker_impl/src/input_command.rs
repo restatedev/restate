@@ -10,9 +10,9 @@
 
 use futures::future::BoxFuture;
 use futures::FutureExt;
+use restate_errors::NotRunningError;
 use restate_invoker_api::{
-    Effect, InvocationStatusReport, InvokeInputJournal, ServiceHandle, ServiceNotRunning,
-    StatusHandle,
+    Effect, InvocationStatusReport, InvokeInputJournal, ServiceHandle, StatusHandle,
 };
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, PartitionKey, PartitionLeaderEpoch,
@@ -80,7 +80,7 @@ pub struct ChannelServiceHandle {
 }
 
 impl ServiceHandle for ChannelServiceHandle {
-    type Future = futures::future::Ready<Result<(), ServiceNotRunning>>;
+    type Future = futures::future::Ready<Result<(), NotRunningError>>;
 
     fn invoke(
         &mut self,
@@ -95,7 +95,7 @@ impl ServiceHandle for ChannelServiceHandle {
                     full_invocation_id,
                     journal,
                 }))
-                .map_err(|_| ServiceNotRunning),
+                .map_err(|_| NotRunningError),
         )
     }
 
@@ -112,7 +112,7 @@ impl ServiceHandle for ChannelServiceHandle {
                     full_invocation_id,
                     journal,
                 }))
-                .map_err(|_| ServiceNotRunning),
+                .map_err(|_| NotRunningError),
         )
     }
 
@@ -129,7 +129,7 @@ impl ServiceHandle for ChannelServiceHandle {
                     full_invocation_id,
                     completion,
                 })
-                .map_err(|_| ServiceNotRunning),
+                .map_err(|_| NotRunningError),
         )
     }
 
@@ -146,7 +146,7 @@ impl ServiceHandle for ChannelServiceHandle {
                     full_invocation_id,
                     entry_index,
                 })
-                .map_err(|_| ServiceNotRunning),
+                .map_err(|_| NotRunningError),
         )
     }
 
@@ -154,7 +154,7 @@ impl ServiceHandle for ChannelServiceHandle {
         futures::future::ready(
             self.input
                 .send(InputCommand::AbortAllPartition { partition })
-                .map_err(|_| ServiceNotRunning),
+                .map_err(|_| NotRunningError),
         )
     }
 
@@ -169,7 +169,7 @@ impl ServiceHandle for ChannelServiceHandle {
                     partition,
                     full_invocation_id,
                 })
-                .map_err(|_| ServiceNotRunning),
+                .map_err(|_| NotRunningError),
         )
     }
 
@@ -186,7 +186,7 @@ impl ServiceHandle for ChannelServiceHandle {
                     partition_key_range,
                     sender,
                 })
-                .map_err(|_| ServiceNotRunning),
+                .map_err(|_| NotRunningError),
         )
     }
 }

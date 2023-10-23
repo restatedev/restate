@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{NetworkCommand, NetworkHandle, NetworkNotRunning, ShuffleSender};
+use crate::{NetworkCommand, NetworkHandle, ShuffleSender};
+use restate_errors::NotRunningError;
 use restate_types::identifiers::PeerId;
 use tokio::sync::mpsc;
 
@@ -36,7 +37,7 @@ where
     ShuffleIn: Send + 'static,
     ShuffleOut: Send + 'static,
 {
-    type Future = futures::future::Ready<Result<(), NetworkNotRunning>>;
+    type Future = futures::future::Ready<Result<(), NotRunningError>>;
 
     fn register_shuffle(
         &self,
@@ -49,7 +50,7 @@ where
                     peer_id,
                     shuffle_tx,
                 })
-                .map_err(|_| NetworkNotRunning),
+                .map_err(|_| NotRunningError),
         )
     }
 
@@ -57,7 +58,7 @@ where
         futures::future::ready(
             self.network_command_tx
                 .send(NetworkCommand::UnregisterShuffle { peer_id })
-                .map_err(|_| NetworkNotRunning),
+                .map_err(|_| NotRunningError),
         )
     }
 

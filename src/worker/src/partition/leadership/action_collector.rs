@@ -20,7 +20,8 @@ use crate::util::IdentitySender;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use prost::Message;
-use restate_invoker_api::{ServiceHandle, ServiceNotRunning};
+use restate_errors::NotRunningError;
+use restate_invoker_api::ServiceHandle;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, PartitionLeaderEpoch};
 use restate_types::invocation::{ServiceInvocation, SpanRelation};
 use restate_types::journal::CompletionResult;
@@ -42,7 +43,7 @@ pub(crate) enum LeaderAwareActionCollector<'a, I, N> {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LeaderAwareActionCollectorError {
     #[error(transparent)]
-    Invoker(#[from] ServiceNotRunning),
+    Invoker(#[from] NotRunningError),
     #[error("failed to send ack response: {0}")]
     Ack(#[from] mpsc::error::SendError<StateMachineAckResponse>),
 }
