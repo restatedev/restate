@@ -12,6 +12,7 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+ahash = { workspace = true } # Required to due a yanked version used by datafusion
 async-trait = { version = "0.1.68" }
 bytes = { workspace = true }
 bytestring = { workspace = true }

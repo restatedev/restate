@@ -18,6 +18,7 @@ repository = "https://github.com/restatedev/restate"
 description = "Restate makes distributed applications easy!"
 
 [workspace.dependencies]
+ahash = "0.8.5"
 async-trait = "0.1.73"
 anyhow = "1.0.68"
 arc-swap = "1.6"
