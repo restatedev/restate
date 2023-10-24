@@ -8,13 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
+use std::future;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
+use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::primitives::Blob;
 use base64::display::Base64Display;
 use base64::Engine;
+use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
 use hyper::body::Bytes;
 use hyper::http::request::Parts;
@@ -22,27 +27,56 @@ use hyper::{body, Body, HeaderMap, Method, Request, Response};
 use serde::ser::{Error, SerializeMap};
 use serde::{Deserialize, Serialize, Serializer};
 
+pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 use restate_types::identifiers::LambdaARN;
 
-mod client_cache;
+mod options;
 
+#[derive(Clone, Debug, Default)]
 pub struct LambdaClient {
-    arn: String,
-    inner: aws_sdk_lambda::Client,
+    profile_name: Option<String>,
+    regional_clients:
+        Arc<Mutex<HashMap<String, Shared<BoxFuture<'static, aws_sdk_lambda::Client>>>>>,
 }
 
 impl LambdaClient {
-    pub async fn new(arn: &LambdaARN) -> Self {
-        let inner = client_cache::get(arn.region()).await;
+    pub fn new(profile_name: Option<String>) -> Self {
         Self {
-            arn: arn.to_string(),
-            inner,
+            profile_name,
+            regional_clients: Default::default(),
+        }
+    }
+
+    pub fn regional_client(
+        &self,
+        region: &str,
+    ) -> Shared<BoxFuture<'static, aws_sdk_lambda::Client>> {
+        let mut handle = self.regional_clients.lock().unwrap();
+        match handle.get(region) {
+            Some(client) => client.clone(),
+            None => {
+                let region = region.to_string();
+                let mut config = aws_config::from_env().region(Region::new(region.clone()));
+                if let Some(profile_name) = &self.profile_name {
+                    config = config.profile_name(profile_name.clone());
+                };
+                let client_fut = config
+                    .load()
+                    .map(|config| aws_sdk_lambda::Client::new(&config))
+                    .boxed()
+                    .shared();
+
+                handle.insert(region, client_fut.clone());
+                client_fut
+            }
         }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum LambdaError {
+    #[error("missing ARN extension in request")]
+    MissingARN,
     #[error("problem reading request body: {0}")]
     HyperError(hyper::Error),
     #[error("error returned from Invoke: {description}: {source}")]
@@ -72,46 +106,54 @@ impl hyper::service::Service<Request<Body>> for LambdaClient {
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
+        let mut req = req;
+        let arn = match req.extensions_mut().remove::<LambdaARN>() {
+            Some(arn) => arn,
+            None => return future::ready(Err(LambdaError::MissingARN)).boxed(),
+        };
+
         let (parts, body) = req.into_parts();
         let body = body::to_bytes(body);
-        let arn = self.arn.clone();
-        let client = self.inner.clone();
+        let client = self.regional_client(arn.region()).clone();
 
-        Box::pin(body.then(|body| async move {
-            let body = body.map_err(LambdaError::HyperError)?;
-            let payload: ApiGatewayProxyRequest = (parts, body).into();
+        futures::future::join(body, client)
+            .then(|(body, client)| async move {
+                let body = body.map_err(LambdaError::HyperError)?;
+                let payload: ApiGatewayProxyRequest = (parts, body).into();
 
-            let res = client
-                .invoke()
-                .function_name(arn)
-                .payload(Blob::new(
-                    serde_json::to_vec(&payload).map_err(LambdaError::SerializationError)?,
-                ))
-                .send()
-                .await
-                .map_err(|err| LambdaError::InvokeError {
-                    description: err.to_string(),
-                    source: err.into_source().unwrap_or_else(|err| err.into()),
-                })?;
+                let res = client
+                    .invoke()
+                    .function_name(arn.to_string())
+                    .payload(Blob::new(
+                        serde_json::to_vec(&payload).map_err(LambdaError::SerializationError)?,
+                    ))
+                    .send()
+                    .await
+                    .map_err(|err| LambdaError::InvokeError {
+                        description: err.to_string(),
+                        source: err.into_source().unwrap_or_else(|err| err.into()),
+                    })?;
 
-            if res.function_error().is_some() {
-                return if let Some(payload) = res.payload() {
-                    let error: serde_json::Value = serde_json::from_slice(payload.as_ref())
-                        .map_err(LambdaError::DeserializationError)?;
-                    Err(LambdaError::FunctionError(error))
-                } else {
-                    Err(LambdaError::FunctionError(serde_json::Value::Null))
-                };
-            }
+                if res.function_error().is_some() {
+                    return if let Some(payload) = res.payload() {
+                        let error: serde_json::Value = serde_json::from_slice(payload.as_ref())
+                            .map_err(LambdaError::DeserializationError)?;
+                        Err(LambdaError::FunctionError(error))
+                    } else {
+                        Err(LambdaError::FunctionError(serde_json::Value::Null))
+                    };
+                }
 
-            if let Some(payload) = res.payload() {
-                let response: ApiGatewayProxyResponse = serde_json::from_slice(payload.as_ref())
-                    .map_err(LambdaError::DeserializationError)?;
-                return response.try_into();
-            }
+                if let Some(payload) = res.payload() {
+                    let response: ApiGatewayProxyResponse =
+                        serde_json::from_slice(payload.as_ref())
+                            .map_err(LambdaError::DeserializationError)?;
+                    return response.try_into();
+                }
 
-            Err(LambdaError::MissingResponse)
-        }))
+                Err(LambdaError::MissingResponse)
+            })
+            .boxed()
     }
 }
 

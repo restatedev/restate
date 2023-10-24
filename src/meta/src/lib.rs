@@ -26,6 +26,11 @@ use storage::FileMetaStorage;
 use tokio::join;
 use tracing::{debug, error};
 
+pub use restate_lambda_client::{
+    Options as LambdaClientOptions, OptionsBuilder as LambdaClientOptionsBuilder,
+    OptionsBuilderError as LambdaClientOptionsBuilderError,
+};
+
 /// # Meta options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -55,6 +60,8 @@ pub struct Options {
     /// Can be overridden by the `HTTP_PROXY` environment variable.
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
     proxy_uri: Option<Proxy>,
+
+    lambda_client: LambdaClientOptions,
 }
 
 impl Default for Options {
@@ -64,6 +71,7 @@ impl Default for Options {
             rest_concurrency_limit: 1000,
             storage_path: "target/meta/".to_string(),
             proxy_uri: None,
+            lambda_client: Default::default(),
         }
     }
 }
@@ -80,6 +88,8 @@ impl Options {
     pub fn build(self) -> Meta {
         let schemas = Schemas::default();
 
+        let lambda_client = self.lambda_client.build();
+
         let service = MetaService::new(
             schemas.clone(),
             FileMetaStorage::new(self.storage_path.into()),
@@ -91,6 +101,7 @@ impl Options {
                 Some(Duration::from_secs(20)),
             ),
             self.proxy_uri,
+            lambda_client,
         );
 
         Meta {

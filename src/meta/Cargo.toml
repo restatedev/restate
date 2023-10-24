@@ -39,6 +39,7 @@ restate_fs_util = { workspace = true }
 
 restate_service_protocol = { workspace = true, features = ["discovery"] }
 restate_worker_api = { workspace = true }
+restate_lambda_client = { workspace = true }
 prost = { workspace = true }
 prost-reflect = { workspace = true }
 restate_schema_api = { workspace = true, features = ["service", "endpoint", "discovery", "serde", "serde_schema"] }

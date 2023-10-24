@@ -27,6 +27,7 @@ use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
 use std::collections::HashMap;
 
+use restate_lambda_client::LambdaClient;
 use std::future::Future;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -211,12 +212,17 @@ where
         storage: Storage,
         service_discovery_retry_policy: RetryPolicy,
         proxy: Option<Proxy>,
+        lambda_client: LambdaClient,
     ) -> Self {
         let (api_cmd_tx, api_cmd_rx) = mpsc::unbounded_channel();
 
         Self {
             schemas,
-            service_discovery: ServiceDiscovery::new(service_discovery_retry_policy, proxy),
+            service_discovery: ServiceDiscovery::new(
+                service_discovery_retry_policy,
+                proxy,
+                lambda_client,
+            ),
             storage,
             handle: MetaHandle(api_cmd_tx),
             api_cmd_rx,

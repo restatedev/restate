@@ -99,13 +99,19 @@ mod pb {
 pub struct ServiceDiscovery {
     retry_policy: RetryPolicy,
     proxy: Option<Proxy>,
+    lambda_client: LambdaClient,
 }
 
 impl ServiceDiscovery {
-    pub fn new(retry_policy: RetryPolicy, proxy: Option<Proxy>) -> Self {
+    pub fn new(
+        retry_policy: RetryPolicy,
+        proxy: Option<Proxy>,
+        lambda_client: LambdaClient,
+    ) -> Self {
         Self {
             retry_policy,
             proxy,
+            lambda_client,
         }
     }
 }
@@ -249,13 +255,17 @@ impl ServiceDiscovery {
                 let client = Client::builder()
                     .http2_only(true)
                     .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
-                self.invoke_discovery_endpoint(client, uri, additional_headers)
+                self.invoke_discovery_endpoint(client, uri, additional_headers, &())
                     .await?
             }
             DiscoverEndpoint::Lambda { arn } => {
-                let client = LambdaClient::new(arn).await;
-                self.invoke_discovery_endpoint(client, &arn.uri(), &HashMap::new())
-                    .await?
+                self.invoke_discovery_endpoint(
+                    self.lambda_client.clone(),
+                    &arn.uri(),
+                    &HashMap::new(),
+                    arn,
+                )
+                .await?
             }
         };
 
@@ -341,16 +351,18 @@ impl ServiceDiscovery {
         })
     }
 
-    async fn invoke_discovery_endpoint<S, F, E>(
+    async fn invoke_discovery_endpoint<S, F, E, T>(
         &self,
         mut client: S,
         uri: &Uri,
         additional_headers: &HashMap<HeaderName, HeaderValue>,
+        extension: &T,
     ) -> Result<(Parts, Bytes), ServiceDiscoveryError>
     where
         S: hyper::service::Service<Request<Body>, Response = Response<Body>, Future = F>,
         F: Future<Output = Result<Response<Body>, E>>,
         E: Into<ServiceDiscoveryError>,
+        T: Send + Sync + Clone + 'static,
     {
         let uri = append_discover(uri)?;
 
@@ -359,6 +371,7 @@ impl ServiceDiscovery {
             let mut request_builder = Request::builder()
                 .method(Method::POST)
                 .uri(uri.clone())
+                .extension(extension.clone())
                 .header(CONTENT_TYPE, APPLICATION_PROTO)
                 .header(ACCEPT, APPLICATION_PROTO);
             request_builder
