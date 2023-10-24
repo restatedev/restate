@@ -735,9 +735,11 @@ where
             ),
         );
 
-        // Inject additional headers
-        for (header_name, header_value) in endpoint_metadata.additional_headers() {
-            http_request_builder = http_request_builder.header(header_name, header_value);
+        if let Some(additional_headers) = endpoint_metadata.additional_headers() {
+            // Inject additional headers
+            for (header_name, header_value) in additional_headers {
+                http_request_builder = http_request_builder.header(header_name, header_value);
+            }
         }
 
         let http_request = http_request_builder
@@ -748,7 +750,7 @@ where
         (http_stream_tx, http_request)
     }
 
-    fn append_path(uri: &Uri, fragments: &[&str]) -> Uri {
+    fn append_path(uri: Uri, fragments: &[&str]) -> Uri {
         let p = format!(
             "{}/{}",
             match uri.path().strip_suffix('/') {
@@ -757,17 +759,18 @@ where
             },
             fragments.join("/")
         );
+        let parts = uri.into_parts();
 
         Uri::builder()
             .authority(
-                uri.authority()
-                    .expect("The function endpoint URI must have the authority")
-                    .clone(),
+                parts
+                    .authority
+                    .expect("The function endpoint URI must have the authority"),
             )
             .scheme(
-                uri.scheme()
-                    .expect("The function endpoint URI must have the scheme")
-                    .clone(),
+                parts
+                    .scheme
+                    .expect("The function endpoint URI must have the scheme"),
             )
             .path_and_query(p)
             .build()

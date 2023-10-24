@@ -9,26 +9,31 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::future::Future;
 
 use bytes::Bytes;
-use codederror::CodedError;
+
 use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::response::Parts;
 use hyper::http::{HeaderName, HeaderValue};
-use hyper::{Body, Client, Method, Request, Uri};
+use hyper::{Body, Client, Method, Request, Response, Uri};
 use hyper_rustls::HttpsConnectorBuilder;
 use prost::{DecodeError, Message};
 use prost_reflect::{
     Cardinality, DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind,
     MethodDescriptor, ServiceDescriptor,
 };
+
+use codederror::CodedError;
 use restate_errors::{warn_it, META0001, META0002, META0003, META0007, META0008};
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
+use restate_lambda_client::{LambdaClient, LambdaError};
 use restate_schema_api::discovery::{
     DiscoveredInstanceType, DiscoveredMethodMetadata, FieldAnnotation, KeyStructure,
     ServiceRegistrationRequest,
 };
 use restate_schema_api::endpoint::ProtocolType;
+use restate_types::identifiers::LambdaARN;
 use restate_types::retries::RetryPolicy;
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
@@ -52,6 +57,9 @@ const EVENT_METADATA_FIELD_EXT: i32 = 2;
 const DISCOVER_PATH: &str = "/discover";
 
 mod pb {
+    pub use generated_structs::ProtocolMode;
+    pub use generated_structs::ServiceDiscoveryRequest;
+
     use super::*;
 
     mod generated_structs {
@@ -63,8 +71,6 @@ mod pb {
             "/dev.restate.service.discovery.rs"
         ));
     }
-    pub use generated_structs::ProtocolMode;
-    pub use generated_structs::ServiceDiscoveryRequest;
 
     // We manually define the protobuf struct for the response here because prost-build
     // won't parse extensions in ServiceDiscoveryResponse.files
@@ -102,6 +108,16 @@ impl ServiceDiscovery {
             proxy,
         }
     }
+}
+
+pub enum DiscoverEndpoint {
+    Http {
+        uri: Uri,
+        additional_headers: HashMap<HeaderName, HeaderValue>,
+    },
+    Lambda {
+        arn: LambdaARN,
+    },
 }
 
 #[derive(Debug)]
@@ -193,6 +209,9 @@ pub enum ServiceDiscoveryError {
     #[error("retry limit exhausted. Last hyper error: {0}")]
     #[code(META0003)]
     Hyper(#[from] hyper::Error),
+    #[error("retry limit exhausted. Last lambda error: {0}")]
+    #[code(META0003)]
+    Lambda(#[from] LambdaError),
 }
 
 impl ServiceDiscoveryError {
@@ -215,12 +234,30 @@ impl ServiceDiscoveryError {
 impl ServiceDiscovery {
     pub async fn discover(
         &self,
-        uri: &Uri,
-        additional_headers: &HashMap<HeaderName, HeaderValue>,
+        endpoint: &DiscoverEndpoint,
     ) -> Result<DiscoveredEndpointMetadata, ServiceDiscoveryError> {
-        let (mut parts, body) = self
-            .invoke_discovery_endpoint(uri, additional_headers)
-            .await?;
+        let (mut parts, body) = match endpoint {
+            DiscoverEndpoint::Http {
+                uri,
+                additional_headers,
+            } => {
+                let connector = HttpsConnectorBuilder::new()
+                    .with_native_roots()
+                    .https_or_http()
+                    .enable_http2()
+                    .build();
+                let client = Client::builder()
+                    .http2_only(true)
+                    .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
+                self.invoke_discovery_endpoint(client, uri, additional_headers)
+                    .await?
+            }
+            DiscoverEndpoint::Lambda { arn } => {
+                let client = LambdaClient::new(arn).await;
+                self.invoke_discovery_endpoint(client, &arn.uri(), &HashMap::new())
+                    .await?
+            }
+        };
 
         // Validate response parts.
         // No need to retry these: if the validation fails, they're sdk bugs.
@@ -232,7 +269,7 @@ impl ServiceDiscovery {
             _ => {
                 return Err(ServiceDiscoveryError::BadResponse(
                     "Bad content type header",
-                ))
+                ));
             }
         }
 
@@ -298,25 +335,23 @@ impl ServiceDiscovery {
                 Err(_) => {
                     return Err(ServiceDiscoveryError::BadResponse(
                         "cannot decode protocol_mode",
-                    ))
+                    ));
                 }
             },
         })
     }
 
-    async fn invoke_discovery_endpoint(
+    async fn invoke_discovery_endpoint<S, F, E>(
         &self,
+        mut client: S,
         uri: &Uri,
         additional_headers: &HashMap<HeaderName, HeaderValue>,
-    ) -> Result<(Parts, Bytes), ServiceDiscoveryError> {
-        let connector = HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .https_or_http()
-            .enable_http2()
-            .build();
-        let client = Client::builder()
-            .http2_only(true)
-            .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
+    ) -> Result<(Parts, Bytes), ServiceDiscoveryError>
+    where
+        S: hyper::service::Service<Request<Body>, Response = Response<Body>, Future = F>,
+        F: Future<Output = Result<Response<Body>, E>>,
+        E: Into<ServiceDiscoveryError>,
+    {
         let uri = append_discover(uri)?;
 
         let mut retry_iter = self.retry_policy.clone().into_iter();
@@ -335,9 +370,9 @@ impl ServiceDiscovery {
                 .body(Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()))
                 .expect("Building the request is not supposed to fail");
 
-            let response_fut = client.request(request);
+            let response_fut = client.call(request);
             let response = async {
-                let (parts, body) = response_fut.await?.into_parts();
+                let (parts, body) = response_fut.await.map_err(Into::into)?.into_parts();
 
                 if !parts.status.is_success() {
                     return Err(ServiceDiscoveryError::BadStatusCode(parts.status.as_u16()));
@@ -662,7 +697,6 @@ mod prost_reflect_types {
         encoding::{encode_key, skip_field, DecodeContext, WireType},
         DecodeError, Message,
     };
-
     pub(crate) use prost_types::{
         enum_descriptor_proto, field_descriptor_proto, EnumOptions, EnumValueOptions,
         ExtensionRangeOptions, FieldOptions, FileOptions, MessageOptions, MethodOptions,

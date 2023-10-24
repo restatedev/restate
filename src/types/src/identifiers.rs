@@ -17,8 +17,10 @@ use bytes::Bytes;
 use bytestring::ByteString;
 
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::mem::size_of;
 use std::str::FromStr;
+use tonic::transport::Uri;
 use uuid::Uuid;
 
 /// Identifying a member of a raft group
@@ -421,6 +423,112 @@ fn display_invocation_id(
             &BASE64_URL_SAFE_NO_PAD
         ),
     )
+}
+
+#[derive(Debug, Clone)]
+pub struct LambdaARN {
+    partition: String,
+    region: String,
+    account_id: String,
+    name: String,
+    version: String,
+}
+
+impl LambdaARN {
+    pub fn region(&self) -> &str {
+        &self.region
+    }
+}
+
+impl Display for LambdaARN {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let LambdaARN {
+            partition,
+            region,
+            account_id,
+            name,
+            version,
+        } = self;
+        write!(
+            f,
+            "arn:{partition}:lambda:{region}:{account_id}:function:{name}:{version}"
+        )
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidLambdaARN {
+    #[error("ARN must have 7 components delimited by `:`")]
+    InvalidFormat,
+    #[error("First component of the ARN must be `arn`")]
+    InvalidPrefix,
+    #[error(
+        "Partition, service, region, account ID, function name and version must all be non-empty"
+    )]
+    InvalidComponent,
+    #[error("ARN must be for the lambda service")]
+    InvalidService,
+}
+
+impl LambdaARN {
+    // Lambda's don't inherently have a URI, so we fake a sensible one for use as Host header and in logs
+    // arn:aws:lambda:aws-region:acct-id:function:helloworld:42 -> lambda://42.helloworld.acct-id.aws-region.aws
+    pub fn uri(&self) -> Uri {
+        let LambdaARN {
+            partition,
+            region,
+            account_id,
+            name,
+            version,
+        } = self;
+        Uri::builder()
+            .scheme("lambda")
+            .authority(format!(
+                "{version}.{name}.{account_id}.{region}.{partition}"
+            ))
+            .build()
+            .expect("lambda arn must create a valid url")
+    }
+}
+
+impl FromStr for LambdaARN {
+    type Err = InvalidLambdaARN;
+
+    fn from_str(arn: &str) -> Result<Self, Self::Err> {
+        let mut split = arn.splitn(7, ':');
+        let invalid_format = || InvalidLambdaARN::InvalidFormat;
+        let arn = split.next().ok_or_else(invalid_format)?;
+        let partition = split.next().ok_or_else(invalid_format)?;
+        let service = split.next().ok_or_else(invalid_format)?;
+        let region = split.next().ok_or_else(invalid_format)?;
+        let account_id = split.next().ok_or_else(invalid_format)?;
+        let name = split.next().ok_or_else(invalid_format)?;
+        let version = split.next().ok_or_else(invalid_format)?;
+
+        if arn != "arn" {
+            return Err(InvalidLambdaARN::InvalidPrefix);
+        }
+        if partition.is_empty()
+            || service.is_empty()
+            || region.is_empty()
+            || account_id.is_empty()
+            || name.is_empty()
+            || version.is_empty()
+        {
+            return Err(InvalidLambdaARN::InvalidComponent);
+        }
+        if service != "lambda" {
+            return Err(InvalidLambdaARN::InvalidService);
+        }
+
+        Ok(Self {
+            partition: partition.to_string(),
+            region: region.to_string(),
+            account_id: account_id.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+        })
+    }
 }
 
 #[cfg(any(test, feature = "mocks"))]

@@ -116,7 +116,7 @@ mod mocks {
             .apply_updates(
                 schemas
                     .compute_new_endpoint_updates(
-                        EndpointMetadata::new(
+                        EndpointMetadata::new_http(
                             "http://localhost:9080".parse().unwrap(),
                             ProtocolType::BidiStream,
                             DeliveryOptions::default(),

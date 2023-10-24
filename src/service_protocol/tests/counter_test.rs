@@ -24,10 +24,10 @@ async fn counter_discovery() {
     let discovery = ServiceDiscovery::new(RetryPolicy::None, None);
 
     let discovered_metadata = discovery
-        .discover(
-            &Uri::from_static("http://localhost:9080"),
-            &Default::default(),
-        )
+        .discover(&DiscoverEndpoint::Http {
+            uri: Uri::from_static("http://localhost:9080"),
+            additional_headers: Default::default(),
+        })
         .await
         .unwrap();
 

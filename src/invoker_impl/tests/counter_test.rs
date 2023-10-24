@@ -141,7 +141,7 @@ async fn bidi_stream() {
     let mut endpoint_metadata_registry = MockEndpointMetadataRegistry::default();
     endpoint_metadata_registry.mock_service_with_metadata(
         &fid.service_id.service_name,
-        EndpointMetadata::new(
+        EndpointMetadata::new_http(
             Uri::from_static("http://localhost:9080"),
             ProtocolType::BidiStream,
             DeliveryOptions::default(),

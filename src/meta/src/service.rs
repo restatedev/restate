@@ -10,7 +10,6 @@
 
 use super::storage::{MetaStorage, MetaStorageError};
 
-use hyper::http::{HeaderName, HeaderValue};
 use hyper::Uri;
 use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
@@ -20,11 +19,14 @@ use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
 use restate_schema_impl::{
     InsertServiceUpdateCommand, RegistrationError, Schemas, SchemasUpdateCommand,
 };
-use restate_service_protocol::discovery::{ServiceDiscovery, ServiceDiscoveryError};
+use restate_service_protocol::discovery::{
+    DiscoverEndpoint, ServiceDiscovery, ServiceDiscoveryError,
+};
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
 use std::collections::HashMap;
+
 use std::future::Future;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -56,8 +58,7 @@ pub struct MetaHandle(UnboundedCommandSender<MetaHandleRequest, MetaHandleRespon
 
 enum MetaHandleRequest {
     DiscoverEndpoint {
-        uri: Uri,
-        additional_headers: HashMap<HeaderName, HeaderValue>,
+        endpoint: DiscoverEndpoint,
         force: bool,
     },
     ModifyService {
@@ -94,15 +95,11 @@ enum MetaHandleResponse {
 impl MetaHandle {
     pub(crate) async fn register_endpoint(
         &self,
-        uri: Uri,
-        additional_headers: HashMap<HeaderName, HeaderValue>,
+        endpoint: DiscoverEndpoint,
         force: bool,
     ) -> Result<DiscoverEndpointResponse, MetaError> {
-        let (cmd, response_tx) = Command::prepare(MetaHandleRequest::DiscoverEndpoint {
-            uri,
-            additional_headers,
-            force,
-        });
+        let (cmd, response_tx) =
+            Command::prepare(MetaHandleRequest::DiscoverEndpoint { endpoint, force });
         self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
         response_tx
             .await
@@ -260,8 +257,8 @@ where
                     let (req, mut replier) = cmd.expect("This channel should never be closed").into_inner();
 
                     let res = match req {
-                        MetaHandleRequest::DiscoverEndpoint { uri, additional_headers, force } => MetaHandleResponse::DiscoverEndpoint(
-                            self.discover_endpoint(uri, additional_headers, force, replier.aborted()).await
+                        MetaHandleRequest::DiscoverEndpoint { endpoint, force } => MetaHandleResponse::DiscoverEndpoint(
+                            self.discover_endpoint(endpoint, force, replier.aborted()).await
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
@@ -325,25 +322,39 @@ where
 
     async fn discover_endpoint(
         &mut self,
-        uri: Uri,
-        additional_headers: HashMap<HeaderName, HeaderValue>,
+        endpoint: DiscoverEndpoint,
         force: bool,
         abort_signal: impl Future<Output = ()>,
     ) -> Result<DiscoverEndpointResponse, MetaError> {
-        debug!(http.url = %uri, "Discovering Service endpoint");
+        match &endpoint {
+            DiscoverEndpoint::Http { uri, .. } => {
+                debug!(http.url = %uri, "Discovering HTTP Service endpoint")
+            }
+            DiscoverEndpoint::Lambda { arn } => {
+                debug!(lambda.arn = %arn, "Discovering Lambda Service endpoint")
+            }
+        }
 
         let discovered_metadata = tokio::select! {
-            res = self.service_discovery.discover(&uri, &additional_headers) => res,
+            res = self.service_discovery.discover(&endpoint) => res,
             _ = abort_signal => return Err(MetaError::RequestAborted),
         }?;
 
-        // Compute the diff with the current state of Schemas
-        let schemas_update_commands = self.schemas.compute_new_endpoint_updates(
-            EndpointMetadata::new(
+        let endpoint_metadata = match endpoint {
+            DiscoverEndpoint::Http {
+                uri,
+                additional_headers,
+            } => EndpointMetadata::new_http(
                 uri.clone(),
                 discovered_metadata.protocol_type,
                 DeliveryOptions::new(additional_headers),
             ),
+            DiscoverEndpoint::Lambda { arn } => EndpointMetadata::new_lambda(arn),
+        };
+
+        // Compute the diff with the current state of Schemas
+        let schemas_update_commands = self.schemas.compute_new_endpoint_updates(
+            endpoint_metadata,
             discovered_metadata.services,
             discovered_metadata.descriptor_pool,
             force,
