@@ -470,12 +470,14 @@ pub enum InvalidLambdaARN {
     InvalidComponent,
     #[error("ARN must be for the lambda service")]
     InvalidService,
+    #[error("Could not create valid URI for this ARN; likely malformed")]
+    InvalidURI,
 }
 
 impl LambdaARN {
-    // Lambda's don't inherently have a URI, so we fake a sensible one for use as Host header and in logs
+    // Lambda's don't inherently have a URI, so we fake a sensible one for use as Host header
     // arn:aws:lambda:aws-region:acct-id:function:helloworld:42 -> lambda://42.helloworld.acct-id.aws-region.aws
-    pub fn uri(&self) -> Uri {
+    pub fn uri(&self) -> Result<Uri, http::Error> {
         let LambdaARN {
             partition,
             region,
@@ -490,7 +492,6 @@ impl LambdaARN {
             ))
             .path_and_query("/")
             .build()
-            .expect("lambda arn must create a valid url")
     }
 }
 
@@ -527,13 +528,20 @@ impl FromStr for LambdaARN {
             return Err(InvalidLambdaARN::InvalidComponent);
         }
 
-        Ok(Self {
+        let lambda = Self {
             partition: partition.to_string(),
             region: region.to_string(),
             account_id: account_id.to_string(),
             name: name.to_string(),
             version: version.to_string(),
-        })
+        };
+
+        // avoid a malformed arn causing a panic later on when building a uri; reject it during discovery
+        if let Err(_) = lambda.uri() {
+            return Err(InvalidLambdaARN::InvalidURI);
+        }
+
+        Ok(lambda)
     }
 }
 

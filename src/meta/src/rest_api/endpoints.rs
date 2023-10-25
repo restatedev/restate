@@ -16,10 +16,10 @@ use axum::http::{StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::{http, Json};
 use okapi_operation::*;
-use restate_schema_api::endpoint::{EndpointMetadataResolver, ProtocolType};
+use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
 use restate_serde_util::SerdeableHeaderHashMap;
 use restate_service_protocol::discovery::DiscoverEndpoint;
-use restate_types::identifiers::{EndpointId, InvalidLambdaARN, ServiceRevision};
+use restate_types::identifiers::{EndpointId, InvalidLambdaARN, LambdaARN, ServiceRevision};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::sync::Arc;
@@ -137,16 +137,47 @@ pub async fn create_service_endpoint<S, W>(
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ServiceEndpointResponse {
     id: EndpointId,
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    #[schemars(with = "String")]
-    uri: Uri,
-    protocol_type: ProtocolType,
-    #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
-    additional_headers: SerdeableHeaderHashMap,
+    #[serde(flatten)]
+    service_endpoint: ServiceEndpoint,
     /// # Services
     ///
     /// List of services exposed by this service endpoint.
     services: Vec<RegisterServiceResponse>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ServiceEndpoint {
+    Http {
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[schemars(with = "String")]
+        uri: Uri,
+        protocol_type: ProtocolType,
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        additional_headers: SerdeableHeaderHashMap,
+    },
+    Lambda {
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[schemars(with = "String")]
+        arn: LambdaARN,
+    },
+}
+
+impl From<EndpointMetadata> for ServiceEndpoint {
+    fn from(value: EndpointMetadata) -> Self {
+        match value {
+            EndpointMetadata::Http {
+                address,
+                protocol_type,
+                delivery_options,
+            } => Self::Http {
+                uri: address,
+                protocol_type,
+                additional_headers: delivery_options.additional_headers().into(),
+            },
+            EndpointMetadata::Lambda { arn } => Self::Lambda { arn },
+        }
+    }
 }
 
 /// Discover endpoint and return discovered endpoints.
@@ -172,13 +203,7 @@ pub async fn get_service_endpoint<S: EndpointMetadataResolver, W>(
 
     Ok(ServiceEndpointResponse {
         id: endpoint_id,
-        uri: endpoint_meta.address().clone(),
-        protocol_type: endpoint_meta.protocol_type(),
-        additional_headers: endpoint_meta
-            .additional_headers()
-            .cloned()
-            .unwrap_or_default()
-            .into(),
+        service_endpoint: endpoint_meta.into(),
         services: services
             .into_iter()
             .map(|(name, revision)| RegisterServiceResponse { name, revision })
@@ -209,13 +234,7 @@ pub async fn list_service_endpoints<S: EndpointMetadataResolver, W>(
             .into_iter()
             .map(|(endpoint_meta, services)| ServiceEndpointResponse {
                 id: endpoint_meta.id(),
-                uri: endpoint_meta.address().clone(),
-                protocol_type: endpoint_meta.protocol_type(),
-                additional_headers: endpoint_meta
-                    .additional_headers()
-                    .cloned()
-                    .unwrap_or_default()
-                    .into(),
+                service_endpoint: endpoint_meta.into(),
                 services: services
                     .into_iter()
                     .map(|(name, revision)| RegisterServiceResponse { name, revision })

@@ -131,6 +131,14 @@ impl InvokerError for InvocationTaskError {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ClientError {
+    #[error(transparent)]
+    Http(#[from] hyper::Error),
+    #[error(transparent)]
+    Lambda(#[from] LambdaError),
+}
+
 // Copy pasted from hyper::Error
 // https://github.com/hyperium/hyper/blob/40c01dfb4f87342a6f86f07564ddc482194c6240/src/error.rs#L229
 // TODO hopefully this code is not needed anymore with hyper 1.0,
@@ -434,10 +442,17 @@ where
 
         // Initialize the response stream state
         let mut http_stream_rx = match endpoint_metadata {
-            EndpointMetadata::Http { .. } => {
+            EndpointMetadata::Http {
+                delivery_options, ..
+            } => {
+                // Inject additional headers
+                for (header_name, header_value) in delivery_options.additional_headers() {
+                    http_request.headers_mut().insert(header_name, header_value);
+                }
                 ResponseStreamState::initialize(&mut self.http_client, http_request)
             }
             EndpointMetadata::Lambda { arn } => {
+                // Inject arn
                 http_request.extensions_mut().insert(arn);
                 ResponseStreamState::initialize(&mut self.lambda_client, http_request)
             }
@@ -708,7 +723,7 @@ where
 
     fn prepare_uri(&self, method: &str, endpoint_metadata: &EndpointMetadata) -> Uri {
         Self::append_path(
-            endpoint_metadata.address(),
+            endpoint_metadata.uri(),
             &[
                 "invoke",
                 self.full_invocation_id
@@ -748,13 +763,6 @@ where
             ),
         );
 
-        if let Some(additional_headers) = endpoint_metadata.additional_headers() {
-            // Inject additional headers
-            for (header_name, header_value) in additional_headers {
-                http_request_builder = http_request_builder.header(header_name, header_value);
-            }
-        }
-
         let http_request = http_request_builder
             .body(req_body)
             // This fails only in case the URI is malformed, which should never happen
@@ -789,14 +797,6 @@ where
             .build()
             .unwrap()
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum ClientError {
-    #[error(transparent)]
-    Http(#[from] hyper::Error),
-    #[error(transparent)]
-    Lambda(#[from] LambdaError),
 }
 
 enum ResponseStreamState {

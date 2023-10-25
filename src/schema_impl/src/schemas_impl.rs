@@ -641,10 +641,9 @@ impl SchemasInner {
                 descriptor_pool,
             } => {
                 let endpoint_id = metadata.id();
-                let endpoint_address = metadata.address().clone();
                 info!(
                     restate.service_endpoint.id = %endpoint_id,
-                    restate.service_endpoint.address = %endpoint_address,
+                    restate.service_endpoint.address = %metadata.address(),
                     "Registering endpoint"
                 );
 
@@ -657,11 +656,9 @@ impl SchemasInner {
                     methods,
                 } in services
                 {
-                    let endpoint_address = metadata.address().clone();
-
                     info!(
                         rpc.service = name,
-                        restate.service_endpoint.address = %endpoint_address,
+                        restate.service_endpoint.address = %metadata.address(),
                         "Registering service"
                     );
                     let service_descriptor =

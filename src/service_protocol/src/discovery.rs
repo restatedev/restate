@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::future::Future;
 
 use bytes::Bytes;
@@ -261,8 +262,8 @@ impl ServiceDiscovery {
                 .await?
             }
             DiscoverEndpoint::Lambda { arn } => {
-                let uri = arn.uri();
-                self.invoke_discovery_endpoint(self.lambda_client.clone(), &uri, || {
+                let uri = arn.uri().expect("Lambda must be convertible into a valid URI. This should have been checked in service discovery. This is a bug, please contact the developers");
+                self.invoke_discovery_endpoint(self.lambda_client.clone(), &arn, || {
                     let mut request = Self::build_request(&uri, &HashMap::new())?;
                     request.extensions_mut().insert(arn.clone());
                     Ok(request)
@@ -377,7 +378,7 @@ impl ServiceDiscovery {
     async fn invoke_discovery_endpoint<S, F, E>(
         &self,
         mut client: S,
-        uri: &Uri,
+        address: impl Display,
         build_request: impl Fn() -> Result<Request<Body>, ServiceDiscoveryError>,
     ) -> Result<(Parts, Bytes), ServiceDiscoveryError>
     where
@@ -410,13 +411,13 @@ impl ServiceDiscovery {
             if let Some(next_retry_interval) = retry_iter.next() {
                 warn_it!(
                     e,
-                    "Error when discovering service endpoint at uri '{}'. Retrying in {} seconds",
-                    uri,
+                    "Error when discovering service endpoint at address '{}'. Retrying in {} seconds",
+                    address,
                     next_retry_interval.as_secs()
                 );
                 tokio::time::sleep(next_retry_interval).await;
             } else {
-                warn_it!(e, "Error when discovering service endpoint '{}'", uri);
+                warn_it!(e, "Error when discovering service endpoint '{}'", address);
                 return Err(e);
             }
         }

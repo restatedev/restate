@@ -16,6 +16,8 @@ pub mod endpoint {
     use http::Uri;
     use restate_types::identifiers::{EndpointId, LambdaARN, ServiceRevision};
     use std::collections::HashMap;
+    use std::fmt;
+    use std::fmt::{Display, Formatter};
 
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -43,13 +45,16 @@ pub mod endpoint {
         pub fn new(additional_headers: HashMap<HeaderName, HeaderValue>) -> Self {
             Self { additional_headers }
         }
+
+        pub fn additional_headers(self) -> HashMap<HeaderName, HeaderValue> {
+            self.additional_headers
+        }
     }
 
     #[derive(Debug, Clone)]
     #[cfg_attr(feature = "serde", serde_with::serde_as)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    #[serde(untagged)]
     pub enum EndpointMetadata {
         Http {
             #[cfg_attr(
@@ -88,26 +93,32 @@ pub mod endpoint {
             Self::Lambda { arn }
         }
 
-        pub fn address(&self) -> Uri {
+        pub fn uri(&self) -> Uri {
             match self {
                 EndpointMetadata::Http { address, .. } => address.clone(),
-                EndpointMetadata::Lambda { arn } => arn.uri(),
+                EndpointMetadata::Lambda { arn } => arn.uri().expect("Lambda must be convertible into a valid URI. This should have been checked in service discovery. This is a bug, please contact the developers"),
             }
+        }
+
+        // address returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
+        // and for Lambda endpoints its the ARN
+        pub fn address(&self) -> impl Display + '_ {
+            struct Wrapper<'a>(&'a EndpointMetadata);
+            impl<'a> Display for Wrapper<'a> {
+                fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                    match self {
+                        Wrapper(EndpointMetadata::Http { address, .. }) => address.fmt(f),
+                        Wrapper(EndpointMetadata::Lambda { arn, .. }) => arn.fmt(f),
+                    }
+                }
+            }
+            Wrapper(self)
         }
 
         pub fn protocol_type(&self) -> ProtocolType {
             match self {
                 EndpointMetadata::Http { protocol_type, .. } => *protocol_type,
                 EndpointMetadata::Lambda { .. } => ProtocolType::RequestResponse,
-            }
-        }
-
-        pub fn additional_headers(&self) -> Option<&HashMap<HeaderName, HeaderValue>> {
-            match self {
-                EndpointMetadata::Http {
-                    delivery_options, ..
-                } => Some(&delivery_options.additional_headers),
-                EndpointMetadata::Lambda { .. } => None,
             }
         }
 
