@@ -60,11 +60,12 @@ impl LambdaClient {
                 if let Some(profile_name) = &self.profile_name {
                     config = config.profile_name(profile_name.clone());
                 };
-                let client_fut = config
-                    .load()
-                    .map(|config| aws_sdk_lambda::Client::new(&config))
-                    .boxed()
-                    .shared();
+                let client_fut = async {
+                    let config = config.load().await;
+                    aws_sdk_lambda::Client::new(&config)
+                }
+                .boxed()
+                .shared();
 
                 handle.insert(region, client_fut.clone());
                 client_fut
@@ -116,44 +117,44 @@ impl hyper::service::Service<Request<Body>> for LambdaClient {
         let body = body::to_bytes(body);
         let client = self.regional_client(arn.region()).clone();
 
-        futures::future::join(body, client)
-            .then(|(body, client)| async move {
-                let body = body.map_err(LambdaError::HyperError)?;
-                let payload: ApiGatewayProxyRequest = (parts, body).into();
+        async move {
+            let (body, client) = futures::join!(body, client);
 
-                let res = client
-                    .invoke()
-                    .function_name(arn.to_string())
-                    .payload(Blob::new(
-                        serde_json::to_vec(&payload).map_err(LambdaError::SerializationError)?,
-                    ))
-                    .send()
-                    .await
-                    .map_err(|err| LambdaError::InvokeError {
-                        description: err.to_string(),
-                        source: err.into_source().unwrap_or_else(|err| err.into()),
-                    })?;
+            let body = body.map_err(LambdaError::HyperError)?;
+            let payload: ApiGatewayProxyRequest = (parts, body).into();
 
-                if res.function_error().is_some() {
-                    return if let Some(payload) = res.payload() {
-                        let error: serde_json::Value = serde_json::from_slice(payload.as_ref())
-                            .map_err(LambdaError::DeserializationError)?;
-                        Err(LambdaError::FunctionError(error))
-                    } else {
-                        Err(LambdaError::FunctionError(serde_json::Value::Null))
-                    };
-                }
+            let res = client
+                .invoke()
+                .function_name(arn.to_string())
+                .payload(Blob::new(
+                    serde_json::to_vec(&payload).map_err(LambdaError::SerializationError)?,
+                ))
+                .send()
+                .await
+                .map_err(|err| LambdaError::InvokeError {
+                    description: err.to_string(),
+                    source: err.into_source().unwrap_or_else(|err| err.into()),
+                })?;
 
-                if let Some(payload) = res.payload() {
-                    let response: ApiGatewayProxyResponse =
-                        serde_json::from_slice(payload.as_ref())
-                            .map_err(LambdaError::DeserializationError)?;
-                    return response.try_into();
-                }
+            if res.function_error().is_some() {
+                return if let Some(payload) = res.payload() {
+                    let error: serde_json::Value = serde_json::from_slice(payload.as_ref())
+                        .map_err(LambdaError::DeserializationError)?;
+                    Err(LambdaError::FunctionError(error))
+                } else {
+                    Err(LambdaError::FunctionError(serde_json::Value::Null))
+                };
+            }
 
-                Err(LambdaError::MissingResponse)
-            })
-            .boxed()
+            if let Some(payload) = res.payload() {
+                let response: ApiGatewayProxyResponse = serde_json::from_slice(payload.as_ref())
+                    .map_err(LambdaError::DeserializationError)?;
+                return response.try_into();
+            }
+
+            Err(LambdaError::MissingResponse)
+        }
+        .boxed()
     }
 }
 
