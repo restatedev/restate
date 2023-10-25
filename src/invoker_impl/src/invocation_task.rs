@@ -12,7 +12,7 @@ use super::{HttpsClient, InvokerError};
 
 use bytes::Bytes;
 use futures::future::FusedFuture;
-use futures::{future, stream, FutureExt, Stream, StreamExt};
+use futures::{future, stream, FutureExt, Stream, StreamExt, TryFutureExt};
 use hyper::body::Sender;
 use hyper::http::response::Parts;
 use hyper::http::HeaderValue;
@@ -24,6 +24,7 @@ use restate_errors::warn_it;
 use restate_invoker_api::{
     EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
 };
+use restate_lambda_client::{LambdaClient, LambdaError};
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
@@ -36,6 +37,7 @@ use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryHeader};
 use restate_types::journal::{Completion, EntryType};
 use std::collections::HashSet;
 use std::error::Error;
+
 use std::future::{poll_fn, Future};
 use std::iter;
 use std::pin::Pin;
@@ -75,8 +77,8 @@ pub(crate) enum InvocationTaskError {
     JournalReader(anyhow::Error),
     #[error("error when trying to read the service instance state: {0}")]
     StateReader(anyhow::Error),
-    #[error("other hyper error: {0}")]
-    Network(hyper::Error),
+    #[error("other client error: {0}")]
+    Client(ClientError),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
     UnexpectedJoinError(#[from] JoinError),
     #[error("got bad SuspensionMessage without journal indexes")]
@@ -181,7 +183,8 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 /// Represents an open invocation stream
 pub(super) struct InvocationTask<JR, SR, EE, EMR> {
     // Shared client
-    client: HttpsClient,
+    http_client: HttpsClient,
+    lambda_client: LambdaClient,
 
     // Connection params
     partition: PartitionLeaderEpoch,
@@ -229,7 +232,7 @@ impl<T> From<hyper::Error> for TerminalLoopState<T> {
         if h2_reason(&err) == h2::Reason::NO_ERROR {
             TerminalLoopState::Closed
         } else {
-            TerminalLoopState::Failed(InvocationTaskError::Network(err))
+            TerminalLoopState::Failed(InvocationTaskError::Client(err.into()))
         }
     }
 }
@@ -257,7 +260,8 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        client: HttpsClient,
+        http_client: HttpsClient,
+        lambda_client: LambdaClient,
         partition: PartitionLeaderEpoch,
         fid: FullInvocationId,
         protocol_version: u16,
@@ -274,7 +278,8 @@ where
         invoker_rx: mpsc::UnboundedReceiver<Completion>,
     ) -> Self {
         Self {
-            client,
+            http_client,
+            lambda_client,
             partition,
             full_invocation_id: fid,
             inactivity_timeout,
@@ -421,14 +426,22 @@ where
         let service_invocation_span_context = journal_metadata.span_context;
 
         // Prepare the request and send start message
-        let (mut http_stream_tx, http_request) = self.prepare_request(uri, endpoint_metadata);
+        let (mut http_stream_tx, mut http_request) = self.prepare_request(uri, &endpoint_metadata);
         shortcircuit!(
             self.write_start(&mut http_stream_tx, journal_size, state_iter)
                 .await
         );
 
         // Initialize the response stream state
-        let mut http_stream_rx = ResponseStreamState::initialize(&self.client, http_request);
+        let mut http_stream_rx = match endpoint_metadata {
+            EndpointMetadata::Http { .. } => {
+                ResponseStreamState::initialize(&mut self.http_client, http_request)
+            }
+            EndpointMetadata::Lambda { arn } => {
+                http_request.extensions_mut().insert(arn);
+                ResponseStreamState::initialize(&mut self.lambda_client, http_request)
+            }
+        };
 
         // Execute the replay
         shortcircuit!(
@@ -606,7 +619,7 @@ where
             // is_closed() is try only if the request channel (Sender) has been closed.
             // This can happen if the service endpoint is suspending.
             if !hyper_err.is_closed() {
-                return Err(InvocationTaskError::Network(hyper_err));
+                return Err(InvocationTaskError::Client(hyper_err.into()));
             }
         };
         Ok(())
@@ -711,7 +724,7 @@ where
     fn prepare_request(
         &mut self,
         uri: Uri,
-        endpoint_metadata: EndpointMetadata,
+        endpoint_metadata: &EndpointMetadata,
     ) -> (Sender, Request<Body>) {
         let (http_stream_tx, req_body) = Body::channel();
         let mut http_request_builder = Request::builder()
@@ -778,20 +791,35 @@ where
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ClientError {
+    #[error(transparent)]
+    Http(#[from] hyper::Error),
+    #[error(transparent)]
+    Lambda(#[from] LambdaError),
+}
+
 enum ResponseStreamState {
-    WaitingHeaders(AbortOnDrop<Result<Response<Body>, hyper::Error>>),
+    WaitingHeaders(AbortOnDrop<Result<Response<Body>, ClientError>>),
     ReadingBody(Body),
 }
 
 impl ResponseStreamState {
-    fn initialize(client: &HttpsClient, req: Request<Body>) -> Self {
+    fn initialize<C, F, E>(mut client: C, req: Request<Body>) -> Self
+    where
+        C: hyper::service::Service<Request<Body>, Future = F>,
+        F: Future<Output = Result<Response<Body>, E>> + Send + 'static,
+        E: Into<ClientError> + 'static,
+    {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.
         // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
-        Self::WaitingHeaders(AbortOnDrop(tokio::task::spawn(client.request(req))))
+        Self::WaitingHeaders(AbortOnDrop(tokio::task::spawn(
+            client.call(req).map_err(Into::into),
+        )))
     }
 
     // Could be replaced by a Future implementation
@@ -801,7 +829,7 @@ impl ResponseStreamState {
                 let http_response = match ready!(join_handle.poll_unpin(cx)) {
                     Ok(Ok(res)) => res,
                     Ok(Err(hyper_err)) => {
-                        return Poll::Ready(Err(InvocationTaskError::Network(hyper_err)))
+                        return Poll::Ready(Err(InvocationTaskError::Client(hyper_err)))
                     }
                     Err(join_err) => {
                         return Poll::Ready(Err(InvocationTaskError::UnexpectedJoinError(join_err)))
@@ -840,7 +868,7 @@ impl ResponseStreamState {
                             if h2_reason(&err) == h2::Reason::NO_ERROR {
                                 Ok(None)
                             } else {
-                                Err(InvocationTaskError::Network(err))
+                                Err(InvocationTaskError::Client(err.into()))
                             }
                         }
                     });

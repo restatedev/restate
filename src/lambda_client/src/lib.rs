@@ -83,7 +83,7 @@ pub enum LambdaError {
     #[error("error returned from Invoke: {description}: {source}")]
     InvokeError {
         description: String,
-        source: Box<dyn std::error::Error + Send + 'static>,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
     #[error("function returned an error during execution: {0}")]
     FunctionError(serde_json::Value),
@@ -118,7 +118,8 @@ impl hyper::service::Service<Request<Body>> for LambdaClient {
         let client = self.regional_client(arn.region()).clone();
 
         async move {
-            let (body, client) = futures::join!(body, client);
+            let (body, client): (Result<Bytes, hyper::Error>, aws_sdk_lambda::Client) =
+                futures::join!(body, client);
 
             let body = body.map_err(LambdaError::HyperError)?;
             let payload: ApiGatewayProxyRequest = (parts, body).into();

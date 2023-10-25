@@ -27,6 +27,7 @@ schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
 humantime = { workspace = true }
+http = { workspace = true }
 uuid = { workspace = true }
 opentelemetry_api = { workspace = true }
 thiserror = { workspace = true }

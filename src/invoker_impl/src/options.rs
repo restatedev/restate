@@ -20,6 +20,11 @@ use serde_with::serde_as;
 use std::path::PathBuf;
 use std::time::Duration;
 
+pub use restate_lambda_client::{
+    Options as LambdaClientOptions, OptionsBuilder as LambdaClientOptionsBuilder,
+    OptionsBuilderError as LambdaClientOptionsBuilderError,
+};
+
 /// # HTTP/2 Keep alive options
 ///
 /// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
@@ -150,6 +155,8 @@ pub struct Options {
     /// If unset, HTTP/2 keep-alive are disabled.
     http2_keep_alive: Option<Http2KeepAliveOptions>,
 
+    lambda_client_options: LambdaClientOptions,
+
     // -- Private config options (not exposed in the schema)
     #[cfg_attr(feature = "options_schema", schemars(skip))]
     disable_eager_state: bool,
@@ -172,6 +179,7 @@ impl Default for Options {
             tmp_dir: restate_fs_util::generate_temp_dir_name("invoker"),
             concurrency_limit: None,
             http2_keep_alive: Some(Http2KeepAliveOptions::default()),
+            lambda_client_options: Default::default(),
             disable_eager_state: false,
         }
     }
@@ -191,6 +199,8 @@ impl Options {
         EE: EntryEnricher,
         EMR: EndpointMetadataResolver,
     {
+        let lambda_client = self.lambda_client_options.build();
+
         Service::new(
             service_endpoint_registry,
             self.retry_policy,
@@ -201,6 +211,7 @@ impl Options {
             self.message_size_limit,
             self.proxy_uri,
             self.http2_keep_alive,
+            lambda_client,
             self.tmp_dir,
             self.concurrency_limit,
             journal_reader,

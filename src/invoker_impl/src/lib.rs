@@ -56,6 +56,7 @@ pub use options::{
     Http2KeepAliveOptions, Http2KeepAliveOptionsBuilder, Http2KeepAliveOptionsBuilderError,
     Options, OptionsBuilder, OptionsBuilderError,
 };
+use restate_lambda_client::LambdaClient;
 
 /// Internal error trait for the invoker errors
 trait InvokerError: std::error::Error {
@@ -85,7 +86,8 @@ trait InvocationTaskRunner {
 
 #[derive(Debug)]
 struct DefaultInvocationTaskRunner<JR, SR, EE, EMR> {
-    client: HttpsClient,
+    http_client: HttpsClient,
+    lambda_client: LambdaClient,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
@@ -117,7 +119,8 @@ where
     ) -> AbortHandle {
         task_pool.spawn(
             InvocationTask::new(
-                self.client.clone(),
+                self.http_client.clone(),
+                self.lambda_client.clone(),
                 partition,
                 fid,
                 0,
@@ -170,6 +173,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
         message_size_limit: Option<usize>,
         proxy: Option<Proxy>,
         keep_alive_options: Option<Http2KeepAliveOptions>,
+        lambda_client: LambdaClient,
         tmp_dir: PathBuf,
         concurrency_limit: Option<usize>,
         journal_reader: JR,
@@ -187,7 +191,8 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
-                    client: Self::create_client(proxy, keep_alive_options),
+                    http_client: Self::create_http_client(proxy, keep_alive_options),
+                    lambda_client,
                     inactivity_timeout,
                     abort_timeout,
                     disable_eager_state,
@@ -210,7 +215,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
 
     // TODO a single client uses the pooling provided by hyper, but this is not enough.
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
-    fn create_client(
+    fn create_http_client(
         proxy: Option<Proxy>,
         keep_alive_options: Option<Http2KeepAliveOptions>,
     ) -> HttpsClient {
@@ -1027,6 +1032,7 @@ mod tests {
             None,
             None,
             None,
+            LambdaClient::new(None),
             tempdir.into_path(),
             None,
             journal_reader::mocks::EmptyJournalReader,

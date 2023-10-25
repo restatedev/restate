@@ -16,11 +16,11 @@ use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
 
+use http::Uri;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::mem::size_of;
 use std::str::FromStr;
-use tonic::transport::Uri;
 use uuid::Uuid;
 
 /// Identifying a member of a raft group
@@ -458,10 +458,12 @@ impl Display for LambdaARN {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InvalidLambdaARN {
-    #[error("ARN must have 7 components delimited by `:`")]
+    #[error("ARN must have 8 components delimited by `:`")]
     InvalidFormat,
     #[error("First component of the ARN must be `arn`")]
     InvalidPrefix,
+    #[error("ARN must refer to a `function` resource")]
+    InvalidResourceType,
     #[error(
         "Partition, service, region, account ID, function name and version must all be non-empty"
     )]
@@ -486,6 +488,7 @@ impl LambdaARN {
             .authority(format!(
                 "{version}.{name}.{account_id}.{region}.{partition}"
             ))
+            .path_and_query("/")
             .build()
             .expect("lambda arn must create a valid url")
     }
@@ -495,30 +498,33 @@ impl FromStr for LambdaARN {
     type Err = InvalidLambdaARN;
 
     fn from_str(arn: &str) -> Result<Self, Self::Err> {
-        let mut split = arn.splitn(7, ':');
+        let mut split = arn.splitn(8, ':');
         let invalid_format = || InvalidLambdaARN::InvalidFormat;
         let arn = split.next().ok_or_else(invalid_format)?;
         let partition = split.next().ok_or_else(invalid_format)?;
         let service = split.next().ok_or_else(invalid_format)?;
         let region = split.next().ok_or_else(invalid_format)?;
         let account_id = split.next().ok_or_else(invalid_format)?;
+        let resource_type = split.next().ok_or_else(invalid_format)?;
         let name = split.next().ok_or_else(invalid_format)?;
         let version = split.next().ok_or_else(invalid_format)?;
 
         if arn != "arn" {
             return Err(InvalidLambdaARN::InvalidPrefix);
         }
+        if resource_type != "function" {
+            return Err(InvalidLambdaARN::InvalidResourceType);
+        }
+        if service != "lambda" {
+            return Err(InvalidLambdaARN::InvalidService);
+        }
         if partition.is_empty()
-            || service.is_empty()
             || region.is_empty()
             || account_id.is_empty()
             || name.is_empty()
             || version.is_empty()
         {
             return Err(InvalidLambdaARN::InvalidComponent);
-        }
-        if service != "lambda" {
-            return Err(InvalidLambdaARN::InvalidService);
         }
 
         Ok(Self {

@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = []
+options_schema = ["restate_lambda_client/options_schema"]
 
 [dependencies]
 # Async

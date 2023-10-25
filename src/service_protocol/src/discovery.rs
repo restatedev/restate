@@ -255,16 +255,18 @@ impl ServiceDiscovery {
                 let client = Client::builder()
                     .http2_only(true)
                     .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
-                self.invoke_discovery_endpoint(client, uri, additional_headers, &())
-                    .await?
+                self.invoke_discovery_endpoint(client, uri, || {
+                    Self::build_request(uri, additional_headers)
+                })
+                .await?
             }
             DiscoverEndpoint::Lambda { arn } => {
-                self.invoke_discovery_endpoint(
-                    self.lambda_client.clone(),
-                    &arn.uri(),
-                    &HashMap::new(),
-                    arn,
-                )
+                let uri = arn.uri();
+                self.invoke_discovery_endpoint(self.lambda_client.clone(), &uri, || {
+                    let mut request = Self::build_request(&uri, &HashMap::new())?;
+                    request.extensions_mut().insert(arn.clone());
+                    Ok(request)
+                })
                 .await?
             }
         };
@@ -351,39 +353,41 @@ impl ServiceDiscovery {
         })
     }
 
-    async fn invoke_discovery_endpoint<S, F, E, T>(
+    fn build_request(
+        uri: &Uri,
+        additional_headers: &HashMap<HeaderName, HeaderValue>,
+    ) -> Result<Request<Body>, ServiceDiscoveryError> {
+        let uri = append_discover(uri)?;
+
+        let mut request_builder = Request::builder()
+            .method(Method::POST)
+            .uri(uri.clone())
+            .header(CONTENT_TYPE, APPLICATION_PROTO)
+            .header(ACCEPT, APPLICATION_PROTO);
+        request_builder
+            .headers_mut()
+            .unwrap()
+            .extend(additional_headers.clone());
+
+        Ok(request_builder
+            .body(Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()))
+            .expect("Building the request is not supposed to fail"))
+    }
+
+    async fn invoke_discovery_endpoint<S, F, E>(
         &self,
         mut client: S,
         uri: &Uri,
-        additional_headers: &HashMap<HeaderName, HeaderValue>,
-        extension: &T,
+        build_request: impl Fn() -> Result<Request<Body>, ServiceDiscoveryError>,
     ) -> Result<(Parts, Bytes), ServiceDiscoveryError>
     where
         S: hyper::service::Service<Request<Body>, Response = Response<Body>, Future = F>,
         F: Future<Output = Result<Response<Body>, E>>,
         E: Into<ServiceDiscoveryError>,
-        T: Send + Sync + Clone + 'static,
     {
-        let uri = append_discover(uri)?;
-
         let mut retry_iter = self.retry_policy.clone().into_iter();
         loop {
-            let mut request_builder = Request::builder()
-                .method(Method::POST)
-                .uri(uri.clone())
-                .extension(extension.clone())
-                .header(CONTENT_TYPE, APPLICATION_PROTO)
-                .header(ACCEPT, APPLICATION_PROTO);
-            request_builder
-                .headers_mut()
-                .unwrap()
-                .extend(additional_headers.clone().into_iter());
-
-            let request = request_builder
-                .body(Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()))
-                .expect("Building the request is not supposed to fail");
-
-            let response_fut = client.call(request);
+            let response_fut = client.call(build_request()?);
             let response = async {
                 let (parts, body) = response_fut.await.map_err(Into::into)?.into_parts();
 
