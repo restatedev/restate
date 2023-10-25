@@ -539,7 +539,7 @@ impl FromStr for LambdaARN {
         };
 
         // avoid a malformed arn causing a panic later on when building a uri; reject it during discovery
-        if let Err(_) = lambda.uri() {
+        if lambda.uri().is_err() {
             return Err(InvalidLambdaARN::InvalidURI);
         }
 
