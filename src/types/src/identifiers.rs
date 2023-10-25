@@ -427,11 +427,11 @@ fn display_invocation_id(
 
 #[derive(Debug, Clone)]
 pub struct LambdaARN {
-    partition: String,
-    region: String,
-    account_id: String,
-    name: String,
-    version: String,
+    partition: ByteString,
+    region: ByteString,
+    account_id: ByteString,
+    name: ByteString,
+    version: ByteString,
 }
 
 impl LambdaARN {
@@ -499,9 +499,11 @@ impl FromStr for LambdaARN {
     type Err = InvalidLambdaARN;
 
     fn from_str(arn: &str) -> Result<Self, Self::Err> {
+        // allocate once
+        let arn = ByteString::from(arn);
         let mut split = arn.splitn(8, ':');
         let invalid_format = || InvalidLambdaARN::InvalidFormat;
-        let arn = split.next().ok_or_else(invalid_format)?;
+        let prefix = split.next().ok_or_else(invalid_format)?;
         let partition = split.next().ok_or_else(invalid_format)?;
         let service = split.next().ok_or_else(invalid_format)?;
         let region = split.next().ok_or_else(invalid_format)?;
@@ -510,7 +512,7 @@ impl FromStr for LambdaARN {
         let name = split.next().ok_or_else(invalid_format)?;
         let version = split.next().ok_or_else(invalid_format)?;
 
-        if arn != "arn" {
+        if prefix != "arn" {
             return Err(InvalidLambdaARN::InvalidPrefix);
         }
         if resource_type != "function" {
@@ -529,11 +531,11 @@ impl FromStr for LambdaARN {
         }
 
         let lambda = Self {
-            partition: partition.to_string(),
-            region: region.to_string(),
-            account_id: account_id.to_string(),
-            name: name.to_string(),
-            version: version.to_string(),
+            partition: arn.slice_ref(partition),
+            region: arn.slice_ref(region),
+            account_id: arn.slice_ref(account_id),
+            name: arn.slice_ref(name),
+            version: arn.slice_ref(version),
         };
 
         // avoid a malformed arn causing a panic later on when building a uri; reject it during discovery
