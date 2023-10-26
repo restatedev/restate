@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{HttpsClient, InvokerError};
+use super::InvokerError;
 
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{future, stream, FutureExt, Stream, StreamExt, TryFutureExt};
 use hyper::body::Sender;
-use hyper::http::response::Parts;
+use hyper::http::response::Parts as ResponseParts;
 use hyper::http::HeaderValue;
-use hyper::{http, Body, Request, Response, Uri};
+use hyper::{http, Body, HeaderMap, Response};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
@@ -24,8 +24,8 @@ use restate_errors::warn_it;
 use restate_invoker_api::{
     EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
 };
-use restate_lambda_client::{LambdaClient, LambdaError};
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
+use restate_service_client::{Parts, Request, ServiceClientError, ServiceEndpointAddress};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
@@ -38,6 +38,7 @@ use restate_types::journal::{Completion, EntryType};
 use std::collections::HashSet;
 use std::error::Error;
 
+use hyper::http::uri::PathAndQuery;
 use std::future::{poll_fn, Future};
 use std::iter;
 use std::pin::Pin;
@@ -78,7 +79,7 @@ pub(crate) enum InvocationTaskError {
     #[error("error when trying to read the service instance state: {0}")]
     StateReader(anyhow::Error),
     #[error("other client error: {0}")]
-    Client(ClientError),
+    Client(ServiceClientError),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
     UnexpectedJoinError(#[from] JoinError),
     #[error("got bad SuspensionMessage without journal indexes")]
@@ -131,14 +132,6 @@ impl InvokerError for InvocationTaskError {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum ClientError {
-    #[error(transparent)]
-    Http(#[from] hyper::Error),
-    #[error(transparent)]
-    Lambda(#[from] LambdaError),
-}
-
 // Copy pasted from hyper::Error
 // https://github.com/hyperium/hyper/blob/40c01dfb4f87342a6f86f07564ddc482194c6240/src/error.rs#L229
 // TODO hopefully this code is not needed anymore with hyper 1.0,
@@ -189,10 +182,9 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 }
 
 /// Represents an open invocation stream
-pub(super) struct InvocationTask<JR, SR, EE, EMR> {
+pub(super) struct InvocationTask<JR, SR, EE, EMR, ServiceClient> {
     // Shared client
-    http_client: HttpsClient,
-    lambda_client: LambdaClient,
+    client: ServiceClient,
 
     // Connection params
     partition: PartitionLeaderEpoch,
@@ -257,7 +249,7 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<JR, SR, EE, EMR> InvocationTask<JR, SR, EE, EMR>
+impl<JR, SR, EE, EMR, ServiceClient> InvocationTask<JR, SR, EE, EMR, ServiceClient>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -265,11 +257,11 @@ where
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher,
     EMR: EndpointMetadataResolver,
+    ServiceClient: restate_service_client::Service,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        http_client: HttpsClient,
-        lambda_client: LambdaClient,
+        client: ServiceClient,
         partition: PartitionLeaderEpoch,
         fid: FullInvocationId,
         protocol_version: u16,
@@ -286,8 +278,7 @@ where
         invoker_rx: mpsc::UnboundedReceiver<Completion>,
     ) -> Self {
         Self {
-            http_client,
-            lambda_client,
+            client,
             partition,
             full_invocation_id: fid,
             inactivity_timeout,
@@ -417,8 +408,8 @@ where
             self.invoker_rx.close();
         }
 
-        // Resolve the uri to use for the request
-        let uri = self.prepare_uri(&journal_metadata.method, &endpoint_metadata);
+        let (mut http_stream_tx, request) =
+            self.prepare_request(&journal_metadata.method, endpoint_metadata);
         let journal_size = journal_metadata.length;
 
         // Attach parent and uri to the current span
@@ -427,36 +418,25 @@ where
             .span_context
             .as_parent()
             .attach_to_span(&invocation_task_span);
-        info!(http.url = %uri, "Executing invocation at service endpoint");
+
+        info!(
+            endpoint.address = %request.address(),
+            path = %request.path(),
+            "Executing invocation at service endpoint"
+        );
 
         // Create an arc of the parent SpanContext.
         // We send this with every journal entry to correctly link new spans generated from journal entries.
         let service_invocation_span_context = journal_metadata.span_context;
 
         // Prepare the request and send start message
-        let (mut http_stream_tx, mut http_request) = self.prepare_request(uri, &endpoint_metadata);
         shortcircuit!(
             self.write_start(&mut http_stream_tx, journal_size, state_iter)
                 .await
         );
 
         // Initialize the response stream state
-        let mut http_stream_rx = match endpoint_metadata {
-            EndpointMetadata::Http {
-                delivery_options, ..
-            } => {
-                // Inject additional headers
-                for (header_name, header_value) in delivery_options.additional_headers() {
-                    http_request.headers_mut().insert(header_name, header_value);
-                }
-                ResponseStreamState::initialize(&mut self.http_client, http_request)
-            }
-            EndpointMetadata::Lambda { arn } => {
-                // Inject arn
-                http_request.extensions_mut().insert(arn);
-                ResponseStreamState::initialize(&mut self.lambda_client, http_request)
-            }
-        };
+        let mut http_stream_rx = ResponseStreamState::initialize(&mut self.client, request);
 
         // Execute the replay
         shortcircuit!(
@@ -719,97 +699,69 @@ where
         Ok(())
     }
 
-    // --- HTTP related methods
-
-    fn prepare_uri(&self, method: &str, endpoint_metadata: &EndpointMetadata) -> Uri {
-        Self::append_path(
-            endpoint_metadata.uri(),
-            &[
-                "invoke",
-                self.full_invocation_id
-                    .service_id
-                    .service_name
-                    .chars()
-                    .as_str(),
-                method,
-            ],
-        )
-    }
-
     fn prepare_request(
         &mut self,
-        uri: Uri,
-        endpoint_metadata: &EndpointMetadata,
+        method: &str,
+        endpoint_metadata: EndpointMetadata,
     ) -> (Sender, Request<Body>) {
         let (http_stream_tx, req_body) = Body::channel();
-        let mut http_request_builder = Request::builder()
-            .method(http::Method::POST)
-            .header(http::header::CONTENT_TYPE, APPLICATION_RESTATE)
-            .header(http::header::ACCEPT, APPLICATION_RESTATE)
-            .uri(uri);
 
-        // In case it's bidi stream, force HTTP/2
-        if endpoint_metadata.protocol_type() == ProtocolType::BidiStream {
-            http_request_builder = http_request_builder.version(http::Version::HTTP_2);
-        }
+        let path: PathAndQuery = format!(
+            "/invoke/{}/{}",
+            self.full_invocation_id
+                .service_id
+                .service_name
+                .chars()
+                .as_str(),
+            method
+        )
+        .try_into()
+        .expect("must be able to build a valid invocation path");
+
+        let mut headers = HeaderMap::from_iter([
+            (http::header::CONTENT_TYPE, APPLICATION_RESTATE),
+            (http::header::ACCEPT, APPLICATION_RESTATE),
+        ]);
 
         // Inject OpenTelemetry context
         TraceContextPropagator::new().inject_context(
             &Span::current().context(),
-            &mut HeaderInjector(
-                http_request_builder
-                    .headers_mut()
-                    .expect("The request builder shouldn't fail"),
-            ),
+            &mut HeaderInjector(&mut headers),
         );
 
-        let http_request = http_request_builder
-            .body(req_body)
-            // This fails only in case the URI is malformed, which should never happen
-            .expect("The request builder shouldn't fail");
-
-        (http_stream_tx, http_request)
-    }
-
-    fn append_path(uri: Uri, fragments: &[&str]) -> Uri {
-        let p = format!(
-            "{}/{}",
-            match uri.path().strip_suffix('/') {
-                None => uri.path(),
-                Some(s) => s,
+        let parts = match endpoint_metadata {
+            EndpointMetadata::Lambda { arn } => Parts {
+                address: ServiceEndpointAddress::Lambda(arn),
+                path,
+                headers,
             },
-            fragments.join("/")
-        );
-        let parts = uri.into_parts();
+            EndpointMetadata::Http {
+                address,
+                protocol_type,
+                delivery_options,
+            } => Parts {
+                address: ServiceEndpointAddress::Http(address, protocol_type),
+                path,
+                headers: {
+                    headers.extend(delivery_options.additional_headers());
+                    headers
+                },
+            },
+        };
 
-        Uri::builder()
-            .authority(
-                parts
-                    .authority
-                    .expect("The function endpoint URI must have the authority"),
-            )
-            .scheme(
-                parts
-                    .scheme
-                    .expect("The function endpoint URI must have the scheme"),
-            )
-            .path_and_query(p)
-            .build()
-            .unwrap()
+        (http_stream_tx, Request::new(parts, req_body))
     }
 }
 
 enum ResponseStreamState {
-    WaitingHeaders(AbortOnDrop<Result<Response<Body>, ClientError>>),
+    WaitingHeaders(AbortOnDrop<Result<Response<Body>, ServiceClientError>>),
     ReadingBody(Body),
 }
 
 impl ResponseStreamState {
-    fn initialize<C, F, E>(mut client: C, req: Request<Body>) -> Self
+    fn initialize<C>(client: &mut C, req: Request<Body>) -> Self
     where
-        C: hyper::service::Service<Request<Body>, Future = F>,
-        F: Future<Output = Result<Response<Body>, E>> + Send + 'static,
-        E: Into<ClientError> + 'static,
+        C: restate_service_client::Service,
     {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
@@ -877,7 +829,7 @@ impl ResponseStreamState {
         }
     }
 
-    fn validate_response(mut parts: Parts) -> Result<(), InvocationTaskError> {
+    fn validate_response(mut parts: ResponseParts) -> Result<(), InvocationTaskError> {
         if !parts.status.is_success() {
             return Err(InvocationTaskError::UnexpectedResponse(parts.status));
         }

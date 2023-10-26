@@ -9,16 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::fmt::Display;
-use std::future::Future;
+use std::fmt;
+use std::fmt::{Display, Formatter};
 
 use bytes::Bytes;
 
 use hyper::header::{ACCEPT, CONTENT_TYPE};
-use hyper::http::response::Parts;
+use hyper::http::response::Parts as ResponseParts;
+use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
-use hyper::{Body, Client, Method, Request, Response, Uri};
-use hyper_rustls::HttpsConnectorBuilder;
+use hyper::{Body, HeaderMap, Uri};
 use prost::{DecodeError, Message};
 use prost_reflect::{
     Cardinality, DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind,
@@ -27,15 +27,14 @@ use prost_reflect::{
 
 use codederror::CodedError;
 use restate_errors::{warn_it, META0001, META0002, META0003, META0007, META0008};
-use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
-use restate_lambda_client::{LambdaClient, LambdaError};
 use restate_schema_api::discovery::{
     DiscoveredInstanceType, DiscoveredMethodMetadata, FieldAnnotation, KeyStructure,
     ServiceRegistrationRequest,
 };
 use restate_schema_api::endpoint::ProtocolType;
+use restate_service_client::{Parts, Request, ServiceClientError, ServiceEndpointAddress};
 use restate_types::identifiers::LambdaARN;
-use restate_types::retries::RetryPolicy;
+use restate_types::retries::{RetryIter, RetryPolicy};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -96,23 +95,17 @@ mod pb {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct ServiceDiscovery {
+#[derive(Debug)]
+pub struct ServiceDiscovery<ServiceClient> {
     retry_policy: RetryPolicy,
-    proxy: Option<Proxy>,
-    lambda_client: LambdaClient,
+    client: ServiceClient,
 }
 
-impl ServiceDiscovery {
-    pub fn new(
-        retry_policy: RetryPolicy,
-        proxy: Option<Proxy>,
-        lambda_client: LambdaClient,
-    ) -> Self {
+impl<ServiceClient> ServiceDiscovery<ServiceClient> {
+    pub fn new(retry_policy: RetryPolicy, client: ServiceClient) -> Self {
         Self {
             retry_policy,
-            proxy,
-            lambda_client,
+            client,
         }
     }
 }
@@ -125,6 +118,54 @@ pub enum DiscoverEndpoint {
     Lambda {
         arn: LambdaARN,
     },
+}
+
+impl DiscoverEndpoint {
+    // address returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
+    // and for Lambda endpoints its the ARN
+    fn address(&self) -> impl Display + '_ {
+        struct Wrapper<'a>(&'a DiscoverEndpoint);
+        impl<'a> Display for Wrapper<'a> {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                match self {
+                    Wrapper(DiscoverEndpoint::Http { uri, .. }) => uri.fmt(f),
+                    Wrapper(DiscoverEndpoint::Lambda { arn, .. }) => arn.fmt(f),
+                }
+            }
+        }
+        Wrapper(self)
+    }
+
+    fn request(&self) -> Request<Body> {
+        let mut headers = HeaderMap::from_iter([
+            (CONTENT_TYPE, APPLICATION_PROTO),
+            (ACCEPT, APPLICATION_PROTO),
+        ]);
+        let path = PathAndQuery::from_static(DISCOVER_PATH);
+        let parts = match self {
+            DiscoverEndpoint::Lambda { arn } => Parts {
+                address: ServiceEndpointAddress::Lambda(arn.clone()),
+                path,
+                headers,
+            },
+            DiscoverEndpoint::Http {
+                uri,
+                additional_headers,
+            } => Parts {
+                address: ServiceEndpointAddress::Http(uri.clone(), ProtocolType::RequestResponse),
+                path,
+                headers: {
+                    headers.extend(additional_headers.clone());
+                    headers
+                },
+            },
+        };
+
+        Request::new(
+            parts,
+            Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()),
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -213,12 +254,9 @@ pub enum ServiceDiscoveryError {
     #[error("retry limit exhausted. Last bad status code: {0}")]
     #[code(META0003)]
     BadStatusCode(u16),
-    #[error("retry limit exhausted. Last hyper error: {0}")]
+    #[error("retry limit exhausted. Last client error: {0}")]
     #[code(META0003)]
-    Hyper(#[from] hyper::Error),
-    #[error("retry limit exhausted. Last lambda error: {0}")]
-    #[code(META0003)]
-    Lambda(#[from] LambdaError),
+    Client(#[from] ServiceClientError),
 }
 
 impl ServiceDiscoveryError {
@@ -238,39 +276,19 @@ impl ServiceDiscoveryError {
     }
 }
 
-impl ServiceDiscovery {
+impl<ServiceClient: restate_service_client::Service> ServiceDiscovery<ServiceClient> {
     pub async fn discover(
-        &self,
+        &mut self,
         endpoint: &DiscoverEndpoint,
     ) -> Result<DiscoveredEndpointMetadata, ServiceDiscoveryError> {
-        let (mut parts, body) = match endpoint {
-            DiscoverEndpoint::Http {
-                uri,
-                additional_headers,
-            } => {
-                let connector = HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http2()
-                    .build();
-                let client = Client::builder()
-                    .http2_only(true)
-                    .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
-                self.invoke_discovery_endpoint(client, uri, || {
-                    Self::build_request(uri, additional_headers)
-                })
-                .await?
-            }
-            DiscoverEndpoint::Lambda { arn } => {
-                let uri = arn.uri().expect("Lambda must be convertible into a valid URI. This should have been checked in service discovery. This is a bug, please contact the developers");
-                self.invoke_discovery_endpoint(self.lambda_client.clone(), &arn, || {
-                    let mut request = Self::build_request(&uri, &HashMap::new())?;
-                    request.extensions_mut().insert(arn.clone());
-                    Ok(request)
-                })
-                .await?
-            }
-        };
+        let retry_policy = self.retry_policy.clone().into_iter();
+        let (mut parts, body) = Self::invoke_discovery_endpoint(
+            &mut self.client,
+            endpoint.address(),
+            || endpoint.request(),
+            retry_policy,
+        )
+        .await?;
 
         // Validate response parts.
         // No need to retry these: if the validation fails, they're sdk bugs.
@@ -354,49 +372,33 @@ impl ServiceDiscovery {
         })
     }
 
-    fn build_request(
-        uri: &Uri,
-        additional_headers: &HashMap<HeaderName, HeaderValue>,
-    ) -> Result<Request<Body>, ServiceDiscoveryError> {
-        let uri = append_discover(uri)?;
-
-        let mut request_builder = Request::builder()
-            .method(Method::POST)
-            .uri(uri.clone())
-            .header(CONTENT_TYPE, APPLICATION_PROTO)
-            .header(ACCEPT, APPLICATION_PROTO);
-        request_builder
-            .headers_mut()
-            .unwrap()
-            .extend(additional_headers.clone());
-
-        Ok(request_builder
-            .body(Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()))
-            .expect("Building the request is not supposed to fail"))
-    }
-
-    async fn invoke_discovery_endpoint<S, F, E>(
-        &self,
-        mut client: S,
+    async fn invoke_discovery_endpoint<S>(
+        client: &mut S,
         address: impl Display,
-        build_request: impl Fn() -> Result<Request<Body>, ServiceDiscoveryError>,
-    ) -> Result<(Parts, Bytes), ServiceDiscoveryError>
+        build_request: impl Fn() -> Request<Body>,
+        mut retry_iter: RetryIter,
+    ) -> Result<(ResponseParts, Bytes), ServiceDiscoveryError>
     where
-        S: hyper::service::Service<Request<Body>, Response = Response<Body>, Future = F>,
-        F: Future<Output = Result<Response<Body>, E>>,
-        E: Into<ServiceDiscoveryError>,
+        S: restate_service_client::Service,
     {
-        let mut retry_iter = self.retry_policy.clone().into_iter();
         loop {
-            let response_fut = client.call(build_request()?);
+            let response_fut = client.call(build_request());
             let response = async {
-                let (parts, body) = response_fut.await.map_err(Into::into)?.into_parts();
+                let (parts, body) = response_fut
+                    .await
+                    .map_err(Into::<ServiceDiscoveryError>::into)?
+                    .into_parts();
 
                 if !parts.status.is_success() {
                     return Err(ServiceDiscoveryError::BadStatusCode(parts.status.as_u16()));
                 }
 
-                Ok((parts, hyper::body::to_bytes(body).await?))
+                Ok((
+                    parts,
+                    hyper::body::to_bytes(body)
+                        .await
+                        .map_err(ServiceClientError::Http)?,
+                ))
             };
 
             let e = match response.await {
@@ -651,32 +653,6 @@ fn is_map_with(field_descriptor: &FieldDescriptor, key_kind: Kind, value_kind: K
             }
             _ => false,
         }
-}
-
-fn append_discover(uri: &Uri) -> Result<Uri, ServiceDiscoveryError> {
-    let p = format!(
-        "{}{}",
-        match uri.path().strip_suffix('/') {
-            None => uri.path(),
-            Some(s) => s,
-        },
-        DISCOVER_PATH
-    );
-
-    Ok(Uri::builder()
-        .authority(
-            uri.authority()
-                .ok_or_else(|| ServiceDiscoveryError::BadUri(uri.to_string()))?
-                .clone(),
-        )
-        .scheme(
-            uri.scheme()
-                .ok_or_else(|| ServiceDiscoveryError::BadUri(uri.to_string()))?
-                .clone(),
-        )
-        .path_and_query(p)
-        .build()
-        .unwrap())
 }
 
 // This function patches the built-in descriptors, to fix https://github.com/restatedev/restate/issues/687

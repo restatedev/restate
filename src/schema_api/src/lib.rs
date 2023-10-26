@@ -67,11 +67,6 @@ pub mod endpoint {
             delivery_options: DeliveryOptions,
         },
         Lambda {
-            #[cfg_attr(
-                feature = "serde",
-                serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
-            )]
-            #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
             arn: LambdaARN,
         },
     }

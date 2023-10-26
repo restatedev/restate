@@ -17,6 +17,9 @@ use bytes::Bytes;
 use bytestring::ByteString;
 
 use http::Uri;
+use schemars::gen::SchemaGenerator;
+use schemars::schema::{InstanceType, Schema, SchemaObject};
+use schemars::JsonSchema;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::mem::size_of;
@@ -426,6 +429,10 @@ fn display_invocation_id(
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+)]
 pub struct LambdaARN {
     partition: ByteString,
     region: ByteString,
@@ -437,6 +444,22 @@ pub struct LambdaARN {
 impl LambdaARN {
     pub fn region(&self) -> &str {
         &self.region
+    }
+}
+
+#[cfg(feature = "serde_schema")]
+impl JsonSchema for LambdaARN {
+    fn schema_name() -> String {
+        "LambdaARN".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            format: Some("arn".to_string()),
+            ..Default::default()
+        }
+        .into()
     }
 }
 

@@ -21,9 +21,8 @@ use hyper::Uri;
 #[error("invalid proxy Uri (must have scheme, authority, and path): {0}")]
 pub struct InvalidProxyUri(Uri);
 
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Proxy {
     uri: Uri,
 }
@@ -90,7 +89,7 @@ impl Proxy {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ProxyConnector<C> {
     proxy: Option<Proxy>,
     connector: C,

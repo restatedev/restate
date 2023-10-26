@@ -155,6 +155,7 @@ async fn bidi_stream() {
         InMemoryStateStorage,
         MockEntryEnricher,
         MockEndpointMetadataRegistry,
+        _,
     > = options.build(
         journal_reader.clone(),
         InMemoryStateStorage::default(),

@@ -4227,15 +4227,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_hyper_util"
-version = "0.4.0"
-dependencies = [
- "hyper",
- "serde",
- "thiserror",
-]
-
-[[package]]
 name = "restate_ingress_dispatcher"
 version = "0.4.0"
 dependencies = [
@@ -4357,7 +4348,6 @@ dependencies = [
  "h2",
  "humantime",
  "hyper",
- "hyper-rustls",
  "itertools 0.11.0",
  "opentelemetry",
  "opentelemetry-http",
@@ -4365,11 +4355,10 @@ dependencies = [
  "restate_errors",
  "restate_fs_util",
  "restate_futures_util",
- "restate_hyper_util",
  "restate_invoker_api",
- "restate_lambda_client",
  "restate_queue",
  "restate_schema_api",
+ "restate_service_client",
  "restate_service_protocol",
  "restate_test_util",
  "restate_timer_queue",
@@ -4384,27 +4373,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "restate_lambda_client"
-version = "0.3.0"
-dependencies = [
- "aws-config",
- "aws-sdk-lambda",
- "base64 0.21.4",
- "derive_builder",
- "futures",
- "http-serde",
- "hyper",
- "lambda_http",
- "restate_schema_api",
- "restate_types",
- "schemars",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror",
 ]
 
 [[package]]
@@ -4424,12 +4392,11 @@ dependencies = [
  "restate_errors",
  "restate_fs_util",
  "restate_futures_util",
- "restate_hyper_util",
- "restate_lambda_client",
  "restate_pb",
  "restate_schema_api",
  "restate_schema_impl",
  "restate_serde_util",
+ "restate_service_client",
  "restate_service_protocol",
  "restate_test_util",
  "restate_types",
@@ -4558,6 +4525,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate_service_client"
+version = "0.4.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-lambda",
+ "base64 0.21.4",
+ "derive_builder",
+ "futures",
+ "http-serde",
+ "humantime",
+ "hyper",
+ "hyper-rustls",
+ "lambda_http",
+ "restate_schema_api",
+ "restate_types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror",
+]
+
+[[package]]
 name = "restate_service_protocol"
 version = "0.4.0"
 dependencies = [
@@ -4566,7 +4556,6 @@ dependencies = [
  "bytes-utils",
  "codederror",
  "hyper",
- "hyper-rustls",
  "paste",
  "prost 0.12.1",
  "prost-build",
@@ -4574,9 +4563,8 @@ dependencies = [
  "prost-types",
  "restate_base64_util",
  "restate_errors",
- "restate_hyper_util",
- "restate_lambda_client",
  "restate_schema_api",
+ "restate_service_client",
  "restate_test_util",
  "restate_types",
  "size",
@@ -4851,6 +4839,7 @@ dependencies = [
  "restate_schema_api",
  "restate_schema_impl",
  "restate_serde_util",
+ "restate_service_client",
  "restate_service_protocol",
  "restate_storage_api",
  "restate_storage_query_datafusion",

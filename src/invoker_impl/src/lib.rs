@@ -23,7 +23,6 @@ use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use restate_errors::warn_it;
-use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
     StateReader,
@@ -52,22 +51,13 @@ use tracing::{debug, trace};
 
 pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
-pub use options::{
-    Http2KeepAliveOptions, Http2KeepAliveOptionsBuilder, Http2KeepAliveOptionsBuilderError,
-    Options, OptionsBuilder, OptionsBuilderError,
-};
-use restate_lambda_client::LambdaClient;
+pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 
 /// Internal error trait for the invoker errors
 trait InvokerError: std::error::Error {
     fn is_transient(&self) -> bool;
     fn to_invocation_error(&self) -> InvocationError;
 }
-
-type HttpsClient = hyper::Client<
-    ProxyConnector<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>>,
-    hyper::Body,
->;
 
 // -- InvocationTask factory: we use this to mock the state machine in tests
 
@@ -85,9 +75,8 @@ trait InvocationTaskRunner {
 }
 
 #[derive(Debug)]
-struct DefaultInvocationTaskRunner<JR, SR, EE, EMR> {
-    http_client: HttpsClient,
-    lambda_client: LambdaClient,
+struct DefaultInvocationTaskRunner<JR, SR, EE, EMR, ServiceClient> {
+    client: ServiceClient,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
@@ -99,7 +88,8 @@ struct DefaultInvocationTaskRunner<JR, SR, EE, EMR> {
     endpoint_metadata_resolver: EMR,
 }
 
-impl<JR, SR, EE, EMR> InvocationTaskRunner for DefaultInvocationTaskRunner<JR, SR, EE, EMR>
+impl<JR, SR, EE, EMR, ServiceClient> InvocationTaskRunner
+    for DefaultInvocationTaskRunner<JR, SR, EE, EMR, ServiceClient>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -107,6 +97,7 @@ where
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
     EMR: EndpointMetadataResolver + Clone + Send + 'static,
+    ServiceClient: restate_service_client::Service,
 {
     fn start_invocation_task(
         &self,
@@ -119,8 +110,7 @@ where
     ) -> AbortHandle {
         task_pool.spawn(
             InvocationTask::new(
-                self.http_client.clone(),
-                self.lambda_client.clone(),
+                self.client.clone(),
                 partition,
                 fid,
                 0,
@@ -144,7 +134,13 @@ where
 // -- Service implementation
 
 #[derive(Debug)]
-pub struct Service<JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
+pub struct Service<
+    JournalReader,
+    StateReader,
+    EntryEnricher,
+    ServiceEndpointRegistry,
+    ServiceClient,
+> {
     // Used for constructing the invoker sender
     input_tx: mpsc::UnboundedSender<InputCommand>,
     // For the segment queue
@@ -157,11 +153,12 @@ pub struct Service<JournalReader, StateReader, EntryEnricher, ServiceEndpointReg
             StateReader,
             EntryEnricher,
             ServiceEndpointRegistry,
+            ServiceClient,
         >,
     >,
 }
 
-impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
+impl<JR, SR, EE, EMR, ServiceClient> Service<JR, SR, EE, EMR, ServiceClient> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         endpoint_metadata_resolver: EMR,
@@ -171,15 +168,13 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
         disable_eager_state: bool,
         message_size_warning: usize,
         message_size_limit: Option<usize>,
-        proxy: Option<Proxy>,
-        keep_alive_options: Option<Http2KeepAliveOptions>,
-        lambda_client: LambdaClient,
+        client: ServiceClient,
         tmp_dir: PathBuf,
         concurrency_limit: Option<usize>,
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
-    ) -> Service<JR, SR, EE, EMR> {
+    ) -> Service<JR, SR, EE, EMR, ServiceClient> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
@@ -191,8 +186,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
-                    http_client: Self::create_http_client(proxy, keep_alive_options),
-                    lambda_client,
+                    client,
                     inactivity_timeout,
                     abort_timeout,
                     disable_eager_state,
@@ -212,34 +206,9 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
             },
         }
     }
-
-    // TODO a single client uses the pooling provided by hyper, but this is not enough.
-    //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
-    fn create_http_client(
-        proxy: Option<Proxy>,
-        keep_alive_options: Option<Http2KeepAliveOptions>,
-    ) -> HttpsClient {
-        let mut builder = hyper::Client::builder();
-        builder.http2_only(true);
-
-        if let Some(keep_alive_options) = keep_alive_options {
-            builder
-                .http2_keep_alive_timeout(keep_alive_options.timeout.into())
-                .http2_keep_alive_interval(Some(keep_alive_options.interval.into()));
-        }
-
-        builder.build::<_, hyper::Body>(ProxyConnector::new(
-            proxy,
-            hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .https_or_http()
-                .enable_http2()
-                .build(),
-        ))
-    }
 }
 
-impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR>
+impl<JR, SR, EE, EMR, ServiceClient> Service<JR, SR, EE, EMR, ServiceClient>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -247,6 +216,7 @@ where
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
     EMR: EndpointMetadataResolver + Clone + Send + 'static,
+    ServiceClient: restate_service_client::Service,
 {
     pub fn handle(&self) -> ChannelServiceHandle {
         ChannelServiceHandle {
@@ -930,6 +900,7 @@ mod tests {
     use super::*;
 
     use crate::invocation_task::InvocationTaskError;
+    use crate::options::ServiceClientOptions;
     use bytes::Bytes;
     use quota::InvokerConcurrencyQuota;
     use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
@@ -1030,9 +1001,7 @@ mod tests {
             false,
             1024,
             None,
-            None,
-            None,
-            LambdaClient::new(None),
+            ServiceClientOptions::default().build(),
             tempdir.into_path(),
             None,
             journal_reader::mocks::EmptyJournalReader,

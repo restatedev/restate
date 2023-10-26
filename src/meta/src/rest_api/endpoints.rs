@@ -157,8 +157,6 @@ pub enum ServiceEndpoint {
         additional_headers: SerdeableHeaderHashMap,
     },
     Lambda {
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[schemars(with = "String")]
         arn: LambdaARN,
     },
 }

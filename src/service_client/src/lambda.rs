@@ -9,11 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::future;
+use std::error::Error;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 
 use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::primitives::Blob;
@@ -21,16 +19,42 @@ use base64::display::Base64Display;
 use base64::Engine;
 use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
-use hyper::body::Bytes;
+use futures::TryFutureExt;
+use hyper::body::{Bytes, HttpBody};
 use hyper::http::request::Parts;
-use hyper::{body, Body, HeaderMap, Method, Request, Response};
-use serde::ser::{Error, SerializeMap};
+use hyper::http::uri::PathAndQuery;
+use hyper::http::HeaderValue;
+use hyper::{body, Body, HeaderMap, Method, Response};
+use serde::ser::Error as _;
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
+use serde_with::serde_as;
 
-pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 use restate_types::identifiers::LambdaARN;
 
-mod options;
+/// # HTTP client options
+#[serde_as]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "options_schema",
+    schemars(rename = "LambdaClientOptions", default)
+)]
+#[builder(default)]
+#[derive(Default)]
+pub struct Options {
+    /// # AWS Profile
+    ///
+    /// Name of the AWS profile to select. Defaults to 'AWS_PROFILE' env var, or otherwise
+    /// the `default` profile.
+    aws_profile: Option<String>,
+}
+
+impl Options {
+    pub fn build(self) -> LambdaClient {
+        LambdaClient::new(self.aws_profile)
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct LambdaClient {
@@ -47,10 +71,7 @@ impl LambdaClient {
         }
     }
 
-    pub fn regional_client(
-        &self,
-        region: &str,
-    ) -> Shared<BoxFuture<'static, aws_sdk_lambda::Client>> {
+    fn regional_client(&self, region: &str) -> Shared<BoxFuture<'static, aws_sdk_lambda::Client>> {
         let mut handle = self.regional_clients.lock().unwrap();
         match handle.get(region) {
             Some(client) => client.clone(),
@@ -72,57 +93,33 @@ impl LambdaClient {
             }
         }
     }
-}
 
-#[derive(Debug, thiserror::Error)]
-pub enum LambdaError {
-    #[error("missing ARN extension in request")]
-    MissingARN,
-    #[error("problem reading request body: {0}")]
-    HyperError(hyper::Error),
-    #[error("error returned from Invoke: {description}: {source}")]
-    InvokeError {
-        description: String,
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
-    },
-    #[error("function returned an error during execution: {0}")]
-    FunctionError(serde_json::Value),
-    #[error("function request could not be serialized: {0}")]
-    SerializationError(serde_json::Error),
-    #[error("function response could not be deserialized: {0}")]
-    DeserializationError(serde_json::Error),
-    #[error("function response body could not be interpreted as base64: {0}")]
-    Base64Error(base64::DecodeError),
-    #[error("function returned neither a payload or an error")]
-    MissingResponse,
-}
-
-impl hyper::service::Service<Request<Body>> for LambdaClient {
-    type Response = Response<Body>;
-    type Error = LambdaError;
-    type Future = Pin<Box<dyn Future<Output = Result<Response<Body>, LambdaError>> + Send>>;
-
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let mut req = req;
-        let arn = match req.extensions_mut().remove::<LambdaARN>() {
-            Some(arn) => arn,
-            None => return future::ready(Err(LambdaError::MissingARN)).boxed(),
-        };
-
-        let (parts, body) = req.into_parts();
-        let body = body::to_bytes(body);
+    pub fn invoke<B>(
+        &self,
+        arn: LambdaARN,
+        body: B,
+        path: PathAndQuery,
+        headers: HeaderMap<HeaderValue>,
+    ) -> impl Future<Output = Result<Response<Body>, LambdaError>> + Send
+    where
+        B: HttpBody + Send + 'static,
+        B::Data: Send,
+        <B as HttpBody>::Error: Into<Box<dyn Error + Send + Sync>>,
+    {
         let client = self.regional_client(arn.region()).clone();
+        let body = body::to_bytes(body).map_err(|err| LambdaError::Body(err.into()));
 
         async move {
-            let (body, client): (Result<Bytes, hyper::Error>, aws_sdk_lambda::Client) =
+            let (body, client): (Result<Bytes, LambdaError>, aws_sdk_lambda::Client) =
                 futures::join!(body, client);
 
-            let body = body.map_err(LambdaError::HyperError)?;
-            let payload: ApiGatewayProxyRequest = (parts, body).into();
+            let payload = ApiGatewayProxyRequest {
+                path: Some(path.path().to_string()),
+                http_method: Method::POST,
+                headers,
+                body: body?,
+                is_base64_encoded: true,
+            };
 
             let res = client
                 .invoke()
@@ -155,8 +152,28 @@ impl hyper::service::Service<Request<Body>> for LambdaClient {
 
             Err(LambdaError::MissingResponse)
         }
-        .boxed()
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LambdaError {
+    #[error("problem reading request body: {0}")]
+    Body(Box<dyn Error + Send + Sync>),
+    #[error("error returned from Invoke: {description}: {source}")]
+    InvokeError {
+        description: String,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+    #[error("function returned an error during execution: {0}")]
+    FunctionError(serde_json::Value),
+    #[error("function request could not be serialized: {0}")]
+    SerializationError(serde_json::Error),
+    #[error("function response could not be deserialized: {0}")]
+    DeserializationError(serde_json::Error),
+    #[error("function response body could not be interpreted as base64: {0}")]
+    Base64Error(base64::DecodeError),
+    #[error("function returned neither a payload or an error")]
+    MissingResponse,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]

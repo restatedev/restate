@@ -13,7 +13,6 @@ use super::storage::{MetaStorage, MetaStorageError};
 use hyper::Uri;
 use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
-use restate_hyper_util::proxy_connector::Proxy;
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
 use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
 use restate_schema_impl::{
@@ -27,7 +26,6 @@ use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
 use std::collections::HashMap;
 
-use restate_lambda_client::LambdaClient;
 use std::future::Future;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -190,10 +188,10 @@ impl MetaHandle {
 
 // -- Service implementation
 
-pub struct MetaService<Storage> {
+pub struct MetaService<Storage, ServiceClient> {
     schemas: Schemas,
 
-    service_discovery: ServiceDiscovery,
+    service_discovery: ServiceDiscovery<ServiceClient>,
 
     storage: Storage,
 
@@ -203,26 +201,22 @@ pub struct MetaService<Storage> {
     reloaded: bool,
 }
 
-impl<Storage> MetaService<Storage>
+impl<Storage, ServiceClient> MetaService<Storage, ServiceClient>
 where
     Storage: MetaStorage,
+    ServiceClient: restate_service_client::Service,
 {
     pub fn new(
         schemas: Schemas,
         storage: Storage,
         service_discovery_retry_policy: RetryPolicy,
-        proxy: Option<Proxy>,
-        lambda_client: LambdaClient,
+        client: ServiceClient,
     ) -> Self {
         let (api_cmd_tx, api_cmd_rx) = mpsc::unbounded_channel();
 
         Self {
             schemas,
-            service_discovery: ServiceDiscovery::new(
-                service_discovery_retry_policy,
-                proxy,
-                lambda_client,
-            ),
+            service_discovery: ServiceDiscovery::new(service_discovery_retry_policy, client),
             storage,
             handle: MetaHandle(api_cmd_tx),
             api_cmd_rx,
