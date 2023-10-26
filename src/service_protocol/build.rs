@@ -9,11 +9,14 @@
 // by the Apache License, Version 2.0.
 
 fn main() -> std::io::Result<()> {
-    prost_build::Config::new().bytes(["."]).compile_protos(
-        &[
-            "service-protocol/dev/restate/service/protocol.proto",
-            "service-protocol/dev/restate/service/discovery.proto",
-        ],
-        &["service-protocol"],
-    )
+    prost_build::Config::new()
+        .bytes(["."])
+        .protoc_arg("--experimental_allow_proto3_optional")
+        .compile_protos(
+            &[
+                "service-protocol/dev/restate/service/protocol.proto",
+                "service-protocol/dev/restate/service/discovery.proto",
+            ],
+            &["service-protocol"],
+        )
 }
