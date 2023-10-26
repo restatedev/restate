@@ -11,5 +11,7 @@
 fn main() -> std::io::Result<()> {
     prost_build::Config::new()
         .bytes(["."])
+        // allow older protobuf compiler to be used
+        .protoc_arg("--experimental_allow_proto3_optional")
         .compile_protos(&["proto/dev/restate/storage/v1/domain.proto"], &["proto"])
 }

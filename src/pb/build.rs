@@ -296,6 +296,8 @@ fn main() -> std::io::Result<()> {
                         .service_generator(),
                 ),
         ))
+        // allow older protobuf compiler to be used
+        .protoc_arg("--experimental_allow_proto3_optional")
         .compile_protos(
             &[
                 "proto/grpc/health/v1/health.proto",
