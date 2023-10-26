@@ -31,13 +31,13 @@ impl KeyExtractor for Schemas {
 pub(crate) mod extract_impls {
     use super::*;
 
-    use crate::schemas_impl::ServiceInstanceType;
+    use crate::schemas_impl::InstanceTypeMetadata;
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use prost::encoding::WireType::*;
     use prost::encoding::{
         decode_key, decode_varint, encode_key, encode_varint, skip_field, DecodeContext, WireType,
     };
-    use restate_schema_api::key::KeyStructure;
+    use restate_schema_api::discovery::KeyStructure;
     use uuid::Uuid;
 
     fn generate_random_key() -> Bytes {
@@ -45,14 +45,14 @@ pub(crate) mod extract_impls {
     }
 
     pub(crate) fn extract(
-        service_instance_type: &ServiceInstanceType,
+        service_instance_type: &InstanceTypeMetadata,
         service_method: impl AsRef<str>,
         payload: Bytes,
     ) -> Result<Bytes, Error> {
         match service_instance_type {
-            ServiceInstanceType::Unkeyed => Ok(generate_random_key()),
-            ServiceInstanceType::Singleton => Ok(Bytes::default()),
-            ServiceInstanceType::Keyed {
+            InstanceTypeMetadata::Unkeyed => Ok(generate_random_key()),
+            InstanceTypeMetadata::Singleton => Ok(Bytes::default()),
+            InstanceTypeMetadata::Keyed {
                 key_structure,
                 service_methods_key_field_root_number,
             } => root_extract(
@@ -62,12 +62,12 @@ pub(crate) mod extract_impls {
                     .ok_or_else(|| Error::NotFound)?,
                 key_structure,
             ),
-            ServiceInstanceType::Unsupported => {
+            InstanceTypeMetadata::Unsupported => {
                 // We return NotFound here because one of the few reasons this error might pop up
                 // is that if a user invokes a service only exposed in the ingress.
                 Err(Error::NotFound)
             }
-            ServiceInstanceType::Custom {
+            InstanceTypeMetadata::Custom {
                 structure_per_method,
             } => {
                 if let Some((root_key_field_number, structure)) =

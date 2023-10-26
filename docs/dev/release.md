@@ -4,11 +4,13 @@ Restate consists of the [runtime](https://github.com/restatedev/restate), the [T
 In order to create a full Restate release you need to:
 
 1. [Release the runtime](#releasing-the-restate-runtime)
-2. [Release the Typescript SDK](https://github.com/restatedev/sdk-typescript#releasing-the-package)
-3. [Update and release the documentation](https://github.com/restatedev/documentation#releasing-the-documentation) with the newly released runtime and SDK
-4. [Update and release the Node template generator](https://github.com/restatedev/node-template-generator#releasing)
-5. [Update and release the tour of Restate](https://github.com/restatedev/tour-of-restate-typescript#releasing)
-6. [Update the examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
+2. [Release the proto](https://github.com/restatedev/proto/)
+3. [Release the service-protocol](https://github.com/restatedev/service-protocol/)
+4. [Release the Typescript SDK](https://github.com/restatedev/sdk-typescript#releasing-the-package)
+5. [Update and release the documentation](https://github.com/restatedev/documentation#releasing-the-documentation) with the newly released runtime and SDK
+6. [Update and release the Node template generator](https://github.com/restatedev/node-template-generator#releasing)
+7. [Update and release the tour of Restate](https://github.com/restatedev/tour-of-restate-typescript#releasing)
+8. [Update the examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
 
 ## Releasing the Restate runtime
 

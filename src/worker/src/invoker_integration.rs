@@ -9,7 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use assert2::let_assert;
+use restate_schema_api::key::extraction;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
+use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::{FullInvocationId, InvocationUuid};
 use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
@@ -44,27 +46,41 @@ where
         raw_entry: &PlainRawEntry,
         request_extractor: impl Fn(Entry) -> InvokeRequest,
         span_relation: SpanRelation,
-    ) -> Result<ResolutionResult, anyhow::Error> {
-        let entry = Codec::deserialize(raw_entry)?;
+    ) -> Result<ResolutionResult, InvocationError> {
+        let entry = Codec::deserialize(raw_entry).map_err(InvocationError::internal)?;
         let request = request_extractor(entry);
 
-        let service_key = self.key_extractor.extract(
+        let service_key = match self.key_extractor.extract(
             &request.service_name,
             &request.method_name,
             request.parameter,
-        )?;
+        ) {
+            Ok(k) => k,
+            Err(extraction::Error::NotFound) => {
+                return Err(InvocationError::service_method_not_found(
+                    &request.service_name,
+                    &request.method_name,
+                ))
+            }
+            Err(e) => return Err(InvocationError::internal(e)),
+        };
 
         let invocation_id = InvocationUuid::now_v7();
 
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(
-            &FullInvocationId::new(request.service_name, service_key.clone(), invocation_id),
+            &FullInvocationId::new(
+                request.service_name.clone(),
+                service_key.clone(),
+                invocation_id,
+            ),
             span_relation,
         );
 
         Ok(ResolutionResult {
             invocation_uuid: invocation_id,
             service_key,
+            service_name: request.service_name,
             span_context,
         })
     }
@@ -79,7 +95,7 @@ where
         &self,
         raw_entry: PlainRawEntry,
         invocation_span_context: &ServiceInvocationSpanContext,
-    ) -> Result<EnrichedRawEntry, anyhow::Error> {
+    ) -> Result<EnrichedRawEntry, InvocationError> {
         let enriched_header = match raw_entry.header {
             RawEntryHeader::PollInputStream { is_completed } => {
                 EnrichedEntryHeader::PollInputStream { is_completed }
@@ -132,10 +148,17 @@ where
                 EnrichedEntryHeader::Awakeable { is_completed }
             }
             RawEntryHeader::CompleteAwakeable => {
-                let entry = Codec::deserialize(&raw_entry)?;
+                let entry = Codec::deserialize(&raw_entry).map_err(InvocationError::internal)?;
                 let_assert!(Entry::CompleteAwakeable(CompleteAwakeableEntry { id, .. }) = entry);
 
-                let (invocation_id, entry_index) = AwakeableIdentifier::decode(id)?.into_inner();
+                let (invocation_id, entry_index) = AwakeableIdentifier::decode(id)
+                    .map_err(|e| {
+                        InvocationError::new(
+                            UserErrorCode::InvalidArgument,
+                            format!("Invalid awakeable identifier: {}", e),
+                        )
+                    })?
+                    .into_inner();
 
                 EnrichedEntryHeader::CompleteAwakeable {
                     invocation_id,

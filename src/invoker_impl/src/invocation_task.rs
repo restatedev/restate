@@ -28,7 +28,7 @@ use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, P
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
-use restate_types::errors::{InvocationError, UserErrorCode};
+use restate_types::errors::InvocationError;
 use restate_types::identifiers::{EndpointId, EntryIndex, FullInvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -89,7 +89,7 @@ pub(crate) enum InvocationTaskError {
     #[code(restate_errors::RT0001)]
     ResponseTimeout,
     #[error("cannot process received entry at index {0} of type {1}: {2}")]
-    EntryEnrichment(EntryIndex, EntryType, #[source] anyhow::Error),
+    EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
     #[error(transparent)]
     Invocation(#[from] InvocationError),
     #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry. This is probably an SDK bug")]
@@ -110,7 +110,20 @@ impl InvokerError for InvocationTaskError {
     fn to_invocation_error(&self) -> InvocationError {
         match self {
             InvocationTaskError::Invocation(e) => e.clone(),
-            e => InvocationError::new(UserErrorCode::Internal, e.to_string()),
+            InvocationTaskError::EntryEnrichment(entry_index, entry_type, e) => {
+                let msg = format!(
+                    "Error when processing entry {} of type {}: {}",
+                    entry_index,
+                    entry_type,
+                    e.message()
+                );
+                let mut err = InvocationError::new(e.code(), msg);
+                if let Some(desc) = e.description() {
+                    err = err.with_description(desc);
+                }
+                err
+            }
+            e => InvocationError::internal(e),
         }
     }
 }

@@ -45,56 +45,46 @@ impl Encoder {
 
     /// Encodes a message to bytes
     pub fn encode(&self, msg: ProtocolMessage) -> Bytes {
-        let header = generate_header(&msg, self.protocol_version);
+        let mut buf = BytesMut::with_capacity(self.encoded_len(&msg));
+        self.encode_to_buf_mut(&mut buf, msg).expect(
+            "Encoding messages should be infallible, \
+            this error indicates a bug in the invoker code. \
+            Please contact the Restate developers.",
+        );
+        buf.freeze()
+    }
 
-        let mut buf = BytesMut::with_capacity((header.frame_length() + 8) as usize);
+    /// Includes header len
+    pub fn encoded_len(&self, msg: &ProtocolMessage) -> usize {
+        8 + msg.encoded_len()
+    }
+
+    pub fn encode_to_buf_mut(
+        &self,
+        mut buf: impl BufMut,
+        msg: ProtocolMessage,
+    ) -> Result<(), prost::EncodeError> {
+        let header = generate_header(&msg, self.protocol_version);
         buf.put_u64(header.into());
 
         // Note:
         // prost::EncodeError can be triggered only by a buffer smaller than required,
         // but because we create the buffer a couple of lines above using the size computed by prost,
         // this can happen only if there is a very bad bug in prost.
-        encode_msg(&msg, &mut buf).expect(
-            "Encoding messages should be infallible, \
-            this error indicates a bug in the invoker code. \
-            Please contact the Restate developers.",
-        );
-
-        buf.freeze()
+        encode_msg(&msg, &mut buf)
     }
 }
 
 fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeader {
+    let len: u32 = msg
+        .encoded_len()
+        .try_into()
+        .expect("Protocol messages can't be larger than u32");
     match msg {
-        ProtocolMessage::Start {
-            partial_state,
-            inner,
-        } => MessageHeader::new_start(
-            *partial_state,
-            protocol_version,
-            inner
-                .encoded_len()
-                .try_into()
-                .expect("Protocol messages can't be larger than u32"),
-        ),
-        ProtocolMessage::Completion(m) => MessageHeader::new(
-            MessageType::Completion,
-            m.encoded_len()
-                .try_into()
-                .expect("Protocol messages can't be larger than u32"),
-        ),
-        ProtocolMessage::Suspension(m) => MessageHeader::new(
-            MessageType::Suspension,
-            m.encoded_len()
-                .try_into()
-                .expect("Protocol messages can't be larger than u32"),
-        ),
-        ProtocolMessage::Error(m) => MessageHeader::new(
-            MessageType::Error,
-            m.encoded_len()
-                .try_into()
-                .expect("Protocol messages can't be larger than u32"),
-        ),
+        ProtocolMessage::Start(_) => MessageHeader::new_start(protocol_version, len),
+        ProtocolMessage::Completion(_) => MessageHeader::new(MessageType::Completion, len),
+        ProtocolMessage::Suspension(_) => MessageHeader::new(MessageType::Suspension, len),
+        ProtocolMessage::Error(_) => MessageHeader::new(MessageType::Error, len),
         ProtocolMessage::UnparsedEntry(entry) => {
             let completed_flag = entry.header.is_completed();
             let requires_ack = if let RawEntryHeader::Custom { requires_ack, .. } = entry.header {
@@ -106,7 +96,7 @@ fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeade
                 raw_header_to_message_type(&entry.header),
                 completed_flag,
                 requires_ack,
-                entry.entry.len() as u32,
+                len,
             )
         }
     }
@@ -114,7 +104,7 @@ fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeade
 
 fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost::EncodeError> {
     match msg {
-        ProtocolMessage::Start { inner, .. } => inner.encode(buf),
+        ProtocolMessage::Start(m) => m.encode(buf),
         ProtocolMessage::Completion(m) => m.encode(buf),
         ProtocolMessage::Suspension(m) => m.encode(buf),
         ProtocolMessage::Error(m) => m.encode(buf),
@@ -234,12 +224,7 @@ fn decode_protocol_message(
     mut buf: impl Buf,
 ) -> Result<ProtocolMessage, prost::DecodeError> {
     Ok(match header.message_type() {
-        MessageType::Start => ProtocolMessage::Start {
-            partial_state: header
-                .partial_state()
-                .expect("StartMessage MUST parse the PARTIAL_STATE flag. This is a runtime bug."),
-            inner: pb::protocol::StartMessage::decode(buf)?,
-        },
+        MessageType::Start => ProtocolMessage::Start(pb::protocol::StartMessage::decode(buf)?),
         MessageType::Completion => {
             ProtocolMessage::Completion(pb::protocol::CompletionMessage::decode(buf)?)
         }
@@ -367,7 +352,6 @@ mod tests {
             actual_msg_header_0.protocol_version(),
             Some(protocol_version)
         );
-        assert_eq!(actual_msg_header_0.partial_state(), Some(true));
         assert_eq!(actual_msg_header_0.message_type(), MessageType::Start);
         assert_eq!(actual_msg_0, expected_msg_0);
 

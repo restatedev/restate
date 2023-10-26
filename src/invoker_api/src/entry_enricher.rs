@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_types::errors::InvocationError;
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
@@ -17,7 +18,7 @@ pub trait EntryEnricher {
         &self,
         entry: PlainRawEntry,
         invocation_span_context: &ServiceInvocationSpanContext,
-    ) -> Result<EnrichedRawEntry, anyhow::Error>;
+    ) -> Result<EnrichedRawEntry, InvocationError>;
 }
 
 #[cfg(any(test, feature = "mocks"))]
@@ -39,7 +40,7 @@ pub mod mocks {
             &self,
             raw_entry: PlainRawEntry,
             invocation_span_context: &ServiceInvocationSpanContext,
-        ) -> Result<EnrichedRawEntry, anyhow::Error> {
+        ) -> Result<EnrichedRawEntry, InvocationError> {
             let enriched_header = match raw_entry.header {
                 RawEntryHeader::PollInputStream { is_completed } => {
                     EnrichedEntryHeader::PollInputStream { is_completed }
@@ -60,6 +61,7 @@ pub mod mocks {
                             resolution_result: Some(ResolutionResult {
                                 invocation_uuid: Default::default(),
                                 service_key: Default::default(),
+                                service_name: Default::default(),
                                 span_context: invocation_span_context.clone(),
                             }),
                         }
@@ -75,6 +77,7 @@ pub mod mocks {
                     resolution_result: ResolutionResult {
                         invocation_uuid: Default::default(),
                         service_key: Default::default(),
+                        service_name: Default::default(),
                         span_context: invocation_span_context.clone(),
                     },
                 },

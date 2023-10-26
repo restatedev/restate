@@ -14,6 +14,9 @@ mod protocol;
 mod reflection;
 mod server;
 
+use std::net::{IpAddr, SocketAddr};
+
+use hyper::server::conn::AddrStream;
 pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
@@ -77,12 +80,34 @@ impl From<Bytes> for HandlerResponse {
 
 type HandlerResult = Result<HandlerResponse, Status>;
 
+// --- Extensions injected into request/response
+
+/// Client connection information for a given RPC request
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ConnectInfo {
+    remote: SocketAddr,
+}
+
+impl ConnectInfo {
+    fn new(socket: &AddrStream) -> Self {
+        Self {
+            remote: socket.remote_addr(),
+        }
+    }
+    fn address(&self) -> IpAddr {
+        self.remote.ip()
+    }
+    fn port(&self) -> u16 {
+        self.remote.port()
+    }
+}
+
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
+    use restate_schema_api::discovery::ServiceRegistrationRequest;
     use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
-    use restate_schema_api::key::ServiceInstanceType;
-    use restate_schema_impl::{Schemas, ServiceRegistrationRequest};
+    use restate_schema_impl::Schemas;
 
     pub(super) fn test_schemas() -> Schemas {
         let schemas = Schemas::default();
@@ -96,9 +121,9 @@ mod mocks {
                             ProtocolType::BidiStream,
                             DeliveryOptions::default(),
                         ),
-                        vec![ServiceRegistrationRequest::new(
+                        vec![ServiceRegistrationRequest::singleton_without_annotations(
                             "greeter.Greeter".to_string(),
-                            ServiceInstanceType::Singleton,
+                            &["Greet"],
                         )],
                         restate_pb::mocks::DESCRIPTOR_POOL.clone(),
                         false,

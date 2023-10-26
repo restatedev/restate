@@ -8,28 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::ack::{AckMode, DeduplicationSource};
-use crate::partition::effects::Effects;
-use crate::partition::state_machine::{Error, StateMachine};
+use super::command_interpreter::CommandInterpreter;
+use super::{AckCommand, AckMode, Effects, Error};
+
+use crate::partition::state_machine::commands::DeduplicationSource;
 use crate::partition::storage::Transaction;
-use crate::partition::AckCommand;
 use restate_storage_api::deduplication_table::SequenceNumberSource;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::SpanRelation;
 use restate_types::journal::raw::RawEntryCodec;
 
 #[derive(Debug)]
-pub(crate) struct DeduplicatingStateMachine<Codec> {
-    state_machine: StateMachine<Codec>,
+pub(crate) struct DeduplicatingCommandInterpreter<Codec> {
+    state_machine: CommandInterpreter<Codec>,
 }
 
-impl<Codec> DeduplicatingStateMachine<Codec> {
-    pub(crate) fn new(state_machine: StateMachine<Codec>) -> Self {
-        DeduplicatingStateMachine { state_machine }
+impl<Codec> DeduplicatingCommandInterpreter<Codec> {
+    pub(crate) fn new(state_machine: CommandInterpreter<Codec>) -> Self {
+        DeduplicatingCommandInterpreter { state_machine }
     }
 }
 
-impl<Codec> DeduplicatingStateMachine<Codec>
+impl<Codec> DeduplicatingCommandInterpreter<Codec>
 where
     Codec: RawEntryCodec,
 {

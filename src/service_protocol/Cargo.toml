@@ -13,7 +13,7 @@ protocol = []
 awakeable-id = ["dep:base64", "dep:restate_base64_util", "dep:restate_types", "dep:thiserror"]
 message = ["protocol", "dep:restate_types", "dep:bytes-utils", "dep:codederror", "dep:restate_errors", "dep:size", "dep:tracing"]
 codec = ["protocol", "dep:restate_types", "dep:thiserror", "dep:paste"]
-discovery = ["dep:thiserror", "dep:codederror", "dep:restate_errors", "dep:restate_schema_api", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:restate_types", "dep:restate_hyper_util"]
+discovery = ["dep:thiserror", "dep:codederror", "dep:restate_errors", "dep:restate_schema_api", "dep:hyper", "dep:hyper-rustls", "dep:prost-reflect", "dep:restate_types", "dep:restate_hyper_util", "dep:tokio"]
 mocks = ["awakeable-id"]
 
 [dependencies]
@@ -36,7 +36,8 @@ prost-reflect = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
 restate_errors = { workspace = true, optional = true }
 restate_hyper_util = { workspace = true, optional = true }
-restate_schema_api = { workspace = true, optional = true, features = ["key_extraction", "endpoint"] }
+restate_schema_api = { workspace = true, optional = true, features = ["endpoint", "discovery"] }
+tokio = { workspace = true, optional = true, features = ["time"] }
 
 size = { version = "0.4.1", optional = true }
 

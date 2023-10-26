@@ -10,27 +10,27 @@
 
 use bytes::Bytes;
 
+use bytestring::ByteString;
 use opentelemetry_api::trace::SpanId;
+use restate_storage_api::status_table::{InvocationStatus, JournalMetadata, NotificationTarget};
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::raw::EntryHeader;
-use restate_types::journal::{Completion, CompletionResult, JournalMetadata};
+use restate_types::journal::{Completion, CompletionResult};
 use std::collections::HashSet;
 use std::fmt;
 use std::vec::Drain;
 use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
 use types::TimerKeyDisplay;
 
-mod interpreter;
-
-use crate::partition::{types, AckResponse, TimerValue};
-pub(crate) use interpreter::{
-    ActuatorMessage, CommitError, Committable, Interpreter, MessageCollector, StateStorage,
-    StateStorageError,
-};
+use crate::partition::state_machine::commands::AckResponse;
+use crate::partition::{types, TimerValue};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::InvocationMetadata;
 use restate_storage_api::timer_table::Timer;
 use restate_types::errors::InvocationErrorCode;
-use restate_types::identifiers::{EndpointId, EntryIndex, FullInvocationId, ServiceId};
+use restate_types::identifiers::{
+    EndpointId, EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
+};
 use restate_types::invocation::{
     InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext,
     SpanRelation,
@@ -77,38 +77,16 @@ pub(crate) enum Effect {
     // State
     SetState {
         service_id: ServiceId,
-        metadata: InvocationMetadata,
-        key: Bytes,
-        value: Bytes,
-        journal_entry: EnrichedRawEntry,
-        entry_index: EntryIndex,
-    },
-    // TODO unify SetState and SetStateOnly
-    SetStateOnly {
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
         key: Bytes,
         value: Bytes,
     },
     ClearState {
         service_id: ServiceId,
-        metadata: InvocationMetadata,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
         key: Bytes,
-        journal_entry: EnrichedRawEntry,
-        entry_index: EntryIndex,
-    },
-    // TODO unify ClearState and ClearStateOnly
-    ClearStateOnly {
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
-        key: Bytes,
-    },
-    GetStateAndAppendCompletedEntry {
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
-        key: Bytes,
-        journal_entry: EnrichedRawEntry,
-        entry_index: EntryIndex,
     },
 
     // Timers
@@ -130,19 +108,10 @@ pub(crate) enum Effect {
     },
     AppendJournalEntry {
         service_id: ServiceId,
-        metadata: InvocationMetadata,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    },
-    AppendAwakeableEntry {
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    },
-    AppendJournalEntryAndAck {
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
+        // We pass around the invocation_status here to avoid an additional read.
+        // We could in theory get rid of this here (and in other places, such as StoreEndpointId),
+        // by using a merge operator in rocksdb.
+        previous_invocation_status: InvocationStatus,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     },
@@ -150,14 +119,31 @@ pub(crate) enum Effect {
         full_invocation_id: FullInvocationId,
         completion: Completion,
     },
-    StoreCompletionAndForward {
+    ForwardCompletion {
         full_invocation_id: FullInvocationId,
         completion: Completion,
     },
-    StoreCompletionAndResume {
+
+    // Virtual journal
+    CreateVirtualJournal {
         service_id: ServiceId,
-        metadata: InvocationMetadata,
+        invocation_uuid: InvocationUuid,
+        span_context: ServiceInvocationSpanContext,
+        completion_notification_target: NotificationTarget,
+        kill_notification_target: NotificationTarget,
+    },
+    NotifyVirtualJournalCompletion {
+        target_service: ServiceId,
+        method_name: String,
+        // TODO perhaps we should rename this type JournalId
+        invocation_uuid: InvocationUuid,
         completion: Completion,
+    },
+    NotifyVirtualJournalKill {
+        target_service: ServiceId,
+        method_name: String,
+        // TODO perhaps we should rename this type JournalId
+        invocation_uuid: InvocationUuid,
     },
 
     // Effects used only for tracing purposes
@@ -170,7 +156,7 @@ pub(crate) enum Effect {
     NotifyInvocationResult {
         full_invocation_id: FullInvocationId,
         creation_time: MillisSinceEpoch,
-        service_method: String,
+        service_method: ByteString,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (InvocationErrorCode, String)>,
     },
@@ -180,6 +166,7 @@ pub(crate) enum Effect {
 
     // Invoker commands
     AbortInvocation(FullInvocationId),
+    SendStoredEntryAckToInvoker(FullInvocationId, EntryIndex),
 }
 
 macro_rules! debug_if_leader {
@@ -222,7 +209,8 @@ impl Effect {
             Effect::ResumeService {
                 metadata:
                     InvocationMetadata {
-                        journal_metadata: JournalMetadata { method, length, .. },
+                        method,
+                        journal_metadata: JournalMetadata { length, .. },
                         ..
                     },
                 ..
@@ -248,12 +236,12 @@ impl Effect {
                     restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
                 );
                 debug_if_leader!(
-                is_leader,
-                rpc.method = %metadata.journal_metadata.method,
-                restate.journal.length = metadata.journal_metadata.length,
-                "Effect: Suspend service waiting on entries {:?}",
-                waiting_for_completed_entries
-                 )
+                    is_leader,
+                    rpc.method = %metadata.method,
+                    restate.journal.length = metadata.journal_metadata.length,
+                    "Effect: Suspend service waiting on entries {:?}",
+                    waiting_for_completed_entries
+                )
             }
             Effect::DropJournalAndFreeService { journal_length, .. } => debug_if_leader!(
                 is_leader,
@@ -369,45 +357,20 @@ impl Effect {
             }
             Effect::SetState {
                 service_id,
-                metadata,
-                key,
-                entry_index,
-                ..
-            } => {
-                info_span_if_leader!(
-                    is_leader,
-                    metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_parent(),
-                    "set_state",
-                    otel.name = format!("set_state {key:?}"),
-                    restate.journal.index = entry_index,
-                    restate.state.key = ?key,
-                    rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
-                );
-
-                debug_if_leader!(
-                    is_leader,
-                    restate.journal.index = entry_index,
-                    restate.state.key = ?key,
-                    "Effect: Set state"
-                )
-            }
-            Effect::SetStateOnly {
-                service_id,
-                metadata,
+                invocation_id,
+                span_context,
                 key,
                 ..
             } => {
                 info_span_if_leader!(
                     is_leader,
-                    metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_parent(),
+                    span_context.is_sampled(),
+                    span_context.as_parent(),
                     "set_state",
                     otel.name = format!("set_state {key:?}"),
                     restate.state.key = ?key,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                    restate.invocation.id = %invocation_id,
                 );
 
                 debug_if_leader!(
@@ -418,76 +381,25 @@ impl Effect {
             }
             Effect::ClearState {
                 service_id,
-                metadata,
-                key,
-                entry_index,
-                ..
-            } => {
-                info_span_if_leader!(
-                    is_leader,
-                    metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_parent(),
-                    "clear_state",
-                    otel.name = format!("clear_state {key:?}"),
-                    restate.journal.index = entry_index,
-                    restate.state.key = ?key,
-                    rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
-                );
-
-                debug_if_leader!(
-                    is_leader,
-                    restate.journal.index = entry_index,
-                    restate.state.key = ?key,
-                    "Effect: Clear state"
-                )
-            }
-            Effect::ClearStateOnly {
-                service_id,
-                metadata,
+                invocation_id,
+                span_context,
                 key,
             } => {
                 info_span_if_leader!(
                     is_leader,
-                    metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_parent(),
+                    span_context.is_sampled(),
+                    span_context.as_parent(),
                     "clear_state",
                     otel.name = format!("clear_state {key:?}"),
                     restate.state.key = ?key,
                     rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                    restate.invocation.id = %invocation_id,
                 );
 
                 debug_if_leader!(
                     is_leader,
                     restate.state.key = ?key,
                     "Effect: Clear state"
-                )
-            }
-            Effect::GetStateAndAppendCompletedEntry {
-                service_id,
-                metadata,
-                key,
-                entry_index,
-                ..
-            } => {
-                info_span_if_leader!(
-                    is_leader,
-                    metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_parent(),
-                    "get_state",
-                    otel.name = format!("get_state {key:?}"),
-                    restate.state.key = ?key,
-                    restate.journal.index = entry_index,
-                    rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
-                );
-
-                debug_if_leader!(
-                    is_leader,
-                    restate.journal.index = entry_index,
-                    restate.state.key = ?key,
-                    "Effect: Get state"
                 )
             }
             Effect::RegisterTimer {
@@ -554,26 +466,6 @@ impl Effect {
                 "Effect: Write journal entry {:?} to storage",
                 journal_entry.header.to_entry_type()
             ),
-            Effect::AppendAwakeableEntry {
-                journal_entry,
-                entry_index,
-                ..
-            } => debug_if_leader!(
-                is_leader,
-                restate.journal.index = entry_index,
-                "Effect: Write journal entry {:?} to storage",
-                journal_entry.header.to_entry_type()
-            ),
-            Effect::AppendJournalEntryAndAck {
-                journal_entry,
-                entry_index,
-                ..
-            } => debug_if_leader!(
-                is_leader,
-                restate.journal.index = entry_index,
-                "Effect: Write journal entry {:?} to storage and ack back",
-                journal_entry.header.to_entry_type()
-            ),
             Effect::StoreCompletion {
                 completion:
                     Completion {
@@ -587,7 +479,7 @@ impl Effect {
                 "Effect: Store completion {}",
                 CompletionResultFmt(result)
             ),
-            Effect::StoreCompletionAndForward {
+            Effect::ForwardCompletion {
                 completion:
                     Completion {
                         entry_index,
@@ -597,12 +489,24 @@ impl Effect {
             } => debug_if_leader!(
                 is_leader,
                 restate.journal.index = entry_index,
-                "Effect: Store completion {} and forward to service endpoint",
+                "Effect: Forward completion {} to service endpoint",
                 CompletionResultFmt(result)
             ),
-            Effect::StoreCompletionAndResume {
+            Effect::CreateVirtualJournal {
                 service_id,
-                metadata,
+                invocation_uuid,
+                ..
+            } => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.service.id = ?service_id,
+                    restate.invocation.id = %InvocationId::new(service_id.partition_key(), *invocation_uuid),
+                    "Effect: Create virtual journal"
+                )
+            }
+            Effect::NotifyVirtualJournalCompletion {
+                target_service,
+                method_name,
                 completion:
                     Completion {
                         entry_index,
@@ -610,21 +514,25 @@ impl Effect {
                     },
                 ..
             } => {
-                info_span_if_leader!(
-                    is_leader,
-                    metadata.journal_metadata.span_context.is_sampled(),
-                    metadata.journal_metadata.span_context.as_parent(),
-                    "resume",
-                    restate.journal.index = entry_index,
-                    rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
-                );
-
                 debug_if_leader!(
                     is_leader,
                     restate.journal.index = entry_index,
-                    "Effect: Store completion {} and resume invocation",
-                    CompletionResultFmt(result)
+                    "Effect: Notify virtual journal completion {} to service {:?} method {}",
+                    CompletionResultFmt(result),
+                    target_service,
+                    method_name
+                )
+            }
+            Effect::NotifyVirtualJournalKill {
+                target_service,
+                method_name,
+                ..
+            } => {
+                debug_if_leader!(
+                    is_leader,
+                    "Effect: Notify virtual journal kill to service {:?} method {}",
+                    target_service,
+                    method_name
                 )
             }
             Effect::BackgroundInvoke {
@@ -682,7 +590,7 @@ impl Effect {
                     "invoke",
                     otel.name = format!("invoke {service_method}"),
                     rpc.service = %full_invocation_id.service_id.service_name,
-                    rpc.method = service_method,
+                    rpc.method = %service_method,
                     restate.invocation.id = %full_invocation_id,
                     restate.invocation.result = result,
                     error = error, // jaeger uses this tag to show an error icon
@@ -701,6 +609,9 @@ impl Effect {
             }
             Effect::AbortInvocation(_) => {
                 debug_if_leader!(is_leader, "Effect: Abort unknown invocation");
+            }
+            Effect::SendStoredEntryAckToInvoker(_, _) => {
+                // We can ignore these
             }
         }
     }
@@ -721,7 +632,7 @@ impl<'a> fmt::Display for CompletionResultFmt<'a> {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct Effects {
+pub struct Effects {
     effects: Vec<Effect>,
 }
 
@@ -793,85 +704,35 @@ impl Effects {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn set_state_and_append_journal_entry(
-        &mut self,
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
-        key: Bytes,
-        value: Bytes,
-        journal_entry: EnrichedRawEntry,
-        entry_index: EntryIndex,
-    ) {
-        self.effects.push(Effect::SetState {
-            service_id,
-            metadata,
-            key,
-            value,
-            journal_entry,
-            entry_index,
-        })
-    }
-
     pub(crate) fn set_state(
         &mut self,
         service_id: ServiceId,
-        metadata: InvocationMetadata,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
         key: Bytes,
         value: Bytes,
     ) {
-        self.effects.push(Effect::SetStateOnly {
+        self.effects.push(Effect::SetState {
             service_id,
-            metadata,
+            invocation_id,
+            span_context,
             key,
             value,
-        })
-    }
-
-    pub(crate) fn clear_state_and_append_journal_entry(
-        &mut self,
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
-        key: Bytes,
-        journal_entry: EnrichedRawEntry,
-        entry_index: EntryIndex,
-    ) {
-        self.effects.push(Effect::ClearState {
-            service_id,
-            metadata,
-            key,
-            journal_entry,
-            entry_index,
         })
     }
 
     pub(crate) fn clear_state(
         &mut self,
         service_id: ServiceId,
-        metadata: InvocationMetadata,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
         key: Bytes,
     ) {
-        self.effects.push(Effect::ClearStateOnly {
+        self.effects.push(Effect::ClearState {
             service_id,
-            metadata,
+            invocation_id,
+            span_context,
             key,
-        })
-    }
-
-    pub(crate) fn get_state_and_append_completed_entry(
-        &mut self,
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
-        key: Bytes,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    ) {
-        self.effects.push(Effect::GetStateAndAppendCompletedEntry {
-            service_id,
-            metadata,
-            key,
-            entry_index,
-            journal_entry,
         })
     }
 
@@ -915,43 +776,13 @@ impl Effects {
     pub(crate) fn append_journal_entry(
         &mut self,
         service_id: ServiceId,
-        metadata: InvocationMetadata,
+        previous_invocation_status: InvocationStatus,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) {
         self.effects.push(Effect::AppendJournalEntry {
             service_id,
-            metadata,
-            entry_index,
-            journal_entry,
-        })
-    }
-
-    pub(crate) fn append_awakeable_entry(
-        &mut self,
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    ) {
-        self.effects.push(Effect::AppendAwakeableEntry {
-            service_id,
-            metadata,
-            entry_index,
-            journal_entry,
-        })
-    }
-
-    pub(crate) fn append_journal_entry_and_ack_storage(
-        &mut self,
-        service_id: ServiceId,
-        metadata: InvocationMetadata,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    ) {
-        self.effects.push(Effect::AppendJournalEntryAndAck {
-            service_id,
-            metadata,
+            previous_invocation_status,
             entry_index,
             journal_entry,
         })
@@ -973,27 +804,59 @@ impl Effects {
         });
     }
 
-    pub(crate) fn store_and_forward_completion(
+    pub(crate) fn forward_completion(
         &mut self,
         full_invocation_id: FullInvocationId,
         completion: Completion,
     ) {
-        self.effects.push(Effect::StoreCompletionAndForward {
+        self.effects.push(Effect::ForwardCompletion {
             full_invocation_id,
             completion,
         });
     }
 
-    pub(crate) fn store_completion_and_resume(
+    pub(crate) fn create_virtual_journal(
         &mut self,
         service_id: ServiceId,
-        metadata: InvocationMetadata,
+        invocation_uuid: InvocationUuid,
+        span_context: ServiceInvocationSpanContext,
+        completion_notification_target: NotificationTarget,
+        kill_notification_target: NotificationTarget,
+    ) {
+        self.effects.push(Effect::CreateVirtualJournal {
+            service_id,
+            invocation_uuid,
+            span_context,
+            completion_notification_target,
+            kill_notification_target,
+        })
+    }
+
+    pub(crate) fn notify_virtual_journal_completion(
+        &mut self,
+        target_service: ServiceId,
+        method_name: String,
+        invocation_uuid: InvocationUuid,
         completion: Completion,
     ) {
-        self.effects.push(Effect::StoreCompletionAndResume {
-            service_id,
-            metadata,
+        self.effects.push(Effect::NotifyVirtualJournalCompletion {
+            target_service,
+            method_name,
+            invocation_uuid,
             completion,
+        });
+    }
+
+    pub(crate) fn notify_virtual_journal_kill(
+        &mut self,
+        target_service: ServiceId,
+        method_name: String,
+        invocation_uuid: InvocationUuid,
+    ) {
+        self.effects.push(Effect::NotifyVirtualJournalKill {
+            target_service,
+            method_name,
+            invocation_uuid,
         });
     }
 
@@ -1035,8 +898,8 @@ impl Effects {
     ) {
         self.effects.push(Effect::NotifyInvocationResult {
             full_invocation_id,
-            creation_time: invocation_metadata.creation_time,
-            service_method: invocation_metadata.journal_metadata.method,
+            creation_time: invocation_metadata.timestamps.creation_time(),
+            service_method: invocation_metadata.method,
             span_context: invocation_metadata.journal_metadata.span_context,
             result,
         })
@@ -1049,6 +912,17 @@ impl Effects {
     pub(crate) fn abort_invocation(&mut self, full_invocation_id: FullInvocationId) {
         self.effects
             .push(Effect::AbortInvocation(full_invocation_id));
+    }
+
+    pub(crate) fn send_stored_ack_to_invoker(
+        &mut self,
+        full_invocation_id: FullInvocationId,
+        entry_index: EntryIndex,
+    ) {
+        self.effects.push(Effect::SendStoredEntryAckToInvoker(
+            full_invocation_id,
+            entry_index,
+        ));
     }
 
     /// We log only if the log level is TRACE, or if the log level is DEBUG and we're the leader,

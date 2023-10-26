@@ -29,6 +29,7 @@ use std::time::Duration;
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "options_schema", schemars(default))]
 pub struct Http2KeepAliveOptions {
     /// # HTTP/2 Keep-alive interval
     ///
@@ -37,10 +38,7 @@ pub struct Http2KeepAliveOptions {
     ///
     /// You should set this timeout with a value lower than the `response_abort_timeout`.
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(with = "String", default = "Http2KeepAliveOptions::default_interval")
-    )]
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     pub(crate) interval: humantime::Duration,
 
     /// # Timeout
@@ -50,10 +48,7 @@ pub struct Http2KeepAliveOptions {
     /// If the ping is not acknowledged within the timeout, the connection will
     /// be closed.
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(with = "String", default = "Http2KeepAliveOptions::default_timeout")
-    )]
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     pub(crate) timeout: humantime::Duration,
 }
 
@@ -80,16 +75,15 @@ impl Http2KeepAliveOptions {
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "options_schema", schemars(rename = "InvokerOptions"))]
+#[cfg_attr(
+    feature = "options_schema",
+    schemars(rename = "InvokerOptions", default)
+)]
 #[builder(default)]
 pub struct Options {
     /// # Retry policy
     ///
     /// Retry policy to use for all the invocations handled by this invoker.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_retry_policy")
-    )]
     retry_policy: RetryPolicy,
 
     /// # Inactivity timeout
@@ -103,10 +97,7 @@ pub struct Options {
     ///
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(with = "String", default = "Options::default_inactivity_timeout")
-    )]
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     inactivity_timeout: humantime::Duration,
 
     /// # Abort timeout
@@ -121,19 +112,12 @@ pub struct Options {
     ///
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(with = "String", default = "Options::default_abort_timeout")
-    )]
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     abort_timeout: humantime::Duration,
 
     /// # Message size warning
     ///
     /// Threshold to log a warning in case protocol messages coming from service endpoint are larger than the specified amount.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(with = "String", default = "Options::default_message_size_warning")
-    )]
     message_size_warning: usize,
 
     /// # Message size limit
@@ -146,7 +130,6 @@ pub struct Options {
     /// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with the `Host` header set to the service endpoint URI.
     /// HTTPS proxy URIs are supported, but only HTTP endpoint traffic will be proxied currently.
     /// Can be overridden by the `HTTP_PROXY` environment variable.
-    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
     proxy_uri: Option<Proxy>,
 
@@ -154,10 +137,6 @@ pub struct Options {
     ///
     /// Temporary directory to use for the invoker temporary files.
     /// If empty, the system temporary directory will be used instead.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(with = "String", default = "Options::default_tmp_dir")
-    )]
     tmp_dir: PathBuf,
 
     /// # Concurrency limit
@@ -169,10 +148,6 @@ pub struct Options {
     ///
     /// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
     /// If unset, HTTP/2 keep-alive are disabled.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_http2_keep_alive")
-    )]
     http2_keep_alive: Option<Http2KeepAliveOptions>,
 
     // -- Private config options (not exposed in the schema)
@@ -183,50 +158,26 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            retry_policy: Options::default_retry_policy(),
-            inactivity_timeout: Options::default_inactivity_timeout(),
-            abort_timeout: Options::default_abort_timeout(),
-            message_size_warning: Options::default_message_size_warning(),
+            retry_policy: RetryPolicy::exponential(
+                Duration::from_millis(50),
+                2.0,
+                usize::MAX,
+                Some(Duration::from_secs(10)),
+            ),
+            inactivity_timeout: Duration::from_secs(60).into(),
+            abort_timeout: Duration::from_secs(60).into(),
+            message_size_warning: 1024 * 1024 * 10, // 10mb
             message_size_limit: None,
             proxy_uri: None,
-            tmp_dir: Options::default_tmp_dir(),
+            tmp_dir: restate_fs_util::generate_temp_dir_name("invoker"),
             concurrency_limit: None,
-            http2_keep_alive: Options::default_http2_keep_alive(),
+            http2_keep_alive: Some(Http2KeepAliveOptions::default()),
             disable_eager_state: false,
         }
     }
 }
 
 impl Options {
-    fn default_retry_policy() -> RetryPolicy {
-        RetryPolicy::exponential(
-            Duration::from_millis(50),
-            2.0,
-            usize::MAX,
-            Some(Duration::from_secs(10)),
-        )
-    }
-
-    fn default_inactivity_timeout() -> humantime::Duration {
-        Duration::from_secs(60).into()
-    }
-
-    fn default_abort_timeout() -> humantime::Duration {
-        Duration::from_secs(60).into()
-    }
-
-    fn default_message_size_warning() -> usize {
-        1024 * 1024 * 10 // 10mb
-    }
-
-    fn default_tmp_dir() -> PathBuf {
-        restate_fs_util::generate_temp_dir_name("invoker")
-    }
-
-    fn default_http2_keep_alive() -> Option<Http2KeepAliveOptions> {
-        Some(Http2KeepAliveOptions::default())
-    }
-
     pub fn build<JR, JS, SR, EE, EMR>(
         self,
         journal_reader: JR,

@@ -157,9 +157,9 @@ mod tests {
     use super::*;
 
     use restate_pb::mocks;
+    use restate_schema_api::discovery::ServiceRegistrationRequest;
     use restate_schema_api::endpoint::EndpointMetadata;
-    use restate_schema_api::key::ServiceInstanceType;
-    use restate_schema_impl::{Schemas, ServiceRegistrationRequest};
+    use restate_schema_impl::Schemas;
     use restate_test_util::test;
     use tempfile::tempdir;
 
@@ -173,9 +173,9 @@ mod tests {
         let commands_1 = schemas
             .compute_new_endpoint_updates(
                 EndpointMetadata::mock_with_uri("http://localhost:9080"),
-                vec![ServiceRegistrationRequest::new(
+                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                     mocks::GREETER_SERVICE_NAME.to_string(),
-                    ServiceInstanceType::Unkeyed,
+                    &["Greet"],
                 )],
                 mocks::DESCRIPTOR_POOL.clone(),
                 false,
@@ -191,13 +191,13 @@ mod tests {
             .compute_new_endpoint_updates(
                 EndpointMetadata::mock_with_uri("http://localhost:9081"),
                 vec![
-                    ServiceRegistrationRequest::new(
+                    ServiceRegistrationRequest::unkeyed_without_annotations(
                         mocks::GREETER_SERVICE_NAME.to_string(),
-                        ServiceInstanceType::Unkeyed,
+                        &["Greet"],
                     ),
-                    ServiceRegistrationRequest::new(
+                    ServiceRegistrationRequest::unkeyed_without_annotations(
                         mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
-                        ServiceInstanceType::Unkeyed,
+                        &["Greet"],
                     ),
                 ],
                 mocks::DESCRIPTOR_POOL.clone(),

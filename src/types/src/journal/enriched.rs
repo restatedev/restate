@@ -22,6 +22,7 @@ pub type EnrichedRawEntry = RawEntry<EnrichedEntryHeader>;
 pub struct ResolutionResult {
     pub invocation_uuid: InvocationUuid,
     pub service_key: Bytes,
+    pub service_name: ByteString,
     // When resolving the service and generating its id, we also generate the associated span
     pub span_context: ServiceInvocationSpanContext,
 }

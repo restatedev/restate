@@ -8,157 +8,110 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::{Effect, Effects};
-use crate::partition::{AckResponse, TimerValue};
+use super::{Effects, Error};
+
+use crate::partition::services::non_deterministic;
+use crate::partition::state_machine::actions::Action;
+use crate::partition::state_machine::effects::Effect;
+use crate::partition::{CommitError, Committable};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
+use restate_storage_api::status_table::{
+    InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
+};
 use restate_storage_api::timer_table::Timer;
-
-use crate::partition::services::non_deterministic;
-use bytestring::ByteString;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
-use restate_types::invocation::{
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
-};
+use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
-use restate_types::journal::raw::{
-    EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryCodecError, RawEntryHeader,
-};
-use restate_types::journal::{Completion, CompletionResult, EntryType, JournalMetadata};
+use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryHeader};
+use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use std::marker::PhantomData;
 use tracing::{debug, warn};
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum Error {
-    #[error("failed to read state while interpreting effects: {0}")]
-    State(#[from] StateStorageError),
-    #[error("failed to decode entry while interpreting effects: {0}")]
-    Codec(#[from] RawEntryCodecError),
+pub trait ActionCollector {
+    fn collect(&mut self, message: Action);
 }
 
-#[derive(Debug)]
-pub(crate) enum ActuatorMessage {
-    Invoke {
-        full_invocation_id: FullInvocationId,
-        invoke_input_journal: InvokeInputJournal,
-    },
-    InvokeBuiltInService {
-        full_invocation_id: FullInvocationId,
-        method: ByteString,
-        span_context: ServiceInvocationSpanContext,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        argument: Bytes,
-    },
-    NewOutboxMessage {
-        seq_number: MessageIndex,
-        message: OutboxMessage,
-    },
-    RegisterTimer {
-        timer_value: TimerValue,
-    },
-    AckStoredEntry {
-        full_invocation_id: FullInvocationId,
-        entry_index: EntryIndex,
-    },
-    ForwardCompletion {
-        full_invocation_id: FullInvocationId,
-        completion: Completion,
-    },
-    SendAckResponse(AckResponse),
-    AbortInvocation(FullInvocationId),
-}
-
-pub(crate) trait MessageCollector {
-    fn collect(&mut self, message: ActuatorMessage);
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum StateStorageError {
-    #[error(transparent)]
-    Storage(#[from] restate_storage_api::StorageError),
-}
-
-pub(crate) trait StateStorage {
+pub trait StateStorage {
     // Invocation status
     fn store_invocation_status<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         status: InvocationStatus,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn drop_journal<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         journal_length: EntryIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn store_journal_entry<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn store_completion_result<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
         completion_result: CompletionResult,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     // TODO: Replace with async trait or proper future
     fn load_completion_result<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<CompletionResult>, StateStorageError>>;
+    ) -> BoxFuture<Result<Option<CompletionResult>, restate_storage_api::StorageError>>;
 
     // TODO: Replace with async trait or proper future
     fn load_journal_entry<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<EnrichedRawEntry>, StateStorageError>>;
+    ) -> BoxFuture<Result<Option<EnrichedRawEntry>, restate_storage_api::StorageError>>;
 
     // In-/outbox
     fn enqueue_into_inbox(
         &mut self,
         seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn enqueue_into_outbox(
         &mut self,
         seq_number: MessageIndex,
         message: OutboxMessage,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn store_inbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn store_outbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn truncate_outbox(
         &mut self,
         outbox_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn truncate_inbox<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         inbox_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     // State
     fn store_state<'a>(
@@ -166,20 +119,20 @@ pub(crate) trait StateStorage {
         service_id: &'a ServiceId,
         key: Bytes,
         value: Bytes,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     // TODO: Replace with async trait or proper future
     fn load_state<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         key: &'a Bytes,
-    ) -> BoxFuture<Result<Option<Bytes>, StateStorageError>>;
+    ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>>;
 
     fn clear_state<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
         key: &'a Bytes,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     // Timer
     fn store_timer(
@@ -188,39 +141,18 @@ pub(crate) trait StateStorage {
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         timer: Timer,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
     fn delete_timer(
         &mut self,
         full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<(), StateStorageError>>;
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("failed committing results: {source:?}")]
-pub(crate) struct CommitError {
-    source: Option<anyhow::Error>,
-}
-
-impl CommitError {
-    pub(crate) fn with_source(source: impl Into<anyhow::Error>) -> Self {
-        CommitError {
-            source: Some(source.into()),
-        }
-    }
-}
-
-pub(crate) trait Committable {
-    // TODO: Replace with async trait or proper future
-    fn commit<'a>(self) -> BoxFuture<'a, Result<(), CommitError>>
-    where
-        Self: 'a;
+    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 }
 
 #[must_use = "Don't forget to commit the interpretation result"]
-pub(crate) struct InterpretationResult<Txn, Collector> {
+pub struct InterpretationResult<Txn, Collector> {
     txn: Txn,
     collector: Collector,
 }
@@ -233,7 +165,7 @@ where
         Self { txn, collector }
     }
 
-    pub(crate) async fn commit(self) -> Result<Collector, CommitError> {
+    pub async fn commit(self) -> Result<Collector, CommitError> {
         let Self { txn, collector } = self;
 
         txn.commit().await?;
@@ -241,12 +173,12 @@ where
     }
 }
 
-pub(crate) struct Interpreter<Codec> {
+pub(crate) struct EffectInterpreter<Codec> {
     _codec: PhantomData<Codec>,
 }
 
-impl<Codec: RawEntryCodec> Interpreter<Codec> {
-    pub(crate) async fn interpret_effects<S: StateStorage + Committable, C: MessageCollector>(
+impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
+    pub(crate) async fn interpret_effects<S: StateStorage + Committable, C: ActionCollector>(
         effects: &mut Effects,
         mut state_storage: S,
         mut message_collector: C,
@@ -258,7 +190,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         Ok(InterpretationResult::new(state_storage, message_collector))
     }
 
-    async fn interpret_effect<S: StateStorage, C: MessageCollector>(
+    async fn interpret_effect<S: StateStorage, C: ActionCollector>(
         effect: Effect,
         state_storage: &mut S,
         collector: &mut C,
@@ -271,13 +203,13 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 service_id,
                 mut metadata,
             } => {
-                metadata.modification_time = MillisSinceEpoch::now();
+                metadata.timestamps.update();
                 let invocation_id = metadata.invocation_uuid;
                 state_storage
                     .store_invocation_status(&service_id, InvocationStatus::Invoked(metadata))
                     .await?;
 
-                collector.collect(ActuatorMessage::Invoke {
+                collector.collect(Action::Invoke {
                     full_invocation_id: FullInvocationId {
                         service_id,
                         invocation_uuid: invocation_id,
@@ -290,7 +222,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 mut metadata,
                 waiting_for_completed_entries,
             } => {
-                metadata.modification_time = MillisSinceEpoch::now();
+                metadata.timestamps.update();
                 state_storage
                     .store_invocation_status(
                         &service_id,
@@ -334,32 +266,12 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     .store_outbox_seq_number(seq_number + 1)
                     .await?;
 
-                collector.collect(ActuatorMessage::NewOutboxMessage {
+                collector.collect(Action::NewOutboxMessage {
                     seq_number,
                     message,
                 });
             }
             Effect::SetState {
-                service_id,
-                metadata,
-                key,
-                value,
-                journal_entry,
-                entry_index,
-            } => {
-                state_storage.store_state(&service_id, key, value).await?;
-
-                Self::append_journal_entry(
-                    state_storage,
-                    collector,
-                    service_id,
-                    metadata,
-                    entry_index,
-                    journal_entry,
-                )
-                .await?;
-            }
-            Effect::SetStateOnly {
                 service_id,
                 key,
                 value,
@@ -368,64 +280,9 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 state_storage.store_state(&service_id, key, value).await?;
             }
             Effect::ClearState {
-                service_id,
-                metadata,
-                key,
-                journal_entry,
-                entry_index,
-            } => {
-                state_storage.clear_state(&service_id, &key).await?;
-
-                Self::append_journal_entry(
-                    state_storage,
-                    collector,
-                    service_id,
-                    metadata,
-                    entry_index,
-                    journal_entry,
-                )
-                .await?;
-            }
-            Effect::ClearStateOnly {
                 service_id, key, ..
             } => {
                 state_storage.clear_state(&service_id, &key).await?;
-            }
-            Effect::GetStateAndAppendCompletedEntry {
-                key,
-                service_id,
-                metadata,
-                mut journal_entry,
-                entry_index,
-            } => {
-                let value = state_storage.load_state(&service_id, &key).await?;
-
-                let completion_result = value
-                    .map(CompletionResult::Success)
-                    .unwrap_or(CompletionResult::Empty);
-
-                Codec::write_completion(&mut journal_entry, completion_result.clone())?;
-
-                let full_invocation_id =
-                    FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid);
-
-                Self::unchecked_append_journal_entry(
-                    state_storage,
-                    collector,
-                    service_id,
-                    metadata,
-                    entry_index,
-                    journal_entry,
-                )
-                .await?;
-
-                collector.collect(ActuatorMessage::ForwardCompletion {
-                    full_invocation_id,
-                    completion: Completion {
-                        entry_index,
-                        result: completion_result,
-                    },
-                })
             }
             Effect::RegisterTimer { timer_value, .. } => {
                 state_storage
@@ -437,7 +294,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                     )
                     .await?;
 
-                collector.collect(ActuatorMessage::RegisterTimer { timer_value });
+                collector.collect(Action::RegisterTimer { timer_value });
             }
             Effect::DeleteTimer {
                 full_invocation_id,
@@ -454,10 +311,10 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 mut metadata,
             } => {
                 debug_assert_eq!(
-                    metadata.journal_metadata.endpoint_id, None,
+                    metadata.endpoint_id, None,
                     "No endpoint_id should be fixed for the current invocation"
                 );
-                metadata.journal_metadata.endpoint_id = Some(endpoint_id);
+                metadata.endpoint_id = Some(endpoint_id);
                 // We recreate the InvocationStatus in Invoked state as the invoker can notify the
                 // chosen endpoint_id only when the invocation is in-flight.
                 state_storage
@@ -466,71 +323,18 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
             }
             Effect::AppendJournalEntry {
                 service_id,
-                metadata,
+                previous_invocation_status,
                 entry_index,
                 journal_entry,
             } => {
                 Self::append_journal_entry(
                     state_storage,
-                    collector,
                     service_id,
-                    metadata,
+                    previous_invocation_status,
                     entry_index,
                     journal_entry,
                 )
                 .await?;
-            }
-            Effect::AppendAwakeableEntry {
-                service_id,
-                metadata,
-                entry_index,
-                mut journal_entry,
-            } => {
-                // check whether the completion has arrived first
-                if let Some(completion_result) = state_storage
-                    .load_completion_result(&service_id, entry_index)
-                    .await?
-                {
-                    Codec::write_completion(&mut journal_entry, completion_result)?;
-                }
-
-                Self::unchecked_append_journal_entry(
-                    state_storage,
-                    collector,
-                    service_id,
-                    metadata,
-                    entry_index,
-                    journal_entry,
-                )
-                .await?;
-            }
-            Effect::AppendJournalEntryAndAck {
-                service_id,
-                metadata,
-                journal_entry,
-                entry_index,
-            } => {
-                let full_invocation_id =
-                    FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid);
-
-                Self::append_journal_entry(
-                    state_storage,
-                    collector,
-                    service_id,
-                    metadata,
-                    entry_index,
-                    journal_entry,
-                )
-                .await?;
-
-                // storage is acked by sending an empty completion
-                collector.collect(ActuatorMessage::ForwardCompletion {
-                    full_invocation_id,
-                    completion: Completion {
-                        entry_index,
-                        result: CompletionResult::Ack,
-                    },
-                })
             }
             Effect::TruncateOutbox(outbox_sequence_number) => {
                 state_storage
@@ -548,72 +352,55 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 Self::store_completion(state_storage, &full_invocation_id, entry_index, result)
                     .await?;
             }
-            Effect::StoreCompletionAndForward {
+            Effect::ForwardCompletion {
                 full_invocation_id,
-                completion:
-                    Completion {
-                        entry_index,
-                        result,
-                    },
+                completion,
             } => {
-                if Self::store_completion(
-                    state_storage,
-                    &full_invocation_id,
-                    entry_index,
-                    // We need to give ownership because storing the completion requires creating
-                    // a protobuf message. However, cloning should be "cheap" because
-                    // CompletionResult uses Bytes.
-                    result.clone(),
-                )
-                .await?
-                {
-                    collector.collect(ActuatorMessage::ForwardCompletion {
-                        full_invocation_id,
-                        completion: Completion {
-                            entry_index,
-                            result,
-                        },
-                    });
-                }
+                collector.collect(Action::ForwardCompletion {
+                    full_invocation_id,
+                    completion,
+                });
             }
-            Effect::StoreCompletionAndResume {
+            Effect::CreateVirtualJournal {
                 service_id,
-                mut metadata,
-                completion:
-                    Completion {
-                        entry_index,
-                        result,
-                    },
+                invocation_uuid,
+                span_context,
+                completion_notification_target,
+                kill_notification_target,
             } => {
-                let full_invocation_id =
-                    FullInvocationId::with_service_id(service_id, metadata.invocation_uuid);
-                if Self::store_completion(
-                    state_storage,
-                    &full_invocation_id,
-                    entry_index,
-                    // We need to give ownership because storing the completion requires creating
-                    // a protobuf message. However, cloning should be "cheap" because
-                    // CompletionResult uses Bytes.
-                    result.clone(),
-                )
-                .await?
-                {
-                    metadata.modification_time = MillisSinceEpoch::now();
-                    state_storage
-                        .store_invocation_status(
-                            &full_invocation_id.service_id,
-                            InvocationStatus::Invoked(metadata),
-                        )
-                        .await?;
-
-                    collector.collect(ActuatorMessage::Invoke {
-                        full_invocation_id,
-                        invoke_input_journal: InvokeInputJournal::NoCachedJournal,
-                    });
-                } else {
-                    unreachable!("There must be an entry that is completed if we want to resume");
-                }
+                state_storage
+                    .store_invocation_status(
+                        &service_id,
+                        InvocationStatus::Virtual {
+                            invocation_uuid,
+                            journal_metadata: JournalMetadata::initialize(span_context),
+                            completion_notification_target,
+                            timestamps: StatusTimestamps::now(),
+                            kill_notification_target,
+                        },
+                    )
+                    .await?;
             }
+            Effect::NotifyVirtualJournalCompletion {
+                target_service,
+                method_name,
+                invocation_uuid,
+                completion,
+            } => collector.collect(Action::NotifyVirtualJournalCompletion {
+                target_service,
+                method_name,
+                invocation_uuid,
+                completion,
+            }),
+            Effect::NotifyVirtualJournalKill {
+                target_service,
+                method_name,
+                invocation_uuid,
+            } => collector.collect(Action::NotifyVirtualJournalKill {
+                target_service,
+                method_name,
+                invocation_uuid,
+            }),
             Effect::DropJournalAndPopInbox {
                 service_id,
                 inbox_sequence_number,
@@ -633,26 +420,30 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 // these effects are only needed for span creation
             }
             Effect::SendAckResponse(ack_response) => {
-                collector.collect(ActuatorMessage::SendAckResponse(ack_response))
+                collector.collect(Action::SendAckResponse(ack_response))
             }
             Effect::AbortInvocation(full_invocation_id) => {
-                collector.collect(ActuatorMessage::AbortInvocation(full_invocation_id))
+                collector.collect(Action::AbortInvocation(full_invocation_id))
+            }
+            Effect::SendStoredEntryAckToInvoker(full_invocation_id, entry_index) => {
+                collector.collect(Action::AckStoredEntry {
+                    full_invocation_id,
+                    entry_index,
+                });
             }
         }
 
         Ok(())
     }
 
-    async fn invoke_service<S: StateStorage, C: MessageCollector>(
+    async fn invoke_service<S: StateStorage, C: ActionCollector>(
         state_storage: &mut S,
         collector: &mut C,
         service_invocation: ServiceInvocation,
     ) -> Result<(), Error> {
-        let creation_time = MillisSinceEpoch::now();
         let journal_metadata = JournalMetadata::new(
-            service_invocation.method_name.clone(),
-            service_invocation.span_context.clone(),
             1, // initial length is 1, because we store the poll input stream entry
+            service_invocation.span_context.clone(),
         );
 
         state_storage
@@ -661,9 +452,10 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 InvocationStatus::Invoked(InvocationMetadata::new(
                     service_invocation.fid.invocation_uuid,
                     journal_metadata.clone(),
+                    None,
+                    service_invocation.method_name.clone(),
                     service_invocation.response_sink.clone(),
-                    creation_time,
-                    creation_time,
+                    StatusTimestamps::now(),
                 )),
             )
             .await?;
@@ -673,7 +465,7 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         let input_entry = if non_deterministic::ServiceInvoker::is_supported(
             &service_invocation.fid.service_id.service_name,
         ) {
-            collector.collect(ActuatorMessage::InvokeBuiltInService {
+            collector.collect(Action::InvokeBuiltInService {
                 full_invocation_id: service_invocation.fid,
                 span_context: service_invocation.span_context,
                 response_sink: service_invocation.response_sink,
@@ -699,10 +491,15 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
 
             let raw_bytes = entry.clone();
 
-            collector.collect(ActuatorMessage::Invoke {
+            collector.collect(Action::Invoke {
                 full_invocation_id: service_invocation.fid,
                 invoke_input_journal: InvokeInputJournal::CachedJournal(
-                    journal_metadata,
+                    restate_invoker_api::JournalMetadata::new(
+                        journal_metadata.length,
+                        journal_metadata.span_context,
+                        service_invocation.method_name.clone(),
+                        None,
+                    ),
                     vec![PlainRawEntry::new(
                         RawEntryHeader::PollInputStream { is_completed },
                         raw_bytes,
@@ -751,6 +548,8 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
                 .await?;
             Ok(true)
         } else {
+            // In case we don't have the journal entry (only awakeables case),
+            // we'll send the completion afterward once we receive the entry.
             state_storage
                 .store_completion_result(
                     &full_invocation_id.service_id,
@@ -762,66 +561,35 @@ impl<Codec: RawEntryCodec> Interpreter<Codec> {
         }
     }
 
-    async fn append_journal_entry<S: StateStorage, C: MessageCollector>(
+    async fn append_journal_entry<S: StateStorage>(
         state_storage: &mut S,
-        collector: &mut C,
         service_id: ServiceId,
-        metadata: InvocationMetadata,
+        mut previous_invocation_status: InvocationStatus,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) -> Result<(), Error> {
-        debug_assert!(
-            state_storage
-                .load_completion_result(&service_id, entry_index)
-                .await?
-                .is_none(),
-            "Only awakeable journal entries can have a completion result already stored"
-        );
-
-        Self::unchecked_append_journal_entry(
-            state_storage,
-            collector,
-            service_id,
-            metadata,
-            entry_index,
-            journal_entry,
-        )
-        .await
-    }
-
-    async fn unchecked_append_journal_entry<S: StateStorage, C: MessageCollector>(
-        state_storage: &mut S,
-        collector: &mut C,
-        service_id: ServiceId,
-        mut metadata: InvocationMetadata,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    ) -> Result<(), Error> {
+        // Store journal entry
         state_storage
             .store_journal_entry(&service_id, entry_index, journal_entry)
             .await?;
 
-        let full_invocation_id =
-            FullInvocationId::with_service_id(service_id, metadata.invocation_uuid);
-
-        // update the journal metadata
+        // update the journal metadata length
+        let journal_meta = previous_invocation_status
+            .get_journal_metadata_mut()
+            .expect("At this point there must be a journal");
         debug_assert_eq!(
-            metadata.journal_metadata.length, entry_index,
+            journal_meta.length, entry_index,
             "journal should not have gaps"
         );
-        metadata.journal_metadata.length = entry_index + 1;
+        journal_meta.length = entry_index + 1;
 
+        // Update timestamps
+        previous_invocation_status.update_timestamps();
+
+        // Store invocation status
         state_storage
-            .store_invocation_status(
-                &full_invocation_id.service_id,
-                InvocationStatus::Invoked(metadata),
-            )
+            .store_invocation_status(&service_id, previous_invocation_status)
             .await?;
-
-        collector.collect(ActuatorMessage::AckStoredEntry {
-            full_invocation_id,
-            entry_index,
-        });
 
         Ok(())
     }

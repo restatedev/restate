@@ -29,10 +29,7 @@ pub use header::{MessageHeader, MessageKind, MessageType};
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolMessage {
     // Core
-    Start {
-        partial_state: bool,
-        inner: pb::protocol::StartMessage,
-    },
+    Start(pb::protocol::StartMessage),
     Completion(pb::protocol::CompletionMessage),
     Suspension(pb::protocol::SuspensionMessage),
     Error(pb::protocol::ErrorMessage),
@@ -49,18 +46,28 @@ impl ProtocolMessage {
         partial_state: bool,
         state_map_entries: impl IntoIterator<Item = (Bytes, Bytes)>,
     ) -> Self {
-        Self::Start {
+        Self::Start(pb::protocol::StartMessage {
+            id,
+            debug_id,
+            known_entries,
             partial_state,
-            inner: pb::protocol::StartMessage {
-                id,
-                debug_id,
-                known_entries,
-                partial_state,
-                state_map: state_map_entries
-                    .into_iter()
-                    .map(|(key, value)| pb::protocol::start_message::StateEntry { key, value })
-                    .collect(),
-            },
+            state_map: state_map_entries
+                .into_iter()
+                .map(|(key, value)| pb::protocol::start_message::StateEntry { key, value })
+                .collect(),
+        })
+    }
+
+    pub(crate) fn encoded_len(&self) -> usize {
+        match self {
+            ProtocolMessage::Start(m) => m.encoded_len(),
+            ProtocolMessage::Completion(m) => m.encoded_len(),
+
+            ProtocolMessage::Suspension(m) => m.encoded_len(),
+
+            ProtocolMessage::Error(m) => m.encoded_len(),
+
+            ProtocolMessage::UnparsedEntry(entry) => entry.entry.len(),
         }
     }
 }
@@ -99,7 +106,7 @@ impl From<pb::protocol::ErrorMessage> for InvocationError {
         if value.description.is_empty() {
             InvocationError::new(value.code, value.message)
         } else {
-            InvocationError::new_with_description(value.code, value.message, value.description)
+            InvocationError::new(value.code, value.message).with_description(value.description)
         }
     }
 }

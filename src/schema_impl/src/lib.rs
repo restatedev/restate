@@ -11,8 +11,10 @@
 use arc_swap::ArcSwap;
 use http::Uri;
 use prost_reflect::DescriptorPool;
+use restate_schema_api::discovery::{
+    DiscoveredInstanceType, DiscoveredMethodMetadata, ServiceRegistrationRequest,
+};
 use restate_schema_api::endpoint::EndpointMetadata;
-use restate_schema_api::key;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 use serde::{Deserialize, Serialize};
@@ -28,29 +30,6 @@ mod proto_symbol;
 mod schemas_impl;
 mod service;
 mod subscriptions;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceRegistrationRequest {
-    name: String,
-    instance_type: key::ServiceInstanceType,
-}
-
-impl ServiceRegistrationRequest {
-    pub fn new(name: String, instance_type: key::ServiceInstanceType) -> Self {
-        Self {
-            name,
-            instance_type,
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn instance_type(&self) -> &key::ServiceInstanceType {
-        &self.instance_type
-    }
-}
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(unknown)]
@@ -77,7 +56,7 @@ pub enum RegistrationError {
     #[error("unknown subscription id {0}")]
     UnknownSubscription(String),
     #[error("invalid subscription: {0}")]
-    // TODO add error code to describe how to set sink and source
+    #[code(restate_errors::META0009)]
     InvalidSubscription(anyhow::Error),
     #[error("a subscription with the same id {0} already exists in the registry")]
     OverrideSubscription(EndpointId),
@@ -88,7 +67,8 @@ pub enum RegistrationError {
 pub struct InsertServiceUpdateCommand {
     pub name: String,
     pub revision: ServiceRevision,
-    pub instance_type: key::ServiceInstanceType,
+    pub instance_type: DiscoveredInstanceType,
+    pub methods: HashMap<String, DiscoveredMethodMetadata>,
 }
 
 /// Represents an update command to update the [`Schemas`] object. See [`Schemas::apply_updates`] for more info.

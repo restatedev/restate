@@ -28,7 +28,10 @@ impl JsonMapperResolver for Schemas {
         method_name: impl AsRef<str>,
     ) -> Option<(Self::JsonToProtobufMapper, Self::ProtobufToJsonMapper)> {
         self.use_service_schema(service_name, |service_schemas| {
-            let method_desc = service_schemas.methods.get(method_name.as_ref())?;
+            let method_desc = service_schemas
+                .methods
+                .get(method_name.as_ref())?
+                .descriptor();
             Some((
                 JsonToProtobufConverter(method_desc.input()),
                 ProtobufToJsonConverter(method_desc.output()),
@@ -94,7 +97,9 @@ mod json_impl {
 mod tests {
     use super::*;
 
-    use crate::schemas_impl::{ServiceInstanceType, ServiceLocation, ServiceSchemas};
+    use crate::schemas_impl::{
+        InstanceTypeMetadata, MethodSchemas, ServiceLocation, ServiceSchemas,
+    };
     use prost_reflect::{MethodDescriptor, ServiceDescriptor};
     use serde::Serialize;
     use serde_json::json;
@@ -119,10 +124,13 @@ mod tests {
             "greeter.Greeter",
             ServiceSchemas {
                 revision: 1,
-                methods: [("Greet".to_string(), greeter_greet_method_descriptor())]
-                    .into_iter()
-                    .collect(),
-                instance_type: ServiceInstanceType::Unkeyed,
+                methods: [(
+                    "Greet".to_string(),
+                    MethodSchemas::new(greeter_greet_method_descriptor(), Default::default()),
+                )]
+                .into_iter()
+                .collect(),
+                instance_type: InstanceTypeMetadata::Unkeyed,
                 location: ServiceLocation::ServiceEndpoint {
                     latest_endpoint: "".to_string(),
                     public: true,

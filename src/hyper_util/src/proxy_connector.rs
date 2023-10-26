@@ -22,6 +22,8 @@ use hyper::Uri;
 pub struct InvalidProxyUri(Uri);
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct Proxy {
     uri: Uri,
 }
@@ -29,6 +31,20 @@ pub struct Proxy {
 impl Display for Proxy {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         self.uri.fmt(f)
+    }
+}
+
+impl TryFrom<String> for Proxy {
+    type Error = ProxyFromStrError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Proxy::from_str(&value)
+    }
+}
+
+impl From<Proxy> for String {
+    fn from(value: Proxy) -> Self {
+        value.to_string()
     }
 }
 

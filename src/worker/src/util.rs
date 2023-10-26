@@ -20,6 +20,15 @@ pub(super) struct IdentitySender<T> {
     sender: mpsc::Sender<PeerTarget<T>>,
 }
 
+impl<T> Clone for IdentitySender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            sender: self.sender.clone(),
+        }
+    }
+}
+
 impl<T> IdentitySender<T> {
     pub(super) fn new(id: PeerId, sender: mpsc::Sender<PeerTarget<T>>) -> Self {
         Self { id, sender }

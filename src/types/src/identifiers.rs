@@ -11,9 +11,11 @@
 //! Restate uses many identifiers to uniquely identify its components and entities.
 
 use base64::display::Base64Display;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
+
 use std::fmt;
 use std::mem::size_of;
 use std::str::FromStr;
@@ -249,24 +251,50 @@ impl fmt::Display for InvocationId {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum InvocationIdParseError {
     #[error("cannot parse the invocation id, bad slice length")]
     BadSliceLength,
     #[error("cannot parse the invocation id uuid: {0}")]
     Uuid(#[from] uuid::Error),
+    #[error("cannot parse the invocation id encoded as base64: bad length")]
+    BadBase64Length,
     #[error("cannot parse the invocation id encoded as base64: {0}")]
-    Base64(#[from] base64::DecodeSliceError),
+    Base64(#[from] base64::DecodeError),
 }
 
 impl FromStr for InvocationId {
     type Err = InvocationIdParseError;
 
     fn from_str(str: &str) -> Result<Self, Self::Err> {
+        const PARTITION_KEY_ENCODED_LENGTH: usize =
+            match base64::encoded_len(size_of::<PartitionKey>(), false) {
+                Some(length) => length,
+                None => panic!("partition key must fit in usize bytes"),
+            };
+        const UUID_ENCODED_LENGTH: usize =
+            match base64::encoded_len(size_of::<uuid::Bytes>(), false) {
+                Some(length) => length,
+                None => panic!("uuid must fit in usize bytes"),
+            };
+
+        // check input length is appropriate
+        if str.len() != PARTITION_KEY_ENCODED_LENGTH + UUID_ENCODED_LENGTH {
+            return Err(InvocationIdParseError::BadBase64Length);
+        }
+
         let mut encoded_id = EncodedInvocationId::default();
 
-        // Length check will be performed by the base64 lib directly
-        restate_base64_util::URL_SAFE.decode_slice(str, &mut encoded_id)?;
+        // base64 library can overestimate the number of bytes needed by up to 2 due to rounding
+        // so we have to use the unchecked version of this
+        restate_base64_util::URL_SAFE.decode_slice_unchecked(
+            &str.as_bytes()[0..PARTITION_KEY_ENCODED_LENGTH],
+            &mut encoded_id[..size_of::<PartitionKey>()],
+        )?;
+        restate_base64_util::URL_SAFE.decode_slice_unchecked(
+            &str.as_bytes()[PARTITION_KEY_ENCODED_LENGTH..],
+            &mut encoded_id[size_of::<PartitionKey>()..],
+        )?;
 
         encoded_id.try_into()
     }
@@ -382,12 +410,15 @@ fn display_invocation_id(
     invocation_uuid: &InvocationUuid,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
+    // encode the two ids separately so that it is possible to do a string prefix search for a
+    // partition key using the first 11 characters. this has the cost of an additional character
     write!(
         f,
-        "{}",
+        "{}{}",
+        Base64Display::new(&partition_key.to_be_bytes(), &BASE64_URL_SAFE_NO_PAD),
         Base64Display::new(
-            &encode_invocation_id(partition_key, invocation_uuid),
-            &restate_base64_util::URL_SAFE
+            invocation_uuid.0.as_bytes().as_slice(),
+            &BASE64_URL_SAFE_NO_PAD
         ),
     )
 }
@@ -438,5 +469,37 @@ mod tests {
             expected,
             InvocationId::from_slice(&expected.as_bytes()).unwrap()
         )
+    }
+
+    #[test]
+    fn roundtrip_invocation_id_str() {
+        let expected = InvocationId::new(92, InvocationUuid::now_v7());
+        let parsed = InvocationId::from_str(&expected.to_string()).unwrap();
+
+        assert_eq!(expected, parsed)
+    }
+
+    #[test]
+    fn bad_invocation_id_str() {
+        let bad_strs = [
+            ("", InvocationIdParseError::BadBase64Length),
+            (
+                "mxvgUOrwIb8cYrGPHkAAKSKY3O!6IEy_g",
+                InvocationIdParseError::Base64(base64::DecodeError::InvalidByte(15, 33)),
+            ),
+            ("mxvgUOrwIb8", InvocationIdParseError::BadBase64Length),
+            (
+                "mxvgUOrwIb8cYrGPHkAAKSKY3Oo6IEy_",
+                InvocationIdParseError::BadBase64Length,
+            ),
+            (
+                "mxvgUOrwIb8cYrGPHkAAKSKY3Oo6IEiYV",
+                InvocationIdParseError::Base64(base64::DecodeError::InvalidLastSymbol(21, 86)),
+            ),
+        ];
+
+        for (bad, error) in bad_strs {
+            assert_eq!(error, InvocationId::from_str(bad).unwrap_err())
+        }
     }
 }

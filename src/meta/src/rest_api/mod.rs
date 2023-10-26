@@ -112,6 +112,10 @@ impl MetaRestEndpoint {
                 patch(openapi_handler!(services::modify_service)),
             )
             .route(
+                "/services/:service/descriptors",
+                get(openapi_handler!(services::list_service_descriptors)),
+            )
+            .route(
                 "/services/:service/methods",
                 get(openapi_handler!(methods::list_service_methods)),
             )

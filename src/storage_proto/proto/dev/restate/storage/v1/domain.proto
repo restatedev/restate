@@ -19,13 +19,8 @@ message FullInvocationId {
 // ---------------------------------------------------------------------
 
 message JournalMeta {
-    bytes method_name = 1;
-    uint32 length = 2;
-    SpanContext span_context = 4;
-    oneof endpoint_id {
-        google.protobuf.Empty none = 5;
-        string value = 6;
-    }
+    uint32 length = 1;
+    SpanContext span_context = 2;
 }
 
 message InvocationStatus {
@@ -36,6 +31,11 @@ message InvocationStatus {
         ServiceInvocationResponseSink response_sink = 3;
         uint64 creation_time = 4;
         uint64 modification_time = 5;
+        bytes method_name = 6;
+        oneof endpoint_id {
+            google.protobuf.Empty none = 7;
+            string value = 8;
+        }
     }
 
     message Suspended {
@@ -45,15 +45,34 @@ message InvocationStatus {
         uint64 creation_time = 4;
         uint64 modification_time = 5;
         repeated uint32 waiting_for_completed_entries = 6;
+        bytes method_name = 7;
+        oneof endpoint_id {
+            google.protobuf.Empty none = 8;
+            string value = 9;
+        }
     }
 
     message Free {
+    }
+
+    message Virtual {
+        bytes invocation_uuid = 1;
+        JournalMeta journal_meta = 2;
+        string completion_notification_target_service_name = 3;
+        bytes completion_notification_target_service_key = 4;
+        string completion_notification_target_method = 5;
+        uint64 creation_time = 6;
+        uint64 modification_time = 7;
+        string kill_notification_target_service_name = 8;
+        bytes kill_notification_target_service_key = 9;
+        string kill_notification_target_method = 10;
     }
 
     oneof status {
         Invoked invoked = 1;
         Suspended suspended = 2;
         Free free = 3;
+        Virtual virtual = 4;
     }
 }
 
@@ -126,6 +145,7 @@ message InvocationResolutionResult {
     message Success {
         bytes invocation_uuid = 1;
         bytes service_key = 2;
+        bytes service_name = 4;
         SpanContext span_context = 3;
     }
 
@@ -138,6 +158,7 @@ message InvocationResolutionResult {
 message BackgroundCallResolutionResult {
     bytes invocation_uuid = 1;
     bytes service_key = 2;
+    bytes service_name = 4;
     SpanContext span_context = 3;
 }
 message EnrichedEntryHeader {

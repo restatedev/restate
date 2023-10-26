@@ -24,14 +24,15 @@ use futures::future::BoxFuture;
 use futures::{stream, FutureExt};
 use prost::Message;
 use restate_invoker_api::{
-    EagerState, Effect, EffectKind, InvokeInputJournal, JournalReader, ServiceHandle, StateReader,
+    EagerState, Effect, EffectKind, InvokeInputJournal, JournalMetadata, JournalReader,
+    ServiceHandle, StateReader,
 };
 use restate_service_protocol::pb::protocol::PollInputStreamEntryMessage;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
 use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{PlainRawEntry, RawEntry, RawEntryCodec};
-use restate_types::journal::{Completion, CompletionResult, JournalMetadata};
+use restate_types::journal::{Completion, CompletionResult};
 use tokio::sync::{mpsc, Mutex};
 use tracing::debug;
 
@@ -219,7 +220,7 @@ impl InMemoryJournalStorage {
             (
                 JournalMetadata {
                     endpoint_id: None,
-                    method: method.into(),
+                    method: method.into().into(),
                     span_context,
                     length: 0,
                 },
@@ -236,11 +237,7 @@ impl InMemoryJournalStorage {
 
         meta.length += 1;
 
-        // TODO workaround because we cannot implement From<EnrichedRawEntry> for PlainRawEntry due
-        //  to https://github.com/restatedev/restate/issues/420
-        let entry = PlainRawEntry::new(entry.header.into(), entry.entry);
-
-        journal.push(entry);
+        journal.push(PlainRawEntry::from(entry));
     }
 
     pub async fn complete_entry<Codec>(

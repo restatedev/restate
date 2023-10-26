@@ -13,18 +13,22 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use codederror::CodedError;
 use hyper::header::{ACCEPT, CONTENT_TYPE};
+use hyper::http::response::Parts;
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, Client, Method, Request, Uri};
 use hyper_rustls::HttpsConnectorBuilder;
 use prost::{DecodeError, Message};
 use prost_reflect::{
-    DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind, MethodDescriptor,
-    ServiceDescriptor,
+    Cardinality, DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind,
+    MethodDescriptor, ServiceDescriptor,
 };
-use restate_errors::{META0001, META0002, META0003};
+use restate_errors::{warn_it, META0001, META0002, META0003, META0007, META0008};
 use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
+use restate_schema_api::discovery::{
+    DiscoveredInstanceType, DiscoveredMethodMetadata, FieldAnnotation, KeyStructure,
+    ServiceRegistrationRequest,
+};
 use restate_schema_api::endpoint::ProtocolType;
-use restate_schema_api::key::{KeyStructure, ServiceInstanceType};
 use restate_types::retries::RetryPolicy;
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
@@ -40,6 +44,10 @@ const FIELD_EXT: &str = "dev.restate.ext.field";
 const UNKEYED_SERVICE_EXT: i32 = 0;
 const KEYED_SERVICE_EXT: i32 = 1;
 const SINGLETON_SERVICE_EXT: i32 = 2;
+
+const KEY_FIELD_EXT: i32 = 0;
+const EVENT_PAYLOAD_FIELD_EXT: i32 = 1;
+const EVENT_METADATA_FIELD_EXT: i32 = 2;
 
 const DISCOVER_PATH: &str = "/discover";
 
@@ -98,7 +106,7 @@ impl ServiceDiscovery {
 
 #[derive(Debug)]
 pub struct DiscoveredEndpointMetadata {
-    pub services: Vec<(String, ServiceInstanceType)>,
+    pub services: Vec<ServiceRegistrationRequest>,
     pub descriptor_pool: DescriptorPool,
     pub protocol_type: ProtocolType,
 }
@@ -126,12 +134,12 @@ pub enum ServiceDiscoveryError {
     #[code(META0002)]
     MissingKeyField(MethodDescriptor),
     #[error(
-        "error when trying to parse the key of service method '{}' with input type '{}'. More than one key field found",
+        "error when trying to parse the annotation {1:?} of service method '{}' with input type '{}'. More than one field annotated with the same annotation found",
         MethodDescriptor::full_name(.0),
         MethodDescriptor::input(.0).full_name()
     )]
-    #[code(META0002)]
-    MoreThanOneKeyField(MethodDescriptor),
+    #[code(META0007)]
+    MoreThanOneAnnotatedField(MethodDescriptor, FieldAnnotation),
     #[error(
         "error when trying to parse the key of service method '{}' with input type '{}'. Bad key field type",
         MethodDescriptor::full_name(.0),
@@ -146,6 +154,20 @@ pub enum ServiceDiscoveryError {
     )]
     #[code(META0002)]
     DifferentKeyTypes(MethodDescriptor),
+    #[error(
+        "error when parsing the annotation EVENT_PAYLOAD of service method '{}' with input type '{}'. Bad type",
+        MethodDescriptor::full_name(.0),
+        MethodDescriptor::input(.0).full_name()
+    )]
+    #[code(META0008)]
+    BadEventPayloadFieldType(MethodDescriptor),
+    #[error(
+    "error when parsing the annotation EVENT_METADATA of service method '{}' with input type '{}'. Bad type",
+        MethodDescriptor::full_name(.0),
+        MethodDescriptor::input(.0).full_name()
+    )]
+    #[code(META0008)]
+    BadEventMetadataFieldType(MethodDescriptor),
 
     // Errors most likely related to SDK bugs
     #[error("cannot find service '{0}' in descriptor set. This might be a symptom of an SDK bug, or of the build tool/pipeline used to generate the descriptor")]
@@ -181,9 +203,11 @@ impl ServiceDiscoveryError {
                 | ServiceDiscoveryError::MissingServiceTypeExtension(_)
                 | ServiceDiscoveryError::KeyedServiceWithoutMethods(_)
                 | ServiceDiscoveryError::MissingKeyField(_)
-                | ServiceDiscoveryError::MoreThanOneKeyField(_)
+                | ServiceDiscoveryError::MoreThanOneAnnotatedField(_, _)
                 | ServiceDiscoveryError::BadKeyFieldType(_)
                 | ServiceDiscoveryError::DifferentKeyTypes(_)
+                | ServiceDiscoveryError::BadEventPayloadFieldType(_)
+                | ServiceDiscoveryError::BadEventMetadataFieldType(_)
         )
     }
 }
@@ -194,47 +218,8 @@ impl ServiceDiscovery {
         uri: &Uri,
         additional_headers: &HashMap<HeaderName, HeaderValue>,
     ) -> Result<DiscoveredEndpointMetadata, ServiceDiscoveryError> {
-        let connector = HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .https_or_http()
-            .enable_http2()
-            .build();
-        let client = Client::builder()
-            .http2_only(true)
-            .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
-        let uri = append_discover(uri)?;
-
         let (mut parts, body) = self
-            .retry_policy
-            .clone()
-            .retry_operation(move || {
-                let client = client.clone();
-
-                let mut request_builder = Request::builder()
-                    .method(Method::POST)
-                    .uri(uri.clone())
-                    .header(CONTENT_TYPE, APPLICATION_PROTO)
-                    .header(ACCEPT, APPLICATION_PROTO);
-                request_builder
-                    .headers_mut()
-                    .unwrap()
-                    .extend(additional_headers.clone().into_iter());
-
-                let request = request_builder
-                    .body(Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()))
-                    .expect("Building the request is not supposed to fail");
-
-                async move {
-                    let response = client.request(request).await?;
-                    let (parts, body) = response.into_parts();
-
-                    if !parts.status.is_success() {
-                        return Err(ServiceDiscoveryError::BadStatusCode(parts.status.as_u16()));
-                    }
-
-                    Ok((parts, hyper::body::to_bytes(body).await?))
-                }
-            })
+            .invoke_discovery_endpoint(uri, additional_headers)
             .await?;
 
         // Validate response parts.
@@ -286,21 +271,31 @@ impl ServiceDiscovery {
                     svc_desc.full_name().to_string(),
                 ));
             }
-            let service_type = infer_service_type(
+            let mut methods = HashMap::with_capacity(svc_desc.methods().len());
+
+            let instance_type = infer_service_type(
                 &svc_desc,
                 &restate_service_type_extension,
                 &restate_key_extension,
+                &mut methods,
             )?;
-            services.push((svc_name.to_string(), service_type))
+
+            infer_event_fields_annotations(&svc_desc, &restate_key_extension, &mut methods)?;
+
+            services.push(ServiceRegistrationRequest {
+                name: svc_name.to_string(),
+                instance_type,
+                methods,
+            })
         }
 
         Ok(DiscoveredEndpointMetadata {
             services,
             descriptor_pool,
-            protocol_type: match pb::ProtocolMode::from_i32(response.protocol_mode) {
-                Some(pb::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
-                Some(pb::ProtocolMode::RequestResponse) => ProtocolType::RequestResponse,
-                None => {
+            protocol_type: match pb::ProtocolMode::try_from(response.protocol_mode) {
+                Ok(pb::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
+                Ok(pb::ProtocolMode::RequestResponse) => ProtocolType::RequestResponse,
+                Err(_) => {
                     return Err(ServiceDiscoveryError::BadResponse(
                         "cannot decode protocol_mode",
                     ))
@@ -308,14 +303,81 @@ impl ServiceDiscovery {
             },
         })
     }
+
+    async fn invoke_discovery_endpoint(
+        &self,
+        uri: &Uri,
+        additional_headers: &HashMap<HeaderName, HeaderValue>,
+    ) -> Result<(Parts, Bytes), ServiceDiscoveryError> {
+        let connector = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_or_http()
+            .enable_http2()
+            .build();
+        let client = Client::builder()
+            .http2_only(true)
+            .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
+        let uri = append_discover(uri)?;
+
+        let mut retry_iter = self.retry_policy.clone().into_iter();
+        loop {
+            let mut request_builder = Request::builder()
+                .method(Method::POST)
+                .uri(uri.clone())
+                .header(CONTENT_TYPE, APPLICATION_PROTO)
+                .header(ACCEPT, APPLICATION_PROTO);
+            request_builder
+                .headers_mut()
+                .unwrap()
+                .extend(additional_headers.clone().into_iter());
+
+            let request = request_builder
+                .body(Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()))
+                .expect("Building the request is not supposed to fail");
+
+            let response_fut = client.request(request);
+            let response = async {
+                let (parts, body) = response_fut.await?.into_parts();
+
+                if !parts.status.is_success() {
+                    return Err(ServiceDiscoveryError::BadStatusCode(parts.status.as_u16()));
+                }
+
+                Ok((parts, hyper::body::to_bytes(body).await?))
+            };
+
+            let e = match response.await {
+                Ok(response) => {
+                    // Discovery succeeded
+                    return Ok(response);
+                }
+                Err(e) => e,
+            };
+
+            // Discovery failed
+            if let Some(next_retry_interval) = retry_iter.next() {
+                warn_it!(
+                    e,
+                    "Error when discovering service endpoint at uri '{}'. Retrying in {} seconds",
+                    uri,
+                    next_retry_interval.as_secs()
+                );
+                tokio::time::sleep(next_retry_interval).await;
+            } else {
+                warn_it!(e, "Error when discovering service endpoint '{}'", uri);
+                return Err(e);
+            }
+        }
+    }
 }
 
 pub fn infer_service_type(
     desc: &ServiceDescriptor,
-    restate_service_type_extension: &ExtensionDescriptor,
-    restate_key_extension: &ExtensionDescriptor,
-) -> Result<ServiceInstanceType, ServiceDiscoveryError> {
-    if !desc.options().has_extension(restate_service_type_extension) {
+    restate_service_type_ext: &ExtensionDescriptor,
+    restate_field_ext: &ExtensionDescriptor,
+    methods: &mut HashMap<String, DiscoveredMethodMetadata>,
+) -> Result<DiscoveredInstanceType, ServiceDiscoveryError> {
+    if !desc.options().has_extension(restate_service_type_ext) {
         return Err(ServiceDiscoveryError::MissingServiceTypeExtension(
             desc.full_name().to_string(),
         ));
@@ -323,62 +385,59 @@ pub fn infer_service_type(
 
     let service_instance_type = desc
         .options()
-        .get_extension(restate_service_type_extension)
+        .get_extension(restate_service_type_ext)
         .as_enum_number()
         // This can happen only if the restate dependency is bad?
         .ok_or_else(|| ServiceDiscoveryError::BadOrMissingRestateDependencyInDescriptor)?;
 
     match service_instance_type {
-        UNKEYED_SERVICE_EXT => Ok(ServiceInstanceType::Unkeyed),
-        KEYED_SERVICE_EXT => infer_keyed_service_type(desc, restate_key_extension),
-        SINGLETON_SERVICE_EXT => Ok(ServiceInstanceType::Singleton),
+        UNKEYED_SERVICE_EXT => Ok(DiscoveredInstanceType::Unkeyed),
+        KEYED_SERVICE_EXT => infer_keyed_service_type(desc, restate_field_ext, methods),
+        SINGLETON_SERVICE_EXT => Ok(DiscoveredInstanceType::Singleton),
         _ => Err(ServiceDiscoveryError::BadOrMissingRestateDependencyInDescriptor),
     }
 }
 
 pub fn infer_keyed_service_type(
     desc: &ServiceDescriptor,
-    restate_key_extension: &ExtensionDescriptor,
-) -> Result<ServiceInstanceType, ServiceDiscoveryError> {
+    restate_field_ext: &ExtensionDescriptor,
+    methods: &mut HashMap<String, DiscoveredMethodMetadata>,
+) -> Result<DiscoveredInstanceType, ServiceDiscoveryError> {
     if desc.methods().len() == 0 {
         return Err(ServiceDiscoveryError::KeyedServiceWithoutMethods(
             desc.full_name().to_string(),
         ));
     }
 
-    // Service is keyed, we need to make sure the key type is always the same
-    let mut service_methods_key_field_root_number = HashMap::with_capacity(desc.methods().len());
-
     // Parse the key from the first method
     let first_method = desc.methods().next().unwrap();
-    let first_key_field_descriptor = resolve_key_field(&first_method, restate_key_extension)?;
+    let first_key_field_descriptor = resolve_key_field(&first_method, restate_field_ext)?;
 
     // Generate the KeyStructure out of it
     let key_structure = infer_key_structure(&first_key_field_descriptor);
-    service_methods_key_field_root_number.insert(
-        first_method.name().to_string(),
-        first_key_field_descriptor.number(),
-    );
+    methods
+        .entry(first_method.name().to_string())
+        .or_default()
+        .input_fields_annotations
+        .insert(FieldAnnotation::Key, first_key_field_descriptor.number());
 
     // Now parse the next methods
     for method_desc in desc.methods().skip(1) {
-        let key_field_descriptor = resolve_key_field(&method_desc, restate_key_extension)?;
+        let key_field_descriptor = resolve_key_field(&method_desc, restate_field_ext)?;
 
         // Validate every method has the same key field type
         if key_field_descriptor.kind() != first_key_field_descriptor.kind() {
             return Err(ServiceDiscoveryError::DifferentKeyTypes(method_desc));
         }
 
-        service_methods_key_field_root_number.insert(
-            method_desc.name().to_string(),
-            key_field_descriptor.number(),
-        );
+        methods
+            .entry(method_desc.name().to_string())
+            .or_default()
+            .input_fields_annotations
+            .insert(FieldAnnotation::Key, key_field_descriptor.number());
     }
 
-    Ok(ServiceInstanceType::Keyed {
-        key_structure,
-        service_methods_key_field_root_number,
-    })
+    Ok(DiscoveredInstanceType::Keyed(key_structure))
 }
 
 fn infer_key_structure(field_descriptor: &FieldDescriptor) -> KeyStructure {
@@ -395,25 +454,21 @@ fn infer_key_structure(field_descriptor: &FieldDescriptor) -> KeyStructure {
 
 fn resolve_key_field(
     method_descriptor: &MethodDescriptor,
-    restate_key_extension: &ExtensionDescriptor,
+    restate_field_extension: &ExtensionDescriptor,
 ) -> Result<FieldDescriptor, ServiceDiscoveryError> {
-    let mut key_fields = method_descriptor
-        .input()
-        .fields()
-        .filter(|f| f.options().has_extension(restate_key_extension))
-        .collect::<Vec<_>>();
-    if key_fields.is_empty() {
-        return Err(ServiceDiscoveryError::MissingKeyField(
-            method_descriptor.clone(),
-        ));
-    }
-    if key_fields.len() != 1 {
-        return Err(ServiceDiscoveryError::MoreThanOneKeyField(
-            method_descriptor.clone(),
-        ));
-    }
-
-    let field_descriptor = key_fields.remove(0);
+    let field_descriptor = match get_annotated_field(
+        method_descriptor,
+        restate_field_extension,
+        KEY_FIELD_EXT,
+        FieldAnnotation::Key,
+    )? {
+        Some(f) => f,
+        None => {
+            return Err(ServiceDiscoveryError::MissingKeyField(
+                method_descriptor.clone(),
+            ));
+        }
+    };
 
     // Validate type
     if field_descriptor.is_map() {
@@ -428,6 +483,121 @@ fn resolve_key_field(
     }
 
     Ok(field_descriptor)
+}
+
+fn infer_event_fields_annotations(
+    service_desc: &ServiceDescriptor,
+    restate_field_ext: &ExtensionDescriptor,
+    methods: &mut HashMap<String, DiscoveredMethodMetadata>,
+) -> Result<(), ServiceDiscoveryError> {
+    for method_desc in service_desc.methods() {
+        let method_meta = methods.entry(method_desc.name().to_string()).or_default();
+
+        // Infer event annotations
+        if let Some(field_desc) = resolve_event_payload_field(&method_desc, restate_field_ext)? {
+            method_meta
+                .input_fields_annotations
+                .insert(FieldAnnotation::EventPayload, field_desc.number());
+        }
+        if let Some(field_desc) = resolve_event_metadata_field(&method_desc, restate_field_ext)? {
+            method_meta
+                .input_fields_annotations
+                .insert(FieldAnnotation::EventMetadata, field_desc.number());
+        }
+    }
+    Ok(())
+}
+
+fn resolve_event_payload_field(
+    method_descriptor: &MethodDescriptor,
+    restate_field_extension: &ExtensionDescriptor,
+) -> Result<Option<FieldDescriptor>, ServiceDiscoveryError> {
+    let field_descriptor = match get_annotated_field(
+        method_descriptor,
+        restate_field_extension,
+        EVENT_PAYLOAD_FIELD_EXT,
+        FieldAnnotation::EventPayload,
+    )? {
+        Some(f) => f,
+        None => return Ok(None),
+    };
+
+    // Validate type
+    if field_descriptor.kind() != Kind::String && field_descriptor.kind() != Kind::Bytes {
+        return Err(ServiceDiscoveryError::BadEventPayloadFieldType(
+            method_descriptor.clone(),
+        ));
+    }
+
+    Ok(Some(field_descriptor))
+}
+
+fn resolve_event_metadata_field(
+    method_descriptor: &MethodDescriptor,
+    restate_field_extension: &ExtensionDescriptor,
+) -> Result<Option<FieldDescriptor>, ServiceDiscoveryError> {
+    let field_descriptor = match get_annotated_field(
+        method_descriptor,
+        restate_field_extension,
+        EVENT_METADATA_FIELD_EXT,
+        FieldAnnotation::EventMetadata,
+    )? {
+        Some(f) => f,
+        None => return Ok(None),
+    };
+
+    // Validate type
+    if !is_map_with(&field_descriptor, Kind::String, Kind::String) {
+        return Err(ServiceDiscoveryError::BadEventMetadataFieldType(
+            method_descriptor.clone(),
+        ));
+    }
+
+    Ok(Some(field_descriptor))
+}
+
+fn get_annotated_field(
+    method_descriptor: &MethodDescriptor,
+    restate_field_extension: &ExtensionDescriptor,
+    extension_value: i32,
+    field_annotation: FieldAnnotation,
+) -> Result<Option<FieldDescriptor>, ServiceDiscoveryError> {
+    let message_desc = method_descriptor.input();
+    let mut iter = message_desc.fields().filter(|f| {
+        f.options().has_extension(restate_field_extension)
+            && f.options()
+                .get_extension(restate_field_extension)
+                .as_enum_number()
+                == Some(extension_value)
+    });
+
+    let field = iter.next();
+    if field.is_none() {
+        return Ok(None);
+    }
+
+    // Check there is only one
+    if iter.next().is_some() {
+        return Err(ServiceDiscoveryError::MoreThanOneAnnotatedField(
+            method_descriptor.clone(),
+            field_annotation,
+        ));
+    }
+
+    Ok(field)
+}
+
+// Expanded version of FieldDescriptor::is_map
+fn is_map_with(field_descriptor: &FieldDescriptor, key_kind: Kind, value_kind: Kind) -> bool {
+    field_descriptor.cardinality() == Cardinality::Repeated
+        && match field_descriptor.kind() {
+            Kind::Message(message) => {
+                message.is_map_entry()
+                    && message.map_entry_key_field().kind() == key_kind
+                    && message.map_entry_value_field().kind() == value_kind
+            }
+            _ => false,
+        }
 }
 
 fn append_discover(uri: &Uri) -> Result<Uri, ServiceDiscoveryError> {

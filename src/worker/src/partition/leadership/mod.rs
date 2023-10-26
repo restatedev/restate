@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::effects::{ActuatorMessage, StateStorage, StateStorageError};
 use crate::partition::shuffle::Shuffle;
-use crate::partition::{shuffle, storage, AckResponse, TimerValue};
+use crate::partition::{
+    shuffle, storage, StateMachineAckCommand, StateMachineAckResponse, TimerValue,
+};
 use assert2::let_assert;
 use futures::{future, Stream, StreamExt};
-use restate_invoker_api::{InvokeInputJournal, ServiceNotRunning};
-use restate_network::NetworkNotRunning;
+use restate_invoker_api::InvokeInputJournal;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
@@ -25,11 +25,13 @@ use tokio::sync::mpsc;
 use tokio::task;
 use tokio::task::JoinError;
 
-mod actuator;
+mod action_collector;
 
 use crate::partition::services::non_deterministic;
-use crate::partition::state_machine::{StateReader, StateReaderError};
-pub(crate) use actuator::{ActuatorMessageCollector, ActuatorOutput, ActuatorStream};
+use crate::partition::state_machine::{Action, StateReader, StateStorage};
+use crate::util::IdentitySender;
+pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareActionCollector};
+use restate_errors::NotRunningError;
 use restate_schema_impl::Schemas;
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -56,7 +58,7 @@ pub(crate) struct LeaderState<'a> {
     shutdown_signal: drain::Signal,
     shuffle_hint_tx: mpsc::Sender<shuffle::NewOutboxMessage>,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
-    message_buffer: Vec<ActuatorMessage>,
+    actions_buffer: Vec<Action>,
     timer_service: Pin<Box<TimerService<'a>>>,
     non_deterministic_service_invoker: non_deterministic::ServiceInvoker<'a>,
 }
@@ -68,23 +70,20 @@ pub(crate) struct FollowerState<I, N> {
     channel_size: usize,
     invoker_tx: I,
     network_handle: N,
-    ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
+    ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
+    self_proposal_tx: IdentitySender<StateMachineAckCommand>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Invoker(#[from] ServiceNotRunning),
+    Invoker(NotRunningError),
     #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Network(#[from] NetworkNotRunning),
+    Network(NotRunningError),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
     FailedShuffleTask(#[from] anyhow::Error),
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
-    #[error(transparent)]
-    StateStorage(#[from] StateStorageError),
-    #[error(transparent)]
-    StateReader(#[from] StateReaderError),
 }
 
 pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle> {
@@ -101,6 +100,7 @@ where
     InvokerInputSender: restate_invoker_api::ServiceHandle,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn follower(
         peer_id: PeerId,
         partition_id: PartitionId,
@@ -108,10 +108,11 @@ where
         channel_size: usize,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
-        ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
-    ) -> (ActuatorStream, Self) {
+        ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
+        self_proposal_tx: IdentitySender<StateMachineAckCommand>,
+    ) -> (ActionEffectStream, Self) {
         (
-            ActuatorStream::Follower,
+            ActionEffectStream::Follower,
             Self::Follower(FollowerState {
                 peer_id,
                 partition_id,
@@ -120,6 +121,7 @@ where
                 invoker_tx,
                 network_handle,
                 ack_tx,
+                self_proposal_tx,
             }),
         )
     }
@@ -136,7 +138,7 @@ where
         schemas: &'a Schemas,
     ) -> Result<
         (
-            ActuatorStream,
+            ActionEffectStream,
             LeadershipState<'a, InvokerInputSender, NetworkHandle>,
         ),
         Error,
@@ -171,7 +173,7 @@ where
         schemas: &'a Schemas,
     ) -> Result<
         (
-            ActuatorStream,
+            ActionEffectStream,
             LeadershipState<'a, InvokerInputSender, NetworkHandle>,
         ),
         Error,
@@ -210,7 +212,8 @@ where
             follower_state
                 .network_handle
                 .register_shuffle(shuffle.peer_id(), shuffle.create_network_sender())
-                .await?;
+                .await
+                .map_err(Error::Network)?;
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
 
@@ -219,7 +222,7 @@ where
             let shuffle_handle = tokio::spawn(shuffle.run(shutdown_watch));
 
             Ok((
-                ActuatorStream::leader(invoker_rx, shuffle_rx, service_invoker_output_rx),
+                ActionEffectStream::leader(invoker_rx, shuffle_rx, service_invoker_output_rx),
                 LeadershipState::Leader {
                     follower_state,
                     leader_state: LeaderState {
@@ -231,7 +234,7 @@ where
                         non_deterministic_service_invoker: service_invoker,
                         // The max number of actuator messages should be 2 atm (e.g. RegisterTimer and
                         // AckStoredEntry)
-                        message_buffer: Vec::with_capacity(2),
+                        actions_buffer: Vec::with_capacity(2),
                     },
                 },
             ))
@@ -252,7 +255,8 @@ where
 
         invoker_handle
             .register_partition(partition_leader_epoch, partition_key_range, invoker_tx)
-            .await?;
+            .await
+            .map_err(Error::Invoker)?;
 
         let mut transaction = partition_storage.create_transaction();
 
@@ -274,7 +278,8 @@ where
                             full_invocation_id,
                             InvokeInputJournal::NoCachedJournal,
                         )
-                        .await?;
+                        .await
+                        .map_err(Error::Invoker)?;
                 } else {
                     built_in_invoked_services.push(full_invocation_id);
                 }
@@ -300,7 +305,7 @@ where
 
             let_assert!(InvocationStatus::Invoked(metadata) = status);
 
-            let method = metadata.journal_metadata.method;
+            let method = metadata.method;
             let response_sink = metadata.response_sink;
             let argument = input_entry.entry;
             built_in_service_invoker
@@ -323,7 +328,7 @@ where
         self,
     ) -> Result<
         (
-            ActuatorStream,
+            ActionEffectStream,
             LeadershipState<'a, InvokerInputSender, NetworkHandle>,
         ),
         Error,
@@ -338,6 +343,7 @@ where
                     mut invoker_tx,
                     network_handle,
                     ack_tx,
+                    self_proposal_tx,
                 },
             leader_state:
                 LeaderState {
@@ -357,8 +363,8 @@ where
                 network_handle.unregister_shuffle(peer_id),
             );
 
-            abort_result?;
-            network_unregister_result?;
+            abort_result.map_err(Error::Invoker)?;
+            network_unregister_result.map_err(Error::Network)?;
 
             Self::unwrap_task_result(shuffle_result)?;
 
@@ -370,9 +376,10 @@ where
                 invoker_tx,
                 network_handle,
                 ack_tx,
+                self_proposal_tx,
             ))
         } else {
-            Ok((ActuatorStream::Follower, self))
+            Ok((ActionEffectStream::Follower, self))
         }
     }
 
@@ -390,17 +397,17 @@ where
 
     pub(crate) fn into_message_collector(
         self,
-    ) -> ActuatorMessageCollector<'a, InvokerInputSender, NetworkHandle> {
+    ) -> LeaderAwareActionCollector<'a, InvokerInputSender, NetworkHandle> {
         match self {
             LeadershipState::Follower(follower_state) => {
-                ActuatorMessageCollector::Follower(follower_state)
+                LeaderAwareActionCollector::Follower(follower_state)
             }
             LeadershipState::Leader {
                 follower_state,
                 mut leader_state,
             } => {
-                leader_state.message_buffer.clear();
-                ActuatorMessageCollector::Leader {
+                leader_state.actions_buffer.clear();
+                LeaderAwareActionCollector::Leader {
                     follower_state,
                     leader_state,
                 }

@@ -8,11 +8,38 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytestring::ByteString;
 use futures::Stream;
-use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::{EndpointId, FullInvocationId};
+use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::PlainRawEntry;
-use restate_types::journal::JournalMetadata;
+use restate_types::journal::EntryIndex;
 use std::future::Future;
+
+/// Metadata associated with a journal
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournalMetadata {
+    pub length: EntryIndex,
+    pub span_context: ServiceInvocationSpanContext,
+    pub method: ByteString,
+    pub endpoint_id: Option<EndpointId>,
+}
+
+impl JournalMetadata {
+    pub fn new(
+        length: EntryIndex,
+        span_context: ServiceInvocationSpanContext,
+        method: ByteString,
+        endpoint_id: Option<String>,
+    ) -> Self {
+        Self {
+            endpoint_id,
+            method,
+            span_context,
+            length,
+        }
+    }
+}
 
 pub trait JournalReader {
     type JournalStream: Stream<Item = PlainRawEntry>;
@@ -42,7 +69,12 @@ pub mod mocks {
 
         fn read_journal<'a>(&'a self, _sid: &'a FullInvocationId) -> Self::Future<'_> {
             futures::future::ready(Ok((
-                JournalMetadata::new("test", ServiceInvocationSpanContext::empty(), 0),
+                JournalMetadata::new(
+                    0,
+                    ServiceInvocationSpanContext::empty(),
+                    "test".into(),
+                    None,
+                ),
                 futures::stream::empty(),
             )))
         }

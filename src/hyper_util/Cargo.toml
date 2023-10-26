@@ -9,7 +9,10 @@ publish = false
 
 [features]
 default = []
+serde = ["dep:serde"]
 
 [dependencies]
 hyper = { workspace = true }
 thiserror = { workspace = true }
+
+serde = { workspace = true, optional = true }

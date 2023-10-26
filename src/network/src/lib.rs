@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_errors::NotRunningError;
 use restate_types::identifiers::{PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::future::Future;
@@ -21,13 +22,9 @@ pub use unbounded_handle::UnboundedNetworkHandle;
 
 pub type ShuffleSender<T> = mpsc::Sender<T>;
 
-#[derive(Debug, thiserror::Error)]
-#[error("network is not running")]
-pub struct NetworkNotRunning;
-
 /// Handle to interact with the running network routing component.
 pub trait NetworkHandle<ShuffleIn, ShuffleOut> {
-    type Future: Future<Output = Result<(), NetworkNotRunning>>;
+    type Future: Future<Output = Result<(), NotRunningError>>;
 
     fn register_shuffle(
         &self,

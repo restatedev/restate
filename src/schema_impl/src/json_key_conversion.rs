@@ -10,7 +10,7 @@
 
 use super::*;
 
-use crate::schemas_impl::ServiceInstanceType;
+use crate::schemas_impl::InstanceTypeMetadata;
 use crate::Schemas;
 use bytes::Bytes;
 use prost::Message;
@@ -34,7 +34,7 @@ impl RestateKeyConverter for Schemas {
                 .next()
                 .expect("Must have at least one method. This should have been checked in service discovery. This is a bug, please contact the developers");
 
-            key_to_json(&service_schemas.instance_type, method_desc.clone(), key)
+            key_to_json(&service_schemas.instance_type, method_desc.descriptor().clone(), key)
         }).ok_or(Error::NotFound)?
     }
 
@@ -45,18 +45,18 @@ impl RestateKeyConverter for Schemas {
                 .next()
                 .expect("Must have at least one method. This should have been checked in service discovery. This is a bug, please contact the developers");
 
-            json_to_key(&service_schemas.instance_type,method_desc.clone(), key)
+            json_to_key(&service_schemas.instance_type, method_desc.descriptor().clone(), key)
         }).ok_or(Error::NotFound)?
     }
 }
 
 fn key_to_json(
-    service_instance_type: &ServiceInstanceType,
+    service_instance_type: &InstanceTypeMetadata,
     method_descriptor: MethodDescriptor,
     key: impl AsRef<[u8]>,
 ) -> Result<Value, Error> {
     match service_instance_type {
-        keyed @ ServiceInstanceType::Keyed {
+        keyed @ InstanceTypeMetadata::Keyed {
             service_methods_key_field_root_number,
             ..
         } => {
@@ -88,26 +88,26 @@ fn key_to_json(
                     _ => panic!("This must be a map because the input schema of the protobuf conversion is always a message! This is a bug, please contact the developers")
                 })
         }
-        ServiceInstanceType::Unkeyed => Ok(Value::String(
+        InstanceTypeMetadata::Unkeyed => Ok(Value::String(
             uuid::Builder::from_slice(key.as_ref())
                 .unwrap()
                 .into_uuid()
                 .to_string(),
         )),
-        ServiceInstanceType::Singleton => Ok(Value::Object(Map::new())),
-        ServiceInstanceType::Unsupported => Err(Error::NotFound),
+        InstanceTypeMetadata::Singleton => Ok(Value::Object(Map::new())),
+        InstanceTypeMetadata::Unsupported => Err(Error::NotFound),
         // TODO add support for Custom json_key_conversion
-        ServiceInstanceType::Custom { .. } => Err(Error::NotFound),
+        InstanceTypeMetadata::Custom { .. } => Err(Error::NotFound),
     }
 }
 
 fn json_to_key(
-    service_instance_type: &ServiceInstanceType,
+    service_instance_type: &InstanceTypeMetadata,
     method_descriptor: MethodDescriptor,
     key: Value,
 ) -> Result<Bytes, Error> {
     match service_instance_type {
-        keyed @ ServiceInstanceType::Keyed {
+        keyed @ InstanceTypeMetadata::Keyed {
             service_methods_key_field_root_number,
             ..
         } => {
@@ -134,13 +134,13 @@ fn json_to_key(
                 key_message.encode_to_vec().into(),
             )?)
         }
-        ServiceInstanceType::Unkeyed => {
+        InstanceTypeMetadata::Unkeyed => {
             let parse_result: Uuid = SerdeableUuid::deserialize(key.into_deserializer())?.into();
 
             Ok(parse_result.as_bytes().to_vec().into())
         }
-        ServiceInstanceType::Singleton if key.is_null() => Ok(Bytes::default()),
-        ServiceInstanceType::Singleton => Err(Error::UnexpectedNonNullSingletonKey),
+        InstanceTypeMetadata::Singleton if key.is_null() => Ok(Bytes::default()),
+        InstanceTypeMetadata::Singleton => Err(Error::UnexpectedNonNullSingletonKey),
         // TODO support custom service
         _ => Err(Error::NotFound),
     }
@@ -154,7 +154,7 @@ mod tests {
     use prost::Message;
     use prost_reflect::{MessageDescriptor, ServiceDescriptor};
     use restate_pb::mocks::test::*;
-    use restate_schema_api::key::KeyStructure;
+    use restate_schema_api::discovery::KeyStructure;
     use serde::Serialize;
     use std::collections::{BTreeMap, HashMap};
     use uuid::Uuid;
@@ -204,8 +204,8 @@ mod tests {
     fn mock_keyed_service_instance_type(
         key_structure: KeyStructure,
         field_number: u32,
-    ) -> ServiceInstanceType {
-        ServiceInstanceType::Keyed {
+    ) -> InstanceTypeMetadata {
+        InstanceTypeMetadata::Keyed {
             key_structure,
             service_methods_key_field_root_number: HashMap::from([(
                 METHOD_NAME.to_string(),
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn unkeyed_convert_key_to_json() {
-        let service_instance_type = ServiceInstanceType::Unkeyed;
+        let service_instance_type = InstanceTypeMetadata::Unkeyed;
 
         // Extract the restate key
         let restate_key = extract(&service_instance_type, METHOD_NAME, Bytes::new())
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn singleton_convert_key_to_json() {
-        let service_instance_type = ServiceInstanceType::Singleton;
+        let service_instance_type = InstanceTypeMetadata::Singleton;
 
         // Extract the restate key
         let restate_key = extract(&service_instance_type, METHOD_NAME, Bytes::new())
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn unkeyed_generate_key_from_json() {
-        let service_instance_type = ServiceInstanceType::Unkeyed;
+        let service_instance_type = InstanceTypeMetadata::Unkeyed;
 
         // Extract the restate key
         let expected_restate_key = extract(&service_instance_type, METHOD_NAME, Bytes::new())
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn singleton_generate_key_from_json() {
-        let service_instance_type = ServiceInstanceType::Singleton;
+        let service_instance_type = InstanceTypeMetadata::Singleton;
 
         // Now convert the key to json
         let actual_json_key = json_to_key(

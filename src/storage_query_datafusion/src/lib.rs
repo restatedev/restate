@@ -12,6 +12,7 @@ mod analyzer;
 pub mod context;
 mod generic_table;
 mod invocation_state;
+mod journal;
 mod options;
 mod physical_optimizer;
 mod state;

@@ -10,7 +10,7 @@
 
 use super::subscription_integration;
 
-use crate::partition::{AckCommand, Command};
+use crate::partition::{StateMachineAckCommand, StateMachineCommand};
 use futures::future::BoxFuture;
 use futures::FutureExt;
 use restate_consensus::ProposalSender;
@@ -75,7 +75,7 @@ pub enum Error {
 pub(crate) struct Services<PartitionTable> {
     command_rx: mpsc::Receiver<WorkerCommand>,
 
-    proposal_tx: ProposalSender<PeerTarget<AckCommand>>,
+    proposal_tx: ProposalSender<PeerTarget<StateMachineAckCommand>>,
     partition_table: PartitionTable,
 
     command_tx: WorkerCommandSender,
@@ -86,7 +86,7 @@ where
     PartitionTable: restate_network::PartitionTable,
 {
     pub(crate) fn new(
-        proposal_tx: ProposalSender<PeerTarget<AckCommand>>,
+        proposal_tx: ProposalSender<PeerTarget<StateMachineAckCommand>>,
         subscription_controller_handle: subscription_integration::SubscriptionControllerHandle,
         partition_table: PartitionTable,
         channel_size: usize,
@@ -130,7 +130,7 @@ where
                             let target_peer_id = partition_table
                                 .partition_key_to_target_peer(invocation_id.partition_key())
                                 .await?;
-                            let msg = AckCommand::no_ack(Command::Kill(invocation_id));
+                            let msg = StateMachineAckCommand::no_ack(StateMachineCommand::Kill(invocation_id));
                             proposal_tx.send((target_peer_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
                         }
                     }

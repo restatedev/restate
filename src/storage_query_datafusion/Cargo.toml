@@ -12,6 +12,7 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+ahash = { workspace = true } # Required to due a yanked version used by datafusion
 async-trait = { version = "0.1.68" }
 bytes = { workspace = true }
 bytestring = { workspace = true }
@@ -27,10 +28,12 @@ prost = {workspace = true}
 restate_storage_rocksdb = {workspace = true }
 restate_types = { workspace = true }
 restate_schema_api = {workspace = true, features = ["key_extraction"]}
+restate_service_protocol = {workspace = true, features = ["codec"]}
 restate_storage_api = {workspace = true}
 restate_invoker_api = {workspace = true}
 paste = { workspace = true}
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

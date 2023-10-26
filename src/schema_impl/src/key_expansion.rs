@@ -27,6 +27,7 @@ impl KeyExpander for Schemas {
                 .methods
                 .get(service_method.as_ref())
                 .ok_or(Error::NotFound)?
+                .descriptor()
                 .input();
             expand_impls::expand(
                 &service_schema.instance_type,
@@ -43,17 +44,17 @@ pub(crate) mod expand_impls {
     use super::*;
     use bytes::{BufMut, BytesMut};
 
-    use crate::schemas_impl::ServiceInstanceType;
+    use crate::schemas_impl::InstanceTypeMetadata;
     use prost::encoding::{encode_key, key_len};
     use prost_reflect::{DynamicMessage, MessageDescriptor};
 
     pub(crate) fn expand(
-        service_instance_type: &ServiceInstanceType,
+        service_instance_type: &InstanceTypeMetadata,
         service_method: impl AsRef<str>,
         descriptor: MessageDescriptor,
         restate_key: impl AsRef<[u8]>,
     ) -> Result<DynamicMessage, Error> {
-        if let ServiceInstanceType::Keyed {
+        if let InstanceTypeMetadata::Keyed {
             service_methods_key_field_root_number,
             ..
         } = service_instance_type
@@ -93,7 +94,7 @@ pub(crate) mod expand_impls {
         use prost::Message;
         use restate_pb::mocks::test::*;
         use restate_pb::mocks::DESCRIPTOR_POOL;
-        use restate_schema_api::key::KeyStructure;
+        use restate_schema_api::discovery::KeyStructure;
         use std::collections::{BTreeMap, HashMap};
 
         static METHOD_NAME: &str = "test";
@@ -133,8 +134,8 @@ pub(crate) mod expand_impls {
         fn mock_keyed_service_instance_type(
             key_structure: KeyStructure,
             field_number: u32,
-        ) -> ServiceInstanceType {
-            ServiceInstanceType::Keyed {
+        ) -> InstanceTypeMetadata {
+            InstanceTypeMetadata::Keyed {
                 key_structure,
                 service_methods_key_field_root_number: HashMap::from([(
                     METHOD_NAME.to_string(),

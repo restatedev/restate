@@ -18,9 +18,6 @@ pub(super) fn service_fn_once<T>(f: T) -> ServiceFnOnce<T> {
     ServiceFnOnce { f: Some(f) }
 }
 
-// TODO this clone makes absolutely no sense, but we need it because of
-//  https://github.com/hyperium/tonic/issues/1290
-#[derive(Clone)]
 pub(super) struct ServiceFnOnce<T> {
     f: Option<T>,
 }

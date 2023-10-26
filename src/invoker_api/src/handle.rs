@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use super::Effect;
+use super::JournalMetadata;
 
+use restate_errors::NotRunningError;
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::identifiers::{FullInvocationId, PartitionKey};
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
-use restate_types::journal::JournalMetadata;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
@@ -26,13 +27,8 @@ pub enum InvokeInputJournal {
     CachedJournal(JournalMetadata, Vec<PlainRawEntry>),
 }
 
-// TODO move this to restate_errors, we have several copies of this type (e.g. NetworkNotRunning)
-#[derive(Debug, thiserror::Error)]
-#[error("invoker is not running")]
-pub struct ServiceNotRunning;
-
 pub trait ServiceHandle {
-    type Future: Future<Output = Result<(), ServiceNotRunning>>;
+    type Future: Future<Output = Result<(), NotRunningError>>;
 
     fn invoke(
         &mut self,

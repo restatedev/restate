@@ -26,7 +26,7 @@ pub(crate) type InvokerEffect = restate_invoker_api::Effect;
 pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
 
 #[derive(Debug, Clone)]
-pub(crate) struct TimerValue {
+pub struct TimerValue {
     pub full_invocation_id: FullInvocationId,
     pub wake_up_time: MillisSinceEpoch,
     pub entry_index: EntryIndex,

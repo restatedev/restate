@@ -21,95 +21,59 @@ use std::net::SocketAddr;
 /// # Json options
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "options_schema", schemars(default))]
 pub struct JsonOptions {
     /// # Deserialize: deny unknown fields
     ///
     /// When deserializing, return an error when encountering unknown message fields.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "JsonOptions::default_deserialize_deny_unknown_fields")
-    )]
     deserialize_deny_unknown_fields: bool,
+
     /// # Serialize: stringify 64 bit integers
     ///
     /// When serializing, encode 64-bit integral types as strings.
     ///
     /// For more details, check the [prost-reflect](https://docs.rs/prost-reflect/0.11.4/prost_reflect/struct.SerializeOptions.html#method.stringify_64_bit_integers)
     /// and [Protobuf encoding](https://protobuf.dev/programming-guides/proto3/#json-options) documentation
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "JsonOptions::default_serialize_stringify_64_bit_integers")
-    )]
     serialize_stringify_64_bit_integers: bool,
+
     /// # Serialize: use enum numbers
     ///
     /// When serializing, encode enum values as their numeric value.
     ///
     /// For more details, check the [prost-reflect](https://docs.rs/prost-reflect/0.11.4/prost_reflect/struct.SerializeOptions.html#method.use_enum_numbers)
     /// and [Protobuf encoding](https://protobuf.dev/programming-guides/proto3/#json-options) documentation
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "JsonOptions::default_serialize_use_enum_numbers")
-    )]
     serialize_use_enum_numbers: bool,
+
     /// # Serialize: use proto field name
     ///
     /// When serializing, use the proto field name instead of the lowerCamelCase name in JSON field names.
     ///
     /// For more details, check the [prost-reflect](https://docs.rs/prost-reflect/0.11.4/prost_reflect/struct.SerializeOptions.html#method.use_proto_field_name)
     /// and [Protobuf encoding](https://protobuf.dev/programming-guides/proto3/#json-options) documentation
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "JsonOptions::default_serialize_use_proto_field_name")
-    )]
     serialize_use_proto_field_name: bool,
+
     /// # Serialize: skip default fields
     ///
     /// When serializing, skip fields which have their default value.
     ///
     /// For more details, check the [prost-reflect](https://docs.rs/prost-reflect/0.11.4/prost_reflect/struct.SerializeOptions.html#method.skip_default_fields)
     /// and [Protobuf encoding](https://protobuf.dev/programming-guides/proto3/#json-options) documentation
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "JsonOptions::default_serialize_skip_default_fields")
-    )]
     serialize_skip_default_fields: bool,
 }
 
 impl Default for JsonOptions {
     fn default() -> Self {
         Self {
-            deserialize_deny_unknown_fields: JsonOptions::default_deserialize_deny_unknown_fields(),
-            serialize_stringify_64_bit_integers:
-                JsonOptions::default_serialize_stringify_64_bit_integers(),
-            serialize_use_enum_numbers: JsonOptions::default_serialize_use_enum_numbers(),
-            serialize_use_proto_field_name: JsonOptions::default_serialize_use_proto_field_name(),
-            serialize_skip_default_fields: JsonOptions::default_serialize_skip_default_fields(),
+            deserialize_deny_unknown_fields: true,
+            serialize_stringify_64_bit_integers: true,
+            serialize_use_enum_numbers: false,
+            serialize_use_proto_field_name: false,
+            serialize_skip_default_fields: false,
         }
     }
 }
 
 impl JsonOptions {
-    fn default_deserialize_deny_unknown_fields() -> bool {
-        true
-    }
-
-    fn default_serialize_stringify_64_bit_integers() -> bool {
-        true
-    }
-
-    fn default_serialize_use_enum_numbers() -> bool {
-        false
-    }
-
-    fn default_serialize_use_proto_field_name() -> bool {
-        false
-    }
-
-    fn default_serialize_skip_default_fields() -> bool {
-        false
-    }
-
     pub(crate) fn to_serialize_options(&self) -> SerializeOptions {
         SerializeOptions::new()
             .stringify_64_bit_integers(self.serialize_stringify_64_bit_integers)
@@ -127,50 +91,36 @@ impl JsonOptions {
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "IngressOptions"))]
+#[cfg_attr(feature = "options_schema", schemars(default))]
 #[builder(default)]
 pub struct Options {
     /// # Bind address
     ///
     /// The address to bind for the ingress.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_bind_address")
-    )]
     bind_address: SocketAddr,
+
     /// # Concurrency limit
     ///
     /// Local concurrency limit to use to limit the amount of concurrent requests. If exceeded, the ingress will reply immediately with an appropriate status code.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_concurrency_limit")
-    )]
     concurrency_limit: usize,
+
     /// # Json
     ///
     /// JSON/Protobuf conversion options.
-    #[cfg_attr(feature = "options_schema", schemars(default))]
     json: JsonOptions,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            bind_address: Options::default_bind_address(),
-            concurrency_limit: Options::default_concurrency_limit(),
+            bind_address: "0.0.0.0:8080".parse().unwrap(),
+            concurrency_limit: 10_000_000,
             json: Default::default(),
         }
     }
 }
 
 impl Options {
-    fn default_bind_address() -> SocketAddr {
-        "0.0.0.0:8080".parse().unwrap()
-    }
-
-    fn default_concurrency_limit() -> usize {
-        1000
-    }
-
     pub fn build<Schemas, JsonDecoder, JsonEncoder>(
         self,
         request_tx: restate_ingress_dispatcher::IngressRequestSender,

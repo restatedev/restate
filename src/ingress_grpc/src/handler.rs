@@ -27,6 +27,7 @@ use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
+use restate_types::errors::InvocationError;
 use restate_types::invocation::SpanRelation;
 use std::sync::Arc;
 use std::task::Poll;
@@ -160,10 +161,8 @@ where
         // Check if the service is public
         match self.schemas.is_service_public(&service_name) {
             None => {
-                return ok(protocol.encode_grpc_status(Status::not_found(format!(
-                    "Service {} not found",
-                    service_name
-                ))))
+                return ok(protocol
+                    .encode_grpc_status(InvocationError::service_not_found(&service_name).into()))
                 .boxed();
             }
             Some(false) => {
@@ -198,6 +197,9 @@ where
         // Encapsulate in this closure the remaining part of the processing
         let schemas = self.schemas.clone();
         let request_tx = self.request_tx.clone();
+
+        let client_connect_info = req.extensions().get::<ConnectInfo>().cloned();
+
         let ingress_request_handler = move |handler_request: HandlerRequest| {
             let (req_headers, req_payload) = handler_request;
 
@@ -206,13 +208,20 @@ where
             // Another span is created later by the ServiceInvocationFactory, for the ServiceInvocation itself,
             // which is used by the Restate components to correctly link to a single parent span
             // to commit intermediate results of the processing.
+            let (client_addr, client_port) = client_connect_info
+                .map(|c| (c.address().to_string(), c.port()))
+                .unwrap_or_default();
+
             let ingress_span = info_span!(
                 "ingress_invoke",
                 otel.name = format!("ingress_invoke {}", req_headers.method_name),
                 rpc.system = "grpc",
                 rpc.service = %req_headers.service_name,
-                rpc.method = %req_headers.method_name
+                rpc.method = %req_headers.method_name,
+                client.socket.address = %client_addr,
+                client.socket.port = %client_port,
             );
+
             // Attach this ingress_span to the parent parsed from the headers, if any.
             span_relation(req_headers.tracing_context.span().span_context())
                 .attach_to_span(&ingress_span);
@@ -246,10 +255,9 @@ where
                         }
                         return match schemas.is_service_public(&health_check_req.service) {
                             None => {
-                                Err(Status::not_found(format!(
-                                    "Service {} not found",
-                                    health_check_req.service
-                                )))
+                                Err(
+                                    InvocationError::service_not_found(& health_check_req.service).into()
+                                )
                             }
                             Some(true) => {
                                 Ok(
@@ -267,8 +275,10 @@ where
                             }
                         }
                     }
-                    // This should not really happen because the method existence is checked before
-                    return Err(Status::not_found("Not found"))
+                    return Err(
+                        InvocationError::service_method_not_found(
+                            &service_name, method_name).into()
+                    )
                 }
 
                 // Extract the key
@@ -276,11 +286,8 @@ where
                     .extract(&service_name, &method_name, req_payload.clone())
                     .map_err(|err| match err {
                         restate_schema_api::key::KeyExtractorError::NotFound => {
-                            Status::not_found(format!(
-                                "Service method {}/{} not found",
-                                service_name,
-                                method_name
-                            ))
+                            InvocationError::service_method_not_found(
+                                &service_name, &method_name).into()
                         }
                         err => Status::internal(err.to_string())
                     })?;

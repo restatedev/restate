@@ -38,6 +38,12 @@ pub enum Entry {
 }
 
 impl Entry {
+    pub fn poll_input_stream(result: impl Into<Bytes>) -> Self {
+        Entry::PollInputStream(PollInputStreamEntry {
+            result: result.into(),
+        })
+    }
+
     pub fn output_stream(result: EntryResult) -> Self {
         Entry::OutputStream(OutputStreamEntry { result })
     }
@@ -72,6 +78,17 @@ impl Entry {
             request,
             invoke_time: invoke_time.map(|t| t.as_u64()).unwrap_or_default(),
         })
+    }
+
+    pub fn complete_awakeable(id: impl Into<ByteString>, result: EntryResult) -> Self {
+        Entry::CompleteAwakeable(CompleteAwakeableEntry {
+            id: id.into(),
+            result,
+        })
+    }
+
+    pub fn awakeable(result: Option<EntryResult>) -> Self {
+        Entry::Awakeable(AwakeableEntry { result })
     }
 }
 

@@ -19,44 +19,29 @@ use std::net::SocketAddr;
     feature = "options_schema",
     schemars(rename = "StorageQueryHttpOptions")
 )]
+#[cfg_attr(feature = "options_schema", schemars(default))]
 pub struct Options {
     /// # Rest endpoint address
     ///
     /// Address to bind for the Storage HTTP APIs.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_http_address")
-    )]
     http_address: SocketAddr,
 
     /// # Rest concurrency limit
     ///
     /// Concurrency limit for the Storage HTTP APIs.
-    #[cfg_attr(
-        feature = "options_schema",
-        schemars(default = "Options::default_http_concurrency_limit")
-    )]
     http_concurrency_limit: usize,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            http_address: Options::default_http_address(),
-            http_concurrency_limit: Options::default_http_concurrency_limit(),
+            http_address: "0.0.0.0:9072".parse().unwrap(),
+            http_concurrency_limit: 1000,
         }
     }
 }
 
 impl Options {
-    fn default_http_address() -> SocketAddr {
-        "0.0.0.0:9072".parse().unwrap()
-    }
-
-    fn default_http_concurrency_limit() -> usize {
-        1000
-    }
-
     pub fn build(self, query_context: QueryContext) -> HTTPQueryService {
         let Options {
             http_address,

@@ -13,16 +13,20 @@ use super::*;
 
 use codederror::CodedError;
 use futures::FutureExt;
+use hyper::server::conn::AddrStream;
+use hyper::service::make_service_fn;
+use hyper::service::service_fn;
 use restate_ingress_dispatcher::IngressRequestSender;
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
-use tower::make::Shared;
+use tower::Service;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::info;
@@ -112,16 +116,26 @@ where
 
         let global_concurrency_limit_semaphore = Arc::new(Semaphore::new(concurrency_limit));
 
-        let make_svc = Shared::new(
-            ServiceBuilder::new()
-                .layer(CorsLayer::very_permissive())
-                .service(handler::Handler::new(
-                    json,
-                    schemas,
-                    request_tx,
-                    global_concurrency_limit_semaphore,
-                )),
-        );
+        let service_builder = ServiceBuilder::new()
+            .layer(CorsLayer::very_permissive())
+            .service(handler::Handler::new(
+                json,
+                schemas,
+                request_tx,
+                global_concurrency_limit_semaphore,
+            ));
+
+        let make_svc = make_service_fn(|socket: &AddrStream| {
+            // Extract remote address information and add to request extensions.
+            let connect_info = ConnectInfo::new(socket);
+            let mut inner_svc = service_builder.clone();
+            let outer_svc = service_fn(move |mut req: http::Request<hyper::Body>| {
+                req.extensions_mut().insert(connect_info);
+                inner_svc.call(req)
+            });
+
+            async { Ok::<_, Infallible>(outer_svc) }
+        });
 
         let server = server_builder.serve(make_svc);
 

@@ -84,9 +84,8 @@ impl ServiceInvoker<'_> {
             restate_pb::PROXY_SERVICE_NAME => {
                 ProxyInvoker(self).invoke_builtin(method, argument).await
             }
-            _ => Err(InvocationError::new(
-                UserErrorCode::NotFound,
-                format!("{} not found", self.fid.service_id.service_name),
+            _ => Err(InvocationError::service_not_found(
+                &self.fid.service_id.service_name,
             )),
         }
     }

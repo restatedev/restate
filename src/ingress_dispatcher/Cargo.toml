@@ -17,6 +17,7 @@ bytestring = { workspace = true }
 drain = { workspace = true }
 restate_futures_util = { workspace = true }
 restate_types = { workspace = true }
+restate_schema_api = { workspace = true, features = ["subscription"] }
 restate_pb = { workspace = true, features = ["restate_types"] }
 prost = { workspace = true }
 thiserror = { workspace = true }
