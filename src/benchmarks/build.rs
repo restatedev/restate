@@ -12,6 +12,7 @@ fn main() -> std::io::Result<()> {
     prost_build::Config::new()
         .bytes(["."])
         .service_generator(tonic_build::configure().service_generator())
+        .protoc_arg("--experimental_allow_proto3_optional")
         .compile_protos(&["proto/counter.proto"], &["proto"])?;
     Ok(())
 }
