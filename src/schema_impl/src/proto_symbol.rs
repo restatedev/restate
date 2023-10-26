@@ -27,7 +27,10 @@ impl ProtoSymbolResolver for Schemas {
             .services
             .iter()
             .filter_map(|(service_name, service_schemas)| {
-                if service_schemas.location.is_ingress_available() {
+                // Some services can be ingress available but not available from proto symbols
+                if service_schemas.location.is_ingress_available()
+                    && guard.proto_symbols.symbols.contains(service_name)
+                {
                     Some(service_name.clone())
                 } else {
                     None

@@ -1139,4 +1139,13 @@ mod tests {
             .unwrap();
         schemas.assert_service_revision(svc_name, 2);
     }
+
+    #[test]
+    fn proto_list_service_should_not_contain_remote_context() {
+        let schemas = Schemas::default();
+        assert!(
+            !restate_schema_api::proto_symbol::ProtoSymbolResolver::list_services(&schemas)
+                .contains(&"dev.restate.internal.RemoteContext".to_string())
+        );
+    }
 }
