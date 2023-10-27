@@ -803,18 +803,14 @@ where
         error: E,
         mut ism: InvocationStateMachine,
     ) {
-        warn_it!(
-            error,
-            restate.invocation.id = %full_invocation_id,
-            "Error when executing the invocation");
-
         match ism.handle_task_error() {
             Some(next_retry_timer_duration) if error.is_transient() => {
-                trace!(
-                    "Starting the retry timer {}. Invocation state: {:?}",
-                    humantime::format_duration(next_retry_timer_duration),
-                    ism.invocation_state_debug()
-                );
+                warn_it!(
+                    error,
+                    restate.invocation.id = %full_invocation_id,
+                    "Error when executing the invocation, retrying in {}.",
+                    humantime::format_duration(next_retry_timer_duration));
+                trace!("Invocation state: {:?}.", ism.invocation_state_debug());
                 self.status_store.on_failure(
                     partition,
                     full_invocation_id.clone(),
@@ -831,7 +827,10 @@ where
                 );
             }
             _ => {
-                trace!("Not going to retry the error");
+                warn_it!(
+                    error,
+                    restate.invocation.id = %full_invocation_id,
+                    "Error when executing the invocation, not going to retry.");
                 self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &full_invocation_id);
                 let _ = self

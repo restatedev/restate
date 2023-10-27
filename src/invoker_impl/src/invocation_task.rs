@@ -91,7 +91,8 @@ pub(crate) enum InvocationTaskError {
     #[error("cannot process received entry at index {0} of type {1}: {2}")]
     EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
     #[error(transparent)]
-    Invocation(#[from] InvocationError),
+    #[code(restate_errors::RT0007)]
+    ErrorMessageReceived(#[from] InvocationError),
     #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry. This is probably an SDK bug")]
     WriteAfterEndOfStream,
     #[error("Unexpected end of invocation stream, as it was closed with both a SuspensionMessage and an OutputStreamEntry. This is probably an SDK bug")]
@@ -109,7 +110,7 @@ impl InvokerError for InvocationTaskError {
 
     fn to_invocation_error(&self) -> InvocationError {
         match self {
-            InvocationTaskError::Invocation(e) => e.clone(),
+            InvocationTaskError::ErrorMessageReceived(e) => e.clone(),
             InvocationTaskError::EntryEnrichment(entry_index, entry_type, e) => {
                 let msg = format!(
                     "Error when processing entry {} of type {}: {}",
@@ -316,7 +317,10 @@ where
                 InvocationTaskOutputInner::Closed
             }
             (TerminalLoopState::Closed, false) => {
-                InvocationTaskOutputInner::Failed(InvocationError::default().into())
+                // Stream closed without output stream entry is same as receiving a default invocation error message.
+                InvocationTaskOutputInner::Failed(InvocationTaskError::ErrorMessageReceived(
+                    InvocationError::default(),
+                ))
             }
             (TerminalLoopState::Suspended(_), true) => {
                 InvocationTaskOutputInner::Failed(InvocationTaskError::TooManyTerminalMessages)
@@ -649,9 +653,9 @@ where
                 }
                 TerminalLoopState::Suspended(suspension_indexes)
             }
-            ProtocolMessage::Error(e) => {
-                TerminalLoopState::Failed(InvocationTaskError::Invocation(InvocationError::from(e)))
-            }
+            ProtocolMessage::Error(e) => TerminalLoopState::Failed(
+                InvocationTaskError::ErrorMessageReceived(InvocationError::from(e)),
+            ),
             ProtocolMessage::UnparsedEntry(entry) => {
                 if entry.header == RawEntryHeader::OutputStream {
                     shortcircuit!(self.notify_saw_output_stream_entry());
