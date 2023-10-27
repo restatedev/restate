@@ -16,7 +16,6 @@ use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
 
-use http::Uri;
 use schemars::gen::SchemaGenerator;
 use schemars::schema::{InstanceType, Schema, SchemaObject};
 use schemars::JsonSchema;
@@ -497,27 +496,6 @@ pub enum InvalidLambdaARN {
     InvalidURI,
 }
 
-impl LambdaARN {
-    // Lambda's don't inherently have a URI, so we fake a sensible one for use as Host header
-    // arn:aws:lambda:aws-region:acct-id:function:helloworld:42 -> lambda://42.helloworld.acct-id.aws-region.aws
-    pub fn uri(&self) -> Result<Uri, http::Error> {
-        let LambdaARN {
-            partition,
-            region,
-            account_id,
-            name,
-            version,
-        } = self;
-        Uri::builder()
-            .scheme("lambda")
-            .authority(format!(
-                "{version}.{name}.{account_id}.{region}.{partition}"
-            ))
-            .path_and_query("/")
-            .build()
-    }
-}
-
 impl FromStr for LambdaARN {
     type Err = InvalidLambdaARN;
 
@@ -560,11 +538,6 @@ impl FromStr for LambdaARN {
             name: arn.slice_ref(name),
             version: arn.slice_ref(version),
         };
-
-        // avoid a malformed arn causing a panic later on when building a uri; reject it during discovery
-        if lambda.uri().is_err() {
-            return Err(InvalidLambdaARN::InvalidURI);
-        }
 
         Ok(lambda)
     }

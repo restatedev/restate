@@ -88,13 +88,6 @@ pub mod endpoint {
             Self::Lambda { arn }
         }
 
-        pub fn uri(&self) -> Uri {
-            match self {
-                EndpointMetadata::Http { address, .. } => address.clone(),
-                EndpointMetadata::Lambda { arn } => arn.uri().expect("Lambda must be convertible into a valid URI. This should have been checked in service discovery. This is a bug, please contact the developers"),
-            }
-        }
-
         // address returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
         // and for Lambda endpoints its the ARN
         pub fn address(&self) -> impl Display + '_ {

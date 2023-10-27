@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::error::Error;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::primitives::Blob;
@@ -60,7 +61,7 @@ impl Options {
 pub struct LambdaClient {
     profile_name: Option<String>,
     regional_clients:
-        Arc<Mutex<HashMap<String, Shared<BoxFuture<'static, aws_sdk_lambda::Client>>>>>,
+        Arc<ArcSwap<HashMap<String, Shared<BoxFuture<'static, aws_sdk_lambda::Client>>>>>,
 }
 
 impl LambdaClient {
@@ -72,26 +73,33 @@ impl LambdaClient {
     }
 
     fn regional_client(&self, region: &str) -> Shared<BoxFuture<'static, aws_sdk_lambda::Client>> {
-        let mut handle = self.regional_clients.lock().unwrap();
-        match handle.get(region) {
-            Some(client) => client.clone(),
-            None => {
-                let region = region.to_string();
-                let mut config = aws_config::from_env().region(Region::new(region.clone()));
-                if let Some(profile_name) = &self.profile_name {
-                    config = config.profile_name(profile_name.clone());
-                };
-                let client_fut = async {
-                    let config = config.load().await;
-                    aws_sdk_lambda::Client::new(&config)
-                }
-                .boxed()
-                .shared();
-
-                handle.insert(region, client_fut.clone());
-                client_fut
-            }
+        if let Some(client) = self.regional_clients.load().get(region) {
+            return client.clone();
         }
+
+        // create client for new region
+        let region = region.to_string();
+        let mut config = aws_config::from_env().region(Region::new(region.clone()));
+        if let Some(profile_name) = &self.profile_name {
+            config = config.profile_name(profile_name.clone());
+        };
+        let client_fut = async {
+            let config = config.load().await;
+            aws_sdk_lambda::Client::new(&config)
+        }
+        .boxed()
+        .shared();
+
+        // adding new regions is very rare and the hash should be small. We can afford to
+        // clone the hash a few times if there is lots of contention, if the benefit is
+        // that reads don't require locking
+        self.regional_clients.rcu(|hash| {
+            let mut hash = HashMap::clone(hash);
+            hash.insert(region.clone(), client_fut.clone());
+            hash
+        });
+
+        client_fut
     }
 
     pub fn invoke<B>(

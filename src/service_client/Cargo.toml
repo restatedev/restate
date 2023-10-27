@@ -17,6 +17,7 @@ restate_schema_api = { workspace = true, features = ["endpoint"] }
 schemars = { workspace = true, optional = true }
 derive_builder = { workspace = true }
 
+arc-swap = { workspace = true }
 base64 = { workspace = true }
 futures = { workspace = true }
 humantime = { workspace = true }
