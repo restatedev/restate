@@ -408,8 +408,18 @@ where
             self.invoker_rx.close();
         }
 
-        let (mut http_stream_tx, request) =
-            self.prepare_request(&journal_metadata.method, endpoint_metadata);
+        let path: PathAndQuery = format!(
+            "/invoke/{}/{}",
+            self.full_invocation_id
+                .service_id
+                .service_name
+                .chars()
+                .as_str(),
+            &journal_metadata.method
+        )
+        .try_into()
+        .expect("must be able to build a valid invocation path");
+
         let journal_size = journal_metadata.length;
 
         // Attach parent and uri to the current span
@@ -420,8 +430,8 @@ where
             .attach_to_span(&invocation_task_span);
 
         info!(
-            endpoint.address = %request.address(),
-            path = %request.path(),
+            endpoint.address = %endpoint_metadata.address_display(),
+            path = %path,
             "Executing invocation at service endpoint"
         );
 
@@ -430,6 +440,7 @@ where
         let service_invocation_span_context = journal_metadata.span_context;
 
         // Prepare the request and send start message
+        let (mut http_stream_tx, request) = self.prepare_request(path, endpoint_metadata);
         shortcircuit!(
             self.write_start(&mut http_stream_tx, journal_size, state_iter)
                 .await
@@ -701,22 +712,10 @@ where
 
     fn prepare_request(
         &mut self,
-        method: &str,
+        path: PathAndQuery,
         endpoint_metadata: EndpointMetadata,
     ) -> (Sender, Request<Body>) {
         let (http_stream_tx, req_body) = Body::channel();
-
-        let path: PathAndQuery = format!(
-            "/invoke/{}/{}",
-            self.full_invocation_id
-                .service_id
-                .service_name
-                .chars()
-                .as_str(),
-            method
-        )
-        .try_into()
-        .expect("must be able to build a valid invocation path");
 
         let mut headers = HeaderMap::from_iter([
             (http::header::CONTENT_TYPE, APPLICATION_RESTATE),
