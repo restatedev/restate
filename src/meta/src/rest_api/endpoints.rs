@@ -171,7 +171,7 @@ impl From<EndpointMetadata> for ServiceEndpoint {
             } => Self::Http {
                 uri: address,
                 protocol_type,
-                additional_headers: delivery_options.additional_headers().into(),
+                additional_headers: delivery_options.additional_headers.into(),
             },
             EndpointMetadata::Lambda { arn } => Self::Lambda { arn },
         }

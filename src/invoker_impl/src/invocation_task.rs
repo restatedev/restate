@@ -743,7 +743,7 @@ where
                 address: ServiceEndpointAddress::Http(address, protocol_type),
                 path,
                 headers: {
-                    headers.extend(delivery_options.additional_headers());
+                    headers.extend(delivery_options.additional_headers);
                     headers
                 },
             },

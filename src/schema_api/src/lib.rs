@@ -38,16 +38,12 @@ pub mod endpoint {
             )
         )]
         #[cfg_attr(feature = "serde_schema", schemars(with = "HashMap<String, String>"))]
-        additional_headers: HashMap<HeaderName, HeaderValue>,
+        pub additional_headers: HashMap<HeaderName, HeaderValue>,
     }
 
     impl DeliveryOptions {
         pub fn new(additional_headers: HashMap<HeaderName, HeaderValue>) -> Self {
             Self { additional_headers }
-        }
-
-        pub fn additional_headers(self) -> HashMap<HeaderName, HeaderValue> {
-            self.additional_headers
         }
     }
 
