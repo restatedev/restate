@@ -61,7 +61,7 @@ pub use restate_invoker_impl::{
     OptionsBuilderError as InvokerOptionsBuilderError,
 };
 
-use restate_service_client::{Body, Connector, ServiceClient};
+use restate_service_client::ServiceClient;
 pub use restate_storage_rocksdb::{
     Options as RocksdbOptions, OptionsBuilder as RocksdbOptionsBuilder,
     OptionsBuilderError as RocksdbOptionsBuilderError,
@@ -223,7 +223,7 @@ pub struct Worker {
         InvokerStorageReader<RocksDBStorage>,
         EntryEnricher<Schemas, ProtobufRawEntryCodec>,
         Schemas,
-        ServiceClient<Connector, Body>,
+        ServiceClient,
     >,
     external_client_ingress_runner: ExternalClientIngressRunner,
     ingress_kafka: IngressKafkaService,

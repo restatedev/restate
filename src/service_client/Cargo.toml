@@ -19,6 +19,7 @@ derive_builder = { workspace = true }
 
 arc-swap = { workspace = true }
 base64 = { workspace = true }
+bytestring = { workspace = true }
 futures = { workspace = true }
 humantime = { workspace = true }
 hyper = { workspace = true }

@@ -19,7 +19,7 @@ use serde_with::serde_as;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use restate_service_client::{Connector, ServiceClient};
+use restate_service_client::ServiceClient;
 pub use restate_service_client::{
     Options as ServiceClientOptions, OptionsBuilder as ServiceClientOptionsBuilder,
     OptionsBuilderError as ServiceClientOptionsBuilderError,
@@ -125,7 +125,7 @@ impl Options {
         state_reader: SR,
         entry_enricher: EE,
         service_endpoint_registry: EMR,
-    ) -> Service<JR, SR, EE, EMR, ServiceClient<Connector, hyper::Body>>
+    ) -> Service<JR, SR, EE, EMR, ServiceClient>
     where
         JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,

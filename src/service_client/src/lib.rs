@@ -1,19 +1,16 @@
-extern crate core;
-
 use core::fmt;
-use std::error::Error;
+
 use std::fmt::Formatter;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::{FutureExt, TryFutureExt};
-use hyper::body::HttpBody;
-use hyper::client::connect::Connect;
+
 use hyper::client::HttpConnector;
 use hyper::header::HeaderValue;
 use hyper::http::uri::PathAndQuery;
-pub use hyper::Body;
+use hyper::Body;
 use hyper::{http, HeaderMap, Response, Uri};
 use hyper_rustls::HttpsConnector;
 
@@ -42,36 +39,21 @@ pub trait Service:
 
 pub type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
 
-#[derive(Debug)]
-pub struct ServiceClient<C, B> {
+#[derive(Debug, Clone)]
+pub struct ServiceClient {
     // TODO a single client uses the pooling provided by hyper, but this is not enough.
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
-    http: hyper::Client<C, B>,
+    http: hyper::Client<Connector, Body>,
     lambda: LambdaClient,
 }
 
-impl<C, B> ServiceClient<C, B> {
-    pub fn new(http: hyper::Client<C, B>, lambda: LambdaClient) -> Self {
+impl ServiceClient {
+    pub(crate) fn new(http: hyper::Client<Connector, Body>, lambda: LambdaClient) -> Self {
         Self { http, lambda }
     }
 }
 
-impl<C: Clone, B> Clone for ServiceClient<C, B> {
-    fn clone(&self) -> Self {
-        Self {
-            http: self.http.clone(),
-            lambda: self.lambda.clone(),
-        }
-    }
-}
-
-impl<C, B> hyper::service::Service<Request<B>> for ServiceClient<C, B>
-where
-    C: Connect + Clone + Send + Sync + 'static,
-    B: HttpBody + Send + 'static,
-    B::Data: Send,
-    B::Error: Into<Box<dyn Error + Send + Sync>>,
-{
+impl hyper::service::Service<Request<Body>> for ServiceClient {
     type Response = Response<Body>;
     type Error = ServiceClientError;
     type Future = Pin<Box<dyn Future<Output = Result<Response<Body>, ServiceClientError>> + Send>>;
@@ -80,7 +62,7 @@ where
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, req: Request<B>) -> Self::Future {
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
         match req.head.address {
             ServiceEndpointAddress::Http(uri, protocol_type) => {
                 let mut http_request_builder =
@@ -107,7 +89,7 @@ where
     }
 }
 
-impl<C> Service for ServiceClient<C, Body> where C: Connect + Clone + Send + Sync + 'static {}
+impl Service for ServiceClient {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceClientError {

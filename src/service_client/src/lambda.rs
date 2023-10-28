@@ -18,6 +18,7 @@ use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::primitives::Blob;
 use base64::display::Base64Display;
 use base64::Engine;
+use bytestring::ByteString;
 use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
 use futures::TryFutureExt;
@@ -59,15 +60,15 @@ impl Options {
 
 #[derive(Clone, Debug, Default)]
 pub struct LambdaClient {
-    profile_name: Option<String>,
+    profile_name: Option<ByteString>,
     regional_clients:
         Arc<ArcSwap<HashMap<String, Shared<BoxFuture<'static, aws_sdk_lambda::Client>>>>>,
 }
 
 impl LambdaClient {
-    pub fn new(profile_name: Option<String>) -> Self {
+    pub fn new(profile_name: Option<impl Into<ByteString>>) -> Self {
         Self {
-            profile_name,
+            profile_name: profile_name.map(Into::into),
             regional_clients: Default::default(),
         }
     }
@@ -90,9 +91,14 @@ impl LambdaClient {
         .boxed()
         .shared();
 
+        // check again in case another thread got there first
+        if let Some(client) = self.regional_clients.load().get(&region) {
+            return client.clone();
+        }
+
+        // rcu retries when there is a write conflict.
         // adding new regions is very rare and the hash should be small. We can afford to
-        // clone the hash a few times if there is lots of contention, if the benefit is
-        // that reads don't require locking
+        // clone the hash a few times if there is lots of contention
         self.regional_clients.rcu(|hash| {
             let mut hash = HashMap::clone(hash);
             hash.insert(region.clone(), client_fut.clone());

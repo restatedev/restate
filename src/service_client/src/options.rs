@@ -36,7 +36,7 @@ pub struct Options {
 }
 
 impl Options {
-    pub fn build(self) -> ServiceClient<Connector, hyper::Body> {
+    pub fn build(self) -> ServiceClient {
         ServiceClient::new(self.http.build(), self.lambda.build())
     }
 }
