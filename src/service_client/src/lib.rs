@@ -25,13 +25,6 @@ mod lambda;
 mod options;
 pub mod proxy;
 
-pub trait Service: Clone + Send + 'static {
-    fn call(
-        &self,
-        req: Request<Body>,
-    ) -> Pin<Box<dyn Future<Output = Result<Response<Body>, ServiceClientError>> + Send>>;
-}
-
 pub type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
 
 #[derive(Debug, Clone)]
@@ -48,8 +41,8 @@ impl ServiceClient {
     }
 }
 
-impl Service for ServiceClient {
-    fn call(
+impl ServiceClient {
+    pub fn call(
         &self,
         req: Request<Body>,
     ) -> Pin<Box<dyn Future<Output = Result<Response<Body>, ServiceClientError>> + Send>> {

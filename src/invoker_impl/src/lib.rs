@@ -52,6 +52,7 @@ use tracing::{debug, trace};
 pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
 pub use options::{Options, OptionsBuilder, OptionsBuilderError};
+use restate_service_client::ServiceClient;
 
 /// Internal error trait for the invoker errors
 trait InvokerError: std::error::Error {
@@ -75,7 +76,7 @@ trait InvocationTaskRunner {
 }
 
 #[derive(Debug)]
-struct DefaultInvocationTaskRunner<JR, SR, EE, EMR, ServiceClient> {
+struct DefaultInvocationTaskRunner<JR, SR, EE, EMR> {
     client: ServiceClient,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
@@ -88,8 +89,7 @@ struct DefaultInvocationTaskRunner<JR, SR, EE, EMR, ServiceClient> {
     endpoint_metadata_resolver: EMR,
 }
 
-impl<JR, SR, EE, EMR, ServiceClient> InvocationTaskRunner
-    for DefaultInvocationTaskRunner<JR, SR, EE, EMR, ServiceClient>
+impl<JR, SR, EE, EMR> InvocationTaskRunner for DefaultInvocationTaskRunner<JR, SR, EE, EMR>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -97,7 +97,6 @@ where
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
     EMR: EndpointMetadataResolver + Clone + Send + 'static,
-    ServiceClient: restate_service_client::Service,
 {
     fn start_invocation_task(
         &self,
@@ -134,13 +133,7 @@ where
 // -- Service implementation
 
 #[derive(Debug)]
-pub struct Service<
-    JournalReader,
-    StateReader,
-    EntryEnricher,
-    ServiceEndpointRegistry,
-    ServiceClient,
-> {
+pub struct Service<JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
     // Used for constructing the invoker sender
     input_tx: mpsc::UnboundedSender<InputCommand>,
     // For the segment queue
@@ -153,12 +146,11 @@ pub struct Service<
             StateReader,
             EntryEnricher,
             ServiceEndpointRegistry,
-            ServiceClient,
         >,
     >,
 }
 
-impl<JR, SR, EE, EMR, ServiceClient> Service<JR, SR, EE, EMR, ServiceClient> {
+impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         endpoint_metadata_resolver: EMR,
@@ -174,7 +166,7 @@ impl<JR, SR, EE, EMR, ServiceClient> Service<JR, SR, EE, EMR, ServiceClient> {
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
-    ) -> Service<JR, SR, EE, EMR, ServiceClient> {
+    ) -> Service<JR, SR, EE, EMR> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
@@ -208,7 +200,7 @@ impl<JR, SR, EE, EMR, ServiceClient> Service<JR, SR, EE, EMR, ServiceClient> {
     }
 }
 
-impl<JR, SR, EE, EMR, ServiceClient> Service<JR, SR, EE, EMR, ServiceClient>
+impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -216,7 +208,6 @@ where
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
     EMR: EndpointMetadataResolver + Clone + Send + 'static,
-    ServiceClient: restate_service_client::Service,
 {
     pub fn handle(&self) -> ChannelServiceHandle {
         ChannelServiceHandle {

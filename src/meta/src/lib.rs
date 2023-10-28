@@ -25,7 +25,6 @@ use storage::FileMetaStorage;
 use tokio::join;
 use tracing::{debug, error};
 
-use restate_service_client::ServiceClient;
 pub use restate_service_client::{
     Options as ServiceClientOptions, OptionsBuilder as ServiceClientOptionsBuilder,
     OptionsBuilderError as LambdaClientOptionsBuilderError,
@@ -127,7 +126,7 @@ pub enum Error {
 pub struct Meta {
     schemas: Schemas,
     rest_endpoint: MetaRestEndpoint,
-    service: MetaService<FileMetaStorage, ServiceClient>,
+    service: MetaService<FileMetaStorage>,
 }
 
 impl Meta {

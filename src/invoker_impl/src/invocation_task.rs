@@ -25,7 +25,9 @@ use restate_invoker_api::{
     EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
 };
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
-use restate_service_client::{Parts, Request, ServiceClientError, ServiceEndpointAddress};
+use restate_service_client::{
+    Parts, Request, ServiceClient, ServiceClientError, ServiceEndpointAddress,
+};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
@@ -182,7 +184,7 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 }
 
 /// Represents an open invocation stream
-pub(super) struct InvocationTask<JR, SR, EE, EMR, ServiceClient> {
+pub(super) struct InvocationTask<JR, SR, EE, EMR> {
     // Shared client
     client: ServiceClient,
 
@@ -249,7 +251,7 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<JR, SR, EE, EMR, ServiceClient> InvocationTask<JR, SR, EE, EMR, ServiceClient>
+impl<JR, SR, EE, EMR> InvocationTask<JR, SR, EE, EMR>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
@@ -257,7 +259,6 @@ where
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher,
     EMR: EndpointMetadataResolver,
-    ServiceClient: restate_service_client::Service,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -765,10 +766,7 @@ enum ResponseStreamState {
 }
 
 impl ResponseStreamState {
-    fn initialize<C>(client: &C, req: Request<Body>) -> Self
-    where
-        C: restate_service_client::Service,
-    {
+    fn initialize(client: &ServiceClient, req: Request<Body>) -> Self {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.

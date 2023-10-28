@@ -26,7 +26,7 @@ use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
 use std::collections::HashMap;
 
-use restate_service_client::ServiceEndpointAddress;
+use restate_service_client::{ServiceClient, ServiceEndpointAddress};
 use std::future::Future;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -189,10 +189,10 @@ impl MetaHandle {
 
 // -- Service implementation
 
-pub struct MetaService<Storage, ServiceClient> {
+pub struct MetaService<Storage> {
     schemas: Schemas,
 
-    service_discovery: ServiceDiscovery<ServiceClient>,
+    service_discovery: ServiceDiscovery,
 
     storage: Storage,
 
@@ -202,10 +202,9 @@ pub struct MetaService<Storage, ServiceClient> {
     reloaded: bool,
 }
 
-impl<Storage, ServiceClient> MetaService<Storage, ServiceClient>
+impl<Storage> MetaService<Storage>
 where
     Storage: MetaStorage,
-    ServiceClient: restate_service_client::Service,
 {
     pub fn new(
         schemas: Schemas,

@@ -32,7 +32,9 @@ use restate_schema_api::discovery::{
     ServiceRegistrationRequest,
 };
 use restate_schema_api::endpoint::ProtocolType;
-use restate_service_client::{Parts, Request, ServiceClientError, ServiceEndpointAddress};
+use restate_service_client::{
+    Parts, Request, ServiceClient, ServiceClientError, ServiceEndpointAddress,
+};
 
 use restate_types::retries::{RetryIter, RetryPolicy};
 
@@ -96,12 +98,12 @@ mod pb {
 }
 
 #[derive(Debug)]
-pub struct ServiceDiscovery<ServiceClient> {
+pub struct ServiceDiscovery {
     retry_policy: RetryPolicy,
     client: ServiceClient,
 }
 
-impl<ServiceClient> ServiceDiscovery<ServiceClient> {
+impl ServiceDiscovery {
     pub fn new(retry_policy: RetryPolicy, client: ServiceClient) -> Self {
         Self {
             retry_policy,
@@ -251,7 +253,7 @@ impl ServiceDiscoveryError {
     }
 }
 
-impl<ServiceClient: restate_service_client::Service> ServiceDiscovery<ServiceClient> {
+impl ServiceDiscovery {
     pub async fn discover(
         &self,
         endpoint: &DiscoverEndpoint,
@@ -347,15 +349,12 @@ impl<ServiceClient: restate_service_client::Service> ServiceDiscovery<ServiceCli
         })
     }
 
-    async fn invoke_discovery_endpoint<S>(
-        client: &S,
+    async fn invoke_discovery_endpoint(
+        client: &ServiceClient,
         address: impl Display,
         build_request: impl Fn() -> Request<Body>,
         mut retry_iter: RetryIter,
-    ) -> Result<(ResponseParts, Bytes), ServiceDiscoveryError>
-    where
-        S: restate_service_client::Service,
-    {
+    ) -> Result<(ResponseParts, Bytes), ServiceDiscoveryError> {
         loop {
             let response_fut = client.call(build_request());
             let response = async {
