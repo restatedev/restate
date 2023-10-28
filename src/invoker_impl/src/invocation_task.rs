@@ -728,27 +728,34 @@ where
             &mut HeaderInjector(&mut headers),
         );
 
-        let parts = match endpoint_metadata {
-            EndpointMetadata::Lambda { arn } => Parts {
-                address: ServiceEndpointAddress::Lambda(arn),
-                path,
-                headers,
-            },
+        let address = match endpoint_metadata {
+            EndpointMetadata::Lambda {
+                arn,
+                delivery_options,
+            } => {
+                headers.extend(delivery_options.additional_headers);
+                ServiceEndpointAddress::Lambda(arn)
+            }
             EndpointMetadata::Http {
                 address,
                 protocol_type,
                 delivery_options,
-            } => Parts {
-                address: ServiceEndpointAddress::Http(address, protocol_type),
-                path,
-                headers: {
-                    headers.extend(delivery_options.additional_headers);
-                    headers
-                },
-            },
+            } => {
+                headers.extend(delivery_options.additional_headers);
+                ServiceEndpointAddress::Http(
+                    address,
+                    match protocol_type {
+                        ProtocolType::RequestResponse => http::Version::default(),
+                        ProtocolType::BidiStream => http::Version::HTTP_2,
+                    },
+                )
+            }
         };
 
-        (http_stream_tx, Request::new(parts, req_body))
+        (
+            http_stream_tx,
+            Request::new(Parts::new(address, path, headers), req_body),
+        )
     }
 }
 

@@ -13,7 +13,7 @@ options_schema = ["dep:schemars", "restate_types/serde_schema"]
 
 [dependencies]
 restate_types = { workspace = true }
-restate_schema_api = { workspace = true, features = ["endpoint"] }
+restate_schema_api = { workspace = true }
 schemars = { workspace = true, optional = true }
 derive_builder = { workspace = true }
 

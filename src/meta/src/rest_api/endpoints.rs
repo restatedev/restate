@@ -18,6 +18,7 @@ use axum::{http, Json};
 use okapi_operation::*;
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
 use restate_serde_util::SerdeableHeaderHashMap;
+use restate_service_client::ServiceEndpointAddress;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::{EndpointId, InvalidLambdaARN, LambdaARN, ServiceRevision};
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,10 @@ use std::sync::Arc;
 pub struct RegisterServiceEndpointRequest {
     #[serde(flatten)]
     pub endpoint_metadata: RegisterServiceEndpointMetadata,
+    /// # Additional headers
+    ///
+    /// Additional headers added to the discover/invoke requests to the service endpoint.
+    pub additional_headers: Option<SerdeableHeaderHashMap>,
     /// # Force
     ///
     /// If `true`, it will override, if existing, any endpoint using the same `uri`.
@@ -51,10 +56,6 @@ pub enum RegisterServiceEndpointMetadata {
         #[serde_as(as = "serde_with::DisplayFromStr")]
         #[schemars(with = "String")]
         uri: Uri,
-        /// # Additional headers
-        ///
-        /// Additional headers added to the discover/invoke requests to the http service endpoint.
-        additional_headers: Option<SerdeableHeaderHashMap>,
     },
     Lambda {
         /// # ARN
@@ -96,20 +97,19 @@ pub async fn create_service_endpoint<S, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
     #[request_body(required = true)] Json(payload): Json<RegisterServiceEndpointRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
-    let endpoint = match payload.endpoint_metadata {
-        RegisterServiceEndpointMetadata::Http {
-            uri,
-            additional_headers,
-        } => DiscoverEndpoint::Http {
-            uri,
-            additional_headers: additional_headers.unwrap_or_default().into(),
-        },
-        RegisterServiceEndpointMetadata::Lambda { arn } => DiscoverEndpoint::Lambda {
-            arn: arn
-                .parse()
+    let address = match payload.endpoint_metadata {
+        RegisterServiceEndpointMetadata::Http { uri } => {
+            ServiceEndpointAddress::Http(uri, Default::default())
+        }
+        RegisterServiceEndpointMetadata::Lambda { arn } => ServiceEndpointAddress::Lambda(
+            arn.parse()
                 .map_err(|e: InvalidLambdaARN| MetaApiError::InvalidField("arn", e.to_string()))?,
-        },
+        ),
     };
+    let endpoint = DiscoverEndpoint::new(
+        address,
+        payload.additional_headers.unwrap_or_default().into(),
+    );
     let registration_result = state
         .meta_handle()
         .register_endpoint(endpoint, payload.force)
@@ -158,6 +158,8 @@ pub enum ServiceEndpoint {
     },
     Lambda {
         arn: LambdaARN,
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        additional_headers: SerdeableHeaderHashMap,
     },
 }
 
@@ -173,7 +175,13 @@ impl From<EndpointMetadata> for ServiceEndpoint {
                 protocol_type,
                 additional_headers: delivery_options.additional_headers.into(),
             },
-            EndpointMetadata::Lambda { arn } => Self::Lambda { arn },
+            EndpointMetadata::Lambda {
+                arn,
+                delivery_options,
+            } => Self::Lambda {
+                arn,
+                additional_headers: delivery_options.additional_headers.into(),
+            },
         }
     }
 }

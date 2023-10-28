@@ -64,6 +64,7 @@ pub mod endpoint {
         },
         Lambda {
             arn: LambdaARN,
+            delivery_options: DeliveryOptions,
         },
     }
 
@@ -80,8 +81,11 @@ pub mod endpoint {
             }
         }
 
-        pub fn new_lambda(arn: LambdaARN) -> Self {
-            Self::Lambda { arn }
+        pub fn new_lambda(arn: LambdaARN, delivery_options: DeliveryOptions) -> Self {
+            Self::Lambda {
+                arn,
+                delivery_options,
+            }
         }
 
         // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
@@ -120,7 +124,7 @@ pub mod endpoint {
                     );
                     restate_base64_util::URL_SAFE.encode(authority_and_path.as_bytes())
                 }
-                EndpointMetadata::Lambda { arn } => {
+                EndpointMetadata::Lambda { arn, .. } => {
                     restate_base64_util::URL_SAFE.encode(arn.to_string().as_bytes())
                 }
             }

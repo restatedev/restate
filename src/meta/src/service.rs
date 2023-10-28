@@ -26,6 +26,7 @@ use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
 use std::collections::HashMap;
 
+use restate_service_client::ServiceEndpointAddress;
 use std::future::Future;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -326,30 +327,22 @@ where
         force: bool,
         abort_signal: impl Future<Output = ()>,
     ) -> Result<DiscoverEndpointResponse, MetaError> {
-        match &endpoint {
-            DiscoverEndpoint::Http { uri, .. } => {
-                debug!(http.url = %uri, "Discovering HTTP Service endpoint")
-            }
-            DiscoverEndpoint::Lambda { arn } => {
-                debug!(lambda.arn = %arn, "Discovering Lambda Service endpoint")
-            }
-        }
+        debug!(endpoint.address = %endpoint.address(), "Discovering service endpoint");
 
         let discovered_metadata = tokio::select! {
             res = self.service_discovery.discover(&endpoint) => res,
             _ = abort_signal => return Err(MetaError::RequestAborted),
         }?;
 
-        let endpoint_metadata = match endpoint {
-            DiscoverEndpoint::Http {
-                uri,
-                additional_headers,
-            } => EndpointMetadata::new_http(
+        let endpoint_metadata = match endpoint.into_inner() {
+            (ServiceEndpointAddress::Http(uri, _), headers) => EndpointMetadata::new_http(
                 uri.clone(),
                 discovered_metadata.protocol_type,
-                DeliveryOptions::new(additional_headers),
+                DeliveryOptions::new(headers),
             ),
-            DiscoverEndpoint::Lambda { arn } => EndpointMetadata::new_lambda(arn),
+            (ServiceEndpointAddress::Lambda(arn), headers) => {
+                EndpointMetadata::new_lambda(arn, DeliveryOptions::new(headers))
+            }
         };
 
         // Compute the diff with the current state of Schemas

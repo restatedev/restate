@@ -1,6 +1,7 @@
 use core::fmt;
 
 use std::fmt::Formatter;
+use std::future;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -15,7 +16,7 @@ use hyper::{http, HeaderMap, Response, Uri};
 use hyper_rustls::HttpsConnector;
 
 pub use options::{Options, OptionsBuilder, OptionsBuilderError};
-use restate_schema_api::endpoint::ProtocolType;
+
 use restate_types::identifiers::LambdaARN;
 
 use crate::lambda::LambdaClient;
@@ -63,26 +64,72 @@ impl hyper::service::Service<Request<Body>> for ServiceClient {
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        match req.head.address {
-            ServiceEndpointAddress::Http(uri, protocol_type) => {
+        let (parts, body) = req.into_parts();
+        match parts.address {
+            ServiceEndpointAddress::Http(uri, version) => {
+                let mut uri_parts = uri.into_parts();
+                uri_parts.path_and_query = match uri_parts.path_and_query {
+                    None => Some(parts.path),
+                    Some(existing_path) => Some({
+                        let path = format!(
+                            "{}/{}",
+                            existing_path
+                                .path()
+                                .strip_suffix('/')
+                                .unwrap_or(existing_path.path()),
+                            parts
+                                .path
+                                .path()
+                                .strip_prefix('/')
+                                .unwrap_or(parts.path.path()),
+                        );
+                        let path = if let Some(query) = existing_path.query() {
+                            format!("{}?{}", path, query)
+                        } else {
+                            path
+                        };
+
+                        match path.try_into() {
+                            Ok(path) => path,
+                            Err(err) => {
+                                return future::ready(Err(ServiceClientError::Http(
+                                    HttpError::Http(err.into()),
+                                )))
+                                .boxed()
+                            }
+                        }
+                    }),
+                };
+
+                let uri = match Uri::from_parts(uri_parts) {
+                    Ok(uri) => uri,
+                    Err(err) => {
+                        return future::ready(Err(ServiceClientError::Http(HttpError::Http(
+                            err.into(),
+                        ))))
+                        .boxed()
+                    }
+                };
+
                 let mut http_request_builder =
                     http::Request::builder().method(http::Method::POST).uri(uri);
 
-                // In case it's bidi stream, force HTTP/2
-                if protocol_type == ProtocolType::BidiStream {
-                    http_request_builder = http_request_builder.version(http::Version::HTTP_2);
+                for (header, value) in parts.headers.iter() {
+                    http_request_builder = http_request_builder.header(header, value)
                 }
 
-                let http_request = http_request_builder
-                    .body(req.body)
-                    // This fails only in case the URI is malformed, which should never happen
-                    .expect("The request builder shouldn't fail");
+                http_request_builder = http_request_builder.version(version);
+
+                let http_request = match http_request_builder.body(body) {
+                    Ok(http_request) => http_request,
+                    Err(err) => return future::ready(Err(err.into())).boxed(),
+                };
 
                 self.http.request(http_request).map_err(Into::into).boxed()
             }
             ServiceEndpointAddress::Lambda(arn) => self
                 .lambda
-                .invoke(arn, req.body, req.head.path, req.head.headers)
+                .invoke(arn, body, parts.path, parts.headers)
                 .map_err(Into::into)
                 .boxed(),
         }
@@ -94,9 +141,28 @@ impl Service for ServiceClient {}
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceClientError {
     #[error(transparent)]
-    Http(#[from] hyper::Error),
+    Http(HttpError),
     #[error(transparent)]
     Lambda(#[from] lambda::LambdaError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum HttpError {
+    #[error(transparent)]
+    Hyper(hyper::Error),
+    #[error(transparent)]
+    Http(http::Error),
+}
+
+impl From<hyper::Error> for ServiceClientError {
+    fn from(value: hyper::Error) -> Self {
+        Self::Http(HttpError::Hyper(value))
+    }
+}
+impl From<http::Error> for ServiceClientError {
+    fn from(value: http::Error) -> Self {
+        Self::Http(HttpError::Http(value))
+    }
 }
 
 pub struct Request<B> {
@@ -109,6 +175,10 @@ impl<B> Request<B> {
         Self { head, body }
     }
 
+    pub fn into_parts(self) -> (Parts, B) {
+        (self.head, self.body)
+    }
+
     pub fn address(&self) -> &ServiceEndpointAddress {
         &self.head.address
     }
@@ -118,19 +188,35 @@ impl<B> Request<B> {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Parts {
     /// The request's target address
     pub address: ServiceEndpointAddress,
 
-    // Can be /discover or /invoke/xyz/abc
+    /// The request's path, for example /discover or /invoke/xyz/abc
     pub path: PathAndQuery,
 
-    // Invoker can still add headers (in lambda case, mapped to apigatewayevent.headers
+    /// The request's headers - in lambda case, mapped to apigatewayevent.headers
     pub headers: HeaderMap<HeaderValue>,
 }
 
+impl Parts {
+    pub fn new(
+        address: ServiceEndpointAddress,
+        path: PathAndQuery,
+        headers: HeaderMap<HeaderValue>,
+    ) -> Self {
+        Self {
+            address,
+            path,
+            headers,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum ServiceEndpointAddress {
-    Http(Uri, ProtocolType),
+    Http(Uri, http::Version),
     Lambda(LambdaARN),
 }
 

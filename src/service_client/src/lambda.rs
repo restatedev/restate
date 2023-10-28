@@ -34,7 +34,7 @@ use serde_with::serde_as;
 
 use restate_types::identifiers::LambdaARN;
 
-/// # HTTP client options
+/// # Lambda client options
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]

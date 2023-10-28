@@ -16,9 +16,6 @@ use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
 
-use schemars::gen::SchemaGenerator;
-use schemars::schema::{InstanceType, Schema, SchemaObject};
-use schemars::JsonSchema;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::mem::size_of;
@@ -447,14 +444,14 @@ impl LambdaARN {
 }
 
 #[cfg(feature = "serde_schema")]
-impl JsonSchema for LambdaARN {
+impl schemars::JsonSchema for LambdaARN {
     fn schema_name() -> String {
         "LambdaARN".into()
     }
 
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
+    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
             format: Some("arn".to_string()),
             ..Default::default()
         }

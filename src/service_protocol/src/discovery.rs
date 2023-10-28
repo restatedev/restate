@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::fmt;
-use std::fmt::{Display, Formatter};
+
+use std::fmt::{Display};
 
 use bytes::Bytes;
 
@@ -18,7 +18,7 @@ use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::response::Parts as ResponseParts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
-use hyper::{Body, HeaderMap, Uri};
+use hyper::{Body, HeaderMap};
 use prost::{DecodeError, Message};
 use prost_reflect::{
     Cardinality, DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind,
@@ -33,7 +33,7 @@ use restate_schema_api::discovery::{
 };
 use restate_schema_api::endpoint::ProtocolType;
 use restate_service_client::{Parts, Request, ServiceClientError, ServiceEndpointAddress};
-use restate_types::identifiers::LambdaARN;
+
 use restate_types::retries::{RetryIter, RetryPolicy};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
@@ -110,30 +110,23 @@ impl<ServiceClient> ServiceDiscovery<ServiceClient> {
     }
 }
 
-pub enum DiscoverEndpoint {
-    Http {
-        uri: Uri,
-        additional_headers: HashMap<HeaderName, HeaderValue>,
-    },
-    Lambda {
-        arn: LambdaARN,
-    },
-}
+#[derive(Clone)]
+pub struct DiscoverEndpoint(ServiceEndpointAddress, HashMap<HeaderName, HeaderValue>);
 
 impl DiscoverEndpoint {
-    // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
-    // and for Lambda endpoints its the ARN
-    fn address_display(&self) -> impl Display + '_ {
-        struct Wrapper<'a>(&'a DiscoverEndpoint);
-        impl<'a> Display for Wrapper<'a> {
-            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-                match self {
-                    Wrapper(DiscoverEndpoint::Http { uri, .. }) => uri.fmt(f),
-                    Wrapper(DiscoverEndpoint::Lambda { arn, .. }) => arn.fmt(f),
-                }
-            }
-        }
-        Wrapper(self)
+    pub fn new(
+        address: ServiceEndpointAddress,
+        additional_headers: HashMap<HeaderName, HeaderValue>,
+    ) -> Self {
+        Self(address, additional_headers)
+    }
+
+    pub fn into_inner(self) -> (ServiceEndpointAddress, HashMap<HeaderName, HeaderValue>) {
+        (self.0, self.1)
+    }
+
+    pub fn address(&self) -> &ServiceEndpointAddress {
+        &self.0
     }
 
     fn request(&self) -> Request<Body> {
@@ -141,28 +134,10 @@ impl DiscoverEndpoint {
             (CONTENT_TYPE, APPLICATION_PROTO),
             (ACCEPT, APPLICATION_PROTO),
         ]);
+        headers.extend(self.1.clone());
         let path = PathAndQuery::from_static(DISCOVER_PATH);
-        let parts = match self {
-            DiscoverEndpoint::Lambda { arn } => Parts {
-                address: ServiceEndpointAddress::Lambda(arn.clone()),
-                path,
-                headers,
-            },
-            DiscoverEndpoint::Http {
-                uri,
-                additional_headers,
-            } => Parts {
-                address: ServiceEndpointAddress::Http(uri.clone(), ProtocolType::RequestResponse),
-                path,
-                headers: {
-                    headers.extend(additional_headers.clone());
-                    headers
-                },
-            },
-        };
-
         Request::new(
-            parts,
+            Parts::new(self.0.clone(), path, headers),
             Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()),
         )
     }
@@ -284,7 +259,7 @@ impl<ServiceClient: restate_service_client::Service> ServiceDiscovery<ServiceCli
         let retry_policy = self.retry_policy.clone().into_iter();
         let (mut parts, body) = Self::invoke_discovery_endpoint(
             &mut self.client,
-            endpoint.address_display(),
+            endpoint.address(),
             || endpoint.request(),
             retry_policy,
         )
@@ -397,7 +372,7 @@ impl<ServiceClient: restate_service_client::Service> ServiceDiscovery<ServiceCli
                     parts,
                     hyper::body::to_bytes(body)
                         .await
-                        .map_err(ServiceClientError::Http)?,
+                        .map_err(|err| ServiceDiscoveryError::Client(err.into()))?,
                 ))
             };
 
