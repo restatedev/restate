@@ -84,9 +84,9 @@ pub mod endpoint {
             Self::Lambda { arn }
         }
 
-        // address returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
+        // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
         // and for Lambda endpoints its the ARN
-        pub fn address(&self) -> impl Display + '_ {
+        pub fn address_display(&self) -> impl Display + '_ {
             struct Wrapper<'a>(&'a EndpointMetadata);
             impl<'a> Display for Wrapper<'a> {
                 fn fmt(&self, f: &mut Formatter) -> fmt::Result {

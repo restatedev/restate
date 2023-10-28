@@ -121,9 +121,9 @@ pub enum DiscoverEndpoint {
 }
 
 impl DiscoverEndpoint {
-    // address returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
+    // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
     // and for Lambda endpoints its the ARN
-    fn address(&self) -> impl Display + '_ {
+    fn address_display(&self) -> impl Display + '_ {
         struct Wrapper<'a>(&'a DiscoverEndpoint);
         impl<'a> Display for Wrapper<'a> {
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -284,7 +284,7 @@ impl<ServiceClient: restate_service_client::Service> ServiceDiscovery<ServiceCli
         let retry_policy = self.retry_policy.clone().into_iter();
         let (mut parts, body) = Self::invoke_discovery_endpoint(
             &mut self.client,
-            endpoint.address(),
+            endpoint.address_display(),
             || endpoint.request(),
             retry_policy,
         )
