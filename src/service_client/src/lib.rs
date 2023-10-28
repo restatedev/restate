@@ -4,7 +4,6 @@ use std::fmt::Formatter;
 use std::future;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll};
 
 use futures::{FutureExt, TryFutureExt};
 
@@ -26,16 +25,11 @@ mod lambda;
 mod options;
 pub mod proxy;
 
-pub trait Service:
-    hyper::service::Service<
-        Request<Body>,
-        Response = Response<Body>,
-        Error = ServiceClientError,
-        Future = Pin<Box<dyn Future<Output = Result<Response<Body>, ServiceClientError>> + Send>>,
-    > + Clone
-    + Send
-    + 'static
-{
+pub trait Service: Clone + Send + 'static {
+    fn call(
+        &self,
+        req: Request<Body>,
+    ) -> Pin<Box<dyn Future<Output = Result<Response<Body>, ServiceClientError>> + Send>>;
 }
 
 pub type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
@@ -54,16 +48,11 @@ impl ServiceClient {
     }
 }
 
-impl hyper::service::Service<Request<Body>> for ServiceClient {
-    type Response = Response<Body>;
-    type Error = ServiceClientError;
-    type Future = Pin<Box<dyn Future<Output = Result<Response<Body>, ServiceClientError>> + Send>>;
-
-    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
+impl Service for ServiceClient {
+    fn call(
+        &self,
+        req: Request<Body>,
+    ) -> Pin<Box<dyn Future<Output = Result<Response<Body>, ServiceClientError>> + Send>> {
         let (parts, body) = req.into_parts();
         match parts.address {
             ServiceEndpointAddress::Http(uri, version) => {
@@ -135,8 +124,6 @@ impl hyper::service::Service<Request<Body>> for ServiceClient {
         }
     }
 }
-
-impl Service for ServiceClient {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceClientError {

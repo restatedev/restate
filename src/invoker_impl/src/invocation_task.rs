@@ -447,7 +447,7 @@ where
         );
 
         // Initialize the response stream state
-        let mut http_stream_rx = ResponseStreamState::initialize(&mut self.client, request);
+        let mut http_stream_rx = ResponseStreamState::initialize(&self.client, request);
 
         // Execute the replay
         shortcircuit!(
@@ -765,7 +765,7 @@ enum ResponseStreamState {
 }
 
 impl ResponseStreamState {
-    fn initialize<C>(client: &mut C, req: Request<Body>) -> Self
+    fn initialize<C>(client: &C, req: Request<Body>) -> Self
     where
         C: restate_service_client::Service,
     {

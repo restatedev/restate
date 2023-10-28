@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use std::fmt::{Display};
+use std::fmt::Display;
 
 use bytes::Bytes;
 
@@ -253,12 +253,12 @@ impl ServiceDiscoveryError {
 
 impl<ServiceClient: restate_service_client::Service> ServiceDiscovery<ServiceClient> {
     pub async fn discover(
-        &mut self,
+        &self,
         endpoint: &DiscoverEndpoint,
     ) -> Result<DiscoveredEndpointMetadata, ServiceDiscoveryError> {
         let retry_policy = self.retry_policy.clone().into_iter();
         let (mut parts, body) = Self::invoke_discovery_endpoint(
-            &mut self.client,
+            &self.client,
             endpoint.address(),
             || endpoint.request(),
             retry_policy,
@@ -348,7 +348,7 @@ impl<ServiceClient: restate_service_client::Service> ServiceDiscovery<ServiceCli
     }
 
     async fn invoke_discovery_endpoint<S>(
-        client: &mut S,
+        client: &S,
         address: impl Display,
         build_request: impl Fn() -> Request<Body>,
         mut retry_iter: RetryIter,

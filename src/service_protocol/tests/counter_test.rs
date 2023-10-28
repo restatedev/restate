@@ -22,7 +22,7 @@ use restate_types::retries::RetryPolicy;
 #[ignore]
 #[test(tokio::test)]
 async fn counter_discovery() {
-    let mut discovery =
+    let discovery =
         ServiceDiscovery::new(RetryPolicy::None, ServiceClientOptions::default().build());
 
     let discovered_metadata = discovery
