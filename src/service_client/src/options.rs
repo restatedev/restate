@@ -8,12 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
+use super::proxy::{Proxy, ProxyConnector};
+use super::{Connector, ServiceClient};
 
 use serde_with::serde_as;
-
-use crate::proxy::{Proxy, ProxyConnector};
-use crate::{Connector, ServiceClient};
+use std::time::Duration;
 
 pub use crate::lambda::{
     Options as LambdaClientOptions, OptionsBuilder as LambdaClientOptionsBuilder,

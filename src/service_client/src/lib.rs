@@ -1,25 +1,20 @@
+use crate::lambda::LambdaClient;
+use crate::proxy::ProxyConnector;
 use core::fmt;
-
-use std::fmt::Formatter;
-use std::future;
-use std::future::Future;
-
 use futures::future::Either;
 use futures::TryFutureExt;
-
 use hyper::client::HttpConnector;
 use hyper::header::HeaderValue;
 use hyper::http::uri::PathAndQuery;
 use hyper::Body;
 use hyper::{http, HeaderMap, Response, Uri};
 use hyper_rustls::HttpsConnector;
+use restate_types::identifiers::LambdaARN;
+use std::fmt::Formatter;
+use std::future;
+use std::future::Future;
 
 pub use options::{Options, OptionsBuilder, OptionsBuilderError};
-
-use restate_types::identifiers::LambdaARN;
-
-use crate::lambda::LambdaClient;
-use crate::proxy::ProxyConnector;
 
 mod lambda;
 mod options;

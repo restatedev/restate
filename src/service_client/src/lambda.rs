@@ -9,20 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use aws_sdk_lambda::config;
-
-use std::error::Error;
-use std::fmt::Debug;
-use std::future::Future;
-
-
-
-
 use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::operation::invoke::InvokeError;
 use aws_sdk_lambda::primitives::Blob;
 use base64::display::Base64Display;
 use base64::Engine;
-
 use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
 use futures::TryFutureExt;
@@ -31,13 +22,14 @@ use hyper::http::request::Parts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
 use hyper::{body, Body, HeaderMap, Method, Response};
+use restate_types::identifiers::LambdaARN;
 use serde::ser::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::serde_as;
-
-
-use restate_types::identifiers::LambdaARN;
+use std::error::Error;
+use std::fmt::Debug;
+use std::future::Future;
 
 /// # Lambda client options
 #[serde_as]

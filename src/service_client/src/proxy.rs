@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use hyper::http::uri::{InvalidUri, Parts, Scheme};
+use hyper::service::Service;
+use hyper::Uri;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use std::task::{Context, Poll};
-
-use hyper::http::uri::{InvalidUri, Parts, Scheme};
-use hyper::service::Service;
-use hyper::Uri;
 
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("invalid proxy Uri (must have scheme, authority, and path): {0}")]
