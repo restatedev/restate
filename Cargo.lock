@@ -534,9 +534,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-lambda"
-version = "0.30.0"
+version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ee0d8ce9c8c2c7e9da686078219c4615428af2cb2e4b187a0eac59fbc3fa3a5"
+checksum = "1830dced2a96cc9a7cfae9902ac75eaf26a9cd90cc7891b8a44e5531ee05e503"
 dependencies = [
  "aws-credential-types",
  "aws-http",
@@ -4547,6 +4547,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

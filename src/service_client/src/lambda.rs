@@ -8,13 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use arc_swap::ArcSwap;
-use std::collections::HashMap;
+use aws_sdk_lambda::config;
+
 use std::error::Error;
+use std::fmt::Debug;
 use std::future::Future;
-use std::sync::Arc;
+
+
+
 
 use aws_sdk_lambda::config::Region;
+use aws_sdk_lambda::operation::invoke::InvokeError;
 use aws_sdk_lambda::primitives::Blob;
 use base64::display::Base64Display;
 use base64::Engine;
@@ -31,6 +35,7 @@ use serde::ser::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::serde_as;
+
 
 use restate_types::identifiers::LambdaARN;
 
@@ -58,60 +63,24 @@ impl Options {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct LambdaClient {
-    inner: Arc<LambdaClientInner>,
+    client: Shared<BoxFuture<'static, aws_sdk_lambda::Client>>,
 }
 
-#[derive(Debug, Default)]
-struct LambdaClientInner {
-    profile_name: Option<String>,
-    regional_clients: ArcSwap<HashMap<String, Shared<BoxFuture<'static, aws_sdk_lambda::Client>>>>,
-}
-
-impl LambdaClient {
+impl<'a> LambdaClient {
     pub fn new(profile_name: Option<String>) -> Self {
-        Self {
-            inner: Arc::new(LambdaClientInner {
-                profile_name: profile_name.map(Into::into),
-                regional_clients: Default::default(),
-            }),
-        }
-    }
-
-    fn regional_client(&self, region: &str) -> Shared<BoxFuture<'static, aws_sdk_lambda::Client>> {
-        if let Some(client) = self.inner.regional_clients.load().get(region) {
-            return client.clone();
-        }
-
-        // create client for new region
-        let region = region.to_string();
-        let mut config = aws_config::from_env().region(Region::new(region.clone()));
-        if let Some(profile_name) = &self.inner.profile_name {
-            config = config.profile_name(profile_name.clone());
+        // create client for a default region, region can be overridden per request
+        let mut config = aws_config::from_env().region(Region::from_static("us-east-1"));
+        if let Some(profile_name) = profile_name {
+            config = config.profile_name(profile_name);
         };
-        let client_fut = async {
-            let config = config.load().await;
-            aws_sdk_lambda::Client::new(&config)
+
+        Self {
+            client: async { aws_sdk_lambda::Client::new(&config.load().await) }
+                .boxed()
+                .shared(),
         }
-        .boxed()
-        .shared();
-
-        // check again in case another thread got there first
-        if let Some(client) = self.inner.regional_clients.load().get(&region) {
-            return client.clone();
-        }
-
-        // rcu retries when there is a write conflict.
-        // adding new regions is very rare and the hash should be small. We can afford to
-        // clone the hash a few times if there is lots of contention
-        self.inner.regional_clients.rcu(|hash| {
-            let mut hash = HashMap::clone(hash);
-            hash.insert(region.clone(), client_fut.clone());
-            hash
-        });
-
-        client_fut
     }
 
     pub fn invoke<B>(
@@ -126,7 +95,9 @@ impl LambdaClient {
         B::Data: Send,
         <B as HttpBody>::Error: Into<Box<dyn Error + Send + Sync>>,
     {
-        let client = self.regional_client(arn.region()).clone();
+        let function_name = arn.to_string();
+        let region = Region::new(arn.region().to_string());
+        let client = self.client.clone();
         let body = body::to_bytes(body).map_err(|err| LambdaError::Body(err.into()));
 
         async move {
@@ -143,16 +114,15 @@ impl LambdaClient {
 
             let res = client
                 .invoke()
-                .function_name(arn.to_string())
+                .function_name(function_name)
                 .payload(Blob::new(
                     serde_json::to_vec(&payload).map_err(LambdaError::SerializationError)?,
                 ))
+                .customize()
+                .await?
+                .config_override(config::Builder::default().region(region))
                 .send()
-                .await
-                .map_err(|err| LambdaError::InvokeError {
-                    description: err.to_string(),
-                    source: err.into_source().unwrap_or_else(|err| err.into()),
-                })?;
+                .await?;
 
             if res.function_error().is_some() {
                 return if let Some(payload) = res.payload() {
@@ -194,6 +164,17 @@ pub enum LambdaError {
     Base64Error(base64::DecodeError),
     #[error("function returned neither a payload or an error")]
     MissingResponse,
+}
+
+impl<R: Send + Debug + Sync + 'static> From<aws_sdk_lambda::error::SdkError<InvokeError, R>>
+    for LambdaError
+{
+    fn from(err: aws_sdk_lambda::error::SdkError<InvokeError, R>) -> Self {
+        Self::InvokeError {
+            description: err.to_string(),
+            source: err.into_source().unwrap_or_else(|err| err.into()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
