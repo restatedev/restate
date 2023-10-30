@@ -10,6 +10,7 @@
 
 use super::proxy::{Proxy, ProxyConnector};
 
+use futures::future::Either;
 use hyper::client::HttpConnector;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
@@ -17,6 +18,7 @@ use hyper::{Body, HeaderMap, Method, Request, Response, Uri, Version};
 use hyper_rustls::HttpsConnector;
 use serde_with::serde_as;
 use std::fmt::Debug;
+use std::future;
 use std::future::Future;
 use std::time::Duration;
 
@@ -190,10 +192,14 @@ impl HttpClient {
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
     ) -> impl Future<Output = Result<Response<Body>, HttpError>> + Send + 'static {
-        let client = self.client.clone();
-        let request = Self::build_request(uri, version, body, path, headers);
+        let request = match Self::build_request(uri, version, body, path, headers) {
+            Ok(request) => request,
+            Err(err) => return Either::Right(future::ready(Err(err.into()))),
+        };
 
-        async move { Ok(client.request(request?).await?) }
+        let fut = self.client.request(request);
+
+        Either::Left(async move { Ok(fut.await?) })
     }
 }
 
