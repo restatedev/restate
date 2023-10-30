@@ -369,9 +369,9 @@ impl ServiceDiscovery {
 
                 Ok((
                     parts,
-                    hyper::body::to_bytes(body)
-                        .await
-                        .map_err(|err| ServiceDiscoveryError::Client(err.into()))?,
+                    hyper::body::to_bytes(body).await.map_err(|err| {
+                        ServiceDiscoveryError::Client(ServiceClientError::Http(err.into()))
+                    })?,
                 ))
             };
 

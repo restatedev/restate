@@ -234,7 +234,9 @@ impl<T> From<hyper::Error> for TerminalLoopState<T> {
         if h2_reason(&err) == h2::Reason::NO_ERROR {
             TerminalLoopState::Closed
         } else {
-            TerminalLoopState::Failed(InvocationTaskError::Client(err.into()))
+            TerminalLoopState::Failed(InvocationTaskError::Client(ServiceClientError::Http(
+                err.into(),
+            )))
         }
     }
 }
@@ -626,7 +628,9 @@ where
             // is_closed() is try only if the request channel (Sender) has been closed.
             // This can happen if the service endpoint is suspending.
             if !hyper_err.is_closed() {
-                return Err(InvocationTaskError::Client(hyper_err.into()));
+                return Err(InvocationTaskError::Client(ServiceClientError::Http(
+                    hyper_err.into(),
+                )));
             }
         };
         Ok(())
@@ -822,7 +826,9 @@ impl ResponseStreamState {
                             if h2_reason(&err) == h2::Reason::NO_ERROR {
                                 Ok(None)
                             } else {
-                                Err(InvocationTaskError::Client(err.into()))
+                                Err(InvocationTaskError::Client(ServiceClientError::Http(
+                                    err.into(),
+                                )))
                             }
                         }
                     });
