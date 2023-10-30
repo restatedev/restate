@@ -57,6 +57,10 @@ impl Options {
 
 #[derive(Clone, Debug)]
 pub struct LambdaClient {
+    // we use Shared here to allow concurrent requests to all await this promise, each getting their
+    // own `cloned` client on completion. A `tokio::sync::OnceCell` isn't ideal here because we would
+    // have to store the input parameters (ie profile_name) in order to call `get_or_init` during every
+    // `invoke`, whereas Shared drops the future (and its captured params) when it completes.
     client: Shared<BoxFuture<'static, aws_sdk_lambda::Client>>,
 }
 
