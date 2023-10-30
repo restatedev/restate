@@ -3,9 +3,9 @@ use core::fmt;
 use std::fmt::Formatter;
 use std::future;
 use std::future::Future;
-use std::pin::Pin;
 
-use futures::{FutureExt, TryFutureExt};
+use futures::future::Either;
+use futures::TryFutureExt;
 
 use hyper::client::HttpConnector;
 use hyper::header::HeaderValue;
@@ -45,8 +45,9 @@ impl ServiceClient {
     pub fn call(
         &self,
         req: Request<Body>,
-    ) -> Pin<Box<dyn Future<Output = Result<Response<Body>, ServiceClientError>> + Send>> {
+    ) -> impl Future<Output = Result<Response<Body>, ServiceClientError>> + Send + 'static {
         let (parts, body) = req.into_parts();
+
         match parts.address {
             ServiceEndpointAddress::Http(uri, version) => {
                 let mut uri_parts = uri.into_parts();
@@ -74,10 +75,9 @@ impl ServiceClient {
                         match path.try_into() {
                             Ok(path) => path,
                             Err(err) => {
-                                return future::ready(Err(ServiceClientError::Http(
-                                    HttpError::Http(err.into()),
-                                )))
-                                .boxed()
+                                return Either::Left(Either::Right(future::ready(Err(
+                                    ServiceClientError::Http(HttpError::Http(err.into())),
+                                ))))
                             }
                         }
                     }),
@@ -86,10 +86,9 @@ impl ServiceClient {
                 let uri = match Uri::from_parts(uri_parts) {
                     Ok(uri) => uri,
                     Err(err) => {
-                        return future::ready(Err(ServiceClientError::Http(HttpError::Http(
-                            err.into(),
+                        return Either::Left(Either::Right(future::ready(Err(
+                            ServiceClientError::Http(HttpError::Http(err.into())),
                         ))))
-                        .boxed()
                     }
                 };
 
@@ -104,16 +103,18 @@ impl ServiceClient {
 
                 let http_request = match http_request_builder.body(body) {
                     Ok(http_request) => http_request,
-                    Err(err) => return future::ready(Err(err.into())).boxed(),
+                    Err(err) => return Either::Left(Either::Right(future::ready(Err(err.into())))),
                 };
 
-                self.http.request(http_request).map_err(Into::into).boxed()
+                Either::Left(Either::Left(
+                    self.http.request(http_request).map_err(Into::into),
+                ))
             }
-            ServiceEndpointAddress::Lambda(arn) => self
-                .lambda
-                .invoke(arn, body, parts.path, parts.headers)
-                .map_err(Into::into)
-                .boxed(),
+            ServiceEndpointAddress::Lambda(arn) => Either::Right(
+                self.lambda
+                    .invoke(arn, body, parts.path, parts.headers)
+                    .map_err(Into::into),
+            ),
         }
     }
 }
@@ -171,13 +172,13 @@ impl<B> Request<B> {
 #[derive(Clone, Debug)]
 pub struct Parts {
     /// The request's target address
-    pub address: ServiceEndpointAddress,
+    address: ServiceEndpointAddress,
 
     /// The request's path, for example /discover or /invoke/xyz/abc
-    pub path: PathAndQuery,
+    path: PathAndQuery,
 
     /// The request's headers - in lambda case, mapped to apigatewayevent.headers
-    pub headers: HeaderMap<HeaderValue>,
+    headers: HeaderMap<HeaderValue>,
 }
 
 impl Parts {

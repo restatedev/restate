@@ -12,7 +12,7 @@ use super::InvokerError;
 
 use bytes::Bytes;
 use futures::future::FusedFuture;
-use futures::{future, stream, FutureExt, Stream, StreamExt, TryFutureExt};
+use futures::{future, stream, FutureExt, Stream, StreamExt};
 use hyper::body::Sender;
 use hyper::http::response::Parts as ResponseParts;
 use hyper::http::HeaderValue;
@@ -773,9 +773,7 @@ impl ResponseStreamState {
         // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
-        Self::WaitingHeaders(AbortOnDrop(tokio::task::spawn(
-            client.call(req).map_err(Into::into),
-        )))
+        Self::WaitingHeaders(AbortOnDrop(tokio::task::spawn(client.call(req))))
     }
 
     // Could be replaced by a Future implementation
