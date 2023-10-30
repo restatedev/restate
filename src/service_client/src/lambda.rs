@@ -60,7 +60,7 @@ pub struct LambdaClient {
     client: Shared<BoxFuture<'static, aws_sdk_lambda::Client>>,
 }
 
-impl<'a> LambdaClient {
+impl LambdaClient {
     pub fn new(profile_name: Option<String>) -> Self {
         // create client for a default region, region can be overridden per request
         let mut config = aws_config::from_env().region(Region::from_static("us-east-1"));
