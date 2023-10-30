@@ -16,8 +16,7 @@ use base64::display::Base64Display;
 use base64::Engine;
 use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
-use futures::TryFutureExt;
-use hyper::body::{Bytes, HttpBody};
+use hyper::body::Bytes;
 use hyper::http::request::Parts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
@@ -27,7 +26,6 @@ use serde::ser::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::serde_as;
-use std::error::Error;
 use std::fmt::Debug;
 use std::future::Future;
 
@@ -79,25 +77,20 @@ impl LambdaClient {
         }
     }
 
-    pub fn invoke<B>(
+    pub fn invoke(
         &self,
         arn: LambdaARN,
-        body: B,
+        body: Body,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
-    ) -> impl Future<Output = Result<Response<Body>, LambdaError>> + Send + 'static
-    where
-        B: HttpBody + Send + 'static,
-        B::Data: Send,
-        <B as HttpBody>::Error: Into<Box<dyn Error + Send + Sync>>,
-    {
+    ) -> impl Future<Output = Result<Response<Body>, LambdaError>> + Send + 'static {
         let function_name = arn.to_string();
         let region = Region::new(arn.region().to_string());
         let client = self.client.clone();
-        let body = body::to_bytes(body).map_err(|err| LambdaError::Body(err.into()));
+        let body = body::to_bytes(body);
 
         async move {
-            let (body, client): (Result<Bytes, LambdaError>, aws_sdk_lambda::Client) =
+            let (body, client): (Result<Bytes, hyper::Error>, aws_sdk_lambda::Client) =
                 futures::join!(body, client);
 
             let payload = ApiGatewayProxyRequest {
@@ -144,7 +137,7 @@ impl LambdaClient {
 #[derive(Debug, thiserror::Error)]
 pub enum LambdaError {
     #[error("problem reading request body: {0}")]
-    Body(Box<dyn Error + Send + Sync>),
+    Body(#[from] hyper::Error),
     #[error("error returned from Invoke: {description}: {source}")]
     InvokeError {
         description: String,

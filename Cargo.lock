@@ -4528,7 +4528,6 @@ dependencies = [
 name = "restate_service_client"
 version = "0.4.0"
 dependencies = [
- "arc-swap",
  "aws-config",
  "aws-sdk-lambda",
  "base64 0.21.4",
@@ -4547,7 +4546,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "thiserror",
- "tokio",
 ]
 
 [[package]]

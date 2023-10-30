@@ -13,7 +13,6 @@ use crate::lambda::LambdaClient;
 
 use core::fmt;
 use futures::future::Either;
-use futures::TryFutureExt;
 use hyper::header::HeaderValue;
 use hyper::http::uri::PathAndQuery;
 use hyper::Body;
@@ -51,16 +50,16 @@ impl ServiceClient {
         let (parts, body) = req.into_parts();
 
         match parts.address {
-            ServiceEndpointAddress::Http(uri, version) => Either::Left(
-                self.http
-                    .request(uri, version, body, parts.path, parts.headers)
-                    .map_err(Into::into),
-            ),
-            ServiceEndpointAddress::Lambda(arn) => Either::Right(
-                self.lambda
-                    .invoke(arn, body, parts.path, parts.headers)
-                    .map_err(Into::into),
-            ),
+            ServiceEndpointAddress::Http(uri, version) => {
+                let fut = self
+                    .http
+                    .request(uri, version, body, parts.path, parts.headers);
+                Either::Left(async move { Ok(fut.await?) })
+            }
+            ServiceEndpointAddress::Lambda(arn) => {
+                let fut = self.lambda.invoke(arn, body, parts.path, parts.headers);
+                Either::Right(async move { Ok(fut.await?) })
+            }
         }
     }
 }
