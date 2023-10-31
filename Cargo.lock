@@ -4530,6 +4530,8 @@ version = "0.4.0"
 dependencies = [
  "aws-config",
  "aws-sdk-lambda",
+ "aws-smithy-http",
+ "aws-smithy-types",
  "base64 0.21.4",
  "bytestring",
  "derive_builder",
