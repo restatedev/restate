@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use aws_config::retry::ErrorKind;
 use aws_sdk_lambda::config;
 use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::operation::invoke::InvokeError;
