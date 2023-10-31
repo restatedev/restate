@@ -121,10 +121,12 @@ impl Default for Http2KeepAliveOptions {
 }
 
 impl Http2KeepAliveOptions {
+    #[inline]
     fn default_interval() -> humantime::Duration {
         (Duration::from_secs(40)).into()
     }
 
+    #[inline]
     fn default_timeout() -> humantime::Duration {
         (Duration::from_secs(20)).into()
     }

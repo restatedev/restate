@@ -229,18 +229,6 @@ impl<T, E: Into<InvocationTaskError>> From<Result<T, E>> for TerminalLoopState<T
     }
 }
 
-impl<T> From<hyper::Error> for TerminalLoopState<T> {
-    fn from(err: hyper::Error) -> Self {
-        if h2_reason(&err) == h2::Reason::NO_ERROR {
-            TerminalLoopState::Closed
-        } else {
-            TerminalLoopState::Failed(InvocationTaskError::Client(ServiceClientError::Http(
-                err.into(),
-            )))
-        }
-    }
-}
-
 /// Could be replaced by ? operator if we had Try stable. See [`InvocationTask::run_internal`]
 macro_rules! shortcircuit {
     ($value:expr) => {

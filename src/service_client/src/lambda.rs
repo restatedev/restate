@@ -31,14 +31,13 @@ use std::future::Future;
 
 /// # Lambda client options
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "options_schema",
     schemars(rename = "LambdaClientOptions", default)
 )]
 #[builder(default)]
-#[derive(Default)]
 pub struct Options {
     /// # AWS Profile
     ///
