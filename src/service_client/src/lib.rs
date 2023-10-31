@@ -57,7 +57,13 @@ impl ServiceClient {
                 Either::Left(async move { Ok(fut.await?) })
             }
             ServiceEndpointAddress::Lambda(arn) => {
-                let fut = self.lambda.invoke(arn, body, parts.path, parts.headers);
+                let fut = self.lambda.invoke(
+                    arn,
+                    Some("arn:aws:iam::663487780041:role/restate-dev".into()),
+                    body,
+                    parts.path,
+                    parts.headers,
+                );
                 Either::Right(async move { Ok(fut.await?) })
             }
         }

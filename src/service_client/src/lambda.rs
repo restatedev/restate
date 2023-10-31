@@ -8,10 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use arc_swap::ArcSwap;
+use aws_credential_types::cache::{
+    CredentialsCache, ProvideCachedCredentials, SharedCredentialsCache,
+};
+use aws_credential_types::provider::error::CredentialsError;
+use aws_credential_types::provider::future::ProvideCredentials;
+use aws_credential_types::provider::SharedCredentialsProvider;
 use aws_sdk_lambda::config;
 use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::operation::invoke::InvokeError;
 use aws_sdk_lambda::primitives::Blob;
+use aws_sdk_sts::operation::assume_role::AssumeRoleError;
 use aws_smithy_types::error::display::DisplayErrorContext;
 use base64::display::Base64Display;
 use base64::Engine;
@@ -27,8 +35,11 @@ use serde::ser::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::serde_as;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
+use std::sync::Arc;
+use std::time::SystemTime;
 
 /// # Lambda client options
 #[serde_as]
@@ -59,7 +70,14 @@ pub struct LambdaClient {
     // own `cloned` client on completion. A `tokio::sync::OnceCell` isn't ideal here because we would
     // have to store the input parameters (ie profile_name) in order to call `get_or_init` during every
     // `invoke`, whereas Shared drops the future (and its captured params) when it completes.
-    client: Shared<BoxFuture<'static, aws_sdk_lambda::Client>>,
+    inner: Shared<BoxFuture<'static, LambdaClientInner>>,
+    assumed_role_providers: Arc<ArcSwap<HashMap<Option<String>, CachedAssumeRoleProvider>>>,
+}
+
+#[derive(Clone, Debug)]
+struct LambdaClientInner {
+    lambda_client: aws_sdk_lambda::Client,
+    sts_client: aws_sdk_sts::Client,
 }
 
 impl LambdaClient {
@@ -70,28 +88,57 @@ impl LambdaClient {
             config = config.profile_name(profile_name);
         };
 
+        let inner = async {
+            let config = config.load().await;
+            let sts_conf = aws_sdk_sts::Config::from(&config);
+            let sts_client = aws_sdk_sts::Client::from_conf(sts_conf);
+
+            // create a new lambda config without credentials set
+            let mut lambda_conf = config::Builder::default();
+            lambda_conf = lambda_conf.region(config.region().cloned());
+            lambda_conf.set_use_fips(config.use_fips());
+            lambda_conf.set_use_dual_stack(config.use_dual_stack());
+            lambda_conf.set_endpoint_url(config.endpoint_url().map(|s| s.to_string()));
+            lambda_conf.set_retry_config(config.retry_config().cloned());
+            lambda_conf.set_timeout_config(config.timeout_config().cloned());
+            lambda_conf.set_sleep_impl(config.sleep_impl());
+            lambda_conf.set_http_connector(config.http_connector().cloned());
+            lambda_conf.set_time_source(config.time_source());
+            lambda_conf.set_app_name(config.app_name().cloned());
+
+            let lambda_client = aws_sdk_lambda::Client::from_conf(lambda_conf.build());
+
+            LambdaClientInner {
+                lambda_client,
+                sts_client,
+            }
+        }
+        .boxed()
+        .shared();
+
         Self {
-            client: async { aws_sdk_lambda::Client::new(&config.load().await) }
-                .boxed()
-                .shared(),
+            inner,
+            assumed_role_providers: Default::default(),
         }
     }
 
     pub fn invoke(
         &self,
         arn: LambdaARN,
+        assume_role: Option<String>,
         body: Body,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
     ) -> impl Future<Output = Result<Response<Body>, LambdaError>> + Send + 'static {
         let function_name = arn.to_string();
         let region = Region::new(arn.region().to_string());
-        let client = self.client.clone();
+        let inner = self.inner.clone();
+        let assumed_role_providers = self.assumed_role_providers.clone();
         let body = body::to_bytes(body);
 
         async move {
-            let (body, client): (Result<Bytes, hyper::Error>, aws_sdk_lambda::Client) =
-                futures::join!(body, client);
+            let (body, inner): (Result<Bytes, hyper::Error>, LambdaClientInner) =
+                futures::join!(body, inner);
 
             let payload = ApiGatewayProxyRequest {
                 path: Some(path.path().to_string()),
@@ -101,7 +148,32 @@ impl LambdaClient {
                 is_base64_encoded: true,
             };
 
-            let res = client
+            let mut config_override = config::Builder::default().region(region);
+
+            let providers = assumed_role_providers.load();
+            let provider = match providers.get(&assume_role) {
+                Some(provider) => provider.clone(),
+                None => {
+                    let provider = CachedAssumeRoleProvider::new(
+                        inner.sts_client.clone(),
+                        assume_role.clone(),
+                    )
+                    .await;
+                    assumed_role_providers.rcu(|cache| {
+                        let mut cache = HashMap::clone(&cache);
+                        cache.insert(assume_role.clone(), provider.clone());
+                        cache
+                    });
+                    provider
+                }
+            };
+
+            // no point building a cache for just this request; we use the providers cache
+            config_override = config_override.credentials_cache(CredentialsCache::no_caching());
+            config_override = config_override.credentials_provider(provider);
+
+            let res = inner
+                .lambda_client
                 .invoke()
                 .function_name(function_name)
                 .payload(Blob::new(
@@ -110,7 +182,7 @@ impl LambdaClient {
                 .customize()
                 .await
                 .expect("customize() must not return an error") // the sdk is commented to say that this eventually won't be a Result
-                .config_override(config::Builder::default().region(region))
+                .config_override(config_override)
                 .send()
                 .await?;
 
@@ -245,5 +317,115 @@ where
     serializer.collect_str(&Base64Display::new(
         body.as_ref(),
         &base64::engine::general_purpose::STANDARD,
+    ))
+}
+
+#[derive(Debug, Clone)]
+struct CachedAssumeRoleProvider(SharedCredentialsCache);
+
+impl CachedAssumeRoleProvider {
+    async fn new(client: aws_sdk_sts::Client, assume_role: Option<String>) -> Self {
+        match assume_role {
+            Some(assume_role) => Self(CredentialsCache::lazy().create_cache(
+                SharedCredentialsProvider::new(AssumeRoleProvider(client, assume_role)),
+            )),
+            None => Self(
+                client
+                    .config()
+                    .credentials_cache()
+                    .expect("sts client must have a credentials cache"),
+            ),
+        }
+    }
+}
+
+impl aws_credential_types::provider::ProvideCredentials for CachedAssumeRoleProvider {
+    fn provide_credentials<'a>(&'a self) -> ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        let result = self.0.provide_cached_credentials();
+
+        ProvideCredentials::new(async {
+            let result = result.await;
+            if let Err(err) = &result {
+                println!("{}", DisplayErrorContext(err));
+            }
+            result
+        })
+    }
+}
+
+#[derive(Debug)]
+struct AssumeRoleProvider(aws_sdk_sts::Client, String);
+
+impl aws_credential_types::provider::ProvideCredentials for AssumeRoleProvider {
+    fn provide_credentials<'a>(&'a self) -> ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        ProvideCredentials::new(async {
+            let fluent_builder = self
+                .0
+                .assume_role()
+                .role_session_name(format!(
+                    "restate-{}",
+                    SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                ))
+                .role_arn(self.1.clone());
+
+            let assumed = fluent_builder.send().await;
+            match assumed {
+                Ok(assumed) => into_credentials(assumed.credentials, "AssumeRoleProvider"),
+                Err(aws_smithy_http::result::SdkError::ServiceError(ref context))
+                    if matches!(
+                        context.err(),
+                        AssumeRoleError::RegionDisabledException(_)
+                            | AssumeRoleError::MalformedPolicyDocumentException(_)
+                    ) =>
+                {
+                    Err(CredentialsError::invalid_configuration(
+                        assumed.err().unwrap(),
+                    ))
+                }
+
+                Err(aws_smithy_http::result::SdkError::ServiceError(_)) => {
+                    Err(CredentialsError::provider_error(assumed.err().unwrap()))
+                }
+                Err(err) => Err(CredentialsError::provider_error(err)),
+            }
+        })
+    }
+}
+
+fn into_credentials(
+    sts_credentials: Option<aws_sdk_sts::types::Credentials>,
+    provider_name: &'static str,
+) -> aws_credential_types::provider::Result {
+    let sts_credentials = sts_credentials
+        .ok_or_else(|| CredentialsError::unhandled("STS credentials must be defined"))?;
+    let expiration = std::time::SystemTime::try_from(
+        sts_credentials
+            .expiration
+            .ok_or_else(|| CredentialsError::unhandled("missing expiration"))?,
+    )
+    .map_err(|_| {
+        CredentialsError::unhandled(
+            "credential expiration time cannot be represented by a SystemTime",
+        )
+    })?;
+    Ok(aws_credential_types::Credentials::new(
+        sts_credentials
+            .access_key_id
+            .ok_or_else(|| CredentialsError::unhandled("access key id missing from result"))?,
+        sts_credentials
+            .secret_access_key
+            .ok_or_else(|| CredentialsError::unhandled("secret access token missing"))?,
+        sts_credentials.session_token,
+        Some(expiration),
+        provider_name,
     ))
 }

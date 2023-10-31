@@ -457,7 +457,7 @@ dependencies = [
  "aws-credential-types",
  "aws-http",
  "aws-sdk-sso",
- "aws-sdk-sts",
+ "aws-sdk-sts 0.30.0",
  "aws-smithy-async",
  "aws-smithy-client",
  "aws-smithy-http",
@@ -585,6 +585,30 @@ name = "aws-sdk-sts"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a47ad6bf01afc00423d781d464220bf69fb6a674ad6629cbbcb06d88cdc2be82"
+dependencies = [
+ "aws-credential-types",
+ "aws-http",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-client",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "http",
+ "regex",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-sts"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "100bf47fca9d6d0aca42ad06a6d28826039a25baadf993b6aa51de6161d36e18"
 dependencies = [
  "aws-credential-types",
  "aws-http",
@@ -4528,9 +4552,14 @@ dependencies = [
 name = "restate_service_client"
 version = "0.4.0"
 dependencies = [
+ "arc-swap",
  "aws-config",
+ "aws-credential-types",
+ "aws-runtime",
  "aws-sdk-lambda",
+ "aws-sdk-sts 0.34.0",
  "aws-smithy-http",
+ "aws-smithy-runtime-api",
  "aws-smithy-types",
  "base64 0.21.4",
  "bytestring",
