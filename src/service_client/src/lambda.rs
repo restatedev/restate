@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use aws_config::retry::ErrorKind;
 use aws_sdk_lambda::config;
 use aws_sdk_lambda::config::Region;
+use aws_sdk_lambda::error::SdkError;
 use aws_sdk_lambda::operation::invoke::InvokeError;
 use aws_sdk_lambda::primitives::Blob;
 use base64::display::Base64Display;
@@ -26,6 +28,7 @@ use serde::ser::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::serde_as;
+use std::error::Error;
 use std::fmt::Debug;
 use std::future::Future;
 
@@ -137,11 +140,20 @@ impl LambdaClient {
 pub enum LambdaError {
     #[error("problem reading request body: {0}")]
     Body(#[from] hyper::Error),
-    #[error("error returned from Invoke: {description}: {source}")]
-    InvokeError {
-        description: String,
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
-    },
+
+    #[error("failed to construct invoke request: {0}")]
+    ConstructionError(Box<dyn Error + Send + Sync>),
+    #[error("call to invoke timed out: {0}")]
+    TimeoutError(Box<dyn Error + Send + Sync>),
+    #[error("failed to dispatch invoke request: {0:?}: {1}")]
+    DispatchFailure(DispatchFailureKind, String),
+    #[error("the invocation response could not be parsed: {0}")]
+    ResponseError(Box<dyn Error + Send + Sync>),
+    #[error("lambda service returned error: {0}")]
+    ServiceError(InvokeError),
+    #[error("lambda service returned unhandled error: {0}")]
+    UnhandledError(String),
+
     #[error("function returned an error during execution: {0}")]
     FunctionError(serde_json::Value),
     #[error("function request could not be serialized: {0}")]
@@ -154,13 +166,59 @@ pub enum LambdaError {
     MissingResponse,
 }
 
-impl<R: Send + Debug + Sync + 'static> From<aws_sdk_lambda::error::SdkError<InvokeError, R>>
-    for LambdaError
-{
-    fn from(err: aws_sdk_lambda::error::SdkError<InvokeError, R>) -> Self {
-        Self::InvokeError {
-            description: err.to_string(),
-            source: err.into_source().unwrap_or_else(|err| err.into()),
+#[derive(Debug)]
+pub enum DispatchFailureKind {
+    Timeout,
+    User,
+    Io,
+    Other(ErrorKind),
+    Unknown,
+}
+
+impl<R: Send + Debug + Sync + 'static> From<SdkError<InvokeError, R>> for LambdaError {
+    fn from(err: SdkError<InvokeError, R>) -> Self {
+        match err {
+            err @ SdkError::ConstructionFailure(_) => {
+                Self::ConstructionError(err.into_source().unwrap_or_else(|err| err.into()))
+            }
+            err @ SdkError::TimeoutError(_) => {
+                Self::TimeoutError(err.into_source().unwrap_or_else(|err| err.into()))
+            }
+            SdkError::DispatchFailure(dispatch_err) => {
+                let kind = if let Some(other) = dispatch_err.as_other() {
+                    DispatchFailureKind::Other(other)
+                } else if dispatch_err.is_io() {
+                    DispatchFailureKind::Io
+                } else if dispatch_err.is_timeout() {
+                    DispatchFailureKind::Timeout
+                } else if dispatch_err.is_user() {
+                    DispatchFailureKind::User
+                } else {
+                    DispatchFailureKind::Unknown
+                };
+                Self::DispatchFailure(
+                    kind,
+                    dispatch_err
+                        .as_connector_error()
+                        .and_then(|err| err.source())
+                        .map(|err| err.to_string())
+                        .unwrap_or("None".into()),
+                )
+            }
+            err @ SdkError::ResponseError(_) => {
+                Self::ResponseError(err.into_source().unwrap_or_else(|err| err.into()))
+            }
+            SdkError::ServiceError(svc_err) => match svc_err.into_err() {
+                InvokeError::Unhandled(unhandled_err) => Self::UnhandledError(
+                    unhandled_err
+                        .source()
+                        .map(|err| err.to_string())
+                        .unwrap_or("None".into()),
+                ),
+                err @ _ => Self::ServiceError(err),
+            },
+            // this is a non exhaustive enum so we have to do this even though it currently does nothing
+            err => Self::ServiceError(err.into_service_error()),
         }
     }
 }
