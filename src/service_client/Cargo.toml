@@ -17,6 +17,7 @@ restate_schema_api = { workspace = true }
 schemars = { workspace = true, optional = true }
 derive_builder = { workspace = true }
 
+arc-swap = { workspace = true }
 base64 = { workspace = true }
 bytestring = { workspace = true }
 futures = { workspace = true }
@@ -30,7 +31,11 @@ serde_with = { workspace = true }
 thiserror = { workspace = true }
 
 aws-config = "0.56.1"
+aws-credential-types = "0.56.1"
 aws-sdk-lambda = "0.34.0"
+aws-sdk-sts = "0.34.0"
 aws-smithy-http = "0.56.1"
 aws-smithy-types = "0.56.1"
+aws-smithy-runtime-api = "0.56.1"
+aws-runtime = "0.56.1"
 lambda_http = "0.8.1"
