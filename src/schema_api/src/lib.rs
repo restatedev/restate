@@ -14,8 +14,10 @@
 pub mod endpoint {
     use http::header::{HeaderName, HeaderValue};
     use http::Uri;
-    use restate_types::identifiers::{EndpointId, ServiceRevision};
+    use restate_types::identifiers::{EndpointId, LambdaARN, ServiceRevision};
     use std::collections::HashMap;
+    use std::fmt;
+    use std::fmt::{Display, Formatter};
 
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -36,7 +38,7 @@ pub mod endpoint {
             )
         )]
         #[cfg_attr(feature = "serde_schema", schemars(with = "HashMap<String, String>"))]
-        additional_headers: HashMap<HeaderName, HeaderValue>,
+        pub additional_headers: HashMap<HeaderName, HeaderValue>,
     }
 
     impl DeliveryOptions {
@@ -49,53 +51,83 @@ pub mod endpoint {
     #[cfg_attr(feature = "serde", serde_with::serde_as)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub struct EndpointMetadata {
-        #[cfg_attr(
-            feature = "serde",
-            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
-        )]
-        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
-        address: Uri,
-        protocol_type: ProtocolType,
-        delivery_options: DeliveryOptions,
+    pub enum EndpointMetadata {
+        Http {
+            #[cfg_attr(
+                feature = "serde",
+                serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
+            )]
+            #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+            address: Uri,
+            protocol_type: ProtocolType,
+            delivery_options: DeliveryOptions,
+        },
+        Lambda {
+            arn: LambdaARN,
+            delivery_options: DeliveryOptions,
+        },
     }
 
     impl EndpointMetadata {
-        pub fn new(
+        pub fn new_http(
             address: Uri,
             protocol_type: ProtocolType,
             delivery_options: DeliveryOptions,
         ) -> Self {
-            Self {
+            Self::Http {
                 address,
                 protocol_type,
                 delivery_options,
             }
         }
 
-        pub fn address(&self) -> &Uri {
-            &self.address
+        pub fn new_lambda(arn: LambdaARN, delivery_options: DeliveryOptions) -> Self {
+            Self::Lambda {
+                arn,
+                delivery_options,
+            }
+        }
+
+        // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
+        // and for Lambda endpoints its the ARN
+        pub fn address_display(&self) -> impl Display + '_ {
+            struct Wrapper<'a>(&'a EndpointMetadata);
+            impl<'a> Display for Wrapper<'a> {
+                fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                    match self {
+                        Wrapper(EndpointMetadata::Http { address, .. }) => address.fmt(f),
+                        Wrapper(EndpointMetadata::Lambda { arn, .. }) => arn.fmt(f),
+                    }
+                }
+            }
+            Wrapper(self)
         }
 
         pub fn protocol_type(&self) -> ProtocolType {
-            self.protocol_type
-        }
-
-        pub fn additional_headers(&self) -> &HashMap<HeaderName, HeaderValue> {
-            &self.delivery_options.additional_headers
+            match self {
+                EndpointMetadata::Http { protocol_type, .. } => *protocol_type,
+                EndpointMetadata::Lambda { .. } => ProtocolType::RequestResponse,
+            }
         }
 
         pub fn id(&self) -> EndpointId {
             use base64::Engine;
 
-            // For the time being we generate this from the URI
-            // We use only authority and path, as those uniquely identify the endpoint.
-            let authority_and_path = format!(
-                "{}{}",
-                self.address.authority().expect("Must have authority"),
-                self.address.path()
-            );
-            restate_base64_util::URL_SAFE.encode(authority_and_path.as_bytes())
+            match self {
+                EndpointMetadata::Http { address, .. } => {
+                    // For the time being we generate this from the URI
+                    // We use only authority and path, as those uniquely identify the endpoint.
+                    let authority_and_path = format!(
+                        "{}{}",
+                        address.authority().expect("Must have authority"),
+                        address.path()
+                    );
+                    restate_base64_util::URL_SAFE.encode(authority_and_path.as_bytes())
+                }
+                EndpointMetadata::Lambda { arn, .. } => {
+                    restate_base64_util::URL_SAFE.encode(arn.to_string().as_bytes())
+                }
+            }
         }
     }
 
@@ -123,7 +155,7 @@ pub mod endpoint {
 
         impl EndpointMetadata {
             pub fn mock() -> EndpointMetadata {
-                EndpointMetadata::new(
+                EndpointMetadata::new_http(
                     "http://localhost:9080".parse().unwrap(),
                     ProtocolType::BidiStream,
                     Default::default(),
@@ -131,7 +163,7 @@ pub mod endpoint {
             }
 
             pub fn mock_with_uri(uri: &str) -> EndpointMetadata {
-                EndpointMetadata::new(
+                EndpointMetadata::new_http(
                     uri.parse().unwrap(),
                     ProtocolType::BidiStream,
                     Default::default(),

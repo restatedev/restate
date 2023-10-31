@@ -156,7 +156,10 @@ skip = [
 
     # clash between prost and otel libraries
     {name = "prost"},
-    {name = "prost-derive"}
+    {name = "prost-derive"},
+
+    # clash between aws-config and datafusion
+    {name = "fastrand"}
 ]
 
 deny = [

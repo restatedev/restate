@@ -78,12 +78,12 @@ restate_consensus = { path = "src/consensus" }
 restate_errors = { path = "src/errors" }
 restate_fs_util = { path = "src/fs_util" }
 restate_futures_util = { path = "src/futures_util" }
-restate_hyper_util = { path = "src/hyper_util" }
 restate_ingress_dispatcher = { path = "src/ingress_dispatcher" }
 restate_ingress_grpc = { path = "src/ingress_grpc" }
 restate_ingress_kafka = { path = "src/ingress_kafka" }
 restate_invoker_api = { path = "src/invoker_api" }
 restate_invoker_impl = { path = "src/invoker_impl" }
+restate_service_client = { path = "src/service_client" }
 restate_queue = { path = "src/queue"}
 restate_meta = { path = "src/meta" }
 restate_network = { path = "src/network" }

@@ -10,26 +10,33 @@
 
 use std::collections::HashMap;
 
+use std::fmt::Display;
+
 use bytes::Bytes;
-use codederror::CodedError;
+
 use hyper::header::{ACCEPT, CONTENT_TYPE};
-use hyper::http::response::Parts;
+use hyper::http::response::Parts as ResponseParts;
+use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
-use hyper::{Body, Client, Method, Request, Uri};
-use hyper_rustls::HttpsConnectorBuilder;
+use hyper::{Body, HeaderMap};
 use prost::{DecodeError, Message};
 use prost_reflect::{
     Cardinality, DescriptorError, DescriptorPool, ExtensionDescriptor, FieldDescriptor, Kind,
     MethodDescriptor, ServiceDescriptor,
 };
+
+use codederror::CodedError;
 use restate_errors::{warn_it, META0001, META0002, META0003, META0007, META0008};
-use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_schema_api::discovery::{
     DiscoveredInstanceType, DiscoveredMethodMetadata, FieldAnnotation, KeyStructure,
     ServiceRegistrationRequest,
 };
 use restate_schema_api::endpoint::ProtocolType;
-use restate_types::retries::RetryPolicy;
+use restate_service_client::{
+    Parts, Request, ServiceClient, ServiceClientError, ServiceEndpointAddress,
+};
+
+use restate_types::retries::{RetryIter, RetryPolicy};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -52,6 +59,9 @@ const EVENT_METADATA_FIELD_EXT: i32 = 2;
 const DISCOVER_PATH: &str = "/discover";
 
 mod pb {
+    pub use generated_structs::ProtocolMode;
+    pub use generated_structs::ServiceDiscoveryRequest;
+
     use super::*;
 
     mod generated_structs {
@@ -63,8 +73,6 @@ mod pb {
             "/dev.restate.service.discovery.rs"
         ));
     }
-    pub use generated_structs::ProtocolMode;
-    pub use generated_structs::ServiceDiscoveryRequest;
 
     // We manually define the protobuf struct for the response here because prost-build
     // won't parse extensions in ServiceDiscoveryResponse.files
@@ -89,18 +97,51 @@ mod pb {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ServiceDiscovery {
     retry_policy: RetryPolicy,
-    proxy: Option<Proxy>,
+    client: ServiceClient,
 }
 
 impl ServiceDiscovery {
-    pub fn new(retry_policy: RetryPolicy, proxy: Option<Proxy>) -> Self {
+    pub fn new(retry_policy: RetryPolicy, client: ServiceClient) -> Self {
         Self {
             retry_policy,
-            proxy,
+            client,
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct DiscoverEndpoint(ServiceEndpointAddress, HashMap<HeaderName, HeaderValue>);
+
+impl DiscoverEndpoint {
+    pub fn new(
+        address: ServiceEndpointAddress,
+        additional_headers: HashMap<HeaderName, HeaderValue>,
+    ) -> Self {
+        Self(address, additional_headers)
+    }
+
+    pub fn into_inner(self) -> (ServiceEndpointAddress, HashMap<HeaderName, HeaderValue>) {
+        (self.0, self.1)
+    }
+
+    pub fn address(&self) -> &ServiceEndpointAddress {
+        &self.0
+    }
+
+    fn request(&self) -> Request<Body> {
+        let mut headers = HeaderMap::from_iter([
+            (CONTENT_TYPE, APPLICATION_PROTO),
+            (ACCEPT, APPLICATION_PROTO),
+        ]);
+        headers.extend(self.1.clone());
+        let path = PathAndQuery::from_static(DISCOVER_PATH);
+        Request::new(
+            Parts::new(self.0.clone(), path, headers),
+            Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()),
+        )
     }
 }
 
@@ -190,9 +231,9 @@ pub enum ServiceDiscoveryError {
     #[error("retry limit exhausted. Last bad status code: {0}")]
     #[code(META0003)]
     BadStatusCode(u16),
-    #[error("retry limit exhausted. Last hyper error: {0}")]
+    #[error("retry limit exhausted. Last client error: {0}")]
     #[code(META0003)]
-    Hyper(#[from] hyper::Error),
+    Client(#[from] ServiceClientError),
 }
 
 impl ServiceDiscoveryError {
@@ -215,12 +256,16 @@ impl ServiceDiscoveryError {
 impl ServiceDiscovery {
     pub async fn discover(
         &self,
-        uri: &Uri,
-        additional_headers: &HashMap<HeaderName, HeaderValue>,
+        endpoint: &DiscoverEndpoint,
     ) -> Result<DiscoveredEndpointMetadata, ServiceDiscoveryError> {
-        let (mut parts, body) = self
-            .invoke_discovery_endpoint(uri, additional_headers)
-            .await?;
+        let retry_policy = self.retry_policy.clone().into_iter();
+        let (mut parts, body) = Self::invoke_discovery_endpoint(
+            &self.client,
+            endpoint.address(),
+            || endpoint.request(),
+            retry_policy,
+        )
+        .await?;
 
         // Validate response parts.
         // No need to retry these: if the validation fails, they're sdk bugs.
@@ -232,7 +277,7 @@ impl ServiceDiscovery {
             _ => {
                 return Err(ServiceDiscoveryError::BadResponse(
                     "Bad content type header",
-                ))
+                ));
             }
         }
 
@@ -298,52 +343,36 @@ impl ServiceDiscovery {
                 Err(_) => {
                     return Err(ServiceDiscoveryError::BadResponse(
                         "cannot decode protocol_mode",
-                    ))
+                    ));
                 }
             },
         })
     }
 
     async fn invoke_discovery_endpoint(
-        &self,
-        uri: &Uri,
-        additional_headers: &HashMap<HeaderName, HeaderValue>,
-    ) -> Result<(Parts, Bytes), ServiceDiscoveryError> {
-        let connector = HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .https_or_http()
-            .enable_http2()
-            .build();
-        let client = Client::builder()
-            .http2_only(true)
-            .build::<_, Body>(ProxyConnector::new(self.proxy.clone(), connector));
-        let uri = append_discover(uri)?;
-
-        let mut retry_iter = self.retry_policy.clone().into_iter();
+        client: &ServiceClient,
+        address: impl Display,
+        build_request: impl Fn() -> Request<Body>,
+        mut retry_iter: RetryIter,
+    ) -> Result<(ResponseParts, Bytes), ServiceDiscoveryError> {
         loop {
-            let mut request_builder = Request::builder()
-                .method(Method::POST)
-                .uri(uri.clone())
-                .header(CONTENT_TYPE, APPLICATION_PROTO)
-                .header(ACCEPT, APPLICATION_PROTO);
-            request_builder
-                .headers_mut()
-                .unwrap()
-                .extend(additional_headers.clone().into_iter());
-
-            let request = request_builder
-                .body(Body::from(pb::ServiceDiscoveryRequest {}.encode_to_vec()))
-                .expect("Building the request is not supposed to fail");
-
-            let response_fut = client.request(request);
+            let response_fut = client.call(build_request());
             let response = async {
-                let (parts, body) = response_fut.await?.into_parts();
+                let (parts, body) = response_fut
+                    .await
+                    .map_err(Into::<ServiceDiscoveryError>::into)?
+                    .into_parts();
 
                 if !parts.status.is_success() {
                     return Err(ServiceDiscoveryError::BadStatusCode(parts.status.as_u16()));
                 }
 
-                Ok((parts, hyper::body::to_bytes(body).await?))
+                Ok((
+                    parts,
+                    hyper::body::to_bytes(body).await.map_err(|err| {
+                        ServiceDiscoveryError::Client(ServiceClientError::Http(err.into()))
+                    })?,
+                ))
             };
 
             let e = match response.await {
@@ -358,13 +387,13 @@ impl ServiceDiscovery {
             if let Some(next_retry_interval) = retry_iter.next() {
                 warn_it!(
                     e,
-                    "Error when discovering service endpoint at uri '{}'. Retrying in {} seconds",
-                    uri,
+                    "Error when discovering service endpoint at address '{}'. Retrying in {} seconds",
+                    address,
                     next_retry_interval.as_secs()
                 );
                 tokio::time::sleep(next_retry_interval).await;
             } else {
-                warn_it!(e, "Error when discovering service endpoint '{}'", uri);
+                warn_it!(e, "Error when discovering service endpoint '{}'", address);
                 return Err(e);
             }
         }
@@ -600,32 +629,6 @@ fn is_map_with(field_descriptor: &FieldDescriptor, key_kind: Kind, value_kind: K
         }
 }
 
-fn append_discover(uri: &Uri) -> Result<Uri, ServiceDiscoveryError> {
-    let p = format!(
-        "{}{}",
-        match uri.path().strip_suffix('/') {
-            None => uri.path(),
-            Some(s) => s,
-        },
-        DISCOVER_PATH
-    );
-
-    Ok(Uri::builder()
-        .authority(
-            uri.authority()
-                .ok_or_else(|| ServiceDiscoveryError::BadUri(uri.to_string()))?
-                .clone(),
-        )
-        .scheme(
-            uri.scheme()
-                .ok_or_else(|| ServiceDiscoveryError::BadUri(uri.to_string()))?
-                .clone(),
-        )
-        .path_and_query(p)
-        .build()
-        .unwrap())
-}
-
 // This function patches the built-in descriptors, to fix https://github.com/restatedev/restate/issues/687
 // We can remove it once https://github.com/restatedev/sdk-typescript/issues/155 is properly fixed.
 fn patch_built_in_descriptors(mut files: Bytes) -> Result<Bytes, ServiceDiscoveryError> {
@@ -662,7 +665,6 @@ mod prost_reflect_types {
         encoding::{encode_key, skip_field, DecodeContext, WireType},
         DecodeError, Message,
     };
-
     pub(crate) use prost_types::{
         enum_descriptor_proto, field_descriptor_proto, EnumOptions, EnumValueOptions,
         ExtensionRangeOptions, FieldOptions, FileOptions, MessageOptions, MethodOptions,

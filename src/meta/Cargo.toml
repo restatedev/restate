@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = []
+options_schema = ["restate_service_client/options_schema"]
 
 [dependencies]
 # Async
@@ -34,11 +34,11 @@ bincode = { workspace = true }
 
 # Service discovery and metadata
 restate_types = { workspace = true, features = ["serde", "serde_schema"] }
-restate_hyper_util = { workspace = true, features = ["serde"] }
 restate_fs_util = { workspace = true }
 
 restate_service_protocol = { workspace = true, features = ["discovery"] }
 restate_worker_api = { workspace = true }
+restate_service_client = { workspace = true }
 prost = { workspace = true }
 prost-reflect = { workspace = true }
 restate_schema_api = { workspace = true, features = ["service", "endpoint", "discovery", "serde", "serde_schema"] }

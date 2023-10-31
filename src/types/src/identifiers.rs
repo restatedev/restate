@@ -17,6 +17,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::mem::size_of;
 use std::str::FromStr;
 use uuid::Uuid;
@@ -421,6 +422,122 @@ fn display_invocation_id(
             &BASE64_URL_SAFE_NO_PAD
         ),
     )
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+)]
+pub struct LambdaARN {
+    partition: ByteString,
+    region: ByteString,
+    account_id: ByteString,
+    name: ByteString,
+    version: ByteString,
+}
+
+impl LambdaARN {
+    pub fn region(&self) -> &str {
+        &self.region
+    }
+}
+
+#[cfg(feature = "serde_schema")]
+impl schemars::JsonSchema for LambdaARN {
+    fn schema_name() -> String {
+        "LambdaARN".into()
+    }
+
+    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            format: Some("arn".to_string()),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
+impl Display for LambdaARN {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let LambdaARN {
+            partition,
+            region,
+            account_id,
+            name,
+            version,
+        } = self;
+        write!(
+            f,
+            "arn:{partition}:lambda:{region}:{account_id}:function:{name}:{version}"
+        )
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidLambdaARN {
+    #[error("ARN must have 8 components delimited by `:`")]
+    InvalidFormat,
+    #[error("First component of the ARN must be `arn`")]
+    InvalidPrefix,
+    #[error("ARN must refer to a `function` resource")]
+    InvalidResourceType,
+    #[error(
+        "Partition, service, region, account ID, function name and version must all be non-empty"
+    )]
+    InvalidComponent,
+    #[error("ARN must be for the lambda service")]
+    InvalidService,
+    #[error("Could not create valid URI for this ARN; likely malformed")]
+    InvalidURI,
+}
+
+impl FromStr for LambdaARN {
+    type Err = InvalidLambdaARN;
+
+    fn from_str(arn: &str) -> Result<Self, Self::Err> {
+        // allocate once
+        let arn = ByteString::from(arn);
+        let mut split = arn.splitn(8, ':');
+        let invalid_format = || InvalidLambdaARN::InvalidFormat;
+        let prefix = split.next().ok_or_else(invalid_format)?;
+        let partition = split.next().ok_or_else(invalid_format)?;
+        let service = split.next().ok_or_else(invalid_format)?;
+        let region = split.next().ok_or_else(invalid_format)?;
+        let account_id = split.next().ok_or_else(invalid_format)?;
+        let resource_type = split.next().ok_or_else(invalid_format)?;
+        let name = split.next().ok_or_else(invalid_format)?;
+        let version = split.next().ok_or_else(invalid_format)?;
+
+        if prefix != "arn" {
+            return Err(InvalidLambdaARN::InvalidPrefix);
+        }
+        if resource_type != "function" {
+            return Err(InvalidLambdaARN::InvalidResourceType);
+        }
+        if service != "lambda" {
+            return Err(InvalidLambdaARN::InvalidService);
+        }
+        if partition.is_empty()
+            || region.is_empty()
+            || account_id.is_empty()
+            || name.is_empty()
+            || version.is_empty()
+        {
+            return Err(InvalidLambdaARN::InvalidComponent);
+        }
+
+        let lambda = Self {
+            partition: arn.slice_ref(partition),
+            region: arn.slice_ref(region),
+            account_id: arn.slice_ref(account_id),
+            name: arn.slice_ref(name),
+            version: arn.slice_ref(version),
+        };
+
+        Ok(lambda)
+    }
 }
 
 #[cfg(any(test, feature = "mocks"))]

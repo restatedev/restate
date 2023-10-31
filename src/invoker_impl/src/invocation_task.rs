@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{HttpsClient, InvokerError};
+use super::InvokerError;
 
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{future, stream, FutureExt, Stream, StreamExt};
 use hyper::body::Sender;
-use hyper::http::response::Parts;
+use hyper::http::response::Parts as ResponseParts;
 use hyper::http::HeaderValue;
-use hyper::{http, Body, Request, Response, Uri};
+use hyper::{http, Body, HeaderMap, Response};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
@@ -25,6 +25,9 @@ use restate_invoker_api::{
     EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
 };
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
+use restate_service_client::{
+    Parts, Request, ServiceClient, ServiceClientError, ServiceEndpointAddress,
+};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
@@ -36,6 +39,8 @@ use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryHeader};
 use restate_types::journal::{Completion, EntryType};
 use std::collections::HashSet;
 use std::error::Error;
+
+use hyper::http::uri::PathAndQuery;
 use std::future::{poll_fn, Future};
 use std::iter;
 use std::pin::Pin;
@@ -75,8 +80,8 @@ pub(crate) enum InvocationTaskError {
     JournalReader(anyhow::Error),
     #[error("error when trying to read the service instance state: {0}")]
     StateReader(anyhow::Error),
-    #[error("other hyper error: {0}")]
-    Network(hyper::Error),
+    #[error("other client error: {0}")]
+    Client(ServiceClientError),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
     UnexpectedJoinError(#[from] JoinError),
     #[error("got bad SuspensionMessage without journal indexes")]
@@ -181,7 +186,7 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 /// Represents an open invocation stream
 pub(super) struct InvocationTask<JR, SR, EE, EMR> {
     // Shared client
-    client: HttpsClient,
+    client: ServiceClient,
 
     // Connection params
     partition: PartitionLeaderEpoch,
@@ -224,16 +229,6 @@ impl<T, E: Into<InvocationTaskError>> From<Result<T, E>> for TerminalLoopState<T
     }
 }
 
-impl<T> From<hyper::Error> for TerminalLoopState<T> {
-    fn from(err: hyper::Error) -> Self {
-        if h2_reason(&err) == h2::Reason::NO_ERROR {
-            TerminalLoopState::Closed
-        } else {
-            TerminalLoopState::Failed(InvocationTaskError::Network(err))
-        }
-    }
-}
-
 /// Could be replaced by ? operator if we had Try stable. See [`InvocationTask::run_internal`]
 macro_rules! shortcircuit {
     ($value:expr) => {
@@ -257,7 +252,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        client: HttpsClient,
+        client: ServiceClient,
         partition: PartitionLeaderEpoch,
         fid: FullInvocationId,
         protocol_version: u16,
@@ -404,8 +399,18 @@ where
             self.invoker_rx.close();
         }
 
-        // Resolve the uri to use for the request
-        let uri = self.prepare_uri(&journal_metadata.method, &endpoint_metadata);
+        let path: PathAndQuery = format!(
+            "/invoke/{}/{}",
+            self.full_invocation_id
+                .service_id
+                .service_name
+                .chars()
+                .as_str(),
+            &journal_metadata.method
+        )
+        .try_into()
+        .expect("must be able to build a valid invocation path");
+
         let journal_size = journal_metadata.length;
 
         // Attach parent and uri to the current span
@@ -414,21 +419,26 @@ where
             .span_context
             .as_parent()
             .attach_to_span(&invocation_task_span);
-        info!(http.url = %uri, "Executing invocation at service endpoint");
+
+        info!(
+            endpoint.address = %endpoint_metadata.address_display(),
+            path = %path,
+            "Executing invocation at service endpoint"
+        );
 
         // Create an arc of the parent SpanContext.
         // We send this with every journal entry to correctly link new spans generated from journal entries.
         let service_invocation_span_context = journal_metadata.span_context;
 
         // Prepare the request and send start message
-        let (mut http_stream_tx, http_request) = self.prepare_request(uri, endpoint_metadata);
+        let (mut http_stream_tx, request) = self.prepare_request(path, endpoint_metadata);
         shortcircuit!(
             self.write_start(&mut http_stream_tx, journal_size, state_iter)
                 .await
         );
 
         // Initialize the response stream state
-        let mut http_stream_rx = ResponseStreamState::initialize(&self.client, http_request);
+        let mut http_stream_rx = ResponseStreamState::initialize(&self.client, request);
 
         // Execute the replay
         shortcircuit!(
@@ -606,7 +616,9 @@ where
             // is_closed() is try only if the request channel (Sender) has been closed.
             // This can happen if the service endpoint is suspending.
             if !hyper_err.is_closed() {
-                return Err(InvocationTaskError::Network(hyper_err));
+                return Err(InvocationTaskError::Client(ServiceClientError::Http(
+                    hyper_err.into(),
+                )));
             }
         };
         Ok(())
@@ -691,104 +703,69 @@ where
         Ok(())
     }
 
-    // --- HTTP related methods
-
-    fn prepare_uri(&self, method: &str, endpoint_metadata: &EndpointMetadata) -> Uri {
-        Self::append_path(
-            endpoint_metadata.address(),
-            &[
-                "invoke",
-                self.full_invocation_id
-                    .service_id
-                    .service_name
-                    .chars()
-                    .as_str(),
-                method,
-            ],
-        )
-    }
-
     fn prepare_request(
         &mut self,
-        uri: Uri,
+        path: PathAndQuery,
         endpoint_metadata: EndpointMetadata,
     ) -> (Sender, Request<Body>) {
         let (http_stream_tx, req_body) = Body::channel();
-        let mut http_request_builder = Request::builder()
-            .method(http::Method::POST)
-            .header(http::header::CONTENT_TYPE, APPLICATION_RESTATE)
-            .header(http::header::ACCEPT, APPLICATION_RESTATE)
-            .uri(uri);
 
-        // In case it's bidi stream, force HTTP/2
-        if endpoint_metadata.protocol_type() == ProtocolType::BidiStream {
-            http_request_builder = http_request_builder.version(http::Version::HTTP_2);
-        }
+        let mut headers = HeaderMap::from_iter([
+            (http::header::CONTENT_TYPE, APPLICATION_RESTATE),
+            (http::header::ACCEPT, APPLICATION_RESTATE),
+        ]);
 
         // Inject OpenTelemetry context
         TraceContextPropagator::new().inject_context(
             &Span::current().context(),
-            &mut HeaderInjector(
-                http_request_builder
-                    .headers_mut()
-                    .expect("The request builder shouldn't fail"),
-            ),
+            &mut HeaderInjector(&mut headers),
         );
 
-        // Inject additional headers
-        for (header_name, header_value) in endpoint_metadata.additional_headers() {
-            http_request_builder = http_request_builder.header(header_name, header_value);
-        }
+        let address = match endpoint_metadata {
+            EndpointMetadata::Lambda {
+                arn,
+                delivery_options,
+            } => {
+                headers.extend(delivery_options.additional_headers);
+                ServiceEndpointAddress::Lambda(arn)
+            }
+            EndpointMetadata::Http {
+                address,
+                protocol_type,
+                delivery_options,
+            } => {
+                headers.extend(delivery_options.additional_headers);
+                ServiceEndpointAddress::Http(
+                    address,
+                    match protocol_type {
+                        ProtocolType::RequestResponse => http::Version::default(),
+                        ProtocolType::BidiStream => http::Version::HTTP_2,
+                    },
+                )
+            }
+        };
 
-        let http_request = http_request_builder
-            .body(req_body)
-            // This fails only in case the URI is malformed, which should never happen
-            .expect("The request builder shouldn't fail");
-
-        (http_stream_tx, http_request)
-    }
-
-    fn append_path(uri: &Uri, fragments: &[&str]) -> Uri {
-        let p = format!(
-            "{}/{}",
-            match uri.path().strip_suffix('/') {
-                None => uri.path(),
-                Some(s) => s,
-            },
-            fragments.join("/")
-        );
-
-        Uri::builder()
-            .authority(
-                uri.authority()
-                    .expect("The function endpoint URI must have the authority")
-                    .clone(),
-            )
-            .scheme(
-                uri.scheme()
-                    .expect("The function endpoint URI must have the scheme")
-                    .clone(),
-            )
-            .path_and_query(p)
-            .build()
-            .unwrap()
+        (
+            http_stream_tx,
+            Request::new(Parts::new(address, path, headers), req_body),
+        )
     }
 }
 
 enum ResponseStreamState {
-    WaitingHeaders(AbortOnDrop<Result<Response<Body>, hyper::Error>>),
+    WaitingHeaders(AbortOnDrop<Result<Response<Body>, ServiceClientError>>),
     ReadingBody(Body),
 }
 
 impl ResponseStreamState {
-    fn initialize(client: &HttpsClient, req: Request<Body>) -> Self {
+    fn initialize(client: &ServiceClient, req: Request<Body>) -> Self {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.
         // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
-        Self::WaitingHeaders(AbortOnDrop(tokio::task::spawn(client.request(req))))
+        Self::WaitingHeaders(AbortOnDrop(tokio::task::spawn(client.call(req))))
     }
 
     // Could be replaced by a Future implementation
@@ -798,7 +775,7 @@ impl ResponseStreamState {
                 let http_response = match ready!(join_handle.poll_unpin(cx)) {
                     Ok(Ok(res)) => res,
                     Ok(Err(hyper_err)) => {
-                        return Poll::Ready(Err(InvocationTaskError::Network(hyper_err)))
+                        return Poll::Ready(Err(InvocationTaskError::Client(hyper_err)))
                     }
                     Err(join_err) => {
                         return Poll::Ready(Err(InvocationTaskError::UnexpectedJoinError(join_err)))
@@ -837,7 +814,9 @@ impl ResponseStreamState {
                             if h2_reason(&err) == h2::Reason::NO_ERROR {
                                 Ok(None)
                             } else {
-                                Err(InvocationTaskError::Network(err))
+                                Err(InvocationTaskError::Client(ServiceClientError::Http(
+                                    err.into(),
+                                )))
                             }
                         }
                     });
@@ -846,7 +825,7 @@ impl ResponseStreamState {
         }
     }
 
-    fn validate_response(mut parts: Parts) -> Result<(), InvocationTaskError> {
+    fn validate_response(mut parts: ResponseParts) -> Result<(), InvocationTaskError> {
         if !parts.status.is_success() {
             return Err(InvocationTaskError::UnexpectedResponse(parts.status));
         }

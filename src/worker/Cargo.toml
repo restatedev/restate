@@ -32,6 +32,7 @@ restate_ingress_grpc = { workspace = true }
 restate_invoker_api = { workspace = true }
 restate_invoker_impl = { workspace = true }
 restate_network = { workspace = true }
+restate_service_client = { workspace = true }
 pin-project = { workspace = true }
 prost = { workspace = true }
 prost-reflect = { workspace = true, features = ["serde"] }

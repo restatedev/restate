@@ -116,12 +116,12 @@ impl Configuration {
             .merge(
                 Env::raw()
                     .only(&["HTTP_PROXY"])
-                    .map(|_| "worker.invoker.proxy_uri".into()),
+                    .map(|_| "worker.invoker.service_client.http.proxy_uri".into()),
             )
             .merge(
                 Env::raw()
                     .only(&["HTTP_PROXY"])
-                    .map(|_| "meta.proxy_uri".into()),
+                    .map(|_| "meta.service_client.http.proxy_uri".into()),
             )
             .extract()?;
 

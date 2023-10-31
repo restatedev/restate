@@ -14,7 +14,6 @@ mod storage;
 
 use codederror::CodedError;
 use rest_api::MetaRestEndpoint;
-use restate_hyper_util::proxy_connector::Proxy;
 use restate_schema_impl::Schemas;
 use restate_types::retries::RetryPolicy;
 use serde::{Deserialize, Serialize};
@@ -25,6 +24,11 @@ use std::time::Duration;
 use storage::FileMetaStorage;
 use tokio::join;
 use tracing::{debug, error};
+
+pub use restate_service_client::{
+    Options as ServiceClientOptions, OptionsBuilder as ServiceClientOptionsBuilder,
+    OptionsBuilderError as LambdaClientOptionsBuilderError,
+};
 
 /// # Meta options
 #[serde_as]
@@ -48,13 +52,7 @@ pub struct Options {
     /// Root path for Meta storage.
     storage_path: String,
 
-    /// # Proxy URI
-    ///
-    /// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with the `Host` header set to the service endpoint URI.    
-    /// HTTPS proxy URIs are supported, but only HTTP endpoint traffic will be proxied currently.
-    /// Can be overridden by the `HTTP_PROXY` environment variable.
-    #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
-    proxy_uri: Option<Proxy>,
+    service_client: ServiceClientOptions,
 }
 
 impl Default for Options {
@@ -63,7 +61,7 @@ impl Default for Options {
             rest_address: "0.0.0.0:9070".parse().unwrap(),
             rest_concurrency_limit: 1000,
             storage_path: "target/meta/".to_string(),
-            proxy_uri: None,
+            service_client: Default::default(),
         }
     }
 }
@@ -80,6 +78,8 @@ impl Options {
     pub fn build(self) -> Meta {
         let schemas = Schemas::default();
 
+        let client = self.service_client.build();
+
         let service = MetaService::new(
             schemas.clone(),
             FileMetaStorage::new(self.storage_path.into()),
@@ -90,7 +90,7 @@ impl Options {
                 10,
                 Some(Duration::from_secs(20)),
             ),
-            self.proxy_uri,
+            client,
         );
 
         Meta {

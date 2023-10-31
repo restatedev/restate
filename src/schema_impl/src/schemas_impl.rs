@@ -355,7 +355,7 @@ impl SchemasInner {
                 for (svc_name, revision) in &existing_endpoint.services {
                     warn!(
                         restate.service_endpoint.id = %endpoint_id,
-                        restate.service_endpoint.url = %endpoint_metadata.address(),
+                        restate.service_endpoint.address = %endpoint_metadata.address_display(),
                         "Going to remove service {} due to a forced service endpoint update",
                         svc_name
                     );
@@ -386,7 +386,7 @@ impl SchemasInner {
                     if allow_overwrite {
                         warn!(
                             restate.service_endpoint.id = %endpoint_id,
-                            restate.service_endpoint.url = %endpoint_metadata.address(),
+                            restate.service_endpoint.address = %endpoint_metadata.address_display(),
                             "Going to overwrite service instance type {} due to a forced service endpoint update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
                             service_meta.name,
                             service_schemas.instance_type,
@@ -641,10 +641,9 @@ impl SchemasInner {
                 descriptor_pool,
             } => {
                 let endpoint_id = metadata.id();
-                let endpoint_address = metadata.address().clone();
                 info!(
                     restate.service_endpoint.id = %endpoint_id,
-                    restate.service_endpoint.url = %endpoint_address,
+                    restate.service_endpoint.address = %metadata.address_display(),
                     "Registering endpoint"
                 );
 
@@ -657,11 +656,9 @@ impl SchemasInner {
                     methods,
                 } in services
                 {
-                    let endpoint_address = metadata.address().clone();
-
                     info!(
                         rpc.service = name,
-                        restate.service_endpoint.url = %endpoint_address,
+                        restate.service_endpoint.address = %metadata.address_display(),
                         "Registering service"
                     );
                     let service_descriptor =

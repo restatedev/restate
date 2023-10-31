@@ -60,6 +60,7 @@ pub use restate_invoker_impl::{
     Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
     OptionsBuilderError as InvokerOptionsBuilderError,
 };
+
 pub use restate_storage_rocksdb::{
     Options as RocksdbOptions, OptionsBuilder as RocksdbOptionsBuilder,
     OptionsBuilderError as RocksdbOptionsBuilderError,
@@ -215,6 +216,7 @@ pub struct Worker {
     network: network_integration::Network,
     storage_query_postgres: PostgresQueryService,
     storage_query_http: HTTPQueryService,
+    #[allow(clippy::type_complexity)]
     invoker: InvokerService<
         InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,

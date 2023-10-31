@@ -21,15 +21,14 @@ futures = { workspace = true }
 h2 = { version = "0.3.20" }
 humantime = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
-hyper-rustls = { workspace = true }
 itertools = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
 restate_errors = { workspace = true }
 restate_fs_util = { workspace = true }
 restate_futures_util = { workspace = true }
-restate_hyper_util = { workspace = true, features = ["serde"] }
 restate_invoker_api = { workspace = true }
+restate_service_client = { workspace = true }
 restate_queue = { workspace = true }
 restate_schema_api = { workspace = true, features = ["endpoint"] }
 restate_service_protocol = { workspace = true, features = ["message"] }

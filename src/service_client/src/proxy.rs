@@ -8,22 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use hyper::http::uri::{InvalidUri, Parts, Scheme};
+use hyper::service::Service;
+use hyper::Uri;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use std::task::{Context, Poll};
 
-use hyper::http::uri::{InvalidUri, Parts, Scheme};
-use hyper::service::Service;
-use hyper::Uri;
-
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("invalid proxy Uri (must have scheme, authority, and path): {0}")]
 pub struct InvalidProxyUri(Uri);
 
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Proxy {
     uri: Uri,
 }
@@ -90,7 +88,7 @@ impl Proxy {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ProxyConnector<C> {
     proxy: Option<Proxy>,
     connector: C,

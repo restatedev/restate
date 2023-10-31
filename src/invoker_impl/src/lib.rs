@@ -23,7 +23,6 @@ use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use restate_errors::warn_it;
-use restate_hyper_util::proxy_connector::{Proxy, ProxyConnector};
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
     StateReader,
@@ -52,21 +51,14 @@ use tracing::{debug, trace};
 
 pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
-pub use options::{
-    Http2KeepAliveOptions, Http2KeepAliveOptionsBuilder, Http2KeepAliveOptionsBuilderError,
-    Options, OptionsBuilder, OptionsBuilderError,
-};
+pub use options::{Options, OptionsBuilder, OptionsBuilderError};
+use restate_service_client::ServiceClient;
 
 /// Internal error trait for the invoker errors
 trait InvokerError: std::error::Error {
     fn is_transient(&self) -> bool;
     fn to_invocation_error(&self) -> InvocationError;
 }
-
-type HttpsClient = hyper::Client<
-    ProxyConnector<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>>,
-    hyper::Body,
->;
 
 // -- InvocationTask factory: we use this to mock the state machine in tests
 
@@ -85,7 +77,7 @@ trait InvocationTaskRunner {
 
 #[derive(Debug)]
 struct DefaultInvocationTaskRunner<JR, SR, EE, EMR> {
-    client: HttpsClient,
+    client: ServiceClient,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
@@ -168,8 +160,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
         disable_eager_state: bool,
         message_size_warning: usize,
         message_size_limit: Option<usize>,
-        proxy: Option<Proxy>,
-        keep_alive_options: Option<Http2KeepAliveOptions>,
+        client: ServiceClient,
         tmp_dir: PathBuf,
         concurrency_limit: Option<usize>,
         journal_reader: JR,
@@ -187,7 +178,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
-                    client: Self::create_client(proxy, keep_alive_options),
+                    client,
                     inactivity_timeout,
                     abort_timeout,
                     disable_eager_state,
@@ -206,31 +197,6 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
                 invocation_state_machine_manager: Default::default(),
             },
         }
-    }
-
-    // TODO a single client uses the pooling provided by hyper, but this is not enough.
-    //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
-    fn create_client(
-        proxy: Option<Proxy>,
-        keep_alive_options: Option<Http2KeepAliveOptions>,
-    ) -> HttpsClient {
-        let mut builder = hyper::Client::builder();
-        builder.http2_only(true);
-
-        if let Some(keep_alive_options) = keep_alive_options {
-            builder
-                .http2_keep_alive_timeout(keep_alive_options.timeout.into())
-                .http2_keep_alive_interval(Some(keep_alive_options.interval.into()));
-        }
-
-        builder.build::<_, hyper::Body>(ProxyConnector::new(
-            proxy,
-            hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .https_or_http()
-                .enable_http2()
-                .build(),
-        ))
     }
 }
 
@@ -925,6 +891,7 @@ mod tests {
     use super::*;
 
     use crate::invocation_task::InvocationTaskError;
+    use crate::options::ServiceClientOptions;
     use bytes::Bytes;
     use quota::InvokerConcurrencyQuota;
     use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
@@ -1025,8 +992,7 @@ mod tests {
             false,
             1024,
             None,
-            None,
-            None,
+            ServiceClientOptions::default().build(),
             tempdir.into_path(),
             None,
             journal_reader::mocks::EmptyJournalReader,

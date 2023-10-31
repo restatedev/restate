@@ -16,22 +16,19 @@ use axum::http::{StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::{http, Json};
 use okapi_operation::*;
-use restate_schema_api::endpoint::{EndpointMetadataResolver, ProtocolType};
+use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
 use restate_serde_util::SerdeableHeaderHashMap;
-use restate_types::identifiers::{EndpointId, ServiceRevision};
+use restate_service_client::ServiceEndpointAddress;
+use restate_service_protocol::discovery::DiscoverEndpoint;
+use restate_types::identifiers::{EndpointId, InvalidLambdaARN, LambdaARN, ServiceRevision};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::sync::Arc;
 
-#[serde_as]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RegisterServiceEndpointRequest {
-    /// # Uri
-    ///
-    /// Uri to use to discover/invoke the service endpoint.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[schemars(with = "String")]
-    pub uri: Uri,
+    #[serde(flatten)]
+    pub endpoint_metadata: RegisterServiceEndpointMetadata,
     /// # Additional headers
     ///
     /// Additional headers added to the discover/invoke requests to the service endpoint.
@@ -46,6 +43,26 @@ pub struct RegisterServiceEndpointRequest {
     /// See the [versioning documentation](https://docs.restate.dev/services/upgrades-removal) for more information.
     #[serde(default = "restate_serde_util::default::bool::<true>")]
     pub force: bool,
+}
+
+#[serde_as]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum RegisterServiceEndpointMetadata {
+    Http {
+        /// # Uri
+        ///
+        /// Uri to use to discover/invoke the http service endpoint.
+        #[serde_as(as = "serde_with::DisplayFromStr")]
+        #[schemars(with = "String")]
+        uri: Uri,
+    },
+    Lambda {
+        /// # ARN
+        ///
+        /// ARN to use to discover/invoke the lambda service endpoint.
+        arn: String,
+    },
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -80,13 +97,22 @@ pub async fn create_service_endpoint<S, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
     #[request_body(required = true)] Json(payload): Json<RegisterServiceEndpointRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
+    let address = match payload.endpoint_metadata {
+        RegisterServiceEndpointMetadata::Http { uri } => {
+            ServiceEndpointAddress::Http(uri, Default::default())
+        }
+        RegisterServiceEndpointMetadata::Lambda { arn } => ServiceEndpointAddress::Lambda(
+            arn.parse()
+                .map_err(|e: InvalidLambdaARN| MetaApiError::InvalidField("arn", e.to_string()))?,
+        ),
+    };
+    let endpoint = DiscoverEndpoint::new(
+        address,
+        payload.additional_headers.unwrap_or_default().into(),
+    );
     let registration_result = state
         .meta_handle()
-        .register_endpoint(
-            payload.uri,
-            payload.additional_headers.unwrap_or_default().into(),
-            payload.force,
-        )
+        .register_endpoint(endpoint, payload.force)
         .await?;
 
     let response_body = RegisterServiceEndpointResponse {
@@ -111,16 +137,53 @@ pub async fn create_service_endpoint<S, W>(
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ServiceEndpointResponse {
     id: EndpointId,
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    #[schemars(with = "String")]
-    uri: Uri,
-    protocol_type: ProtocolType,
-    #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
-    additional_headers: SerdeableHeaderHashMap,
+    #[serde(flatten)]
+    service_endpoint: ServiceEndpoint,
     /// # Services
     ///
     /// List of services exposed by this service endpoint.
     services: Vec<RegisterServiceResponse>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ServiceEndpoint {
+    Http {
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[schemars(with = "String")]
+        uri: Uri,
+        protocol_type: ProtocolType,
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        additional_headers: SerdeableHeaderHashMap,
+    },
+    Lambda {
+        arn: LambdaARN,
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        additional_headers: SerdeableHeaderHashMap,
+    },
+}
+
+impl From<EndpointMetadata> for ServiceEndpoint {
+    fn from(value: EndpointMetadata) -> Self {
+        match value {
+            EndpointMetadata::Http {
+                address,
+                protocol_type,
+                delivery_options,
+            } => Self::Http {
+                uri: address,
+                protocol_type,
+                additional_headers: delivery_options.additional_headers.into(),
+            },
+            EndpointMetadata::Lambda {
+                arn,
+                delivery_options,
+            } => Self::Lambda {
+                arn,
+                additional_headers: delivery_options.additional_headers.into(),
+            },
+        }
+    }
 }
 
 /// Discover endpoint and return discovered endpoints.
@@ -146,9 +209,7 @@ pub async fn get_service_endpoint<S: EndpointMetadataResolver, W>(
 
     Ok(ServiceEndpointResponse {
         id: endpoint_id,
-        uri: endpoint_meta.address().clone(),
-        protocol_type: endpoint_meta.protocol_type(),
-        additional_headers: endpoint_meta.additional_headers().clone().into(),
+        service_endpoint: endpoint_meta.into(),
         services: services
             .into_iter()
             .map(|(name, revision)| RegisterServiceResponse { name, revision })
@@ -179,9 +240,7 @@ pub async fn list_service_endpoints<S: EndpointMetadataResolver, W>(
             .into_iter()
             .map(|(endpoint_meta, services)| ServiceEndpointResponse {
                 id: endpoint_meta.id(),
-                uri: endpoint_meta.address().clone(),
-                protocol_type: endpoint_meta.protocol_type(),
-                additional_headers: endpoint_meta.additional_headers().clone().into(),
+                service_endpoint: endpoint_meta.into(),
                 services: services
                     .into_iter()
                     .map(|(name, revision)| RegisterServiceResponse { name, revision })
