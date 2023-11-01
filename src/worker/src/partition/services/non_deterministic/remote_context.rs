@@ -84,6 +84,8 @@ const PROTOCOL_VERSION: u16 = 0;
 
 const STREAM_TIMEOUT_SEC: u32 = 60;
 
+const EMBEDDED_HANDLER_JOURNAL: &str = "dev.restate.EmbeddedHandlerJournal";
+
 // TODO perhaps it makes sense to promote this to a "interval timer feature",
 //  and include it directly in the PP timer support.
 //  It could be used for a bunch of other things, such as cron scheduling,
@@ -103,6 +105,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         stream_id: &str,
         retention_period_sec: u32,
         entry_index: EntryIndex,
+        virtual_journal_fid: &FullInvocationId,
         journal_span_context: ServiceInvocationSpanContext,
         header: MessageHeader,
         message: ProtocolMessage,
@@ -134,6 +137,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     operation_id,
                     retention_period_sec,
                     entry_index,
+                    virtual_journal_fid,
                     journal_span_context,
                     entry,
                 )
@@ -147,6 +151,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         operation_id: &str,
         retention_period_sec: u32,
         entry_index: EntryIndex,
+        virtual_journal_fid: &FullInvocationId,
         journal_span_context: ServiceInvocationSpanContext,
         mut entry: PlainRawEntry,
     ) -> Result<(), InvocationError> {
@@ -234,17 +239,9 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         fid: fid.clone(),
                         method_name: request.method_name,
                         argument: request.parameter,
-                        response_sink: Some(ServiceInvocationResponseSink::NewInvocation {
-                            target: FullInvocationId::with_service_id(
-                                self.full_invocation_id.service_id.clone(),
-                                InvocationUuid::now_v7(),
-                            ),
-                            method: REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME.to_string(),
-                            caller_context: Bincode::encode(&InvokeEntryContext {
-                                operation_id: operation_id.to_string(),
-                                entry_index,
-                            })
-                            .map_err(InvocationError::internal)?,
+                        response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
+                            caller: virtual_journal_fid.clone(),
+                            entry_index,
                         }),
                         span_context: span_context.clone(),
                     }));
@@ -576,7 +573,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
     fn journal_service_id(&self) -> ServiceId {
         // We use the same service key of the remote context to make sure the partition key is the same
         ServiceId::new(
-            "dev.restate.EmbeddedHandlerJournal",
+            EMBEDDED_HANDLER_JOURNAL,
             self.full_invocation_id.service_id.key.clone(),
         )
     }
@@ -739,10 +736,13 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
             .await?;
 
         let journal_service_id = self.journal_service_id();
-        let (_, mut journal_metadata) = self
+        let (journal_uuid, mut journal_metadata) = self
             .load_journal_metadata(&journal_service_id)
             .await?
             .ok_or_else(|| InvocationError::internal("There must be a journal at this point"))?;
+        let virtual_journal_fid =
+            FullInvocationId::with_service_id(journal_service_id, journal_uuid);
+
         for (message_header, message) in decode_messages(request.messages)
             .map_err(|e| InvocationError::new(UserErrorCode::FailedPrecondition, e))?
         {
@@ -751,6 +751,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 &request.stream_id,
                 retention_period_sec,
                 journal_metadata.length,
+                &virtual_journal_fid,
                 journal_metadata.span_context.clone(),
                 message_header,
                 message,
@@ -1718,7 +1719,7 @@ mod tests {
         .encode_to_vec()
         .into();
 
-        let (operation_id, _, send_effects, _) = send_then_receive_test(
+        let (_, _, send_effects, _) = send_then_receive_test(
             ProtobufRawEntryCodec::serialize(Entry::invoke(
                 InvokeRequest::new(GREETER_SERVICE_NAME, "Greet", argument.clone()),
                 None,
@@ -1772,18 +1773,13 @@ mod tests {
                     }),
                     method_name: displays_as(eq("Greet")),
                     argument: eq(argument),
-                    response_sink: some(pat!(ServiceInvocationResponseSink::NewInvocation {
-                        target: pat!(FullInvocationId {
+                    response_sink: some(pat!(ServiceInvocationResponseSink::PartitionProcessor {
+                        entry_index: eq(1),
+                        caller: pat!(FullInvocationId {
                             service_id: pat!(ServiceId {
-                                service_name: displays_as(eq(REMOTE_CONTEXT_SERVICE_NAME))
+                                service_name: displays_as(eq(EMBEDDED_HANDLER_JOURNAL))
                             })
-                        }),
-                        method: displays_as(eq(REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME)),
-                        caller_context: eq(Bincode::encode(&InvokeEntryContext {
-                            operation_id: operation_id.to_string(),
-                            entry_index: 1,
                         })
-                        .unwrap())
                     }))
                 }))
             ))))

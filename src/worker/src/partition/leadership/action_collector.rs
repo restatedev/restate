@@ -175,31 +175,40 @@ where
                     "Virtual Journal completions doesn't support acks"
                 );
 
+                let journal_notification_request = Bytes::from(restate_pb::restate::internal::JournalCompletionNotificationRequest {
+                    entry_index: completion.entry_index,
+                    invocation_uuid: Bytes::copy_from_slice(invocation_uuid.as_bytes()),
+                    result: Some(match completion.result {
+                        CompletionResult::Empty =>
+                            restate_pb::restate::internal::journal_completion_notification_request::Result::Empty(()),
+                        CompletionResult::Success(s) =>
+                            restate_pb::restate::internal::journal_completion_notification_request::Result::Success(s),
+                        CompletionResult::Failure(code, msg) =>               restate_pb::restate::internal::journal_completion_notification_request::Result::Failure(
+                            restate_pb::restate::internal::InvocationFailure {
+                                code: code.into(),
+                                message: msg.to_string(),
+                            }
+                        ),
+                        CompletionResult::Ack => { unreachable!("Virtual Journal completions doesn't support acks") }
+                    }),
+                }.encode_to_vec());
+
                 // We need this to agree on the invocation uuid, which is randomly generated
                 // We could get rid of it if invocation uuids are deterministically generated.
-                let _ = self_proposal_tx.send(StateMachineAckCommand::no_ack(StateMachineCommand::Invocation(ServiceInvocation::new(
-                    FullInvocationId::with_service_id(target_service, InvocationUuid::now_v7()),
-                    method_name,
-                    restate_pb::restate::internal::JournalCompletionNotificationRequest {
-                        entry_index: completion.entry_index,
-                        invocation_uuid: Bytes::copy_from_slice(invocation_uuid.as_bytes()),
-                        result: Some(match completion.result {
-                            CompletionResult::Empty =>
-                                restate_pb::restate::internal::journal_completion_notification_request::Result::Empty(()),
-                            CompletionResult::Success(s) =>
-                                restate_pb::restate::internal::journal_completion_notification_request::Result::Success(s),
-                            CompletionResult::Failure(code, msg) =>               restate_pb::restate::internal::journal_completion_notification_request::Result::Failure(
-                                restate_pb::restate::internal::InvocationFailure {
-                                    code: code.into(),
-                                    message: msg.to_string(),
-                                }
+                let _ = self_proposal_tx
+                    .send(StateMachineAckCommand::no_ack(
+                        StateMachineCommand::Invocation(ServiceInvocation::new(
+                            FullInvocationId::with_service_id(
+                                target_service,
+                                InvocationUuid::now_v7(),
                             ),
-                            CompletionResult::Ack => { unreachable!() }
-                        }),
-                    }.encode_to_vec(),
-                    None,
-                    SpanRelation::None
-                )))).await;
+                            method_name,
+                            journal_notification_request,
+                            None,
+                            SpanRelation::None,
+                        )),
+                    ))
+                    .await;
             }
             Action::NotifyVirtualJournalKill {
                 target_service,

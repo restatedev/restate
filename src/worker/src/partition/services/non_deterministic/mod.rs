@@ -31,6 +31,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Deref;
 use tokio::sync::mpsc;
+use tracing::warn;
 
 mod idempotent_invoker;
 mod ingress;
@@ -181,6 +182,11 @@ impl<'a> ServiceInvoker<'a> {
                 out_effects.push(Effect::End(None));
             }
             Err(e) => {
+                warn!(
+                    rpc.service = %full_invocation_id.service_id.service_name,
+                    restate.invocation.id = %full_invocation_id,
+                    "Invocation to built-in service failed with {}",
+                    e);
                 // Clear effects, and append end error
                 out_effects.clear();
                 out_effects.push(Effect::End(Some(e)))
