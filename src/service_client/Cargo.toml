@@ -33,7 +33,7 @@ thiserror = { workspace = true }
 aws-config = "0.56.1"
 aws-credential-types = "0.56.1"
 aws-sdk-lambda = "0.34.0"
-aws-sdk-sts = "0.34.0"
+aws-sdk-sts = "0.30.0"
 aws-smithy-http = "0.56.1"
 aws-smithy-types = "0.56.1"
 aws-smithy-runtime-api = "0.56.1"
