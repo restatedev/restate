@@ -8,18 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::assume_role::{AssumeRoleProvider, PreCachedCredentialsProvider};
+
 use arc_swap::ArcSwap;
-use aws_credential_types::cache::{
-    CredentialsCache, ProvideCachedCredentials, SharedCredentialsCache,
-};
-use aws_credential_types::provider::error::CredentialsError;
-use aws_credential_types::provider::future::ProvideCredentials;
+use aws_credential_types::cache::CredentialsCache;
 use aws_credential_types::provider::SharedCredentialsProvider;
-use aws_sdk_lambda::config;
 use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::operation::invoke::InvokeError;
 use aws_sdk_lambda::primitives::Blob;
-use aws_sdk_sts::operation::assume_role::AssumeRoleError;
 use aws_smithy_types::error::display::DisplayErrorContext;
 use base64::display::Base64Display;
 use base64::Engine;
@@ -40,7 +36,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 /// # Lambda client options
 #[serde_as]
@@ -56,12 +51,14 @@ pub struct Options {
     ///
     /// Name of the AWS profile to select. Defaults to 'AWS_PROFILE' env var, or otherwise
     /// the `default` profile.
+    #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
     aws_profile: Option<ByteString>,
 
     /// # AssumeRole external ID
     ///
     /// An external ID to apply to any AssumeRole operations taken by this client.
     /// https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
+    #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
     assume_role_external_id: Option<ByteString>,
 }
 
@@ -74,18 +71,26 @@ impl Options {
 #[derive(Clone, Debug)]
 pub struct LambdaClient {
     // we use Shared here to allow concurrent requests to all await this promise, each getting their
-    // own `cloned` client on completion. A `tokio::sync::OnceCell` isn't ideal here because we would
-    // have to store the input parameters (ie profile_name) in order to call `get_or_init` during every
+    // own `cloned` inner on completion. A `tokio::sync::OnceCell` isn't ideal here because we would
+    // have to store the input parameters (eg aws_profile) in order to call `get_or_init` during every
     // `invoke`, whereas Shared drops the future (and its captured params) when it completes.
-    inner: Shared<BoxFuture<'static, LambdaClientInner>>,
-    assumed_role_providers: Arc<ArcSwap<HashMap<Option<ByteString>, CachedAssumeRoleProvider>>>,
-    assume_role_external_id: Option<ByteString>,
+    inner: Shared<BoxFuture<'static, Arc<LambdaClientInner>>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct LambdaClientInner {
     lambda_client: aws_sdk_lambda::Client,
     sts_client: aws_sdk_sts::Client,
+
+    // keep track of credentials to use if we aren't assuming a role
+    default_credentials: SharedCredentialsProvider,
+    // keep track of the parameters to use to create credential caches, as we need to do this on the fly
+    // for new assume role arns
+    credentials_cache_config: CredentialsCache,
+    // threadsafe map of assume role arn -> cached credential provider
+    assume_role_credentials: ArcSwap<HashMap<String, SharedCredentialsProvider>>,
+    // external id to set on assume role requests
+    assume_role_external_id: Option<ByteString>,
 }
 
 impl LambdaClient {
@@ -101,11 +106,24 @@ impl LambdaClient {
 
         let inner = async {
             let config = config.load().await;
+            let credentials_cache_config = config
+                .credentials_cache()
+                .expect("default config must have a credentials cache config")
+                .clone();
+
             let sts_conf = aws_sdk_sts::Config::from(&config);
+            let default_credentials =
+                SharedCredentialsProvider::new(PreCachedCredentialsProvider::new(
+                    sts_conf
+                        .credentials_cache()
+                        .expect("sts client must be configured with a credentials provider"),
+                ));
             let sts_client = aws_sdk_sts::Client::from_conf(sts_conf);
 
-            // create a new lambda config without credentials set
-            let mut lambda_conf = config::Builder::default();
+            // create a new lambda config without any source of credentials (these will be added dynamically)
+            // this is very annoying, but there is not a way to remove credentials from an existing client
+            // and we don't want to go through config loading twice
+            let mut lambda_conf = aws_sdk_lambda::config::Builder::default();
             lambda_conf = lambda_conf.region(config.region().cloned());
             lambda_conf.set_use_fips(config.use_fips());
             lambda_conf.set_use_dual_stack(config.use_dual_stack());
@@ -119,25 +137,25 @@ impl LambdaClient {
 
             let lambda_client = aws_sdk_lambda::Client::from_conf(lambda_conf.build());
 
-            LambdaClientInner {
+            Arc::new(LambdaClientInner {
                 lambda_client,
                 sts_client,
-            }
+                default_credentials,
+                credentials_cache_config,
+                assume_role_credentials: Default::default(),
+                assume_role_external_id,
+            })
         }
         .boxed()
         .shared();
 
-        Self {
-            inner,
-            assumed_role_providers: Default::default(),
-            assume_role_external_id,
-        }
+        Self { inner }
     }
 
     pub fn invoke(
         &self,
         arn: LambdaARN,
-        assume_role: Option<ByteString>,
+        assume_role_arn: Option<ByteString>,
         body: Body,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
@@ -145,12 +163,10 @@ impl LambdaClient {
         let function_name = arn.to_string();
         let region = Region::new(arn.region().to_string());
         let inner = self.inner.clone();
-        let assumed_role_providers = self.assumed_role_providers.clone();
-        let assume_role_external_id = self.assume_role_external_id.clone();
         let body = body::to_bytes(body);
 
         async move {
-            let (body, inner): (Result<Bytes, hyper::Error>, LambdaClientInner) =
+            let (body, inner): (Result<Bytes, hyper::Error>, Arc<LambdaClientInner>) =
                 futures::join!(body, inner);
 
             let payload = ApiGatewayProxyRequest {
@@ -161,31 +177,19 @@ impl LambdaClient {
                 is_base64_encoded: true,
             };
 
-            let mut config_override = config::Builder::default().region(region);
+            let mut config_override = aws_sdk_lambda::config::Builder::default().region(region);
 
-            let providers = assumed_role_providers.load();
-            let provider = match providers.get(&assume_role) {
-                Some(provider) => provider.clone(),
-                None => {
-                    let provider = CachedAssumeRoleProvider::new(
-                        inner.sts_client.clone(),
-                        assume_role.clone().map(|role_arn| {
-                            AssumeRoleParameters::new(role_arn, assume_role_external_id.clone())
-                        }),
-                    )
-                    .await;
-                    assumed_role_providers.rcu(|cache| {
-                        let mut cache = HashMap::clone(&cache);
-                        cache.insert(assume_role.clone(), provider.clone());
-                        cache
-                    });
-                    provider
-                }
+            // the library forces us to tell it how to cache credentials, instead of just giving it a cache.
+            // As a result, just tell it not to cache; our providers will handle their own caching
+            config_override = config_override.credentials_cache(CredentialsCache::no_caching());
+
+            let credentials_provider = match assume_role_arn {
+                // no role to assume, just use default creds
+                None => inner.default_credentials.clone(),
+                Some(assume_role_arn) => inner.get_provider(&assume_role_arn),
             };
 
-            // no point building a cache for just this request; we use the providers cache
-            config_override = config_override.credentials_cache(CredentialsCache::no_caching());
-            config_override = config_override.credentials_provider(provider);
+            config_override.set_credentials_provider(Some(credentials_provider));
 
             let res = inner
                 .lambda_client
@@ -218,6 +222,34 @@ impl LambdaClient {
             }
 
             Err(LambdaError::MissingResponse)
+        }
+    }
+}
+
+impl LambdaClientInner {
+    fn get_provider(&self, assume_role_arn: &ByteString) -> SharedCredentialsProvider {
+        let providers = self.assume_role_credentials.load();
+        match providers.get::<str>(assume_role_arn) {
+            Some(provider) => provider.clone(),
+            None => {
+                // create a new cached provider of credentials for this arn
+                let provider = SharedCredentialsProvider::new(PreCachedCredentialsProvider::new(
+                    self.credentials_cache_config.clone().create_cache(
+                        SharedCredentialsProvider::new(AssumeRoleProvider::new(
+                            self.sts_client.clone(),
+                            assume_role_arn.clone(),
+                            self.assume_role_external_id.clone(),
+                        )),
+                    ),
+                ));
+                // repeatedly try to clone the hashmap and compare and swap in a map with the new arn
+                self.assume_role_credentials.rcu(|cache| {
+                    let mut cache = HashMap::clone(cache);
+                    cache.insert(assume_role_arn.to_string(), provider.clone());
+                    cache
+                });
+                provider
+            }
         }
     }
 }
@@ -332,127 +364,5 @@ where
     serializer.collect_str(&Base64Display::new(
         body.as_ref(),
         &base64::engine::general_purpose::STANDARD,
-    ))
-}
-
-#[derive(Debug)]
-struct AssumeRoleParameters {
-    role_arn: ByteString,
-    external_id: Option<ByteString>,
-}
-
-impl AssumeRoleParameters {
-    fn new(role_arn: ByteString, external_id: Option<ByteString>) -> Self {
-        Self {
-            role_arn,
-            external_id,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct CachedAssumeRoleProvider(SharedCredentialsCache);
-
-impl CachedAssumeRoleProvider {
-    async fn new(client: aws_sdk_sts::Client, assume_role: Option<AssumeRoleParameters>) -> Self {
-        match assume_role {
-            Some(assume_role) => Self(CredentialsCache::lazy().create_cache(
-                SharedCredentialsProvider::new(AssumeRoleProvider(client, assume_role)),
-            )),
-            None => Self(
-                client
-                    .config()
-                    .credentials_cache()
-                    .expect("sts client must have a credentials cache"),
-            ),
-        }
-    }
-}
-
-impl aws_credential_types::provider::ProvideCredentials for CachedAssumeRoleProvider {
-    fn provide_credentials<'a>(&'a self) -> ProvideCredentials<'a>
-    where
-        Self: 'a,
-    {
-        self.0.provide_cached_credentials()
-    }
-}
-
-/// AssumeRoleProvider implements ProvideCredentials
-#[derive(Debug)]
-struct AssumeRoleProvider(aws_sdk_sts::Client, AssumeRoleParameters);
-
-impl aws_credential_types::provider::ProvideCredentials for AssumeRoleProvider {
-    fn provide_credentials<'a>(&'a self) -> ProvideCredentials<'a>
-    where
-        Self: 'a,
-    {
-        ProvideCredentials::new(async {
-            let mut fluent_builder = self
-                .0
-                .assume_role()
-                .role_session_name(format!(
-                    "restate-{}",
-                    SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs()
-                ))
-                .role_arn(self.1.role_arn.clone());
-
-            if let Some(external_id) = self.1.external_id.clone() {
-                fluent_builder = fluent_builder.external_id(external_id);
-            }
-
-            let assumed = fluent_builder.send().await;
-            match assumed {
-                Ok(assumed) => into_credentials(assumed.credentials, "AssumeRoleProvider"),
-                Err(aws_smithy_http::result::SdkError::ServiceError(ref context))
-                    if matches!(
-                        context.err(),
-                        AssumeRoleError::RegionDisabledException(_)
-                            | AssumeRoleError::MalformedPolicyDocumentException(_)
-                    ) =>
-                {
-                    Err(CredentialsError::invalid_configuration(
-                        assumed.err().unwrap(),
-                    ))
-                }
-
-                Err(aws_smithy_http::result::SdkError::ServiceError(_)) => {
-                    Err(CredentialsError::provider_error(assumed.err().unwrap()))
-                }
-                Err(err) => Err(CredentialsError::provider_error(err)),
-            }
-        })
-    }
-}
-
-fn into_credentials(
-    sts_credentials: Option<aws_sdk_sts::types::Credentials>,
-    provider_name: &'static str,
-) -> aws_credential_types::provider::Result {
-    let sts_credentials = sts_credentials
-        .ok_or_else(|| CredentialsError::unhandled("STS credentials must be defined"))?;
-    let expiration = std::time::SystemTime::try_from(
-        sts_credentials
-            .expiration
-            .ok_or_else(|| CredentialsError::unhandled("missing expiration"))?,
-    )
-    .map_err(|_| {
-        CredentialsError::unhandled(
-            "credential expiration time cannot be represented by a SystemTime",
-        )
-    })?;
-    Ok(aws_credential_types::Credentials::new(
-        sts_credentials
-            .access_key_id
-            .ok_or_else(|| CredentialsError::unhandled("access key id missing from result"))?,
-        sts_credentials
-            .secret_access_key
-            .ok_or_else(|| CredentialsError::unhandled("secret access token missing"))?,
-        sts_credentials.session_token,
-        Some(expiration),
-        provider_name,
     ))
 }
