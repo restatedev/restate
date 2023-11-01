@@ -11,6 +11,7 @@
 use crate::http::HttpClient;
 use crate::lambda::LambdaClient;
 
+use bytestring::ByteString;
 use core::fmt;
 use futures::future::Either;
 use hyper::header::HeaderValue;
@@ -56,14 +57,10 @@ impl ServiceClient {
                     .request(uri, version, body, parts.path, parts.headers);
                 Either::Left(async move { Ok(fut.await?) })
             }
-            ServiceEndpointAddress::Lambda(arn) => {
-                let fut = self.lambda.invoke(
-                    arn,
-                    Some("arn:aws:iam::663487780041:role/restate-dev".into()),
-                    body,
-                    parts.path,
-                    parts.headers,
-                );
+            ServiceEndpointAddress::Lambda(arn, assume_role_arn) => {
+                let fut = self
+                    .lambda
+                    .invoke(arn, assume_role_arn, body, parts.path, parts.headers);
                 Either::Right(async move { Ok(fut.await?) })
             }
         }
@@ -130,14 +127,14 @@ impl Parts {
 #[derive(Clone, Debug)]
 pub enum ServiceEndpointAddress {
     Http(Uri, hyper::http::Version),
-    Lambda(LambdaARN),
+    Lambda(LambdaARN, Option<ByteString>),
 }
 
 impl fmt::Display for ServiceEndpointAddress {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Http(uri, _) => uri.fmt(f),
-            Self::Lambda(arn) => write!(f, "lambda://{}", arn),
+            Self::Lambda(arn, _) => write!(f, "lambda://{}", arn),
         }
     }
 }

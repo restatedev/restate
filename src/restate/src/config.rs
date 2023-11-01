@@ -123,6 +123,16 @@ impl Configuration {
                     .only(&["HTTP_PROXY"])
                     .map(|_| "meta.service_client.http.proxy_uri".into()),
             )
+            .merge(
+                Env::raw()
+                    .only(&["AWS_EXTERNAL_ID"])
+                    .map(|_| "meta.service_client.lambda.assume_role_external_id".into()),
+            )
+            .merge(
+                Env::raw()
+                    .only(&["AWS_EXTERNAL_ID"])
+                    .map(|_| "worker.invoker.service_client.lambda.assume_role_external_id".into()),
+            )
             .extract()?;
 
         Ok(figment)

@@ -46,6 +46,7 @@ restate_schema_impl = { workspace = true }
 restate_pb = { workspace = true }
 
 # Others
+bytestring = { workspace = true }
 derive_builder = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

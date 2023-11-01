@@ -15,6 +15,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::{http, Json};
+use bytestring::ByteString;
 use okapi_operation::*;
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
 use restate_serde_util::SerdeableHeaderHashMap;
@@ -62,6 +63,11 @@ pub enum RegisterServiceEndpointMetadata {
         ///
         /// ARN to use to discover/invoke the lambda service endpoint.
         arn: String,
+        /// # Assume role ARN
+        ///
+        /// Optional ARN of a role to assume when invoking this endpoint, to support role chaining
+        #[schemars(with = "Option<String>")]
+        assume_role_arn: Option<ByteString>,
     },
 }
 
@@ -101,9 +107,13 @@ pub async fn create_service_endpoint<S, W>(
         RegisterServiceEndpointMetadata::Http { uri } => {
             ServiceEndpointAddress::Http(uri, Default::default())
         }
-        RegisterServiceEndpointMetadata::Lambda { arn } => ServiceEndpointAddress::Lambda(
+        RegisterServiceEndpointMetadata::Lambda {
+            arn,
+            assume_role_arn,
+        } => ServiceEndpointAddress::Lambda(
             arn.parse()
                 .map_err(|e: InvalidLambdaARN| MetaApiError::InvalidField("arn", e.to_string()))?,
+            assume_role_arn,
         ),
     };
     let endpoint = DiscoverEndpoint::new(
@@ -158,6 +168,9 @@ pub enum ServiceEndpoint {
     },
     Lambda {
         arn: LambdaARN,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "Option<String>")]
+        assume_role_arn: Option<ByteString>,
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
     },
@@ -177,9 +190,11 @@ impl From<EndpointMetadata> for ServiceEndpoint {
             },
             EndpointMetadata::Lambda {
                 arn,
+                assume_role_arn,
                 delivery_options,
             } => Self::Lambda {
                 arn,
+                assume_role_arn,
                 additional_headers: delivery_options.additional_headers.into(),
             },
         }

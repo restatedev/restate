@@ -339,8 +339,8 @@ where
                 discovered_metadata.protocol_type,
                 DeliveryOptions::new(headers),
             ),
-            (ServiceEndpointAddress::Lambda(arn), headers) => {
-                EndpointMetadata::new_lambda(arn, DeliveryOptions::new(headers))
+            (ServiceEndpointAddress::Lambda(arn, assume_role_arn), headers) => {
+                EndpointMetadata::new_lambda(arn, assume_role_arn, DeliveryOptions::new(headers))
             }
         };
 

@@ -23,6 +23,7 @@ use aws_sdk_sts::operation::assume_role::AssumeRoleError;
 use aws_smithy_types::error::display::DisplayErrorContext;
 use base64::display::Base64Display;
 use base64::Engine;
+use bytestring::ByteString;
 use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
 use hyper::body::Bytes;
@@ -55,12 +56,18 @@ pub struct Options {
     ///
     /// Name of the AWS profile to select. Defaults to 'AWS_PROFILE' env var, or otherwise
     /// the `default` profile.
-    aws_profile: Option<String>,
+    aws_profile: Option<ByteString>,
+
+    /// # AssumeRole external ID
+    ///
+    /// An external ID to apply to any AssumeRole operations taken by this client.
+    /// https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
+    assume_role_external_id: Option<ByteString>,
 }
 
 impl Options {
     pub fn build(self) -> LambdaClient {
-        LambdaClient::new(self.aws_profile)
+        LambdaClient::new(self.aws_profile, self.assume_role_external_id)
     }
 }
 
@@ -71,7 +78,8 @@ pub struct LambdaClient {
     // have to store the input parameters (ie profile_name) in order to call `get_or_init` during every
     // `invoke`, whereas Shared drops the future (and its captured params) when it completes.
     inner: Shared<BoxFuture<'static, LambdaClientInner>>,
-    assumed_role_providers: Arc<ArcSwap<HashMap<Option<String>, CachedAssumeRoleProvider>>>,
+    assumed_role_providers: Arc<ArcSwap<HashMap<Option<ByteString>, CachedAssumeRoleProvider>>>,
+    assume_role_external_id: Option<ByteString>,
 }
 
 #[derive(Clone, Debug)]
@@ -81,7 +89,10 @@ struct LambdaClientInner {
 }
 
 impl LambdaClient {
-    pub fn new(profile_name: Option<String>) -> Self {
+    pub fn new(
+        profile_name: Option<ByteString>,
+        assume_role_external_id: Option<ByteString>,
+    ) -> Self {
         // create client for a default region, region can be overridden per request
         let mut config = aws_config::from_env().region(Region::from_static("us-east-1"));
         if let Some(profile_name) = profile_name {
@@ -119,13 +130,14 @@ impl LambdaClient {
         Self {
             inner,
             assumed_role_providers: Default::default(),
+            assume_role_external_id,
         }
     }
 
     pub fn invoke(
         &self,
         arn: LambdaARN,
-        assume_role: Option<String>,
+        assume_role: Option<ByteString>,
         body: Body,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
@@ -134,6 +146,7 @@ impl LambdaClient {
         let region = Region::new(arn.region().to_string());
         let inner = self.inner.clone();
         let assumed_role_providers = self.assumed_role_providers.clone();
+        let assume_role_external_id = self.assume_role_external_id.clone();
         let body = body::to_bytes(body);
 
         async move {
@@ -156,7 +169,9 @@ impl LambdaClient {
                 None => {
                     let provider = CachedAssumeRoleProvider::new(
                         inner.sts_client.clone(),
-                        assume_role.clone(),
+                        assume_role.clone().map(|role_arn| {
+                            AssumeRoleParameters::new(role_arn, assume_role_external_id.clone())
+                        }),
                     )
                     .await;
                     assumed_role_providers.rcu(|cache| {
@@ -320,11 +335,26 @@ where
     ))
 }
 
+#[derive(Debug)]
+struct AssumeRoleParameters {
+    role_arn: ByteString,
+    external_id: Option<ByteString>,
+}
+
+impl AssumeRoleParameters {
+    fn new(role_arn: ByteString, external_id: Option<ByteString>) -> Self {
+        Self {
+            role_arn,
+            external_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CachedAssumeRoleProvider(SharedCredentialsCache);
 
 impl CachedAssumeRoleProvider {
-    async fn new(client: aws_sdk_sts::Client, assume_role: Option<String>) -> Self {
+    async fn new(client: aws_sdk_sts::Client, assume_role: Option<AssumeRoleParameters>) -> Self {
         match assume_role {
             Some(assume_role) => Self(CredentialsCache::lazy().create_cache(
                 SharedCredentialsProvider::new(AssumeRoleProvider(client, assume_role)),
@@ -344,20 +374,13 @@ impl aws_credential_types::provider::ProvideCredentials for CachedAssumeRoleProv
     where
         Self: 'a,
     {
-        let result = self.0.provide_cached_credentials();
-
-        ProvideCredentials::new(async {
-            let result = result.await;
-            if let Err(err) = &result {
-                println!("{}", DisplayErrorContext(err));
-            }
-            result
-        })
+        self.0.provide_cached_credentials()
     }
 }
 
+/// AssumeRoleProvider implements ProvideCredentials
 #[derive(Debug)]
-struct AssumeRoleProvider(aws_sdk_sts::Client, String);
+struct AssumeRoleProvider(aws_sdk_sts::Client, AssumeRoleParameters);
 
 impl aws_credential_types::provider::ProvideCredentials for AssumeRoleProvider {
     fn provide_credentials<'a>(&'a self) -> ProvideCredentials<'a>
@@ -365,7 +388,7 @@ impl aws_credential_types::provider::ProvideCredentials for AssumeRoleProvider {
         Self: 'a,
     {
         ProvideCredentials::new(async {
-            let fluent_builder = self
+            let mut fluent_builder = self
                 .0
                 .assume_role()
                 .role_session_name(format!(
@@ -375,7 +398,11 @@ impl aws_credential_types::provider::ProvideCredentials for AssumeRoleProvider {
                         .unwrap_or_default()
                         .as_secs()
                 ))
-                .role_arn(self.1.clone());
+                .role_arn(self.1.role_arn.clone());
+
+            if let Some(external_id) = self.1.external_id.clone() {
+                fluent_builder = fluent_builder.external_id(external_id);
+            }
 
             let assumed = fluent_builder.send().await;
             match assumed {
