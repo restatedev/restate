@@ -12,6 +12,7 @@ use aws_sdk_lambda::config;
 use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::operation::invoke::InvokeError;
 use aws_sdk_lambda::primitives::Blob;
+use aws_smithy_types::error::display::DisplayErrorContext;
 use base64::display::Base64Display;
 use base64::Engine;
 use futures::future::{BoxFuture, Shared};
@@ -107,7 +108,8 @@ impl LambdaClient {
                     serde_json::to_vec(&payload).map_err(LambdaError::SerializationError)?,
                 ))
                 .customize()
-                .await?
+                .await
+                .expect("customize() must not return an error") // the sdk is commented to say that this eventually won't be a Result
                 .config_override(config::Builder::default().region(region))
                 .send()
                 .await?;
@@ -137,11 +139,11 @@ impl LambdaClient {
 pub enum LambdaError {
     #[error("problem reading request body: {0}")]
     Body(#[from] hyper::Error),
-    #[error("error returned from Invoke: {description}: {source}")]
-    InvokeError {
-        description: String,
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
-    },
+    #[error("lambda service returned error: {}", DisplayErrorContext(&.0))]
+    SdkError(
+        #[from]
+        aws_smithy_http::result::SdkError<InvokeError, Response<aws_smithy_http::body::SdkBody>>,
+    ),
     #[error("function returned an error during execution: {0}")]
     FunctionError(serde_json::Value),
     #[error("function request could not be serialized: {0}")]
@@ -152,17 +154,6 @@ pub enum LambdaError {
     Base64Error(base64::DecodeError),
     #[error("function returned neither a payload or an error")]
     MissingResponse,
-}
-
-impl<R: Send + Debug + Sync + 'static> From<aws_sdk_lambda::error::SdkError<InvokeError, R>>
-    for LambdaError
-{
-    fn from(err: aws_sdk_lambda::error::SdkError<InvokeError, R>) -> Self {
-        Self::InvokeError {
-            description: err.to_string(),
-            source: err.into_source().unwrap_or_else(|err| err.into()),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
