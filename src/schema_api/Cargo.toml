@@ -14,7 +14,7 @@ serde_schema = ["serde", "dep:schemars", "restate_types?/serde_schema", "restate
 key_extraction = ["dep:bytes", "dep:thiserror", "dep:anyhow", "dep:prost"]
 key_expansion = ["dep:bytes", "dep:thiserror", "dep:prost", "dep:prost-reflect", "dep:anyhow"]
 json_key_conversion = ["key_extraction", "key_expansion", "dep:serde_json", "dep:thiserror"]
-endpoint = ["dep:restate_types", "dep:http", "dep:base64", "dep:restate_base64_util"]
+endpoint = ["dep:restate_types", "dep:http", "dep:base64", "dep:restate_base64_util", "dep:bytestring"]
 discovery = []
 service = ["dep:restate_types"]
 json_conversion = ["dep:prost-reflect", "prost-reflect?/serde", "dep:anyhow", "dep:serde_json"]
@@ -26,6 +26,7 @@ mocks = []
 anyhow = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
+bytestring = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }

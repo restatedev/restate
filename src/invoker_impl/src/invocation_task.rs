@@ -724,10 +724,11 @@ where
         let address = match endpoint_metadata {
             EndpointMetadata::Lambda {
                 arn,
+                assume_role_arn,
                 delivery_options,
             } => {
                 headers.extend(delivery_options.additional_headers);
-                ServiceEndpointAddress::Lambda(arn)
+                ServiceEndpointAddress::Lambda(arn, assume_role_arn)
             }
             EndpointMetadata::Http {
                 address,

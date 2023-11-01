@@ -12,6 +12,7 @@
 
 #[cfg(feature = "endpoint")]
 pub mod endpoint {
+    use bytestring::ByteString;
     use http::header::{HeaderName, HeaderValue};
     use http::Uri;
     use restate_types::identifiers::{EndpointId, LambdaARN, ServiceRevision};
@@ -64,6 +65,12 @@ pub mod endpoint {
         },
         Lambda {
             arn: LambdaARN,
+            #[cfg_attr(
+                feature = "serde",
+                serde(default, skip_serializing_if = "Option::is_none",)
+            )]
+            #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
+            assume_role_arn: Option<ByteString>,
             delivery_options: DeliveryOptions,
         },
     }
@@ -81,9 +88,14 @@ pub mod endpoint {
             }
         }
 
-        pub fn new_lambda(arn: LambdaARN, delivery_options: DeliveryOptions) -> Self {
+        pub fn new_lambda(
+            arn: LambdaARN,
+            assume_role_arn: Option<ByteString>,
+            delivery_options: DeliveryOptions,
+        ) -> Self {
             Self::Lambda {
                 arn,
+                assume_role_arn,
                 delivery_options,
             }
         }
