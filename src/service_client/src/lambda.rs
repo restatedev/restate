@@ -8,11 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::assume_role::{AssumeRoleProvider, PreCachedCredentialsProvider};
+use crate::assume_role::AssumeRoleProvider;
 
 use arc_swap::ArcSwap;
-use aws_credential_types::cache::CredentialsCache;
-use aws_credential_types::provider::SharedCredentialsProvider;
 use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::operation::invoke::InvokeError;
 use aws_sdk_lambda::primitives::Blob;
@@ -80,13 +78,11 @@ struct LambdaClientInner {
     lambda_client: aws_sdk_lambda::Client,
     sts_client: aws_sdk_sts::Client,
 
-    // keep track of credentials to use if we aren't assuming a role
-    default_credentials: SharedCredentialsProvider,
-    // keep track of the parameters to use to create credential caches, as we need to do this on the fly
-    // for new assume role arns
-    credentials_cache_config: CredentialsCache,
+    // keep track of how to create a lambda client with shared http connector etc with the main one
+    // as we have to do this for assumed roles
+    lambda_client_builder: aws_sdk_lambda::config::Builder,
     // threadsafe map of assume role arn -> cached credential provider
-    assume_role_credentials: ArcSwap<HashMap<String, SharedCredentialsProvider>>,
+    assume_role_lambda_clients: ArcSwap<HashMap<String, aws_sdk_lambda::Client>>,
     // external id to set on assume role requests
     assume_role_external_id: Option<String>,
 }
@@ -101,33 +97,20 @@ impl LambdaClient {
 
         let inner = async {
             let config = config.load().await;
-            let credentials_cache_config = config
-                .credentials_cache()
-                .expect("default config must have a credentials cache config")
-                .clone();
 
             let sts_conf = aws_sdk_sts::Config::from(&config);
-            let default_credentials =
-                SharedCredentialsProvider::new(PreCachedCredentialsProvider::new(
-                    sts_conf
-                        .credentials_cache()
-                        .expect("sts client must be configured with a credentials provider"),
-                ));
             let sts_client = aws_sdk_sts::Client::from_conf(sts_conf);
 
-            // create a new lambda config without any source of credentials (these will be added dynamically)
-            let mut lambda_conf = aws_sdk_lambda::config::Builder::from(&config);
-            lambda_conf.set_credentials_provider(None);
-            lambda_conf.set_credentials_cache(None);
+            let lambda_client_builder = aws_sdk_lambda::config::Builder::from(&config);
 
-            let lambda_client = aws_sdk_lambda::Client::from_conf(lambda_conf.build());
+            let lambda_client =
+                aws_sdk_lambda::Client::from_conf(lambda_client_builder.clone().build());
 
             Arc::new(LambdaClientInner {
                 lambda_client,
                 sts_client,
-                default_credentials,
-                credentials_cache_config,
-                assume_role_credentials: Default::default(),
+                lambda_client_builder,
+                assume_role_lambda_clients: Default::default(),
                 assume_role_external_id,
             })
         }
@@ -162,23 +145,8 @@ impl LambdaClient {
                 is_base64_encoded: true,
             };
 
-            let mut config_override = aws_sdk_lambda::config::Builder::default().region(region);
-
-            // the library forces us to tell it how to cache credentials, instead of just giving it a cache.
-            // As a result, just tell it not to cache; our providers will handle their own caching
-            config_override = config_override.credentials_cache(CredentialsCache::no_caching());
-
-            let credentials_provider = match assume_role_arn {
-                // no role to assume, just use default creds
-                None => inner.default_credentials.clone(),
-                Some(assume_role_arn) => inner.get_provider(&assume_role_arn),
-            };
-
-            config_override.set_credentials_provider(Some(credentials_provider));
-
             let res = inner
-                .lambda_client
-                .invoke()
+                .build_invoke(assume_role_arn)
                 .function_name(function_name)
                 .payload(Blob::new(
                     serde_json::to_vec(&payload).map_err(LambdaError::SerializationError)?,
@@ -186,7 +154,7 @@ impl LambdaClient {
                 .customize()
                 .await
                 .expect("customize() must not return an error") // the sdk is commented to say that this eventually won't be a Result
-                .config_override(config_override)
+                .config_override(aws_sdk_lambda::config::Builder::default().region(region))
                 .send()
                 .await?;
 
@@ -212,29 +180,53 @@ impl LambdaClient {
 }
 
 impl LambdaClientInner {
-    fn get_provider(&self, assume_role_arn: &str) -> SharedCredentialsProvider {
-        if let Some(provider) = self.assume_role_credentials.load().get(assume_role_arn) {
-            return provider.clone();
+    fn build_invoke(
+        &self,
+        assume_role_arn: Option<ByteString>,
+    ) -> aws_sdk_lambda::operation::invoke::builders::InvokeFluentBuilder {
+        let assume_role_arn = if let Some(assume_role_arn) = assume_role_arn {
+            assume_role_arn
+        } else {
+            // fastest path; no assumed role, don't bother with the shared hashmap
+            return self.lambda_client.invoke();
+        };
+
+        if let Some(client) = self
+            .assume_role_lambda_clients
+            .load()
+            .get(&*assume_role_arn)
+        {
+            // fast-ish path; we've seen this assumed role before
+            return client.invoke();
         }
 
-        // create a new cached provider of credentials for this arn
-        let provider = SharedCredentialsProvider::new(PreCachedCredentialsProvider::new(
-            self.credentials_cache_config
-                .clone()
-                .create_cache(SharedCredentialsProvider::new(AssumeRoleProvider::new(
-                    self.sts_client.clone(),
-                    assume_role_arn.into(),
-                    self.assume_role_external_id.clone(),
-                ))),
-        ));
+        // slow path; create the client for this assumed role
+
+        let conf = self
+            .lambda_client_builder
+            .clone()
+            .credentials_provider(AssumeRoleProvider::new(
+                self.sts_client.clone(),
+                assume_role_arn.to_string(),
+                self.assume_role_external_id.clone(),
+            ))
+            .build();
+
+        let mut client = aws_sdk_lambda::Client::from_conf(conf);
 
         // repeatedly try to clone the hashmap and compare and swap in a map with the new arn
-        self.assume_role_credentials.rcu(|cache| {
+        self.assume_role_lambda_clients.rcu(|cache| {
+            if let Some(existing_client) = cache.get(&*assume_role_arn) {
+                // someone else got there first
+                client = existing_client.clone();
+                return cache.clone();
+            }
             let mut cache = HashMap::clone(cache);
-            cache.insert(assume_role_arn.to_string(), provider.clone());
-            cache
+            cache.insert(assume_role_arn.to_string(), client.clone());
+            cache.into()
         });
-        provider
+
+        client.invoke()
     }
 }
 
