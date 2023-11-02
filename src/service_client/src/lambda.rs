@@ -59,9 +59,24 @@ pub struct Options {
 }
 
 impl Options {
-    pub fn build(self) -> LambdaClient {
-        LambdaClient::new(self.aws_profile, self.assume_role_external_id)
+    pub fn build(self, assume_role_cache_mode: AssumeRoleCacheMode) -> LambdaClient {
+        LambdaClient::new(
+            self.aws_profile,
+            self.assume_role_external_id,
+            assume_role_cache_mode,
+        )
     }
+}
+
+/// # AssumeRole Cache Mode
+///
+/// In unbounded case, store Lambda clients that are produced for AssumeRole role ARNs. This is recommended
+/// on the invocation path (worker), but not on the discovery path (meta), as the unbounded cache would be a DoS
+/// vector.
+/// See https://github.com/restatedev/restate/issues/878
+pub enum AssumeRoleCacheMode {
+    None,
+    Unbounded,
 }
 
 #[derive(Clone, Debug)]
@@ -84,20 +99,27 @@ struct LambdaClientInner {
     lambda_client_builder: aws_sdk_lambda::config::Builder,
     /// Map of Role -> Client
     /// We use this map to cache pre-configured clients per role.
-    role_to_lambda_clients: ArcSwap<HashMap<String, aws_sdk_lambda::Client>>,
+    /// If not set, do not cache; the discovery client for example should not cache because there is
+    /// a DoS vector
+    /// https://github.com/restatedev/restate/issues/878
+    role_to_lambda_clients: Option<ArcSwap<HashMap<String, aws_sdk_lambda::Client>>>,
     /// External id to set on assume role requests
     assume_role_external_id: Option<String>,
 }
 
 impl LambdaClient {
-    pub fn new(profile_name: Option<String>, assume_role_external_id: Option<String>) -> Self {
+    pub fn new(
+        profile_name: Option<String>,
+        assume_role_external_id: Option<String>,
+        assume_role_cache_mode: AssumeRoleCacheMode,
+    ) -> Self {
         // create client for a default region, region can be overridden per request
         let mut config = aws_config::from_env().region(Region::from_static("us-east-1"));
         if let Some(profile_name) = profile_name {
             config = config.profile_name(profile_name);
         };
 
-        let inner = async {
+        let inner = async move {
             let config = config.load().await;
 
             let sts_conf = aws_sdk_sts::Config::from(&config);
@@ -108,11 +130,16 @@ impl LambdaClient {
             let lambda_client =
                 aws_sdk_lambda::Client::from_conf(lambda_client_builder.clone().build());
 
+            let role_to_lambda_clients = match assume_role_cache_mode {
+                AssumeRoleCacheMode::Unbounded => Some(Default::default()),
+                AssumeRoleCacheMode::None => None,
+            };
+
             Arc::new(LambdaClientInner {
                 no_role_lambda_client: lambda_client,
                 sts_client,
                 lambda_client_builder,
-                role_to_lambda_clients: Default::default(),
+                role_to_lambda_clients,
                 assume_role_external_id,
             })
         }
@@ -193,9 +220,13 @@ impl LambdaClientInner {
             return self.no_role_lambda_client.invoke();
         };
 
-        if let Some(client) = self.role_to_lambda_clients.load().get(&*assume_role_arn) {
+        if let Some(invoke) = self.role_to_lambda_clients.as_ref().and_then(|rlc| {
+            rlc.load()
+                .get(&*assume_role_arn)
+                .map(|client| client.invoke())
+        }) {
             // fast-ish path; we've seen this assumed role before
-            return client.invoke();
+            return invoke;
         }
 
         // slow path; create the client for this assumed role
@@ -212,18 +243,20 @@ impl LambdaClientInner {
 
         let mut client = aws_sdk_lambda::Client::from_conf(conf);
 
-        // repeatedly try to clone the hashmap and compare and swap in a map with the new arn
-        self.role_to_lambda_clients.rcu(|cache| {
-            if let Some(existing_client) = cache.get(&*assume_role_arn) {
-                // someone else got there first; instead of cloning the whole hashmap, just keep track
-                // of the winning client and write the existing hashmap back into the ArcSwap
-                client = existing_client.clone();
-                return cache.clone(); // this is an Arc clone, not a hashmap clone
-            }
-            let mut cache = HashMap::clone(cache);
-            cache.insert(assume_role_arn.to_string(), client.clone());
-            cache.into()
-        });
+        if let Some(rlc) = &self.role_to_lambda_clients {
+            // repeatedly try to clone the hashmap and compare and swap in a map with the new arn
+            rlc.rcu(|cache| {
+                if let Some(existing_client) = cache.get(&*assume_role_arn) {
+                    // someone else got there first; instead of cloning the whole hashmap, just keep track
+                    // of the winning client and write the existing hashmap back into the ArcSwap
+                    client = existing_client.clone();
+                    return cache.clone(); // this is an Arc clone, not a hashmap clone
+                }
+                let mut cache = HashMap::clone(cache);
+                cache.insert(assume_role_arn.to_string(), client.clone());
+                cache.into()
+            });
+        }
 
         client.invoke()
     }
