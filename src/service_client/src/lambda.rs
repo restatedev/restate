@@ -216,7 +216,7 @@ impl LambdaClientInner {
         self.role_to_lambda_clients.rcu(|cache| {
             if let Some(existing_client) = cache.get(&*assume_role_arn) {
                 // someone else got there first; instead of cloning the whole hashmap, just keep track
-                // of the winning client write the existing hashmap back into the ArcSwap
+                // of the winning client and write the existing hashmap back into the ArcSwap
                 client = existing_client.clone();
                 return cache.clone(); // this is an Arc clone, not a hashmap clone
             }
