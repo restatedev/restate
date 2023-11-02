@@ -51,15 +51,13 @@ pub struct Options {
     ///
     /// Name of the AWS profile to select. Defaults to 'AWS_PROFILE' env var, or otherwise
     /// the `default` profile.
-    #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
-    aws_profile: Option<ByteString>,
+    aws_profile: Option<String>,
 
     /// # AssumeRole external ID
     ///
     /// An external ID to apply to any AssumeRole operations taken by this client.
     /// https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
-    #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
-    assume_role_external_id: Option<ByteString>,
+    assume_role_external_id: Option<String>,
 }
 
 impl Options {
@@ -90,14 +88,11 @@ struct LambdaClientInner {
     // threadsafe map of assume role arn -> cached credential provider
     assume_role_credentials: ArcSwap<HashMap<String, SharedCredentialsProvider>>,
     // external id to set on assume role requests
-    assume_role_external_id: Option<ByteString>,
+    assume_role_external_id: Option<String>,
 }
 
 impl LambdaClient {
-    pub fn new(
-        profile_name: Option<ByteString>,
-        assume_role_external_id: Option<ByteString>,
-    ) -> Self {
+    pub fn new(profile_name: Option<String>, assume_role_external_id: Option<String>) -> Self {
         // create client for a default region, region can be overridden per request
         let mut config = aws_config::from_env().region(Region::from_static("us-east-1"));
         if let Some(profile_name) = profile_name {
@@ -157,7 +152,7 @@ impl LambdaClient {
 
         async move {
             let (body, inner): (Result<Bytes, hyper::Error>, Arc<LambdaClientInner>) =
-                futures::join!(body, inner);
+                futures::future::join(body, inner).await;
 
             let payload = ApiGatewayProxyRequest {
                 path: Some(path.path().to_string()),
@@ -217,12 +212,8 @@ impl LambdaClient {
 }
 
 impl LambdaClientInner {
-    fn get_provider(&self, assume_role_arn: &ByteString) -> SharedCredentialsProvider {
-        if let Some(provider) = self
-            .assume_role_credentials
-            .load()
-            .get::<str>(assume_role_arn)
-        {
+    fn get_provider(&self, assume_role_arn: &str) -> SharedCredentialsProvider {
+        if let Some(provider) = self.assume_role_credentials.load().get(assume_role_arn) {
             return provider.clone();
         }
 
@@ -232,7 +223,7 @@ impl LambdaClientInner {
                 .clone()
                 .create_cache(SharedCredentialsProvider::new(AssumeRoleProvider::new(
                     self.sts_client.clone(),
-                    assume_role_arn.clone(),
+                    assume_role_arn.into(),
                     self.assume_role_external_id.clone(),
                 ))),
         ));

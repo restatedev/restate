@@ -12,7 +12,6 @@ use aws_credential_types::cache::ProvideCachedCredentials;
 use aws_credential_types::provider::error::CredentialsError;
 use aws_credential_types::provider::future::ProvideCredentials;
 use aws_sdk_sts::operation::assume_role::AssumeRoleError;
-use bytestring::ByteString;
 use std::time::SystemTime;
 
 /// PreCachedCredentialsProvider allows us to force the use of our own cache for credentials,
@@ -43,15 +42,15 @@ impl<T: ProvideCachedCredentials> aws_credential_types::provider::ProvideCredent
 #[derive(Debug)]
 pub(crate) struct AssumeRoleProvider {
     client: aws_sdk_sts::Client,
-    role_arn: ByteString,
-    external_id: Option<ByteString>,
+    role_arn: String,
+    external_id: Option<String>,
 }
 
 impl AssumeRoleProvider {
     pub(crate) fn new(
         client: aws_sdk_sts::Client,
-        role_arn: ByteString,
-        external_id: Option<ByteString>,
+        role_arn: String,
+        external_id: Option<String>,
     ) -> Self {
         Self {
             client,
@@ -79,8 +78,8 @@ impl aws_credential_types::provider::ProvideCredentials for AssumeRoleProvider {
                 ))
                 .role_arn(self.role_arn.clone());
 
-            if let Some(external_id) = self.external_id.clone() {
-                fluent_builder = fluent_builder.external_id(external_id);
+            if let Some(external_id) = &self.external_id {
+                fluent_builder = fluent_builder.external_id(external_id.clone());
             }
 
             let assumed = fluent_builder.send().await;

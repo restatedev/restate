@@ -66,8 +66,7 @@ pub enum RegisterServiceEndpointMetadata {
         /// # Assume role ARN
         ///
         /// Optional ARN of a role to assume when invoking this endpoint, to support role chaining
-        #[schemars(with = "Option<String>")]
-        assume_role_arn: Option<ByteString>,
+        assume_role_arn: Option<String>,
     },
 }
 
@@ -113,7 +112,7 @@ pub async fn create_service_endpoint<S, W>(
         } => ServiceEndpointAddress::Lambda(
             arn.parse()
                 .map_err(|e: InvalidLambdaARN| MetaApiError::InvalidField("arn", e.to_string()))?,
-            assume_role_arn,
+            assume_role_arn.map(Into::into),
         ),
     };
     let endpoint = DiscoverEndpoint::new(
