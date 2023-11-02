@@ -121,19 +121,9 @@ impl LambdaClient {
             let sts_client = aws_sdk_sts::Client::from_conf(sts_conf);
 
             // create a new lambda config without any source of credentials (these will be added dynamically)
-            // this is very annoying, but there is not a way to remove credentials from an existing client
-            // and we don't want to go through config loading twice
-            let mut lambda_conf = aws_sdk_lambda::config::Builder::default();
-            lambda_conf = lambda_conf.region(config.region().cloned());
-            lambda_conf.set_use_fips(config.use_fips());
-            lambda_conf.set_use_dual_stack(config.use_dual_stack());
-            lambda_conf.set_endpoint_url(config.endpoint_url().map(|s| s.to_string()));
-            lambda_conf.set_retry_config(config.retry_config().cloned());
-            lambda_conf.set_timeout_config(config.timeout_config().cloned());
-            lambda_conf.set_sleep_impl(config.sleep_impl());
-            lambda_conf.set_http_connector(config.http_connector().cloned());
-            lambda_conf.set_time_source(config.time_source());
-            lambda_conf.set_app_name(config.app_name().cloned());
+            let mut lambda_conf = aws_sdk_lambda::config::Builder::from(&config);
+            lambda_conf.set_credentials_provider(None);
+            lambda_conf.set_credentials_cache(None);
 
             let lambda_client = aws_sdk_lambda::Client::from_conf(lambda_conf.build());
 
