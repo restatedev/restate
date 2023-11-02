@@ -75,16 +75,17 @@ pub struct LambdaClient {
 
 #[derive(Debug)]
 struct LambdaClientInner {
-    lambda_client: aws_sdk_lambda::Client,
+    /// STS client in order to call AssumeRole if needed
     sts_client: aws_sdk_sts::Client,
-
-    // keep track of how to create a lambda client with shared http connector etc with the main one
-    // as we have to do this for assumed roles
+    /// Lambda client to use if we aren't assuming a role
+    no_role_lambda_client: aws_sdk_lambda::Client,
+    /// Lambda client config builder
+    /// Keep track of how to create a lambda client with shared http connector etc with the main one
     lambda_client_builder: aws_sdk_lambda::config::Builder,
     /// Map of Role -> Client
     /// We use this map to cache pre-configured clients per role.
     role_to_lambda_clients: ArcSwap<HashMap<String, aws_sdk_lambda::Client>>,
-    // external id to set on assume role requests
+    /// External id to set on assume role requests
     assume_role_external_id: Option<String>,
 }
 
@@ -108,10 +109,10 @@ impl LambdaClient {
                 aws_sdk_lambda::Client::from_conf(lambda_client_builder.clone().build());
 
             Arc::new(LambdaClientInner {
-                lambda_client,
+                no_role_lambda_client: lambda_client,
                 sts_client,
                 lambda_client_builder,
-                assume_role_lambda_clients: Default::default(),
+                role_to_lambda_clients: Default::default(),
                 assume_role_external_id,
             })
         }
@@ -189,14 +190,10 @@ impl LambdaClientInner {
             assume_role_arn
         } else {
             // fastest path; no assumed role, don't bother with the shared hashmap
-            return self.lambda_client.invoke();
+            return self.no_role_lambda_client.invoke();
         };
 
-        if let Some(client) = self
-            .assume_role_lambda_clients
-            .load()
-            .get(&*assume_role_arn)
-        {
+        if let Some(client) = self.role_to_lambda_clients.load().get(&*assume_role_arn) {
             // fast-ish path; we've seen this assumed role before
             return client.invoke();
         }
@@ -216,11 +213,12 @@ impl LambdaClientInner {
         let mut client = aws_sdk_lambda::Client::from_conf(conf);
 
         // repeatedly try to clone the hashmap and compare and swap in a map with the new arn
-        self.assume_role_lambda_clients.rcu(|cache| {
+        self.role_to_lambda_clients.rcu(|cache| {
             if let Some(existing_client) = cache.get(&*assume_role_arn) {
-                // someone else got there first
+                // someone else got there first; instead of cloning the whole hashmap, just keep track
+                // of the winning client write the existing hashmap back into the ArcSwap
                 client = existing_client.clone();
-                return cache.clone();
+                return cache.clone(); // this is an Arc clone, not a hashmap clone
             }
             let mut cache = HashMap::clone(cache);
             cache.insert(assume_role_arn.to_string(), client.clone());
