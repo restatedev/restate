@@ -8,33 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use aws_credential_types::cache::ProvideCachedCredentials;
+//! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-config/src/sts/assume_role.rs
+//! License Apache-2.0
+
 use aws_credential_types::provider::error::CredentialsError;
 use aws_credential_types::provider::future::ProvideCredentials;
 use aws_sdk_sts::operation::assume_role::AssumeRoleError;
 use std::time::SystemTime;
-
-/// PreCachedCredentialsProvider allows us to force the use of our own cache for credentials,
-/// despite the AWS SDK preferring to build its own cache around our uncached provider.
-#[derive(Debug, Clone)]
-pub(crate) struct PreCachedCredentialsProvider<T>(T);
-
-impl<T> PreCachedCredentialsProvider<T> {
-    pub(crate) fn new(inner: T) -> Self {
-        Self(inner)
-    }
-}
-
-impl<T: ProvideCachedCredentials> aws_credential_types::provider::ProvideCredentials
-    for PreCachedCredentialsProvider<T>
-{
-    fn provide_credentials<'a>(&'a self) -> ProvideCredentials<'a>
-    where
-        Self: 'a,
-    {
-        self.0.provide_cached_credentials()
-    }
-}
 
 /// AssumeRoleProvider implements ProvideCredentials by assuming a provided role
 /// It is materially very similar to AssumeRoleProvider in the aws-config crate, except
