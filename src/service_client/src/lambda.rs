@@ -218,29 +218,32 @@ impl LambdaClient {
 
 impl LambdaClientInner {
     fn get_provider(&self, assume_role_arn: &ByteString) -> SharedCredentialsProvider {
-        let providers = self.assume_role_credentials.load();
-        match providers.get::<str>(assume_role_arn) {
-            Some(provider) => provider.clone(),
-            None => {
-                // create a new cached provider of credentials for this arn
-                let provider = SharedCredentialsProvider::new(PreCachedCredentialsProvider::new(
-                    self.credentials_cache_config.clone().create_cache(
-                        SharedCredentialsProvider::new(AssumeRoleProvider::new(
-                            self.sts_client.clone(),
-                            assume_role_arn.clone(),
-                            self.assume_role_external_id.clone(),
-                        )),
-                    ),
-                ));
-                // repeatedly try to clone the hashmap and compare and swap in a map with the new arn
-                self.assume_role_credentials.rcu(|cache| {
-                    let mut cache = HashMap::clone(cache);
-                    cache.insert(assume_role_arn.to_string(), provider.clone());
-                    cache
-                });
-                provider
-            }
+        if let Some(provider) = self
+            .assume_role_credentials
+            .load()
+            .get::<str>(assume_role_arn)
+        {
+            return provider.clone();
         }
+
+        // create a new cached provider of credentials for this arn
+        let provider = SharedCredentialsProvider::new(PreCachedCredentialsProvider::new(
+            self.credentials_cache_config
+                .clone()
+                .create_cache(SharedCredentialsProvider::new(AssumeRoleProvider::new(
+                    self.sts_client.clone(),
+                    assume_role_arn.clone(),
+                    self.assume_role_external_id.clone(),
+                ))),
+        ));
+
+        // repeatedly try to clone the hashmap and compare and swap in a map with the new arn
+        self.assume_role_credentials.rcu(|cache| {
+            let mut cache = HashMap::clone(cache);
+            cache.insert(assume_role_arn.to_string(), provider.clone());
+            cache
+        });
+        provider
     }
 }
 
