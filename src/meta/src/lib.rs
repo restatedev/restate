@@ -25,6 +25,7 @@ use storage::FileMetaStorage;
 use tokio::join;
 use tracing::{debug, error};
 
+use restate_service_client::AssumeRoleCacheMode;
 pub use restate_service_client::{
     Options as ServiceClientOptions, OptionsBuilder as ServiceClientOptionsBuilder,
     OptionsBuilderError as LambdaClientOptionsBuilderError,
@@ -78,7 +79,7 @@ impl Options {
     pub fn build(self) -> Meta {
         let schemas = Schemas::default();
 
-        let client = self.service_client.build();
+        let client = self.service_client.build(AssumeRoleCacheMode::None);
 
         let service = MetaService::new(
             schemas.clone(),

@@ -22,6 +22,7 @@ use restate_types::identifiers::LambdaARN;
 use std::fmt::Formatter;
 use std::future::Future;
 
+pub use crate::lambda::AssumeRoleCacheMode;
 pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 
 mod assume_role;

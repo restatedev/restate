@@ -13,6 +13,7 @@ use super::Service;
 use futures::Stream;
 use restate_invoker_api::{EntryEnricher, JournalReader};
 use restate_schema_api::endpoint::EndpointMetadataResolver;
+use restate_service_client::AssumeRoleCacheMode;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::retries::RetryPolicy;
 use serde_with::serde_as;
@@ -131,7 +132,7 @@ impl Options {
         EE: EntryEnricher,
         EMR: EndpointMetadataResolver,
     {
-        let client = self.service_client.build();
+        let client = self.service_client.build(AssumeRoleCacheMode::Unbounded);
 
         Service::new(
             service_endpoint_registry,
