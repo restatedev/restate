@@ -81,8 +81,9 @@ struct LambdaClientInner {
     // keep track of how to create a lambda client with shared http connector etc with the main one
     // as we have to do this for assumed roles
     lambda_client_builder: aws_sdk_lambda::config::Builder,
-    // threadsafe map of assume role arn -> cached credential provider
-    assume_role_lambda_clients: ArcSwap<HashMap<String, aws_sdk_lambda::Client>>,
+    /// Map of Role -> Client
+    /// We use this map to cache pre-configured clients per role.
+    role_to_lambda_clients: ArcSwap<HashMap<String, aws_sdk_lambda::Client>>,
     // external id to set on assume role requests
     assume_role_external_id: Option<String>,
 }
