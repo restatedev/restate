@@ -60,6 +60,8 @@ pub enum RegistrationError {
     InvalidSubscription(anyhow::Error),
     #[error("a subscription with the same id {0} already exists in the registry")]
     OverrideSubscription(EndpointId),
+    #[error("a schema update is not backwards compatible with the existing definition")]
+    IncompatibleSchemaEvolution(String, Vec<String>),
 }
 
 /// Insert (or replace) service
