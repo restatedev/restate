@@ -992,7 +992,8 @@ mod tests {
             false,
             1024,
             None,
-            ServiceClientOptions::default().build(AssumeRoleCacheMode::None),
+            ServiceClientOptions::default()
+                .build(restate_service_client::AssumeRoleCacheMode::None),
             tempdir.into_path(),
             None,
             journal_reader::mocks::EmptyJournalReader,

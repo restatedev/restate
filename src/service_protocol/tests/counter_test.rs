@@ -14,7 +14,9 @@
 //! [Counter example](https://github.com/restatedev/sdk-java/blob/main/examples/src/main/java/dev/restate/sdk/examples/BlockingCounter.java) in sdk-java.
 
 use hyper::Uri;
-use restate_service_client::{Options as ServiceClientOptions, ServiceEndpointAddress};
+use restate_service_client::{
+    AssumeRoleCacheMode, Options as ServiceClientOptions, ServiceEndpointAddress,
+};
 use restate_service_protocol::discovery::*;
 use restate_test_util::test;
 use restate_types::retries::RetryPolicy;
