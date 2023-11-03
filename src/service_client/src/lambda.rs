@@ -250,7 +250,7 @@ impl LambdaClientInner {
                     // someone else got there first; instead of cloning the whole hashmap, just keep track
                     // of the winning client and write the existing hashmap back into the ArcSwap
                     client = existing_client.clone();
-                    return cache.clone(); // this is an Arc clone, not a hashmap clone
+                    return Arc::clone(cache);
                 }
                 let mut cache = HashMap::clone(cache);
                 cache.insert(assume_role_arn.to_string(), client.clone());
