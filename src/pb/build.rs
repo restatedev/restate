@@ -328,5 +328,22 @@ fn main() -> std::io::Result<()> {
             &["proto", "tests/proto"],
         )?;
 
+    prost_build::Config::new()
+        // TODO: figure out a cleaner way of discarding the Rust byproducts
+        .out_dir(PathBuf::from(
+            env::var("TMPDIR").expect("OUT_DIR environment variable not set"),
+        ))
+        .file_descriptor_set_path(
+            PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR environment variable not set"))
+                .join("file_descriptor_set_test-v2_incompatible.bin"),
+        )
+        .bytes(["."])
+        .service_generator(tonic_build::configure().service_generator())
+        .extern_path(".dev.restate", "crate::restate")
+        .compile_protos(
+            &["tests/proto/greeter-v2_incompatible.proto"],
+            &["proto", "tests/proto"],
+        )?;
+
     Ok(())
 }

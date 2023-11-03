@@ -338,19 +338,20 @@ impl Default for SchemasInner {
 }
 
 impl SchemasInner {
+    /// When `force_overwrite` when set, we will allow incompatible service definition updates to existing services.
     pub(crate) fn compute_new_endpoint_updates(
         &self,
         endpoint_metadata: EndpointMetadata,
-        services: Vec<ServiceRegistrationRequest>,
+        registration_requests: Vec<ServiceRegistrationRequest>,
         descriptor_pool: DescriptorPool,
-        allow_overwrite: bool,
+        force_overwrite: bool,
     ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
         let endpoint_id = endpoint_metadata.id();
 
-        let mut result_commands = Vec::with_capacity(1 + services.len());
+        let mut result_commands = Vec::with_capacity(1 + registration_requests.len());
 
         if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
-            if allow_overwrite {
+            if force_overwrite {
                 // If we need to overwrite the endpoint we need to remove old services
                 for (svc_name, revision) in &existing_endpoint.services {
                     warn!(
@@ -370,55 +371,77 @@ impl SchemasInner {
         }
 
         // Compute service revision numbers
-        let mut computed_revisions = HashMap::with_capacity(services.len());
-        for service_meta in &services {
-            check_is_reserved(&service_meta.name)?;
+        let mut computed_revisions = HashMap::with_capacity(registration_requests.len());
+        for proposed_service in &registration_requests {
+            check_is_reserved(&proposed_service.name)?;
 
             let instance_type = InstanceTypeMetadata::from_discovered_metadata(
-                service_meta.instance_type.clone(),
-                &service_meta.methods,
+                proposed_service.instance_type.clone(),
+                &proposed_service.methods,
             );
 
             // For the time being when updating we overwrite existing data
-            let revision = if let Some(service_schemas) = self.services.get(&service_meta.name) {
+            let revision = if let Some(existing_service) = self.services.get(&proposed_service.name)
+            {
                 // Check instance type
-                if service_schemas.instance_type != instance_type {
-                    if allow_overwrite {
+                if existing_service.instance_type != instance_type {
+                    if force_overwrite {
                         warn!(
                             restate.service_endpoint.id = %endpoint_id,
                             restate.service_endpoint.address = %endpoint_metadata.address_display(),
                             "Going to overwrite service instance type {} due to a forced service endpoint update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
-                            service_meta.name,
-                            service_schemas.instance_type,
+                            proposed_service.name,
+                            existing_service.instance_type,
                             instance_type
                         );
                     } else {
                         return Err(RegistrationError::DifferentServiceInstanceType(
-                            service_meta.name.clone(),
+                            proposed_service.name.clone(),
                         ));
                     }
                 }
 
-                service_schemas.revision.wrapping_add(1)
+                if !existing_service
+                    .methods
+                    .keys()
+                    .all(|method_name| proposed_service.methods.contains_key(method_name))
+                {
+                    let missing_methods = existing_service
+                        .methods
+                        .keys()
+                        .filter(|method_name| !proposed_service.methods.contains_key(*method_name))
+                        .map(|method_name| method_name.to_string())
+                        .collect();
+
+                    return Err(RegistrationError::IncompatibleSchemaEvolution(format!(
+                            "Service {} does not define all the methods currently exposed in revision {}.",
+                            proposed_service.name,
+                            existing_service.revision,
+                        ),
+                      missing_methods
+                    ));
+                }
+
+                existing_service.revision.wrapping_add(1)
             } else {
                 1
             };
-            computed_revisions.insert(service_meta.name.clone(), revision);
+            computed_revisions.insert(proposed_service.name.clone(), revision);
         }
 
         // Create the InsertEndpoint command
         result_commands.push(SchemasUpdateCommand::InsertEndpoint {
             metadata: endpoint_metadata,
-            services: services
+            services: registration_requests
                 .into_iter()
-                .map(|service_meta| {
-                    let revision = computed_revisions.remove(&service_meta.name).unwrap();
+                .map(|request| {
+                    let revision = computed_revisions.remove(&request.name).unwrap();
 
                     InsertServiceUpdateCommand {
-                        name: service_meta.name,
+                        name: request.name,
                         revision,
-                        instance_type: service_meta.instance_type,
-                        methods: service_meta.methods,
+                        instance_type: request.instance_type,
+                        methods: request.methods,
                     }
                 })
                 .collect(),
@@ -813,7 +836,7 @@ mod tests {
     use restate_pb::mocks;
     use restate_schema_api::endpoint::EndpointMetadataResolver;
     use restate_schema_api::service::ServiceMetadataResolver;
-    use restate_test_util::{assert, assert_eq, let_assert, test};
+    use restate_test_util::{assert, assert_eq, check, let_assert, test};
 
     impl Schemas {
         fn assert_service_revision(&self, svc_name: &str, revision: ServiceRevision) {
@@ -859,6 +882,7 @@ mod tests {
 
         schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 1);
         schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint.id());
+        // assert_eq!(schemas.list_services().first().unwrap().methods.len(), 1);
     }
 
     #[test]
@@ -1098,7 +1122,7 @@ mod tests {
     #[test]
     fn register_issue682() {
         let schemas = Schemas::default();
-        let svc_name = "test.Issue682";
+        let svc_name = "greeter.Greeter";
 
         let endpoint = EndpointMetadata::mock();
         schemas
@@ -1135,6 +1159,46 @@ mod tests {
             )
             .unwrap();
         schemas.assert_service_revision(svc_name, 2);
+    }
+
+    #[test]
+    fn prevent_removing_existing_service_methods() {
+        let schemas = Schemas::default();
+
+        let endpoint = EndpointMetadata::mock();
+        let commands = schemas
+            .compute_new_endpoint_updates(
+                endpoint.clone(),
+                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
+                    mocks::GREETER_SERVICE_NAME.to_string(),
+                    &["Greet"],
+                )],
+                mocks::DESCRIPTOR_POOL.clone(),
+                false,
+            )
+            .unwrap();
+        schemas.apply_updates(commands).unwrap();
+        schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 1);
+
+        let result = schemas.compute_new_endpoint_updates(
+            endpoint.clone(),
+            vec![ServiceRegistrationRequest::unkeyed_without_annotations(
+                mocks::GREETER_SERVICE_NAME.to_string(),
+                &["Greetings"],
+            )],
+            mocks::DESCRIPTOR_POOL_V2_INCOMPATIBLE.clone(),
+            true,
+        );
+
+        schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 1); // unchanged
+
+        let_assert!(
+            Err(RegistrationError::IncompatibleSchemaEvolution(
+                message, methods
+            )) = result
+        );
+        check!(message == "Service greeter.Greeter does not define all the methods currently exposed in revision 1.");
+        check!(methods == std::vec!["Greet"]);
     }
 
     #[test]
