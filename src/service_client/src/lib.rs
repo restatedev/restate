@@ -25,7 +25,6 @@ use std::future::Future;
 pub use crate::lambda::AssumeRoleCacheMode;
 pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 
-mod assume_role;
 mod http;
 mod lambda;
 mod options;

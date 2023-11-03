@@ -15,7 +15,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::{http, Json};
-use bytestring::ByteString;
 use okapi_operation::*;
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
 use restate_serde_util::SerdeableHeaderHashMap;
@@ -168,8 +167,7 @@ pub enum ServiceEndpoint {
     Lambda {
         arn: LambdaARN,
         #[serde(skip_serializing_if = "Option::is_none")]
-        #[schemars(with = "Option<String>")]
-        assume_role_arn: Option<ByteString>,
+        assume_role_arn: Option<String>,
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
     },
@@ -193,7 +191,7 @@ impl From<EndpointMetadata> for ServiceEndpoint {
                 delivery_options,
             } => Self::Lambda {
                 arn,
-                assume_role_arn,
+                assume_role_arn: assume_role_arn.map(Into::into),
                 additional_headers: delivery_options.additional_headers.into(),
             },
         }
