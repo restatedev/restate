@@ -159,7 +159,12 @@ skip = [
     {name = "prost-derive"},
 
     # clash between aws-config and datafusion
-    {name = "fastrand"}
+    {name = "fastrand"},
+
+    # clash between aws-config and pgwire
+    {name = "untrusted"},
+    {name = "spin"},
+    {name = "ring"}
 ]
 
 deny = [

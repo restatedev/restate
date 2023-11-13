@@ -14,10 +14,12 @@
 
 use arc_swap::ArcSwap;
 use assume_role::AssumeRoleProvider;
+use aws_config::BehaviorVersion;
 use aws_sdk_lambda::config::Region;
+use aws_sdk_lambda::error::{DisplayErrorContext, SdkError};
 use aws_sdk_lambda::operation::invoke::InvokeError;
 use aws_sdk_lambda::primitives::Blob;
-use aws_smithy_types::error::display::DisplayErrorContext;
+use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
 use base64::display::Base64Display;
 use base64::Engine;
 use bytestring::ByteString;
@@ -114,7 +116,7 @@ struct LambdaClientInner {
     assume_role_external_id: Option<String>,
 }
 
-/// Copied from `aws_smithy_client::HTTPS_NATIVE_ROOTS` but with SO_NODELAY set
+/// Copied from `aws_smithy_runtime::client::http::HTTPS_NATIVE_ROOTS` but with SO_NODELAY set
 static HTTPS_NATIVE_ROOTS: Lazy<HttpsConnector<HttpConnector>> = Lazy::new(|| {
     let mut http = HttpConnector::new();
     // HttpConnector won't enforce scheme, but HttpsConnector will
@@ -154,15 +156,11 @@ impl LambdaClient {
         assume_role_cache_mode: AssumeRoleCacheMode,
     ) -> Self {
         // create client for a default region, region can be overridden per request
-        let mut config = aws_config::from_env().region(Region::from_static("us-east-1"));
+        let mut config = aws_config::defaults(BehaviorVersion::latest());
         if let Some(profile_name) = profile_name {
             config = config.profile_name(profile_name);
         };
-        config = config.http_connector(
-            aws_smithy_client::http_connector::HttpConnector::ConnectorFn(Arc::new(
-                Self::default_connector,
-            )),
-        );
+        config = config.http_client(HyperClientBuilder::new().build(HTTPS_NATIVE_ROOTS.clone()));
 
         let inner = async move {
             let config = config.load().await;
@@ -192,20 +190,6 @@ impl LambdaClient {
         .shared();
 
         Self { inner }
-    }
-
-    /// Copied from `aws_smithy_client::default_connector`
-    fn default_connector(
-        settings: &aws_smithy_client::http_connector::ConnectorSettings,
-        sleep: Option<aws_sdk_lambda::config::SharedAsyncSleep>,
-    ) -> Option<aws_smithy_client::erase::DynConnector> {
-        let mut hyper =
-            aws_smithy_client::hyper_ext::Adapter::builder().connector_settings(settings.clone());
-        if let Some(sleep) = sleep {
-            hyper = hyper.sleep_impl(sleep);
-        }
-        let hyper = hyper.build(HTTPS_NATIVE_ROOTS.clone());
-        Some(aws_smithy_client::erase::DynConnector::new(hyper))
     }
 
     pub fn invoke(
@@ -240,8 +224,6 @@ impl LambdaClient {
                     serde_json::to_vec(&payload).map_err(LambdaError::SerializationError)?,
                 ))
                 .customize()
-                .await
-                .expect("customize() must not return an error") // the sdk is commented to say that this eventually won't be a Result
                 .config_override(aws_sdk_lambda::config::Builder::default().region(region))
                 .send()
                 .await?;
@@ -326,10 +308,7 @@ pub enum LambdaError {
     #[error("problem reading request body: {0}")]
     Body(#[from] hyper::Error),
     #[error("lambda service returned error: {}", DisplayErrorContext(&.0))]
-    SdkError(
-        #[from]
-        aws_smithy_http::result::SdkError<InvokeError, Response<aws_smithy_http::body::SdkBody>>,
-    ),
+    SdkError(#[from] SdkError<InvokeError>),
     #[error("function returned an error during execution: {0}")]
     FunctionError(serde_json::Value),
     #[error("function request could not be serialized: {0}")]
@@ -437,6 +416,7 @@ where
 mod assume_role {
     use aws_credential_types::provider::error::CredentialsError;
     use aws_credential_types::provider::future::ProvideCredentials;
+    use aws_sdk_lambda::error::SdkError;
     use aws_sdk_sts::operation::assume_role::AssumeRoleError;
     use std::time::SystemTime;
 
@@ -491,7 +471,7 @@ mod assume_role {
                     Ok(assumed) => {
                         into_credentials(assumed.credentials, "RestateAssumeRoleProvider")
                     }
-                    Err(aws_smithy_http::result::SdkError::ServiceError(ref context))
+                    Err(SdkError::ServiceError(ref context))
                         if matches!(
                             context.err(),
                             AssumeRoleError::RegionDisabledException(_)
@@ -503,7 +483,7 @@ mod assume_role {
                         ))
                     }
 
-                    Err(aws_smithy_http::result::SdkError::ServiceError(_)) => {
+                    Err(SdkError::ServiceError(_)) => {
                         Err(CredentialsError::provider_error(assumed.err().unwrap()))
                     }
                     Err(err) => Err(CredentialsError::provider_error(err)),
@@ -518,24 +498,15 @@ mod assume_role {
     ) -> aws_credential_types::provider::Result {
         let sts_credentials = sts_credentials
             .ok_or_else(|| CredentialsError::unhandled("STS credentials must be defined"))?;
-        let expiration = std::time::SystemTime::try_from(
-            sts_credentials
-                .expiration
-                .ok_or_else(|| CredentialsError::unhandled("missing expiration"))?,
-        )
-        .map_err(|_| {
+        let expiration = SystemTime::try_from(sts_credentials.expiration).map_err(|_| {
             CredentialsError::unhandled(
                 "credential expiration time cannot be represented by a SystemTime",
             )
         })?;
         Ok(aws_credential_types::Credentials::new(
-            sts_credentials
-                .access_key_id
-                .ok_or_else(|| CredentialsError::unhandled("access key id missing from result"))?,
-            sts_credentials
-                .secret_access_key
-                .ok_or_else(|| CredentialsError::unhandled("secret access token missing"))?,
-            sts_credentials.session_token,
+            sts_credentials.access_key_id,
+            sts_credentials.secret_access_key,
+            Some(sts_credentials.session_token),
             Some(expiration),
             provider_name,
         ))
