@@ -65,10 +65,6 @@ pub mod endpoint {
         },
         Lambda {
             arn: LambdaARN,
-            #[cfg_attr(
-                feature = "serde",
-                serde(default, skip_serializing_if = "Option::is_none",)
-            )]
             #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
             assume_role_arn: Option<ByteString>,
             delivery_options: DeliveryOptions,
