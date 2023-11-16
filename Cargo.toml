@@ -50,6 +50,7 @@ prost-reflect = "0.12.0"
 prost-build = "0.12.1"
 rand = "0.8.5"
 rocksdb = "0.21.0"
+rustls = "0.21.6"
 schemars = { version = "0.8", features = ["bytes"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_with = "2.2"
