@@ -56,7 +56,7 @@ drain = { workspace = true }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
 schemars = { workspace = true, optional = true }
-once_cell = "1.18"
+once_cell = { workspace = true }
 
 [dev-dependencies]
 restate_ingress_dispatcher = { workspace = true, features = ["mocks"] }

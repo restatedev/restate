@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 //! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-config/src/sts/assume_role.rs
+//! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-smithy-client/src/conns.rs
 //! License Apache-2.0
 
 use arc_swap::ArcSwap;
@@ -23,10 +24,13 @@ use bytestring::ByteString;
 use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
 use hyper::body::Bytes;
+use hyper::client::HttpConnector;
 use hyper::http::request::Parts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
 use hyper::{body, Body, HeaderMap, Method, Response};
+use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
+use once_cell::sync::Lazy;
 use restate_types::identifiers::LambdaARN;
 use serde::ser::Error as _;
 use serde::ser::SerializeMap;
@@ -110,6 +114,39 @@ struct LambdaClientInner {
     assume_role_external_id: Option<String>,
 }
 
+/// Copied from `aws_smithy_client::HTTPS_NATIVE_ROOTS` but with SO_NODELAY set
+static HTTPS_NATIVE_ROOTS: Lazy<HttpsConnector<HttpConnector>> = Lazy::new(|| {
+    let mut http = HttpConnector::new();
+    // HttpConnector won't enforce scheme, but HttpsConnector will
+    http.enforce_http(false);
+    // Set SO_NODELAY, which we have found significantly improves Lambda invocation latency
+    http.set_nodelay(true);
+    hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(
+            rustls::ClientConfig::builder()
+                .with_cipher_suites(&[
+                    // TLS1.3 suites
+                    rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
+                    rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
+                    // TLS1.2 suites
+                    rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                    rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                    rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+                    rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                    rustls::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+                ])
+                .with_safe_default_kx_groups()
+                .with_safe_default_protocol_versions()
+                .expect("Error with the TLS configuration. Please file a bug report under https://github.com/restatedev/restate/issues.")
+                .with_native_roots()
+                .with_no_client_auth()
+        )
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .wrap_connector(http)
+});
+
 impl LambdaClient {
     pub fn new(
         profile_name: Option<String>,
@@ -121,6 +158,11 @@ impl LambdaClient {
         if let Some(profile_name) = profile_name {
             config = config.profile_name(profile_name);
         };
+        config = config.http_connector(
+            aws_smithy_client::http_connector::HttpConnector::ConnectorFn(Arc::new(
+                Self::default_connector,
+            )),
+        );
 
         let inner = async move {
             let config = config.load().await;
@@ -150,6 +192,20 @@ impl LambdaClient {
         .shared();
 
         Self { inner }
+    }
+
+    /// Copied from `aws_smithy_client::default_connector`
+    fn default_connector(
+        settings: &aws_smithy_client::http_connector::ConnectorSettings,
+        sleep: Option<aws_sdk_lambda::config::SharedAsyncSleep>,
+    ) -> Option<aws_smithy_client::erase::DynConnector> {
+        let mut hyper =
+            aws_smithy_client::hyper_ext::Adapter::builder().connector_settings(settings.clone());
+        if let Some(sleep) = sleep {
+            hyper = hyper.sleep_impl(sleep);
+        }
+        let hyper = hyper.build(HTTPS_NATIVE_ROOTS.clone());
+        Some(aws_smithy_client::erase::DynConnector::new(hyper))
     }
 
     pub fn invoke(
