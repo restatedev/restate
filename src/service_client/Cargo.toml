@@ -25,20 +25,15 @@ humantime = { workspace = true }
 hyper = { workspace = true }
 hyper-rustls = { workspace = true }
 rustls = { workspace = true }
-once_cell = { version = "1.18" }
+once_cell = { workspace = true }
 serde = { workspace = true }
 http-serde = "1.1.2"
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 
-aws-config = "0.56.1"
-aws-credential-types = "0.56.1"
-aws-sdk-lambda = "0.34.0"
-aws-sdk-sts = "0.30.0"
-aws-smithy-client = "0.56.1"
-aws-smithy-http = "0.56.1"
-aws-smithy-types = "0.56.1"
-aws-smithy-runtime-api = "0.56.1"
-aws-runtime = "0.56.1"
-lambda_http = "0.8.1"
+aws-config = { version = "0.100.0", features = ["sso"] }
+aws-credential-types = "0.58.0"
+aws-sdk-lambda = "0.37.0"
+aws-sdk-sts = "0.37.0"
+aws-smithy-runtime = "0.58.0"
