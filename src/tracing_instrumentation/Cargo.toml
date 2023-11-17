@@ -19,7 +19,7 @@ derive_builder = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 console-subscriber = { version = "0.2.0", optional = true }
-once_cell = { version = "1.18" }
+once_cell = { workspace = true }
 opentelemetry = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.13.0" }
 opentelemetry-semantic-conventions = "0.12.0"
