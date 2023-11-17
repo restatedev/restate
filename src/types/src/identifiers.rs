@@ -477,8 +477,10 @@ impl Display for LambdaARN {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InvalidLambdaARN {
-    #[error("ARN must have 8 components delimited by `:`")]
+    #[error("A qualified ARN must have 8 components delimited by `:`")]
     InvalidFormat,
+    #[error("A qualified ARN needs a version or alias suffix. If you want to use the unpublished version, provide $LATEST")]
+    MissingVersionSuffix,
     #[error("First component of the ARN must be `arn`")]
     InvalidPrefix,
     #[error("ARN must refer to a `function` resource")]
@@ -508,7 +510,7 @@ impl FromStr for LambdaARN {
         let account_id = split.next().ok_or_else(invalid_format)?;
         let resource_type = split.next().ok_or_else(invalid_format)?;
         let name = split.next().ok_or_else(invalid_format)?;
-        let version = split.next().ok_or_else(invalid_format)?;
+        let version = split.next().ok_or(InvalidLambdaARN::MissingVersionSuffix)?;
 
         if prefix != "arn" {
             return Err(InvalidLambdaARN::InvalidPrefix);
