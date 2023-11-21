@@ -1,0 +1,25 @@
+[package]
+name = "restate-cli"
+authors = { workspace = true }
+description = { workspace = true }
+edition = {workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+version = { workspace = true }
+publish = false
+default-run = "restate"
+
+[features]
+default = []
+
+[dependencies]
+clap = { version = "4.1", features = ["derive", "env"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[lib]
+bench = false
+
+[[bin]]
+name = "restate"
+path = "src/main.rs"

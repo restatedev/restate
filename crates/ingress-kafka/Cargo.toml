@@ -1,0 +1,47 @@
+[package]
+name = "restate-ingress-kafka"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+options_schema = ["dep:schemars"]
+
+[dependencies]
+restate-errors = { workspace = true }
+restate-futures-util = { workspace = true }
+restate-ingress-dispatcher = { workspace = true }
+restate-pb = { workspace = true }
+restate-schema-api = { workspace = true, features = ["subscription"] }
+restate-timer-queue = { workspace = true }
+restate-types = { workspace = true }
+
+bytes = { workspace = true }
+derive_builder = { workspace = true }
+drain = { workspace = true }
+opentelemetry_api = { workspace = true }
+prost = { workspace = true }
+rdkafka = { version = "0.34", features = ["cmake-build"] }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt"] }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+restate-ingress-dispatcher = { workspace = true, features = ["mocks"] }
+restate-pb = { workspace = true, features = ["mocks"] }
+restate-schema-api = { workspace = true, features = ["mocks"] }
+restate-schema-impl = { workspace = true }
+restate-test-util = { workspace = true }
+restate-types = { workspace = true, features = ["mocks"] }
+
+base64 = { workspace = true }
+serde_json = { workspace = true }
+
