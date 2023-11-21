@@ -8,11 +8,4 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use cling::prelude::*;
-
-use restate_cli::CliApp;
-
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> ClingFinished<CliApp> {
-    Cling::parse_and_run().await
-}
+pub mod whoami;
