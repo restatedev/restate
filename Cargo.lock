@@ -1204,14 +1204,14 @@ dependencies = [
 
 [[package]]
 name = "codederror"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
- "codederror-impl",
+ "codederror-derive",
  "thiserror",
 ]
 
 [[package]]
-name = "codederror-impl"
+name = "codederror-derive"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -4021,42 +4021,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate"
-version = "0.4.0"
-dependencies = [
- "clap",
- "codederror",
- "derive_builder",
- "drain",
- "figment",
- "futures-util",
- "humantime",
- "pin-project",
- "restate_errors",
- "restate_fs_util",
- "restate_meta",
- "restate_tracing_instrumentation",
- "restate_types",
- "restate_worker",
- "schemars",
- "serde",
- "serde_with",
- "serde_yaml",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "restate_base64_util"
-version = "0.4.0"
+name = "restate-base64-util"
+version = "0.5.0"
 dependencies = [
  "base64 0.21.4",
 ]
 
 [[package]]
-name = "restate_benchmarks"
-version = "0.4.0"
+name = "restate-benchmarks"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -4068,8 +4041,8 @@ dependencies = [
  "prost 0.12.1",
  "prost-build",
  "rand",
- "restate",
- "restate_types",
+ "restate-server",
+ "restate-types",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4078,15 +4051,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_consensus"
-version = "0.4.0"
+name = "restate-cli"
+version = "0.5.0"
+dependencies = [
+ "clap",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "restate-consensus"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "futures",
  "futures-sink",
  "pin-project",
- "restate_test_util",
- "restate_types",
+ "restate-test-util",
+ "restate-types",
  "thiserror",
  "tokio",
  "tracing",
@@ -4094,12 +4076,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_errors"
-version = "0.4.0"
+name = "restate-errors"
+version = "0.5.0"
 dependencies = [
  "codederror",
  "paste",
- "restate_test_util",
+ "restate-test-util",
  "termimad",
  "thiserror",
  "tracing",
@@ -4107,8 +4089,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_fs_util"
-version = "0.4.0"
+name = "restate-fs-util"
+version = "0.5.0"
 dependencies = [
  "tokio",
  "tracing",
@@ -4116,12 +4098,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_futures_util"
-version = "0.4.0"
+name = "restate-futures-util"
+version = "0.5.0"
 dependencies = [
  "futures",
  "pin-project",
- "restate_test_util",
+ "restate-test-util",
  "thiserror",
  "tokio",
  "tracing",
@@ -4129,19 +4111,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_ingress_dispatcher"
-version = "0.4.0"
+name = "restate-ingress-dispatcher"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "bytestring",
  "drain",
  "googletest",
  "prost 0.12.1",
- "restate_futures_util",
- "restate_pb",
- "restate_schema_api",
- "restate_test_util",
- "restate_types",
+ "restate-futures-util",
+ "restate-pb",
+ "restate-schema-api",
+ "restate-test-util",
+ "restate-types",
  "thiserror",
  "tokio",
  "tracing",
@@ -4149,8 +4131,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_ingress_grpc"
-version = "0.4.0"
+name = "restate-ingress-grpc"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4169,14 +4151,14 @@ dependencies = [
  "pin-project",
  "prost 0.12.1",
  "prost-reflect",
- "restate_errors",
- "restate_futures_util",
- "restate_ingress_dispatcher",
- "restate_pb",
- "restate_schema_api",
- "restate_schema_impl",
- "restate_test_util",
- "restate_types",
+ "restate-errors",
+ "restate-futures-util",
+ "restate-ingress-dispatcher",
+ "restate-pb",
+ "restate-schema-api",
+ "restate-schema-impl",
+ "restate-test-util",
+ "restate-types",
  "schemars",
  "serde",
  "serde_json",
@@ -4193,8 +4175,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_ingress_kafka"
-version = "0.4.0"
+name = "restate-ingress-kafka"
+version = "0.5.0"
 dependencies = [
  "base64 0.21.4",
  "bytes",
@@ -4203,15 +4185,15 @@ dependencies = [
  "opentelemetry_api",
  "prost 0.12.1",
  "rdkafka",
- "restate_errors",
- "restate_futures_util",
- "restate_ingress_dispatcher",
- "restate_pb",
- "restate_schema_api",
- "restate_schema_impl",
- "restate_test_util",
- "restate_timer_queue",
- "restate_types",
+ "restate-errors",
+ "restate-futures-util",
+ "restate-ingress-dispatcher",
+ "restate-pb",
+ "restate-schema-api",
+ "restate-schema-impl",
+ "restate-test-util",
+ "restate-timer-queue",
+ "restate-types",
  "schemars",
  "serde",
  "serde_json",
@@ -4223,23 +4205,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_invoker_api"
-version = "0.4.0"
+name = "restate-invoker-api"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
  "bytestring",
  "codederror",
  "futures",
- "restate_errors",
- "restate_types",
+ "restate-errors",
+ "restate-types",
  "thiserror",
  "tokio",
 ]
 
 [[package]]
-name = "restate_invoker_impl"
-version = "0.4.0"
+name = "restate-invoker-impl"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4254,17 +4236,17 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-http",
  "prost 0.12.1",
- "restate_errors",
- "restate_fs_util",
- "restate_futures_util",
- "restate_invoker_api",
- "restate_queue",
- "restate_schema_api",
- "restate_service_client",
- "restate_service_protocol",
- "restate_test_util",
- "restate_timer_queue",
- "restate_types",
+ "restate-errors",
+ "restate-fs-util",
+ "restate-futures-util",
+ "restate-invoker-api",
+ "restate-queue",
+ "restate-schema-api",
+ "restate-service-client",
+ "restate-service-protocol",
+ "restate-test-util",
+ "restate-timer-queue",
+ "restate-types",
  "schemars",
  "serde",
  "serde_with",
@@ -4278,8 +4260,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_meta"
-version = "0.4.0"
+name = "restate-meta"
+version = "0.5.0"
 dependencies = [
  "axum",
  "bincode",
@@ -4292,18 +4274,18 @@ dependencies = [
  "okapi-operation",
  "prost 0.12.1",
  "prost-reflect",
- "restate_errors",
- "restate_fs_util",
- "restate_futures_util",
- "restate_pb",
- "restate_schema_api",
- "restate_schema_impl",
- "restate_serde_util",
- "restate_service_client",
- "restate_service_protocol",
- "restate_test_util",
- "restate_types",
- "restate_worker_api",
+ "restate-errors",
+ "restate-fs-util",
+ "restate-futures-util",
+ "restate-pb",
+ "restate-schema-api",
+ "restate-schema-impl",
+ "restate-serde-util",
+ "restate-service-client",
+ "restate-service-protocol",
+ "restate-test-util",
+ "restate-types",
+ "restate-worker-api",
  "schemars",
  "serde",
  "serde_json",
@@ -4318,17 +4300,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_network"
-version = "0.4.0"
+name = "restate-network"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
  "drain",
  "futures",
  "pin-project",
- "restate_errors",
- "restate_test_util",
- "restate_types",
+ "restate-errors",
+ "restate-test-util",
+ "restate-types",
  "thiserror",
  "tokio",
  "tracing",
@@ -4336,8 +4318,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_pb"
-version = "0.4.0"
+name = "restate-pb"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "convert_case",
@@ -4346,19 +4328,19 @@ dependencies = [
  "prost-build",
  "prost-reflect",
  "prost-types",
- "restate_types",
+ "restate-types",
  "tonic 0.10.2",
  "tonic-build",
 ]
 
 [[package]]
-name = "restate_queue"
-version = "0.4.0"
+name = "restate-queue"
+version = "0.5.0"
 dependencies = [
  "bincode",
  "criterion",
- "restate_fs_util",
- "restate_types",
+ "restate-fs-util",
+ "restate-types",
  "serde",
  "tempfile",
  "tokio",
@@ -4366,8 +4348,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_schema_api"
-version = "0.4.0"
+name = "restate-schema-api"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.21.4",
@@ -4376,9 +4358,9 @@ dependencies = [
  "http",
  "prost 0.12.1",
  "prost-reflect",
- "restate_base64_util",
- "restate_serde_util",
- "restate_types",
+ "restate-base64-util",
+ "restate-serde-util",
+ "restate-types",
  "schemars",
  "serde",
  "serde_json",
@@ -4387,8 +4369,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_schema_impl"
-version = "0.4.0"
+name = "restate-schema-impl"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4399,12 +4381,12 @@ dependencies = [
  "once_cell",
  "prost 0.12.1",
  "prost-reflect",
- "restate_errors",
- "restate_pb",
- "restate_schema_api",
- "restate_serde_util",
- "restate_test_util",
- "restate_types",
+ "restate-errors",
+ "restate-pb",
+ "restate-schema-api",
+ "restate-serde-util",
+ "restate-test-util",
+ "restate-types",
  "serde",
  "serde_json",
  "thiserror",
@@ -4414,8 +4396,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_serde_util"
-version = "0.4.0"
+name = "restate-serde-util"
+version = "0.5.0"
 dependencies = [
  "base64 0.21.4",
  "bytes",
@@ -4429,8 +4411,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_service_client"
-version = "0.4.0"
+name = "restate-server"
+version = "0.5.0"
+dependencies = [
+ "clap",
+ "codederror",
+ "derive_builder",
+ "drain",
+ "figment",
+ "futures-util",
+ "humantime",
+ "pin-project",
+ "restate-errors",
+ "restate-fs-util",
+ "restate-meta",
+ "restate-tracing-instrumentation",
+ "restate-types",
+ "restate-worker",
+ "schemars",
+ "serde",
+ "serde_with",
+ "serde_yaml",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "restate-service-client"
+version = "0.5.0"
 dependencies = [
  "arc-swap",
  "aws-config",
@@ -4447,8 +4456,8 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "once_cell",
- "restate_schema_api",
- "restate_types",
+ "restate-schema-api",
+ "restate-types",
  "rustls",
  "schemars",
  "serde",
@@ -4458,8 +4467,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_service_protocol"
-version = "0.4.0"
+name = "restate-service-protocol"
+version = "0.5.0"
 dependencies = [
  "base64 0.21.4",
  "bytes",
@@ -4471,12 +4480,12 @@ dependencies = [
  "prost-build",
  "prost-reflect",
  "prost-types",
- "restate_base64_util",
- "restate_errors",
- "restate_schema_api",
- "restate_service_client",
- "restate_test_util",
- "restate_types",
+ "restate-base64-util",
+ "restate-errors",
+ "restate-schema-api",
+ "restate-service-client",
+ "restate-test-util",
+ "restate-types",
  "size",
  "thiserror",
  "tokio",
@@ -4486,20 +4495,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_storage_api"
-version = "0.4.0"
+name = "restate-storage-api"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
  "bytestring",
  "futures-util",
- "restate_types",
+ "restate-types",
  "thiserror",
 ]
 
 [[package]]
-name = "restate_storage_proto"
-version = "0.4.0"
+name = "restate-storage-proto"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4508,14 +4517,14 @@ dependencies = [
  "prost 0.12.1",
  "prost-build",
  "prost-types",
- "restate_storage_api",
- "restate_types",
+ "restate-storage-api",
+ "restate-types",
  "thiserror",
 ]
 
 [[package]]
-name = "restate_storage_query_datafusion"
-version = "0.4.0"
+name = "restate-storage-query-datafusion"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "async-trait",
@@ -4529,12 +4538,12 @@ dependencies = [
  "futures",
  "paste",
  "prost 0.12.1",
- "restate_invoker_api",
- "restate_schema_api",
- "restate_service_protocol",
- "restate_storage_api",
- "restate_storage_rocksdb",
- "restate_types",
+ "restate-invoker-api",
+ "restate-schema-api",
+ "restate-service-protocol",
+ "restate-storage-api",
+ "restate-storage-rocksdb",
+ "restate-types",
  "schemars",
  "serde",
  "serde_json",
@@ -4545,8 +4554,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_storage_query_http"
-version = "0.4.0"
+name = "restate-storage-query-http"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.21.4",
@@ -4558,10 +4567,10 @@ dependencies = [
  "futures",
  "hyper",
  "okapi-operation",
- "restate_errors",
- "restate_schema_api",
- "restate_storage_query_datafusion",
- "restate_worker_api",
+ "restate-errors",
+ "restate-schema-api",
+ "restate-storage-query-datafusion",
+ "restate-worker-api",
  "schemars",
  "serde",
  "serde_json",
@@ -4572,8 +4581,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_storage_query_postgres"
-version = "0.4.0"
+name = "restate-storage-query-postgres"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4588,12 +4597,12 @@ dependencies = [
  "paste",
  "pgwire",
  "prost 0.12.1",
- "restate_errors",
- "restate_storage_api",
- "restate_storage_proto",
- "restate_storage_query_datafusion",
- "restate_storage_rocksdb",
- "restate_types",
+ "restate-errors",
+ "restate-storage-api",
+ "restate-storage-proto",
+ "restate-storage-query-datafusion",
+ "restate-storage-rocksdb",
+ "restate-types",
  "schemars",
  "serde",
  "thiserror",
@@ -4603,8 +4612,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_storage_rocksdb"
-version = "0.4.0"
+name = "restate-storage-rocksdb"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4617,10 +4626,10 @@ dependencies = [
  "num-bigint",
  "paste",
  "prost 0.12.1",
- "restate_errors",
- "restate_storage_api",
- "restate_storage_proto",
- "restate_types",
+ "restate-errors",
+ "restate-storage-api",
+ "restate-storage-proto",
+ "restate-types",
  "rocksdb",
  "schemars",
  "serde",
@@ -4632,8 +4641,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_test_util"
-version = "0.4.0"
+name = "restate-test-util"
+version = "0.5.0"
 dependencies = [
  "assert2",
  "googletest",
@@ -4644,16 +4653,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_timer"
-version = "0.4.0"
+name = "restate-timer"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "derive_builder",
  "futures-util",
  "pin-project",
  "priority-queue",
- "restate_test_util",
- "restate_types",
+ "restate-test-util",
+ "restate-types",
  "schemars",
  "serde",
  "thiserror",
@@ -4664,16 +4673,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_timer_queue"
-version = "0.4.0"
+name = "restate-timer-queue"
+version = "0.5.0"
 dependencies = [
  "futures",
  "tokio",
 ]
 
 [[package]]
-name = "restate_tracing_instrumentation"
-version = "0.4.0"
+name = "restate-tracing-instrumentation"
+version = "0.5.0"
 dependencies = [
  "console-subscriber",
  "derive_builder",
@@ -4693,8 +4702,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_types"
-version = "0.4.0"
+name = "restate-types"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.21.4",
@@ -4704,7 +4713,7 @@ dependencies = [
  "humantime",
  "opentelemetry_api",
  "rand",
- "restate_base64_util",
+ "restate-base64-util",
  "schemars",
  "serde",
  "serde_with",
@@ -4718,8 +4727,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_worker"
-version = "0.4.0"
+name = "restate-worker"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "assert2",
@@ -4737,29 +4746,29 @@ dependencies = [
  "pin-project",
  "prost 0.12.1",
  "prost-reflect",
- "restate_consensus",
- "restate_errors",
- "restate_ingress_dispatcher",
- "restate_ingress_grpc",
- "restate_ingress_kafka",
- "restate_invoker_api",
- "restate_invoker_impl",
- "restate_network",
- "restate_pb",
- "restate_schema_api",
- "restate_schema_impl",
- "restate_serde_util",
- "restate_service_client",
- "restate_service_protocol",
- "restate_storage_api",
- "restate_storage_query_datafusion",
- "restate_storage_query_http",
- "restate_storage_query_postgres",
- "restate_storage_rocksdb",
- "restate_test_util",
- "restate_timer",
- "restate_types",
- "restate_worker_api",
+ "restate-consensus",
+ "restate-errors",
+ "restate-ingress-dispatcher",
+ "restate-ingress-grpc",
+ "restate-ingress-kafka",
+ "restate-invoker-api",
+ "restate-invoker-impl",
+ "restate-network",
+ "restate-pb",
+ "restate-schema-api",
+ "restate-schema-impl",
+ "restate-serde-util",
+ "restate-service-client",
+ "restate-service-protocol",
+ "restate-storage-api",
+ "restate-storage-query-datafusion",
+ "restate-storage-query-http",
+ "restate-storage-query-postgres",
+ "restate-storage-rocksdb",
+ "restate-test-util",
+ "restate-timer",
+ "restate-types",
+ "restate-worker-api",
  "schemars",
  "serde",
  "serde_json",
@@ -4774,11 +4783,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate_worker_api"
-version = "0.4.0"
+name = "restate-worker-api"
+version = "0.5.0"
 dependencies = [
- "restate_schema_api",
- "restate_types",
+ "restate-schema-api",
+ "restate-types",
  "thiserror",
 ]
 
@@ -5136,13 +5145,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "service_protocol_wireshark_dissector"
-version = "0.4.0"
+name = "service-protocol-wireshark-dissector"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "mlua",
- "restate_service_protocol",
- "restate_types",
+ "restate-service-protocol",
+ "restate-types",
  "thiserror",
 ]
 
@@ -6406,16 +6415,16 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "drain",
  "reqwest",
- "restate",
- "restate_meta",
- "restate_schema_api",
- "restate_types",
- "restate_worker_api",
+ "restate-meta",
+ "restate-schema-api",
+ "restate-server",
+ "restate-types",
+ "restate-worker-api",
  "schemars",
  "serde_json",
  "serde_yaml",

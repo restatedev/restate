@@ -86,7 +86,7 @@ build *flags: (_target-installed target)
 
 build-tools *flags: (_target-installed target)
     cd {{justfile_directory()}}/tools/xtask; cargo build {{ _target-option }} {{ _features }} {{ flags }}
-    cd {{justfile_directory()}}/tools/service_protocol_wireshark_dissector; cargo build {{ _target-option }} {{ _features }} {{ flags }}
+    cd {{justfile_directory()}}/tools/service-protocol-wireshark-dissector; cargo build {{ _target-option }} {{ _features }} {{ flags }}
 
 # Might be able to use cross-rs at some point but for now it could not handle a container image that
 # has a rust toolchain installed. Alternatively, we can create a separate cross-rs builder image.

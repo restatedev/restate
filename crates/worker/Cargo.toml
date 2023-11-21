@@ -1,0 +1,82 @@
+[package]
+name = "restate-worker"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+options_schema = [
+  "dep:schemars",
+  "restate-timer/options_schema",
+  "restate-storage-rocksdb/options_schema",
+  "restate-storage-query-datafusion/options_schema",
+  "restate-storage-query-http/options_schema",
+  "restate-storage-query-postgres/options_schema",
+  "restate-ingress-kafka/options_schema",
+  "restate-ingress-grpc/options_schema",
+  "restate-invoker-impl/options_schema",
+]
+
+[dependencies]
+restate-consensus = { workspace = true }
+restate-errors = { workspace = true }
+restate-ingress-dispatcher = { workspace = true }
+restate-ingress-grpc = { workspace = true }
+restate-ingress-kafka = { workspace = true }
+restate-invoker-api = { workspace = true }
+restate-invoker-impl = { workspace = true }
+restate-network = { workspace = true }
+restate-pb = { workspace = true, features = ["builtin-service"] }
+restate-schema-api = { workspace = true, features = [ "key_extraction", "json_conversion", ] }
+restate-schema-impl = { workspace = true }
+restate-serde-util = { workspace = true, features = ["proto"] }
+restate-service-client = { workspace = true }
+restate-service-protocol = { workspace = true, features = [ "codec", "awakeable-id", "protocol", "message", ] }
+restate-storage-api = { workspace = true }
+restate-storage-query-datafusion = { workspace = true }
+restate-storage-query-http = { workspace = true }
+restate-storage-query-postgres = { workspace = true }
+restate-storage-rocksdb = { workspace = true }
+restate-timer = { workspace = true }
+restate-types = { workspace = true }
+restate-worker-api = { workspace = true }
+
+anyhow = { workspace = true }
+assert2 = { workspace = true }
+async-trait = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+codederror = { workspace = true }
+derive_builder = { workspace = true }
+drain = { workspace = true }
+futures = { workspace = true }
+humantime = { workspace = true }
+opentelemetry_api = { workspace = true }
+pin-project = { workspace = true }
+prost = { workspace = true }
+prost-reflect = { workspace = true, features = ["serde"] }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+
+[dev-dependencies]
+restate-pb = { workspace = true, features = ["mocks"] }
+restate-schema-api = { workspace = true, features = ["mocks"] }
+restate-service-protocol = { workspace = true, features = ["mocks"] }
+restate-test-util = { workspace = true, features = ["prost"] }
+restate-types = { workspace = true, features = ["mocks"] }
+
+googletest = { workspace = true }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
