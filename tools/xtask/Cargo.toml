@@ -8,15 +8,16 @@ license.workspace = true
 publish = false
 
 [dependencies]
+restate-meta = { workspace = true }
+restate-schema-api = { workspace = true, features = ["subscription"] }
+restate-server = { workspace = true, features = ["options_schema"] }
+restate-types = { workspace = true }
+restate-worker-api = { workspace = true }
+
 anyhow = { workspace = true }
 drain = { workspace = true }
 reqwest = { version = "0.11.16", default-features = false }
-restate = { workspace = true, features = ["options_schema"] }
-restate_types = { workspace = true }
-restate_meta = { workspace = true }
-restate_schema_api = { workspace = true, features = ["subscription"] }
-restate_worker_api = { workspace = true }
+schemars = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
-schemars = { workspace = true }
 tokio = { workspace = true }

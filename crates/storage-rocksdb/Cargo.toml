@@ -1,0 +1,44 @@
+[package]
+name = "restate-storage-rocksdb"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+options_schema = ["dep:schemars"]
+
+[dependencies]
+restate-errors = { workspace = true }
+restate-storage-api = { workspace = true }
+restate-storage-proto = { workspace = true, features = ["conversion"] }
+restate-types = { workspace = true }
+
+anyhow = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+codederror = { workspace = true }
+derive_builder = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+paste = { workspace = true }
+prost = { workspace = true }
+rocksdb = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+num-bigint = "0.4"
+tempfile = { workspace = true }
+
+[[bench]]
+name = "basic_benchmark"
+harness = false

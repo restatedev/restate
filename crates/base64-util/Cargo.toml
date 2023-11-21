@@ -1,0 +1,11 @@
+[package]
+name = "restate-base64-util"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+base64 = { workspace = true }
