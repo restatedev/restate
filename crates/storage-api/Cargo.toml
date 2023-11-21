@@ -1,0 +1,17 @@
+[package]
+name = "restate-storage-api"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-types = { workspace = true }
+
+anyhow = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+futures-util = { workspace = true }
+thiserror = { workspace = true }

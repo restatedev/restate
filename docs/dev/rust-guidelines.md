@@ -11,8 +11,11 @@ All the guidelines available in https://rust-lang.github.io/api-guidelines/check
   When consuming it, it should be referred as `invoker::Error` or imported as `use invoker::Error as InvokerError`.
 * Avoid defining the struct field's visibility as `pub` or even `pub(crate)`, but rather use getters/setters. There are two notable exceptions to this rule:
   * When a type needs to be deconstructed, to take ownership of the single fields, which would be rather heavy to `Clone`. In these cases, either make the field `pub` or provide a [`into_inner(self)` deconstructor](https://users.rust-lang.org/t/explanation-of-into-inner/13872) method. 
-  * When defining [Passive data structures](https://en.wikipedia.org/wiki/Passive_data_structure), such as Restate domain types in `restate_types` crate. In these cases, it is fine to declare the field as `pub` for ease to use.
+  * When defining [Passive data structures](https://en.wikipedia.org/wiki/Passive_data_structure), such as Restate domain types in `restate-types` crate. In these cases, it is fine to declare the field as `pub` for ease to use.
 * The crate entrypoint (`lib.rs`) file should contain `pub` (re-)exports to the crate public types.
+* Restate-specific crate names (in `Cargo.toml`) should start with `restate-` and placed under `crates/` directory without the `restate-` prefix.
+* Crate names and their directories should be hyphenated (i.e. `restate-types` rather than `restate_types`)
+* Please keep `Cargo.toml` organised. Restate internal dependencies at the top, everything else after an empty line, and keep the list of dependencies sorted (per block).
 
 ### `restate-types`
 
@@ -25,7 +28,7 @@ if multiple interfaces needs the same type, move it to `restate-types` afterward
 ### Util modules
 
 When implementing a utility method/type to interact with 3rd party library, that should be shared by different Restate components, 
-place it in a util module that groups all the utilities to interact with that specific library, e.g. `restate_serde_util`. 
+place it in a util module that groups all the utilities to interact with that specific library, e.g. `restate-serde-util`. 
 Alternatively, you could also place it in ad-hoc module.
 
 ## Restate component design
@@ -78,4 +81,4 @@ The result can be unforeseen race conditions.
 * Don't use `Box<dyn std::error::Error>` but rather use `anyhow::Error` for generic errors/error type erasure.
 * `anyhow::Error` should be used only when it is irrelevant for the consumer of the fallible method to distinguish the error type. 
   It is fine to use `anyhow::Error` as error source when defining a variant of your error type using `thiserror`, in order to hide the implementation details of the fallible method.   
-* When defining error types, use `CodedError` to document how to troubleshoot the error. These documentation pages are automatically embedded in the Restate documentation. Check `restate_errors` for more details.
+* When defining error types, use `CodedError` to document how to troubleshoot the error. These documentation pages are automatically embedded in the Restate documentation. Check `restate-errors` for more details.
