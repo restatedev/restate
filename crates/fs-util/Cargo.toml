@@ -1,0 +1,16 @@
+[package]
+name = "restate-fs-util"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+tokio = { workspace = true, features = ["fs"] }
+tracing = { workspace = true }
+uuid = { workspace = true }

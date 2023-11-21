@@ -1,0 +1,63 @@
+[package]
+name = "restate-meta"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+options_schema = ["restate-service-client/options_schema"]
+
+[dependencies]
+# Async
+drain = { workspace = true }
+futures = { workspace = true }
+restate-futures-util = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+# Rest API
+axum = "0.6.18"
+hyper = { workspace = true, features = ["full"] }
+okapi-operation = { version = "0.2.1", features = ["axum-integration"] }
+tower = { workspace = true, features = ["load-shed", "limit"] }
+
+# Serde
+bincode = { workspace = true }
+restate-serde-util = { workspace = true, features = ["schema"] }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+
+# Service discovery and metadata
+prost = { workspace = true }
+prost-reflect = { workspace = true }
+restate-fs-util = { workspace = true }
+restate-pb = { workspace = true }
+restate-schema-api = { workspace = true, features = [ "service", "endpoint", "discovery", "serde", "serde_schema", ] }
+restate-schema-impl = { workspace = true }
+restate-service-client = { workspace = true }
+restate-service-protocol = { workspace = true, features = ["discovery"] }
+restate-types = { workspace = true, features = ["serde", "serde_schema"] }
+restate-worker-api = { workspace = true }
+
+# Others
+bytestring = { workspace = true }
+codederror = { workspace = true }
+derive_builder = { workspace = true }
+restate-errors = { workspace = true, features = ["include_doc"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+restate-pb = { workspace = true, features = ["mocks"] }
+restate-schema-api = { workspace = true, features = ["mocks"] }
+restate-test-util = { workspace = true }
+
+tempfile = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

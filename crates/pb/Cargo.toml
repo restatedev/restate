@@ -1,0 +1,28 @@
+[package]
+name = "restate-pb"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+builtin-service = ["restate-types", "dep:async-trait"]
+mocks = []
+
+[dependencies]
+restate-types = { workspace = true, optional = true }
+
+async-trait = { workspace = true, optional = true }
+once_cell = { workspace = true }
+prost = { workspace = true }
+prost-reflect = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
+
+[build-dependencies]
+convert_case = "0.6"
+prost-build = { workspace = true }
+tonic-build = { workspace = true }

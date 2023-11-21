@@ -1,0 +1,20 @@
+[package]
+name = "restate-futures-util"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+futures = { workspace = true }
+pin-project = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+restate-test-util = { workspace = true }
+
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
