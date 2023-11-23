@@ -8,6 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-fn main() {
-    println!("Restate cli placeholder, run restate-server if you need to run the server!");
+use restate_cli::build_info;
+
+#[tokio::main]
+async fn main() {
+    println!(
+        "Restate cli {} placeholder, run restate-server if you need to run the server!",
+        build_info::RESTATE_CLI_VERSION
+    );
 }
