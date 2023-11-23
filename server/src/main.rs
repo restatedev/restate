@@ -11,6 +11,7 @@
 use clap::Parser;
 use codederror::CodedError;
 use restate_errors::fmt::RestateCode;
+use restate_server::build_info;
 use restate_server::Application;
 use restate_server::Configuration;
 use restate_tracing_instrumentation::TracingGuard;
@@ -19,7 +20,7 @@ use std::ops::Div;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 mod signal;
 
@@ -86,8 +87,8 @@ fn main() {
         Ok(c) => c,
         Err(e) => {
             // We cannot use tracing here as it's not configured yet
-            println!("{}", e.decorate());
-            println!("{:#?}", RestateCode::from(&e));
+            eprintln!("{}", e.decorate());
+            eprintln!("{:#?}", RestateCode::from(&e));
             std::process::exit(EXIT_CODE_FAILURE);
         }
     };
@@ -106,7 +107,7 @@ fn main() {
             .init("Restate binary", std::process::id())
             .expect("failed to instrument logging and tracing!");
 
-        info!("Starting Restate");
+        info!("Starting Restate Server {}", build_info::build_info());
         info!(
             "Loading configuration file from {}",
             cli_args.config_file.display()
