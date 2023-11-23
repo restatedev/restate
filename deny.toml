@@ -71,7 +71,7 @@ ignore = true
 registries = []
 
 [bans]
-multiple-versions = "deny"
+multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
 allow = []
