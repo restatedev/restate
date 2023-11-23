@@ -169,7 +169,7 @@ where
                                 leadership_state = message_collector.send().await?;
                             }
                             restate_consensus::Command::BecomeLeader(leader_epoch) => {
-                                info!(restate.partition.peer = %peer_id, restate.partition.id = %partition_id, restate.partition.leader_epoch = %leader_epoch, "Become leader");
+                                debug!(restate.partition.peer = %peer_id, restate.partition.id = %partition_id, restate.partition.leader_epoch = %leader_epoch, "Become leader");
 
                                 (actuator_stream, leadership_state) = leadership_state.become_leader(
                                     leader_epoch,
