@@ -20,7 +20,7 @@ use std::ops::Div;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
-use tracing::{debug, info, trace, warn};
+use tracing::{info, trace, warn};
 
 mod signal;
 
