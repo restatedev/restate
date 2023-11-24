@@ -475,11 +475,11 @@ impl Display for LambdaARN {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum InvalidLambdaARN {
     #[error("A qualified ARN must have 8 components delimited by `:`")]
     InvalidFormat,
-    #[error("A qualified ARN needs a version or alias suffix. If you want to use the unpublished version, provide $LATEST")]
+    #[error("A qualified ARN needs a version or alias suffix. If you want to use the unpublished version, provide $LATEST and make sure your shell doesn't treat it as a variable")]
     MissingVersionSuffix,
     #[error("First component of the ARN must be `arn`")]
     InvalidPrefix,
@@ -521,15 +521,14 @@ impl FromStr for LambdaARN {
         if service != "lambda" {
             return Err(InvalidLambdaARN::InvalidService);
         }
-        if partition.is_empty()
-            || region.is_empty()
-            || account_id.is_empty()
-            || name.is_empty()
-            || version.is_empty()
-        {
+        if partition.is_empty() || region.is_empty() || account_id.is_empty() || name.is_empty() {
             return Err(InvalidLambdaARN::InvalidComponent);
         }
 
+        if version.is_empty() {
+            // special case this common mistake
+            return Err(InvalidLambdaARN::MissingVersionSuffix);
+        }
         let lambda = Self {
             partition: arn.slice_ref(partition),
             region: arn.slice_ref(region),
@@ -619,6 +618,29 @@ mod tests {
 
         for (bad, error) in bad_strs {
             assert_eq!(error, InvocationId::from_str(bad).unwrap_err())
+        }
+    }
+
+    #[test]
+    fn roundtrip_lambda_arn() {
+        let good = "arn:aws:lambda:eu-central-1:1234567890:function:e2e-node-services:version";
+
+        let expected = LambdaARN::from_str(good).unwrap();
+        let parsed = expected.to_string();
+
+        assert_eq!(good, parsed)
+    }
+
+    #[test]
+    fn missing_version_lambda_arn() {
+        for bad in [
+            "arn:aws:lambda:eu-central-1:1234567890:function:e2e-node-services",
+            "arn:aws:lambda:eu-central-1:1234567890:function:e2e-node-services:",
+        ] {
+            assert_eq!(
+                LambdaARN::from_str(bad).unwrap_err(),
+                InvalidLambdaARN::MissingVersionSuffix
+            );
         }
     }
 }
