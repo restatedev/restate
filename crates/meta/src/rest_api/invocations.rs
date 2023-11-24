@@ -8,13 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use super::error::*;
 use super::state::*;
 
+use restate_types::identifiers::InvocationId;
+
 use axum::extract::{Path, State};
 use okapi_operation::*;
-use restate_types::identifiers::InvocationId;
-use std::sync::Arc;
 
 /// Cancel/kill an invocation
 #[openapi(

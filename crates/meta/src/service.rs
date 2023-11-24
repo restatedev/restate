@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
+use std::future::Future;
+
 use super::storage::{MetaStorage, MetaStorageError};
 
-use hyper::Uri;
 use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
@@ -18,16 +20,15 @@ use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
 use restate_schema_impl::{
     InsertServiceUpdateCommand, RegistrationError, Schemas, SchemasUpdateCommand,
 };
+use restate_service_client::{ServiceClient, ServiceEndpointAddress};
 use restate_service_protocol::discovery::{
     DiscoverEndpoint, ServiceDiscovery, ServiceDiscoveryError,
 };
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
-use std::collections::HashMap;
 
-use restate_service_client::{ServiceClient, ServiceEndpointAddress};
-use std::future::Future;
+use hyper::Uri;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 

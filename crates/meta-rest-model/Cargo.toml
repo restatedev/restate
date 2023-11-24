@@ -1,0 +1,22 @@
+[package]
+name = "restate-meta-rest-model"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+restate-types = { workspace = true, features = ["serde", "serde_schema"] }
+restate-schema-api = { workspace = true, features = [ "service", "endpoint", "discovery", "serde", "serde_schema", "subscription" ] }
+restate-serde-util = { workspace = true, features = ["schema"] }
+
+http = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }

@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::service::MetaError;
+
+use restate_schema_impl::RegistrationError;
+
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -16,11 +20,8 @@ use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
-use restate_schema_impl::RegistrationError;
 use schemars::JsonSchema;
 use serde::Serialize;
-
-use crate::service::MetaError;
 
 /// This error is used by handlers to propagate API errors,
 /// and later converted to a response through the IntoResponse implementation

@@ -14,12 +14,13 @@ use crate::cli_env::CliEnv;
 use crate::console::{c_println, Icon};
 use crate::meta_client::MetaClientInterface;
 use crate::ui::console::StyledTable;
+
+use restate_meta_rest_model::endpoints::{ProtocolType, ServiceEndpoint, ServiceEndpointResponse};
+use restate_meta_rest_model::services::{InstanceType, MethodMetadata};
+
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::{Attribute, Cell, Table};
-use restate_meta::rest_api::endpoints::{ServiceEndpoint, ServiceEndpointResponse};
-use restate_schema_api::endpoint::ProtocolType;
-use restate_schema_api::service::{InstanceType, MethodMetadata};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
