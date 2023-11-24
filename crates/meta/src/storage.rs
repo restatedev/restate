@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::path::PathBuf;
+
+use restate_schema_impl::SchemasUpdateCommand;
+
 use futures::future::BoxFuture;
 use futures::FutureExt;
-use restate_schema_impl::SchemasUpdateCommand;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use tokio::io;
 use tracing::trace;
 

@@ -8,69 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use super::error::*;
 use super::state::*;
 
+use restate_meta_rest_model::subscriptions::*;
+
 use axum::extract::Query;
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, Uri};
+use axum::http::StatusCode;
 use axum::{http, Json};
 use okapi_operation::*;
-use restate_schema_api::subscription::{
-    ListSubscriptionFilter, Subscription, SubscriptionResolver,
-};
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-use std::collections::HashMap;
-use std::sync::Arc;
-
-#[serde_as]
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CreateSubscriptionRequest {
-    /// # Identifier
-    ///
-    /// Identifier of the subscription. If not specified, one will be auto-generated.
-    pub id: Option<String>,
-    /// # Source
-    ///
-    /// Source uri. Accepted forms:
-    ///
-    /// * `kafka://<cluster_name>/<topic_name>`, e.g. `service://my-cluster/my-topic`
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[schemars(with = "String")]
-    pub source: Uri,
-    /// # Sink
-    ///
-    /// Sink uri. Accepted forms:
-    ///
-    /// * `service://<service_name>/<method_name>`, e.g. `service://com.example.MySvc/MyMethod`
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[schemars(with = "String")]
-    pub sink: Uri,
-    /// # Options
-    ///
-    /// Additional options to apply to the subscription.
-    pub options: Option<HashMap<String, String>>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct SubscriptionResponse {
-    id: String,
-    source: String,
-    sink: String,
-    options: HashMap<String, String>,
-}
-
-impl From<Subscription> for SubscriptionResponse {
-    fn from(value: Subscription) -> Self {
-        Self {
-            id: value.id().to_string(),
-            source: value.source().to_string(),
-            sink: value.sink().to_string(),
-            options: value.metadata().clone(),
-        }
-    }
-}
 
 /// Create subscription.
 #[openapi(
@@ -135,17 +84,6 @@ where
         .ok_or_else(|| MetaApiError::SubscriptionNotFound(subscription_id.clone()))?;
 
     Ok(SubscriptionResponse::from(subscription).into())
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ListSubscriptionsParams {
-    sink: Option<String>,
-    source: Option<String>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct ListSubscriptionsResponse {
-    subscriptions: Vec<SubscriptionResponse>,
 }
 
 /// List subscriptions.

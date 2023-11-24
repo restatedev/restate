@@ -8,25 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// TODO: FIX ME
-pub mod rest_api;
+mod rest_api;
 mod service;
 mod storage;
 
-use codederror::CodedError;
-use rest_api::MetaRestEndpoint;
+use std::net::SocketAddr;
+use std::time::Duration;
+
+use crate::rest_api::MetaRestEndpoint;
+
 use restate_schema_impl::Schemas;
+use restate_service_client::AssumeRoleCacheMode;
 use restate_types::retries::RetryPolicy;
+
+use codederror::CodedError;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use service::MetaService;
-use std::net::SocketAddr;
-use std::time::Duration;
 use storage::FileMetaStorage;
 use tokio::join;
 use tracing::{debug, error};
 
-use restate_service_client::AssumeRoleCacheMode;
 pub use restate_service_client::{
     Options as ServiceClientOptions, OptionsBuilder as ServiceClientOptionsBuilder,
     OptionsBuilderError as LambdaClientOptionsBuilderError,

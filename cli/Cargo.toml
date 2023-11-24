@@ -14,8 +14,7 @@ build = "build.rs"
 default = []
 
 [dependencies]
-restate-meta = { workspace = true }
-restate-schema-api = { workspace = true }
+restate-meta-rest-model = { workspace = true }
 restate-serde-util = { workspace = true }
 
 anyhow = { workspace = true }

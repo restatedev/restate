@@ -10,16 +10,21 @@
 
 //! This module implements the Meta API endpoint.
 
-// TODO: FIX ME
-pub mod endpoints;
+mod endpoints;
 mod error;
 mod health;
 mod invocations;
 mod methods;
-// TODO: FIX ME
-pub mod services;
+mod services;
 mod state;
 mod subscriptions;
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use restate_schema_api::endpoint::EndpointMetadataResolver;
+use restate_schema_api::service::ServiceMetadataResolver;
+use restate_schema_api::subscription::SubscriptionResolver;
 
 use axum::error_handling::HandleErrorLayer;
 use axum::http::StatusCode;
@@ -28,11 +33,6 @@ use futures::FutureExt;
 use hyper::Server;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
-use restate_schema_api::endpoint::EndpointMetadataResolver;
-use restate_schema_api::service::ServiceMetadataResolver;
-use restate_schema_api::subscription::SubscriptionResolver;
-use std::net::SocketAddr;
-use std::sync::Arc;
 use tower::ServiceBuilder;
 use tracing::info;
 

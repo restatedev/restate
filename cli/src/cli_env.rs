@@ -12,15 +12,14 @@
 
 #[cfg(test)]
 use std::collections::HashMap;
-
 use std::io::IsTerminal;
 use std::path::PathBuf;
+
+use crate::app::{GlobalOpts, UiConfig};
 
 use anyhow::Result;
 use dotenvy::dotenv;
 use url::Url;
-
-use crate::app::{GlobalOpts, UiConfig};
 
 pub const CONFIG_FILENAME: &str = "config.toml";
 
