@@ -27,9 +27,9 @@ use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
 use super::error::*;
 use super::state::*;
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ListServicesResponse {
-    services: Vec<ServiceMetadata>,
+    pub services: Vec<ServiceMetadata>,
 }
 
 /// List services
