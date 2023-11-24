@@ -51,7 +51,7 @@ pub struct Icon<'a, 'b>(pub &'a str, pub &'b str);
 
 /// Text with a style that drops the style if colors are disabled.
 #[derive(Copy, Clone)]
-pub struct Styled<'a, T>(pub Style, pub &'a T);
+pub struct Styled<'a, T: ?Sized>(pub Style, pub &'a T);
 
 impl Display for Icon<'_, '_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -65,7 +65,7 @@ impl Display for Icon<'_, '_> {
 
 impl<T> Display for Styled<'_, T>
 where
-    T: Display,
+    T: Display + ?Sized,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if colors_enabled() {

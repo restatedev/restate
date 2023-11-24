@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod describe;
 mod list;
 
 use cling::prelude::*;
@@ -17,4 +18,6 @@ use cling::prelude::*;
 pub enum Services {
     /// List the registered services
     List(list::List),
+    /// Prints detailed information about a given service
+    Describe(describe::Describe),
 }
