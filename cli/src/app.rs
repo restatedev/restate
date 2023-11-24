@@ -30,30 +30,56 @@ pub struct CliApp {
     pub cmd: Command,
 }
 
-#[derive(Args, Clone)]
-pub struct GlobalOpts {}
+#[derive(Args, Clone, Default)]
+pub struct UiConfig {
+    /// Which table output style to use
+    #[arg(long, default_value = "compact", global = true)]
+    pub table_style: TableStyle,
+}
+
+#[derive(ValueEnum, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TableStyle {
+    #[default]
+    /// No borders, condensed layout
+    Compact,
+    /// UTF8 borders, good for multiline text
+    Borders,
+}
+
+#[derive(Args, Collect, Clone, Default)]
+pub struct GlobalOpts {
+    /// Auto answer "yes" to confirmation prompts
+    #[arg(long, short, global = true)]
+    pub yes: bool,
+
+    #[clap(flatten)]
+    pub ui_config: UiConfig,
+}
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Command {
     #[clap(name = "whoami")]
     WhoAmiI(whoami::WhoAmI),
+    #[clap(subcommand)]
+    Services(services::Services),
 }
 
 fn init(
     Collected(verbosity): Collected<clap_verbosity_flag::Verbosity<Quiet>>,
+    global_opts: &GlobalOpts,
 ) -> Result<State<CliEnv>> {
-    let env = CliEnv::load()?;
+    let env = CliEnv::load(global_opts)?;
     // Setup logging from env and from -v .. -vvvv
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_max_level(verbosity.log_level_filter().as_trace())
-        .with_ansi(env.is_terminal())
+        .with_ansi(env.colorful)
         .init();
 
     // We only log after we've initialized the logger with the desired log
     // level.
-    match env.env_file_path() {
+    match &env.loaded_env_file {
         Some(path) => {
             info!("Loaded environment file from: {}", path.display())
         }
