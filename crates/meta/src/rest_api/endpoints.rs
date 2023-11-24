@@ -69,7 +69,7 @@ pub enum RegisterServiceEndpointMetadata {
     },
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RegisterServiceResponse {
     name: String,
     revision: ServiceRevision,
@@ -142,18 +142,18 @@ pub async fn create_service_endpoint<S, W>(
     ))
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceEndpointResponse {
-    id: EndpointId,
+    pub id: EndpointId,
     #[serde(flatten)]
-    service_endpoint: ServiceEndpoint,
+    pub service_endpoint: ServiceEndpoint,
     /// # Services
     ///
     /// List of services exposed by this service endpoint.
-    services: Vec<RegisterServiceResponse>,
+    pub services: Vec<RegisterServiceResponse>,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ServiceEndpoint {
     Http {
@@ -162,13 +162,16 @@ pub enum ServiceEndpoint {
         uri: Uri,
         protocol_type: ProtocolType,
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
     },
     Lambda {
         arn: LambdaARN,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         assume_role_arn: Option<String>,
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
     },
 }
@@ -230,9 +233,9 @@ pub async fn get_service_endpoint<S: EndpointMetadataResolver, W>(
     .into())
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ListServiceEndpointsResponse {
-    endpoints: Vec<ServiceEndpointResponse>,
+    pub endpoints: Vec<ServiceEndpointResponse>,
 }
 
 /// List services

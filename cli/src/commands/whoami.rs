@@ -13,52 +13,50 @@ use comfy_table::Table;
 
 use crate::build_info;
 use crate::cli_env::CliEnv;
+use crate::meta_client::MetaClientInterface;
+use crate::{c_eprintln, c_error, c_println, c_success};
 
 #[derive(Run, Parser, Clone)]
 #[cling(run = "run")]
 pub struct WhoAmI {}
 
 pub async fn run(State(env): State<CliEnv>) {
-    if env.colorful() {
-        println!("{}", crate::art::render_logo());
-        println!("            Restate");
-        println!("       https://restate.dev/");
-        println!();
+    if crate::console::colors_enabled() {
+        c_println!("{}", crate::art::render_logo());
+        c_println!("            Restate");
+        c_println!("       https://restate.dev/");
+        c_println!();
     }
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
-    table.add_row(vec![
-        "Ingress base URL",
-        &env.ingress_base_url().to_string(),
-    ]);
+    table.add_row(vec!["Ingress base URL", env.ingress_base_url.as_ref()]);
 
-    table.add_row(vec!["Meta URL", &env.meta_base_url().to_string()]);
-    println!("{}", table);
+    table.add_row(vec!["Meta URL", env.meta_base_url.as_ref()]);
+    c_println!("{}", table);
 
-    println!();
-    println!("Local Environment");
+    c_println!();
+    c_println!("Local Environment");
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
     table.add_row(vec![
         "Config Dir",
         &format!(
             "{} {}",
-            env.config_home().display(),
-            if env.config_home().exists() {
+            env.config_home.display(),
+            if env.config_home.exists() {
                 "(exists)"
             } else {
                 "(does not exist)"
             }
         ),
     ]);
-    let config_file = env.config_file_path();
 
     table.add_row(vec![
         "Config File",
         &format!(
             "{} {}",
-            config_file.display(),
-            if config_file.exists() {
+            env.config_file.display(),
+            if env.config_file.exists() {
                 "(exists)"
             } else {
                 "(does not exist)"
@@ -68,14 +66,15 @@ pub async fn run(State(env): State<CliEnv>) {
 
     table.add_row(vec![
         "Loaded .env file",
-        &env.env_file_path()
+        &env.loaded_env_file
+            .as_ref()
             .map(|x| x.display().to_string())
             .unwrap_or("(NONE)".to_string()),
     ]);
-    println!("{}", table);
+    c_println!("{}", table);
 
-    println!();
-    println!("Build Information");
+    c_println!();
+    c_println!("Build Information");
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
     table.add_row(vec!["Version", build_info::RESTATE_CLI_VERSION]);
@@ -89,5 +88,29 @@ pub async fn run(State(env): State<CliEnv>) {
     table.add_row(vec!["Git SHA", build_info::RESTATE_CLI_COMMIT_SHA]);
     table.add_row(vec!["Git Commit Date", build_info::RESTATE_CLI_COMMIT_DATE]);
     table.add_row(vec!["Git Commit Branch", build_info::RESTATE_CLI_BRANCH]);
-    println!("{}", table);
+    c_println!("{}", table);
+
+    c_println!();
+    // Get meta client, don't fail completely if we can't get one!
+    if let Ok(client) = crate::meta_client::MetaClient::new(&env) {
+        match client.health().await {
+            Ok(envelope) if envelope.status_code().is_success() => {
+                c_success!("Meta Service '{}' is healthy!", env.meta_base_url);
+            }
+            Ok(envelope) => {
+                c_error!("Meta Service '{}' is unhealthy:", env.meta_base_url);
+                let url = envelope.url().clone();
+                let status_code = envelope.status_code();
+                let body = envelope.into_text().await;
+                c_eprintln!("   >> [{}] from '{}'", status_code.to_string(), url);
+                c_eprintln!("   >> {}", body.unwrap_or_default());
+            }
+            Err(e) => {
+                c_error!("Meta Service '{}' is unhealthy:", env.meta_base_url);
+                c_eprintln!("   >> {}", e);
+            }
+        }
+    }
+
+    c_println!();
 }

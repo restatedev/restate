@@ -14,22 +14,32 @@ build = "build.rs"
 default = []
 
 [dependencies]
+restate-meta = { workspace = true }
+restate-schema-api = { workspace = true }
+
 anyhow = { workspace = true }
+async-trait = { version = "0.1.66" }
 clap = { version = "4.1", features = ["derive", "env", "wrap_help", "color"] }
 clap-verbosity-flag = { version = "2.0.1" }
 cling = { version = "0.1.0", default-features = false, features = ["derive"] }
 comfy-table = "7.1"
+dialoguer = { version = "0.11.0" }
 dirs = { version = "5.0" }
 dotenvy = "0.15"
 indicatif = "0.17.7"
+is-terminal = { version = "0.4.9" }
 once_cell = { workspace = true }
+reqwest = { version = "0.11.22", features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+termcolor = { version = "1.4.0" }
+thiserror = { workspace = true }
+tiny-gradient = { version = "0.1.0" }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 tracing-log = { version = "0.2.0" }
-is-terminal = { version = "0.4.9" }
-http = { version = "1.0.0" }
-tiny-gradient = { version = "0.1.0" }
+tracing-subscriber = { workspace = true }
+url = { version = "2.4.1" }
 
 
 [build-dependencies]
