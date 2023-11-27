@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod build_info;
+mod list;
 
-mod app;
-mod art;
-mod cli_env;
-mod commands;
-mod meta_client;
-mod ui;
+use cling::prelude::*;
 
-pub use app::CliApp;
-pub(crate) use ui::console;
+#[derive(Run, Subcommand, Clone)]
+#[clap(visible_alias = "svc")]
+pub enum Services {
+    /// List the registered services
+    List(list::List),
+}

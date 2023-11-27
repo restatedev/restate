@@ -8,14 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod build_info;
+//! A wrapper client for meta HTTP service.
 
-mod app;
-mod art;
-mod cli_env;
-mod commands;
-mod meta_client;
-mod ui;
+mod client;
+mod meta_interface;
 
-pub use app::CliApp;
-pub(crate) use ui::console;
+pub use client::MetaClient;
+pub use meta_interface::MetaClientInterface;
