@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Display;
+
 use crate::app::UiConfig;
 
 use super::console::{Icon, StyledTable};
@@ -51,6 +53,24 @@ impl StyledTable for comfy_table::Table {
                 table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
             }
         }
+        if !crate::console::colors_enabled() {
+            table.force_no_tty();
+        }
         table
+    }
+
+    fn set_styled_header(&mut self, headers: Vec<&str>) -> &mut Self {
+        self.set_header(
+            headers
+                .into_iter()
+                .map(|c| comfy_table::Cell::new(c).add_attribute(comfy_table::Attribute::Bold)),
+        )
+    }
+
+    fn add_kv_row<V: Display>(&mut self, key: &str, value: V) -> &mut Self {
+        self.add_row(vec![
+            comfy_table::Cell::new(key).add_attribute(comfy_table::Attribute::Bold),
+            comfy_table::Cell::new(value),
+        ])
     }
 }

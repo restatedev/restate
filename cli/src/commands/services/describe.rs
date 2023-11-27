@@ -39,14 +39,14 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
         .await?;
 
     let mut table = Table::new_styled(&env.ui_config);
-    table.add_row(vec!["Name:", svc.name.as_ref()]);
-    table.add_row(vec![
+    table.add_kv_row("Name:", svc.name);
+    table.add_kv_row(
         "Flavor (Instance Type):",
         &format!("{:?}", svc.instance_type),
-    ]);
-    table.add_row(vec!["Revision:", &svc.revision.to_string()]);
-    table.add_row(vec!["Public:", &svc.public.to_string()]);
-    table.add_row(vec!["Endpoint Id:", &svc.endpoint_id.to_string()]);
+    );
+    table.add_kv_row("Revision:", svc.revision);
+    table.add_kv_row("Public:", svc.public);
+    table.add_kv_row("Endpoint Id:", &svc.endpoint_id);
 
     let endpoint = client
         .get_endpoint(&svc.endpoint_id)
@@ -62,7 +62,8 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
     c_println!();
     c_println!("{}", Styled(Style::Info, "Methods"));
     let mut table = Table::new_styled(&env.ui_config);
-    table.set_header(vec!["NAME", "INPUT TYPE", "OUTPUT TYPE", "KEY FIELD INDEX"]);
+    table.set_styled_header(vec!["NAME", "INPUT TYPE", "OUTPUT TYPE", "KEY FIELD INEDX"]);
+
     for method in svc.methods {
         table.add_row(vec![
             &method.name,
@@ -87,14 +88,14 @@ fn add_endpoint(endpoint: &ServiceEndpointResponse, table: &mut Table) {
             protocol_type,
             additional_headers,
         } => {
-            table.add_row(vec!["Endpoint Type:", "HTTP"]);
-            table.add_row(vec!["Endpoint URL:", &uri.to_string()]);
+            table.add_kv_row("Endpoint Type:", "HTTP");
+            table.add_kv_row("Endpoint URL:", uri);
             let protocol_type = match protocol_type {
-                ProtocolType::RequestResponse => "RequestResponse",
-                ProtocolType::BidiStream => "BidiStream",
+                ProtocolType::RequestResponse => "Request/Response",
+                ProtocolType::BidiStream => "Streaming",
             }
             .to_string();
-            table.add_row(vec!["Endpoint Protocol:", &protocol_type]);
+            table.add_kv_row("Endpoint Protocol:", protocol_type);
             additional_headers.clone()
         }
         ServiceEndpoint::Lambda {
@@ -102,14 +103,13 @@ fn add_endpoint(endpoint: &ServiceEndpointResponse, table: &mut Table) {
             assume_role_arn,
             additional_headers,
         } => {
-            table.add_row(vec!["Endpoint Type:", "AWS Lambda"]);
-            table.add_row(vec!["Endpoint ARN:", &arn.to_string()]);
-            table.add_row_if(
-                |_, _| assume_role_arn.is_some(),
-                vec![
-                    "Endpoint Assume Role ARN:",
-                    assume_role_arn.as_ref().unwrap(),
-                ],
+            table.add_kv_row("Endpoint Type:", "AWS Lambda");
+            table.add_kv_row("Endpoint ARN:", arn);
+            table.add_kv_row("Endpoint Protocol:", "Request/Response");
+            table.add_kv_row_if(
+                || assume_role_arn.is_some(),
+                "Endpoint Assume Role ARN:",
+                assume_role_arn.as_ref().unwrap(),
             );
             additional_headers.clone()
         }
@@ -119,9 +119,9 @@ fn add_endpoint(endpoint: &ServiceEndpointResponse, table: &mut Table) {
         additional_headers.into();
 
     for (header, value) in additional_headers.iter() {
-        table.add_row(vec![
+        table.add_kv_row(
             "Endpoint Additional Header:",
             &format!("{}: {}", header, value.to_str().unwrap_or("<BINARY>")),
-        ]);
+        );
     }
 }
