@@ -36,8 +36,9 @@ serde_with = { workspace = true }
 prost = { workspace = true }
 prost-reflect = { workspace = true }
 restate-fs-util = { workspace = true }
+restate-meta-rest-model = { workspace = true, features = ["schema"] }
 restate-pb = { workspace = true }
-restate-schema-api = { workspace = true, features = [ "service", "endpoint", "discovery", "serde", "serde_schema", ] }
+restate-schema-api = { workspace = true, features = ["service", "endpoint", "discovery", "serde", "serde_schema"] }
 restate-schema-impl = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }

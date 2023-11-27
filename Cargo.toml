@@ -40,6 +40,7 @@ restate-ingress-kafka = { path = "crates/ingress-kafka" }
 restate-invoker-api = { path = "crates/invoker-api" }
 restate-invoker-impl = { path = "crates/invoker-impl" }
 restate-meta = { path = "crates/meta" }
+restate-meta-rest-model = { path = "crates/meta-rest-model" }
 restate-network = { path = "crates/network" }
 restate-pb = { path = "crates/pb" }
 restate-queue = { path = "crates/queue" }

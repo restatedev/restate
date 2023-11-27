@@ -10,6 +10,13 @@
 
 use std::sync::Arc;
 
+use super::error::*;
+use super::state::*;
+
+use restate_meta_rest_model::services::*;
+use restate_pb::grpc::reflection::FileDescriptorResponse;
+use restate_schema_api::service::ServiceMetadataResolver;
+
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
@@ -18,19 +25,6 @@ use okapi_operation::okapi::openapi3::MediaType;
 use okapi_operation::okapi::Map;
 use okapi_operation::*;
 use prost::Message;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-use restate_pb::grpc::reflection::FileDescriptorResponse;
-use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
-
-use super::error::*;
-use super::state::*;
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ListServicesResponse {
-    pub services: Vec<ServiceMetadata>,
-}
 
 /// List services
 #[openapi(
@@ -69,15 +63,6 @@ pub async fn get_service<S: ServiceMetadataResolver, W>(
         .resolve_latest_service_metadata(&service_name)
         .map(Into::into)
         .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ModifyServiceRequest {
-    /// # Public
-    ///
-    /// If true, the service can be invoked through the ingress.
-    /// If false, the service can be invoked only from another Restate service.
-    pub public: bool,
 }
 
 /// Modify a service
