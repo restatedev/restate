@@ -81,6 +81,20 @@ where
 /// Impl is in stylesheets.
 pub trait StyledTable {
     fn new_styled(ui_config: &UiConfig) -> Self;
+    fn set_styled_header(&mut self, headers: Vec<&str>) -> &mut Self;
+    fn add_kv_row<V: Display>(&mut self, key: &str, value: V) -> &mut Self;
+    fn add_kv_row_if<P: Fn() -> bool, V: Display>(
+        &mut self,
+        predicate: P,
+        key: &str,
+        value: V,
+    ) -> &mut Self {
+        if predicate() {
+            self.add_kv_row(key, value)
+        } else {
+            self
+        }
+    }
 }
 
 #[macro_export]

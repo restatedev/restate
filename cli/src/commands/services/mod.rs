@@ -14,7 +14,7 @@ mod list;
 use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
-#[clap(visible_alias = "svc")]
+#[clap(visible_alias = "svc", alias = "service")]
 pub enum Services {
     /// List the registered services
     List(list::List),

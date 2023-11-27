@@ -20,7 +20,7 @@ use restate_meta_rest_model::services::{InstanceType, MethodMetadata};
 
 use anyhow::{Context, Result};
 use cling::prelude::*;
-use comfy_table::{Attribute, Cell, Table};
+use comfy_table::Table;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
@@ -49,18 +49,12 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
     }
 
     let mut table = Table::new_styled(&env.ui_config);
-    let mut header = vec![
-        Cell::new(""),
-        Cell::new("NAME").add_attribute(Attribute::Bold),
-        Cell::new("REV").add_attribute(Attribute::Bold),
-        Cell::new("FLAVOR").add_attribute(Attribute::Bold),
-        Cell::new("ENDPOINT").add_attribute(Attribute::Bold),
-    ];
+    let mut header = vec!["", "NAME", "REV", "FLAVOR", "ENDPOINT"];
     if list_opts.extra {
-        header.push(Cell::new("ADDRESS").add_attribute(Attribute::Bold));
-        header.push(Cell::new("METHODS").add_attribute(Attribute::Bold));
+        header.push("ADDRESS");
+        header.push("METHODS");
     }
-    table.set_header(header);
+    table.set_styled_header(header);
 
     for svc in defs.services {
         if list_opts.public_only && !svc.public {
