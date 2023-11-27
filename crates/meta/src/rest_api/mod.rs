@@ -10,12 +10,14 @@
 
 //! This module implements the Meta API endpoint.
 
-mod endpoints;
+// TODO: FIX ME
+pub mod endpoints;
 mod error;
 mod health;
 mod invocations;
 mod methods;
-mod services;
+// TODO: FIX ME
+pub mod services;
 mod state;
 mod subscriptions;
 
