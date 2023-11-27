@@ -32,7 +32,7 @@ impl From<Style> for dialoguer::console::Style {
             Style::Danger => DStyle::new().red().bold(),
             Style::Warn => DStyle::new().yellow(),
             Style::Success => DStyle::new().green(),
-            Style::Info => DStyle::new().bright(),
+            Style::Info => DStyle::new().bright().bold(),
         }
     }
 }
