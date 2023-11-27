@@ -18,7 +18,8 @@ use crate::console::c_println;
 use crate::meta_client::{MetaClient, MetaClientInterface};
 use crate::ui::console::{Styled, StyledTable};
 use crate::ui::stylesheet::Style;
-use restate_meta::rest_api::endpoints::{ServiceEndpoint, ServiceEndpointResponse};
+
+use restate_meta_rest_model::endpoints::{ProtocolType, ServiceEndpoint, ServiceEndpointResponse};
 
 use anyhow::Result;
 
@@ -89,8 +90,8 @@ fn add_endpoint(endpoint: &ServiceEndpointResponse, table: &mut Table) {
             table.add_row(vec!["Endpoint Type:", "HTTP"]);
             table.add_row(vec!["Endpoint URL:", &uri.to_string()]);
             let protocol_type = match protocol_type {
-                restate_schema_api::endpoint::ProtocolType::RequestResponse => "RequestResponse",
-                restate_schema_api::endpoint::ProtocolType::BidiStream => "BidiStream",
+                ProtocolType::RequestResponse => "RequestResponse",
+                ProtocolType::BidiStream => "BidiStream",
             }
             .to_string();
             table.add_row(vec!["Endpoint Protocol:", &protocol_type]);

@@ -8,20 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use super::error::*;
 use super::state::*;
+
+use restate_meta_rest_model::methods::*;
+use restate_schema_api::service::ServiceMetadataResolver;
+
 use axum::extract::{Path, State};
 use axum::Json;
 use okapi_operation::*;
-use restate_schema_api::service::{MethodMetadata, ServiceMetadataResolver};
-use schemars::JsonSchema;
-use serde::Serialize;
-use std::sync::Arc;
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct ListServiceMethodsResponse {
-    methods: Vec<MethodMetadata>,
-}
 
 /// List discovered methods for service
 #[openapi(

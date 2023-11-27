@@ -4285,8 +4285,7 @@ dependencies = [
  "is-terminal",
  "once_cell",
  "reqwest",
- "restate-meta",
- "restate-schema-api",
+ "restate-meta-rest-model",
  "restate-serde-util",
  "serde",
  "serde_json",
@@ -4519,6 +4518,7 @@ dependencies = [
  "restate-errors",
  "restate-fs-util",
  "restate-futures-util",
+ "restate-meta-rest-model",
  "restate-pb",
  "restate-schema-api",
  "restate-schema-impl",
@@ -4539,6 +4539,20 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "restate-meta-rest-model"
+version = "0.5.0"
+dependencies = [
+ "http",
+ "restate-schema-api",
+ "restate-serde-util",
+ "restate-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_with",
 ]
 
 [[package]]

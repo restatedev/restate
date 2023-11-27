@@ -8,78 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use super::error::*;
 use super::state::*;
 
+use restate_meta_rest_model::endpoints::*;
+use restate_schema_api::endpoint::EndpointMetadataResolver;
+use restate_service_client::ServiceEndpointAddress;
+use restate_service_protocol::discovery::DiscoverEndpoint;
+use restate_types::identifiers::InvalidLambdaARN;
+
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, Uri};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{http, Json};
 use okapi_operation::*;
-use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
-use restate_serde_util::SerdeableHeaderHashMap;
-use restate_service_client::ServiceEndpointAddress;
-use restate_service_protocol::discovery::DiscoverEndpoint;
-use restate_types::identifiers::{EndpointId, InvalidLambdaARN, LambdaARN, ServiceRevision};
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-use std::sync::Arc;
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct RegisterServiceEndpointRequest {
-    #[serde(flatten)]
-    pub endpoint_metadata: RegisterServiceEndpointMetadata,
-    /// # Additional headers
-    ///
-    /// Additional headers added to the discover/invoke requests to the service endpoint.
-    pub additional_headers: Option<SerdeableHeaderHashMap>,
-    /// # Force
-    ///
-    /// If `true`, it will override, if existing, any endpoint using the same `uri`.
-    /// Beware that this can lead in-flight invocations to an unrecoverable error state.
-    ///
-    /// By default, this is `true` but it might change in future to `false`.
-    ///
-    /// See the [versioning documentation](https://docs.restate.dev/services/upgrades-removal) for more information.
-    #[serde(default = "restate_serde_util::default::bool::<true>")]
-    pub force: bool,
-}
-
-#[serde_as]
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum RegisterServiceEndpointMetadata {
-    Http {
-        /// # Uri
-        ///
-        /// Uri to use to discover/invoke the http service endpoint.
-        #[serde_as(as = "serde_with::DisplayFromStr")]
-        #[schemars(with = "String")]
-        uri: Uri,
-    },
-    Lambda {
-        /// # ARN
-        ///
-        /// ARN to use to discover/invoke the lambda service endpoint.
-        arn: String,
-        /// # Assume role ARN
-        ///
-        /// Optional ARN of a role to assume when invoking this endpoint, to support role chaining
-        assume_role_arn: Option<String>,
-    },
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct RegisterServiceResponse {
-    name: String,
-    revision: ServiceRevision,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct RegisterServiceEndpointResponse {
-    id: EndpointId,
-    services: Vec<RegisterServiceResponse>,
-}
+use serde::Deserialize;
 
 /// Create service endpoint and return discovered services.
 #[openapi(
@@ -142,66 +87,7 @@ pub async fn create_service_endpoint<S, W>(
     ))
 }
 
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ServiceEndpointResponse {
-    pub id: EndpointId,
-    #[serde(flatten)]
-    pub service_endpoint: ServiceEndpoint,
-    /// # Services
-    ///
-    /// List of services exposed by this service endpoint.
-    pub services: Vec<RegisterServiceResponse>,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum ServiceEndpoint {
-    Http {
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[schemars(with = "String")]
-        uri: Uri,
-        protocol_type: ProtocolType,
-        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
-        #[serde(default)]
-        additional_headers: SerdeableHeaderHashMap,
-    },
-    Lambda {
-        arn: LambdaARN,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
-        assume_role_arn: Option<String>,
-        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
-        #[serde(default)]
-        additional_headers: SerdeableHeaderHashMap,
-    },
-}
-
-impl From<EndpointMetadata> for ServiceEndpoint {
-    fn from(value: EndpointMetadata) -> Self {
-        match value {
-            EndpointMetadata::Http {
-                address,
-                protocol_type,
-                delivery_options,
-            } => Self::Http {
-                uri: address,
-                protocol_type,
-                additional_headers: delivery_options.additional_headers.into(),
-            },
-            EndpointMetadata::Lambda {
-                arn,
-                assume_role_arn,
-                delivery_options,
-            } => Self::Lambda {
-                arn,
-                assume_role_arn: assume_role_arn.map(Into::into),
-                additional_headers: delivery_options.additional_headers.into(),
-            },
-        }
-    }
-}
-
-/// Discover endpoint and return discovered endpoints.
+/// Return discovered endpoints.
 #[openapi(
     summary = "Get service endpoint",
     description = "Get service endpoint metadata",
@@ -231,11 +117,6 @@ pub async fn get_service_endpoint<S: EndpointMetadataResolver, W>(
             .collect(),
     }
     .into())
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ListServiceEndpointsResponse {
-    pub endpoints: Vec<ServiceEndpointResponse>,
 }
 
 /// List services
@@ -268,7 +149,7 @@ pub async fn list_service_endpoints<S: EndpointMetadataResolver, W>(
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeleteServiceEndpointParams {
-    force: Option<bool>,
+    pub force: Option<bool>,
 }
 
 /// Discover endpoint and return discovered endpoints.
