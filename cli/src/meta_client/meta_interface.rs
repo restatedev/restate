@@ -8,15 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use async_trait::async_trait;
-use restate_meta::rest_api::endpoints::ListServiceEndpointsResponse;
-use restate_meta::rest_api::endpoints::ServiceEndpointResponse;
-
-use restate_meta::rest_api::services::ListServicesResponse;
-use restate_schema_api::service::ServiceMetadata;
-
 use super::client::Envelope;
 use super::MetaClient;
+
+use restate_meta_rest_model::endpoints::*;
+use restate_meta_rest_model::services::*;
+
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait MetaClientInterface {
