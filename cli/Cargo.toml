@@ -16,6 +16,7 @@ default = []
 [dependencies]
 restate-meta = { workspace = true }
 restate-schema-api = { workspace = true }
+restate-serde-util = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -26,6 +27,7 @@ comfy-table = "7.1"
 dialoguer = { version = "0.11.0" }
 dirs = { version = "5.0" }
 dotenvy = "0.15"
+http = { workspace = true }
 indicatif = "0.17.7"
 is-terminal = { version = "0.4.9" }
 once_cell = { workspace = true }

@@ -17,7 +17,7 @@ use std::fmt;
 
 /// Proxy type to implement HashMap<HeaderName, HeaderValue> ser/de
 /// Use it directly or with `#[serde(with = "serde_with::As::<serde_with::FromInto<restate_serde_util::SerdeableHeaderMap>>")]`.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(transparent))]
 pub struct SerdeableHeaderHashMap(
