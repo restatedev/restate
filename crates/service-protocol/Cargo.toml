@@ -12,7 +12,7 @@ default = []
 
 awakeable-id = ["dep:base64", "dep:restate-base64-util", "dep:restate-types", "dep:thiserror"]
 codec = ["protocol", "dep:restate-types", "dep:thiserror", "dep:paste"]
-discovery = ["dep:thiserror", "dep:codederror", "dep:restate-errors", "dep:restate-schema-api", "dep:hyper", "dep:restate-service-client", "dep:prost-reflect", "dep:restate-types", "dep:tokio"]
+discovery = ["dep:tracing", "dep:thiserror", "dep:codederror", "dep:restate-errors", "dep:restate-schema-api", "dep:hyper", "dep:restate-service-client", "dep:prost-reflect", "dep:restate-types", "dep:tokio"]
 message = ["protocol", "dep:restate-types", "dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:size", "dep:tracing"]
 mocks = ["awakeable-id"]
 protocol = []
