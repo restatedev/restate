@@ -35,7 +35,7 @@ In order to change the log level, configure the [`RUST_LOG` env variable](https:
 For example, to enable debug mode for Restate crates:
 
 ```shell
-RUST_LOG=info,restate=debug just run --release
+RUST_LOG=info,restate=debug just run --bin restate-server --release
 ```
 
 ### Registering Restate services
