@@ -19,6 +19,13 @@ The basic primitives Restate offers to simplify application development are the 
 
 Check [our GitHub org](https://github.com/restatedev) or the [docs](https://docs.restate.dev) for further details.
 
+## SDKs
+
+Restate supports the following SDKs:
+
+* [Typescript](https://github.com/restatedev/sdk-typescript)
+* [Java and Kotlin](https://github.com/restatedev/sdk-java)
+
 ## Building Restate
 
 In order to build Restate locally [follow the build instructions](https://github.com/restatedev/restate/blob/main/docs/dev/local-development.md#building-restate).
