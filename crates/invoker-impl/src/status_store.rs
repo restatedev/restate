@@ -45,7 +45,21 @@ impl InvocationStatusStore {
             .or_insert_with(Default::default);
         report.start_count += 1;
         report.last_start_at = SystemTime::now();
+        report.next_retry_at = None;
         report.in_flight = true;
+    }
+
+    pub(super) fn on_endpoint_chosen(
+        &mut self,
+        partition: &PartitionLeaderEpoch,
+        fid: &FullInvocationId,
+        endpoint_id: EndpointId,
+    ) {
+        if let Some(inner) = self.0.get_mut(partition) {
+            if let Some(report) = inner.get_mut(fid) {
+                report.last_attempt_endpoint_id = Some(endpoint_id);
+            }
+        }
     }
 
     pub(super) fn on_end(&mut self, partition: &PartitionLeaderEpoch, fid: &FullInvocationId) {
@@ -62,6 +76,7 @@ impl InvocationStatusStore {
         partition: PartitionLeaderEpoch,
         fid: FullInvocationId,
         reason: InvocationErrorReport,
+        next_retry_at: Option<SystemTime>,
     ) {
         let report = self
             .0
@@ -70,6 +85,7 @@ impl InvocationStatusStore {
             .entry(fid)
             .or_insert_with(Default::default);
         report.in_flight = false;
+        report.next_retry_at = next_retry_at;
         report.last_retry_attempt_failure = Some(reason);
     }
 }

@@ -504,6 +504,12 @@ where
                 endpoint_id,
                 ism.invocation_state_debug()
             );
+
+            self.status_store.on_endpoint_chosen(
+                &partition,
+                &full_invocation_id,
+                endpoint_id.clone(),
+            );
             ism.notify_chosen_endpoint(endpoint_id);
         } else {
             // If no state machine, this might be an event for an aborted invocation.
@@ -777,20 +783,20 @@ where
                     "Error when executing the invocation, retrying in {}.",
                     humantime::format_duration(next_retry_timer_duration));
                 trace!("Invocation state: {:?}.", ism.invocation_state_debug());
+                let next_retry_at = SystemTime::now() + next_retry_timer_duration;
                 self.status_store.on_failure(
                     partition,
                     full_invocation_id.clone(),
                     InvocationErrorReport::new(error.to_invocation_error(), error.code()),
+                    Some(next_retry_at),
                 );
                 self.invocation_state_machine_manager.register_invocation(
                     partition,
                     full_invocation_id.clone(),
                     ism,
                 );
-                self.retry_timers.sleep_until(
-                    SystemTime::now() + next_retry_timer_duration,
-                    (partition, full_invocation_id),
-                );
+                self.retry_timers
+                    .sleep_until(next_retry_at, (partition, full_invocation_id));
             }
             _ => {
                 warn_it!(

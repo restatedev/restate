@@ -379,13 +379,14 @@ where
                     &self.full_invocation_id.service_id.service_name
                 )
                 .ok_or(InvocationTaskError::NoEndpointForService));
-            let _ = self.invoker_tx.send(InvocationTaskOutput {
-                partition: self.partition,
-                full_invocation_id: self.full_invocation_id.clone(),
-                inner: InvocationTaskOutputInner::SelectedEndpoint(endpoint_meta.id()),
-            });
             endpoint_meta
         };
+
+        let _ = self.invoker_tx.send(InvocationTaskOutput {
+            partition: self.partition,
+            full_invocation_id: self.full_invocation_id.clone(),
+            inner: InvocationTaskOutputInner::SelectedEndpoint(endpoint_metadata.id()),
+        });
 
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
         let protocol_type = if self.inactivity_timeout.is_zero() {
