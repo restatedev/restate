@@ -167,7 +167,8 @@ pub(super) struct InvocationTaskOutput {
 }
 
 pub(super) enum InvocationTaskOutputInner {
-    SelectedEndpoint(EndpointId),
+    // `has_changed` indicates if we believe this is a freshly selected endpoint or not.
+    SelectedEndpoint(EndpointId, /* has_changed */ bool),
     NewEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
@@ -367,25 +368,35 @@ where
             shortcircuit!(tokio::try_join!(read_journal_future, read_state_future));
 
         // Resolve the endpoint metadata
-        let endpoint_metadata = if let Some(endpoint_id) = journal_metadata.endpoint_id {
-            shortcircuit!(self
-                .endpoint_metadata_resolver
-                .get_endpoint(&endpoint_id)
-                .ok_or_else(|| InvocationTaskError::UnknownEndpoint(endpoint_id.clone())))
-        } else {
-            let endpoint_meta = shortcircuit!(self
-                .endpoint_metadata_resolver
-                .resolve_latest_endpoint_for_service(
-                    &self.full_invocation_id.service_id.service_name
-                )
-                .ok_or(InvocationTaskError::NoEndpointForService));
-            let _ = self.invoker_tx.send(InvocationTaskOutput {
-                partition: self.partition,
-                full_invocation_id: self.full_invocation_id.clone(),
-                inner: InvocationTaskOutputInner::SelectedEndpoint(endpoint_meta.id()),
-            });
-            endpoint_meta
-        };
+        let (endpoint_metadata, endpoint_changed) =
+            if let Some(endpoint_id) = journal_metadata.endpoint_id {
+                // We have a pinned endpoint that we can't change even if newer
+                // endpoints have been registered for the same service.
+                let endpoint_metadata = shortcircuit!(self
+                    .endpoint_metadata_resolver
+                    .get_endpoint(&endpoint_id)
+                    .ok_or_else(|| InvocationTaskError::UnknownEndpoint(endpoint_id.clone())));
+                (endpoint_metadata, /* has_changed */ false)
+            } else {
+                // We can choose the freshest endpoint for the latest revision
+                // of the registered service.
+                let endpoint_metadata = shortcircuit!(self
+                    .endpoint_metadata_resolver
+                    .resolve_latest_endpoint_for_service(
+                        &self.full_invocation_id.service_id.service_name
+                    )
+                    .ok_or(InvocationTaskError::NoEndpointForService));
+                (endpoint_metadata, /* has_changed */ true)
+            };
+
+        let _ = self.invoker_tx.send(InvocationTaskOutput {
+            partition: self.partition,
+            full_invocation_id: self.full_invocation_id.clone(),
+            inner: InvocationTaskOutputInner::SelectedEndpoint(
+                endpoint_metadata.id(),
+                endpoint_changed,
+            ),
+        });
 
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
         let protocol_type = if self.inactivity_timeout.is_zero() {
