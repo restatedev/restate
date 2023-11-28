@@ -84,7 +84,7 @@ jobs:
         with:
           images: | 
             ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
-            ${{ inputs.pushToDockerHub && format('{0}/{1}', env.REPOSITORY_OWNER, env.IMAGE_NAME) || '' }}
+            ${{ inputs.pushToDockerHub && format('docker.io/{0}/{1}', env.REPOSITORY_OWNER, env.IMAGE_NAME) || '' }}
 
           # Note: We need this to generate the latest tag until we have a first stable release.
           # Check https://github.com/docker/metadata-action/issues/34
