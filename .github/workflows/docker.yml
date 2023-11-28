@@ -38,7 +38,7 @@ on:
         type: boolean
 
 env:
-  REPOSITORY_OWNER: 'restatedev'
+  REPOSITORY_OWNER: ${{ github.repository_owner }}
   GHCR_REGISTRY: 'ghcr.io'
   GHCR_REGISTRY_USERNAME: ${{ github.actor }}
   GHCR_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,20 +80,18 @@ jobs:
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v4
+        uses: docker/metadata-action@v5
         with:
           images: | 
             ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
             ${{ inputs.pushToDockerHub && format('docker.io/{0}/{1}', env.REPOSITORY_OWNER, env.IMAGE_NAME) || '' }}
 
-          # Note: We need this to generate the latest tag until we have a first stable release.
-          # Check https://github.com/docker/metadata-action/issues/34
           flavor: |
-            latest=true
             ${{ inputs.debug && 'prefix=debug-,onlatest=true' || '' }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
 
       - name: Build${{inputs.uploadImageAsTarball != true && ' and push ' || ' '}}Docker image
         id: build
