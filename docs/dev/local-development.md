@@ -2,7 +2,9 @@
 
 This file contains recommendations for how to set up your local development environment.
 
-## Required dependencies
+## Building Restate
+
+### Required dependencies
 
 To build the project, you need the Rust toolchain. Follow the guide here https://rustup.rs/ to setup Rust, Cargo, etc.
 
@@ -14,10 +16,12 @@ The project contains some Rust libraries binding to native libraries/build tools
 * [RocksDB](http://rocksdb.org/)
 * [Protobuf compiler](https://grpc.io/docs/protoc-installation/) version >= 3.15
 
+Optionally, you can install [just](https://github.com/casey/just) to make use of our [justfile](https://github.com/restatedev/restate/blob/main/justfile).
+
 To setup these on Fedora, run:
 
 ```
-sudo dnf install clang lld lldb libcxx cmake openssl-devel rocksdb-devel protobuf-compiler
+sudo dnf install clang lld lldb libcxx cmake openssl-devel rocksdb-devel protobuf-compiler just
 ```
 
 On MacOS, you can use [homebrew](https://brew.sh)
@@ -35,11 +39,7 @@ If you choose to install OpenJDK via homebrew, you'll also need to link it so th
 sudo ln -sfn /opt/homebrew/opt/openjdk/libexec/openjdk.jdk /Library/Java/JavaVirtualMachines/openjdk.jdk
 ```
 
-## Speeding builds up via sccache
-
-In order to speed up the build process, one can install the [sccache](https://github.com/mozilla/sccache) which caches build artifacts of `rustc`.
-
-## Building on MacOS (M1)
+### Building on MacOS (M1)
 
 In order to build the runtime on MacOS (M1) you need to export `CMAKE_OSX_ARCHITECTURES="arm64"`.
 This will prevent `librdkafka` from building a [fat binary that fails to be linked on MacOS (M1)](https://github.com/rust-lang/cargo/issues/8875).
@@ -55,6 +55,24 @@ You can also add the following section to your `~/.cargo/config.toml` to make ca
 # more details.
 CMAKE_OSX_ARCHITECTURES = "arm64"
 ```
+
+### Building the binaries
+
+In order to build the `restate-server` binary run:
+
+```shell
+just build --bin restate-server [--release]
+```
+
+In order to build the `restate-cli` binary run:
+
+```shell
+just build --bin restate-cli [--release]
+```
+
+## Speeding builds up via sccache
+
+In order to speed up the build process, one can install the [sccache](https://github.com/mozilla/sccache) which caches build artifacts of `rustc`.
 
 ## Tracing
 
@@ -144,7 +162,7 @@ Requirements:
 For performance analysis you can generate a flamegraph of the runtime binary via:
 
 ```shell
-$ just flamegraph --bin restate
+$ just flamegraph --bin restate-server
 ```
 
 This command will produce a `flamegraph.svg` in the current working directory when the process is stopped.
