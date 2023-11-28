@@ -31,6 +31,12 @@ You can start the runtime via:
 just run --bin restate-server --release
 ```
 
+or the latest release via docker:
+
+```shell
+docker run --name restate --rm --network=host docker.io/restatedev/restate
+```
+
 In order to change the log level, configure the [`RUST_LOG` env variable](https://rust-lang-nursery.github.io/rust-cookbook/development_tools/debugging/config_log.html#enable-log-levels-per-module) respectively.
 For example, to enable debug mode for Restate crates:
 
