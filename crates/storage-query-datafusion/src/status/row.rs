@@ -114,6 +114,9 @@ fn fill_invocation_metadata(
 ) {
     // journal_metadata and stats are filled by other functions
     row.method(meta.method);
+    if let Some(endpoint_id) = meta.endpoint_id {
+        row.pinned_endpoint_id(endpoint_id);
+    }
     match meta.response_sink {
         Some(ServiceInvocationResponseSink::PartitionProcessor { caller, .. }) => {
             row.invoked_by("service");
