@@ -330,11 +330,12 @@ where
                     inner
                 } = invocation_task_msg;
                 match inner {
-                    InvocationTaskOutputInner::SelectedEndpoint(endpoint_id) => {
+                    InvocationTaskOutputInner::SelectedEndpoint(endpoint_id, has_changed) => {
                         self.handle_selected_endpoint(
                             partition,
                             full_invocation_id,
-                            endpoint_id
+                            endpoint_id,
+                            has_changed,
                         ).await
                     }
                     InvocationTaskOutputInner::NewEntry {entry_index, entry} => {
@@ -494,6 +495,7 @@ where
         partition: PartitionLeaderEpoch,
         full_invocation_id: FullInvocationId,
         endpoint_id: EndpointId,
+        has_changed: bool,
     ) {
         if let Some((_, ism)) = self
             .invocation_state_machine_manager
@@ -504,7 +506,17 @@ where
                 endpoint_id,
                 ism.invocation_state_debug()
             );
-            ism.notify_chosen_endpoint(endpoint_id);
+
+            self.status_store.on_endpoint_chosen(
+                &partition,
+                &full_invocation_id,
+                endpoint_id.clone(),
+            );
+            // If we think this selected endpoint has been freshly picked, otherwise
+            // we assume that we have stored it previously.
+            if has_changed {
+                ism.notify_chosen_endpoint(endpoint_id);
+            }
         } else {
             // If no state machine, this might be an event for an aborted invocation.
             trace!("No state machine found for selected endpoint id");
@@ -777,20 +789,20 @@ where
                     "Error when executing the invocation, retrying in {}.",
                     humantime::format_duration(next_retry_timer_duration));
                 trace!("Invocation state: {:?}.", ism.invocation_state_debug());
+                let next_retry_at = SystemTime::now() + next_retry_timer_duration;
                 self.status_store.on_failure(
                     partition,
                     full_invocation_id.clone(),
                     InvocationErrorReport::new(error.to_invocation_error(), error.code()),
+                    Some(next_retry_at),
                 );
                 self.invocation_state_machine_manager.register_invocation(
                     partition,
                     full_invocation_id.clone(),
                     ism,
                 );
-                self.retry_timers.sleep_until(
-                    SystemTime::now() + next_retry_timer_duration,
-                    (partition, full_invocation_id),
-                );
+                self.retry_timers
+                    .sleep_until(next_retry_at, (partition, full_invocation_id));
             }
             _ => {
                 warn_it!(
