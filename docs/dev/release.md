@@ -1,16 +1,31 @@
 # Releasing Restate
 
-Restate consists of the [runtime](https://github.com/restatedev/restate), the [Typescript SDK](https://github.com/restatedev/sdk-typescript), the [documentation](https://github.com/restatedev/documentation), the [Node template generator](https://github.com/restatedev/node-template-generator) and several example repositories ([tour of Restate](https://github.com/restatedev/tour-of-restate-typescript), [ticket reservation example](https://github.com/restatedev/example-ticket-reservation-system), [food ordering example](https://github.com/restatedev/example-food-ordering), [shopping cart example](https://github.com/restatedev/example-shopping-cart-typescript) and the [Lambda greeter example](https://github.com/restatedev/example-lambda-ts-greeter)).
-In order to create a full Restate release you need to:
+Restate artifacts:
 
-1. [Release the runtime](#releasing-the-restate-runtime)
-2. [Release the proto](https://github.com/restatedev/proto/)
-3. [Release the service-protocol](https://github.com/restatedev/service-protocol/)
-4. [Release the Typescript SDK](https://github.com/restatedev/sdk-typescript#releasing-the-package)
-5. [Update and release the documentation](https://github.com/restatedev/documentation#releasing-the-documentation) with the newly released runtime and SDK
-6. [Update and release the Node template generator](https://github.com/restatedev/node-template-generator#releasing)
-7. [Update and release the tour of Restate](https://github.com/restatedev/tour-of-restate-typescript#releasing)
-8. [Update the examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
+* Runtime (this repo)
+* [SDK-Typescript](https://github.com/restatedev/sdk-typescript) and [Node template](https://github.com/restatedev/node-template-generator)
+* [Proto](https://github.com/restatedev/proto/)
+* [Documentation](https://github.com/restatedev/documentation/) and [Tour of Restate - Typescript](https://github.com/restatedev/tour-of-restate-typescript)
+* [Examples](https://github.com/restatedev/examples)
+
+## Versioning policy
+
+In order to keep the versioning of our artifacts simple, we're currently following this release policy:
+
+* We treat minor as major: every minor can break in a non-backward compatible way. E.g. 0.5.x doesn't have to be compatible with 0.4.x. Neverthless, we should clearly state it in the breaking changes section of the release notes.
+* We keep in sync minor releases between artifacts. E.g. when releasing runtime 0.5.0, we release also 0.5.0 for every SDK, documentation, examples and proto.
+* Patch releases of the same minor release must be compatible with each other. E.g. every SDK 0.5.x must be compatible with every runtime 0.5.x release, and viceversa.
+
+This release policy applies to all the aforementioned artifacts.
+
+## Release order
+
+When performing a full release of all the artifacts, this order should be followed:
+
+1. Runtime
+1. Proto: After executing the release make sure the SDKs are using the latest `proto` version.
+1. SDKs: After runtime and SDK artifacts are published, execute a manual run of the [e2e tests](https://github.com/restatedev/e2e/actions/workflows/e2e.yaml) to check everything works fine.
+1. Documentation and examples
 
 ## Releasing the Restate runtime
 
@@ -26,18 +41,9 @@ In order to finish the release, you have to publish it [here](https://github.com
 
 Please also bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version after the release.
 
-After having created a new runtime release, you need to:
+## Releasing the other artifacts
 
-1. [Update and release the documentation](https://github.com/restatedev/documentation#upgrading-restate-runtime-version)
-2. [Update the Node template generator](https://github.com/restatedev/node-template-generator#upgrading-restate-runtime)
-
-## Versioning of the Restate runtime
-
-The runtime follows the [SemVer specification](https://semver.org/#semantic-versioning-200) for its versioning.
-In short, increment the: 
-
-* MAJOR version if you introduce breaking changes
-* MINOR version if you add functionality in a backward compatible manner
-* PATCH version if you add backward compatible bug fixes
-
-During the initial development phase where the major version is zero (0.x.y) the minor version field is incremented for breaking changes. 
+1. [Release the proto](https://github.com/restatedev/proto/)
+1. [Release the Typescript SDK](https://github.com/restatedev/sdk-typescript#releasing-the-package) and [Release the Node template generator](https://github.com/restatedev/node-template-generator#releasing)
+1. [Release the documentation](https://github.com/restatedev/documentation#releasing-the-documentation) and https://github.com/restatedev/tour-of-restate-typescript#releasing
+1. [Release the examples](https://github.com/restatedev/examples#releasing-for-restate-developers)

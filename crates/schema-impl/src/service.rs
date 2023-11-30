@@ -49,7 +49,7 @@ impl ServiceMetadataResolver for Schemas {
     }
 }
 
-fn map_to_service_metadata(
+pub(crate) fn map_to_service_metadata(
     service_name: &str,
     service_schemas: &ServiceSchemas,
 ) -> Option<ServiceMetadata> {
