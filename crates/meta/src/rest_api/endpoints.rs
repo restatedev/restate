@@ -10,6 +10,9 @@
 
 use std::sync::Arc;
 
+use crate::service::ApplyMode;
+use crate::service::Force;
+
 use super::error::*;
 use super::state::*;
 
@@ -63,18 +66,23 @@ pub async fn create_service_endpoint<S, W>(
         address,
         payload.additional_headers.unwrap_or_default().into(),
     );
+
+    let apply_changes = if payload.dry_run {
+        ApplyMode::DryRun
+    } else {
+        ApplyMode::Apply
+    };
+
+    let force = if payload.force { Force::Yes } else { Force::No };
+
     let registration_result = state
         .meta_handle()
-        .register_endpoint(endpoint, payload.force)
+        .register_endpoint(endpoint, force, apply_changes)
         .await?;
 
     let response_body = RegisterServiceEndpointResponse {
         id: registration_result.endpoint,
-        services: registration_result
-            .services
-            .into_iter()
-            .map(|(name, revision)| RegisterServiceResponse { name, revision })
-            .collect(),
+        services: registration_result.services,
     };
 
     Ok((
@@ -113,7 +121,7 @@ pub async fn get_service_endpoint<S: EndpointMetadataResolver, W>(
         service_endpoint: endpoint_meta.into(),
         services: services
             .into_iter()
-            .map(|(name, revision)| RegisterServiceResponse { name, revision })
+            .map(|(name, revision)| ServiceNameRevPair { name, revision })
             .collect(),
     }
     .into())
@@ -139,7 +147,7 @@ pub async fn list_service_endpoints<S: EndpointMetadataResolver, W>(
                 service_endpoint: endpoint_meta.into(),
                 services: services
                     .into_iter()
-                    .map(|(name, revision)| RegisterServiceResponse { name, revision })
+                    .map(|(name, revision)| ServiceNameRevPair { name, revision })
                     .collect(),
             })
             .collect(),
