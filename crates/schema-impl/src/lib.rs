@@ -60,8 +60,9 @@ pub enum RegistrationError {
     InvalidSubscription(anyhow::Error),
     #[error("a subscription with the same id {0} already exists in the registry")]
     OverrideSubscription(EndpointId),
-    #[error("a schema update is not backwards compatible with the existing definition")]
-    IncompatibleSchemaEvolution(String, Vec<String>),
+    #[error("schema update removes methods from an existing service endpoint")]
+    #[code(restate_errors::META0006)]
+    IncompatibleSchemaMissingMethod(String, Vec<String>),
 }
 
 /// Insert (or replace) service
@@ -139,13 +140,13 @@ impl Schemas {
         endpoint_metadata: EndpointMetadata,
         services: Vec<ServiceRegistrationRequest>,
         descriptor_pool: DescriptorPool,
-        allow_overwrite: bool,
+        force: bool,
     ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
         self.0.load().compute_new_endpoint_updates(
             endpoint_metadata,
             services,
             descriptor_pool,
-            allow_overwrite,
+            force,
         )
     }
 
