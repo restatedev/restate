@@ -1,0 +1,69 @@
+name: Build binaries
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        target: ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: ./.github/actions/clean-runner
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          # need to provide a toolchain version because this action cannot read rust-toolchain.toml. See https://github.com/actions-rs/toolchain/issues/126
+          toolchain: stable
+
+      - name: Install Cross
+        run: cargo install cross
+
+      - name: Install cargo-license
+        run: cargo install cargo-license
+
+      - name: Setup just
+        uses: extractions/setup-just@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.3
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Generate notice
+        run: just notice-file
+
+      - name: Compile binaries
+        run: just target=${{ matrix.target }} cross-build --bins --release
+
+      - name: Move binary
+        run: mv target/${{ matrix.target }}/release/restate-{server,cli} .
+
+      - name: Create tar
+        run: tar -cvzf restate.${{ matrix.target }}.tar.gz LICENSE NOTICE restate-server restate-cli
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: restate.${{ matrix.target }}.tar.gz
+          path: restate.${{ matrix.target }}.tar.gz
+          retention-days: 1
+          if-no-files-found: error
