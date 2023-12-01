@@ -1,0 +1,173 @@
+name: Build binaries
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'version to label binaries'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'version to label binaries'
+        required: true
+        type: string
+
+jobs:
+  build-and-npm-publish:
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        build:
+          - target: aarch64-apple-darwin
+            node_arch: arm64
+            node_os: darwin
+          - target: x86_64-apple-darwin
+            node_arch: x64
+            node_os: darwin
+          - target: x86_64-unknown-linux-gnu
+            node_arch: x64
+            node_os: linux
+          - target: aarch64-unknown-linux-gnu
+            node_arch: arm64
+            node_os: linux
+    env:
+      RUST_BACKTRACE: full
+      RUSTC_WRAPPER: "sccache"
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: ./.github/actions/clean-runner
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          # need to provide a toolchain version because this action cannot read rust-toolchain.toml. See https://github.com/actions-rs/toolchain/issues/126
+          toolchain: stable
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: "18.x"
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.3
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Cross
+        run: cargo install cross
+
+      - name: Install cargo-license
+        run: cargo install cargo-license
+
+      - name: Install ldid for signing
+        if: ${{ matrix.build.target == 'aarch64-apple-darwin' }}
+        run: |
+          curl -L https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64 -o ldid
+          chmod +x ldid
+
+      - name: Setup just
+        uses: extractions/setup-just@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate notice
+        run: just notice-file
+
+      - name: Compile binaries
+        env:
+          RUSTC_WRAPPER: "" # Cross.toml sets it back
+        run: just target=${{ matrix.build.target }} cross-build --bins --release
+
+      - name: Sign binary with ldid
+        if: ${{ matrix.build.target == 'aarch64-apple-darwin' }}
+        run: |
+          ./ldid -S target/${{ matrix.build.target }}/release/restate-server
+          ./ldid -S target/${{ matrix.build.target }}/release/restate
+
+      - name: Move binary
+        run: cp target/${{ matrix.build.target }}/release/restate-server target/${{ matrix.build.target }}/release/restate .
+
+      - name: Create tar
+        run: tar -cvzf restate.${{ matrix.build.target }}.tar.gz LICENSE NOTICE restate-server restate
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: restate.${{ matrix.build.target }}.tar.gz
+          path: restate.${{ matrix.build.target }}.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Publish to NPM
+        shell: bash
+        run: |
+          cd npm
+          for bin in restate restate-server
+          do
+            export node_os="${{ matrix.build.node_os }}"
+            export node_os
+            node_arch="${{ matrix.build.node_arch }}"
+            export node_arch
+            # set the version
+            node_version="${{ inputs.version }}"
+            node_version="${node_version#v}"
+            export node_version
+            # set the package name
+            export node_pkg="${bin}-${node_os}-${node_arch}"
+            # create the package directory
+            mkdir -p "${node_pkg}/bin"
+            # generate package.json from the template
+            envsubst < package.json.tmpl > "${node_pkg}/package.json"
+            # copy the binary into the package
+            cp "../target/${{ matrix.build.target }}/release/${bin}" "${node_pkg}/bin"
+            # publish the package
+            pushd "${node_pkg}"
+            npm publish --access public
+            popd
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-npm-base:
+    needs: build-and-npm-publish
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: "18.x"
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish to npm
+        shell: bash
+        run: |
+          node_version="${{ inputs.version }}"
+          node_version="${node_version#v}"
+          cd npm
+          for bin in restate restate-server
+          do
+            pushd "${bin}"
+            sed -i "s/0.5.1/${node_version}/" package.json
+            npm install
+            npm run build
+            npm publish --access public
+            popd
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

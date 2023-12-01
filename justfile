@@ -88,21 +88,8 @@ build-tools *flags: (_target-installed target)
     cd {{justfile_directory()}}/tools/xtask; cargo build {{ _target-option }} {{ _features }} {{ flags }}
     cd {{justfile_directory()}}/tools/service-protocol-wireshark-dissector; cargo build {{ _target-option }} {{ _features }} {{ flags }}
 
-# Might be able to use cross-rs at some point but for now it could not handle a container image that
-# has a rust toolchain installed. Alternatively, we can create a separate cross-rs builder image.
 cross-build *flags:
-    #!/usr/bin/env bash
-    if [[ {{ target }} =~ "linux" ]]; then
-      docker run --rm -v `pwd`:/restate:Z -w /restate {{ dev_tools_image }} just _resolved_target={{ target }} features={{ features }} build {{ flags }}
-    elif [[ {{ target }} =~ "darwin" ]]; then
-      if [[ {{ os() }} != "macos" ]]; then
-        echo "Cannot built macos target on non-macos host";
-      else
-        just _resolved_target={{ target }} features={{ features }} build {{ flags }};
-      fi
-    else
-      echo "Unsupported target: {{ target }}";
-    fi
+    cross build --target {{ target }} {{ _features }} {{ flags }}
 
 print-target:
     @echo {{ _resolved_target }}
