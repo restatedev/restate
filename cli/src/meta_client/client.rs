@@ -28,9 +28,9 @@ pub struct ApiErrorBody {
 
 #[derive(Debug, Clone)]
 pub struct ApiError {
-    http_status_code: reqwest::StatusCode,
-    url: Url,
-    body: ApiErrorBody,
+    pub http_status_code: reqwest::StatusCode,
+    pub url: Url,
+    pub body: ApiErrorBody,
 }
 
 #[derive(Error, Debug)]
@@ -45,7 +45,7 @@ pub enum Error {
 impl std::fmt::Display for ApiErrorBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let code = self.restate_code.as_deref().unwrap_or("<UNKNOWN>");
-        writeln!(f, "{} {}", Styled(Style::Warn, code), self.message)?;
+        write!(f, "{} {}", Styled(Style::Warn, code), self.message)?;
         Ok(())
     }
 }
@@ -53,8 +53,7 @@ impl std::fmt::Display for ApiErrorBody {
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{}", self.body)?;
-
-        writeln!(
+        write!(
             f,
             "  -> Http status code {} at '{}'",
             Styled(Style::Warn, &self.http_status_code),
@@ -154,7 +153,7 @@ impl MetaClient {
     }
 
     /// Prepare a request builder that encodes the body as JSON.
-    fn _prepare_with_body<B>(
+    fn prepare_with_body<B>(
         &self,
         method: reqwest::Method,
         path: Url,
@@ -181,7 +180,7 @@ impl MetaClient {
         Ok(resp.into())
     }
 
-    pub(crate) async fn _run_with_body<T, B>(
+    pub(crate) async fn run_with_body<T, B>(
         &self,
         method: reqwest::Method,
         path: Url,
@@ -191,8 +190,8 @@ impl MetaClient {
         T: DeserializeOwned + Send,
         B: Serialize + std::fmt::Debug + Send,
     {
-        debug!("Sending request {} ({})", method, path);
-        let request = self._prepare_with_body(method, path, body);
+        debug!("Sending request {} ({}): {:?}", method, path, body);
+        let request = self.prepare_with_body(method, path, body);
         let resp = request.send().await?;
         Ok(resp.into())
     }
