@@ -150,7 +150,7 @@ impl TryFrom<&InstanceTypeMetadata> for InstanceType {
 }
 
 impl ServiceSchemas {
-    fn new(
+    pub(crate) fn new(
         revision: ServiceRevision,
         methods: HashMap<String, MethodSchemas>,
         instance_type: InstanceTypeMetadata,
@@ -191,7 +191,7 @@ impl ServiceSchemas {
         }
     }
 
-    fn compute_service_methods(
+    pub(crate) fn compute_service_methods(
         svc_desc: &ServiceDescriptor,
         method_meta: &HashMap<String, DiscoveredMethodMetadata>,
     ) -> HashMap<String, MethodSchemas> {
