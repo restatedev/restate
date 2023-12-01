@@ -16,6 +16,7 @@ use super::console::{Icon, StyledTable};
 
 pub const SUCCESS_ICON: Icon = Icon("✅", "[OK]:");
 pub const ERR_ICON: Icon = Icon("❌", "[ERR]:");
+pub const WARN_ICON: Icon = Icon("⚠️", "[WARNING]:");
 
 #[derive(Copy, Clone)]
 pub enum Style {
@@ -32,7 +33,7 @@ impl From<Style> for dialoguer::console::Style {
         // Mapping styles to actual colors
         match style {
             Style::Danger => DStyle::new().red().bold(),
-            Style::Warn => DStyle::new().yellow(),
+            Style::Warn => DStyle::new().magenta(),
             Style::Success => DStyle::new().green(),
             Style::Info => DStyle::new().bright().bold(),
         }

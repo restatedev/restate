@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod describe;
+mod discover;
 mod list;
 
 use cling::prelude::*;
@@ -20,4 +21,6 @@ pub enum Services {
     List(list::List),
     /// Prints detailed information about a given service
     Describe(describe::Describe),
+    /// Add or update services through endpoint discovery
+    Discover(discover::Discover),
 }

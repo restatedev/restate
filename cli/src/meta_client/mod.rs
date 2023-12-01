@@ -13,5 +13,6 @@
 mod client;
 mod meta_interface;
 
+pub use client::Error as MetaClientError;
 pub use client::MetaClient;
 pub use meta_interface::MetaClientInterface;
