@@ -24,7 +24,7 @@ pub use restate_schema_api::endpoint::{EndpointMetadata, ProtocolType};
 pub use restate_types::identifiers::{EndpointId, LambdaARN};
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ServiceEndpoint {
     Http {
