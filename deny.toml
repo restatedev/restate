@@ -168,13 +168,8 @@ skip = [
 ]
 
 deny = [
-    # Each entry the name of a crate and a version range. If version is
-    # not specified, all versions will be matched.
-    #{ name = "ansi_term", version = "=0.11.0" },
-    #
-    # Wrapper crates can optionally be specified to allow the crate when it
-    # is a direct dependency of the otherwise banned crate
-    #{ name = "ansi_term", version = "=0.11.0", wrappers = [] },
+    # Use rustls instead of openssl-sys since it is assumed to be more secure
+    { name = "openssl-sys" }
 ]
 
 [sources]
