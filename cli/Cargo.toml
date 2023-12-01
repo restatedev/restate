@@ -30,7 +30,7 @@ http = { workspace = true }
 indicatif = "0.17.7"
 is-terminal = { version = "0.4.9" }
 once_cell = { workspace = true }
-reqwest = { version = "0.11.22", features = ["json"] }
+reqwest = { version = "0.11.22", default-features = false, features = ["json", "rustls-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 termcolor = { version = "1.4.0" }
