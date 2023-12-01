@@ -33,7 +33,6 @@ use futures::{ready, FutureExt, Stream};
 use futures_util::future::ok;
 use futures_util::StreamExt;
 use restate_storage_api::{GetFuture, GetStream, PutFuture, Storage, StorageError, Transaction};
-use rocksdb::BlockBasedOptions;
 use rocksdb::Cache;
 use rocksdb::ColumnFamily;
 use rocksdb::DBCompressionType;
@@ -44,6 +43,7 @@ use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::SingleThreaded;
 use rocksdb::WriteBatch;
+use rocksdb::{BlockBasedOptions, WriteOptions};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -599,7 +599,9 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
             // for now we always use the WAL when committing the write batch,
             // but once we will have the Raft log persisted else where, this becomes
             // only needed during a checkpoint operation.
-            db.write(write_batch)
+            let mut opts = WriteOptions::default();
+            opts.set_sync(true);
+            db.write_opt(write_batch, &opts)
                 .map_err(|error| StorageError::Generic(error.into()))
         };
         tokio::task::spawn_blocking(f)
