@@ -23,7 +23,12 @@ pub trait MetaClientInterface {
     async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>>;
     async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>>;
     async fn get_endpoints(&self) -> reqwest::Result<Envelope<ListServiceEndpointsResponse>>;
-    async fn get_endpoint(&self, name: &str) -> reqwest::Result<Envelope<ServiceEndpointResponse>>;
+    async fn get_endpoint(&self, id: &str) -> reqwest::Result<Envelope<ServiceEndpointResponse>>;
+
+    async fn discover_endpoint(
+        &self,
+        body: RegisterServiceEndpointRequest,
+    ) -> reqwest::Result<Envelope<RegisterServiceEndpointResponse>>;
 }
 
 #[async_trait]
@@ -39,7 +44,6 @@ impl MetaClientInterface for MetaClient {
     }
 
     async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>> {
-        // TODO: FIX ME
         let url = self
             .base_url
             .join(&format!("/services/{}", name))
@@ -53,12 +57,19 @@ impl MetaClientInterface for MetaClient {
         Ok(self.run(reqwest::Method::GET, url).await?)
     }
 
-    async fn get_endpoint(&self, name: &str) -> reqwest::Result<Envelope<ServiceEndpointResponse>> {
-        // TODO: FIX ME
+    async fn get_endpoint(&self, id: &str) -> reqwest::Result<Envelope<ServiceEndpointResponse>> {
         let url = self
             .base_url
-            .join(&format!("/endpoints/{}", name))
+            .join(&format!("/endpoints/{}", id))
             .expect("Bad url!");
         Ok(self.run(reqwest::Method::GET, url).await?)
+    }
+
+    async fn discover_endpoint(
+        &self,
+        body: RegisterServiceEndpointRequest,
+    ) -> reqwest::Result<Envelope<RegisterServiceEndpointResponse>> {
+        let url = self.base_url.join("/endpoints").expect("Bad url!");
+        Ok(self.run_with_body(reqwest::Method::POST, url, body).await?)
     }
 }

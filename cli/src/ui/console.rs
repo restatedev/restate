@@ -26,6 +26,7 @@ use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::UiConfig;
+use crate::cli_env::CliEnv;
 
 use super::stylesheet::Style;
 use dialoguer::console::Style as DStyle;
@@ -97,6 +98,33 @@ pub trait StyledTable {
     }
 }
 
+pub fn confirm_or_exit(env: &CliEnv, prompt: &str) -> anyhow::Result<()> {
+    if !confirm(env, prompt) {
+        return Err(anyhow::anyhow!("User aborted"));
+    }
+    Ok(())
+}
+
+pub fn confirm(env: &CliEnv, prompt: &str) -> bool {
+    let theme = dialoguer::theme::ColorfulTheme::default();
+    if env.auto_confirm {
+        c_println!(
+            "{} {}",
+            prompt,
+            Styled(Style::Warn, "Auto-confirming --yes is set."),
+        );
+        true
+    } else {
+        dialoguer::Confirm::with_theme(&theme)
+            .with_prompt(prompt)
+            .default(false)
+            .wait_for_newline(true)
+            .interact_opt()
+            .unwrap_or(Some(false))
+            .unwrap_or(false)
+    }
+}
+
 #[macro_export]
 /// Internal macro used by c_*print*! macros
 macro_rules! _gecho {
@@ -113,12 +141,31 @@ macro_rules! _gecho {
             let _ = writeln!(std::io::$where(), $($arg)*);
         }
     };
+    (@indented_newline, ($indent:expr), $where:tt, $($arg:tt)*) => {
+        {
+            use std::io::Write;
+
+            let mut lock = std::io::$where().lock();
+            let _padding = $indent * 2;
+            let _ = write!(lock, "{:>_padding$}", "");
+            let _ = writeln!(lock, $($arg)*);
+        }
+    };
     (@nl_with_prefix, ($prefix:expr), $where:tt, $($arg:tt)*) => {
         {
             use std::io::Write;
             let mut lock = std::io::$where().lock();
             let _ = write!(lock, "{} ", $prefix);
             let _ = writeln!(lock, $($arg)*);
+        }
+    };
+    (@nl_with_prefix_styled, ($prefix:expr), ($style:expr), $where:tt, $($arg:tt)*) => {
+        {
+            use std::io::Write;
+            let mut lock = std::io::$where().lock();
+            let _ = write!(lock, " ❯ {}  ", $prefix);
+            let formatted = format!($($arg)*);
+            let _ = writeln!(lock, "{}", $crate::ui::console::Styled($style ,formatted));
         }
     };
     (@bare, $where:tt, $($arg:tt)*) => {
@@ -178,7 +225,52 @@ macro_rules! c_error {
     };
 }
 
+/// Warning Sign
+#[macro_export]
+macro_rules! c_warn {
+    ($($arg:tt)*) => {
+        {
+            let mut table = comfy_table::Table::new();
+            table.load_preset(comfy_table::presets::UTF8_BORDERS_ONLY);
+            table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
+            table.set_width(120);
+            let formatted = format!($($arg)*);
+
+            table.add_row(vec![
+                comfy_table::Cell::new(format!(" {} ",
+        $crate::ui::stylesheet::WARN_ICON)).set_alignment(comfy_table::CellAlignment::Center),
+                comfy_table::Cell::new(formatted).add_attribute(comfy_table::Attribute::Bold).fg(comfy_table::Color::Yellow),
+            ]);
+            $crate::ui::console::c_eprintln!("{}", table);
+        }
+    };
+}
+
+/// Padded printing
+#[macro_export]
+macro_rules! c_indentln {
+    ($indent:expr, $($arg:tt)*) => {
+        $crate::ui::console::_gecho!(@indented_newline, ($indent), stdout, $($arg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! c_indent_table {
+    ($indent:expr, $table:expr) => {{
+        use std::io::Write;
+
+        let mut _lock = std::io::stdout().lock();
+        let _padding = $indent * 2;
+        for _l in $table.lines() {
+            let _ = write!(_lock, "{:>_padding$}", "");
+            let _ = writeln!(_lock, "{}", _l);
+        }
+    }};
+}
+
 // Macros with a "c_" prefix to emits console output with no panics.
 pub use {_gecho, c_eprint, c_eprintln, c_print, c_println};
 // Convenience macros with emojis/icons upfront
-pub use {c_error, c_success};
+pub use {c_error, c_success, c_warn};
+// padded printing
+pub use {c_indent_table, c_indentln};

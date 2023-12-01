@@ -17,6 +17,7 @@ use crate::cli_env::CliEnv;
 use crate::console::c_println;
 use crate::meta_client::{MetaClient, MetaClientInterface};
 use crate::ui::console::{Styled, StyledTable};
+use crate::ui::service_methods::create_service_methods_table;
 use crate::ui::stylesheet::Style;
 
 use restate_meta_rest_model::endpoints::{ProtocolType, ServiceEndpoint, ServiceEndpointResponse};
@@ -61,21 +62,7 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
     // Methods
     c_println!();
     c_println!("{}", Styled(Style::Info, "Methods"));
-    let mut table = Table::new_styled(&env.ui_config);
-    table.set_styled_header(vec!["NAME", "INPUT TYPE", "OUTPUT TYPE", "KEY FIELD INEDX"]);
-
-    for method in svc.methods {
-        table.add_row(vec![
-            &method.name,
-            &method.input_type,
-            &method.output_type,
-            &method
-                .key_field_number
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_default(),
-        ]);
-    }
+    let table = create_service_methods_table(&env.ui_config, svc.instance_type, &svc.methods);
     c_println!("{}", table);
 
     Ok(())
