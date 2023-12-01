@@ -6,8 +6,8 @@ package greeter;
 
 service Greeter {
   rpc Greet(GreetingRequest) returns (GreetingResponse);
-  // rpc GetCount(google.protobuf.Empty) returns (CountResponse);
-  // rpc GreetStream(GreetingRequest) returns (stream CountResponse);
+  rpc GetCount(google.protobuf.Empty) returns (CountResponse);
+  rpc GreetStream(GreetingRequest) returns (stream CountResponse);
 }
 
 message GreetingRequest {
