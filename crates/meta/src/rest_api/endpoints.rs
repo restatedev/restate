@@ -28,6 +28,7 @@ use axum::response::IntoResponse;
 use axum::{http, Json};
 use okapi_operation::*;
 use serde::Deserialize;
+use tracing::warn;
 
 /// Create service endpoint and return discovered services.
 #[openapi(
@@ -74,6 +75,10 @@ pub async fn create_service_endpoint<S, W>(
     };
 
     let force = if payload.force { Force::Yes } else { Force::No };
+    warn!(
+        "Force is set to {:?} and payload.force={}",
+        force, payload.force
+    );
 
     let registration_result = state
         .meta_handle()
