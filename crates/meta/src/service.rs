@@ -14,14 +14,13 @@ use hyper::Uri;
 use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
+use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
-use restate_schema_impl::{
-    InsertServiceUpdateCommand, RegistrationError, Schemas, SchemasUpdateCommand,
-};
+use restate_schema_impl::{RegistrationError, Schemas, SchemasUpdateCommand};
 use restate_service_protocol::discovery::{
     DiscoverEndpoint, ServiceDiscovery, ServiceDiscoveryError,
 };
-use restate_types::identifiers::{EndpointId, ServiceRevision};
+use restate_types::identifiers::EndpointId;
 use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
 use std::collections::HashMap;
@@ -56,10 +55,38 @@ pub enum MetaError {
 #[derive(Clone)]
 pub struct MetaHandle(UnboundedCommandSender<MetaHandleRequest, MetaHandleResponse>);
 
+/// Whether to force the registration of an existing endpoint or not
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Force {
+    Yes,
+    No,
+}
+
+impl Force {
+    pub fn force_enabled(&self) -> bool {
+        *self == Self::Yes
+    }
+}
+
+/// Whether to apply the changes or not
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub enum ApplyMode {
+    DryRun,
+    #[default]
+    Apply,
+}
+
+impl ApplyMode {
+    pub fn should_apply(&self) -> bool {
+        *self == Self::Apply
+    }
+}
+
 enum MetaHandleRequest {
     DiscoverEndpoint {
         endpoint: DiscoverEndpoint,
-        force: bool,
+        force: Force,
+        apply_changes: ApplyMode,
     },
     ModifyService {
         service_name: String,
@@ -81,7 +108,7 @@ enum MetaHandleRequest {
 
 pub(crate) struct DiscoverEndpointResponse {
     pub(crate) endpoint: EndpointId,
-    pub(crate) services: Vec<(String, ServiceRevision)>,
+    pub(crate) services: Vec<ServiceMetadata>,
 }
 
 enum MetaHandleResponse {
@@ -96,10 +123,14 @@ impl MetaHandle {
     pub(crate) async fn register_endpoint(
         &self,
         endpoint: DiscoverEndpoint,
-        force: bool,
+        force: Force,
+        apply_changes: ApplyMode,
     ) -> Result<DiscoverEndpointResponse, MetaError> {
-        let (cmd, response_tx) =
-            Command::prepare(MetaHandleRequest::DiscoverEndpoint { endpoint, force });
+        let (cmd, response_tx) = Command::prepare(MetaHandleRequest::DiscoverEndpoint {
+            endpoint,
+            force,
+            apply_changes,
+        });
         self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
         response_tx
             .await
@@ -257,8 +288,8 @@ where
                     let (req, mut replier) = cmd.expect("This channel should never be closed").into_inner();
 
                     let res = match req {
-                        MetaHandleRequest::DiscoverEndpoint { endpoint, force } => MetaHandleResponse::DiscoverEndpoint(
-                            self.discover_endpoint(endpoint, force, replier.aborted()).await
+                        MetaHandleRequest::DiscoverEndpoint { endpoint, force, apply_changes } => MetaHandleResponse::DiscoverEndpoint(
+                            self.discover_endpoint(endpoint, force, apply_changes, replier.aborted()).await
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
@@ -323,7 +354,8 @@ where
     async fn discover_endpoint(
         &mut self,
         endpoint: DiscoverEndpoint,
-        force: bool,
+        force: Force,
+        apply_changes: ApplyMode,
         abort_signal: impl Future<Output = ()>,
     ) -> Result<DiscoverEndpointResponse, MetaError> {
         debug!(endpoint.address = %endpoint.address(), "Discovering service endpoint");
@@ -349,16 +381,20 @@ where
             endpoint_metadata,
             discovered_metadata.services,
             discovered_metadata.descriptor_pool,
-            force,
+            force.force_enabled(),
         )?;
 
         // Compute the response
         let discovery_response =
             Self::infer_discovery_response_from_update_commands(&schemas_update_commands);
 
-        // Propagate updates
-        self.store_and_apply_updates(schemas_update_commands)
-            .await?;
+        if apply_changes.should_apply() {
+            // Propagate updates
+            self.store_and_apply_updates(schemas_update_commands)
+                .await?;
+        } else {
+            debug!("Not applying schemas update commands because of dry-run mode");
+        }
 
         Ok(discovery_response)
     }
@@ -452,15 +488,24 @@ where
     ) -> DiscoverEndpointResponse {
         for schema_update_command in commands {
             if let SchemasUpdateCommand::InsertEndpoint {
-                metadata, services, ..
+                metadata,
+                services,
+                descriptor_pool,
             } = schema_update_command
             {
                 return DiscoverEndpointResponse {
                     endpoint: metadata.id(),
                     services: services
                         .iter()
-                        .map(|InsertServiceUpdateCommand { name, revision, .. }| {
-                            (name.clone(), *revision)
+                        .map(|update_command| {
+                            let service_descriptor = descriptor_pool
+                                .get_service_by_name(&update_command.name)
+                                .expect(
+                                    "A service descriptor must be present in the descriptor pool",
+                                );
+                            update_command
+                                .as_service_metadata(metadata.id(), &service_descriptor)
+                                .expect("Discovered services cannot be built-in services")
                         })
                         .collect(),
                 };

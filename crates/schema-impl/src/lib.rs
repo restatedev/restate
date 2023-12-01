@@ -10,11 +10,12 @@
 
 use arc_swap::ArcSwap;
 use http::Uri;
-use prost_reflect::DescriptorPool;
+use prost_reflect::{DescriptorPool, ServiceDescriptor};
 use restate_schema_api::discovery::{
     DiscoveredInstanceType, DiscoveredMethodMetadata, ServiceRegistrationRequest,
 };
 use restate_schema_api::endpoint::EndpointMetadata;
+use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,9 @@ mod proto_symbol;
 mod schemas_impl;
 mod service;
 mod subscriptions;
+
+use self::schemas_impl::InstanceTypeMetadata;
+use self::schemas_impl::ServiceSchemas;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(unknown)]
@@ -69,6 +73,25 @@ pub struct InsertServiceUpdateCommand {
     pub revision: ServiceRevision,
     pub instance_type: DiscoveredInstanceType,
     pub methods: HashMap<String, DiscoveredMethodMetadata>,
+}
+
+impl InsertServiceUpdateCommand {
+    pub fn as_service_metadata(
+        &self,
+        latest_endpoint_id: EndpointId,
+        service_descriptor: &ServiceDescriptor,
+    ) -> Option<ServiceMetadata> {
+        let schemas = ServiceSchemas::new(
+            self.revision,
+            ServiceSchemas::compute_service_methods(service_descriptor, &self.methods),
+            InstanceTypeMetadata::from_discovered_metadata(
+                self.instance_type.clone(),
+                &self.methods,
+            ),
+            latest_endpoint_id,
+        );
+        service::map_to_service_metadata(&self.name, &schemas)
+    }
 }
 
 /// Represents an update command to update the [`Schemas`] object. See [`Schemas::apply_updates`] for more info.
