@@ -10,6 +10,7 @@
 
 use super::services::ServiceRevision;
 
+use restate_schema_api::service::ServiceMetadata;
 use restate_serde_util::SerdeableHeaderHashMap;
 
 use http::Uri;
@@ -90,11 +91,18 @@ pub struct RegisterServiceEndpointRequest {
     /// See the [versioning documentation](https://docs.restate.dev/services/upgrades-removal) for more information.
     #[serde(default = "restate_serde_util::default::bool::<true>")]
     pub force: bool,
+
+    /// # Dry-run mode
+    ///
+    /// If `true`, discovery will run but the endpoint will not be registered.
+    /// This is useful to see the impact of a new endpoint before registering it.
+    #[serde(default = "restate_serde_util::default::bool::<false>")]
+    pub dry_run: bool,
 }
 
 #[serde_as]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RegisterServiceEndpointMetadata {
     Http {
@@ -119,7 +127,7 @@ pub enum RegisterServiceEndpointMetadata {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RegisterServiceResponse {
+pub struct ServiceNameRevPair {
     pub name: String,
     pub revision: ServiceRevision,
 }
@@ -128,7 +136,7 @@ pub struct RegisterServiceResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegisterServiceEndpointResponse {
     pub id: EndpointId,
-    pub services: Vec<RegisterServiceResponse>,
+    pub services: Vec<ServiceMetadata>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -146,5 +154,5 @@ pub struct ServiceEndpointResponse {
     /// # Services
     ///
     /// List of services exposed by this service endpoint.
-    pub services: Vec<RegisterServiceResponse>,
+    pub services: Vec<ServiceNameRevPair>,
 }
