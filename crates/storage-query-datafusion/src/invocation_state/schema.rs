@@ -26,6 +26,11 @@ define_table!(state(
     in_flight: DataType::Boolean,
     retry_count: DataType::UInt64,
     last_start_at: DataType::Date64,
+    // The endpoint that was selected in the last invocation attempt. This is
+    // guaranteed to be set unlike in `sys_status` table which require that the
+    // endpoint to be committed before it is set.
+    last_attempt_endpoint_id: DataType::LargeUtf8,
+    next_retry_at: DataType::Date64,
     last_failure: DataType::LargeUtf8,
     last_error_code: DataType::LargeUtf8,
 ));
