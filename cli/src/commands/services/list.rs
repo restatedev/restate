@@ -11,12 +11,14 @@
 use std::collections::HashMap;
 
 use crate::cli_env::CliEnv;
-use crate::console::{c_println, Icon};
+use crate::console::c_println;
 use crate::meta_client::MetaClientInterface;
 use crate::ui::console::StyledTable;
+use crate::ui::render::{render_endpoint_type, render_endpoint_url};
+use crate::ui::service_methods::{icon_for_is_public, icon_for_service_flavor};
 
-use restate_meta_rest_model::endpoints::{ProtocolType, ServiceEndpoint, ServiceEndpointResponse};
-use restate_meta_rest_model::services::{InstanceType, MethodMetadata};
+use restate_meta_rest_model::endpoints::ServiceEndpointResponse;
+use restate_meta_rest_model::services::MethodMetadata;
 
 use anyhow::{Context, Result};
 use cling::prelude::*;
@@ -30,7 +32,7 @@ pub struct List {
     #[clap(long)]
     public_only: bool,
 
-    ////Show additional columns
+    //// Show additional columns
     #[clap(long)]
     extra: bool,
 }
@@ -62,17 +64,8 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
             continue;
         }
 
-        let public = if svc.public {
-            Icon("🌎", "[public]")
-        } else {
-            Icon("🔒", "[private]")
-        };
-
-        let flavor = match svc.instance_type {
-            InstanceType::Unkeyed => Icon("", ""),
-            InstanceType::Keyed => Icon("⬅️ 🚶🚶🚶", "keyed"),
-            InstanceType::Singleton => Icon("👑", "singleton"),
-        };
+        let public = icon_for_is_public(svc.public);
+        let flavor = icon_for_service_flavor(&svc.instance_type);
 
         let endpoint = endpoint_cache
             .get(&svc.endpoint_id)
@@ -83,10 +76,10 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
             svc.name,
             svc.revision.to_string(),
             flavor.to_string(),
-            render_endpoint_type(endpoint),
+            render_endpoint_type(&endpoint.service_endpoint),
         ];
         if list_opts.extra {
-            row.push(render_endpoint_url(endpoint));
+            row.push(render_endpoint_url(&endpoint.service_endpoint));
             row.push(render_methods(svc.methods));
         }
 
@@ -104,27 +97,4 @@ fn render_methods(methods: Vec<MethodMetadata>) -> String {
         writeln!(&mut out, "- {}", method.name).unwrap();
     }
     out
-}
-
-fn render_endpoint_type(endpoint: &ServiceEndpointResponse) -> String {
-    match &endpoint.service_endpoint {
-        ServiceEndpoint::Http { protocol_type, .. } => {
-            format!(
-                "HTTP {}",
-                if protocol_type == &ProtocolType::BidiStream {
-                    "2"
-                } else {
-                    "1"
-                }
-            )
-        }
-        ServiceEndpoint::Lambda { .. } => "AWS Lambda".to_string(),
-    }
-}
-
-fn render_endpoint_url(endpoint: &ServiceEndpointResponse) -> String {
-    match &endpoint.service_endpoint {
-        ServiceEndpoint::Http { uri, .. } => uri.to_string(),
-        ServiceEndpoint::Lambda { arn, .. } => arn.to_string(),
-    }
 }
