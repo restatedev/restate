@@ -235,7 +235,7 @@ pub mod service {
     use bytes::Bytes;
     use restate_types::identifiers::{EndpointId, ServiceRevision};
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub enum InstanceType {
