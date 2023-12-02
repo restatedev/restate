@@ -42,6 +42,7 @@ jobs:
     name: Build release Docker image
     needs: [run-tests]
     uses: ./.github/workflows/docker.yml
+    secrets: inherit
     with:
       pushToDockerHub: true
 
