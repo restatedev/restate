@@ -106,7 +106,15 @@ fn parse_endpoint(
     let endpoint = if raw.starts_with("arn:") {
         Endpoint::Lambda(LambdaARN::from_str(raw)?)
     } else {
-        let uri = Uri::from_str(raw).map_err(|e| format!("invalid URL({e})"))?;
+        let mut uri = Uri::from_str(raw).map_err(|e| format!("invalid URL({e})"))?;
+        let mut parts = uri.into_parts();
+        if parts.scheme.is_none() {
+            parts.scheme = Some(http::uri::Scheme::HTTP);
+        }
+        if parts.path_and_query.is_none() {
+            parts.path_and_query = Some(http::uri::PathAndQuery::from_str("/")?);
+        }
+        uri = Uri::from_parts(parts)?;
         Endpoint::Uri(uri)
     };
     Ok(endpoint)
