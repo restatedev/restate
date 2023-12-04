@@ -77,9 +77,11 @@ enum InvocationState {
     InFlight {
         // If there is no completions_tx,
         // then the stream is open in request/response mode
-        completions_tx: Option<mpsc::UnboundedSender<Completion>>,
+        notifications_tx: Option<mpsc::UnboundedSender<Notification>>,
         journal_tracker: JournalTracker,
         abort_handle: AbortHandle,
+
+        entries_to_ack: HashSet<EntryIndex>,
 
         // If Some, we need to notify the deployment id to the partition processor
         chosen_deployment: Option<DeploymentId>,
@@ -98,15 +100,15 @@ impl fmt::Debug for InvocationState {
             InvocationState::InFlight {
                 journal_tracker,
                 abort_handle,
-                completions_tx,
+                notifications_tx,
                 ..
             } => f
                 .debug_struct("InFlight")
                 .field("journal_tracker", journal_tracker)
                 .field("abort_handle", abort_handle)
                 .field(
-                    "completions_tx_open",
-                    &completions_tx
+                    "notifications_tx_open",
+                    &notifications_tx
                         .as_ref()
                         .map(|s| !s.is_closed())
                         .unwrap_or(false),
@@ -135,7 +137,7 @@ impl InvocationStateMachine {
     pub(super) fn start(
         &mut self,
         abort_handle: AbortHandle,
-        completions_tx: mpsc::UnboundedSender<Completion>,
+        notifications_tx: mpsc::UnboundedSender<Notification>,
     ) {
         debug_assert!(matches!(
             &self.invocation_state,
@@ -143,9 +145,10 @@ impl InvocationStateMachine {
         ));
 
         self.invocation_state = InvocationState::InFlight {
-            completions_tx: Some(completions_tx),
+            notifications_tx: Some(notifications_tx),
             journal_tracker: Default::default(),
             abort_handle,
+            entries_to_ack: Default::default(),
             chosen_deployment: None,
         };
     }
@@ -189,16 +192,21 @@ impl InvocationStateMachine {
         }
     }
 
-    pub(super) fn notify_new_entry(&mut self, entry_index: EntryIndex) {
+    pub(super) fn notify_new_entry(&mut self, entry_index: EntryIndex, requires_ack: bool) {
         debug_assert!(matches!(
             &self.invocation_state,
             InvocationState::InFlight { .. }
         ));
 
         if let InvocationState::InFlight {
-            journal_tracker, ..
+            journal_tracker,
+            entries_to_ack,
+            ..
         } = &mut self.invocation_state
         {
+            if requires_ack {
+                entries_to_ack.insert(entry_index);
+            }
             journal_tracker.notify_entry_sent_to_partition_processor(entry_index);
         }
     }
@@ -206,8 +214,14 @@ impl InvocationStateMachine {
     pub(super) fn notify_stored_ack(&mut self, entry_index: EntryIndex) {
         match &mut self.invocation_state {
             InvocationState::InFlight {
-                journal_tracker, ..
+                journal_tracker,
+                entries_to_ack,
+                notifications_tx,
+                ..
             } => {
+                if entries_to_ack.remove(&entry_index) {
+                    Self::try_send_notification(notifications_tx, Notification::Ack(entry_index));
+                }
                 journal_tracker.notify_acked_entry_from_partition_processor(entry_index);
             }
             InvocationState::WaitingRetry {
@@ -220,15 +234,25 @@ impl InvocationStateMachine {
     }
 
     pub(super) fn notify_completion(&mut self, completion: Completion) {
-        if let InvocationState::InFlight { completions_tx, .. } = &mut self.invocation_state {
-            *completions_tx = completions_tx.take().and_then(move |sender| {
-                if sender.send(completion).is_ok() {
-                    Some(sender)
-                } else {
-                    None
-                }
-            });
+        if let InvocationState::InFlight {
+            notifications_tx, ..
+        } = &mut self.invocation_state
+        {
+            Self::try_send_notification(notifications_tx, Notification::Completion(completion));
         }
+    }
+
+    pub(super) fn try_send_notification(
+        notifications_tx: &mut Option<mpsc::UnboundedSender<Notification>>,
+        notification: Notification,
+    ) {
+        *notifications_tx = notifications_tx.take().and_then(move |sender| {
+            if sender.send(notification).is_ok() {
+                Some(sender)
+            } else {
+                None
+            }
+        });
     }
 
     pub(super) fn notify_retry_timer_fired(&mut self) {
@@ -294,8 +318,12 @@ impl InvocationStateMachine {
 mod tests {
     use super::*;
 
+    use googletest::matchers::{eq, some};
+    use googletest::prelude::err;
+    use googletest::{assert_that, pat};
     use restate_test_util::{check, test};
     use std::time::Duration;
+    use tokio::sync::mpsc::error::TryRecvError;
 
     #[test]
     fn handle_error_when_waiting_for_retry() {
@@ -310,5 +338,33 @@ mod tests {
         // We stay in `WaitingForRetry`
         assert!(invocation_state_machine.handle_task_error().is_some());
         check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+    }
+
+    #[test(tokio::test)]
+    async fn handle_requires_ack() {
+        let mut invocation_state_machine =
+            InvocationStateMachine::create(RetryPolicy::fixed_delay(Duration::from_secs(1), 10));
+
+        let abort_handle = tokio::spawn(async {}).abort_handle();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        invocation_state_machine.start(abort_handle, tx);
+        invocation_state_machine.notify_new_entry(1, true);
+        invocation_state_machine.notify_new_entry(2, false);
+        invocation_state_machine.notify_new_entry(3, true);
+
+        invocation_state_machine.notify_stored_ack(1);
+        invocation_state_machine.notify_stored_ack(2);
+        invocation_state_machine.notify_stored_ack(3);
+
+        // Check notification was sent for ack 1 and 3
+        let notification = rx.recv().await;
+        assert_that!(notification, some(pat!(Notification::Ack(eq(1)))));
+        let notification = rx.recv().await;
+        assert_that!(notification, some(pat!(Notification::Ack(eq(3)))));
+
+        // Channel should be empty
+        let try_recv = rx.try_recv();
+        assert_that!(try_recv, err(eq(TryRecvError::Empty)));
     }
 }

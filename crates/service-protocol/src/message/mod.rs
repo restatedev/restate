@@ -17,8 +17,8 @@ use bytes::Bytes;
 use prost::Message;
 use restate_types::errors::InvocationError;
 use restate_types::journal::raw::PlainRawEntry;
-use restate_types::journal::Completion;
 use restate_types::journal::CompletionResult;
+use restate_types::journal::{Completion, EntryIndex};
 
 mod encoding;
 mod header;
@@ -33,6 +33,7 @@ pub enum ProtocolMessage {
     Completion(pb::protocol::CompletionMessage),
     Suspension(pb::protocol::SuspensionMessage),
     Error(pb::protocol::ErrorMessage),
+    EntryAck(pb::protocol::EntryAckMessage),
 
     // Entries are not parsed at this point
     UnparsedEntry(PlainRawEntry),
@@ -58,40 +59,49 @@ impl ProtocolMessage {
         })
     }
 
+    pub fn new_entry_ack(entry_index: EntryIndex) -> ProtocolMessage {
+        Self::EntryAck(pb::protocol::EntryAckMessage { entry_index })
+    }
+
     pub(crate) fn encoded_len(&self) -> usize {
         match self {
             ProtocolMessage::Start(m) => m.encoded_len(),
             ProtocolMessage::Completion(m) => m.encoded_len(),
-
             ProtocolMessage::Suspension(m) => m.encoded_len(),
-
             ProtocolMessage::Error(m) => m.encoded_len(),
-
-            ProtocolMessage::UnparsedEntry(entry) => entry.entry.len(),
+            ProtocolMessage::EntryAck(m) => m.encoded_len(),
+            ProtocolMessage::UnparsedEntry(entry) => entry.serialized_entry().len(),
         }
     }
 }
 
 impl From<Completion> for ProtocolMessage {
     fn from(completion: Completion) -> Self {
-        ProtocolMessage::Completion(pb::protocol::CompletionMessage {
-            entry_index: completion.entry_index,
-            result: match completion.result {
-                CompletionResult::Ack => None,
-                CompletionResult::Empty => {
-                    Some(pb::protocol::completion_message::Result::Empty(()))
-                }
-                CompletionResult::Success(b) => {
-                    Some(pb::protocol::completion_message::Result::Value(b))
-                }
-                CompletionResult::Failure(code, message) => Some(
-                    pb::protocol::completion_message::Result::Failure(pb::protocol::Failure {
-                        code: code.into(),
-                        message: message.to_string(),
-                    }),
-                ),
-            },
-        })
+        match completion.result {
+            CompletionResult::Empty => {
+                ProtocolMessage::Completion(pb::protocol::CompletionMessage {
+                    entry_index: completion.entry_index,
+                    result: Some(pb::protocol::completion_message::Result::Empty(())),
+                })
+            }
+            CompletionResult::Success(b) => {
+                ProtocolMessage::Completion(pb::protocol::CompletionMessage {
+                    entry_index: completion.entry_index,
+                    result: Some(pb::protocol::completion_message::Result::Value(b)),
+                })
+            }
+            CompletionResult::Failure(code, message) => {
+                ProtocolMessage::Completion(pb::protocol::CompletionMessage {
+                    entry_index: completion.entry_index,
+                    result: Some(pb::protocol::completion_message::Result::Failure(
+                        pb::protocol::Failure {
+                            code: code.into(),
+                            message: message.to_string(),
+                        },
+                    )),
+                })
+            }
+        }
     }
 }
 

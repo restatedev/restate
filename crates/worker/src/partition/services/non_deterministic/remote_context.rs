@@ -35,8 +35,10 @@ use restate_service_protocol::message::{
 use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext};
-use restate_types::journal::enriched::{EnrichedEntryHeader, ResolutionResult};
-use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec, RawEntryHeader};
+use restate_types::journal::enriched::{
+    AwakeableEnrichmentResult, EnrichedEntryHeader, InvokeEnrichmentResult,
+};
+use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntryCodec};
 use restate_types::journal::{
     BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Entry, GetStateEntry,
     InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry,
@@ -124,6 +126,10 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 UserErrorCode::FailedPrecondition,
                 "Unexpected SuspensionMessage received",
             )),
+            ProtocolMessage::EntryAck(_) => Err(InvocationError::new(
+                UserErrorCode::FailedPrecondition,
+                "Unexpected EntryAckMessage received",
+            )),
             ProtocolMessage::Error(error) => {
                 warn!(
                     ?error,
@@ -137,6 +143,9 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     operation_id,
                     retention_period_sec,
                     entry_index,
+                    header
+                        .requires_ack()
+                        .expect("Entry message supports requires_ack"),
                     virtual_journal_fid,
                     journal_span_context,
                     entry,
@@ -146,23 +155,29 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_entry(
         &mut self,
         operation_id: &str,
         retention_period_sec: u32,
         entry_index: EntryIndex,
+        requires_ack: bool,
         virtual_journal_fid: &FullInvocationId,
         journal_span_context: ServiceInvocationSpanContext,
-        mut entry: PlainRawEntry,
+        entry: PlainRawEntry,
     ) -> Result<(), InvocationError> {
-        let enriched_entry = match entry.header {
-            RawEntryHeader::OutputStream => {
+        let enriched_entry = match entry.header() {
+            PlainEntryHeader::OutputStream { .. } => {
                 let_assert!(
-                    Entry::OutputStream(OutputStreamEntry { result }) =
-                        ProtobufRawEntryCodec::deserialize(&entry)
-                            .map_err(InvocationError::internal)?
+                    Entry::OutputStream(OutputStreamEntry { result }) = entry
+                        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+                        .map_err(InvocationError::internal)?
                 );
 
+                if requires_ack {
+                    self.enqueue_protocol_message(ProtocolMessage::new_entry_ack(entry_index))
+                        .await?;
+                }
                 self.complete_invocation(
                     operation_id,
                     retention_period_sec,
@@ -174,15 +189,20 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 // We don't store the entry, as we drop the journal in complete_invocation
                 return Ok(());
             }
-            RawEntryHeader::GetState { is_completed } => {
+            PlainEntryHeader::GetState { is_completed, .. } => {
                 let_assert!(
-                    Entry::GetState(GetStateEntry { key, .. }) =
-                        ProtobufRawEntryCodec::deserialize(&entry)
-                            .map_err(InvocationError::internal)?
+                    Entry::GetState(GetStateEntry { key, .. }) = entry
+                        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+                        .map_err(InvocationError::internal)?
                 );
                 let state_key = check_state_key(key)?;
 
-                if !is_completed {
+                if *is_completed {
+                    EnrichedRawEntry::new(
+                        EnrichedEntryHeader::GetState { is_completed: true },
+                        entry.into_inner().1,
+                    )
+                } else {
                     let state_value = self.load_state(&state_key).await?;
 
                     let completion = Completion::new(
@@ -193,42 +213,48 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         },
                     );
 
-                    ProtobufRawEntryCodec::write_completion(&mut entry, completion.result.clone())
-                        .map_err(InvocationError::internal)?;
+                    let mut enriched_entry = EnrichedRawEntry::new(
+                        EnrichedEntryHeader::GetState {
+                            is_completed: false,
+                        },
+                        entry.into_inner().1,
+                    );
+                    ProtobufRawEntryCodec::write_completion(
+                        &mut enriched_entry,
+                        completion.result.clone(),
+                    )
+                    .map_err(InvocationError::internal)?;
                     self.enqueue_protocol_message(ProtocolMessage::from(completion))
                         .await?;
+                    enriched_entry
                 }
-                EnrichedRawEntry::new(
-                    EnrichedEntryHeader::GetState { is_completed: true },
-                    entry.entry,
-                )
             }
-            RawEntryHeader::SetState => {
+            PlainEntryHeader::SetState { .. } => {
                 let_assert!(
-                    Entry::SetState(SetStateEntry { key, value }) =
-                        ProtobufRawEntryCodec::deserialize(&entry)
-                            .map_err(InvocationError::internal)?
+                    Entry::SetState(SetStateEntry { key, value }) = entry
+                        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+                        .map_err(InvocationError::internal)?
                 );
                 let state_key = check_state_key(key)?;
                 self.set_state(&state_key, &value)?;
-                EnrichedRawEntry::new(EnrichedEntryHeader::SetState, entry.entry)
+                EnrichedRawEntry::new(EnrichedEntryHeader::SetState {}, entry.into_inner().1)
             }
-            RawEntryHeader::ClearState => {
+            PlainEntryHeader::ClearState { .. } => {
                 let_assert!(
-                    Entry::ClearState(ClearStateEntry { key }) =
-                        ProtobufRawEntryCodec::deserialize(&entry)
-                            .map_err(InvocationError::internal)?
+                    Entry::ClearState(ClearStateEntry { key }) = entry
+                        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+                        .map_err(InvocationError::internal)?
                 );
                 let state_key = check_state_key(key)?;
                 self.clear_state(&state_key);
-                EnrichedRawEntry::new(EnrichedEntryHeader::ClearState, entry.entry)
+                EnrichedRawEntry::new(EnrichedEntryHeader::ClearState {}, entry.into_inner().1)
             }
-            RawEntryHeader::Invoke { is_completed } => {
+            PlainEntryHeader::Invoke { is_completed, .. } => {
                 if !is_completed {
                     let_assert!(
-                        Entry::Invoke(InvokeEntry { request, .. }) =
-                            ProtobufRawEntryCodec::deserialize(&entry)
-                                .map_err(InvocationError::internal)?
+                        Entry::Invoke(InvokeEntry { request, .. }) = entry
+                            .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+                            .map_err(InvocationError::internal)?
                     );
 
                     let fid = self.generate_fid_from_invoke_request(&request)?;
@@ -248,32 +274,33 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
 
                     EnrichedRawEntry::new(
                         EnrichedEntryHeader::Invoke {
-                            is_completed,
-                            resolution_result: Some(ResolutionResult {
+                            is_completed: *is_completed,
+                            enrichment_result: Some(InvokeEnrichmentResult {
                                 invocation_uuid: fid.invocation_uuid,
                                 service_key: fid.service_id.key,
                                 service_name: fid.service_id.service_name,
                                 span_context,
                             }),
                         },
-                        entry.entry,
+                        entry.into_inner().1,
                     )
                 } else {
                     EnrichedRawEntry::new(
                         EnrichedEntryHeader::Invoke {
-                            is_completed,
-                            resolution_result: None,
+                            is_completed: *is_completed,
+                            enrichment_result: None,
                         },
-                        entry.entry,
+                        entry.into_inner().1,
                     )
                 }
             }
-            RawEntryHeader::BackgroundInvoke => {
+            PlainEntryHeader::BackgroundInvoke { .. } => {
                 let_assert!(
                     Entry::BackgroundInvoke(BackgroundInvokeEntry {
                         request,
                         invoke_time,
-                    }) = ProtobufRawEntryCodec::deserialize(&entry)
+                    }) = entry
+                        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
                         .map_err(InvocationError::internal)?
                 );
 
@@ -301,24 +328,27 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 }
                 EnrichedRawEntry::new(
                     EnrichedEntryHeader::BackgroundInvoke {
-                        resolution_result: ResolutionResult {
+                        enrichment_result: InvokeEnrichmentResult {
                             invocation_uuid: fid.invocation_uuid,
                             service_key: fid.service_id.key,
                             service_name: fid.service_id.service_name,
                             span_context,
                         },
                     },
-                    entry.entry,
+                    entry.into_inner().1,
                 )
             }
-            RawEntryHeader::Awakeable { is_completed } => {
-                EnrichedRawEntry::new(EnrichedEntryHeader::Awakeable { is_completed }, entry.entry)
-            }
-            RawEntryHeader::CompleteAwakeable => {
+            PlainEntryHeader::Awakeable { is_completed, .. } => EnrichedRawEntry::new(
+                EnrichedEntryHeader::Awakeable {
+                    is_completed: *is_completed,
+                },
+                entry.into_inner().1,
+            ),
+            PlainEntryHeader::CompleteAwakeable { .. } => {
                 let_assert!(
-                    Entry::CompleteAwakeable(CompleteAwakeableEntry { id, result }) =
-                        ProtobufRawEntryCodec::deserialize(&entry)
-                            .map_err(InvocationError::internal)?
+                    Entry::CompleteAwakeable(CompleteAwakeableEntry { id, result }) = entry
+                        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+                        .map_err(InvocationError::internal)?
                 );
 
                 let (invocation_id, entry_index) = AwakeableIdentifier::decode(id)
@@ -333,35 +363,25 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
 
                 EnrichedRawEntry::new(
                     EnrichedEntryHeader::CompleteAwakeable {
-                        invocation_id,
-                        entry_index,
+                        enrichment_result: AwakeableEnrichmentResult {
+                            invocation_id,
+                            entry_index,
+                        },
                     },
-                    entry.entry,
+                    entry.into_inner().1,
                 )
             }
-            RawEntryHeader::Custom { requires_ack, code } => {
-                if requires_ack {
-                    self.enqueue_protocol_message(ProtocolMessage::from(Completion::new(
-                        entry_index,
-                        CompletionResult::Ack,
-                    )))
-                    .await?;
-                }
-                EnrichedRawEntry::new(
-                    EnrichedEntryHeader::Custom {
-                        code,
-                        requires_ack: false,
-                    },
-                    entry.entry,
-                )
-            }
-            RawEntryHeader::PollInputStream { .. } => {
+            PlainEntryHeader::Custom { code, .. } => EnrichedRawEntry::new(
+                EnrichedEntryHeader::Custom { code: *code },
+                entry.into_inner().1,
+            ),
+            PlainEntryHeader::PollInputStream { .. } => {
                 return Err(InvocationError::new(
                     UserErrorCode::FailedPrecondition,
                     "Unexpected PollInputStream entry received",
                 ))
             }
-            RawEntryHeader::Sleep { .. } => {
+            PlainEntryHeader::Sleep { .. } => {
                 return Err(InvocationError::new(
                     UserErrorCode::Unimplemented,
                     "Unsupported entry type",
@@ -369,6 +389,10 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             }
         };
 
+        if requires_ack {
+            self.enqueue_protocol_message(ProtocolMessage::new_entry_ack(entry_index))
+                .await?;
+        }
         self.store_journal_entry(self.journal_service_id(), entry_index, enriched_entry);
         Ok(())
     }
@@ -625,7 +649,9 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 // If there isn't any journal, let's create one
                 let input_entry = EnrichedRawEntry::new(
                     EnrichedEntryHeader::PollInputStream { is_completed: true },
-                    ProtobufRawEntryCodec::serialize_as_unary_input_entry(request.argument).entry,
+                    ProtobufRawEntryCodec::serialize_as_unary_input_entry(request.argument)
+                        .into_inner()
+                        .1,
                 );
                 let invocation_uuid = InvocationUuid::now_v7();
                 self.create_journal(
@@ -1093,6 +1119,21 @@ mod tests {
         }
 
         buf.freeze()
+    }
+
+    fn encode_entry_with_requires_ack(entry: PlainRawEntry) -> Bytes {
+        let encoder = Encoder::new(PROTOCOL_VERSION);
+
+        let mut v = Vec::new();
+        encoder
+            .encode_to_buf_mut(&mut v, ProtocolMessage::UnparsedEntry(entry))
+            .expect("Encoding messages to a BytesMut should be infallible, unless OOM is reached.");
+
+        // Manually replace the requires_ack byte.
+        // This is to avoid exporting new interfaces in service-protocol only for this test.
+        v[2] |= 0x80;
+
+        Bytes::from(v)
     }
 
     fn encode_entries(entries: Vec<Entry>) -> Bytes {
@@ -1686,21 +1727,67 @@ mod tests {
 
     #[test(tokio::test)]
     async fn send_custom_entry_and_recv_ack() {
-        send_then_receive_test(
-            ProtocolMessage::UnparsedEntry(PlainRawEntry::new(
-                RawEntryHeader::Custom {
-                    code: 0xFC00,
-                    requires_ack: true,
-                },
-                Bytes::copy_from_slice(b"123"),
-            )),
-            |_, _, _| std::future::ready(()).boxed(),
-            eq(ProtocolMessage::from(Completion::new(
-                1,
-                CompletionResult::Ack,
-            ))),
-        )
-        .await;
+        let (mut ctx, operation_id, stream_id) = bootstrap_invocation_using_start().await;
+
+        let (fid, send_effects) = ctx
+            .invoke(|ctx| {
+                ctx.send(
+                    SendRequest {
+                        operation_id: operation_id.clone(),
+                        stream_id: stream_id.clone(),
+                        messages: encode_entry_with_requires_ack(PlainRawEntry::new(
+                            PlainEntryHeader::Custom { code: 0xFC00 },
+                            Bytes::copy_from_slice(b"123"),
+                        )),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            send_effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        SendResponse {
+                            response: some(eq(send_response::Response::Ok(())))
+                        }
+                    ))))
+                }
+            ))))
+        );
+
+        let (fid, recv_effects) = ctx
+            .invoke(|ctx| {
+                ctx.recv(
+                    RecvRequest {
+                        operation_id: operation_id.clone(),
+                        stream_id: stream_id.clone(),
+                    },
+                    Default::default(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            recv_effects,
+            contains(pat!(Effect::OutboxMessage(pat!(
+                OutboxMessage::IngressResponse {
+                    full_invocation_id: eq(fid),
+                    response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
+                        RecvResponse {
+                            response: some(pat!(recv_response::Response::Messages(
+                                decoded_as_protocol_messages(elements_are![eq(
+                                    ProtocolMessage::new_entry_ack(1)
+                                )])
+                            )))
+                        }
+                    ))))
+                }
+            ))))
+        );
     }
 
     #[test(tokio::test)]
@@ -1856,35 +1943,28 @@ mod tests {
     async fn send_many_side_effects_at_once() {
         let (mut ctx, operation_id, stream_id) = bootstrap_invocation_using_start().await;
 
+        let custom_entry_header = PlainEntryHeader::Custom { code: 0xFC00 };
+        let mut send_buf = BytesMut::new();
+        send_buf.put(encode_entry_with_requires_ack(PlainRawEntry::new(
+            custom_entry_header.clone(),
+            Bytes::copy_from_slice(b"123"),
+        )));
+        send_buf.put(encode_entry_with_requires_ack(PlainRawEntry::new(
+            custom_entry_header.clone(),
+            Bytes::copy_from_slice(b"456"),
+        )));
+        send_buf.put(encode_entry_with_requires_ack(PlainRawEntry::new(
+            custom_entry_header.clone(),
+            Bytes::copy_from_slice(b"789"),
+        )));
+
         let (fid, send_effects) = ctx
             .invoke(|ctx| {
                 ctx.send(
                     SendRequest {
                         operation_id: operation_id.clone(),
                         stream_id: stream_id.clone(),
-                        messages: encode_messages(vec![
-                            ProtocolMessage::UnparsedEntry(PlainRawEntry::new(
-                                RawEntryHeader::Custom {
-                                    code: 0xFC00,
-                                    requires_ack: true,
-                                },
-                                Bytes::copy_from_slice(b"123"),
-                            )),
-                            ProtocolMessage::UnparsedEntry(PlainRawEntry::new(
-                                RawEntryHeader::Custom {
-                                    code: 0xFC00,
-                                    requires_ack: true,
-                                },
-                                Bytes::copy_from_slice(b"456"),
-                            )),
-                            ProtocolMessage::UnparsedEntry(PlainRawEntry::new(
-                                RawEntryHeader::Custom {
-                                    code: 0xFC00,
-                                    requires_ack: true,
-                                },
-                                Bytes::copy_from_slice(b"789"),
-                            )),
-                        ]),
+                        messages: send_buf.freeze(),
                     },
                     Default::default(),
                 )
@@ -1926,18 +2006,9 @@ mod tests {
                         RecvResponse {
                             response: some(pat!(recv_response::Response::Messages(
                                 decoded_as_protocol_messages(elements_are![
-                                    eq(ProtocolMessage::from(Completion::new(
-                                        1,
-                                        CompletionResult::Ack,
-                                    ))),
-                                    eq(ProtocolMessage::from(Completion::new(
-                                        2,
-                                        CompletionResult::Ack,
-                                    ))),
-                                    eq(ProtocolMessage::from(Completion::new(
-                                        3,
-                                        CompletionResult::Ack,
-                                    )))
+                                    eq(ProtocolMessage::new_entry_ack(1,)),
+                                    eq(ProtocolMessage::new_entry_ack(2,)),
+                                    eq(ProtocolMessage::new_entry_ack(3,))
                                 ])
                             )))
                         }
@@ -2085,15 +2156,10 @@ mod tests {
                         SendRequest {
                             operation_id: operation_id.clone(),
                             stream_id: stream_id.clone(),
-                            messages: encode_messages(vec![ProtocolMessage::UnparsedEntry(
-                                PlainRawEntry::new(
-                                    RawEntryHeader::Custom {
-                                        code: 0xFC00,
-                                        requires_ack: true,
-                                    },
-                                    Bytes::copy_from_slice(b"123"),
-                                ),
-                            )]),
+                            messages: encode_entry_with_requires_ack(PlainRawEntry::new(
+                                PlainEntryHeader::Custom { code: 0xFC00 },
+                                Bytes::copy_from_slice(b"123"),
+                            )),
                         },
                         Default::default(),
                     )
@@ -2136,18 +2202,9 @@ mod tests {
                         RecvResponse {
                             response: some(pat!(recv_response::Response::Messages(
                                 decoded_as_protocol_messages(elements_are![
-                                    eq(ProtocolMessage::from(Completion::new(
-                                        1,
-                                        CompletionResult::Ack,
-                                    ))),
-                                    eq(ProtocolMessage::from(Completion::new(
-                                        2,
-                                        CompletionResult::Ack,
-                                    ))),
-                                    eq(ProtocolMessage::from(Completion::new(
-                                        3,
-                                        CompletionResult::Ack,
-                                    )))
+                                    eq(ProtocolMessage::new_entry_ack(1,)),
+                                    eq(ProtocolMessage::new_entry_ack(2,)),
+                                    eq(ProtocolMessage::new_entry_ack(3,))
                                 ])
                             )))
                         }

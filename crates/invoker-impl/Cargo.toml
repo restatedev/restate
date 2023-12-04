@@ -50,6 +50,7 @@ restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true }
 
+googletest = { workspace = true }
 prost = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }

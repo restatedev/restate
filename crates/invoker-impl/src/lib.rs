@@ -60,6 +60,12 @@ trait InvokerError: std::error::Error {
     fn to_invocation_error(&self) -> InvocationError;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Notification {
+    Completion(Completion),
+    Ack(EntryIndex),
+}
+
 // -- InvocationTask factory: we use this to mock the state machine in tests
 
 trait InvocationTaskRunner {
@@ -69,7 +75,7 @@ trait InvocationTaskRunner {
         partition: PartitionLeaderEpoch,
         fid: FullInvocationId,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-        invoker_rx: mpsc::UnboundedReceiver<Completion>,
+        invoker_rx: mpsc::UnboundedReceiver<Notification>,
         input_journal: InvokeInputJournal,
         task_pool: &mut JoinSet<()>,
     ) -> AbortHandle;
@@ -103,7 +109,7 @@ where
         partition: PartitionLeaderEpoch,
         fid: FullInvocationId,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-        invoker_rx: mpsc::UnboundedReceiver<Completion>,
+        invoker_rx: mpsc::UnboundedReceiver<Notification>,
         input_journal: InvokeInputJournal,
         task_pool: &mut JoinSet<()>,
     ) -> AbortHandle {
@@ -333,12 +339,13 @@ where
                             has_changed,
                         ).await
                     }
-                    InvocationTaskOutputInner::NewEntry {entry_index, entry} => {
+                    InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack} => {
                         self.handle_new_entry(
                             partition,
                             full_invocation_id,
                             entry_index,
                             entry,
+                            requires_ack
                         ).await
                     },
                     InvocationTaskOutputInner::Closed => {
@@ -535,12 +542,13 @@ where
         full_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
+        requires_ack: bool,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
             .resolve_invocation(partition, &full_invocation_id)
         {
-            ism.notify_new_entry(entry_index);
+            ism.notify_new_entry(entry_index, requires_ack);
             trace!(
                 "Received a new entry. Invocation state: {:?}",
                 ism.invocation_state_debug()
@@ -958,7 +966,7 @@ mod tests {
             PartitionLeaderEpoch,
             FullInvocationId,
             mpsc::UnboundedSender<InvocationTaskOutput>,
-            mpsc::UnboundedReceiver<Completion>,
+            mpsc::UnboundedReceiver<Notification>,
             InvokeInputJournal,
         ) -> Fut,
         Fut: Future<Output = ()> + Send + 'static,
@@ -968,7 +976,7 @@ mod tests {
             partition: PartitionLeaderEpoch,
             fid: FullInvocationId,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-            invoker_rx: mpsc::UnboundedReceiver<Completion>,
+            invoker_rx: mpsc::UnboundedReceiver<Notification>,
             input_journal: InvokeInputJournal,
             task_pool: &mut JoinSet<()>,
         ) -> AbortHandle {
@@ -1139,10 +1147,8 @@ mod tests {
                     full_invocation_id,
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: 1,
-                        entry: RawEntry {
-                            header: EnrichedEntryHeader::SetState,
-                            entry: Default::default(),
-                        },
+                        entry: RawEntry::new(EnrichedEntryHeader::SetState {}, Bytes::default()),
+                        requires_ack: false,
                     },
                 });
                 pending() // Never ends

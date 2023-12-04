@@ -12,6 +12,7 @@ use super::pb::protocol;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
+use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::*;
 use restate_types::journal::{CompletionResult, Entry, EntryType};
 use std::fmt::Debug;
@@ -38,19 +39,22 @@ macro_rules! match_decode {
 pub struct ProtobufRawEntryCodec;
 
 impl RawEntryCodec for ProtobufRawEntryCodec {
-    fn serialize_as_unary_input_entry(value: Bytes) -> PlainRawEntry {
+    fn serialize_as_unary_input_entry(value: Bytes) -> EnrichedRawEntry {
         RawEntry::new(
-            RawEntryHeader::PollInputStream { is_completed: true },
+            EnrichedEntryHeader::PollInputStream { is_completed: true },
             protocol::PollInputStreamEntryMessage { value }
                 .encode_to_vec()
                 .into(),
         )
     }
 
-    fn deserialize<H: EntryHeader>(raw_entry: &RawEntry<H>) -> Result<Entry, RawEntryCodecError> {
+    fn deserialize(
+        entry_type: EntryType,
+        mut entry_value: Bytes,
+    ) -> Result<Entry, RawEntryCodecError> {
         // We clone the entry Bytes here to ensure that the generated Message::decode
         // invocation reuses the same underlying byte array.
-        match_decode!(raw_entry.header.to_entry_type(), raw_entry.entry.clone(), {
+        match_decode!(entry_type, entry_value, {
             PollInputStream,
             OutputStream,
             GetState,
@@ -64,12 +68,12 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
         })
     }
 
-    fn write_completion<H: EntryHeader + Debug>(
-        entry: &mut RawEntry<H>,
+    fn write_completion<InvokeEnrichmentResult: Debug, AwakeableEnrichmentResult: Debug>(
+        entry: &mut RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult>,
         completion_result: CompletionResult,
     ) -> Result<(), RawEntryCodecError> {
         debug_assert_eq!(
-            entry.header.is_completed(),
+            entry.header().is_completed(),
             Some(false),
             "Entry '{:?}' is already completed",
             entry
@@ -77,11 +81,6 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
 
         // Prepare the result to serialize in protobuf
         let completion_result_message = match completion_result {
-            CompletionResult::Ack => {
-                // For acks we simply flag the entry as completed and return
-                entry.header.mark_completed();
-                return Ok(());
-            }
             CompletionResult::Empty => protocol::completion_message::Result::Empty(()),
             CompletionResult::Success(b) => protocol::completion_message::Result::Value(b),
             CompletionResult::Failure(code, message) => {
@@ -94,7 +93,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
 
         // Prepare a buffer for the result
         // TODO perhaps use SegmentedBuf here to avoid allocating?
-        let len = entry.entry.len() + completion_result_message.encoded_len();
+        let len = entry.serialized_entry().len() + completion_result_message.encoded_len();
         let mut result_buf = BytesMut::with_capacity(len);
 
         // Concatenate entry + result
@@ -102,12 +101,12 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
         // of completion message are the same used by completable entries.
         // See the service_protocol protobuf definition for more details.
         // https://protobuf.dev/programming-guides/encoding/#last-one-wins
-        result_buf.put(mem::take(&mut entry.entry));
+        result_buf.put(mem::take(entry.serialized_entry_mut()));
         completion_result_message.encode(&mut result_buf);
 
         // Write back to the entry the new buffer and the completed flag
-        entry.entry = result_buf.freeze();
-        entry.header.mark_completed();
+        *entry.serialized_entry_mut() = result_buf.freeze();
+        entry.header_mut().mark_completed();
 
         Ok(())
     }
@@ -125,7 +124,9 @@ mod mocks {
         Failure, GetStateEntryMessage, InvokeEntryMessage, OutputStreamEntryMessage,
         PollInputStreamEntryMessage, SetStateEntryMessage,
     };
-    use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
+    use restate_types::journal::enriched::{
+        AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
+    };
     use restate_types::journal::{
         AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateValue,
         PollInputStreamEntry,
@@ -135,11 +136,11 @@ mod mocks {
         pub fn serialize(entry: Entry) -> PlainRawEntry {
             match entry {
                 Entry::PollInputStream(entry) => PlainRawEntry::new(
-                    RawEntryHeader::PollInputStream { is_completed: true },
+                    PlainEntryHeader::PollInputStream { is_completed: true },
                     Self::serialize_poll_input_stream_entry(entry),
                 ),
                 Entry::OutputStream(entry) => PlainRawEntry::new(
-                    RawEntryHeader::OutputStream,
+                    PlainEntryHeader::OutputStream {},
                     OutputStreamEntryMessage {
                         result: Some(match entry.result {
                             EntryResult::Success(s) => {
@@ -157,7 +158,7 @@ mod mocks {
                     .into(),
                 ),
                 Entry::GetState(entry) => PlainRawEntry::new(
-                    RawEntryHeader::GetState {
+                    PlainEntryHeader::GetState {
                         is_completed: entry.is_completed(),
                     },
                     GetStateEntryMessage {
@@ -171,7 +172,7 @@ mod mocks {
                     .into(),
                 ),
                 Entry::SetState(entry) => PlainRawEntry::new(
-                    RawEntryHeader::SetState,
+                    PlainEntryHeader::SetState {},
                     SetStateEntryMessage {
                         key: entry.key,
                         value: entry.value,
@@ -180,14 +181,15 @@ mod mocks {
                     .into(),
                 ),
                 Entry::ClearState(entry) => PlainRawEntry::new(
-                    RawEntryHeader::ClearState,
+                    PlainEntryHeader::ClearState {},
                     ClearStateEntryMessage { key: entry.key }
                         .encode_to_vec()
                         .into(),
                 ),
                 Entry::Invoke(entry) => PlainRawEntry::new(
-                    RawEntryHeader::Invoke {
+                    PlainEntryHeader::Invoke {
                         is_completed: entry.is_completed(),
+                        enrichment_result: None,
                     },
                     InvokeEntryMessage {
                         service_name: entry.request.service_name.into(),
@@ -207,7 +209,9 @@ mod mocks {
                     .into(),
                 ),
                 Entry::BackgroundInvoke(entry) => PlainRawEntry::new(
-                    RawEntryHeader::BackgroundInvoke,
+                    PlainEntryHeader::BackgroundInvoke {
+                        enrichment_result: (),
+                    },
                     BackgroundInvokeEntryMessage {
                         service_name: entry.request.service_name.into(),
                         method_name: entry.request.method_name.into(),
@@ -218,11 +222,13 @@ mod mocks {
                     .into(),
                 ),
                 Entry::CompleteAwakeable(entry) => PlainRawEntry::new(
-                    RawEntryHeader::CompleteAwakeable,
+                    PlainEntryHeader::CompleteAwakeable {
+                        enrichment_result: (),
+                    },
                     Self::serialize_complete_awakeable_entry(entry),
                 ),
                 Entry::Awakeable(entry) => PlainRawEntry::new(
-                    RawEntryHeader::Awakeable {
+                    PlainEntryHeader::Awakeable {
                         is_completed: entry.is_completed(),
                     },
                     Self::serialize_awakeable_entry(entry),
@@ -243,14 +249,16 @@ mod mocks {
 
                     EnrichedRawEntry::new(
                         EnrichedEntryHeader::CompleteAwakeable {
-                            invocation_id,
-                            entry_index,
+                            enrichment_result: AwakeableEnrichmentResult {
+                                invocation_id,
+                                entry_index,
+                            },
                         },
                         Self::serialize_complete_awakeable_entry(entry),
                     )
                 }
                 Entry::SetState(entry) => EnrichedRawEntry::new(
-                    EnrichedEntryHeader::SetState,
+                    EnrichedEntryHeader::SetState {},
                     SetStateEntryMessage {
                         key: entry.key,
                         value: entry.value,
@@ -259,7 +267,7 @@ mod mocks {
                     .into(),
                 ),
                 Entry::ClearState(entry) => EnrichedRawEntry::new(
-                    EnrichedEntryHeader::ClearState,
+                    EnrichedEntryHeader::ClearState {},
                     ClearStateEntryMessage { key: entry.key }
                         .encode_to_vec()
                         .into(),
@@ -336,8 +344,9 @@ mod tests {
 
         // Create an invoke entry
         let raw_entry: PlainRawEntry = RawEntry::new(
-            RawEntryHeader::Invoke {
+            PlainEntryHeader::Invoke {
                 is_completed: false,
+                enrichment_result: None,
             },
             protocol::InvokeEntryMessage {
                 service_name: "MySvc".to_string(),
@@ -351,7 +360,9 @@ mod tests {
         );
 
         // Complete the expected entry directly on the materialized model
-        let mut expected_entry = ProtobufRawEntryCodec::deserialize(&raw_entry).unwrap();
+        let mut expected_entry = raw_entry
+            .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+            .unwrap();
         match &mut expected_entry {
             Entry::Invoke(invoke_entry_inner) => {
                 invoke_entry_inner.result = Some(EntryResult::Success(invoke_result.clone()))
@@ -366,9 +377,11 @@ mod tests {
             CompletionResult::Success(invoke_result),
         )
         .unwrap();
-        let actual_entry = ProtobufRawEntryCodec::deserialize(&actual_raw_entry).unwrap();
+        let actual_entry = actual_raw_entry
+            .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+            .unwrap();
 
-        assert_eq!(actual_raw_entry.header.is_completed(), Some(true));
+        assert_eq!(actual_raw_entry.header().is_completed(), Some(true));
         assert_eq!(actual_entry, expected_entry);
     }
 }

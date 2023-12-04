@@ -27,9 +27,7 @@ pub mod storage {
             use crate::storage::v1::invocation_status::{
                 invoked, suspended, Free, Invoked, Suspended, Virtual,
             };
-            use crate::storage::v1::journal_entry::completion_result::{
-                Ack, Empty, Failure, Success,
-            };
+            use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
             use crate::storage::v1::journal_entry::{
                 completion_result, CompletionResult, Entry, Kind,
             };
@@ -56,6 +54,7 @@ pub mod storage {
             use restate_storage_api::StorageError;
             use restate_types::identifiers::ServiceId;
             use restate_types::invocation::MaybeFullInvocationId;
+            use restate_types::journal::enriched::AwakeableEnrichmentResult;
             use restate_types::time::MillisSinceEpoch;
             use std::collections::{HashSet, VecDeque};
             use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -903,9 +902,10 @@ pub mod storage {
 
             impl From<restate_types::journal::enriched::EnrichedRawEntry> for Entry {
                 fn from(value: restate_types::journal::enriched::EnrichedRawEntry) -> Self {
+                    let (header, entry) = value.into_inner();
                     Entry {
-                        header: Some(EnrichedEntryHeader::from(value.header)),
-                        raw_entry: value.entry,
+                        header: Some(EnrichedEntryHeader::from(header)),
+                        raw_entry: entry,
                     }
                 }
             }
@@ -918,9 +918,6 @@ pub mod storage {
                         .result
                         .ok_or(ConversionError::missing_field("result"))?
                     {
-                        completion_result::Result::Ack(_) => {
-                            restate_types::journal::CompletionResult::Ack
-                        }
                         completion_result::Result::Empty(_) => {
                             restate_types::journal::CompletionResult::Empty
                         }
@@ -945,9 +942,6 @@ pub mod storage {
             impl From<restate_types::journal::CompletionResult> for CompletionResult {
                 fn from(value: restate_types::journal::CompletionResult) -> Self {
                     let result = match value {
-                        restate_types::journal::CompletionResult::Ack => {
-                            completion_result::Result::Ack(Ack {})
-                        }
                         restate_types::journal::CompletionResult::Empty => {
                             completion_result::Result::Empty(Empty {})
                         }
@@ -972,37 +966,44 @@ pub mod storage {
                 type Error = ConversionError;
 
                 fn try_from(value: EnrichedEntryHeader) -> Result<Self, Self::Error> {
+                    // By definition of requires_ack, if it reached the journal storage then
+                    // either there is one in-flight stream that already got notified of this entry ack,
+                    // or there are no in-flight streams and the entry won't need any ack because it's in the replayed journal.
+
                     let enriched_header = match value
                         .kind
                         .ok_or(ConversionError::missing_field("kind"))?
                     {
                         enriched_entry_header::Kind::PollInputStream(poll_input_stream) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::PollInputStream {
-                                is_completed: poll_input_stream.is_completed,
+                                                            is_completed: poll_input_stream.is_completed,
                             }
                         }
                         enriched_entry_header::Kind::OutputStream(_) => {
-                            restate_types::journal::enriched::EnrichedEntryHeader::OutputStream
+                            restate_types::journal::enriched::EnrichedEntryHeader::OutputStream {
+                                                        }
                         }
                         enriched_entry_header::Kind::GetState(get_state) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::GetState {
-                                is_completed: get_state.is_completed,
+                                                            is_completed: get_state.is_completed,
                             }
                         }
                         enriched_entry_header::Kind::SetState(_) => {
-                            restate_types::journal::enriched::EnrichedEntryHeader::SetState
+                            restate_types::journal::enriched::EnrichedEntryHeader::SetState {
+                                                        }
                         }
                         enriched_entry_header::Kind::ClearState(_) => {
-                            restate_types::journal::enriched::EnrichedEntryHeader::ClearState
+                            restate_types::journal::enriched::EnrichedEntryHeader::ClearState {
+                                                        }
                         }
                         enriched_entry_header::Kind::Sleep(sleep) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::Sleep {
-                                is_completed: sleep.is_completed,
+                                                            is_completed: sleep.is_completed,
                             }
                         }
                         enriched_entry_header::Kind::Invoke(invoke) => {
-                            let resolution_result = Option::<
-                                restate_types::journal::enriched::ResolutionResult,
+                            let enrichment_result = Option::<
+                                restate_types::journal::enriched::InvokeEnrichmentResult,
                             >::try_from(
                                 invoke
                                     .resolution_result
@@ -1010,38 +1011,39 @@ pub mod storage {
                             )?;
 
                             restate_types::journal::enriched::EnrichedEntryHeader::Invoke {
-                                is_completed: invoke.is_completed,
-                                resolution_result,
+                                                            is_completed: invoke.is_completed,
+                                enrichment_result,
                             }
                         }
                         enriched_entry_header::Kind::BackgroundCall(background_call) => {
-                            let resolution_result =
-                                restate_types::journal::enriched::ResolutionResult::try_from(
+                            let enrichment_result =
+                                restate_types::journal::enriched::InvokeEnrichmentResult::try_from(
                                     background_call.resolution_result.ok_or(
                                         ConversionError::missing_field("resolution_result"),
                                     )?,
                                 )?;
 
                             restate_types::journal::enriched::EnrichedEntryHeader::BackgroundInvoke {
-                                    resolution_result,
-                                }
+                                                            enrichment_result,
+                            }
                         }
                         enriched_entry_header::Kind::Awakeable(awakeable) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::Awakeable {
-                                is_completed: awakeable.is_completed,
+                                                            is_completed: awakeable.is_completed,
                             }
                         }
                         enriched_entry_header::Kind::CompleteAwakeable(CompleteAwakeable { invocation_id, entry_index }) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable {
-                                invocation_id: restate_types::identifiers::InvocationId::from_slice(&invocation_id).map_err(ConversionError::invalid_data)?,
-                                entry_index,
+                                                            enrichment_result: AwakeableEnrichmentResult {
+                                    invocation_id: restate_types::identifiers::InvocationId::from_slice(&invocation_id).map_err(ConversionError::invalid_data)?,
+                                    entry_index,
+                                },
                             }
                         }
                         enriched_entry_header::Kind::Custom(custom) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::Custom {
-                                code: u16::try_from(custom.code)
+                                                            code: u16::try_from(custom.code)
                                     .map_err(ConversionError::invalid_data)?,
-                                requires_ack: custom.requires_ack,
                             }
                         }
                     };
@@ -1052,57 +1054,63 @@ pub mod storage {
 
             impl From<restate_types::journal::enriched::EnrichedEntryHeader> for EnrichedEntryHeader {
                 fn from(value: restate_types::journal::enriched::EnrichedEntryHeader) -> Self {
+                    // No need to write down the requires_ack field for any of the entries because
+                    // when reading an entry from storage, we never need to send the ack back for it.
+
                     let kind = match value {
                         restate_types::journal::enriched::EnrichedEntryHeader::PollInputStream {
                             is_completed,
+                            ..
                         } => enriched_entry_header::Kind::PollInputStream(PollInputStream {
                             is_completed,
                         }),
-                        restate_types::journal::enriched::EnrichedEntryHeader::OutputStream => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::OutputStream{..} => {
                             enriched_entry_header::Kind::OutputStream(OutputStream {})
                         }
-                        restate_types::journal::enriched::EnrichedEntryHeader::GetState { is_completed } => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::GetState { is_completed, .. } => {
                             enriched_entry_header::Kind::GetState(GetState { is_completed })
                         }
-                        restate_types::journal::enriched::EnrichedEntryHeader::SetState => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::SetState{..} => {
                             enriched_entry_header::Kind::SetState(SetState {})
                         }
-                        restate_types::journal::enriched::EnrichedEntryHeader::ClearState => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::ClearState{..} => {
                             enriched_entry_header::Kind::ClearState(ClearState {})
                         }
-                        restate_types::journal::enriched::EnrichedEntryHeader::Sleep { is_completed } => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::Sleep { is_completed, .. } => {
                             enriched_entry_header::Kind::Sleep(Sleep { is_completed })
                         }
                         restate_types::journal::enriched::EnrichedEntryHeader::Invoke {
                             is_completed,
-                            resolution_result,
+                            enrichment_result,
+                            ..
                         } => enriched_entry_header::Kind::Invoke(Invoke {
                             is_completed,
                             resolution_result: Some(InvocationResolutionResult::from(
-                                resolution_result,
+                                enrichment_result,
                             )),
                         }),
                         restate_types::journal::enriched::EnrichedEntryHeader::BackgroundInvoke {
-                            resolution_result,
+                            enrichment_result,
+                            ..
                         } => enriched_entry_header::Kind::BackgroundCall(BackgroundCall {
                             resolution_result: Some(BackgroundCallResolutionResult::from(
-                                resolution_result,
+                                enrichment_result,
                             )),
                         }),
                         restate_types::journal::enriched::EnrichedEntryHeader::Awakeable {
                             is_completed,
+                            ..
                         } => enriched_entry_header::Kind::Awakeable(Awakeable { is_completed }),
-                        restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable { invocation_id, entry_index } => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable { enrichment_result, .. } => {
                             enriched_entry_header::Kind::CompleteAwakeable(CompleteAwakeable {
-                                invocation_id: Bytes::copy_from_slice(&invocation_id.as_bytes()),
-                                entry_index
+                                invocation_id: Bytes::copy_from_slice(&enrichment_result.invocation_id.as_bytes()),
+                                entry_index: enrichment_result.entry_index
                             })
                         }
                         restate_types::journal::enriched::EnrichedEntryHeader::Custom {
-                            requires_ack,
                             code,
+                            ..
                         } => enriched_entry_header::Kind::Custom(Custom {
-                            requires_ack,
                             code: u32::from(code),
                         }),
                     };
@@ -1112,7 +1120,7 @@ pub mod storage {
             }
 
             impl TryFrom<InvocationResolutionResult>
-                for Option<restate_types::journal::enriched::ResolutionResult>
+                for Option<restate_types::journal::enriched::InvokeEnrichmentResult>
             {
                 type Error = ConversionError;
 
@@ -1135,7 +1143,7 @@ pub mod storage {
                             let service_name = ByteString::try_from(success.service_name)
                                 .map_err(ConversionError::invalid_data)?;
 
-                            Some(restate_types::journal::enriched::ResolutionResult {
+                            Some(restate_types::journal::enriched::InvokeEnrichmentResult {
                                 span_context,
                                 invocation_uuid,
                                 service_key,
@@ -1148,14 +1156,16 @@ pub mod storage {
                 }
             }
 
-            impl From<Option<restate_types::journal::enriched::ResolutionResult>>
+            impl From<Option<restate_types::journal::enriched::InvokeEnrichmentResult>>
                 for InvocationResolutionResult
             {
-                fn from(value: Option<restate_types::journal::enriched::ResolutionResult>) -> Self {
+                fn from(
+                    value: Option<restate_types::journal::enriched::InvokeEnrichmentResult>,
+                ) -> Self {
                     let result = match value {
                         None => invocation_resolution_result::Result::None(Default::default()),
                         Some(resolution_result) => match resolution_result {
-                            restate_types::journal::enriched::ResolutionResult {
+                            restate_types::journal::enriched::InvokeEnrichmentResult {
                                 invocation_uuid,
                                 service_key,
                                 service_name,
@@ -1178,7 +1188,7 @@ pub mod storage {
             }
 
             impl TryFrom<BackgroundCallResolutionResult>
-                for restate_types::journal::enriched::ResolutionResult
+                for restate_types::journal::enriched::InvokeEnrichmentResult
             {
                 type Error = ConversionError;
 
@@ -1194,7 +1204,7 @@ pub mod storage {
                     let service_name = ByteString::try_from(value.service_name)
                         .map_err(ConversionError::invalid_data)?;
 
-                    Ok(restate_types::journal::enriched::ResolutionResult {
+                    Ok(restate_types::journal::enriched::InvokeEnrichmentResult {
                         span_context,
                         invocation_uuid,
                         service_key,
@@ -1203,8 +1213,10 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_types::journal::enriched::ResolutionResult> for BackgroundCallResolutionResult {
-                fn from(value: restate_types::journal::enriched::ResolutionResult) -> Self {
+            impl From<restate_types::journal::enriched::InvokeEnrichmentResult>
+                for BackgroundCallResolutionResult
+            {
+                fn from(value: restate_types::journal::enriched::InvokeEnrichmentResult) -> Self {
                     BackgroundCallResolutionResult {
                         invocation_uuid: invocation_uuid_to_bytes(&value.invocation_uuid),
                         service_key: value.service_key,

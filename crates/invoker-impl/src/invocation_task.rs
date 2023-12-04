@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::InvokerError;
+use super::{InvokerError, Notification};
 
 use bytes::Bytes;
 use futures::future::FusedFuture;
@@ -37,8 +37,8 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryHeader};
-use restate_types::journal::{Completion, EntryType};
+use restate_types::journal::raw::PlainRawEntry;
+use restate_types::journal::EntryType;
 use std::collections::HashSet;
 use std::error::Error;
 
@@ -174,6 +174,12 @@ pub(super) enum InvocationTaskOutputInner {
     NewEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
+        /// If true, the SDK requested to be notified when the entry is correctly stored.
+        ///
+        /// When reading the entry from the storage this flag will always be false, as we never need to send acks for entries sent during a journal replay.
+        ///
+        /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#acknowledgment-of-stored-entries
+        requires_ack: bool,
     },
     Closed,
     Suspended(HashSet<EntryIndex>),
@@ -204,7 +210,7 @@ pub(super) struct InvocationTask<JR, SR, EE, DMR> {
     entry_enricher: EE,
     deployment_metadata_resolver: DMR,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-    invoker_rx: mpsc::UnboundedReceiver<Completion>,
+    invoker_rx: mpsc::UnboundedReceiver<Notification>,
 
     // Encoder/Decoder
     encoder: Encoder,
@@ -269,7 +275,7 @@ where
         entry_enricher: EE,
         deployment_metadata_resolver: DMR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-        invoker_rx: mpsc::UnboundedReceiver<Completion>,
+        invoker_rx: mpsc::UnboundedReceiver<Notification>,
     ) -> Self {
         Self {
             client,
@@ -510,7 +516,7 @@ where
                 opt_je = journal_stream.next() => {
                     match opt_je {
                         Some(je) => {
-                            if je.header == RawEntryHeader::OutputStream {
+                            if je.header().as_entry_type() == EntryType::OutputStream {
                                 shortcircuit!(self.notify_saw_output_stream_entry());
                             }
                             shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
@@ -538,9 +544,13 @@ where
             tokio::select! {
                 opt_completion = self.invoker_rx.recv() => {
                     match opt_completion {
-                        Some(completion) => {
+                        Some(Notification::Completion(completion)) => {
                             trace!("Sending the completion to the wire");
                             shortcircuit!(self.write(&mut http_stream_tx, completion.into()).await);
+                        },
+                        Some(Notification::Ack(entry_index)) => {
+                            trace!("Sending the ack to the wire");
+                            shortcircuit!(self.write(&mut http_stream_tx, ProtocolMessage::new_entry_ack(entry_index)).await);
                         },
                         None => {
                             // Completion channel is closed,
@@ -665,6 +675,9 @@ where
             ProtocolMessage::Completion(_) => TerminalLoopState::Failed(
                 InvocationTaskError::UnexpectedMessage(MessageType::Completion),
             ),
+            ProtocolMessage::EntryAck(_) => TerminalLoopState::Failed(
+                InvocationTaskError::UnexpectedMessage(MessageType::EntryAck),
+            ),
             ProtocolMessage::Suspension(suspension) => {
                 let suspension_indexes = HashSet::from_iter(suspension.entry_indexes);
                 if suspension_indexes.is_empty() {
@@ -682,10 +695,10 @@ where
                 InvocationTaskError::ErrorMessageReceived(InvocationError::from(e)),
             ),
             ProtocolMessage::UnparsedEntry(entry) => {
-                if entry.header == RawEntryHeader::OutputStream {
+                let entry_type = entry.header().as_entry_type();
+                if entry_type == EntryType::OutputStream {
                     shortcircuit!(self.notify_saw_output_stream_entry());
                 }
-                let entry_type = entry.header.to_entry_type();
                 let enriched_entry = shortcircuit!(self
                     .entry_enricher
                     .enrich_entry(entry, parent_span_context)
@@ -700,6 +713,9 @@ where
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
                         entry: enriched_entry,
+                        requires_ack: mh
+                            .requires_ack()
+                            .expect("All entry messages support requires_ack"),
                     },
                 });
                 self.next_journal_index += 1;

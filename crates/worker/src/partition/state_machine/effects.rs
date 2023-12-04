@@ -14,7 +14,6 @@ use bytestring::ByteString;
 use opentelemetry_api::trace::SpanId;
 use restate_storage_api::status_table::{InvocationStatus, JournalMetadata, NotificationTarget};
 use restate_types::identifiers::WithPartitionKey;
-use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::{Completion, CompletionResult};
 use std::collections::HashSet;
 use std::fmt;
@@ -489,7 +488,7 @@ impl Effect {
                 is_leader,
                 restate.journal.index = entry_index,
                 "Effect: Write journal entry {:?} to storage",
-                journal_entry.header.to_entry_type()
+                journal_entry.header().as_entry_type()
             ),
             Effect::StoreCompletion {
                 completion:
@@ -648,7 +647,6 @@ struct CompletionResultFmt<'a>(&'a CompletionResult);
 impl<'a> fmt::Display for CompletionResultFmt<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            CompletionResult::Ack => write!(f, "Ack"),
             CompletionResult::Empty => write!(f, "Empty"),
             CompletionResult::Success(_) => write!(f, "Success"),
             CompletionResult::Failure(code, reason) => write!(f, "Failure({}, {})", code, reason),

@@ -109,7 +109,6 @@ impl Completion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionResult {
-    Ack,
     Empty,
     Success(Bytes),
     Failure(UserErrorCode, ByteString),

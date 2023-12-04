@@ -14,111 +14,196 @@ use super::*;
 
 use std::fmt::Debug;
 
-pub type PlainRawEntry = RawEntry<RawEntryHeader>;
-
-/// Defines a [RawEntry] header.
-pub trait EntryHeader {
-    fn is_completed(&self) -> Option<bool>;
-
-    fn mark_completed(&mut self);
-
-    fn to_entry_type(&self) -> EntryType;
-}
+/// This struct represents headers as they are received from the wire.
+pub type PlainEntryHeader = EntryHeader<(), ()>;
+pub type PlainRawEntry = RawEntry<(), ()>;
 
 /// This struct represents a serialized journal entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct RawEntry<H> {
-    // TODO can we get rid of these pub here?
-    pub header: H,
-    pub entry: Bytes,
+pub struct RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
+    header: EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult>,
+    entry: Bytes,
 }
 
-impl<H> RawEntry<H> {
-    pub const fn new(header: H, entry: Bytes) -> Self {
+impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
+    RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult>
+{
+    pub const fn new(
+        header: EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult>,
+        entry: Bytes,
+    ) -> Self {
         Self { header, entry }
     }
 
-    pub fn into_inner(self) -> (H, Bytes) {
+    pub fn into_inner(
+        self,
+    ) -> (
+        EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult>,
+        Bytes,
+    ) {
         (self.header, self.entry)
     }
-}
 
-impl<H: EntryHeader> RawEntry<H> {
+    pub fn header(&self) -> &EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
+        &self.header
+    }
+
+    pub fn header_mut(
+        &mut self,
+    ) -> &mut EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
+        &mut self.header
+    }
+
+    pub fn serialized_entry(&self) -> &Bytes {
+        &self.entry
+    }
+
+    pub fn serialized_entry_mut(&mut self) -> &mut Bytes {
+        &mut self.entry
+    }
+
     pub fn ty(&self) -> EntryType {
-        self.header.to_entry_type()
+        self.header.as_entry_type()
+    }
+
+    pub fn map_header<F, TargetInvokeEnrichmentResult, TargetAwakeableEnrichmentResult>(
+        self,
+        mapper: F,
+    ) -> RawEntry<TargetInvokeEnrichmentResult, TargetAwakeableEnrichmentResult>
+    where
+        F: FnOnce(
+            EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult>,
+            &Bytes,
+        )
+            -> EntryHeader<TargetInvokeEnrichmentResult, TargetAwakeableEnrichmentResult>,
+    {
+        let new_header = mapper(self.header, &self.entry);
+        RawEntry {
+            header: new_header,
+            entry: self.entry,
+        }
+    }
+
+    pub fn deserialize_entry<Codec: RawEntryCodec>(self) -> Result<Entry, RawEntryCodecError> {
+        Codec::deserialize(self.ty(), self.entry)
+    }
+
+    pub fn deserialize_entry_ref<Codec: RawEntryCodec>(&self) -> Result<Entry, RawEntryCodecError> {
+        Codec::deserialize(self.ty(), self.entry.clone())
+    }
+
+    pub fn erase_enrichment(self) -> PlainRawEntry {
+        self.map_header(|h, _| h.erase_enrichment())
     }
 }
 
-/// This struct represents headers as they are received from the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum RawEntryHeader {
-    PollInputStream { is_completed: bool },
+pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
+    PollInputStream {
+        is_completed: bool,
+    },
     OutputStream,
-    GetState { is_completed: bool },
+    GetState {
+        is_completed: bool,
+    },
     SetState,
     ClearState,
-    Sleep { is_completed: bool },
-    Invoke { is_completed: bool },
-    BackgroundInvoke,
-    Awakeable { is_completed: bool },
-    CompleteAwakeable,
-    Custom { code: u16, requires_ack: bool },
+    Sleep {
+        is_completed: bool,
+    },
+    Invoke {
+        is_completed: bool,
+        enrichment_result: Option<InvokeEnrichmentResult>,
+    },
+    BackgroundInvoke {
+        enrichment_result: InvokeEnrichmentResult,
+    },
+    Awakeable {
+        is_completed: bool,
+    },
+    CompleteAwakeable {
+        enrichment_result: AwakeableEnrichmentResult,
+    },
+    Custom {
+        code: u16,
+    },
 }
 
-impl RawEntryHeader {
+impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
+    EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult>
+{
     pub fn is_completed(&self) -> Option<bool> {
         match self {
-            RawEntryHeader::PollInputStream { is_completed } => Some(*is_completed),
-            RawEntryHeader::OutputStream => None,
-            RawEntryHeader::GetState { is_completed } => Some(*is_completed),
-            RawEntryHeader::SetState => None,
-            RawEntryHeader::ClearState => None,
-            RawEntryHeader::Sleep { is_completed } => Some(*is_completed),
-            RawEntryHeader::Invoke { is_completed } => Some(*is_completed),
-            RawEntryHeader::BackgroundInvoke => None,
-            RawEntryHeader::Awakeable { is_completed } => Some(*is_completed),
-            RawEntryHeader::CompleteAwakeable => None,
-            RawEntryHeader::Custom { .. } => None,
-        }
-    }
-}
-
-impl EntryHeader for RawEntryHeader {
-    fn is_completed(&self) -> Option<bool> {
-        self.is_completed()
-    }
-
-    fn mark_completed(&mut self) {
-        match self {
-            RawEntryHeader::PollInputStream { is_completed } => *is_completed = true,
-            RawEntryHeader::OutputStream => {}
-            RawEntryHeader::GetState { is_completed } => *is_completed = true,
-            RawEntryHeader::SetState => {}
-            RawEntryHeader::ClearState => {}
-            RawEntryHeader::Sleep { is_completed } => *is_completed = true,
-            RawEntryHeader::Invoke { is_completed } => *is_completed = true,
-            RawEntryHeader::BackgroundInvoke => {}
-            RawEntryHeader::Awakeable { is_completed } => *is_completed = true,
-            RawEntryHeader::CompleteAwakeable => {}
-            RawEntryHeader::Custom { .. } => {}
+            EntryHeader::PollInputStream { is_completed, .. } => Some(*is_completed),
+            EntryHeader::OutputStream { .. } => None,
+            EntryHeader::GetState { is_completed, .. } => Some(*is_completed),
+            EntryHeader::SetState { .. } => None,
+            EntryHeader::ClearState { .. } => None,
+            EntryHeader::Sleep { is_completed, .. } => Some(*is_completed),
+            EntryHeader::Invoke { is_completed, .. } => Some(*is_completed),
+            EntryHeader::BackgroundInvoke { .. } => None,
+            EntryHeader::Awakeable { is_completed, .. } => Some(*is_completed),
+            EntryHeader::CompleteAwakeable { .. } => None,
+            EntryHeader::Custom { .. } => None,
         }
     }
 
-    fn to_entry_type(&self) -> EntryType {
+    pub fn mark_completed(&mut self) {
         match self {
-            RawEntryHeader::PollInputStream { .. } => EntryType::PollInputStream,
-            RawEntryHeader::OutputStream => EntryType::OutputStream,
-            RawEntryHeader::GetState { .. } => EntryType::GetState,
-            RawEntryHeader::SetState => EntryType::SetState,
-            RawEntryHeader::ClearState => EntryType::ClearState,
-            RawEntryHeader::Sleep { .. } => EntryType::Sleep,
-            RawEntryHeader::Invoke { .. } => EntryType::Invoke,
-            RawEntryHeader::BackgroundInvoke => EntryType::BackgroundInvoke,
-            RawEntryHeader::Awakeable { .. } => EntryType::Awakeable,
-            RawEntryHeader::CompleteAwakeable => EntryType::CompleteAwakeable,
-            RawEntryHeader::Custom { .. } => EntryType::Custom,
+            EntryHeader::PollInputStream { is_completed, .. } => *is_completed = true,
+            EntryHeader::OutputStream { .. } => {}
+            EntryHeader::GetState { is_completed, .. } => *is_completed = true,
+            EntryHeader::SetState { .. } => {}
+            EntryHeader::ClearState { .. } => {}
+            EntryHeader::Sleep { is_completed, .. } => *is_completed = true,
+            EntryHeader::Invoke { is_completed, .. } => *is_completed = true,
+            EntryHeader::BackgroundInvoke { .. } => {}
+            EntryHeader::Awakeable { is_completed, .. } => *is_completed = true,
+            EntryHeader::CompleteAwakeable { .. } => {}
+            EntryHeader::Custom { .. } => {}
+        }
+    }
+
+    pub fn as_entry_type(&self) -> EntryType {
+        match self {
+            EntryHeader::PollInputStream { .. } => EntryType::PollInputStream,
+            EntryHeader::OutputStream { .. } => EntryType::OutputStream,
+            EntryHeader::GetState { .. } => EntryType::GetState,
+            EntryHeader::SetState { .. } => EntryType::SetState,
+            EntryHeader::ClearState { .. } => EntryType::ClearState,
+            EntryHeader::Sleep { .. } => EntryType::Sleep,
+            EntryHeader::Invoke { .. } => EntryType::Invoke,
+            EntryHeader::BackgroundInvoke { .. } => EntryType::BackgroundInvoke,
+            EntryHeader::Awakeable { .. } => EntryType::Awakeable,
+            EntryHeader::CompleteAwakeable { .. } => EntryType::CompleteAwakeable,
+            EntryHeader::Custom { .. } => EntryType::Custom,
+        }
+    }
+
+    pub fn erase_enrichment(self) -> PlainEntryHeader {
+        match self {
+            EntryHeader::PollInputStream { is_completed } => {
+                EntryHeader::PollInputStream { is_completed }
+            }
+            EntryHeader::OutputStream {} => EntryHeader::OutputStream {},
+            EntryHeader::GetState { is_completed } => EntryHeader::GetState { is_completed },
+            EntryHeader::SetState {} => EntryHeader::SetState {},
+            EntryHeader::ClearState {} => EntryHeader::ClearState {},
+            EntryHeader::Sleep { is_completed } => EntryHeader::Sleep { is_completed },
+            EntryHeader::Invoke { is_completed, .. } => EntryHeader::Invoke {
+                is_completed,
+                enrichment_result: None,
+            },
+            EntryHeader::BackgroundInvoke { .. } => EntryHeader::BackgroundInvoke {
+                enrichment_result: (),
+            },
+            EntryHeader::Awakeable { is_completed } => EntryHeader::Awakeable { is_completed },
+            EntryHeader::CompleteAwakeable { .. } => EntryHeader::CompleteAwakeable {
+                enrichment_result: (),
+            },
+            EntryHeader::Custom { code } => EntryHeader::Custom { code },
         }
     }
 }
@@ -150,12 +235,12 @@ pub enum ErrorKind {
 }
 
 pub trait RawEntryCodec {
-    fn serialize_as_unary_input_entry(input_message: Bytes) -> PlainRawEntry;
+    fn serialize_as_unary_input_entry(input_message: Bytes) -> enriched::EnrichedRawEntry;
 
-    fn deserialize<H: EntryHeader>(entry: &RawEntry<H>) -> Result<Entry, RawEntryCodecError>;
+    fn deserialize(entry_type: EntryType, entry_value: Bytes) -> Result<Entry, RawEntryCodecError>;
 
-    fn write_completion<H: EntryHeader + Debug>(
-        entry: &mut RawEntry<H>,
+    fn write_completion<InvokeEnrichmentResult: Debug, AwakeableEnrichmentResult: Debug>(
+        entry: &mut RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult>,
         completion_result: CompletionResult,
     ) -> Result<(), RawEntryCodecError>;
 }

@@ -11,7 +11,7 @@
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
 const VERSION_MASK: u64 = 0x03FF_0000_0000;
 const COMPLETED_MASK: u64 = 0x0001_0000_0000;
-const REQUIRES_ACK_MASK: u64 = 0x0001_0000_0000;
+const REQUIRES_ACK_MASK: u64 = 0x8000_0000_0000;
 
 type MessageTypeId = u16;
 
@@ -21,7 +21,7 @@ pub enum MessageKind {
     IO,
     State,
     Syscall,
-    Custom,
+    CustomEntry,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -30,6 +30,7 @@ pub enum MessageType {
     Completion,
     Suspension,
     Error,
+    EntryAck,
     PollInputStreamEntry,
     OutputStreamEntry,
     GetStateEntry,
@@ -40,7 +41,7 @@ pub enum MessageType {
     BackgroundInvokeEntry,
     AwakeableEntry,
     CompleteAwakeableEntry,
-    Custom(u16),
+    CustomEntry(u16),
 }
 
 impl MessageType {
@@ -50,6 +51,7 @@ impl MessageType {
             MessageType::Completion => MessageKind::Core,
             MessageType::Suspension => MessageKind::Core,
             MessageType::Error => MessageKind::Core,
+            MessageType::EntryAck => MessageKind::Core,
             MessageType::PollInputStreamEntry => MessageKind::IO,
             MessageType::OutputStreamEntry => MessageKind::IO,
             MessageType::GetStateEntry => MessageKind::State,
@@ -60,7 +62,7 @@ impl MessageType {
             MessageType::BackgroundInvokeEntry => MessageKind::Syscall,
             MessageType::AwakeableEntry => MessageKind::Syscall,
             MessageType::CompleteAwakeableEntry => MessageKind::Syscall,
-            MessageType::Custom(_) => MessageKind::Custom,
+            MessageType::CustomEntry(_) => MessageKind::CustomEntry,
         }
     }
 
@@ -80,7 +82,10 @@ impl MessageType {
     }
 
     fn has_requires_ack_flag(&self) -> bool {
-        matches!(self, MessageType::Custom(_))
+        matches!(
+            self.kind(),
+            MessageKind::State | MessageKind::IO | MessageKind::Syscall | MessageKind::CustomEntry
+        )
     }
 }
 
@@ -88,6 +93,7 @@ const START_MESSAGE_TYPE: u16 = 0x0000;
 const COMPLETION_MESSAGE_TYPE: u16 = 0x0001;
 const SUSPENSION_MESSAGE_TYPE: u16 = 0x0002;
 const ERROR_MESSAGE_TYPE: u16 = 0x0003;
+const ENTRY_ACK_MESSAGE_TYPE: u16 = 0x0004;
 const POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE: u16 = 0x0400;
 const OUTPUT_STREAM_ENTRY_MESSAGE_TYPE: u16 = 0x0401;
 const GET_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0800;
@@ -106,6 +112,7 @@ impl From<MessageType> for MessageTypeId {
             MessageType::Completion => COMPLETION_MESSAGE_TYPE,
             MessageType::Suspension => SUSPENSION_MESSAGE_TYPE,
             MessageType::Error => ERROR_MESSAGE_TYPE,
+            MessageType::EntryAck => ENTRY_ACK_MESSAGE_TYPE,
             MessageType::PollInputStreamEntry => POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE,
             MessageType::OutputStreamEntry => OUTPUT_STREAM_ENTRY_MESSAGE_TYPE,
             MessageType::GetStateEntry => GET_STATE_ENTRY_MESSAGE_TYPE,
@@ -116,7 +123,7 @@ impl From<MessageType> for MessageTypeId {
             MessageType::BackgroundInvokeEntry => BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE,
             MessageType::AwakeableEntry => AWAKEABLE_ENTRY_MESSAGE_TYPE,
             MessageType::CompleteAwakeableEntry => COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE,
-            MessageType::Custom(id) => id,
+            MessageType::CustomEntry(id) => id,
         }
     }
 }
@@ -134,6 +141,7 @@ impl TryFrom<MessageTypeId> for MessageType {
             COMPLETION_MESSAGE_TYPE => Ok(MessageType::Completion),
             SUSPENSION_MESSAGE_TYPE => Ok(MessageType::Suspension),
             ERROR_MESSAGE_TYPE => Ok(MessageType::Error),
+            ENTRY_ACK_MESSAGE_TYPE => Ok(MessageType::EntryAck),
             POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE => Ok(MessageType::PollInputStreamEntry),
             OUTPUT_STREAM_ENTRY_MESSAGE_TYPE => Ok(MessageType::OutputStreamEntry),
             GET_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetStateEntry),
@@ -144,7 +152,7 @@ impl TryFrom<MessageTypeId> for MessageType {
             BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE => Ok(MessageType::BackgroundInvokeEntry),
             AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::AwakeableEntry),
             COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CompleteAwakeableEntry),
-            v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::Custom(v)),
+            v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::CustomEntry(v)),
             v => Err(UnknownMessageType(v)),
         }
     }
@@ -161,7 +169,7 @@ pub struct MessageHeader {
 
     /// Only `CompletableEntries` have completed flag. See [`MessageType#allows_completed_flag`].
     completed_flag: Option<bool>,
-    /// Only `Custom` entries have requires ack flag.
+    /// All Entry messages may have requires ack flag.
     requires_ack_flag: Option<bool>,
 }
 
@@ -186,18 +194,17 @@ impl MessageHeader {
     pub(super) fn new_entry_header(
         ty: MessageType,
         completed_flag: Option<bool>,
-        requires_ack_flag: Option<bool>,
         length: u32,
     ) -> Self {
         debug_assert!(completed_flag.is_some() == ty.has_completed_flag());
-        debug_assert!(requires_ack_flag.is_some() == ty.has_requires_ack_flag());
 
         MessageHeader {
             ty,
             length,
             protocol_version: None,
             completed_flag,
-            requires_ack_flag,
+            // It is always false when sending entries from the runtime
+            requires_ack_flag: Some(false),
         }
     }
 
@@ -322,7 +329,7 @@ mod tests {
 
     impl MessageHeader {
         fn new_completable_entry(ty: MessageType, completed: bool, length: u32) -> Self {
-            Self::new_entry_header(ty, Some(completed), None, length)
+            Self::new_entry_header(ty, Some(completed), length)
         }
     }
 
@@ -366,6 +373,18 @@ mod tests {
                 Some($requires_ack)
             );
         };
+        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, requires_ack: $requires_ack:expr, completed: $completed:expr) => {
+            roundtrip_test!(
+                $test_name,
+                $header,
+                $ty,
+                $kind,
+                $len,
+                Some($completed),
+                None,
+                Some($requires_ack)
+            );
+        };
         ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, $completed:expr, $protocol_version:expr, $requires_ack:expr) => {
             #[test]
             fn $test_name() {
@@ -405,6 +424,7 @@ mod tests {
         GetStateEntry,
         State,
         0,
+        requires_ack: false,
         completed: true
     );
 
@@ -414,6 +434,7 @@ mod tests {
         GetStateEntry,
         State,
         0,
+        requires_ack: false,
         completed: false
     );
 
@@ -423,23 +444,33 @@ mod tests {
         GetStateEntry,
         State,
         10341,
+        requires_ack: false,
         completed: true
     );
 
     roundtrip_test!(
+        set_state_with_requires_ack,
+        MessageHeader::_new(SetStateEntry, None, None, Some(true), 10341),
+        SetStateEntry,
+        State,
+        10341,
+        requires_ack: true
+    );
+
+    roundtrip_test!(
         custom_entry,
-        MessageHeader::new(MessageType::Custom(0xFC00), 10341),
-        MessageType::Custom(0xFC00),
-        MessageKind::Custom,
+        MessageHeader::new(MessageType::CustomEntry(0xFC00), 10341),
+        MessageType::CustomEntry(0xFC00),
+        MessageKind::CustomEntry,
         10341,
         requires_ack: false
     );
 
     roundtrip_test!(
         custom_entry_with_requires_ack,
-        MessageHeader::_new(MessageType::Custom(0xFC00), None, None, Some(true), 10341),
-        MessageType::Custom(0xFC00),
-        MessageKind::Custom,
+        MessageHeader::_new(MessageType::CustomEntry(0xFC00), None, None, Some(true), 10341),
+        MessageType::CustomEntry(0xFC00),
+        MessageKind::CustomEntry,
         10341,
         requires_ack: true
     );
