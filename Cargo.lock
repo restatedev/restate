@@ -3238,9 +3238,9 @@ dependencies = [
 
 [[package]]
 name = "okapi-operation"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22c8349c6b870555e7758a8d3194b6569a1d19e39826e0b9eb12b9207d22b088"
+checksum = "cdb9f8592e696267af3f08ae9b3072b04c1f8a38d69d9c09fe70a30a6044c46c"
 dependencies = [
  "anyhow",
  "axum",

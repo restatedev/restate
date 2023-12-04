@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::bail;
+use reqwest::header::ACCEPT;
 use restate_schema_api::subscription::Subscription;
 use restate_types::identifiers::InvocationId;
 use restate_types::retries::RetryPolicy;
@@ -82,7 +83,16 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let join_handle = tokio::spawn(meta_service.run(shutdown_watch, Mock));
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)
-        .retry_operation(|| async { reqwest::get(openapi_address.clone()).await?.text().await })
+        .retry_operation(|| async {
+            reqwest::Client::builder()
+                .build()?
+                .get(openapi_address.clone())
+                .header(ACCEPT, "application/json")
+                .send()
+                .await?
+                .text()
+                .await
+        })
         .await
         .unwrap();
 
