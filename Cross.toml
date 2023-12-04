@@ -10,7 +10,7 @@ pre-build = [
 ]
 
 [target.aarch64-apple-darwin]
-image = "ghcr.io/jackkleeman/cross:aarch64-apple-darwin"
+image = "ghcr.io/restatedev/cross:aarch64-apple-darwin"
 
 [target.aarch64-apple-darwin.env]
 passthrough = [
@@ -27,7 +27,7 @@ passthrough = [
 ]
 
 [target.x86_64-apple-darwin]
-image = "ghcr.io/jackkleeman/cross:x86_64-apple-darwin"
+image = "ghcr.io/restatedev/cross:x86_64-apple-darwin"
 
 [target.x86_64-apple-darwin.env]
 passthrough = [
