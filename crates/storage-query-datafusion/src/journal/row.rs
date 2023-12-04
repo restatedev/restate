@@ -16,7 +16,6 @@ use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_rocksdb::journal_table::OwnedJournalRow;
 use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
-use restate_types::journal::raw::{EntryHeader, RawEntryCodec};
 
 use crate::table_util::format_using;
 use restate_types::journal::{BackgroundInvokeEntry, Entry, InvokeEntry, InvokeRequest};
@@ -39,35 +38,37 @@ pub(crate) fn append_journal_row(
 
     match journal_row.journal_entry {
         JournalEntry::Entry(entry) => {
-            row.entry_type(format_using(output, &entry.header.to_entry_type()));
+            row.entry_type(format_using(output, &entry.header().as_entry_type()));
 
-            if let Some(completed) = entry.header.is_completed() {
+            if let Some(completed) = entry.header().is_completed() {
                 row.completed(completed);
             }
 
-            match &entry.header {
+            match &entry.header() {
                 EnrichedEntryHeader::Invoke {
-                    resolution_result: Some(resolution_result),
+                    enrichment_result: Some(enrichment_result),
                     ..
                 }
-                | EnrichedEntryHeader::BackgroundInvoke { resolution_result } => {
+                | EnrichedEntryHeader::BackgroundInvoke {
+                    enrichment_result, ..
+                } => {
                     row.invoked_service_key(
-                        std::str::from_utf8(&resolution_result.service_key)
+                        std::str::from_utf8(&enrichment_result.service_key)
                             .expect("The key must be a string!"),
                     );
 
-                    row.invoked_service(&resolution_result.service_name);
+                    row.invoked_service(&enrichment_result.service_name);
 
                     if row.is_invoked_id_defined() {
                         let partition_key = ServiceId::new(
-                            resolution_result.service_name.clone(),
-                            resolution_result.service_key.clone(),
+                            enrichment_result.service_name.clone(),
+                            enrichment_result.service_key.clone(),
                         )
                         .partition_key();
 
                         row.invoked_id(format_using(
                             output,
-                            &InvocationId::new(partition_key, resolution_result.invocation_uuid),
+                            &InvocationId::new(partition_key, enrichment_result.invocation_uuid),
                         ));
                     }
 
@@ -88,8 +89,9 @@ pub(crate) fn append_journal_row(
 }
 
 fn deserialize_invocation_request(entry: &EnrichedRawEntry) -> Option<InvokeRequest> {
-    let decoded_entry =
-        ProtobufRawEntryCodec::deserialize(entry).expect("journal entry must deserialize");
+    let decoded_entry = entry
+        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+        .expect("journal entry must deserialize");
 
     debug_assert!(matches!(
         decoded_entry,

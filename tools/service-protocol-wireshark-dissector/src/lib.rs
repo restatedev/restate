@@ -15,7 +15,6 @@ use mlua::{Table, Value};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{Decoder, MessageType, ProtocolMessage};
 use restate_types::errors::InvocationError;
-use restate_types::journal::raw::RawEntryCodec;
 
 #[derive(Debug, thiserror::Error)]
 #[error("unexpected lua value received")]
@@ -60,11 +59,14 @@ fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Tabl
                 ProtocolMessage::Suspension(s) => {
                     format!("{:#?}", s)
                 }
+                ProtocolMessage::EntryAck(a) => {
+                    format!("{:#?}", a)
+                }
                 ProtocolMessage::Error(e) => {
                     format!("{:?}", InvocationError::from(e))
                 }
                 ProtocolMessage::UnparsedEntry(e) => {
-                    format!("{:#?}", ProtobufRawEntryCodec::deserialize(&e).map_err(LuaError::external)?)
+                    format!("{:#?}", e.deserialize_entry::<ProtobufRawEntryCodec>().map_err(LuaError::external)?)
                 }
             }
         );
@@ -88,7 +90,7 @@ fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Tabl
 
 fn format_message_type(msg_type: MessageType) -> String {
     match msg_type {
-        mt @ MessageType::Custom(_) => {
+        mt @ MessageType::CustomEntry(_) => {
             format!("{:?}", mt)
         }
         mt => {

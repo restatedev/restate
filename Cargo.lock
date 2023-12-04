@@ -4737,6 +4737,7 @@ dependencies = [
  "derive_builder",
  "drain",
  "futures",
+ "googletest",
  "h2",
  "humantime",
  "hyper",

@@ -169,12 +169,6 @@ where
                 invocation_uuid,
                 completion,
             } => {
-                debug_assert_ne!(
-                    completion.result,
-                    CompletionResult::Ack,
-                    "Virtual Journal completions doesn't support acks"
-                );
-
                 let journal_notification_request = Bytes::from(restate_pb::restate::internal::JournalCompletionNotificationRequest {
                     entry_index: completion.entry_index,
                     invocation_uuid: Bytes::copy_from_slice(invocation_uuid.as_bytes()),
@@ -189,7 +183,6 @@ where
                                 message: msg.to_string(),
                             }
                         ),
-                        CompletionResult::Ack => { unreachable!("Virtual Journal completions doesn't support acks") }
                     }),
                 }.encode_to_vec());
 

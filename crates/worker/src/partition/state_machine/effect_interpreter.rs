@@ -14,7 +14,6 @@ use crate::partition::services::non_deterministic;
 use crate::partition::state_machine::actions::Action;
 use crate::partition::state_machine::effects::Effect;
 use crate::partition::{CommitError, Committable};
-use assert2::let_assert;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use restate_invoker_api::InvokeInputJournal;
@@ -26,7 +25,7 @@ use restate_storage_api::timer_table::Timer;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
-use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryCodec, RawEntryHeader};
+use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
@@ -489,21 +488,13 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
 
             // TODO clean up custom entry hack by allowing to store bytes directly?
             EnrichedRawEntry::new(
-                EnrichedEntryHeader::Custom {
-                    code: 0,
-                    requires_ack: false,
-                },
+                EnrichedEntryHeader::Custom { code: 0 },
                 service_invocation.argument,
             )
         } else {
-            let_assert!(
-                restate_types::journal::raw::RawEntry {
-                    header: RawEntryHeader::PollInputStream { is_completed },
-                    entry
-                } = Codec::serialize_as_unary_input_entry(service_invocation.argument.clone())
-            );
-
-            let raw_bytes = entry.clone();
+            let poll_input_stream_entry =
+                Codec::serialize_as_unary_input_entry(service_invocation.argument.clone());
+            let (header, serialized_entry) = poll_input_stream_entry.into_inner();
 
             collector.collect(Action::Invoke {
                 full_invocation_id: service_invocation.fid,
@@ -515,13 +506,13 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                         None,
                     ),
                     vec![PlainRawEntry::new(
-                        RawEntryHeader::PollInputStream { is_completed },
-                        raw_bytes,
+                        header.clone().erase_enrichment(),
+                        serialized_entry.clone(),
                     )],
                 ),
             });
 
-            EnrichedRawEntry::new(EnrichedEntryHeader::PollInputStream { is_completed }, entry)
+            EnrichedRawEntry::new(header, serialized_entry)
         };
 
         state_storage
@@ -543,7 +534,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             .await?
         {
             if journal_entry.ty() == EntryType::Awakeable
-                && journal_entry.header.is_completed() == Some(true)
+                && journal_entry.header().is_completed() == Some(true)
             {
                 // We can ignore when we get an awakeable completion twice as they might be a result of
                 // some request being retried from the ingress to complete the awakeable.

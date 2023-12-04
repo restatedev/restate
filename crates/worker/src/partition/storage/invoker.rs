@@ -18,7 +18,6 @@ use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::Transaction;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::ServiceId;
-use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
 use std::vec::IntoIter;
 
@@ -66,9 +65,7 @@ where
                         entry
                             .map_err(InvokerStorageReaderError::Storage)
                             .map(|journal_entry| match journal_entry {
-                                JournalEntry::Entry(EnrichedRawEntry { header, entry }) => {
-                                    PlainRawEntry::new(header.into(), entry)
-                                }
+                                JournalEntry::Entry(entry) => entry.erase_enrichment(),
                                 JournalEntry::Completion(_) => {
                                     panic!("should only read entries when reading the journal")
                                 }

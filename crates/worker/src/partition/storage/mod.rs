@@ -28,7 +28,6 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::CompletionResult;
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
@@ -267,9 +266,7 @@ where
                 .get_journal_entry(service_id, entry_index)
                 .await?
                 .map(|journal_entry| match journal_entry {
-                    JournalEntry::Entry(EnrichedRawEntry { header, .. }) => {
-                        header.is_completed().unwrap_or(true)
-                    }
+                    JournalEntry::Entry(entry) => entry.header().is_completed().unwrap_or(true),
                     JournalEntry::Completion(_) => false,
                 })
                 .unwrap_or(false))

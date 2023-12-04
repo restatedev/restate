@@ -19,7 +19,7 @@ use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 // false positive because of Bytes
 #[allow(clippy::declare_interior_mutable_const)]
 const MOCK_JOURNAL_ENTRY: JournalEntry = JournalEntry::Entry(EnrichedRawEntry::new(
-    EnrichedEntryHeader::ClearState,
+    EnrichedEntryHeader::ClearState {},
     Bytes::new(),
 ));
 

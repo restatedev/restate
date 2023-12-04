@@ -37,7 +37,6 @@ use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{FullInvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
-use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::EntryType;
 
 pub(crate) trait InvocationReader {
@@ -293,7 +292,7 @@ where
                 .expect("first journal entry must be present; if not, this indicates a bug.");
 
             assert_eq!(
-                input_entry.header.to_entry_type(),
+                input_entry.header().as_entry_type(),
                 EntryType::Custom,
                 "first journal entry must be a '{}' for built in services",
                 EntryType::Custom
@@ -307,7 +306,7 @@ where
 
             let method = metadata.method;
             let response_sink = metadata.response_sink;
-            let argument = input_entry.entry;
+            let argument = input_entry.serialized_entry().clone();
             built_in_service_invoker
                 .invoke(
                     full_invocation_id,

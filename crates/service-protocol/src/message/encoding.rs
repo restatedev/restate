@@ -15,7 +15,7 @@ use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
-use restate_types::journal::raw::{RawEntry, RawEntryHeader};
+use restate_types::journal::raw::{PlainEntryHeader, RawEntry};
 use size::Size;
 use tracing::warn;
 
@@ -85,17 +85,12 @@ fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeade
         ProtocolMessage::Completion(_) => MessageHeader::new(MessageType::Completion, len),
         ProtocolMessage::Suspension(_) => MessageHeader::new(MessageType::Suspension, len),
         ProtocolMessage::Error(_) => MessageHeader::new(MessageType::Error, len),
+        ProtocolMessage::EntryAck(_) => MessageHeader::new(MessageType::EntryAck, len),
         ProtocolMessage::UnparsedEntry(entry) => {
-            let completed_flag = entry.header.is_completed();
-            let requires_ack = if let RawEntryHeader::Custom { requires_ack, .. } = entry.header {
-                Some(requires_ack)
-            } else {
-                None
-            };
+            let completed_flag = entry.header().is_completed();
             MessageHeader::new_entry_header(
-                raw_header_to_message_type(&entry.header),
+                raw_header_to_message_type(entry.header()),
                 completed_flag,
-                requires_ack,
                 len,
             )
         }
@@ -108,8 +103,9 @@ fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost:
         ProtocolMessage::Completion(m) => m.encode(buf),
         ProtocolMessage::Suspension(m) => m.encode(buf),
         ProtocolMessage::Error(m) => m.encode(buf),
+        ProtocolMessage::EntryAck(m) => m.encode(buf),
         ProtocolMessage::UnparsedEntry(entry) => {
-            buf.put(entry.entry.clone());
+            buf.put(entry.serialized_entry().clone());
             Ok(())
         }
     }
@@ -232,6 +228,9 @@ fn decode_protocol_message(
             ProtocolMessage::Suspension(pb::protocol::SuspensionMessage::decode(buf)?)
         }
         MessageType::Error => ProtocolMessage::Error(pb::protocol::ErrorMessage::decode(buf)?),
+        MessageType::EntryAck => {
+            ProtocolMessage::EntryAck(pb::protocol::EntryAckMessage::decode(buf)?)
+        }
         _ => ProtocolMessage::UnparsedEntry(RawEntry::new(
             message_header_to_raw_header(header),
             // NOTE: This is a no-op copy if the Buf is instance of Bytes.
@@ -242,11 +241,22 @@ fn decode_protocol_message(
     })
 }
 
-fn message_header_to_raw_header(message_header: &MessageHeader) -> RawEntryHeader {
+macro_rules! expect_flag {
+    ($message_header:expr, $name:ident) => {
+        MessageHeader::$name($message_header)
+            .expect(concat!(stringify!($name), " flag being present"))
+    };
+}
+
+fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHeader {
     debug_assert!(
         !matches!(
             message_header.message_type(),
-            MessageType::Start | MessageType::Completion | MessageType::Suspension
+            MessageType::Start
+                | MessageType::Completion
+                | MessageType::Suspension
+                | MessageType::EntryAck
+                | MessageType::Error
         ),
         "Message is not an entry type. This is a Restate bug. Please contact the developers."
     );
@@ -255,58 +265,50 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> RawEntryHeade
         MessageType::Completion => unreachable!(),
         MessageType::Suspension => unreachable!(),
         MessageType::Error => unreachable!(),
-        MessageType::PollInputStreamEntry => RawEntryHeader::PollInputStream {
-            is_completed: message_header
-                .completed()
-                .expect("completed flag being present"),
+        MessageType::EntryAck => unreachable!(),
+
+        MessageType::PollInputStreamEntry => PlainEntryHeader::PollInputStream {
+            is_completed: expect_flag!(message_header, completed),
         },
-        MessageType::OutputStreamEntry => RawEntryHeader::OutputStream,
-        MessageType::GetStateEntry => RawEntryHeader::GetState {
-            is_completed: message_header
-                .completed()
-                .expect("completed flag being present"),
+        MessageType::OutputStreamEntry => PlainEntryHeader::OutputStream {},
+        MessageType::GetStateEntry => PlainEntryHeader::GetState {
+            is_completed: expect_flag!(message_header, completed),
         },
-        MessageType::SetStateEntry => RawEntryHeader::SetState,
-        MessageType::ClearStateEntry => RawEntryHeader::ClearState,
-        MessageType::SleepEntry => RawEntryHeader::Sleep {
-            is_completed: message_header
-                .completed()
-                .expect("completed flag being present"),
+        MessageType::SetStateEntry => PlainEntryHeader::SetState {},
+        MessageType::ClearStateEntry => PlainEntryHeader::ClearState {},
+        MessageType::SleepEntry => PlainEntryHeader::Sleep {
+            is_completed: expect_flag!(message_header, completed),
         },
-        MessageType::InvokeEntry => RawEntryHeader::Invoke {
-            is_completed: message_header
-                .completed()
-                .expect("completed flag being present"),
+        MessageType::InvokeEntry => PlainEntryHeader::Invoke {
+            is_completed: expect_flag!(message_header, completed),
+            enrichment_result: None,
         },
-        MessageType::BackgroundInvokeEntry => RawEntryHeader::BackgroundInvoke,
-        MessageType::AwakeableEntry => RawEntryHeader::Awakeable {
-            is_completed: message_header
-                .completed()
-                .expect("completed flag being present"),
+        MessageType::BackgroundInvokeEntry => PlainEntryHeader::BackgroundInvoke {
+            enrichment_result: (),
         },
-        MessageType::CompleteAwakeableEntry => RawEntryHeader::CompleteAwakeable,
-        MessageType::Custom(code) => RawEntryHeader::Custom {
-            code,
-            requires_ack: message_header
-                .requires_ack()
-                .expect("requires ack flag begin present"),
+        MessageType::AwakeableEntry => PlainEntryHeader::Awakeable {
+            is_completed: expect_flag!(message_header, completed),
         },
+        MessageType::CompleteAwakeableEntry => PlainEntryHeader::CompleteAwakeable {
+            enrichment_result: (),
+        },
+        MessageType::CustomEntry(code) => PlainEntryHeader::Custom { code },
     }
 }
 
-fn raw_header_to_message_type(entry_header: &RawEntryHeader) -> MessageType {
+fn raw_header_to_message_type(entry_header: &PlainEntryHeader) -> MessageType {
     match entry_header {
-        RawEntryHeader::PollInputStream { .. } => MessageType::PollInputStreamEntry,
-        RawEntryHeader::OutputStream => MessageType::OutputStreamEntry,
-        RawEntryHeader::GetState { .. } => MessageType::GetStateEntry,
-        RawEntryHeader::SetState => MessageType::SetStateEntry,
-        RawEntryHeader::ClearState => MessageType::ClearStateEntry,
-        RawEntryHeader::Sleep { .. } => MessageType::SleepEntry,
-        RawEntryHeader::Invoke { .. } => MessageType::InvokeEntry,
-        RawEntryHeader::BackgroundInvoke => MessageType::BackgroundInvokeEntry,
-        RawEntryHeader::Awakeable { .. } => MessageType::AwakeableEntry,
-        RawEntryHeader::CompleteAwakeable => MessageType::CompleteAwakeableEntry,
-        RawEntryHeader::Custom { code, .. } => MessageType::Custom(*code),
+        PlainEntryHeader::PollInputStream { .. } => MessageType::PollInputStreamEntry,
+        PlainEntryHeader::OutputStream { .. } => MessageType::OutputStreamEntry,
+        PlainEntryHeader::GetState { .. } => MessageType::GetStateEntry,
+        PlainEntryHeader::SetState { .. } => MessageType::SetStateEntry,
+        PlainEntryHeader::ClearState { .. } => MessageType::ClearStateEntry,
+        PlainEntryHeader::Sleep { .. } => MessageType::SleepEntry,
+        PlainEntryHeader::Invoke { .. } => MessageType::InvokeEntry,
+        PlainEntryHeader::BackgroundInvoke { .. } => MessageType::BackgroundInvokeEntry,
+        PlainEntryHeader::Awakeable { .. } => MessageType::AwakeableEntry,
+        PlainEntryHeader::CompleteAwakeable { .. } => MessageType::CompleteAwakeableEntry,
+        PlainEntryHeader::Custom { code, .. } => MessageType::CustomEntry(*code),
     }
 }
 
@@ -316,7 +318,7 @@ mod tests {
     use super::*;
 
     use crate::pb;
-    use restate_types::journal::raw::RawEntryHeader;
+    use restate_types::journal::raw::PlainEntryHeader;
 
     use restate_test_util::{assert, assert_eq, let_assert};
 
@@ -329,7 +331,7 @@ mod tests {
         let expected_msg_0 =
             ProtocolMessage::new_start_message("key".into(), "key".into(), 1, true, vec![]);
         let expected_msg_1: ProtocolMessage = RawEntry::new(
-            RawEntryHeader::PollInputStream { is_completed: true },
+            PlainEntryHeader::PollInputStream { is_completed: true },
             pb::protocol::PollInputStreamEntryMessage {
                 value: Bytes::from_static("input".as_bytes()),
             }
@@ -385,7 +387,7 @@ mod tests {
         let mut decoder = Decoder::default();
 
         let expected_msg: ProtocolMessage = RawEntry::new(
-            RawEntryHeader::PollInputStream { is_completed: true },
+            PlainEntryHeader::PollInputStream { is_completed: true },
             pb::protocol::PollInputStreamEntryMessage {
                 value: Bytes::from_static("input".as_bytes()),
             }
@@ -418,7 +420,7 @@ mod tests {
         let encoder = Encoder::new(0);
         let msg = encoder.encode(
             RawEntry::new(
-                RawEntryHeader::PollInputStream { is_completed: true },
+                PlainEntryHeader::PollInputStream { is_completed: true },
                 pb::protocol::PollInputStreamEntryMessage {
                     value: (0..=u8::MAX).collect::<Vec<_>>().into(),
                 }

@@ -35,7 +35,9 @@ use restate_types::invocation::{
     InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
 };
-use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry, ResolutionResult};
+use restate_types::journal::enriched::{
+    AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
+};
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::*;
 use restate_types::message::MessageIndex;
@@ -492,16 +494,17 @@ where
             let journal_entry = journal_entry?;
 
             if let JournalEntry::Entry(enriched_entry) = journal_entry {
-                match enriched_entry.header {
+                let (h, _) = enriched_entry.into_inner();
+                match h {
                     // we only need to kill child invocations if they are not completed and the target was resolved
                     EnrichedEntryHeader::Invoke {
                         is_completed,
-                        resolution_result: Some(resolution_result),
+                        enrichment_result: Some(enrichment_result),
                     } if !is_completed => {
                         let target_fid = FullInvocationId::new(
-                            resolution_result.service_name,
-                            resolution_result.service_key,
-                            resolution_result.invocation_uuid,
+                            enrichment_result.service_name,
+                            enrichment_result.service_key,
+                            enrichment_result.invocation_uuid,
                         );
                         self.send_message(OutboxMessage::Kill(target_fid), effects);
                     }
@@ -748,19 +751,19 @@ where
             "Expect to receive next journal entry for {full_invocation_id}"
         );
 
-        match journal_entry.header {
+        match journal_entry.header() {
             // nothing to do
-            EnrichedEntryHeader::PollInputStream { is_completed } => {
+            EnrichedEntryHeader::PollInputStream { is_completed, .. } => {
                 debug_assert!(
                     !is_completed,
                     "Poll input stream entry must not be completed."
                 );
             }
-            EnrichedEntryHeader::OutputStream => {
+            EnrichedEntryHeader::OutputStream { .. } => {
                 if let Some(ref response_sink) = invocation_metadata.response_sink {
                     let_assert!(
                         Entry::OutputStream(OutputStreamEntry { result }) =
-                            Codec::deserialize(&journal_entry)?
+                            journal_entry.deserialize_entry_ref::<Codec>()?
                     );
 
                     self.send_message(
@@ -773,11 +776,11 @@ where
                     );
                 }
             }
-            EnrichedEntryHeader::GetState { is_completed } => {
+            EnrichedEntryHeader::GetState { is_completed, .. } => {
                 if !is_completed {
                     let_assert!(
                         Entry::GetState(GetStateEntry { key, .. }) =
-                            Codec::deserialize(&journal_entry)?
+                            journal_entry.deserialize_entry_ref::<Codec>()?
                     );
 
                     // Load state and write completion
@@ -796,10 +799,10 @@ where
                     );
                 }
             }
-            EnrichedEntryHeader::SetState => {
+            EnrichedEntryHeader::SetState { .. } => {
                 let_assert!(
                     Entry::SetState(SetStateEntry { key, value }) =
-                        Codec::deserialize(&journal_entry)?
+                        journal_entry.deserialize_entry_ref::<Codec>()?
                 );
 
                 effects.set_state(
@@ -810,10 +813,10 @@ where
                     value,
                 );
             }
-            EnrichedEntryHeader::ClearState => {
+            EnrichedEntryHeader::ClearState { .. } => {
                 let_assert!(
                     Entry::ClearState(ClearStateEntry { key }) =
-                        Codec::deserialize(&journal_entry)?
+                        journal_entry.deserialize_entry_ref::<Codec>()?
                 );
                 effects.clear_state(
                     full_invocation_id.service_id.clone(),
@@ -822,11 +825,11 @@ where
                     key,
                 );
             }
-            EnrichedEntryHeader::Sleep { is_completed } => {
+            EnrichedEntryHeader::Sleep { is_completed, .. } => {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
                 let_assert!(
                     Entry::Sleep(SleepEntry { wake_up_time, .. }) =
-                        Codec::deserialize(&journal_entry)?
+                        journal_entry.deserialize_entry_ref::<Codec>()?
                 );
                 effects.register_timer(
                     TimerValue::new_sleep(
@@ -841,19 +844,18 @@ where
                 );
             }
             EnrichedEntryHeader::Invoke {
-                ref resolution_result,
-                ..
+                enrichment_result, ..
             } => {
-                if let Some(ResolutionResult {
+                if let Some(InvokeEnrichmentResult {
                     service_key,
                     invocation_uuid: invocation_id,
                     span_context,
                     ..
-                }) = resolution_result
+                }) = enrichment_result
                 {
                     let_assert!(
                         Entry::Invoke(InvokeEntry { request, .. }) =
-                            Codec::deserialize(&journal_entry)?
+                            journal_entry.deserialize_entry_ref::<Codec>()?
                     );
 
                     let service_invocation = Self::create_service_invocation(
@@ -872,20 +874,20 @@ where
                 }
             }
             EnrichedEntryHeader::BackgroundInvoke {
-                ref resolution_result,
+                enrichment_result, ..
             } => {
-                let ResolutionResult {
+                let InvokeEnrichmentResult {
                     service_key,
                     invocation_uuid: invocation_id,
                     span_context,
                     ..
-                } = resolution_result;
+                } = enrichment_result;
 
                 let_assert!(
                     Entry::BackgroundInvoke(BackgroundInvokeEntry {
                         request,
                         invoke_time
-                    }) = Codec::deserialize(&journal_entry)?
+                    }) = journal_entry.deserialize_entry_ref::<Codec>()?
                 );
 
                 let service_method = request.method_name.clone();
@@ -928,7 +930,7 @@ where
                     );
                 }
             }
-            EnrichedEntryHeader::Awakeable { is_completed } => {
+            EnrichedEntryHeader::Awakeable { is_completed, .. } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
                 // Check the awakeable_completion_received_before_entry test in state_machine/mod.rs for more details
 
@@ -946,35 +948,29 @@ where
                 }
             }
             EnrichedEntryHeader::CompleteAwakeable {
-                ref invocation_id,
-                entry_index,
+                enrichment_result:
+                    AwakeableEnrichmentResult {
+                        invocation_id,
+                        entry_index,
+                    },
+                ..
             } => {
-                let_assert!(Entry::CompleteAwakeable(entry) = Codec::deserialize(&journal_entry)?);
+                let_assert!(
+                    Entry::CompleteAwakeable(entry) =
+                        journal_entry.deserialize_entry_ref::<Codec>()?
+                );
 
                 self.send_message(
                     OutboxMessage::from_awakeable_completion(
                         invocation_id.clone(),
-                        entry_index,
+                        *entry_index,
                         entry.result.into(),
                     ),
                     effects,
                 );
             }
-            EnrichedEntryHeader::Custom { requires_ack, code } => {
-                if requires_ack {
-                    // Reset the requires_ack flag to false
-                    journal_entry.header = EnrichedEntryHeader::Custom {
-                        code,
-                        requires_ack: false,
-                    };
-                    effects.forward_completion(
-                        full_invocation_id.clone(),
-                        Completion {
-                            entry_index,
-                            result: CompletionResult::Ack,
-                        },
-                    );
-                }
+            EnrichedEntryHeader::Custom { .. } => {
+                // We just store it
             }
         }
 
@@ -1603,7 +1599,7 @@ mod tests {
                 JournalEntry::Entry(EnrichedRawEntry::new(
                     EnrichedEntryHeader::Invoke {
                         is_completed: false,
-                        resolution_result: Some(ResolutionResult {
+                        enrichment_result: Some(InvokeEnrichmentResult {
                             invocation_uuid: call_fid.invocation_uuid,
                             service_key: call_fid.service_id.key.clone(),
                             service_name: call_fid.service_id.service_name.clone(),
@@ -1614,7 +1610,7 @@ mod tests {
                 )),
                 JournalEntry::Entry(EnrichedRawEntry::new(
                     EnrichedEntryHeader::BackgroundInvoke {
-                        resolution_result: ResolutionResult {
+                        enrichment_result: InvokeEnrichmentResult {
                             invocation_uuid: background_fid.invocation_uuid,
                             service_key: background_fid.service_id.key.clone(),
                             service_name: background_fid.service_id.service_name.clone(),
@@ -1626,7 +1622,7 @@ mod tests {
                 JournalEntry::Entry(EnrichedRawEntry::new(
                     EnrichedEntryHeader::Invoke {
                         is_completed: true,
-                        resolution_result: Some(ResolutionResult {
+                        enrichment_result: Some(InvokeEnrichmentResult {
                             invocation_uuid: finished_call_fid.invocation_uuid,
                             service_key: finished_call_fid.service_id.key.clone(),
                             service_name: finished_call_fid.service_id.service_name.clone(),

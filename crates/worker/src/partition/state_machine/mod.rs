@@ -110,7 +110,6 @@ mod tests {
         ServiceInvocationResponseSink, ServiceInvocationSpanContext,
     };
     use restate_types::journal::enriched::EnrichedRawEntry;
-    use restate_types::journal::raw::EntryHeader;
     use restate_types::journal::{Completion, CompletionResult};
     use restate_types::journal::{Entry, EntryType};
     use tempfile::tempdir;
@@ -211,26 +210,7 @@ mod tests {
     #[test(tokio::test)]
     async fn start_invocation() {
         let mut state_machine = MockStateMachine::default();
-
-        let fid = FullInvocationId::generate("MySvc", Bytes::default());
-
-        let actions = state_machine
-            .apply(AckCommand::no_ack(Command::Invocation(ServiceInvocation {
-                fid: fid.clone(),
-                method_name: ByteString::from("MyMethod"),
-                argument: Default::default(),
-                response_sink: None,
-                span_context: Default::default(),
-            })))
-            .await;
-
-        assert_that!(
-            actions,
-            contains(pat!(Action::Invoke {
-                full_invocation_id: eq(fid.clone()),
-                invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
-            }))
-        );
+        let fid = mock_start_invocation(&mut state_machine).await;
 
         let invocation_status = state_machine
             .storage()
@@ -250,18 +230,7 @@ mod tests {
     #[test(tokio::test)]
     async fn awakeable_completion_received_before_entry() {
         let mut state_machine = MockStateMachine::default();
-
-        let fid = FullInvocationId::generate("MySvc", Bytes::default());
-
-        let _ = state_machine
-            .apply_cmd(Command::Invocation(ServiceInvocation {
-                fid: fid.clone(),
-                method_name: ByteString::from("MyMethod"),
-                argument: Default::default(),
-                response_sink: None,
-                span_context: Default::default(),
-            }))
-            .await;
+        let fid = mock_start_invocation(&mut state_machine).await;
 
         // Send completion first
         let _ = state_machine
@@ -320,7 +289,7 @@ mod tests {
             entry,
             pat!(JournalEntry::Entry(all!(
                 property!(EnrichedRawEntry.ty(), eq(EntryType::Awakeable)),
-                predicate(|e: &EnrichedRawEntry| e.header.is_completed() == Some(true))
+                predicate(|e: &EnrichedRawEntry| e.header().is_completed() == Some(true))
             )))
         );
 
@@ -440,7 +409,6 @@ mod tests {
             InvocationResponse, MaybeFullInvocationId, ResponseResult,
         };
         use restate_types::journal::enriched::EnrichedRawEntry;
-        use restate_types::journal::raw::EntryHeader;
         use restate_types::journal::EntryType;
         use restate_types::journal::{AwakeableEntry, Completion, CompletionResult, Entry};
 
@@ -646,7 +614,7 @@ mod tests {
                     .unwrap(),
                 pat!(JournalEntry::Entry(all!(
                     property!(EnrichedRawEntry.ty(), eq(EntryType::Awakeable)),
-                    predicate(|e: &EnrichedRawEntry| e.header.is_completed() == Some(true))
+                    predicate(|e: &EnrichedRawEntry| e.header().is_completed() == Some(true))
                 )))
             );
             // Assert notify action is created
@@ -663,5 +631,29 @@ mod tests {
                 })]
             )
         }
+    }
+
+    async fn mock_start_invocation(state_machine: &mut MockStateMachine) -> FullInvocationId {
+        let fid = FullInvocationId::generate("MySvc", Bytes::default());
+
+        let actions = state_machine
+            .apply(AckCommand::no_ack(Command::Invocation(ServiceInvocation {
+                fid: fid.clone(),
+                method_name: ByteString::from("MyMethod"),
+                argument: Default::default(),
+                response_sink: None,
+                span_context: Default::default(),
+            })))
+            .await;
+
+        assert_that!(
+            actions,
+            contains(pat!(Action::Invoke {
+                full_invocation_id: eq(fid.clone()),
+                invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+            }))
+        );
+
+        fid
     }
 }
