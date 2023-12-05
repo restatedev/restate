@@ -13,8 +13,8 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 use crate::cli_env::CliEnv;
+use crate::clients::{MetaClientInterface, MetasClient, MetasClientError};
 use crate::console::c_println;
-use crate::meta_client::{MetaClient, MetaClientError, MetaClientInterface};
 use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
 use crate::ui::render::render_endpoint_url;
 use crate::ui::service_methods::{
@@ -129,7 +129,7 @@ pub async fn run_discover(State(env): State<CliEnv>, discover_opts: &Discover) -
     });
 
     // Preparing the discovery request
-    let client = crate::meta_client::MetaClient::new(&env)?;
+    let client = crate::clients::MetasClient::new(&env)?;
     let endpoint_metadata = match &discover_opts.endpoint {
         Endpoint::Uri(uri) => RegisterServiceEndpointMetadata::Http { uri: uri.clone() },
         Endpoint::Lambda(arn) => RegisterServiceEndpointMetadata::Lambda {
@@ -179,7 +179,7 @@ pub async fn run_discover(State(env): State<CliEnv>, discover_opts: &Discover) -
             // Appears to be an existing endpoint.
             Some(existing_endpoint)
         }
-        Err(MetaClientError::Api(err)) if err.http_status_code == StatusCode::NOT_FOUND => None,
+        Err(MetasClientError::Api(err)) if err.http_status_code == StatusCode::NOT_FOUND => None,
         // We cannot get existing endpoint details. This is a problem.
         Err(err) => return Err(err.into()),
     };
@@ -398,7 +398,7 @@ pub async fn run_discover(State(env): State<CliEnv>, discover_opts: &Discover) -
 }
 
 async fn resolve_endpoint(
-    client: &MetaClient,
+    client: &MetasClient,
     cache: &mut HashMap<String, ServiceEndpoint>,
     endpoint_id: &str,
 ) -> Option<ServiceEndpoint> {

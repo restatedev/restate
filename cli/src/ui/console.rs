@@ -53,6 +53,22 @@ pub struct Icon<'a, 'b>(pub &'a str, pub &'b str);
 #[derive(Copy, Clone)]
 pub struct Styled<T>(pub Style, pub T);
 
+impl<T> std::fmt::Debug for Styled<T>
+where
+    T: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        // passthrough debug formatting to the actual wrapped value
+        if colors_enabled() {
+            // unpack the style and the string.
+            let dstyle = DStyle::from(self.0);
+            write!(f, "{:?}", dstyle.apply_to(&self.1))
+        } else {
+            write!(f, "{:?}", self.1)
+        }
+    }
+}
+
 impl Display for Icon<'_, '_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if colors_enabled() {
@@ -82,7 +98,7 @@ where
 /// Impl is in stylesheets.
 pub trait StyledTable {
     fn new_styled(ui_config: &UiConfig) -> Self;
-    fn set_styled_header(&mut self, headers: Vec<&str>) -> &mut Self;
+    fn set_styled_header<T: ToString>(&mut self, headers: Vec<T>) -> &mut Self;
     fn add_kv_row<V: Display>(&mut self, key: &str, value: V) -> &mut Self;
     fn add_kv_row_if<P: Fn() -> bool, V: Display>(
         &mut self,

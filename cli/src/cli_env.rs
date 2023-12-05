@@ -30,10 +30,12 @@ pub const CLI_CONFIG_FILE_ENV: &str = "RESTATE_CLI_CONFIG_FILE";
 
 pub const INGRESS_URL_ENV: &str = "RESTATE_INGRESS_URL";
 pub const META_URL_ENV: &str = "RESTATE_META_URL";
+pub const DATAFUSION_HTTP_URL_ENV: &str = "RESTATE_DATAFUSION_HTTP_URL";
 
 // Default values
 pub const INGRESS_URL_DEFAULT: &str = "http://localhost:8080/";
 pub const META_URL_DEFAULT: &str = "http://localhost:9070/";
+pub const DATAFUSION_HTTP_URL_DEFAULT: &str = "http://localhost:9072/";
 
 #[derive(Clone, Default)]
 pub struct CliConfig {}
@@ -45,6 +47,7 @@ pub struct CliEnv {
     pub config_file: PathBuf,
     pub ingress_base_url: Url,
     pub meta_base_url: Url,
+    pub datafusion_http_base_url: Url,
     /// Should we use colors and emojis or not?
     pub colorful: bool,
     /// Auto answer yes to prompts that asks for confirmation
@@ -87,6 +90,12 @@ impl CliEnv {
             .as_deref()
             .map(Url::parse)
             .unwrap_or_else(|| Url::parse(META_URL_DEFAULT))?;
+
+        let datafusion_http_base_url = os_env
+            .get(DATAFUSION_HTTP_URL_ENV)
+            .as_deref()
+            .map(Url::parse)
+            .unwrap_or_else(|| Url::parse(DATAFUSION_HTTP_URL_DEFAULT))?;
 
         // color setup
         // NO_COLOR=1 with any value other than "0" means user doesn't want colors.
@@ -133,6 +142,7 @@ impl CliEnv {
             config_file,
             ingress_base_url,
             meta_base_url,
+            datafusion_http_base_url,
             colorful,
             auto_confirm: global_opts.yes,
             ui_config: global_opts.ui_config.clone(),

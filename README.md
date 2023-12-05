@@ -1,5 +1,6 @@
 [![Documentation](https://img.shields.io/badge/doc-reference-blue)](https://docs.restate.dev)
-[![Discord](https://img.shields.io/badge/join-discord-purple)](https://discord.gg/skW3AZ6uGd)
+[![Examples](https://img.shields.io/badge/view-examples-blue)](https://github.com/restatedev/examples)
+[![Discord](https://img.shields.io/discord/1128210118216007792?logo=discord)](https://discord.gg/skW3AZ6uGd)
 [![Twitter](https://img.shields.io/twitter/follow/restatedev.svg?style=social&label=Follow)](https://twitter.com/intent/follow?screen_name=restatedev)
 
 # Restate - Building resilient applications made easy!
@@ -17,7 +18,11 @@ The basic primitives Restate offers to simplify application development are the 
 * **consistent state**: keyed user code can attach key/value state, which is eagerly pushed into handlers during invocation, and written back upon completion. This is particularly efficient for FaaS deployments (stateful serverless, yay!).
 * **observability & introspection**: Restate automatically generates Open Telemetry traces for the interactions between handlers and gives you a SQL shell to query the distributed state of the application.
 
-Check [our GitHub org](https://github.com/restatedev) or the [docs](https://docs.restate.dev) for further details.
+📖 Check out our [docs](https://docs.restate.dev) to get quickly started!
+
+🗣️ Join our [discord channel](https://discord.gg/skW3AZ6uGd) to talk to the community.
+
+🏠 Visit our [GitHub org](https://github.com/restatedev) for more details.
 
 ## SDKs
 

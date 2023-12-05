@@ -13,8 +13,8 @@ mod build_info;
 mod app;
 mod art;
 mod cli_env;
+mod clients;
 mod commands;
-mod meta_client;
 mod ui;
 
 pub use app::CliApp;

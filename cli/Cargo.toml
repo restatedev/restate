@@ -18,7 +18,9 @@ restate-meta-rest-model = { workspace = true }
 restate-serde-util = { workspace = true }
 
 anyhow = { workspace = true }
+arrow = { version = "49.0.0", default-features = false, features = ["ipc", "prettyprint"] }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 clap = { version = "4.1", features = ["derive", "env", "wrap_help", "color"] }
 clap-verbosity-flag = { version = "2.0.1" }
 cling = { version = "0.1.0", default-features = false, features = ["derive"] }

@@ -24,6 +24,7 @@ pub enum Style {
     Warn,
     Success,
     Info,
+    Notice,
 }
 
 impl From<Style> for dialoguer::console::Style {
@@ -36,6 +37,7 @@ impl From<Style> for dialoguer::console::Style {
             Style::Warn => DStyle::new().magenta(),
             Style::Success => DStyle::new().green(),
             Style::Info => DStyle::new().bright().bold(),
+            Style::Notice => DStyle::new().italic(),
         }
     }
 }
@@ -60,7 +62,7 @@ impl StyledTable for comfy_table::Table {
         table
     }
 
-    fn set_styled_header(&mut self, headers: Vec<&str>) -> &mut Self {
+    fn set_styled_header<T: ToString>(&mut self, headers: Vec<T>) -> &mut Self {
         self.set_header(
             headers
                 .into_iter()
