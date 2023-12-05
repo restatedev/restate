@@ -10,28 +10,14 @@
 
 //! A wrapper client for meta HTTP service.
 
+use super::errors::ApiError;
 use crate::build_info;
 use crate::cli_env::CliEnv;
-use crate::console::Styled;
-use crate::ui::stylesheet::Style;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct ApiErrorBody {
-    restate_code: Option<String>,
-    message: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct ApiError {
-    pub http_status_code: reqwest::StatusCode,
-    pub url: Url,
-    pub body: ApiErrorBody,
-}
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -41,29 +27,6 @@ pub enum Error {
     Serialization(#[from] serde_json::Error),
     Network(#[from] reqwest::Error),
 }
-
-impl std::fmt::Display for ApiErrorBody {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let code = self.restate_code.as_deref().unwrap_or("<UNKNOWN>");
-        write!(f, "{} {}", Styled(Style::Warn, code), self.message)?;
-        Ok(())
-    }
-}
-
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}", self.body)?;
-        write!(
-            f,
-            "  -> Http status code {} at '{}'",
-            Styled(Style::Warn, &self.http_status_code),
-            Styled(Style::Info, &self.url),
-        )?;
-        Ok(())
-    }
-}
-
-impl std::error::Error for ApiError {}
 
 /// A lazy wrapper around a reqwest response that deserializes the body on
 /// demand and decodes our custom error body on non-2xx responses.
@@ -122,12 +85,12 @@ impl<T> From<reqwest::Response> for Envelope<T> {
 
 /// A handy client for the meta HTTP service.
 #[derive(Clone)]
-pub struct MetaClient {
+pub struct MetasClient {
     pub(crate) inner: reqwest::Client,
     pub(crate) base_url: reqwest::Url,
 }
 
-impl MetaClient {
+impl MetasClient {
     pub fn new(env: &CliEnv) -> reqwest::Result<Self> {
         let raw_client = reqwest::Client::builder()
             .user_agent(format!(
@@ -199,6 +162,6 @@ impl MetaClient {
 
 // Ensure that MetaClient is Send + Sync. Compiler will fail if it's not.
 const _: () = {
-    fn assert_send<T: Send + Sync>() {}
-    let _ = assert_send::<MetaClient>;
+    const fn assert_send<T: Send + Sync>() {}
+    assert_send::<MetasClient>();
 };

@@ -14,8 +14,8 @@ use cling::prelude::*;
 use comfy_table::Table;
 
 use crate::cli_env::CliEnv;
+use crate::clients::{MetaClientInterface, MetasClient};
 use crate::console::c_println;
-use crate::meta_client::{MetaClient, MetaClientInterface};
 use crate::ui::console::{Styled, StyledTable};
 use crate::ui::service_methods::create_service_methods_table;
 use crate::ui::stylesheet::Style;
@@ -32,7 +32,7 @@ pub struct Describe {
 }
 
 pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -> Result<()> {
-    let client = MetaClient::new(&env)?;
+    let client = MetasClient::new(&env)?;
     let svc = client
         .get_service(&describe_opts.name)
         .await?
