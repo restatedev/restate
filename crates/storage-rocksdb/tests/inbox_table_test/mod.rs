@@ -9,51 +9,54 @@
 // by the Apache License, Version 2.0.
 
 use crate::{assert_stream_eq, mock_service_invocation};
+use once_cell::sync::Lazy;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::ServiceId;
 
+static INBOX_ENTRIES: Lazy<Vec<InboxEntry>> = Lazy::new(|| {
+    vec![
+        InboxEntry::new(
+            7,
+            mock_service_invocation(ServiceId::new( "svc-1", "key-1")),
+        ),
+        InboxEntry::new(
+            8,
+            mock_service_invocation(ServiceId::new("svc-1", "key-1")),
+        ),
+        InboxEntry::new(
+            9,
+            mock_service_invocation(ServiceId::new("svc-2", "key-1")),
+        ),
+    ]
+});
+
 async fn populate_data<T: InboxTable>(table: &mut T) {
-    table
-        .put_invocation(
-            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            InboxEntry::new(7, mock_service_invocation()),
-        )
-        .await;
-
-    table
-        .put_invocation(
-            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            InboxEntry::new(8, mock_service_invocation()),
-        )
-        .await;
-
-    table
-        .put_invocation(
-            &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
-            InboxEntry::new(9, mock_service_invocation()),
-        )
-        .await;
+    for inbox_entry in INBOX_ENTRIES.iter() {
+        table
+            .put_invocation(inbox_entry.service_id(), inbox_entry.clone())
+            .await;
+    }
 }
 
 async fn find_the_next_message_in_an_inbox<T: InboxTable>(table: &mut T) {
     let result = table
-        .peek_inbox(&ServiceId::with_partition_key(1337, "svc-1", "key-1"))
+        .peek_inbox(INBOX_ENTRIES[0].service_id())
         .await;
 
     assert_eq!(
         result.unwrap(),
-        Some(InboxEntry::new(7, mock_service_invocation()))
+        Some(INBOX_ENTRIES[0].clone())
     );
 }
 
 async fn get_svc_inbox<T: InboxTable>(table: &mut T) {
-    let stream = table.inbox(&ServiceId::with_partition_key(1337, "svc-1", "key-1"));
+    let stream = table.inbox(INBOX_ENTRIES[0].service_id());
 
     let vec = vec![
-        InboxEntry::new(7, mock_service_invocation()),
-        InboxEntry::new(8, mock_service_invocation()),
+        INBOX_ENTRIES[0].clone(),
+        INBOX_ENTRIES[1].clone(),
     ];
 
     assert_stream_eq(stream, vec).await;
@@ -61,18 +64,18 @@ async fn get_svc_inbox<T: InboxTable>(table: &mut T) {
 
 async fn delete_entry<T: InboxTable>(table: &mut T) {
     table
-        .delete_invocation(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), 7)
+        .delete_invocation(INBOX_ENTRIES[0].service_id(), 7)
         .await;
 }
 
 async fn peek_after_delete<T: InboxTable>(table: &mut T) {
     let result = table
-        .peek_inbox(&ServiceId::with_partition_key(1337, "svc-1", "key-1"))
+        .peek_inbox(INBOX_ENTRIES[0].service_id())
         .await;
 
     assert_eq!(
         result.unwrap(),
-        Some(InboxEntry::new(8, mock_service_invocation()))
+        Some(INBOX_ENTRIES[1].clone())
     );
 }
 

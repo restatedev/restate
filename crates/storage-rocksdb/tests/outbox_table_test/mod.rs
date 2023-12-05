@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::mock_service_invocation;
+use crate::mock_random_service_invocation;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 
 fn mock_outbox_message() -> OutboxMessage {
-    OutboxMessage::ServiceInvocation(mock_service_invocation())
+    OutboxMessage::ServiceInvocation(mock_random_service_invocation())
 }
 
 pub(crate) async fn populate_data<T: OutboxTable>(txn: &mut T) {

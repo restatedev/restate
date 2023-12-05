@@ -5114,6 +5114,7 @@ dependencies = [
  "futures",
  "futures-util",
  "num-bigint",
+ "once_cell",
  "paste",
  "prost 0.12.3",
  "restate-errors",
