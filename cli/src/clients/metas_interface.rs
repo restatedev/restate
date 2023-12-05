@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::client::Envelope;
-use super::MetaClient;
+use super::metas_client::Envelope;
+use super::MetasClient;
 
 use restate_meta_rest_model::endpoints::*;
 use restate_meta_rest_model::services::*;
@@ -32,7 +32,7 @@ pub trait MetaClientInterface {
 }
 
 #[async_trait]
-impl MetaClientInterface for MetaClient {
+impl MetaClientInterface for MetasClient {
     async fn health(&self) -> reqwest::Result<Envelope<()>> {
         let url = self.base_url.join("/health").expect("Bad url!");
         Ok(self.run(reqwest::Method::GET, url).await?)

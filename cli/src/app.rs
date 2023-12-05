@@ -61,9 +61,12 @@ pub enum Command {
     /// Prints general information about the configured environment
     #[clap(name = "whoami")]
     WhoAmiI(whoami::WhoAmI),
-    /// Manage Restate's service registry
+    /// Manages Restate's service registry
     #[clap(subcommand)]
     Services(services::Services),
+    /// Runs SQL queries against the data fusion service
+    #[clap(hide = true)]
+    Sql(fusion::Sql),
 }
 
 fn init(
