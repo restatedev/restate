@@ -62,6 +62,8 @@ pub enum Command {
     #[clap(name = "whoami")]
     WhoAmiI(whoami::WhoAmI),
     /// Manages Restate's service registry
+
+    /// Manage Restate's service registry
     #[clap(subcommand)]
     Services(services::Services),
     /// Manages your service deployments
@@ -70,6 +72,10 @@ pub enum Command {
     /// Runs SQL queries against the data fusion service
     #[clap(hide = true)]
     Sql(sql::Sql),
+
+    /// Download Restate's examples
+    #[clap(name = "example", alias = "examples")]
+    Examples(examples::Examples),
 }
 
 fn init(
