@@ -10,3 +10,4 @@
 
 pub mod services;
 pub mod whoami;
+pub mod fusion;

@@ -13,7 +13,7 @@ use comfy_table::Table;
 
 use crate::build_info;
 use crate::cli_env::CliEnv;
-use crate::meta_client::MetaClientInterface;
+use crate::clients::MetaClientInterface;
 use crate::{c_eprintln, c_error, c_println, c_success};
 
 #[derive(Run, Parser, Clone)]
@@ -92,7 +92,7 @@ pub async fn run(State(env): State<CliEnv>) {
 
     c_println!();
     // Get meta client, don't fail completely if we can't get one!
-    if let Ok(client) = crate::meta_client::MetaClient::new(&env) {
+    if let Ok(client) = crate::clients::MetasClient::new(&env) {
         match client.health().await {
             Ok(envelope) if envelope.status_code().is_success() => {
                 c_success!("Meta Service '{}' is healthy!", env.meta_base_url);

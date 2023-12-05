@@ -64,6 +64,9 @@ pub enum Command {
     /// Manage Restate's service registry
     #[clap(subcommand)]
     Services(services::Services),
+    /// Run SQL queries against the data fusion service
+    #[clap(hide = true)]
+    Sql(fusion::Sql),
 }
 
 fn init(

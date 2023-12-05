@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 
 use crate::cli_env::CliEnv;
+use crate::clients::MetaClientInterface;
 use crate::console::c_println;
-use crate::meta_client::MetaClientInterface;
 use crate::ui::console::StyledTable;
 use crate::ui::render::{render_endpoint_type, render_endpoint_url};
 use crate::ui::service_methods::{icon_for_is_public, icon_for_service_flavor};
@@ -38,7 +38,7 @@ pub struct List {
 }
 
 pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()> {
-    let client = crate::meta_client::MetaClient::new(&env)?;
+    let client = crate::clients::MetasClient::new(&env)?;
     let defs = client.get_services().await?.into_body().await?;
 
     let endpoints = client.get_endpoints().await?.into_body().await?;
