@@ -9,4 +9,5 @@
 // by the Apache License, Version 2.0.
 
 pub mod services;
+pub mod sql;
 pub mod whoami;
