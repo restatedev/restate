@@ -16,14 +16,16 @@ use crate::{Result, TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
 
+use futures_util::FutureExt;
 use prost::Message;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use restate_types::invocation::ServiceInvocation;
+use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
 use std::io::Cursor;
 use std::ops::RangeInclusive;
+use tokio_stream::StreamExt;
 
 define_table_key!(
     Inbox,
@@ -100,6 +102,47 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             let inbox_entry = decode_inbox_key_value(k, v);
             TableScanIterationDecision::Emit(inbox_entry)
         })
+    }
+
+    fn contains(
+        &mut self,
+        maybe_fid: impl Into<MaybeFullInvocationId>,
+    ) -> GetFuture<Option<(ServiceId, u64)>> {
+        let (inbox_key, invocation_uuid) = match maybe_fid.into() {
+            MaybeFullInvocationId::Partial(invocation_id) => (
+                InboxKey::default().partition_key(invocation_id.partition_key()),
+                invocation_id.invocation_uuid(),
+            ),
+            MaybeFullInvocationId::Full(fid) => (
+                InboxKey::default()
+                    .partition_key(fid.partition_key())
+                    .service_name(fid.service_id.service_name)
+                    .service_key(fid.service_id.key),
+                fid.invocation_uuid,
+            ),
+        };
+
+        let mut result =
+            self.for_each_key_value(TableScan::KeyPrefix(inbox_key), move |key, value| {
+                let inbox_entry = decode_inbox_key_value(key, value);
+
+                match inbox_entry {
+                    Ok(inbox_entry) => {
+                        let fid = inbox_entry.service_invocation.fid;
+                        if fid.invocation_uuid == invocation_uuid {
+                            TableScanIterationDecision::BreakWith(Ok((
+                                fid.service_id,
+                                inbox_entry.inbox_sequence_number,
+                            )))
+                        } else {
+                            TableScanIterationDecision::Continue
+                        }
+                    }
+                    Err(err) => TableScanIterationDecision::BreakWith(Err(err)),
+                }
+            });
+
+        async move { result.next().await.transpose() }.boxed()
     }
 }
 

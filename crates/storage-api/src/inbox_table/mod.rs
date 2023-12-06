@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::{GetFuture, GetStream, PutFuture};
-use restate_types::identifiers::{PartitionKey, ServiceId};
-use restate_types::invocation::ServiceInvocation;
+use restate_types::identifiers::{FullInvocationId, PartitionKey, ServiceId};
+use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
 use restate_types::message::MessageIndex;
 use std::ops::RangeInclusive;
 
@@ -28,6 +28,14 @@ impl InboxEntry {
             service_invocation,
         }
     }
+
+    pub fn service_id(&self) -> &ServiceId {
+        &self.service_invocation.fid.service_id
+    }
+
+    pub fn fid(&self) -> &FullInvocationId {
+        &self.service_invocation.fid
+    }
 }
 
 pub trait InboxTable {
@@ -40,4 +48,13 @@ pub trait InboxTable {
     fn inbox(&mut self, service_id: &ServiceId) -> GetStream<InboxEntry>;
 
     fn all_inboxes(&mut self, range: RangeInclusive<PartitionKey>) -> GetStream<InboxEntry>;
+
+    /// Scans the inbox for an inbox entry with the given invocation id.
+    ///
+    /// Important: This method can be quite costly if it is invoked with an `InvocationId` because
+    /// it needs to scan all inboxes for the given partition key to match the given invocation uuid.
+    fn contains(
+        &mut self,
+        maybe_fid: impl Into<MaybeFullInvocationId>,
+    ) -> GetFuture<Option<(ServiceId, u64)>>;
 }
