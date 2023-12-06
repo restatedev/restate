@@ -22,20 +22,22 @@ use url::Url;
 
 use crate::app::{GlobalOpts, UiConfig};
 
-pub const CONFIG_FILENAME: &str = "config.toml";
+pub const CONFIG_FILENAME: &str = "config.yaml";
+
+pub const RESTATE_HOST_ENV: &str = "RESTATE_HOST";
+pub const RESTATE_HOST_SCHEME_ENV: &str = "RESTATE_HOST_SCHEME";
+// The default is localhost unless the CLI configuration states a different default.
+pub const RESTATE_HOST_DEFAULT: &str = "localhost";
+pub const RESTATE_HOST_SCHEME_DEFAULT: &str = "http";
 
 /// Environment variable to override the default config dir path
 pub const CLI_CONFIG_HOME_ENV: &str = "RESTATE_CLI_CONFIG_HOME";
-pub const CLI_CONFIG_FILE_ENV: &str = "RESTATE_CLI_CONFIG_FILE";
+// This is CONFIG and not CONFIG_FILE to be consistent with RESTATE_CONFIG (server)
+pub const CLI_CONFIG_FILE_ENV: &str = "RESTATE_CLI_CONFIG";
 
 pub const INGRESS_URL_ENV: &str = "RESTATE_INGRESS_URL";
 pub const META_URL_ENV: &str = "RESTATE_META_URL";
 pub const DATAFUSION_HTTP_URL_ENV: &str = "RESTATE_DATAFUSION_HTTP_URL";
-
-// Default values
-pub const INGRESS_URL_DEFAULT: &str = "http://localhost:8080/";
-pub const META_URL_DEFAULT: &str = "http://localhost:9070/";
-pub const DATAFUSION_HTTP_URL_DEFAULT: &str = "http://localhost:9072/";
 
 #[derive(Clone, Default)]
 pub struct CliConfig {}
@@ -69,6 +71,18 @@ impl CliEnv {
         // Load .env file. Best effort.
         let maybe_env = dotenv();
 
+        let restate_host = os_env
+            .get(RESTATE_HOST_ENV)
+            .as_deref()
+            .unwrap_or(RESTATE_HOST_DEFAULT)
+            .to_owned();
+
+        let restate_host_scheme = os_env
+            .get(RESTATE_HOST_SCHEME_ENV)
+            .as_deref()
+            .unwrap_or(RESTATE_HOST_SCHEME_DEFAULT)
+            .to_owned();
+
         let config_home = os_env
             .get(CLI_CONFIG_HOME_ENV)
             .map(|x| Ok(PathBuf::from(x)))
@@ -83,19 +97,25 @@ impl CliEnv {
             .get(INGRESS_URL_ENV)
             .as_deref()
             .map(Url::parse)
-            .unwrap_or_else(|| Url::parse(INGRESS_URL_DEFAULT))?;
+            .unwrap_or_else(|| {
+                Url::parse(&format!("{}://{}:8080/", restate_host_scheme, restate_host))
+            })?;
 
         let meta_base_url = os_env
             .get(META_URL_ENV)
             .as_deref()
             .map(Url::parse)
-            .unwrap_or_else(|| Url::parse(META_URL_DEFAULT))?;
+            .unwrap_or_else(|| {
+                Url::parse(&format!("{}://{}:9070/", restate_host_scheme, restate_host))
+            })?;
 
         let datafusion_http_base_url = os_env
             .get(DATAFUSION_HTTP_URL_ENV)
             .as_deref()
             .map(Url::parse)
-            .unwrap_or_else(|| Url::parse(DATAFUSION_HTTP_URL_DEFAULT))?;
+            .unwrap_or_else(|| {
+                Url::parse(&format!("{}://{}:9072/", restate_host_scheme, restate_host))
+            })?;
 
         // color setup
         // NO_COLOR=1 with any value other than "0" means user doesn't want colors.
@@ -231,7 +251,7 @@ mod tests {
 
         // RESTATE_CLI_CONFIG_FILE overrides the config file only!
         os_env.clear();
-        let new_config_file = PathBuf::from("/to/infinity/and/beyond.toml");
+        let new_config_file = PathBuf::from("/to/infinity/and/beyond.yaml");
         os_env.insert(CLI_CONFIG_FILE_ENV, new_config_file.display().to_string());
 
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
@@ -249,17 +269,43 @@ mod tests {
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
         assert_eq!(
             cli_env.ingress_base_url.to_string(),
-            INGRESS_URL_DEFAULT.to_string()
+            "http://localhost:8080/".to_string()
         );
         assert_eq!(
             cli_env.meta_base_url.to_string(),
-            META_URL_DEFAULT.to_string()
+            "http://localhost:9070/".to_string()
+        );
+
+        assert_eq!(
+            cli_env.datafusion_http_base_url.to_string(),
+            "http://localhost:9072/".to_string()
+        );
+
+        // Defaults are templated over RESTATE_HOST
+        os_env.clear();
+
+        os_env.insert(RESTATE_HOST_ENV, "example.com".to_string());
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
+
+        assert_eq!(
+            cli_env.ingress_base_url.to_string(),
+            "http://example.com:8080/".to_string()
+        );
+        assert_eq!(
+            cli_env.meta_base_url.to_string(),
+            "http://example.com:9070/".to_string()
+        );
+
+        assert_eq!(
+            cli_env.datafusion_http_base_url.to_string(),
+            "http://example.com:9072/".to_string()
         );
 
         // RESTATE_INGRESS_URL/RESTATE_META_URL override the base URLs!
         os_env.clear();
         os_env.insert(INGRESS_URL_ENV, "https://api.restate.dev:4567".to_string());
         os_env.insert(META_URL_ENV, "https://admin.restate.dev:4567".to_string());
+        os_env.insert(RESTATE_HOST_SCHEME_ENV, "https".to_string());
 
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
         // Note that Uri adds a trailing slash to the path as expected
@@ -270,6 +316,12 @@ mod tests {
         assert_eq!(
             cli_env.meta_base_url.to_string(),
             "https://admin.restate.dev:4567/".to_string()
+        );
+        // datafusion still inherits the default from host
+        assert_eq!(
+            cli_env.datafusion_http_base_url.to_string(),
+            // note "https"
+            "https://localhost:9072/".to_string()
         );
 
         Ok(())
