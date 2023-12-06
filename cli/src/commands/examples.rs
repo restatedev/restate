@@ -162,7 +162,7 @@ async fn download_example(repo_handler: RepoHandler<'_>, asset: Asset) -> Result
     zip_out_file_path.push("temp.zip");
 
     // Download zip in the out_dir
-    let _ = match download_asset_to_file(&zip_out_file_path, repo_handler, asset).await {
+    match download_asset_to_file(&zip_out_file_path, repo_handler, asset).await {
         Ok(f) => f,
         Err(e) => {
             // Try to remove the directory, to avoid leaving a dirty user directory in case of a retry.
@@ -199,10 +199,7 @@ async fn download_asset_to_file(
     asset: Asset,
 ) -> Result<()> {
     let mut out_file = File::create(zip_out_file_path).await?;
-    let mut zip_stream = repo_handler
-        .releases()
-        .stream_asset(asset.id.clone())
-        .await?;
+    let mut zip_stream = repo_handler.releases().stream_asset(asset.id).await?;
     while let Some(res) = zip_stream.next().await {
         let mut buf = res?;
         out_file.write_buf(&mut buf).await?;
@@ -212,9 +209,9 @@ async fn download_asset_to_file(
     Ok(())
 }
 
-async fn unzip(zip_out_file: &PathBuf, out_name: &PathBuf) -> Result<()> {
-    let zip_out_file_copy = zip_out_file.clone();
-    let out_dir_copy = out_name.clone();
+async fn unzip(zip_out_file: &Path, out_name: &Path) -> Result<()> {
+    let zip_out_file_copy = zip_out_file.to_owned();
+    let out_dir_copy = out_name.to_owned();
     tokio::task::spawn_blocking(move || {
         let zip_file = std::fs::File::open(zip_out_file_copy)?;
         let mut archive = zip::ZipArchive::new(zip_file)?;
