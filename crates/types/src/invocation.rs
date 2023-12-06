@@ -65,6 +65,18 @@ pub enum MaybeFullInvocationId {
     Full(FullInvocationId),
 }
 
+impl From<InvocationId> for MaybeFullInvocationId {
+    fn from(value: InvocationId) -> Self {
+        MaybeFullInvocationId::Partial(value)
+    }
+}
+
+impl From<FullInvocationId> for MaybeFullInvocationId {
+    fn from(value: FullInvocationId) -> Self {
+        MaybeFullInvocationId::Full(value)
+    }
+}
+
 impl WithPartitionKey for MaybeFullInvocationId {
     fn partition_key(&self) -> PartitionKey {
         match self {
