@@ -569,14 +569,13 @@ where
         invocation_metadata: InvocationMetadata,
         error: InvocationError,
     ) -> Result<(), Error> {
-        let code = error.code();
         if let Some(response_sink) = &invocation_metadata.response_sink {
             // TODO: We probably only need to send the response if we haven't send a response before
             self.send_message(
                 OutboxMessage::from_response_sink(
                     &full_invocation_id,
                     response_sink.clone(),
-                    ResponseResult::Failure(code.into(), error.message().into()),
+                    ResponseResult::from(&error),
                 ),
                 effects,
             );
@@ -587,7 +586,7 @@ where
             &full_invocation_id,
             invocation_metadata,
             effects,
-            Err((code, error.to_string())),
+            Err((error.code(), error.to_string())),
         );
         self.complete_invocation(full_invocation_id, state, length, effects)
             .await

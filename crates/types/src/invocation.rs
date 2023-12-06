@@ -125,6 +125,12 @@ impl From<InvocationError> for ResponseResult {
     }
 }
 
+impl From<&InvocationError> for ResponseResult {
+    fn from(e: &InvocationError) -> Self {
+        ResponseResult::Failure(e.code().into(), e.message().into())
+    }
+}
+
 /// Definition of the sink where to send the result of a service invocation.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
