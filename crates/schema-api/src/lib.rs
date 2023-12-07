@@ -12,6 +12,7 @@
 
 #[cfg(feature = "endpoint")]
 pub mod endpoint {
+    use bytes::Bytes;
     use bytestring::ByteString;
     use http::header::{HeaderName, HeaderValue};
     use http::Uri;
@@ -147,6 +148,8 @@ pub mod endpoint {
 
         fn get_endpoint(&self, endpoint_id: &EndpointId) -> Option<EndpointMetadata>;
 
+        fn get_endpoint_descriptor_pool(&self, endpoint_id: &EndpointId) -> Option<Bytes>;
+
         fn get_endpoint_and_services(
             &self,
             endpoint_id: &EndpointId,
@@ -208,6 +211,10 @@ pub mod endpoint {
 
             fn get_endpoint(&self, endpoint_id: &EndpointId) -> Option<EndpointMetadata> {
                 self.endpoints.get(endpoint_id).cloned()
+            }
+
+            fn get_endpoint_descriptor_pool(&self, _endpoint_id: &EndpointId) -> Option<Bytes> {
+                todo!()
             }
 
             fn get_endpoint_and_services(

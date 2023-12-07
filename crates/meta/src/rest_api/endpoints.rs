@@ -22,10 +22,14 @@ use restate_service_client::ServiceEndpointAddress;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::InvalidLambdaARN;
 
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::{http, Json};
+use okapi_operation::anyhow::Error;
+use okapi_operation::okapi::openapi3::{MediaType, Responses};
+use okapi_operation::okapi::Map;
 use okapi_operation::*;
 use serde::Deserialize;
 
@@ -126,6 +130,30 @@ pub async fn get_service_endpoint<S: EndpointMetadataResolver, W>(
     .into())
 }
 
+/// Return discovered endpoints.
+#[openapi(
+    summary = "Get service endpoint descriptors",
+    description = "Get service endpoint Protobuf descriptor pool, serialized as protobuf type google.protobuf.FileDescriptorSet",
+    operation_id = "get_service_endpoint_descriptors",
+    tags = "service_endpoint",
+    parameters(path(
+        name = "endpoint",
+        description = "Endpoint identifier",
+        schema = "std::string::String"
+    ))
+)]
+pub async fn get_service_endpoint_descriptors<S: EndpointMetadataResolver, W>(
+    State(state): State<Arc<RestEndpointState<S, W>>>,
+    Path(endpoint_id): Path<String>,
+) -> Result<ProtoBytes, MetaApiError> {
+    Ok(ProtoBytes(
+        state
+            .schemas()
+            .get_endpoint_descriptor_pool(&endpoint_id)
+            .ok_or_else(|| MetaApiError::ServiceEndpointNotFound(endpoint_id.clone()))?,
+    ))
+}
+
 /// List services
 #[openapi(
     summary = "List service endpoints",
@@ -205,5 +233,36 @@ pub async fn delete_service_endpoint<S, W>(
         Ok(StatusCode::ACCEPTED)
     } else {
         Ok(StatusCode::NOT_IMPLEMENTED)
+    }
+}
+
+pub struct ProtoBytes(Bytes);
+
+impl IntoResponse for ProtoBytes {
+    fn into_response(self) -> Response {
+        (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/x-protobuf"),
+            )],
+            self.0,
+        )
+            .into_response()
+    }
+}
+
+impl ToMediaTypes for ProtoBytes {
+    fn generate(_components: &mut Components) -> Result<Map<String, MediaType>, anyhow::Error> {
+        Ok(okapi::map! {
+            "application/x-protobuf".into() => {
+                MediaType { ..Default::default() }
+            }
+        })
+    }
+}
+
+impl ToResponses for ProtoBytes {
+    fn generate(_components: &mut Components) -> Result<Responses, Error> {
+        Ok(Responses::default())
     }
 }
