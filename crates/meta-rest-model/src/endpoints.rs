@@ -20,6 +20,7 @@ use serde_with::serde_as;
 
 // Export schema types to be used by other crates without exposing the fact
 // that we are using proxying to restate-schema-api or restate-types
+use restate_schema_api::endpoint::EndpointType;
 pub use restate_schema_api::endpoint::{EndpointMetadata, ProtocolType};
 pub use restate_types::identifiers::{EndpointId, LambdaARN};
 
@@ -35,6 +36,7 @@ pub enum ServiceEndpoint {
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
+        created_at: String,
     },
     Lambda {
         arn: LambdaARN,
@@ -44,29 +46,30 @@ pub enum ServiceEndpoint {
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
+        created_at: String,
     },
 }
 
 impl From<EndpointMetadata> for ServiceEndpoint {
     fn from(value: EndpointMetadata) -> Self {
-        match value {
-            EndpointMetadata::Http {
+        match value.ty {
+            EndpointType::Http {
                 address,
                 protocol_type,
-                delivery_options,
             } => Self::Http {
                 uri: address,
                 protocol_type,
-                additional_headers: delivery_options.additional_headers.into(),
+                additional_headers: value.delivery_options.additional_headers.into(),
+                created_at: humantime::format_rfc3339(value.created_at.into()).to_string(),
             },
-            EndpointMetadata::Lambda {
+            EndpointType::Lambda {
                 arn,
                 assume_role_arn,
-                delivery_options,
             } => Self::Lambda {
                 arn,
                 assume_role_arn: assume_role_arn.map(Into::into),
-                additional_headers: delivery_options.additional_headers.into(),
+                additional_headers: value.delivery_options.additional_headers.into(),
+                created_at: humantime::format_rfc3339(value.created_at.into()).to_string(),
             },
         }
     }
