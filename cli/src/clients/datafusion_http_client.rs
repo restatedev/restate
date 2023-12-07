@@ -14,7 +14,8 @@ use super::errors::ApiError;
 use crate::build_info;
 use crate::cli_env::CliEnv;
 
-use arrow::datatypes::SchemaRef;
+use arrow::array::AsArray;
+use arrow::datatypes::{ArrowPrimitiveType, Int64Type, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
@@ -99,6 +100,33 @@ impl DataFusionHttpClient {
 
         Ok(SqlResponse { schema, batches })
     }
+
+    pub async fn run_count_query(&self, query: String) -> Result<i64, Error> {
+        let resp = self.run_query(query).await?;
+
+        Ok(get_column_as::<Int64Type>(&resp.batches, 0)
+            .get(0)
+            .map(|v| **v)
+            .unwrap_or(0))
+    }
+}
+
+fn get_column_as<T>(
+    batches: &[RecordBatch],
+    column_index: usize,
+) -> Vec<&<T as ArrowPrimitiveType>::Native>
+where
+    T: ArrowPrimitiveType,
+{
+    let mut output = vec![];
+    for batch in batches {
+        let col = batch.column(column_index);
+        assert_eq!(col.data_type(), &T::DATA_TYPE);
+
+        let l = col.as_primitive::<T>();
+        output.extend(l.values());
+    }
+    output
 }
 
 #[derive(Serialize, Debug, Clone)]

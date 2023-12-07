@@ -51,7 +51,7 @@ pub struct Icon<'a, 'b>(pub &'a str, pub &'b str);
 
 /// Text with a style that drops the style if colors are disabled.
 #[derive(Copy, Clone)]
-pub struct Styled<T>(pub Style, pub T);
+pub struct Styled<T: ?Sized>(pub Style, pub T);
 
 impl<T> std::fmt::Debug for Styled<T>
 where

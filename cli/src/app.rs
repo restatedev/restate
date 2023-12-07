@@ -18,7 +18,7 @@ use crate::cli_env::CliEnv;
 use crate::commands::*;
 
 #[derive(Run, Parser, Clone)]
-#[command(author, version = crate::build_info::version(), about)]
+#[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
 #[cling(run = "init")]
 pub struct CliApp {
     #[clap(flatten)]
@@ -64,6 +64,9 @@ pub enum Command {
     /// Manages Restate's service registry
     #[clap(subcommand)]
     Services(services::Services),
+    /// Manages your service deployments
+    #[clap(subcommand)]
+    Deployments(deployments::Deployments),
     /// Runs SQL queries against the data fusion service
     #[clap(hide = true)]
     Sql(sql::Sql),

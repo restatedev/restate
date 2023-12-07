@@ -25,6 +25,7 @@ pub enum Style {
     Success,
     Info,
     Notice,
+    Normal,
 }
 
 impl From<Style> for dialoguer::console::Style {
@@ -38,6 +39,7 @@ impl From<Style> for dialoguer::console::Style {
             Style::Success => DStyle::new().green(),
             Style::Info => DStyle::new().bright().bold(),
             Style::Notice => DStyle::new().italic(),
+            Style::Normal => DStyle::new(),
         }
     }
 }
