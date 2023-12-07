@@ -24,7 +24,9 @@ use restate_errors::warn_it;
 use restate_invoker_api::{
     EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
 };
-use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver, ProtocolType};
+use restate_schema_api::endpoint::{
+    EndpointMetadata, EndpointMetadataResolver, EndpointType, ProtocolType,
+};
 use restate_service_client::{
     Parts, Request, ServiceClient, ServiceClientError, ServiceEndpointAddress,
 };
@@ -732,30 +734,24 @@ where
             &mut HeaderInjector(&mut headers),
         );
 
-        let address = match endpoint_metadata {
-            EndpointMetadata::Lambda {
+        let address = match endpoint_metadata.ty {
+            EndpointType::Lambda {
                 arn,
                 assume_role_arn,
-                delivery_options,
-            } => {
-                headers.extend(delivery_options.additional_headers);
-                ServiceEndpointAddress::Lambda(arn, assume_role_arn)
-            }
-            EndpointMetadata::Http {
+            } => ServiceEndpointAddress::Lambda(arn, assume_role_arn),
+            EndpointType::Http {
                 address,
                 protocol_type,
-                delivery_options,
-            } => {
-                headers.extend(delivery_options.additional_headers);
-                ServiceEndpointAddress::Http(
-                    address,
-                    match protocol_type {
-                        ProtocolType::RequestResponse => http::Version::default(),
-                        ProtocolType::BidiStream => http::Version::HTTP_2,
-                    },
-                )
-            }
+            } => ServiceEndpointAddress::Http(
+                address,
+                match protocol_type {
+                    ProtocolType::RequestResponse => http::Version::default(),
+                    ProtocolType::BidiStream => http::Version::HTTP_2,
+                },
+            ),
         };
+
+        headers.extend(endpoint_metadata.delivery_options.additional_headers);
 
         (
             http_stream_tx,

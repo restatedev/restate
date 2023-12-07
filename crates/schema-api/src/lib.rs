@@ -16,6 +16,7 @@ pub mod endpoint {
     use http::header::{HeaderName, HeaderValue};
     use http::Uri;
     use restate_types::identifiers::{EndpointId, LambdaARN, ServiceRevision};
+    use restate_types::time::MillisSinceEpoch;
     use std::collections::HashMap;
     use std::fmt;
     use std::fmt::{Display, Formatter};
@@ -52,7 +53,17 @@ pub mod endpoint {
     #[cfg_attr(feature = "serde", serde_with::serde_as)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub enum EndpointMetadata {
+    pub struct EndpointMetadata {
+        pub ty: EndpointType,
+        pub delivery_options: DeliveryOptions,
+        pub created_at: MillisSinceEpoch,
+    }
+
+    #[derive(Debug, Clone)]
+    #[cfg_attr(feature = "serde", serde_with::serde_as)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum EndpointType {
         Http {
             #[cfg_attr(
                 feature = "serde",
@@ -61,13 +72,11 @@ pub mod endpoint {
             #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
             address: Uri,
             protocol_type: ProtocolType,
-            delivery_options: DeliveryOptions,
         },
         Lambda {
             arn: LambdaARN,
             #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
             assume_role_arn: Option<ByteString>,
-            delivery_options: DeliveryOptions,
         },
     }
 
@@ -77,10 +86,13 @@ pub mod endpoint {
             protocol_type: ProtocolType,
             delivery_options: DeliveryOptions,
         ) -> Self {
-            Self::Http {
-                address,
-                protocol_type,
+            Self {
+                ty: EndpointType::Http {
+                    address,
+                    protocol_type,
+                },
                 delivery_options,
+                created_at: MillisSinceEpoch::now(),
             }
         }
 
@@ -89,40 +101,43 @@ pub mod endpoint {
             assume_role_arn: Option<ByteString>,
             delivery_options: DeliveryOptions,
         ) -> Self {
-            Self::Lambda {
-                arn,
-                assume_role_arn,
+            Self {
+                ty: EndpointType::Lambda {
+                    arn,
+                    assume_role_arn,
+                },
                 delivery_options,
+                created_at: MillisSinceEpoch::now(),
             }
         }
 
         // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
         // and for Lambda endpoints its the ARN
         pub fn address_display(&self) -> impl Display + '_ {
-            struct Wrapper<'a>(&'a EndpointMetadata);
+            struct Wrapper<'a>(&'a EndpointType);
             impl<'a> Display for Wrapper<'a> {
                 fn fmt(&self, f: &mut Formatter) -> fmt::Result {
                     match self {
-                        Wrapper(EndpointMetadata::Http { address, .. }) => address.fmt(f),
-                        Wrapper(EndpointMetadata::Lambda { arn, .. }) => arn.fmt(f),
+                        Wrapper(EndpointType::Http { address, .. }) => address.fmt(f),
+                        Wrapper(EndpointType::Lambda { arn, .. }) => arn.fmt(f),
                     }
                 }
             }
-            Wrapper(self)
+            Wrapper(&self.ty)
         }
 
         pub fn protocol_type(&self) -> ProtocolType {
-            match self {
-                EndpointMetadata::Http { protocol_type, .. } => *protocol_type,
-                EndpointMetadata::Lambda { .. } => ProtocolType::RequestResponse,
+            match &self.ty {
+                EndpointType::Http { protocol_type, .. } => *protocol_type,
+                EndpointType::Lambda { .. } => ProtocolType::RequestResponse,
             }
         }
 
         pub fn id(&self) -> EndpointId {
             use base64::Engine;
 
-            match self {
-                EndpointMetadata::Http { address, .. } => {
+            match &self.ty {
+                EndpointType::Http { address, .. } => {
                     // For the time being we generate this from the URI
                     // We use only authority and path, as those uniquely identify the endpoint.
                     let authority_and_path = format!(
@@ -132,10 +147,14 @@ pub mod endpoint {
                     );
                     restate_base64_util::URL_SAFE.encode(authority_and_path.as_bytes())
                 }
-                EndpointMetadata::Lambda { arn, .. } => {
+                EndpointType::Lambda { arn, .. } => {
                     restate_base64_util::URL_SAFE.encode(arn.to_string().as_bytes())
                 }
             }
+        }
+
+        pub fn created_at(&self) -> MillisSinceEpoch {
+            self.created_at
         }
     }
 

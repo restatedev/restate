@@ -4639,6 +4639,7 @@ name = "restate-meta-rest-model"
 version = "0.5.2"
 dependencies = [
  "http",
+ "humantime",
  "restate-schema-api",
  "restate-serde-util",
  "restate-types",
