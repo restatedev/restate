@@ -128,6 +128,10 @@ jobs:
             export node_version
             # set the package name
             export node_pkg="${bin}-${node_os}-${node_arch}"
+            if npm view "@restatedev/${node_pkg}@${node_version}"
+            then
+              continue
+            fi
             # create the package directory
             mkdir -p "${node_pkg}/bin"
             # generate package.json from the template
@@ -164,6 +168,10 @@ jobs:
           cd npm
           for bin in restate restate-server
           do
+            if npm view "@restatedev/${bin}@${node_version}"
+            then
+              continue
+            fi
             pushd "${bin}"
             sed -i "s/0.5.1/${node_version}/" package.json
             npm install
