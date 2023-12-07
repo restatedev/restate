@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::console::c_println;
+use crate::console::{c_println, Styled};
+use crate::ui::stylesheet::Style;
 use anyhow::{anyhow, bail, Context, Result};
 use cling::prelude::*;
 use convert_case::{Case, Casing};
+use dialoguer::theme::ColorfulTheme;
 use dialoguer::Select;
 use futures::StreamExt;
 use octocrab::models::repos::Asset;
@@ -25,7 +27,9 @@ use tokio::io::AsyncWriteExt;
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_examples")]
 pub struct Examples {
-    /// Example name
+    /// Example name.
+    ///
+    /// If omitted, an interactive prompt will ask you which example to download.
     name: Option<String>,
 }
 
@@ -37,7 +41,7 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
         .releases()
         .get_latest()
         .await
-        .context("Can't access the examples releases. Please retry later")?;
+        .context("Can't access the examples releases. Check if your machine can access the Github repository https://github.com/restatedev/examples")?;
 
     let example_asset = if let Some(example) = &example_opts.name {
         // Check if the example exists
@@ -47,19 +51,19 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
             .into_iter()
             .find(|a| a.name.trim_end_matches(".zip") == example_lowercase)
             .ok_or(anyhow!(
-                "Unknown example {}. Use `restate examples` to navigate the list of examples.",
+                "Unknown example {}. Use `restate example` to navigate the list of examples.",
                 example_lowercase
             ))?
     } else {
         // Ask the example to download among the available examples
         let mut languages = parse_available_examples(latest_release.assets);
-        let language_selection = Select::new()
-            .with_prompt("Which language?")
+        let language_selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Choose the programming language")
             .items(&languages)
             .interact()
             .unwrap();
-        let example_selection = Select::new()
-            .with_prompt("Which example?")
+        let example_selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Choose the example")
             .items(&languages[language_selection].examples)
             .interact()
             .unwrap();
@@ -106,13 +110,11 @@ fn parse_available_examples(assets: Vec<Asset>) -> Vec<Language> {
         let mut split_asset_name = asset_name.splitn(2, '-');
 
         // First part is language
-        let language = if let Some(lang) = split_asset_name.next() {
-            lang.to_string()
-        } else {
+        let Some(language) = split_asset_name.next() else {
             // Bad name, just ignore it
             continue;
         };
-        let language_display_name = capitalize(&language);
+        let language_display_name = capitalize(language);
 
         // Second is example name
         let example_display_name = if let Some(example) = split_asset_name.next() {
@@ -124,10 +126,10 @@ fn parse_available_examples(assets: Vec<Asset>) -> Vec<Language> {
             // Bad name, just ignore it
             continue;
         };
-        let example_display_name = example_display_name.trim_end_matches(".zip").to_string();
+        let example_display_name = example_display_name.trim_end_matches(".zip").to_owned();
 
         languages_map
-            .entry(language)
+            .entry(language.to_owned())
             .or_insert_with(|| Language {
                 display_name: language_display_name,
                 examples: vec![],
@@ -151,12 +153,17 @@ fn capitalize(s: &str) -> String {
 }
 
 async fn download_example(repo_handler: RepoHandler<'_>, asset: Asset) -> Result<()> {
-    let out_dir_name = PathBuf::from(asset.name.trim_end_matches(".zip").to_string());
+    let out_dir_name = PathBuf::from(asset.name.trim_end_matches(".zip").to_owned());
     // This fails if the directory already exists.
-    tokio::fs::create_dir(&out_dir_name).await.context(format!(
-        "Cannot create the output directory {} for the example",
-        out_dir_name.display()
-    ))?;
+    tokio::fs::create_dir(&out_dir_name)
+        .await
+        .with_context(|| {
+            format!(
+                "Cannot create the output directory {} for the example",
+                out_dir_name.display()
+            )
+        })?;
+    c_println!("Created directory {}", out_dir_name.display());
 
     let mut zip_out_file_path = PathBuf::from(&out_dir_name);
     zip_out_file_path.push("temp.zip");
@@ -174,11 +181,11 @@ async fn download_example(repo_handler: RepoHandler<'_>, asset: Asset) -> Result
             );
         }
     };
+    c_println!("Downloaded example zip in {}", zip_out_file_path.display());
 
     // Unzip it
     if let Err(e) = unzip(&zip_out_file_path, &out_dir_name).await {
         // Try to remove the directory, to avoid leaving a dirty user directory in case of a retry.
-        println!("{:#?}", e);
         let _ = tokio::fs::remove_dir_all(&out_dir_name).await;
         return Err(e);
     }
@@ -186,9 +193,12 @@ async fn download_example(repo_handler: RepoHandler<'_>, asset: Asset) -> Result
     // Ready to rock!
     c_println!(
         "The example is ready in the directory {}",
+        Styled(Style::Success, out_dir_name.display())
+    );
+    c_println!(
+        "Look at the {}/README.md to get started!",
         out_dir_name.display()
     );
-    c_println!("Look at the example README to get started!");
 
     Ok(())
 }
@@ -219,16 +229,20 @@ async fn unzip(zip_out_file: &Path, out_name: &Path) -> Result<()> {
         Ok::<_, anyhow::Error>(())
     })
     .await
-    .context(format!(
-        "Panic when trying to unzip {} in {}",
-        zip_out_file.display(),
-        out_name.display()
-    ))?
-    .context(format!(
-        "Error when trying to unzip {} in {}",
-        zip_out_file.display(),
-        out_name.display()
-    ))?;
+    .with_context(|| {
+        format!(
+            "Panic when trying to unzip {} in {}",
+            zip_out_file.display(),
+            out_name.display()
+        )
+    })?
+    .with_context(|| {
+        format!(
+            "Error when trying to unzip {} in {}",
+            zip_out_file.display(),
+            out_name.display()
+        )
+    })?;
 
     Ok(())
 }

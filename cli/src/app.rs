@@ -73,7 +73,7 @@ pub enum Command {
     #[clap(hide = true)]
     Sql(sql::Sql),
 
-    /// Download Restate's examples
+    /// Download one of Restate's examples in this directory.
     #[clap(name = "example", alias = "examples")]
     Examples(examples::Examples),
 }
