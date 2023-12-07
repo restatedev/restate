@@ -49,12 +49,12 @@ pub trait InboxTable {
 
     fn all_inboxes(&mut self, range: RangeInclusive<PartitionKey>) -> GetStream<InboxEntry>;
 
-    /// Scans the inbox for an inbox entry with the given invocation id.
+    /// Gets an inbox entry for the given invocation id.
     ///
     /// Important: This method can be quite costly if it is invoked with an `InvocationId` because
     /// it needs to scan all inboxes for the given partition key to match the given invocation uuid.
-    fn contains(
+    fn get_inbox_entry(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> GetFuture<Option<(ServiceId, u64)>>;
+    ) -> GetFuture<Option<InboxEntry>>;
 }

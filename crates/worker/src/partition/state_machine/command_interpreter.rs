@@ -18,6 +18,7 @@ use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt
 use crate::partition::TimerValue;
 use assert2::let_assert;
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::future::BoxFuture;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -62,6 +63,11 @@ pub trait StateReader {
         &'a mut self,
         service_id: &'a ServiceId,
     ) -> BoxFuture<'a, Result<Option<InboxEntry>, restate_storage_api::StorageError>>;
+
+    fn get_inbox_entry(
+        &mut self,
+        maybe_fid: impl Into<MaybeFullInvocationId>,
+    ) -> BoxFuture<Result<Option<InboxEntry>, restate_storage_api::StorageError>>;
 
     // TODO: Replace with async trait or proper future
     fn is_entry_resumable<'a>(
@@ -370,19 +376,59 @@ where
                 Ok((Some(full_invocation_id), SpanRelation::None))
             }
             _ => {
-                trace!(
-                    "Received kill command for unknown invocation with fid '{full_invocation_id}'."
-                );
-                // We still try to send the abort signal to the invoker,
-                // as it might be the case that previously the user sent an abort signal
-                // but some message was still between the invoker/PP queues.
-                // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
-                // and the abort message can overtake the invoke/resume.
-                // Consequently the invoker might have not received the abort and the user tried to send it again.
-                effects.abort_invocation(full_invocation_id.clone());
-                Ok((Some(full_invocation_id), SpanRelation::None))
+                // check if service invocation is in inbox
+                let inbox_entry = state.get_inbox_entry(invocation_id).await?;
+
+                if let Some(inbox_entry) = inbox_entry {
+                    self.kill_inboxed_invocation(effects, inbox_entry)
+                } else {
+                    trace!("Received kill command for unknown invocation with fid '{full_invocation_id}'.");
+                    // We still try to send the abort signal to the invoker,
+                    // as it might be the case that previously the user sent an abort signal
+                    // but some message was still between the invoker/PP queues.
+                    // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
+                    // and the abort message can overtake the invoke/resume.
+                    // Consequently the invoker might have not received the abort and the user tried to send it again.
+                    effects.abort_invocation(full_invocation_id.clone());
+                    Ok((Some(full_invocation_id), SpanRelation::None))
+                }
             }
         }
+    }
+
+    fn kill_inboxed_invocation(
+        &mut self,
+        effects: &mut Effects,
+        inbox_entry: InboxEntry,
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        // remove service invocation from inbox and send failure response
+        let service_invocation = inbox_entry.service_invocation;
+        let fid = service_invocation.fid;
+        let span_context = service_invocation.span_context;
+        let parent_span = span_context.as_parent();
+
+        self.try_send_failure_response(
+            effects,
+            &fid,
+            service_invocation.response_sink,
+            &KILLED_INVOCATION_ERROR,
+        );
+
+        self.notify_invocation_result(
+            &fid,
+            service_invocation.method_name,
+            span_context,
+            MillisSinceEpoch::now(),
+            Err((
+                KILLED_INVOCATION_ERROR.code(),
+                KILLED_INVOCATION_ERROR.to_string(),
+            )),
+            effects,
+        );
+
+        effects.delete_inbox_entry(fid.service_id.clone(), inbox_entry.inbox_sequence_number);
+
+        Ok((Some(fid), parent_span))
     }
 
     async fn kill_invocation<State: StateReader>(
@@ -555,10 +601,22 @@ where
         full_invocation_id: FullInvocationId,
         invocation_metadata: InvocationMetadata,
     ) -> Result<(), Error> {
-        let length = invocation_metadata.journal_metadata.length;
-        self.notify_invocation_result(&full_invocation_id, invocation_metadata, effects, Ok(()));
-        self.complete_invocation(full_invocation_id, state, length, effects)
-            .await
+        self.notify_invocation_result(
+            &full_invocation_id,
+            invocation_metadata.method,
+            invocation_metadata.journal_metadata.span_context,
+            invocation_metadata.timestamps.creation_time(),
+            Ok(()),
+            effects,
+        );
+
+        self.complete_invocation(
+            full_invocation_id,
+            state,
+            invocation_metadata.journal_metadata.length,
+            effects,
+        )
+        .await
     }
 
     async fn fail_invocation<State: StateReader>(
@@ -569,27 +627,46 @@ where
         invocation_metadata: InvocationMetadata,
         error: InvocationError,
     ) -> Result<(), Error> {
-        if let Some(response_sink) = &invocation_metadata.response_sink {
+        let length = invocation_metadata.journal_metadata.length;
+
+        self.try_send_failure_response(
+            effects,
+            &full_invocation_id,
+            invocation_metadata.response_sink,
+            &error,
+        );
+
+        self.notify_invocation_result(
+            &full_invocation_id,
+            invocation_metadata.method,
+            invocation_metadata.journal_metadata.span_context,
+            invocation_metadata.timestamps.creation_time(),
+            Err((error.code(), error.to_string())),
+            effects,
+        );
+
+        self.complete_invocation(full_invocation_id, state, length, effects)
+            .await
+    }
+
+    fn try_send_failure_response(
+        &mut self,
+        effects: &mut Effects,
+        full_invocation_id: &FullInvocationId,
+        response_sink: Option<ServiceInvocationResponseSink>,
+        error: &InvocationError,
+    ) {
+        if let Some(response_sink) = response_sink {
             // TODO: We probably only need to send the response if we haven't send a response before
             self.send_message(
                 OutboxMessage::from_response_sink(
-                    &full_invocation_id,
-                    response_sink.clone(),
-                    ResponseResult::from(&error),
+                    full_invocation_id,
+                    response_sink,
+                    ResponseResult::from(error),
                 ),
                 effects,
             );
         }
-
-        let length = invocation_metadata.journal_metadata.length;
-        self.notify_invocation_result(
-            &full_invocation_id,
-            invocation_metadata,
-            effects,
-            Err((error.code(), error.to_string())),
-        );
-        self.complete_invocation(full_invocation_id, state, length, effects)
-            .await
     }
 
     async fn handle_journal_entry<State: StateReader>(
@@ -956,11 +1033,19 @@ where
     fn notify_invocation_result(
         &mut self,
         full_invocation_id: &FullInvocationId,
-        invocation_metadata: InvocationMetadata,
-        effects: &mut Effects,
+        service_method: ByteString,
+        span_context: ServiceInvocationSpanContext,
+        creation_time: MillisSinceEpoch,
         result: Result<(), (InvocationErrorCode, String)>,
+        effects: &mut Effects,
     ) {
-        effects.notify_invocation_result(full_invocation_id.clone(), invocation_metadata, result);
+        effects.notify_invocation_result(
+            full_invocation_id.clone(),
+            service_method,
+            span_context,
+            creation_time,
+            result,
+        );
     }
 
     async fn complete_invocation<State: StateReader>(
@@ -1123,6 +1208,13 @@ mod tests {
             &'a mut self,
             _service_id: &'a ServiceId,
         ) -> BoxFuture<'a, Result<Option<InboxEntry>, restate_storage_api::StorageError>> {
+            todo!()
+        }
+
+        fn get_inbox_entry(
+            &mut self,
+            _maybe_fid: impl Into<MaybeFullInvocationId>,
+        ) -> BoxFuture<Result<Option<InboxEntry>, StorageError>> {
             todo!()
         }
 

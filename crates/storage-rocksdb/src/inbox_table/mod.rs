@@ -104,10 +104,10 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         })
     }
 
-    fn contains(
+    fn get_inbox_entry(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> GetFuture<Option<(ServiceId, u64)>> {
+    ) -> GetFuture<Option<InboxEntry>> {
         let (inbox_key, invocation_uuid) = match maybe_fid.into() {
             MaybeFullInvocationId::Partial(invocation_id) => (
                 InboxKey::default().partition_key(invocation_id.partition_key()),
@@ -128,12 +128,8 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
 
                 match inbox_entry {
                     Ok(inbox_entry) => {
-                        let fid = inbox_entry.service_invocation.fid;
-                        if fid.invocation_uuid == invocation_uuid {
-                            TableScanIterationDecision::BreakWith(Ok((
-                                fid.service_id,
-                                inbox_entry.inbox_sequence_number,
-                            )))
+                        if inbox_entry.service_invocation.fid.invocation_uuid == invocation_uuid {
+                            TableScanIterationDecision::BreakWith(Ok(inbox_entry))
                         } else {
                             TableScanIterationDecision::Continue
                         }

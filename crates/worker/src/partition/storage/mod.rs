@@ -26,7 +26,7 @@ use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
     WithPartitionKey,
 };
-use restate_types::invocation::ServiceInvocation;
+use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::EntryHeader;
 use restate_types::journal::CompletionResult;
@@ -241,6 +241,15 @@ where
     ) -> BoxFuture<Result<Option<InboxEntry>, StorageError>> {
         self.assert_partition_key(service_id);
         async { self.inner.peek_inbox(service_id).await }.boxed()
+    }
+
+    fn get_inbox_entry(
+        &mut self,
+        maybe_fid: impl Into<MaybeFullInvocationId>,
+    ) -> BoxFuture<Result<Option<InboxEntry>, StorageError>> {
+        let maybe_fid = maybe_fid.into();
+        self.assert_partition_key(&maybe_fid);
+        async { self.inner.get_inbox_entry(maybe_fid).await }.boxed()
     }
 
     // Returns true if the entry is a completable journal entry and is completed,
@@ -469,6 +478,16 @@ where
             Ok(())
         }
         .boxed()
+    }
+
+    fn delete_inbox_entry<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        sequence_number: MessageIndex,
+    ) -> BoxFuture<()> {
+        self.inner
+            .delete_invocation(service_id, sequence_number)
+            .boxed()
     }
 
     fn store_state<'a>(

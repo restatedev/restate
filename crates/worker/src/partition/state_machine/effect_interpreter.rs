@@ -113,6 +113,12 @@ pub trait StateStorage {
         inbox_sequence_number: MessageIndex,
     ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
+    fn delete_inbox_entry<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        sequence_number: MessageIndex,
+    ) -> BoxFuture<()>;
+
     // State
     fn store_state<'a>(
         &'a mut self,
@@ -253,6 +259,14 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .await?;
                 // need to store the next inbox sequence number
                 state_storage.store_inbox_seq_number(seq_number + 1).await?;
+            }
+            Effect::DeleteInboxEntry {
+                service_id,
+                sequence_number,
+            } => {
+                state_storage
+                    .delete_inbox_entry(&service_id, sequence_number)
+                    .await;
             }
             Effect::EnqueueIntoOutbox {
                 seq_number,

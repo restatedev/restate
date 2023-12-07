@@ -73,6 +73,10 @@ pub(crate) enum Effect {
         journal_length: EntryIndex,
         service_invocation: ServiceInvocation,
     },
+    DeleteInboxEntry {
+        service_id: ServiceId,
+        sequence_number: MessageIndex,
+    },
 
     // State
     SetState {
@@ -311,6 +315,17 @@ impl Effect {
                 restate.outbox.seq = seq_number,
                 "Effect: Send success response to ingress"
             ),
+            Effect::DeleteInboxEntry {
+                service_id,
+                sequence_number,
+            } => {
+                debug_if_leader!(
+                    is_leader,
+                    rpc.service = %service_id.service_name,
+                    restate.inbox.seq = sequence_number,
+                    "Effect: Delete inbox entry",
+                );
+            }
             Effect::EnqueueIntoOutbox {
                 seq_number,
                 message:
@@ -697,6 +712,17 @@ impl Effects {
         })
     }
 
+    pub(crate) fn delete_inbox_entry(
+        &mut self,
+        service_id: ServiceId,
+        sequence_number: MessageIndex,
+    ) {
+        self.effects.push(Effect::DeleteInboxEntry {
+            service_id,
+            sequence_number,
+        });
+    }
+
     pub(crate) fn enqueue_into_outbox(&mut self, seq_number: MessageIndex, message: OutboxMessage) {
         self.effects.push(Effect::EnqueueIntoOutbox {
             seq_number,
@@ -893,14 +919,16 @@ impl Effects {
     pub(crate) fn notify_invocation_result(
         &mut self,
         full_invocation_id: FullInvocationId,
-        invocation_metadata: InvocationMetadata,
+        service_method: ByteString,
+        span_context: ServiceInvocationSpanContext,
+        creation_time: MillisSinceEpoch,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {
         self.effects.push(Effect::NotifyInvocationResult {
             full_invocation_id,
-            creation_time: invocation_metadata.timestamps.creation_time(),
-            service_method: invocation_metadata.method,
-            span_context: invocation_metadata.journal_metadata.span_context,
+            creation_time,
+            service_method,
+            span_context,
             result,
         })
     }

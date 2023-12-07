@@ -57,59 +57,58 @@ async fn peek_after_delete<T: InboxTable>(table: &mut T) {
     assert_eq!(result.unwrap(), Some(INBOX_ENTRIES[1].clone()));
 }
 
-async fn contains_inbox_entries<T: InboxTable>(table: &mut T) {
-    for inbox_entry in INBOX_ENTRIES.iter() {
-        let (service_id, index) = table
-            .contains(inbox_entry.fid().clone())
+async fn get_inbox_entries<T: InboxTable>(table: &mut T) {
+    for expected_inbox_entry in INBOX_ENTRIES.iter() {
+        let actual_inbox_entry = table
+            .get_inbox_entry(expected_inbox_entry.fid().clone())
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(service_id, inbox_entry.service_id().clone());
-        assert_eq!(index, inbox_entry.inbox_sequence_number);
+        assert_eq!(actual_inbox_entry, *expected_inbox_entry);
 
-        let (service_id, index) = table
-            .contains(InvocationId::from(inbox_entry.fid()))
+        let actual_inbox_entry = table
+            .get_inbox_entry(InvocationId::from(expected_inbox_entry.fid()))
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(service_id, inbox_entry.service_id().clone());
-        assert_eq!(index, inbox_entry.inbox_sequence_number);
+        assert_eq!(actual_inbox_entry, *expected_inbox_entry);
     }
 
-    let not_existing_entry = table.contains(InvocationId::mock_random()).await.unwrap();
+    let not_existing_entry = table
+        .get_inbox_entry(InvocationId::mock_random())
+        .await
+        .unwrap();
 
     assert!(not_existing_entry.is_none());
 }
 
-async fn contains_inbox_entries_after_delete<T: InboxTable>(table: &mut T) {
+async fn get_inbox_entries_after_delete<T: InboxTable>(table: &mut T) {
     let mut inbox_entries_iterator = INBOX_ENTRIES.iter();
 
     let not_existing_entry = table
-        .contains(inbox_entries_iterator.next().unwrap().fid().clone())
+        .get_inbox_entry(inbox_entries_iterator.next().unwrap().fid().clone())
         .await
         .unwrap();
     assert!(not_existing_entry.is_none());
 
-    for inbox_entry in inbox_entries_iterator {
-        let (service_id, index) = table
-            .contains(inbox_entry.fid().clone())
+    for expected_inbox_entry in inbox_entries_iterator {
+        let actual_inbox_entry = table
+            .get_inbox_entry(expected_inbox_entry.fid().clone())
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(service_id, inbox_entry.service_id().clone());
-        assert_eq!(index, inbox_entry.inbox_sequence_number);
+        assert_eq!(actual_inbox_entry, *expected_inbox_entry);
 
-        let (service_id, index) = table
-            .contains(InvocationId::from(inbox_entry.fid()))
+        let actual_inbox_entry = table
+            .get_inbox_entry(InvocationId::from(expected_inbox_entry.fid()))
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(service_id, inbox_entry.service_id().clone());
-        assert_eq!(index, inbox_entry.inbox_sequence_number);
+        assert_eq!(actual_inbox_entry, *expected_inbox_entry);
     }
 }
 
@@ -121,7 +120,7 @@ pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
     find_the_next_message_in_an_inbox(&mut txn).await;
     get_svc_inbox(&mut txn).await;
-    contains_inbox_entries(&mut txn).await;
+    get_inbox_entries(&mut txn).await;
 
     let mut txn = rocksdb.transaction();
     delete_entry(&mut txn).await;
@@ -129,5 +128,5 @@ pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
 
     let mut txn = rocksdb.transaction();
     peek_after_delete(&mut txn).await;
-    contains_inbox_entries_after_delete(&mut txn).await;
+    get_inbox_entries_after_delete(&mut txn).await;
 }
