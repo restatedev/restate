@@ -14,7 +14,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::MetaClientInterface;
 use crate::console::c_println;
 use crate::ui::console::StyledTable;
-use crate::ui::render::{render_endpoint_type, render_endpoint_url};
+use crate::ui::endpoints::{render_endpoint_type, render_endpoint_url};
 use crate::ui::service_methods::{icon_for_is_public, icon_for_service_flavor};
 
 use restate_meta_rest_model::endpoints::ServiceEndpointResponse;
@@ -51,7 +51,7 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
     }
 
     let mut table = Table::new_styled(&env.ui_config);
-    let mut header = vec!["", "NAME", "REV", "FLAVOR", "ENDPOINT"];
+    let mut header = vec!["", "NAME", "REV", "FLAVOR", "DEPLOYMENT TYPE"];
     if list_opts.extra {
         header.push("ADDRESS");
         header.push("METHODS");

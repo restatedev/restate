@@ -16,7 +16,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::{MetaClientInterface, MetasClient, MetasClientError};
 use crate::console::c_println;
 use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
-use crate::ui::render::render_endpoint_url;
+use crate::ui::endpoints::render_endpoint_url;
 use crate::ui::service_methods::{
     create_service_methods_table, create_service_methods_table_diff, icon_for_service_flavor,
 };
@@ -35,10 +35,10 @@ use indicatif::ProgressBar;
 use restate_meta_rest_model::services::ServiceMetadata;
 
 #[derive(Run, Parser, Collect, Clone)]
-#[clap(visible_alias = "register", visible_alias = "add")]
-#[cling(run = "run_discover")]
-pub struct Discover {
-    /// Force overwriting an endpoint if it already exists or if incompatible changes were
+#[clap(visible_alias = "discover", visible_alias = "add")]
+#[cling(run = "run_register")]
+pub struct Register {
+    /// Force overwriting the deployment if it already exists or if incompatible changes were
     /// detected during discovery.
     #[clap(long)]
     force: bool,
@@ -123,7 +123,7 @@ fn parse_endpoint(
 // NOTE: Without parsing the proto descriptor, we can't detect the details of the
 // schema changes. We can only mention additions or removals of services or functions
 // and that's probably good enough for now!
-pub async fn run_discover(State(env): State<CliEnv>, discover_opts: &Discover) -> Result<()> {
+pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -> Result<()> {
     let headers = discover_opts.extra_headers.as_ref().map(|headers| {
         HashMap::from_iter(headers.iter().map(|kv| (kv.key.clone(), kv.value.clone())))
     });
@@ -187,19 +187,21 @@ pub async fn run_discover(State(env): State<CliEnv>, discover_opts: &Discover) -
     if let Some(ref existing_endpoint) = existing_endpoint {
         if !discover_opts.force {
             c_error!(
-                "Endpoint already exists with id {}. Use --force to overwrite it.",
+                "A deployment already exists that uses this endpoint (ID: {}). Use --force to overwrite it.",
                 existing_endpoint.id,
             );
             return Ok(());
         } else {
             c_eprintln!();
-            c_warn!("This endpoint is already known to the server under the ID \"{}\". \
-                Applying this discovery will overwrite services defined by the previous version of this endpoint. \
-                Inflight invocations to this endpoint might move to an unrecoverable \
-                failure state after the forced replacement.\
+            c_warn!(
+                "This deployment is already known to the server under the ID \"{}\". \
+                Confirming this operation will overwrite services defined by the existing \
+                deployment. Inflight invocations to this deployment might move to an unrecoverable \
+                failure state afterwards!.\
                 \n\nThis is a DANGEROUS operation! \n
-                In production, we recommend deploying a new endpoint while keeping the old one active \
-                until the old endpoint is fully drained.", existing_endpoint.id
+                In production, we recommend creating a new deployment with a unique endpoint while \
+                keeping the old one active until the old deployment is drained.",
+                existing_endpoint.id
             );
             c_eprintln!();
         }
@@ -217,7 +219,10 @@ pub async fn run_discover(State(env): State<CliEnv>, discover_opts: &Discover) -
         .iter()
         .partition(|svc| svc.revision == 1);
 
-    c_println!("Endpoint ID:  {}", Styled(Style::Info, &dry_run_result.id));
+    c_println!(
+        "Deployment ID:  {}",
+        Styled(Style::Info, &dry_run_result.id)
+    );
     // The following services will be added:
     if !added.is_empty() {
         c_println!();
@@ -262,10 +267,7 @@ pub async fn run_discover(State(env): State<CliEnv>, discover_opts: &Discover) -
         let mut existing_services: HashMap<String, ServiceMetadata> = HashMap::new();
         for svc in &updated {
             // Get the current service information by querying the server.
-            progress.set_message(format!(
-                "Fetching information about existing service {}",
-                svc.name,
-            ));
+            progress.set_message(format!("Fetching information about service '{}'", svc.name,));
             match client.get_service(&svc.name).await?.into_body().await {
                 Ok(svc_metadata) => {
                     existing_services.insert(svc.name.clone(), svc_metadata);
@@ -313,7 +315,7 @@ pub async fn run_discover(State(env): State<CliEnv>, discover_opts: &Discover) -
                         maybe_old_endpoint.map(|old_endpoint| render_endpoint_url(&old_endpoint));
                     c_indentln!(
                         2,
-                        "Old Endpoint: {} ({})",
+                        "Old Deployment: {} (at {})",
                         old_endpoint_message.as_deref().unwrap_or("<UNKNOWN>"),
                         &existing_svc.endpoint_id,
                     );
@@ -371,7 +373,7 @@ pub async fn run_discover(State(env): State<CliEnv>, discover_opts: &Discover) -
     progress.enable_steady_tick(std::time::Duration::from_millis(120));
 
     progress.set_message(format!(
-        "Asking restate server {} to apply endpoint discovery of {}",
+        "Asking restate server {} to confirm this deployment (at {})",
         env.meta_base_url, discover_opts.endpoint
     ));
 
@@ -386,7 +388,7 @@ pub async fn run_discover(State(env): State<CliEnv>, discover_opts: &Discover) -
 
     progress.finish_and_clear();
     // print the result of the discovery
-    c_success!("DISCOVERY RESULT:");
+    c_success!("DEPLOYMENT:");
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec!["SERVICE", "REV"]);
     for svc in dry_run_result.services {
@@ -412,7 +414,7 @@ async fn resolve_endpoint(
     progress.enable_steady_tick(std::time::Duration::from_millis(120));
 
     progress.set_message(format!(
-        "Fetching information about existing endpoint {}",
+        "Fetching information about existing deployments at {}",
         endpoint_id,
     ));
 

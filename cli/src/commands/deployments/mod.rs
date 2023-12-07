@@ -8,16 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod describe;
 mod list;
+mod register;
 
 use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
-#[clap(visible_alias = "svc", alias = "service")]
-pub enum Services {
-    /// List the registered services
+#[clap(visible_alias = "dp", alias = "deployment")]
+pub enum Deployments {
+    /// List the registered deployments
     List(list::List),
-    /// Prints detailed information about a given service
-    Describe(describe::Describe),
+    /// Add or update deployments through endpoint discovery
+    Register(register::Register),
 }
