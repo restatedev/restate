@@ -20,7 +20,9 @@ use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use restate_storage_api::inbox_table::InboxEntry;
+use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::timer_table::Timer;
@@ -89,6 +91,12 @@ pub trait StateReader {
         service_id: &'a ServiceId,
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<Option<CompletionResult>, restate_storage_api::StorageError>>;
+
+    fn get_journal<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        length: EntryIndex,
+    ) -> BoxStream<'a, Result<JournalEntry, restate_storage_api::StorageError>>;
 }
 
 pub(crate) struct CommandInterpreter<Codec> {
@@ -1264,6 +1272,14 @@ mod tests {
             _service_id: &'a ServiceId,
             _entry_index: EntryIndex,
         ) -> BoxFuture<Result<Option<CompletionResult>, StorageError>> {
+            todo!()
+        }
+
+        fn get_journal<'a>(
+            &'a mut self,
+            _service_id: &'a ServiceId,
+            _length: EntryIndex,
+        ) -> BoxStream<'a, Result<JournalEntry, StorageError>> {
             todo!()
         }
     }

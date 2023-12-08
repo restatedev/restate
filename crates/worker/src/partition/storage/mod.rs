@@ -292,6 +292,14 @@ where
     ) -> BoxFuture<Result<Option<CompletionResult>, StorageError>> {
         super::state_machine::StateStorage::load_completion_result(self, service_id, entry_index)
     }
+
+    fn get_journal<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        length: EntryIndex,
+    ) -> BoxStream<'a, Result<JournalEntry, StorageError>> {
+        self.inner.get_journal(service_id, length)
+    }
 }
 
 impl<TransactionType> super::state_machine::StateStorage for Transaction<TransactionType>
