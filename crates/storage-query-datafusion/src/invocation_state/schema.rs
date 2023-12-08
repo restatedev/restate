@@ -17,11 +17,7 @@ use datafusion::arrow::datatypes::DataType;
 define_table!(state(
     partition_key: DataType::UInt64,
     service: DataType::LargeUtf8,
-    service_key: DataType::LargeBinary,
-    service_key_utf8: DataType::LargeUtf8,
-    service_key_int32: DataType::Int32,
-    service_key_uuid: DataType::LargeUtf8,
-    service_key_json: DataType::LargeUtf8,
+    service_key: DataType::LargeUtf8,
     id: DataType::LargeUtf8,
     in_flight: DataType::Boolean,
     retry_count: DataType::UInt64,

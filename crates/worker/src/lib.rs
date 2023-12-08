@@ -297,11 +297,8 @@ impl Worker {
             schemas.clone(),
         );
 
-        let query_context = storage_query_datafusion.build(
-            rocksdb.clone(),
-            schemas.clone(),
-            invoker.status_reader(),
-        )?;
+        let query_context =
+            storage_query_datafusion.build(rocksdb.clone(), invoker.status_reader())?;
         let storage_query_http = storage_query_http.build(query_context.clone());
         let storage_query_postgres = storage_query_postgres.build(query_context);
 

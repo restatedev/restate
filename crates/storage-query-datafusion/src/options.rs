@@ -12,7 +12,6 @@ use crate::context::QueryContext;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
 use restate_invoker_api::StatusHandle;
-use restate_schema_api::key::RestateKeyConverter;
 use restate_storage_rocksdb::RocksDBStorage;
 use std::fmt::Debug;
 
@@ -45,7 +44,6 @@ impl Options {
     pub fn build(
         self,
         rocksdb: RocksDBStorage,
-        schema: impl RestateKeyConverter + Sync + Send + Clone + Debug + 'static,
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
     ) -> Result<QueryContext, BuildError> {
         let Options {
@@ -55,11 +53,11 @@ impl Options {
         } = self;
 
         let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
-        crate::status::register_self(&ctx, rocksdb.clone(), schema.clone())?;
-        crate::state::register_self(&ctx, rocksdb.clone(), schema.clone())?;
-        crate::journal::register_self(&ctx, rocksdb.clone(), schema.clone())?;
-        crate::invocation_state::register_self(&ctx, status, schema.clone())?;
-        crate::inbox::register_self(&ctx, rocksdb, schema)?;
+        crate::status::register_self(&ctx, rocksdb.clone())?;
+        crate::state::register_self(&ctx, rocksdb.clone())?;
+        crate::journal::register_self(&ctx, rocksdb.clone())?;
+        crate::invocation_state::register_self(&ctx, status)?;
+        crate::inbox::register_self(&ctx, rocksdb)?;
 
         Ok(ctx)
     }

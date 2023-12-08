@@ -9,9 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::journal::schema::JournalBuilder;
-use crate::udfs::restate_keys;
 
-use restate_schema_api::key::RestateKeyConverter;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
 use restate_storage_api::journal_table::JournalEntry;
@@ -22,48 +20,20 @@ use restate_types::journal::raw::{EntryHeader, RawEntryCodec};
 
 use crate::table_util::format_using;
 use restate_types::journal::{BackgroundInvokeEntry, Entry, InvokeEntry, InvokeRequest};
-use uuid::Uuid;
 
 #[inline]
 pub(crate) fn append_journal_row(
     builder: &mut JournalBuilder,
     output: &mut String,
     journal_row: OwnedJournalRow,
-    resolver: impl RestateKeyConverter + Clone,
 ) {
     let mut row = builder.row();
 
     row.partition_key(journal_row.partition_key);
     row.service(&journal_row.service);
-    row.service_key(&journal_row.service_key);
-    if row.is_service_key_utf8_defined() {
-        if let Some(utf8) = restate_keys::try_decode_restate_key_as_utf8(&journal_row.service_key) {
-            row.service_key_utf8(utf8);
-        }
-    }
-    if row.is_service_key_int32_defined() {
-        if let Some(key) = restate_keys::try_decode_restate_key_as_int32(&journal_row.service_key) {
-            row.service_key_int32(key);
-        }
-    }
-    if row.is_service_key_uuid_defined() {
-        let mut buffer = Uuid::encode_buffer();
-        if let Some(key) =
-            restate_keys::try_decode_restate_key_as_uuid(&journal_row.service_key, &mut buffer)
-        {
-            row.service_key_uuid(key);
-        }
-    }
-    if row.is_service_key_json_defined() {
-        if let Some(key) = restate_keys::try_decode_restate_key_as_json(
-            &journal_row.service,
-            &journal_row.service_key,
-            output,
-            resolver.clone(),
-        ) {
-            row.service_key_json(key);
-        }
-    }
+    row.service_key(
+        std::str::from_utf8(&journal_row.service_key).expect("The key must be a string!"),
+    );
 
     row.index(journal_row.journal_index);
 
@@ -81,20 +51,12 @@ pub(crate) fn append_journal_row(
                     ..
                 }
                 | EnrichedEntryHeader::BackgroundInvoke { resolution_result } => {
-                    row.invoked_service_key(&resolution_result.service_key);
+                    row.invoked_service_key(
+                        std::str::from_utf8(&resolution_result.service_key)
+                            .expect("The key must be a string!"),
+                    );
 
                     row.invoked_service(&resolution_result.service_name);
-
-                    if row.is_invoked_service_key_json_defined() {
-                        if let Some(key) = restate_keys::try_decode_restate_key_as_json(
-                            &resolution_result.service_name,
-                            &resolution_result.service_key,
-                            output,
-                            resolver,
-                        ) {
-                            row.invoked_service_key_json(key)
-                        }
-                    }
 
                     if row.is_invoked_id_defined() {
                         let partition_key = ServiceId::new(

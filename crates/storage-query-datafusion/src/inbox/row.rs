@@ -10,8 +10,6 @@
 
 use super::schema::InboxBuilder;
 use crate::table_util::format_using;
-use crate::udfs::restate_keys;
-use restate_schema_api::key::RestateKeyConverter;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink};
@@ -23,7 +21,6 @@ pub(crate) fn append_inbox_row(
     builder: &mut InboxBuilder,
     output: &mut String,
     inbox_entry: InboxEntry,
-    resolver: impl RestateKeyConverter,
 ) {
     let InboxEntry {
         inbox_sequence_number,
@@ -43,35 +40,7 @@ pub(crate) fn append_inbox_row(
     row.service_name(&fid.service_id.service_name);
     row.method(&method_name);
 
-    row.service_key(&fid.service_id.key);
-    if row.is_service_key_utf8_defined() {
-        if let Some(utf8) = restate_keys::try_decode_restate_key_as_utf8(&fid.service_id.key) {
-            row.service_key_utf8(utf8);
-        }
-    }
-    if row.is_service_key_int32_defined() {
-        if let Some(key) = restate_keys::try_decode_restate_key_as_int32(&fid.service_id.key) {
-            row.service_key_int32(key);
-        }
-    }
-    if row.is_service_key_uuid_defined() {
-        let mut buffer = Uuid::encode_buffer();
-        if let Some(key) =
-            restate_keys::try_decode_restate_key_as_uuid(&fid.service_id.key, &mut buffer)
-        {
-            row.service_key_uuid(key);
-        }
-    }
-    if row.is_service_key_json_defined() {
-        if let Some(key) = restate_keys::try_decode_restate_key_as_json(
-            &fid.service_id.service_name,
-            &fid.service_id.key,
-            output,
-            resolver,
-        ) {
-            row.service_key_json(key);
-        }
-    }
+    row.service_key(std::str::from_utf8(&fid.service_id.key).expect("The key must be a string!"));
 
     if row.is_id_defined() {
         row.id(format_using(output, &InvocationId::from(&fid)));

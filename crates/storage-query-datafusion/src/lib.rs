@@ -20,6 +20,5 @@ mod state;
 mod status;
 mod table_macro;
 mod table_util;
-mod udfs;
 
 pub use crate::options::{BuildError, Options, OptionsBuilder, OptionsBuilderError};

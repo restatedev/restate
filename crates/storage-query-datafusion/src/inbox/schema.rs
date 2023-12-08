@@ -20,11 +20,7 @@ define_table!(inbox(
     service_name: DataType::LargeUtf8,
     method: DataType::LargeUtf8,
 
-    service_key: DataType::LargeBinary,
-    service_key_utf8: DataType::LargeUtf8,
-    service_key_int32: DataType::Int32,
-    service_key_uuid: DataType::LargeUtf8,
-    service_key_json: DataType::LargeUtf8,
+    service_key: DataType::LargeUtf8,
 
     id: DataType::LargeUtf8,
 

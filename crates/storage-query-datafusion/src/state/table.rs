@@ -22,7 +22,6 @@ use crate::state::schema::StateBuilder;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_schema_api::key::RestateKeyConverter;
 use restate_storage_rocksdb::state_table::OwnedStateRow;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::PartitionKey;
@@ -31,12 +30,8 @@ use tokio::sync::mpsc::Sender;
 pub(crate) fn register_self(
     ctx: &QueryContext,
     storage: RocksDBStorage,
-    resolver: impl RestateKeyConverter + Send + Sync + Debug + Clone + 'static,
 ) -> datafusion::common::Result<()> {
-    let table = GenericTableProvider::new(
-        StateBuilder::schema(),
-        Arc::new(StateScanner(storage, resolver)),
-    );
+    let table = GenericTableProvider::new(StateBuilder::schema(), Arc::new(StateScanner(storage)));
 
     ctx.as_ref()
         .register_table("state", Arc::new(table))
@@ -44,11 +39,9 @@ pub(crate) fn register_self(
 }
 
 #[derive(Debug, Clone)]
-struct StateScanner<R>(RocksDBStorage, R);
+struct StateScanner(RocksDBStorage);
 
-impl<R: RestateKeyConverter + Send + Sync + Debug + Clone + 'static> RangeScanner
-    for StateScanner<R>
-{
+impl RangeScanner for StateScanner {
     fn scan(
         &self,
         range: RangeInclusive<PartitionKey>,
@@ -56,12 +49,11 @@ impl<R: RestateKeyConverter + Send + Sync + Debug + Clone + 'static> RangeScanne
     ) -> SendableRecordBatchStream {
         let db = self.0.clone();
         let schema = projection.clone();
-        let resolver = self.1.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
         let tx = stream_builder.tx();
         let background_task = move || {
             let rows = db.all_states(range);
-            for_each_state(schema, tx, rows, resolver);
+            for_each_state(schema, tx, rows);
         };
         stream_builder.spawn_blocking(background_task);
         stream_builder.build()
@@ -72,14 +64,12 @@ fn for_each_state<'a, I>(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     rows: I,
-    resolver: impl RestateKeyConverter + Clone,
 ) where
     I: Iterator<Item = OwnedStateRow> + 'a,
 {
     let mut builder = StateBuilder::new(schema.clone());
-    let mut temp = String::new();
     for row in rows {
-        append_state_row(&mut builder, &mut temp, row, resolver.clone());
+        append_state_row(&mut builder, row);
         if builder.full() {
             let batch = builder.finish();
             if tx.blocking_send(Ok(batch)).is_err() {
