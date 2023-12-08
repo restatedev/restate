@@ -16,10 +16,10 @@ use std::fmt;
 #[derive(Debug, thiserror::Error)]
 #[error("Field {field_name} cannot be mapped to field tag {tag} because it's not a valid UTF-8 string: {reason}")]
 pub struct Error {
-    field_name: &'static str,
-    tag: u32,
+    pub(crate) field_name: &'static str,
+    pub(crate) tag: u32,
     #[source]
-    reason: core::str::Utf8Error,
+    pub(crate) reason: core::str::Utf8Error,
 }
 
 /// Structure that implements the remapping of the event fields.

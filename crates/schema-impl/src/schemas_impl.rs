@@ -533,12 +533,12 @@ impl SchemasInner {
                     let key = if let Some(index) =
                         method_schemas.input_field_annotated(FieldAnnotation::Key)
                     {
-                        let kind = input_type.get_field(index).unwrap().kind();
-                        if kind == Kind::String {
-                            Some((index, FieldRemapType::String))
-                        } else {
-                            Some((index, FieldRemapType::Bytes))
-                        }
+                        debug_assert_eq!(
+                            input_type.get_field(index).unwrap().kind(),
+                            Kind::String,
+                            "discovery should check whether this field is string or not."
+                        );
+                        Some((index, FieldRemapType::String))
                     } else {
                         None
                     };

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
 use restate_pb::restate::Event;
@@ -188,13 +188,19 @@ impl IngressRequest {
             match instance_type {
                 EventReceiverServiceInstanceType::Keyed {
                     ordering_key_is_key,
-                } => generate_restate_key(if *ordering_key_is_key {
+                } => Bytes::from(if *ordering_key_is_key {
                     event.ordering_key.clone()
                 } else {
-                    event.key.clone()
+                    std::str::from_utf8(&event.key)
+                        .map_err(|e| EventError {
+                            field_name: "key",
+                            tag: 2,
+                            reason: e,
+                        })?
+                        .to_owned()
                 }),
                 EventReceiverServiceInstanceType::Unkeyed => {
-                    Bytes::copy_from_slice(InvocationUuid::now_v7().as_bytes())
+                    Bytes::from(InvocationUuid::now_v7().to_string())
                 }
                 EventReceiverServiceInstanceType::Singleton => Bytes::new(),
             },
@@ -252,18 +258,6 @@ impl IngressRequest {
             )
         })
     }
-}
-
-fn generate_restate_key(key: impl Buf) -> Bytes {
-    // Because this needs to be a valid Restate key, we need to prepend it with its length to make it
-    // look like it was extracted using the RestateKeyExtractor
-    // This is done to ensure all the other operations on the key will work correctly (e.g. key to json)
-    let key_len = key.remaining();
-    let mut buf =
-        BytesMut::with_capacity(prost::encoding::encoded_len_varint(key_len as u64) + key_len);
-    prost::encoding::encode_varint(key_len as u64, &mut buf);
-    buf.put(key);
-    buf.freeze()
 }
 
 // -- Types used by the network to interact with the ingress dispatcher service
