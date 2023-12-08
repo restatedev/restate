@@ -188,7 +188,7 @@ where
                 Ok((None, SpanRelation::None))
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
-            Command::Kill(iid) => self.try_kill_invocation(iid, state, effects).await,
+            Command::Kill(maybe_fid) => self.try_kill_invocation(maybe_fid, state, effects).await,
             Command::BuiltInInvoker(nbis_effects) => {
                 self.try_built_in_invoker_effect(effects, state, nbis_effects)
                     .await
@@ -352,13 +352,13 @@ where
 
     async fn try_kill_invocation<State: StateReader>(
         &mut self,
-        invocation_id: InvocationId,
+        maybe_fid: MaybeFullInvocationId,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let (full_invocation_id, status) = state
-            .resolve_invocation_status_from_invocation_id(&invocation_id)
-            .await?;
+        // TODO: Handle case where there is no invocation status properly and avoid cloning maybe_fid
+        let (full_invocation_id, status) =
+            Self::read_invocation_status(maybe_fid.clone(), state).await?;
 
         match status {
             InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. }
@@ -385,7 +385,7 @@ where
             }
             _ => {
                 // check if service invocation is in inbox
-                let inbox_entry = state.get_inbox_entry(invocation_id).await?;
+                let inbox_entry = state.get_inbox_entry(maybe_fid).await?;
 
                 if let Some(inbox_entry) = inbox_entry {
                     self.kill_inboxed_invocation(effects, inbox_entry)
@@ -941,17 +941,8 @@ where
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let (full_invocation_id, status) = match maybe_full_invocation_id {
-            MaybeFullInvocationId::Partial(iid) => {
-                state
-                    .resolve_invocation_status_from_invocation_id(&iid)
-                    .await?
-            }
-            MaybeFullInvocationId::Full(fid) => {
-                let status = state.get_invocation_status(&fid.service_id).await?;
-                (fid, status)
-            }
-        };
+        let (full_invocation_id, status) =
+            Self::read_invocation_status(maybe_full_invocation_id, state).await?;
         let mut related_sid = None;
         let mut span_relation = SpanRelation::None;
 
@@ -1016,6 +1007,24 @@ where
         }
 
         Ok((related_sid, span_relation))
+    }
+
+    async fn read_invocation_status<State: StateReader>(
+        maybe_full_invocation_id: MaybeFullInvocationId,
+        state: &mut State,
+    ) -> Result<(FullInvocationId, InvocationStatus), Error> {
+        let (full_invocation_id, status) = match maybe_full_invocation_id {
+            MaybeFullInvocationId::Partial(iid) => {
+                state
+                    .resolve_invocation_status_from_invocation_id(&iid)
+                    .await?
+            }
+            MaybeFullInvocationId::Full(fid) => {
+                let status = state.get_invocation_status(&fid.service_id).await?;
+                (fid, status)
+            }
+        };
+        Ok((full_invocation_id, status))
     }
 
     async fn handle_deterministic_built_in_service_invocation(
@@ -1446,7 +1455,7 @@ mod tests {
 
         command_interpreter
             .on_apply(
-                Command::Kill(InvocationId::from(inboxed_fid.clone())),
+                Command::Kill(MaybeFullInvocationId::from(inboxed_fid.clone())),
                 &mut effects,
                 &mut state_reader,
             )

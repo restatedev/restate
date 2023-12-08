@@ -17,6 +17,7 @@ use restate_consensus::ProposalSender;
 use restate_network::PartitionTableError;
 use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::WithPartitionKey;
+use restate_types::invocation::MaybeFullInvocationId;
 use restate_types::message::PeerTarget;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -130,7 +131,7 @@ where
                             let target_peer_id = partition_table
                                 .partition_key_to_target_peer(invocation_id.partition_key())
                                 .await?;
-                            let msg = StateMachineAckCommand::no_ack(StateMachineCommand::Kill(invocation_id));
+                            let msg = StateMachineAckCommand::no_ack(StateMachineCommand::Kill(MaybeFullInvocationId::from(invocation_id)));
                             proposal_tx.send((target_peer_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
                         }
                     }

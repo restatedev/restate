@@ -103,8 +103,7 @@ mod tests {
     use restate_test_util::test;
     use restate_types::errors::UserErrorCode;
     use restate_types::identifiers::{
-        FullInvocationId, InvocationId, InvocationUuid, PartitionId, PartitionKey, ServiceId,
-        WithPartitionKey,
+        FullInvocationId, InvocationUuid, PartitionId, PartitionKey, ServiceId, WithPartitionKey,
     };
     use restate_types::invocation::{
         InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
@@ -378,7 +377,9 @@ mod tests {
         assert!(result.is_some());
 
         let actions = state_machine
-            .apply_cmd(Command::Kill(InvocationId::from(inboxed_fid.clone())))
+            .apply_cmd(Command::Kill(MaybeFullInvocationId::from(
+                inboxed_fid.clone(),
+            )))
             .await;
 
         let result = state_machine
