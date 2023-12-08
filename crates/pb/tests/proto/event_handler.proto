@@ -8,11 +8,3 @@ package eventhandler;
 service EventHandler {
   rpc Handle(dev.restate.Event) returns (google.protobuf.Empty);
 }
-
-service KeyedEventHandler {
-  rpc Handle(dev.restate.KeyedEvent) returns (google.protobuf.Empty);
-}
-
-service StringKeyedEventHandler {
-  rpc Handle(dev.restate.StringKeyedEvent) returns (google.protobuf.Empty);
-}
