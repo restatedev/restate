@@ -23,6 +23,7 @@ use restate_storage_proto::storage;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::invocation::ServiceInvocation;
 use std::io::Cursor;
+use std::ops::RangeInclusive;
 
 define_table_key!(
     Inbox,
@@ -89,6 +90,13 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             .service_key(service_id.key.clone());
 
         self.for_each_key_value(TableScan::KeyPrefix(key), |k, v| {
+            let inbox_entry = decode_inbox_key_value(k, v);
+            TableScanIterationDecision::Emit(inbox_entry)
+        })
+    }
+
+    fn all_inboxes(&mut self, range: RangeInclusive<PartitionKey>) -> GetStream<InboxEntry> {
+        self.for_each_key_value(TableScan::PartitionKeyRange::<InboxKey>(range), |k, v| {
             let inbox_entry = decode_inbox_key_value(k, v);
             TableScanIterationDecision::Emit(inbox_entry)
         })

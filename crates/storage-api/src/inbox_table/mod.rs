@@ -9,9 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use crate::{GetFuture, GetStream, PutFuture};
-use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{PartitionKey, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::message::MessageIndex;
+use std::ops::RangeInclusive;
 
 /// Entry of the inbox
 #[derive(Debug, Clone, PartialEq)]
@@ -37,4 +38,6 @@ pub trait InboxTable {
     fn peek_inbox(&mut self, service_id: &ServiceId) -> GetFuture<Option<InboxEntry>>;
 
     fn inbox(&mut self, service_id: &ServiceId) -> GetStream<InboxEntry>;
+
+    fn all_inboxes(&mut self, range: RangeInclusive<PartitionKey>) -> GetStream<InboxEntry>;
 }
