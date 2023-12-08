@@ -8,22 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use indicatif::ProgressBar;
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::count_endpoint_active_inv;
+use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::{MetaClientInterface, MetasClient};
 use crate::console::c_println;
 use crate::ui::console::{Styled, StyledTable};
-use crate::ui::endpoints::{render_active_invocations, render_endpoint_type, render_endpoint_url};
+use crate::ui::deployments::{
+    add_deployment_to_kv_table, render_active_invocations, render_deployment_type,
+    render_endpoint_url,
+};
 use crate::ui::service_methods::create_service_methods_table;
 use crate::ui::stylesheet::Style;
-
-use restate_meta_rest_model::endpoints::{ProtocolType, ServiceEndpoint, ServiceEndpointResponse};
 
 use anyhow::Result;
 
@@ -58,7 +57,7 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
         .await?
         .into_body()
         .await?;
-    add_endpoint(&endpoint, &mut table);
+    add_deployment_to_kv_table(&endpoint.service_endpoint, &mut table);
 
     c_println!("{}", Styled(Style::Info, "Service Information"));
     c_println!("{}", table);
@@ -66,7 +65,7 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
     // Methods
     c_println!();
     c_println!("{}", Styled(Style::Info, "Methods"));
-    let table = create_service_methods_table(&env.ui_config, svc.instance_type, &svc.methods);
+    let table = create_service_methods_table(&env.ui_config, &svc.methods);
     c_println!("{}", table);
 
     // Printing other existing endpoints with previous revisions. We currently don't
@@ -130,11 +129,11 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
     other_endpoints.sort_by(|(_, _, rev1), (_, _, rev2)| rev2.cmp(rev1));
 
     for (endpoint_id, endpoint_metadata, rev) in other_endpoints {
-        let active_inv = count_endpoint_active_inv(&sql_client, &endpoint_id).await?;
+        let active_inv = count_deployment_active_inv(&sql_client, &endpoint_id).await?;
 
         table.add_row(vec![
             Cell::new(render_endpoint_url(&endpoint_metadata)),
-            Cell::new(render_endpoint_type(&endpoint_metadata)),
+            Cell::new(render_deployment_type(&endpoint_metadata)),
             Cell::new(rev),
             render_active_invocations(active_inv),
             Cell::new(endpoint_id),
@@ -148,53 +147,4 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
     c_println!("{}", table);
 
     Ok(())
-}
-
-fn add_endpoint(endpoint: &ServiceEndpointResponse, table: &mut Table) {
-    let (additional_headers, created_at) = match &endpoint.service_endpoint {
-        ServiceEndpoint::Http {
-            uri,
-            protocol_type,
-            additional_headers,
-            created_at,
-        } => {
-            table.add_kv_row("Deployment Type:", "HTTP");
-            table.add_kv_row("Endpoint:", uri);
-            let protocol_type = match protocol_type {
-                ProtocolType::RequestResponse => "Request/Response",
-                ProtocolType::BidiStream => "Streaming",
-            }
-            .to_string();
-            table.add_kv_row("Endpoint Protocol:", protocol_type);
-            (additional_headers.clone(), created_at)
-        }
-        ServiceEndpoint::Lambda {
-            arn,
-            assume_role_arn,
-            additional_headers,
-            created_at,
-        } => {
-            table.add_kv_row("Deployment Type:", "AWS Lambda");
-            table.add_kv_row("Endpoint:", arn);
-            table.add_kv_row("Endpoint Protocol:", "Request/Response");
-            table.add_kv_row_if(
-                || assume_role_arn.is_some(),
-                "Endpoint Assume Role ARN:",
-                assume_role_arn.as_ref().unwrap(),
-            );
-            (additional_headers.clone(), created_at)
-        }
-    };
-
-    let additional_headers: HashMap<http::HeaderName, http::HeaderValue> =
-        additional_headers.into();
-
-    for (header, value) in additional_headers.iter() {
-        table.add_kv_row(
-            "Endpoint Additional Header:",
-            &format!("{}: {}", header, value.to_str().unwrap_or("<BINARY>")),
-        );
-    }
-
-    table.add_kv_row("Created at:", created_at);
 }

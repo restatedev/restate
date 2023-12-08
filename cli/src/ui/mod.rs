@@ -9,6 +9,6 @@
 // by the Apache License, Version 2.0.
 
 pub mod console;
-pub mod endpoints;
+pub mod deployments;
 pub mod service_methods;
 pub mod stylesheet;

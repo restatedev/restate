@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod describe;
 mod list;
 mod register;
+mod remove;
 
 use cling::prelude::*;
 
@@ -20,4 +22,8 @@ pub enum Deployments {
     List(list::List),
     /// Add or update deployments through endpoint discovery
     Register(register::Register),
+    /// Prints detailed information about a given deployment
+    Describe(describe::Describe),
+    /// Remove a drained deployment
+    Remove(remove::Remove),
 }
