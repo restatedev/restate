@@ -21,7 +21,9 @@ use crate::ui::endpoints::{
 };
 use crate::ui::stylesheet::Style;
 
-use restate_meta_rest_model::endpoints::{ServiceEndpointResponse, ServiceNameRevPair};
+use restate_meta_rest_model::endpoints::{
+    ServiceEndpoint, ServiceEndpointResponse, ServiceNameRevPair,
+};
 use restate_meta_rest_model::services::ServiceMetadata;
 
 use anyhow::Result;
@@ -52,7 +54,14 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
     }
     //
     let mut table = Table::new_styled(&env.ui_config);
-    let mut header = vec!["ENDPOINT", "TYPE", "STATUS", "# OF INVOCATIONS", "ID"];
+    let mut header = vec![
+        "ENDPOINT",
+        "TYPE",
+        "STATUS",
+        "# OF INVOCATIONS",
+        "ID",
+        "CREATED AT",
+    ];
     if list_opts.extra {
         header.push("SERVICES");
     }
@@ -86,6 +95,10 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
             render_endpoint_status(status),
             render_active_invocations(active_inv),
             Cell::new(&endpoint.id),
+            Cell::new(match &endpoint.service_endpoint {
+                ServiceEndpoint::Http { created_at, .. } => created_at,
+                ServiceEndpoint::Lambda { created_at, .. } => created_at,
+            }),
         ];
         if list_opts.extra {
             row.push(render_services(

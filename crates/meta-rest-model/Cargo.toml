@@ -17,6 +17,7 @@ restate-schema-api = { workspace = true, features = [ "service", "endpoint", "di
 restate-serde-util = { workspace = true }
 
 http = { workspace = true }
+humantime = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

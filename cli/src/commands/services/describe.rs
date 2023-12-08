@@ -151,11 +151,12 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
 }
 
 fn add_endpoint(endpoint: &ServiceEndpointResponse, table: &mut Table) {
-    let additional_headers = match &endpoint.service_endpoint {
+    let (additional_headers, created_at) = match &endpoint.service_endpoint {
         ServiceEndpoint::Http {
             uri,
             protocol_type,
             additional_headers,
+            created_at,
         } => {
             table.add_kv_row("Deployment Type:", "HTTP");
             table.add_kv_row("Endpoint:", uri);
@@ -165,12 +166,13 @@ fn add_endpoint(endpoint: &ServiceEndpointResponse, table: &mut Table) {
             }
             .to_string();
             table.add_kv_row("Endpoint Protocol:", protocol_type);
-            additional_headers.clone()
+            (additional_headers.clone(), created_at)
         }
         ServiceEndpoint::Lambda {
             arn,
             assume_role_arn,
             additional_headers,
+            created_at,
         } => {
             table.add_kv_row("Deployment Type:", "AWS Lambda");
             table.add_kv_row("Endpoint:", arn);
@@ -180,7 +182,7 @@ fn add_endpoint(endpoint: &ServiceEndpointResponse, table: &mut Table) {
                 "Endpoint Assume Role ARN:",
                 assume_role_arn.as_ref().unwrap(),
             );
-            additional_headers.clone()
+            (additional_headers.clone(), created_at)
         }
     };
 
@@ -193,4 +195,6 @@ fn add_endpoint(endpoint: &ServiceEndpointResponse, table: &mut Table) {
             &format!("{}: {}", header, value.to_str().unwrap_or("<BINARY>")),
         );
     }
+
+    table.add_kv_row("Created at:", created_at);
 }
