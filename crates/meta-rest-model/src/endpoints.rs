@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::services::ServiceRevision;
+use std::time::SystemTime;
 
 use restate_schema_api::service::ServiceMetadata;
 use restate_serde_util::SerdeableHeaderHashMap;
@@ -36,7 +37,9 @@ pub enum ServiceEndpoint {
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
-        created_at: String,
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        created_at: humantime::Timestamp,
     },
     Lambda {
         arn: LambdaARN,
@@ -46,7 +49,9 @@ pub enum ServiceEndpoint {
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
-        created_at: String,
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        created_at: humantime::Timestamp,
     },
 }
 
@@ -60,7 +65,7 @@ impl From<EndpointMetadata> for ServiceEndpoint {
                 uri: address,
                 protocol_type,
                 additional_headers: value.delivery_options.additional_headers.into(),
-                created_at: humantime::format_rfc3339(value.created_at.into()).to_string(),
+                created_at: SystemTime::from(value.created_at).into(),
             },
             EndpointType::Lambda {
                 arn,
@@ -69,7 +74,7 @@ impl From<EndpointMetadata> for ServiceEndpoint {
                 arn,
                 assume_role_arn: assume_role_arn.map(Into::into),
                 additional_headers: value.delivery_options.additional_headers.into(),
-                created_at: humantime::format_rfc3339(value.created_at.into()).to_string(),
+                created_at: SystemTime::from(value.created_at).into(),
             },
         }
     }
