@@ -113,19 +113,16 @@ pub async fn create_service_endpoint<S, W>(
 pub async fn get_service_endpoint<S: EndpointMetadataResolver, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
     Path(endpoint_id): Path<String>,
-) -> Result<Json<ServiceEndpointResponse>, MetaApiError> {
+) -> Result<Json<DetailedServiceEndpointResponse>, MetaApiError> {
     let (endpoint_meta, services) = state
         .schemas()
         .get_endpoint_and_services(&endpoint_id)
         .ok_or_else(|| MetaApiError::ServiceEndpointNotFound(endpoint_id.clone()))?;
 
-    Ok(ServiceEndpointResponse {
+    Ok(DetailedServiceEndpointResponse {
         id: endpoint_id,
         service_endpoint: endpoint_meta.into(),
-        services: services
-            .into_iter()
-            .map(|(name, revision)| ServiceNameRevPair { name, revision })
-            .collect(),
+        services,
     }
     .into())
 }

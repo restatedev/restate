@@ -12,6 +12,7 @@
 
 #[cfg(feature = "endpoint")]
 pub mod endpoint {
+    use super::service::ServiceMetadata;
     use bytes::Bytes;
     use bytestring::ByteString;
     use http::header::{HeaderName, HeaderValue};
@@ -172,7 +173,7 @@ pub mod endpoint {
         fn get_endpoint_and_services(
             &self,
             endpoint_id: &EndpointId,
-        ) -> Option<(EndpointMetadata, Vec<(String, ServiceRevision)>)>;
+        ) -> Option<(EndpointMetadata, Vec<ServiceMetadata>)>;
 
         fn get_endpoints(&self) -> Vec<(EndpointMetadata, Vec<(String, ServiceRevision)>)>;
     }
@@ -239,7 +240,7 @@ pub mod endpoint {
             fn get_endpoint_and_services(
                 &self,
                 endpoint_id: &EndpointId,
-            ) -> Option<(EndpointMetadata, Vec<(String, ServiceRevision)>)> {
+            ) -> Option<(EndpointMetadata, Vec<ServiceMetadata>)> {
                 self.endpoints
                     .get(endpoint_id)
                     .cloned()
