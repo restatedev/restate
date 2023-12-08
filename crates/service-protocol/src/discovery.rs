@@ -499,13 +499,7 @@ fn resolve_key_field(
         }
     };
 
-    // Validate type
-    if field_descriptor.is_map() {
-        return Err(ServiceDiscoveryError::BadKeyFieldType(
-            method_descriptor.clone(),
-        ));
-    }
-    if field_descriptor.is_list() {
+    if field_descriptor.kind() != Kind::String {
         return Err(ServiceDiscoveryError::BadKeyFieldType(
             method_descriptor.clone(),
         ));
