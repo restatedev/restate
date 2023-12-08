@@ -558,6 +558,8 @@ pub mod key {
             UnexpectedServiceInstanceType,
             #[error("unexpected value for a singleton service. Singleton service have no service key associated")]
             UnexpectedNonNullSingletonKey,
+            #[error("bad unkeyed service key. Expected a string")]
+            BadUnkeyedKey,
             #[error("error when decoding the json key: {0}")]
             DecodeJson(#[from] serde_json::Error),
         }

@@ -16,11 +16,9 @@ use bytes::Bytes;
 use prost::Message;
 use prost_reflect::{DynamicMessage, MethodDescriptor};
 use restate_schema_api::key::json_conversion::{Error, RestateKeyConverter};
-use restate_serde_util::SerdeableUuid;
 use serde::de::IntoDeserializer;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value};
-use uuid::Uuid;
 
 impl RestateKeyConverter for Schemas {
     fn key_to_json(
@@ -89,10 +87,7 @@ fn key_to_json(
                 })
         }
         InstanceTypeMetadata::Unkeyed => Ok(Value::String(
-            uuid::Builder::from_slice(key.as_ref())
-                .unwrap()
-                .into_uuid()
-                .to_string(),
+            String::from_utf8(key.as_ref().to_vec()).expect("Must be a valid UTF-8 string"),
         )),
         InstanceTypeMetadata::Singleton => Ok(Value::Object(Map::new())),
         InstanceTypeMetadata::Unsupported => Err(Error::NotFound),
@@ -135,9 +130,11 @@ fn json_to_key(
             )?)
         }
         InstanceTypeMetadata::Unkeyed => {
-            let parse_result: Uuid = SerdeableUuid::deserialize(key.into_deserializer())?.into();
-
-            Ok(parse_result.as_bytes().to_vec().into())
+            return if let Some(key_str) = key.as_str() {
+                Ok(Bytes::copy_from_slice(key_str.as_bytes()))
+            } else {
+                Err(Error::BadUnkeyedKey)
+            }
         }
         InstanceTypeMetadata::Singleton if key.is_null() => Ok(Bytes::default()),
         InstanceTypeMetadata::Singleton => Err(Error::UnexpectedNonNullSingletonKey),
@@ -411,14 +408,11 @@ mod tests {
         let expected_restate_key = extract(&service_instance_type, METHOD_NAME, Bytes::new())
             .expect("successful key extraction");
 
-        // Parse this as uuid
-        let uuid = Uuid::from_slice(&expected_restate_key).unwrap();
-
         // Now convert the key to json
         let actual_restate_key = json_to_key(
             &service_instance_type,
             test_method_descriptor(),
-            Value::String(uuid.as_simple().to_string()),
+            Value::String(String::from_utf8(expected_restate_key.to_vec()).unwrap()),
         )
         .unwrap();
 

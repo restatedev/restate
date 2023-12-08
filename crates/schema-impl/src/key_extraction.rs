@@ -41,7 +41,7 @@ pub(crate) mod extract_impls {
     use uuid::Uuid;
 
     fn generate_random_key() -> Bytes {
-        Bytes::copy_from_slice(Uuid::now_v7().as_bytes())
+        Bytes::copy_from_slice(Uuid::now_v7().to_string().as_ref())
     }
 
     pub(crate) fn extract(
