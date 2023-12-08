@@ -10,6 +10,7 @@
 
 use super::*;
 
+use crate::service::map_to_service_metadata;
 use anyhow::anyhow;
 use prost_reflect::{DescriptorPool, Kind, MethodDescriptor, ServiceDescriptor};
 use proto_symbol::ProtoSymbols;
@@ -250,7 +251,10 @@ impl ServiceLocation {
 #[derive(Debug, Clone)]
 pub(crate) struct EndpointSchemas {
     pub(crate) metadata: EndpointMetadata,
-    pub(crate) services: Vec<(String, ServiceRevision)>,
+
+    // We need to store ServiceSchemas and DescriptorPool here only for queries
+    // We could optimize the memory impact of this by reading these info from disk
+    pub(crate) services: Vec<ServiceMetadata>,
     pub(crate) descriptor_pool: DescriptorPool,
 }
 
@@ -353,16 +357,16 @@ impl SchemasInner {
         if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
             if allow_overwrite {
                 // If we need to overwrite the endpoint we need to remove old services
-                for (svc_name, revision) in &existing_endpoint.services {
+                for svc in &existing_endpoint.services {
                     warn!(
                         restate.service_endpoint.id = %endpoint_id,
                         restate.service_endpoint.address = %endpoint_metadata.address_display(),
                         "Going to remove service {} due to a forced service endpoint update",
-                        svc_name
+                        svc.name
                     );
                     result_commands.push(SchemasUpdateCommand::RemoveService {
-                        name: svc_name.to_string(),
-                        revision: *revision,
+                        name: svc.name.to_owned(),
+                        revision: svc.revision,
                     });
                 }
             } else {
@@ -452,8 +456,11 @@ impl SchemasInner {
         let endpoint_schemas = self.endpoints.get(&endpoint_id).unwrap();
 
         let mut commands = Vec::with_capacity(1 + endpoint_schemas.services.len());
-        for (name, revision) in endpoint_schemas.services.clone() {
-            commands.push(SchemasUpdateCommand::RemoveService { name, revision });
+        for svc in endpoint_schemas.services.clone() {
+            commands.push(SchemasUpdateCommand::RemoveService {
+                name: svc.name,
+                revision: svc.revision,
+            });
         }
         commands.push(SchemasUpdateCommand::RemoveEndpoint { endpoint_id });
 
@@ -678,7 +685,8 @@ impl SchemasInner {
                     }
 
                     // We need to retain the `public` field from previous registrations
-                    self.services
+                    let service_schemas = self
+                        .services
                         .entry(name.clone())
                         .and_modify(|service_schemas| {
                             info!(rpc.service = name, "Overwriting existing service schemas");
@@ -722,7 +730,10 @@ impl SchemasInner {
                     self.proto_symbols
                         .add_service(&endpoint_id, &service_descriptor);
 
-                    endpoint_services.push((name, revision));
+                    endpoint_services.push(
+                        map_to_service_metadata(&name, service_schemas)
+                            .expect("Should not be a built-in service"),
+                    );
                 }
 
                 self.endpoints.insert(

@@ -13,6 +13,7 @@ use bytes::Bytes;
 
 use crate::schemas_impl::ServiceLocation;
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver};
+use restate_schema_api::service::ServiceMetadata;
 use restate_types::identifiers::{EndpointId, ServiceRevision};
 
 impl EndpointMetadataResolver for Schemas {
@@ -52,7 +53,7 @@ impl EndpointMetadataResolver for Schemas {
     fn get_endpoint_and_services(
         &self,
         endpoint_id: &EndpointId,
-    ) -> Option<(EndpointMetadata, Vec<(String, ServiceRevision)>)> {
+    ) -> Option<(EndpointMetadata, Vec<ServiceMetadata>)> {
         let schemas = self.0.load();
         schemas
             .endpoints
@@ -65,7 +66,16 @@ impl EndpointMetadataResolver for Schemas {
         schemas
             .endpoints
             .values()
-            .map(|schemas| (schemas.metadata.clone(), schemas.services.clone()))
+            .map(|schemas| {
+                (
+                    schemas.metadata.clone(),
+                    schemas
+                        .services
+                        .iter()
+                        .map(|s| (s.name.clone(), s.revision))
+                        .collect(),
+                )
+            })
             .collect()
     }
 }

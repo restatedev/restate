@@ -164,3 +164,15 @@ pub struct ServiceEndpointResponse {
     /// List of services exposed by this service endpoint.
     pub services: Vec<ServiceNameRevPair>,
 }
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DetailedServiceEndpointResponse {
+    pub id: EndpointId,
+    #[serde(flatten)]
+    pub service_endpoint: ServiceEndpoint,
+    /// # Services
+    ///
+    /// List of services exposed by this service endpoint.
+    pub services: Vec<ServiceMetadata>,
+}
