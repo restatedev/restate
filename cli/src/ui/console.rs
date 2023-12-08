@@ -99,7 +99,7 @@ where
 pub trait StyledTable {
     fn new_styled(ui_config: &UiConfig) -> Self;
     fn set_styled_header<T: ToString>(&mut self, headers: Vec<T>) -> &mut Self;
-    fn add_kv_row<V: Display>(&mut self, key: &str, value: V) -> &mut Self;
+    fn add_kv_row<V: Into<comfy_table::Cell>>(&mut self, key: &str, value: V) -> &mut Self;
     fn add_kv_row_if<P: Fn() -> bool, V: Display>(
         &mut self,
         predicate: P,

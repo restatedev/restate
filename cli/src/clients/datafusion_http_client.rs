@@ -101,7 +101,7 @@ impl DataFusionHttpClient {
         Ok(SqlResponse { schema, batches })
     }
 
-    pub async fn run_count_query(&self, query: String) -> Result<i64, Error> {
+    pub async fn run_count_agg_query(&self, query: String) -> Result<i64, Error> {
         let resp = self.run_query(query).await?;
 
         Ok(get_column_as::<Int64Type>(&resp.batches, 0)

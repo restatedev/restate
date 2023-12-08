@@ -14,6 +14,7 @@ use super::errors::ApiError;
 use crate::build_info;
 use crate::cli_env::CliEnv;
 
+use http::StatusCode;
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 use tracing::{debug, info};
@@ -22,7 +23,8 @@ use url::Url;
 #[derive(Error, Debug)]
 #[error(transparent)]
 pub enum Error {
-    Api(#[from] ApiError),
+    // Error is boxed because ApiError can get quite large if the message body is large.
+    Api(#[from] Box<ApiError>),
     #[error("(Protocol error) {0}")]
     Serialization(#[from] serde_json::Error),
     Network(#[from] reqwest::Error),
@@ -56,11 +58,11 @@ where
             info!("Response from {} ({})", url, http_status_code);
             info!("  {}", body);
             // Wrap the error into ApiError
-            return Err(Error::Api(ApiError {
+            return Err(Error::Api(Box::new(ApiError {
                 http_status_code,
                 url,
                 body: serde_json::from_str(&body)?,
-            }));
+            })));
         }
 
         debug!("Response from {} ({})", url, http_status_code);
@@ -71,6 +73,15 @@ where
 
     pub async fn into_text(self) -> Result<String, Error> {
         Ok(self.inner.text().await?)
+    }
+    pub fn success_or_error(self) -> Result<StatusCode, Error> {
+        let http_status_code = self.inner.status();
+        let url = self.inner.url().clone();
+        info!("Response from {} ({})", url, http_status_code);
+        match self.inner.error_for_status() {
+            Ok(_) => Ok(http_status_code),
+            Err(e) => Err(Error::Network(e)),
+        }
     }
 }
 

@@ -10,9 +10,12 @@
 
 use std::collections::HashMap;
 
-use comfy_table::{Cell, Color};
+use comfy_table::{Cell, Color, Table};
+
 use restate_meta_rest_model::endpoints::{ProtocolType, ServiceEndpoint, ServiceNameRevPair};
 use restate_meta_rest_model::services::ServiceMetadata;
+
+use super::console::StyledTable;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointStatus {
@@ -33,7 +36,7 @@ pub fn render_endpoint_url(svc_endpoint: &ServiceEndpoint) -> String {
     }
 }
 
-pub fn render_endpoint_type(svc_endpoint: &ServiceEndpoint) -> String {
+pub fn render_deployment_type(svc_endpoint: &ServiceEndpoint) -> String {
     match svc_endpoint {
         ServiceEndpoint::Http { protocol_type, .. } => {
             format!(
@@ -49,7 +52,7 @@ pub fn render_endpoint_type(svc_endpoint: &ServiceEndpoint) -> String {
     }
 }
 
-pub fn calculate_endpoint_status(
+pub fn calculate_deployment_status(
     endpoint_id: &str,
     owned_services: &[ServiceNameRevPair],
     active_inv: i64,
@@ -77,7 +80,7 @@ pub fn calculate_endpoint_status(
     status
 }
 
-pub fn render_endpoint_status(status: EndpointStatus) -> Cell {
+pub fn render_deployment_status(status: EndpointStatus) -> Cell {
     let color = match status {
         EndpointStatus::Active => Color::Green,
         EndpointStatus::Draining => Color::Yellow,
@@ -91,5 +94,54 @@ pub fn render_active_invocations(active_inv: i64) -> Cell {
         Cell::new(active_inv).fg(comfy_table::Color::Yellow)
     } else {
         Cell::new(active_inv).fg(comfy_table::Color::Grey)
+    }
+}
+
+pub fn add_deployment_to_kv_table(endpoint: &ServiceEndpoint, table: &mut Table) {
+    table.add_kv_row("Deployment Type:", render_deployment_type(endpoint));
+    let (additional_headers, created_at) = match &endpoint {
+        ServiceEndpoint::Http {
+            uri,
+            protocol_type,
+            additional_headers,
+            created_at,
+        } => {
+            let protocol_type = match protocol_type {
+                ProtocolType::RequestResponse => "Request/Response",
+                ProtocolType::BidiStream => "Streaming",
+            }
+            .to_string();
+            table.add_kv_row("Protocol Style:", protocol_type);
+
+            table.add_kv_row("Endpoint:", uri);
+            (additional_headers.clone(), created_at)
+        }
+        ServiceEndpoint::Lambda {
+            arn,
+            assume_role_arn,
+            additional_headers,
+            created_at,
+        } => {
+            table.add_kv_row("Protocol Style:", "Request/Response");
+            table.add_kv_row_if(
+                || assume_role_arn.is_some(),
+                "Endpoint Assume Role ARN:",
+                assume_role_arn.as_ref().unwrap(),
+            );
+
+            table.add_kv_row("Endpoint:", arn);
+            (additional_headers.clone(), created_at)
+        }
+    };
+
+    let additional_headers: HashMap<http::HeaderName, http::HeaderValue> =
+        additional_headers.into();
+
+    table.add_kv_row("Created at:", created_at);
+    for (header, value) in additional_headers.iter() {
+        table.add_kv_row(
+            "Endpoint Additional Header:",
+            &format!("{}: {}", header, value.to_str().unwrap_or("<BINARY>")),
+        );
     }
 }

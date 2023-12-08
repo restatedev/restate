@@ -22,7 +22,7 @@ restate-types = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-chrono = { version = "0.4.26", default-features = false, features = ["clock"] }
+chrono = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
 datafusion-expr = { workspace = true }

@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Display;
-
 use crate::app::UiConfig;
 
 use super::console::{Icon, StyledTable};
@@ -72,10 +70,10 @@ impl StyledTable for comfy_table::Table {
         )
     }
 
-    fn add_kv_row<V: Display>(&mut self, key: &str, value: V) -> &mut Self {
+    fn add_kv_row<V: Into<comfy_table::Cell>>(&mut self, key: &str, value: V) -> &mut Self {
         self.add_row(vec![
             comfy_table::Cell::new(key).add_attribute(comfy_table::Attribute::Bold),
-            comfy_table::Cell::new(value),
+            value.into(),
         ])
     }
 }

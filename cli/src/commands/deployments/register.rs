@@ -16,7 +16,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::{MetaClientInterface, MetasClient, MetasClientError};
 use crate::console::c_println;
 use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
-use crate::ui::endpoints::render_endpoint_url;
+use crate::ui::deployments::render_endpoint_url;
 use crate::ui::service_methods::{
     create_service_methods_table, create_service_methods_table_diff, icon_for_service_flavor,
 };
@@ -241,11 +241,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
             c_indent_table!(
                 2,
-                create_service_methods_table(
-                    &env.ui_config,
-                    svc.instance_type.clone(),
-                    &svc.methods
-                )
+                create_service_methods_table(&env.ui_config, &svc.methods)
             );
             c_println!();
         }
@@ -332,11 +328,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 c_indentln!(
                     2,
                     "{}",
-                    create_service_methods_table(
-                        &env.ui_config,
-                        svc.instance_type.clone(),
-                        &svc.methods
-                    )
+                    create_service_methods_table(&env.ui_config, &svc.methods)
                 );
             }
             c_println!();

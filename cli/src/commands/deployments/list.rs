@@ -11,13 +11,13 @@
 use std::collections::HashMap;
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::count_endpoint_active_inv;
+use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::MetaClientInterface;
 use crate::console::c_println;
 use crate::ui::console::{Styled, StyledTable};
-use crate::ui::endpoints::{
-    calculate_endpoint_status, render_active_invocations, render_endpoint_status,
-    render_endpoint_type, render_endpoint_url, EndpointStatus,
+use crate::ui::deployments::{
+    calculate_deployment_status, render_active_invocations, render_deployment_status,
+    render_deployment_type, render_endpoint_url, EndpointStatus,
 };
 use crate::ui::stylesheet::Style;
 
@@ -72,8 +72,8 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
 
     for endpoint in endpoints {
         // calculate status and counters.
-        let active_inv = count_endpoint_active_inv(&sql_client, &endpoint.id).await?;
-        let status = calculate_endpoint_status(
+        let active_inv = count_deployment_active_inv(&sql_client, &endpoint.id).await?;
+        let status = calculate_deployment_status(
             &endpoint.id,
             &endpoint.services,
             active_inv,
@@ -91,8 +91,8 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
     for (endpoint, status, active_inv) in enriched_endpoints {
         let mut row = vec![
             Cell::new(render_endpoint_url(&endpoint.service_endpoint)),
-            Cell::new(render_endpoint_type(&endpoint.service_endpoint)),
-            render_endpoint_status(status),
+            Cell::new(render_deployment_type(&endpoint.service_endpoint)),
+            render_deployment_status(status),
             render_active_invocations(active_inv),
             Cell::new(&endpoint.id),
             Cell::new(match &endpoint.service_endpoint {

@@ -23,7 +23,11 @@ pub trait MetaClientInterface {
     async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>>;
     async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>>;
     async fn get_endpoints(&self) -> reqwest::Result<Envelope<ListServiceEndpointsResponse>>;
-    async fn get_endpoint(&self, id: &str) -> reqwest::Result<Envelope<ServiceEndpointResponse>>;
+    async fn get_endpoint(
+        &self,
+        id: &str,
+    ) -> reqwest::Result<Envelope<DetailedServiceEndpointResponse>>;
+    async fn remove_endpoint(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>>;
 
     async fn discover_endpoint(
         &self,
@@ -57,7 +61,10 @@ impl MetaClientInterface for MetasClient {
         Ok(self.run(reqwest::Method::GET, url).await?)
     }
 
-    async fn get_endpoint(&self, id: &str) -> reqwest::Result<Envelope<ServiceEndpointResponse>> {
+    async fn get_endpoint(
+        &self,
+        id: &str,
+    ) -> reqwest::Result<Envelope<DetailedServiceEndpointResponse>> {
         let url = self
             .base_url
             .join(&format!("/endpoints/{}", id))
@@ -71,5 +78,16 @@ impl MetaClientInterface for MetasClient {
     ) -> reqwest::Result<Envelope<RegisterServiceEndpointResponse>> {
         let url = self.base_url.join("/endpoints").expect("Bad url!");
         Ok(self.run_with_body(reqwest::Method::POST, url, body).await?)
+    }
+
+    async fn remove_endpoint(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>> {
+        let mut url = self
+            .base_url
+            .join(&format!("/endpoints/{}", id))
+            .expect("Bad url!");
+
+        url.set_query(Some(&format!("force={}", force)));
+
+        Ok(self.run(reqwest::Method::DELETE, url).await?)
     }
 }

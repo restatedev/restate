@@ -15,35 +15,16 @@ use restate_meta_rest_model::services::{InstanceType, MethodMetadata};
 
 use comfy_table::{Cell, Color, Table};
 
-pub fn create_service_methods_table(
-    ui_config: &UiConfig,
-    service_type: InstanceType,
-    methods: &[MethodMetadata],
-) -> Table {
+pub fn create_service_methods_table(ui_config: &UiConfig, methods: &[MethodMetadata]) -> Table {
     let mut table = Table::new_styled(ui_config);
-
-    let mut headers = vec!["NAME", "INPUT TYPE", "OUTPUT TYPE"];
-    if service_type != InstanceType::Unkeyed {
-        headers.push("KEY FIELD INDEX");
-    }
-    table.set_styled_header(headers);
+    table.set_styled_header(vec!["NAME", "INPUT TYPE", "OUTPUT TYPE"]);
 
     for method in methods {
-        let mut row = vec![
+        table.add_row(vec![
             Cell::new(&method.name),
             Cell::new(&method.input_type),
             Cell::new(&method.output_type),
-        ];
-        if service_type != InstanceType::Unkeyed {
-            row.push(Cell::new(
-                &method
-                    .key_field_number
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
-            ));
-        }
-        table.add_row(row);
+        ]);
     }
     table
 }
