@@ -251,6 +251,7 @@ impl ServiceLocation {
 pub(crate) struct EndpointSchemas {
     pub(crate) metadata: EndpointMetadata,
     pub(crate) services: Vec<(String, ServiceRevision)>,
+    pub(crate) descriptor_pool: DescriptorPool,
 }
 
 impl Default for SchemasInner {
@@ -729,6 +730,7 @@ impl SchemasInner {
                     EndpointSchemas {
                         metadata,
                         services: endpoint_services,
+                        descriptor_pool,
                     },
                 );
             }

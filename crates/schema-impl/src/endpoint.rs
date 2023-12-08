@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::Schemas;
+use bytes::Bytes;
 
 use crate::schemas_impl::ServiceLocation;
 use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver};
@@ -38,6 +39,14 @@ impl EndpointMetadataResolver for Schemas {
             .endpoints
             .get(endpoint_id)
             .map(|schemas| schemas.metadata.clone())
+    }
+
+    fn get_endpoint_descriptor_pool(&self, endpoint_id: &EndpointId) -> Option<Bytes> {
+        let schemas = self.0.load();
+        schemas
+            .endpoints
+            .get(endpoint_id)
+            .map(|schemas| schemas.descriptor_pool.encode_to_vec().into())
     }
 
     fn get_endpoint_and_services(
