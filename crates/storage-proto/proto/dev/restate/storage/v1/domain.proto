@@ -302,10 +302,15 @@ message OutboxMessage {
         ResponseResult response_result = 3;
     }
 
+    message OutboxKill {
+        FullInvocationId full_invocation_id = 1;
+    }
+
     oneof outbox_message {
         OutboxServiceInvocation service_invocation_case = 1;
         OutboxServiceInvocationResponse service_invocation_response = 2;
         OutboxIngressResponse ingress_response = 3;
+        OutboxKill kill = 4;
     }
 
 }

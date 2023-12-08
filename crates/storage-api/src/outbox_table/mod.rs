@@ -28,6 +28,9 @@ pub enum OutboxMessage {
         full_invocation_id: FullInvocationId,
         response: ResponseResult,
     },
+
+    /// Kill command to send to another partition processor
+    Kill(FullInvocationId),
 }
 
 pub trait OutboxTable {

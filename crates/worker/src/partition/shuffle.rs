@@ -50,9 +50,10 @@ impl OutboxTruncation {
 pub(crate) struct ShuffleInput(pub(crate) AckKind);
 
 #[derive(Debug, Clone)]
-pub(crate) enum InvocationOrResponse {
+pub(crate) enum PartitionProcessorMessage {
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
+    Kill(FullInvocationId),
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +100,7 @@ impl ShuffleOutput {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ShuffleMessageDestination {
-    PartitionProcessor(InvocationOrResponse),
+    PartitionProcessor(PartitionProcessorMessage),
     Ingress(IngressResponse),
 }
 
@@ -116,14 +117,17 @@ impl From<OutboxMessage> for ShuffleMessageDestination {
                 response,
             }),
             OutboxMessage::ServiceResponse(response) => {
-                ShuffleMessageDestination::PartitionProcessor(InvocationOrResponse::Response(
+                ShuffleMessageDestination::PartitionProcessor(PartitionProcessorMessage::Response(
                     response,
                 ))
             }
             OutboxMessage::ServiceInvocation(invocation) => {
-                ShuffleMessageDestination::PartitionProcessor(InvocationOrResponse::Invocation(
-                    invocation,
-                ))
+                ShuffleMessageDestination::PartitionProcessor(
+                    PartitionProcessorMessage::Invocation(invocation),
+                )
+            }
+            OutboxMessage::Kill(fid) => {
+                ShuffleMessageDestination::PartitionProcessor(PartitionProcessorMessage::Kill(fid))
             }
         }
     }

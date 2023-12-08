@@ -21,6 +21,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
+use futures::StreamExt;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -356,7 +357,8 @@ where
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        // TODO: Handle case where there is no invocation status properly and avoid cloning maybe_fid
+        // TODO: Introduce distinction between invocation_status and service_instance_status to
+        //      properly handle case when the given invocation is not executing + avoid cloning maybe_fid
         let (full_invocation_id, status) =
             Self::read_invocation_status(maybe_fid.clone(), state).await?;
 
@@ -372,8 +374,17 @@ where
             InvocationStatus::Virtual {
                 kill_notification_target,
                 invocation_uuid,
+                journal_metadata,
                 ..
             } => {
+                self.kill_child_invocations(
+                    &full_invocation_id,
+                    state,
+                    effects,
+                    journal_metadata.length,
+                )
+                .await?;
+
                 effects.notify_virtual_journal_kill(
                     kill_notification_target.service,
                     kill_notification_target.method,
@@ -448,6 +459,14 @@ where
     ) -> Result<(FullInvocationId, SpanRelation), Error> {
         let related_span = metadata.journal_metadata.span_context.as_parent();
 
+        self.kill_child_invocations(
+            &full_invocation_id,
+            state,
+            effects,
+            metadata.journal_metadata.length,
+        )
+        .await?;
+
         self.fail_invocation(
             effects,
             state,
@@ -459,6 +478,41 @@ where
         effects.abort_invocation(full_invocation_id.clone());
 
         Ok((full_invocation_id, related_span))
+    }
+
+    async fn kill_child_invocations<State: StateReader>(
+        &mut self,
+        full_invocation_id: &FullInvocationId,
+        state: &mut State,
+        effects: &mut Effects,
+        journal_length: EntryIndex,
+    ) -> Result<(), Error> {
+        let mut journal_entries = state.get_journal(&full_invocation_id.service_id, journal_length);
+        while let Some(journal_entry) = journal_entries.next().await {
+            let journal_entry = journal_entry?;
+
+            if let JournalEntry::Entry(enriched_entry) = journal_entry {
+                match enriched_entry.header {
+                    // we only need to kill child invocations if they are not completed and the target was resolved
+                    EnrichedEntryHeader::Invoke {
+                        is_completed,
+                        resolution_result: Some(resolution_result),
+                    } if !is_completed => {
+                        let target_fid = FullInvocationId::new(
+                            resolution_result.service_name,
+                            resolution_result.service_key,
+                            resolution_result.invocation_uuid,
+                        );
+                        self.send_message(OutboxMessage::Kill(target_fid), effects);
+                    }
+                    // we neither kill background calls nor delayed calls since we are considering them detached from this
+                    // call tree. In the future we want to support a mode which also kills these calls (causally related).
+                    // See https://github.com/restatedev/restate/issues/979
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn on_timer<State: StateReader>(

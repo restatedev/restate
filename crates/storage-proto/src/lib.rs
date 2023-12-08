@@ -34,7 +34,8 @@ pub mod storage {
                 completion_result, CompletionResult, Entry, Kind,
             };
             use crate::storage::v1::outbox_message::{
-                OutboxIngressResponse, OutboxServiceInvocation, OutboxServiceInvocationResponse,
+                OutboxIngressResponse, OutboxKill, OutboxServiceInvocation,
+                OutboxServiceInvocationResponse,
             };
             use crate::storage::v1::service_invocation_response_sink::{
                 Ingress, NewInvocation, PartitionProcessor, ResponseSink,
@@ -1282,6 +1283,14 @@ pub mod storage {
                                 )?,
                             }
                         }
+                        outbox_message::OutboxMessage::Kill(outbox_kill) => {
+                            let fid = outbox_kill
+                                .full_invocation_id
+                                .ok_or(ConversionError::missing_field("full_invocation_id"))?;
+                            restate_storage_api::outbox_table::OutboxMessage::Kill(
+                                restate_types::identifiers::FullInvocationId::try_from(fid)?,
+                            )
+                        }
                     };
 
                     Ok(result)
@@ -1333,6 +1342,11 @@ pub mod storage {
                                 )),
                                 ingress_dispatcher_id: ingress_dispatcher_id.to_string(),
                                 response_result: Some(ResponseResult::from(response)),
+                            })
+                        }
+                        restate_storage_api::outbox_table::OutboxMessage::Kill(fid) => {
+                            outbox_message::OutboxMessage::Kill(OutboxKill {
+                                full_invocation_id: Some(FullInvocationId::from(fid)),
                             })
                         }
                     };

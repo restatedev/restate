@@ -285,6 +285,16 @@ impl Effect {
             ),
             Effect::EnqueueIntoOutbox {
                 seq_number,
+                message: OutboxMessage::Kill(fid),
+            } => debug_if_leader!(
+                is_leader,
+                rpc.service = %fid.service_id.service_name,
+                restate.invocation.id = %fid,
+                restate.outbox.seq = seq_number,
+                "Effect: Send kill command to partition processor",
+            ),
+            Effect::EnqueueIntoOutbox {
+                seq_number,
                 message:
                     OutboxMessage::ServiceResponse(InvocationResponse {
                         result: ResponseResult::Failure(failure_code, failure_msg),

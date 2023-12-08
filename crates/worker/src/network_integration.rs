@@ -134,16 +134,17 @@ mod ingress_integration {
 mod shuffle_integration {
     use crate::partition;
     use crate::partition::shuffle;
+    use crate::partition::shuffle::PartitionProcessorMessage;
     use restate_network::{ConsensusOrIngressTarget, TargetConsensusOrIngress};
     use restate_types::errors::InvocationError;
     use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
-    use restate_types::invocation::ResponseResult;
+    use restate_types::invocation::{MaybeFullInvocationId, ResponseResult};
     use restate_types::message::MessageIndex;
 
     #[derive(Debug)]
     pub(crate) struct ShuffleToConsensus {
-        msg: shuffle::InvocationOrResponse,
+        msg: shuffle::PartitionProcessorMessage,
         shuffle_id: PeerId,
         partition_id: PartitionId,
         msg_index: MessageIndex,
@@ -152,10 +153,13 @@ mod shuffle_integration {
     impl WithPartitionKey for ShuffleToConsensus {
         fn partition_key(&self) -> PartitionKey {
             match &self.msg {
-                shuffle::InvocationOrResponse::Invocation(invocation) => {
+                shuffle::PartitionProcessorMessage::Invocation(invocation) => {
                     invocation.fid.service_id.partition_key()
                 }
-                shuffle::InvocationOrResponse::Response(response) => response.id.partition_key(),
+                shuffle::PartitionProcessorMessage::Response(response) => {
+                    response.id.partition_key()
+                }
+                PartitionProcessorMessage::Kill(fid) => fid.partition_key(),
             }
         }
     }
@@ -176,15 +180,21 @@ mod shuffle_integration {
             );
 
             match msg {
-                shuffle::InvocationOrResponse::Invocation(invocation) => {
+                shuffle::PartitionProcessorMessage::Invocation(invocation) => {
                     partition::StateMachineAckCommand::dedup(
                         partition::StateMachineCommand::Invocation(invocation),
                         deduplication_source,
                     )
                 }
-                shuffle::InvocationOrResponse::Response(response) => {
+                shuffle::PartitionProcessorMessage::Response(response) => {
                     partition::StateMachineAckCommand::dedup(
                         partition::StateMachineCommand::Response(response),
+                        deduplication_source,
+                    )
+                }
+                shuffle::PartitionProcessorMessage::Kill(fid) => {
+                    partition::StateMachineAckCommand::dedup(
+                        partition::StateMachineCommand::Kill(MaybeFullInvocationId::from(fid)),
                         deduplication_source,
                     )
                 }
