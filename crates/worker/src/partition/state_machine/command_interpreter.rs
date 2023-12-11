@@ -319,7 +319,7 @@ where
                 self.send_message(msg, effects);
             }
             NBISEffect::End(None) => {
-                self.finish_invocation(
+                self.end_invocation(
                     effects,
                     state,
                     full_invocation_id.clone(),
@@ -582,7 +582,7 @@ where
                 }
             }
             InvokerEffectKind::End => {
-                self.finish_invocation(effects, state, full_invocation_id, invocation_metadata)
+                self.end_invocation(effects, state, full_invocation_id, invocation_metadata)
                     .await?;
             }
             InvokerEffectKind::Failed(e) => {
@@ -594,7 +594,7 @@ where
         Ok((related_sid, span_relation))
     }
 
-    async fn finish_invocation<State: StateReader>(
+    async fn end_invocation<State: StateReader>(
         &mut self,
         effects: &mut Effects,
         state: &mut State,
@@ -610,7 +610,7 @@ where
             effects,
         );
 
-        self.complete_invocation(
+        self.end_invocation_lifecycle(
             full_invocation_id,
             state,
             invocation_metadata.journal_metadata.length,
@@ -627,8 +627,6 @@ where
         invocation_metadata: InvocationMetadata,
         error: InvocationError,
     ) -> Result<(), Error> {
-        let length = invocation_metadata.journal_metadata.length;
-
         self.try_send_failure_response(
             effects,
             &full_invocation_id,
@@ -645,8 +643,13 @@ where
             effects,
         );
 
-        self.complete_invocation(full_invocation_id, state, length, effects)
-            .await
+        self.end_invocation_lifecycle(
+            full_invocation_id,
+            state,
+            invocation_metadata.journal_metadata.length,
+            effects,
+        )
+        .await
     }
 
     fn try_send_failure_response(
@@ -1048,7 +1051,7 @@ where
         );
     }
 
-    async fn complete_invocation<State: StateReader>(
+    async fn end_invocation_lifecycle<State: StateReader>(
         &mut self,
         full_invocation_id: FullInvocationId,
         state: &mut State,
