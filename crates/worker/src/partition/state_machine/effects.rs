@@ -151,13 +151,13 @@ pub(crate) enum Effect {
     },
 
     // Effects used only for tracing purposes
-    BackgroundInvoke {
+    TraceBackgroundInvoke {
         full_invocation_id: FullInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
         pointer_span_id: Option<SpanId>,
     },
-    NotifyInvocationResult {
+    TraceInvocationResult {
         full_invocation_id: FullInvocationId,
         creation_time: MillisSinceEpoch,
         service_method: ByteString,
@@ -550,7 +550,7 @@ impl Effect {
                     method_name
                 )
             }
-            Effect::BackgroundInvoke {
+            Effect::TraceBackgroundInvoke {
                 full_invocation_id,
                 service_method,
                 span_context,
@@ -586,7 +586,7 @@ impl Effect {
                     );
                 }
             }
-            Effect::NotifyInvocationResult {
+            Effect::TraceInvocationResult {
                 full_invocation_id,
                 creation_time,
                 service_method,
@@ -901,14 +901,14 @@ impl Effects {
         });
     }
 
-    pub(crate) fn background_invoke(
+    pub(crate) fn trace_background_invoke(
         &mut self,
         full_invocation_id: FullInvocationId,
         service_method: String,
         span_context: ServiceInvocationSpanContext,
         pointer_span_id: Option<SpanId>,
     ) {
-        self.effects.push(Effect::BackgroundInvoke {
+        self.effects.push(Effect::TraceBackgroundInvoke {
             full_invocation_id,
             service_method,
             span_context,
@@ -916,7 +916,7 @@ impl Effects {
         })
     }
 
-    pub(crate) fn notify_invocation_result(
+    pub(crate) fn trace_invocation_result(
         &mut self,
         full_invocation_id: FullInvocationId,
         service_method: ByteString,
@@ -924,7 +924,7 @@ impl Effects {
         creation_time: MillisSinceEpoch,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {
-        self.effects.push(Effect::NotifyInvocationResult {
+        self.effects.push(Effect::TraceInvocationResult {
             full_invocation_id,
             creation_time,
             service_method,

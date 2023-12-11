@@ -841,7 +841,7 @@ where
                     _ => None,
                 };
 
-                effects.background_invoke(
+                effects.trace_background_invoke(
                     service_invocation.fid.clone(),
                     method,
                     invocation_metadata.journal_metadata.span_context.clone(),
@@ -1042,7 +1042,7 @@ where
         result: Result<(), (InvocationErrorCode, String)>,
         effects: &mut Effects,
     ) {
-        effects.notify_invocation_result(
+        effects.trace_invocation_result(
             full_invocation_id.clone(),
             service_method,
             span_context,
