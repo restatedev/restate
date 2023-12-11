@@ -65,6 +65,15 @@ pub enum MaybeFullInvocationId {
     Full(FullInvocationId),
 }
 
+impl From<MaybeFullInvocationId> for InvocationId {
+    fn from(value: MaybeFullInvocationId) -> Self {
+        match value {
+            MaybeFullInvocationId::Partial(iid) => iid,
+            MaybeFullInvocationId::Full(fid) => InvocationId::from(fid),
+        }
+    }
+}
+
 impl From<InvocationId> for MaybeFullInvocationId {
     fn from(value: InvocationId) -> Self {
         MaybeFullInvocationId::Partial(value)

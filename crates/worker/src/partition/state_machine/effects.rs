@@ -993,3 +993,15 @@ impl Effects {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Effect;
+    use super::Effects;
+
+    impl Effects {
+        pub(crate) fn into_inner(self) -> Vec<Effect> {
+            self.effects
+        }
+    }
+}

@@ -1152,12 +1152,13 @@ mod tests {
     #[derive(Default)]
     struct StateReaderMock {
         invocations: HashMap<ServiceId, InvocationStatus>,
+        inboxes: HashMap<ServiceId, Vec<InboxEntry>>,
     }
 
     impl StateReaderMock {
-        fn register_invocation_status(&mut self, fid: &FullInvocationId, length: EntryIndex) {
+        fn register_invocation_status(&mut self, fid: FullInvocationId, length: EntryIndex) {
             self.invocations.insert(
-                fid.service_id.clone(),
+                fid.service_id,
                 InvocationStatus::Invoked(InvocationMetadata {
                     invocation_uuid: fid.invocation_uuid,
                     journal_metadata: JournalMetadata {
@@ -1170,6 +1171,18 @@ mod tests {
                     timestamps: StatusTimestamps::now(),
                 }),
             );
+        }
+
+        fn enqueue_into_inbox(&mut self, service_id: ServiceId, inbox_entry: InboxEntry) {
+            assert_eq!(
+                service_id, inbox_entry.service_invocation.fid.service_id,
+                "Service invocation must have the same service_id as the inbox entry"
+            );
+
+            self.inboxes
+                .entry(service_id)
+                .or_default()
+                .push(inbox_entry);
         }
     }
 
@@ -1195,14 +1208,12 @@ mod tests {
                     service_id.partition_key() == invocation_id.partition_key()
                         && status.invocation_uuid().unwrap() == invocation_id.invocation_uuid()
                 })
-                .unwrap();
+                .map(|(service_id, status)| (service_id.clone(), status.clone()))
+                .unwrap_or((ServiceId::new("", ""), InvocationStatus::default()));
 
             ok((
-                FullInvocationId::with_service_id(
-                    service_id.clone(),
-                    invocation_id.invocation_uuid(),
-                ),
-                status.clone(),
+                FullInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
+                status,
             ))
             .boxed()
         }
@@ -1216,9 +1227,20 @@ mod tests {
 
         fn get_inbox_entry(
             &mut self,
-            _maybe_fid: impl Into<MaybeFullInvocationId>,
+            maybe_fid: impl Into<MaybeFullInvocationId>,
         ) -> BoxFuture<Result<Option<InboxEntry>, StorageError>> {
-            todo!()
+            let invocation_id = InvocationId::from(maybe_fid.into());
+
+            let result = self
+                .inboxes
+                .values()
+                .flat_map(|v| v.iter())
+                .find(|inbox_entry| {
+                    inbox_entry.service_invocation.fid.invocation_uuid
+                        == invocation_id.invocation_uuid()
+                });
+
+            ok(result.cloned()).boxed()
         }
 
         fn is_entry_resumable<'a>(
@@ -1272,7 +1294,7 @@ mod tests {
             },
         });
 
-        state_reader.register_invocation_status(&sid_caller, 1);
+        state_reader.register_invocation_status(sid_caller.clone(), 1);
 
         state_machine
             .on_apply(cmd, &mut effects, &mut state_reader)
@@ -1322,7 +1344,7 @@ mod tests {
             },
         });
 
-        state_reader.register_invocation_status(&sid_caller, 1);
+        state_reader.register_invocation_status(sid_caller.clone(), 1);
 
         state_machine
             .on_apply(cmd, &mut effects, &mut state_reader)
@@ -1359,14 +1381,14 @@ mod tests {
             result: ResponseResult::Success(Bytes::from_static(b"hello")),
         });
 
-        state_reader.register_invocation_status(&fid, 1);
+        state_reader.register_invocation_status(fid.clone(), 1);
 
         state_machine
             .on_apply(cmd, &mut effects, &mut state_reader)
             .await
             .unwrap();
         assert_that!(
-            effects.drain().collect::<Vec<_>>(),
+            effects.into_inner(),
             all!(
                 contains(pat!(Effect::StoreCompletion {
                     full_invocation_id: eq(fid.clone()),
@@ -1378,5 +1400,66 @@ mod tests {
                 }))
             )
         );
+    }
+
+    #[test(tokio::test)]
+    async fn kill_inboxed_invocation() -> Result<(), Error> {
+        let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
+
+        let mut effects = Effects::default();
+        let mut state_reader = StateReaderMock::default();
+        let fid = FullInvocationId::generate("svc", "key");
+        let inboxed_fid = FullInvocationId::generate("svc", "key");
+        let caller_fid = FullInvocationId::mock_random();
+
+        state_reader.register_invocation_status(fid, 0);
+        state_reader.enqueue_into_inbox(
+            inboxed_fid.service_id.clone(),
+            InboxEntry {
+                inbox_sequence_number: 0,
+                service_invocation: ServiceInvocation {
+                    fid: inboxed_fid.clone(),
+                    response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
+                        caller: caller_fid.clone(),
+                        entry_index: 0,
+                    }),
+                    ..ServiceInvocation::mock()
+                },
+            },
+        );
+
+        command_interpreter
+            .on_apply(
+                Command::Kill(InvocationId::from(inboxed_fid.clone())),
+                &mut effects,
+                &mut state_reader,
+            )
+            .await?;
+
+        assert_that!(
+            effects.into_inner(),
+            all!(
+                contains(pat!(Effect::DeleteInboxEntry {
+                    service_id: eq(inboxed_fid.service_id),
+                    sequence_number: eq(0)
+                })),
+                contains(pat!(Effect::EnqueueIntoOutbox {
+                    message: pat!(
+                        restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(pat!(
+                            InvocationResponse {
+                                id: eq(MaybeFullInvocationId::from(caller_fid)),
+                                entry_index: eq(0),
+                                result: pat!(ResponseResult::Failure(
+                                    eq(UserErrorCode::Aborted),
+                                    eq(ByteString::from_static("killed"))
+                                ))
+                            }
+                        ))
+                    )
+                }))
+            )
+        );
+
+        Ok(())
     }
 }
