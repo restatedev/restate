@@ -163,16 +163,19 @@ impl MessageSender {
         ordering_key_prefix: &str,
         msg: &impl Message,
     ) -> String {
-        let mut buf = String::new();
+        let partition = msg.partition().to_string();
+
+        let mut buf =
+            String::with_capacity(ordering_key_prefix.len() + msg.topic().len() + partition.len());
         buf.push_str(ordering_key_prefix);
         buf.push_str(msg.topic());
-        buf.push_str(&msg.partition().to_string());
+        buf.push_str(&partition);
 
         if let (KafkaOrderingKeyFormat::ConsumerGroupTopicPartitionKey, Some(key)) =
             (ordering_key_format, msg.key())
         {
-            buf.push_str(&base64::prelude::BASE64_STANDARD.encode(key))
-        };
+            buf.push_str(&base64::prelude::BASE64_STANDARD.encode(key));
+        }
 
         buf
     }
