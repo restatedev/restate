@@ -19,20 +19,24 @@ jobs:
     permissions:
       contents: read
       packages: read
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.build.os }}
     strategy:
       matrix:
         build:
           - target: aarch64-apple-darwin
+            os: macos-12
             node_arch: arm64
             node_os: darwin
           - target: x86_64-apple-darwin
+            os: macos-12
             node_arch: x64
             node_os: darwin
           - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
             node_arch: x64
             node_os: linux
           - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
             node_arch: arm64
             node_os: linux
     env:
@@ -42,13 +46,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Log in to the Container registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: ./.github/actions/clean-runner
 
       - name: Install Rust toolchain
@@ -56,6 +53,11 @@ jobs:
         with:
           # need to provide a toolchain version because this action cannot read rust-toolchain.toml. See https://github.com/actions-rs/toolchain/issues/126
           toolchain: stable
+
+      # necessary because the toolchain@v1 action would install this target for stable only
+      - name: Install aarch64-apple-darwin Rust toolchain
+        if: ${{ matrix.build.target == 'aarch64-apple-darwin' }}
+        run: rustup target add aarch64-apple-darwin
 
       - uses: actions/setup-node@v3
         with:
@@ -68,17 +70,12 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Install Cross
-        run: cargo install cross
-
       - name: Install cargo-license
         run: cargo install cargo-license
 
-      - name: Install ldid for signing
-        if: ${{ matrix.build.target == 'aarch64-apple-darwin' }}
-        run: |
-          curl -L https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64 -o ldid
-          chmod +x ldid
+      - name: Install protoc
+        if: ${{ matrix.build.os == 'macos-12' }} # installed in cross docker image in linux builds
+        uses: ./.github/actions/install-protoc
 
       - name: Setup just
         uses: extractions/setup-just@v1
@@ -88,16 +85,33 @@ jobs:
       - name: Generate notice
         run: just notice-file
 
-      - name: Compile binaries
+      - name: Compile Mac binaries
+        if: ${{ matrix.build.os == 'macos-12' }}
+        uses: actions-rs/cargo@v1
+        env:
+          MACOSX_DEPLOYMENT_TARGET: 10.14.0
+          CC: sccache clang -target ${{ matrix.build.target }}
+          CXX: sccache clang++ -target ${{ matrix.build.target }}
+        with:
+          command: build
+          args: --release --bins --target ${{ matrix.build.target }}
+          use-cross: ${{ matrix.build.os == 'ubuntu-22.04' }}
+
+      - name: Compile Linux binaries
+        if: ${{ matrix.build.os == 'ubuntu-22.04' }}
+        uses: actions-rs/cargo@v1
         env:
           RUSTC_WRAPPER: "" # Cross.toml sets it back
-        run: just target=${{ matrix.build.target }} cross-build --bins --release
+        with:
+          command: build
+          args: --release --bins --target ${{ matrix.build.target }}
+          use-cross: true
 
-      - name: Sign binary with ldid
-        if: ${{ matrix.build.target == 'aarch64-apple-darwin' }}
+      - name: Sign binaries
+        if: ${{ matrix.build.os == 'macos-12' }}
         run: |
-          ./ldid -S target/${{ matrix.build.target }}/release/restate-server
-          ./ldid -S target/${{ matrix.build.target }}/release/restate
+          codesign -s - target/${{ matrix.build.target }}/release/restate-server
+          codesign -s - target/${{ matrix.build.target }}/release/restate
 
       - name: Move binary
         run: cp target/${{ matrix.build.target }}/release/restate-server target/${{ matrix.build.target }}/release/restate .
@@ -150,7 +164,7 @@ jobs:
 
   publish-npm-base:
     needs: build-and-npm-publish
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v3
