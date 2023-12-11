@@ -369,3 +369,20 @@ impl SpanRelation {
         }
     }
 }
+
+#[cfg(any(test, feature = "mocks"))]
+mod mocks {
+    use super::*;
+
+    impl ServiceInvocation {
+        pub fn mock() -> Self {
+            Self {
+                fid: FullInvocationId::mock_random(),
+                method_name: "mock".into(),
+                argument: Default::default(),
+                response_sink: None,
+                span_context: Default::default(),
+            }
+        }
+    }
+}
