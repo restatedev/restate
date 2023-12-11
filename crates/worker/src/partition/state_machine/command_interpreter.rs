@@ -826,7 +826,7 @@ where
                     }) = Codec::deserialize(&journal_entry)?
                 );
 
-                let method = request.method_name.to_string();
+                let service_method = request.method_name.clone();
 
                 let service_invocation = Self::create_service_invocation(
                     *invocation_id,
@@ -843,7 +843,7 @@ where
 
                 effects.trace_background_invoke(
                     service_invocation.fid.clone(),
-                    method,
+                    service_method,
                     invocation_metadata.journal_metadata.span_context.clone(),
                     pointer_span_id,
                 );

@@ -153,7 +153,7 @@ pub(crate) enum Effect {
     // Effects used only for tracing purposes
     TraceBackgroundInvoke {
         full_invocation_id: FullInvocationId,
-        service_method: String,
+        service_method: ByteString,
         span_context: ServiceInvocationSpanContext,
         pointer_span_id: Option<SpanId>,
     },
@@ -569,7 +569,7 @@ impl Effect {
                         "background_invoke",
                         otel.name = format!("background_invoke {service_method}"),
                         rpc.service = %full_invocation_id.service_id.service_name,
-                        rpc.method = service_method,
+                        rpc.method = %service_method,
                         restate.invocation.id = %full_invocation_id,
                         restate.internal.span_id = %pointer_span_id,
                     );
@@ -581,7 +581,7 @@ impl Effect {
                         "background_invoke",
                         otel.name = format!("background_invoke {service_method}"),
                         rpc.service = %full_invocation_id.service_id.service_name,
-                        rpc.method = service_method,
+                        rpc.method = %service_method,
                         restate.invocation.id = %full_invocation_id,
                     );
                 }
@@ -904,7 +904,7 @@ impl Effects {
     pub(crate) fn trace_background_invoke(
         &mut self,
         full_invocation_id: FullInvocationId,
-        service_method: String,
+        service_method: ByteString,
         span_context: ServiceInvocationSpanContext,
         pointer_span_id: Option<SpanId>,
     ) {
