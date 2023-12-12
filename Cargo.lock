@@ -4931,6 +4931,7 @@ dependencies = [
  "itertools 0.11.0",
  "once_cell",
  "prost 0.12.3",
+ "prost-build",
  "prost-reflect",
  "restate-errors",
  "restate-pb",

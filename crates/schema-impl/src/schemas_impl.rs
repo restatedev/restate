@@ -356,6 +356,7 @@ impl SchemasInner {
 
         let mut result_commands = Vec::with_capacity(1 + registration_requests.len());
 
+        // TODO what to do with this
         // if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
         //     if force {
         //         // If we need to overwrite the endpoint we need to remove old services
@@ -1224,42 +1225,65 @@ mod tests {
         check!(registered_methods == std::vec!["Greet"]);
     }
 
-    #[test]
-    fn reject_removing_existing_methods() {
-        let schemas = Schemas::default();
+    macro_rules! load_mock_descriptor {
+        ($name:ident, $path:literal) => {
+            static $name: once_cell::sync::Lazy<DescriptorPool> = once_cell::sync::Lazy::new(|| {
+                DescriptorPool::decode(
+                    include_bytes!(concat!(env!("OUT_DIR"), "/pb/", $path, "/descriptor.bin")).as_ref(),
+                )
+                    .expect("The built-in descriptor pool should be valid")
+            });
+        };
+    }
 
-        let commands = schemas.compute_new_endpoint_updates(
-            EndpointMetadata::mock(),
-            vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                mocks::GREETER_SERVICE_NAME.to_string(),
-                &["Greet" /*, "GetCount", "GreetStream"*/],
-            )],
-            mocks::DESCRIPTOR_POOL.clone(),
-            false,
-        );
-        schemas.apply_updates(commands.unwrap()).unwrap();
-        schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 1);
+    mod remove_method {
+        use super::*;
 
-        let rejection = schemas.compute_new_endpoint_updates(
-            EndpointMetadata::mock(),
-            vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                mocks::GREETER_SERVICE_NAME.to_string(),
-                &["Greetings" /*, "GetCount", "GreetStream"*/],
-            )],
-            mocks::DESCRIPTOR_POOL_V2_INCOMPATIBLE.clone(),
-            false,
-        );
+        use restate_test_util::{check, let_assert, test};
 
-        schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 1); // unchanged
+        load_mock_descriptor!(REMOVE_METHOD_DESCRIPTOR_V1, "remove_method/v1");
+        load_mock_descriptor!(REMOVE_METHOD_DESCRIPTOR_V2, "remove_method/v2");
+        const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
 
-        let_assert!(
+
+        #[test]
+        fn reject_removing_existing_methods() {
+            let schemas = Schemas::default();
+
+            let commands = schemas.compute_new_endpoint_updates(
+                EndpointMetadata::mock(),
+                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
+                    GREETER_SERVICE_NAME.to_string(),
+                    &["Greet" /*, "GetCount", "GreetStream"*/],
+                )],
+                REMOVE_METHOD_DESCRIPTOR_V1.clone(),
+                false,
+            );
+            schemas.apply_updates(commands.unwrap()).unwrap();
+            schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
+
+            let rejection = schemas.compute_new_endpoint_updates(
+                EndpointMetadata::mock(),
+                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
+                    GREETER_SERVICE_NAME.to_string(),
+                    &["Greetings" /*, "GetCount", "GreetStream"*/],
+                )],
+                REMOVE_METHOD_DESCRIPTOR_V2.clone(),
+                false,
+            );
+
+            schemas.assert_service_revision(GREETER_SERVICE_NAME, 1); // unchanged
+
+            let_assert!(
             Err(RegistrationError::IncompatibleSchemaMissingMethod(
                 message,
                 missing_methods
             )) = rejection
         );
-        check!(message == "Service greeter.Greeter does not define all the methods currently exposed in revision 1.");
-        check!(missing_methods == std::vec!["Greet"]);
+            check!(message == "Service greeter.Greeter does not define all the methods currently exposed in revision 1.");
+            check!(missing_methods == std::vec!["Greet"]);
+        }
+
     }
 
     #[test]
