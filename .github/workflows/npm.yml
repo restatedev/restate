@@ -8,7 +8,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         build:
@@ -67,6 +67,7 @@ jobs:
             cp "${bin}" "${node_pkg}/bin"
             cp NOTICE "${node_pkg}"
             cp LICENSE "${node_pkg}"
+            cp README.md "${node_pkg}"
             # publish the package
             pushd "${node_pkg}"
             npm publish --access public
@@ -77,7 +78,7 @@ jobs:
 
   publish-npm-base:
     needs: build-and-npm-publish
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -101,6 +102,7 @@ jobs:
             fi
             pushd "${bin}"
             sed -i "s/\"version\": \".*\",/\"version\": \"${node_version}\",/" package.json
+            curl https://raw.githubusercontent.com/restatedev/restate/main/README.md -o README.md
             npm install
             npm run build
             npm publish --access public

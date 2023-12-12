@@ -24,13 +24,13 @@ jobs:
       matrix:
         build:
           - target: aarch64-apple-darwin
-            os: macos-12
+            os: macos-latest
           - target: x86_64-apple-darwin
-            os: macos-12
+            os: macos-latest
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
+            os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
+            os: ubuntu-latest
     env:
       RUST_BACKTRACE: full
       RUSTC_WRAPPER: "sccache"
@@ -61,7 +61,7 @@ jobs:
         run: cargo install cargo-license
 
       - name: Install protoc
-        if: ${{ matrix.build.os == 'macos-12' }} # installed in cross docker image in linux builds
+        if: ${{ matrix.build.os == 'macos-latest' }} # installed in cross docker image in linux builds
         uses: ./.github/actions/install-protoc
 
       - name: Setup just
@@ -73,7 +73,7 @@ jobs:
         run: just notice-file
 
       - name: Compile Mac binaries
-        if: ${{ matrix.build.os == 'macos-12' }}
+        if: ${{ matrix.build.os == 'macos-latest' }}
         uses: actions-rs/cargo@v1
         env:
           MACOSX_DEPLOYMENT_TARGET: 10.14.0
@@ -82,10 +82,10 @@ jobs:
         with:
           command: build
           args: --release --bins --target ${{ matrix.build.target }}
-          use-cross: ${{ matrix.build.os == 'ubuntu-22.04' }}
+          use-cross: false
 
       - name: Compile Linux binaries
-        if: ${{ matrix.build.os == 'ubuntu-22.04' }}
+        if: ${{ matrix.build.os == 'ubuntu-latest' }}
         uses: actions-rs/cargo@v1
         env:
           RUSTC_WRAPPER: "" # Cross.toml sets it back
@@ -95,7 +95,7 @@ jobs:
           use-cross: true
 
       - name: Sign binaries
-        if: ${{ matrix.build.os == 'macos-12' }}
+        if: ${{ matrix.build.os == 'macos-latest' }}
         run: |
           codesign -s - target/${{ matrix.build.target }}/release/restate-server
           codesign -s - target/${{ matrix.build.target }}/release/restate
