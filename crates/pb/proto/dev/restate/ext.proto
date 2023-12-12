@@ -29,8 +29,14 @@ enum ServiceType {
 
 enum FieldType {
   // protolint:disable:next ENUM_FIELD_NAMES_ZERO_VALUE_END_WITH
+  // Note: only string fields can be used for service key fields
   KEY = 0;
+
+  // Flag a field as event payload. When receiving events, this field will be filled with the event payload.
+  // Note: only string fields can be used for event payload fields
   EVENT_PAYLOAD = 1;
+  // Flag a field as event metadata. When receiving events, this field will be filled with the event metadata.
+  // Note: only type map<string, string> can be used for event payload fields
   EVENT_METADATA = 2;
 }
 

@@ -16,11 +16,9 @@ use bytes::Bytes;
 use prost::Message;
 use prost_reflect::{DynamicMessage, MethodDescriptor};
 use restate_schema_api::key::json_conversion::{Error, RestateKeyConverter};
-use restate_serde_util::SerdeableUuid;
 use serde::de::IntoDeserializer;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value};
-use uuid::Uuid;
 
 impl RestateKeyConverter for Schemas {
     fn key_to_json(
@@ -89,10 +87,7 @@ fn key_to_json(
                 })
         }
         InstanceTypeMetadata::Unkeyed => Ok(Value::String(
-            uuid::Builder::from_slice(key.as_ref())
-                .unwrap()
-                .into_uuid()
-                .to_string(),
+            String::from_utf8(key.as_ref().to_vec()).expect("Must be a valid UTF-8 string"),
         )),
         InstanceTypeMetadata::Singleton => Ok(Value::Object(Map::new())),
         InstanceTypeMetadata::Unsupported => Err(Error::NotFound),
@@ -135,9 +130,11 @@ fn json_to_key(
             )?)
         }
         InstanceTypeMetadata::Unkeyed => {
-            let parse_result: Uuid = SerdeableUuid::deserialize(key.into_deserializer())?.into();
-
-            Ok(parse_result.as_bytes().to_vec().into())
+            return if let Some(key_str) = key.as_str() {
+                Ok(Bytes::copy_from_slice(key_str.as_bytes()))
+            } else {
+                Err(Error::BadUnkeyedKey)
+            }
         }
         InstanceTypeMetadata::Singleton if key.is_null() => Ok(Bytes::default()),
         InstanceTypeMetadata::Singleton => Err(Error::UnexpectedNonNullSingletonKey),
@@ -156,7 +153,7 @@ mod tests {
     use restate_pb::mocks::test::*;
     use restate_schema_api::discovery::KeyStructure;
     use serde::Serialize;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
     use uuid::Uuid;
 
     static METHOD_NAME: &str = "Test";
@@ -187,18 +184,6 @@ mod tests {
                 ..Default::default()
             }),
         }
-    }
-
-    fn nested_key_structure() -> KeyStructure {
-        KeyStructure::Nested(BTreeMap::from([
-            (1, KeyStructure::Scalar),
-            (2, KeyStructure::Scalar),
-            (3, KeyStructure::Scalar),
-            (
-                4,
-                KeyStructure::Nested(BTreeMap::from([(1, KeyStructure::Scalar)])),
-            ),
-        ]))
     }
 
     fn mock_keyed_service_instance_type(
@@ -328,36 +313,6 @@ mod tests {
     }
 
     json_tests!(string);
-    json_tests!(bytes);
-    json_tests!(number);
-    json_tests!(nested_message, nested_key_structure());
-    json_tests!(
-        test: nested_message_with_default,
-        field_name: nested_message,
-        key_structure: nested_key_structure(),
-        test_message: TestMessage {
-            nested_message: Some(NestedKey {
-                b: "b".to_string(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    );
-    json_tests!(
-        test: double_nested_message,
-        field_name: nested_message,
-        key_structure: nested_key_structure(),
-        test_message: TestMessage {
-            nested_message: Some(NestedKey {
-                b: "b".to_string(),
-                other: Some(OtherMessage {
-                    d: "d".to_string()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    );
 
     #[test]
     fn unkeyed_convert_key_to_json() {
@@ -411,14 +366,11 @@ mod tests {
         let expected_restate_key = extract(&service_instance_type, METHOD_NAME, Bytes::new())
             .expect("successful key extraction");
 
-        // Parse this as uuid
-        let uuid = Uuid::from_slice(&expected_restate_key).unwrap();
-
         // Now convert the key to json
         let actual_restate_key = json_to_key(
             &service_instance_type,
             test_method_descriptor(),
-            Value::String(uuid.as_simple().to_string()),
+            Value::String(String::from_utf8(expected_restate_key.to_vec()).unwrap()),
         )
         .unwrap();
 

@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{BufMut, Bytes, BytesMut};
+use base64::Engine;
+use bytes::Bytes;
 use opentelemetry_api::trace::TraceContextExt;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
@@ -161,20 +162,22 @@ impl MessageSender {
         ordering_key_format: &KafkaOrderingKeyFormat,
         ordering_key_prefix: &str,
         msg: &impl Message,
-    ) -> Bytes {
-        let mut buf = BytesMut::new();
-        buf.put(ordering_key_prefix.as_bytes());
-        buf.put(msg.topic().as_bytes());
-        buf.put_i32(msg.partition());
+    ) -> String {
+        let partition = msg.partition().to_string();
 
-        match ordering_key_format {
-            KafkaOrderingKeyFormat::ConsumerGroupTopicPartitionKey if msg.key().is_some() => {
-                buf.put(msg.key().unwrap())
-            }
-            _ => {}
-        };
+        let mut buf =
+            String::with_capacity(ordering_key_prefix.len() + msg.topic().len() + partition.len());
+        buf.push_str(ordering_key_prefix);
+        buf.push_str(msg.topic());
+        buf.push_str(&partition);
 
-        buf.freeze()
+        if let (KafkaOrderingKeyFormat::ConsumerGroupTopicPartitionKey, Some(key)) =
+            (ordering_key_format, msg.key())
+        {
+            buf.push_str(&base64::prelude::BASE64_STANDARD.encode(key));
+        }
+
+        buf
     }
 
     fn generate_events_attributes(

@@ -23,7 +23,6 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
 use futures::StreamExt;
-use restate_schema_api::key::RestateKeyConverter;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::GetStream;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -33,12 +32,8 @@ use tokio::sync::mpsc::Sender;
 pub(crate) fn register_self(
     ctx: &QueryContext,
     storage: RocksDBStorage,
-    resolver: impl RestateKeyConverter + Send + Sync + Debug + Clone + 'static,
 ) -> datafusion::common::Result<()> {
-    let table = GenericTableProvider::new(
-        InboxBuilder::schema(),
-        Arc::new(InboxScanner(storage, resolver)),
-    );
+    let table = GenericTableProvider::new(InboxBuilder::schema(), Arc::new(InboxScanner(storage)));
 
     ctx.as_ref()
         .register_table("sys_inbox", Arc::new(table))
@@ -46,11 +41,9 @@ pub(crate) fn register_self(
 }
 
 #[derive(Debug, Clone)]
-struct InboxScanner<R>(RocksDBStorage, R);
+struct InboxScanner(RocksDBStorage);
 
-impl<R: RestateKeyConverter + Send + Sync + Debug + Clone + 'static> RangeScanner
-    for InboxScanner<R>
-{
+impl RangeScanner for InboxScanner {
     fn scan(
         &self,
         range: RangeInclusive<PartitionKey>,
@@ -58,13 +51,12 @@ impl<R: RestateKeyConverter + Send + Sync + Debug + Clone + 'static> RangeScanne
     ) -> SendableRecordBatchStream {
         let db = self.0.clone();
         let schema = projection.clone();
-        let resolver = self.1.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
         let tx = stream_builder.tx();
         let background_task = async move {
             let mut transaction = db.transaction();
             let rows = transaction.all_inboxes(range);
-            for_each_state(schema, tx, rows, resolver).await;
+            for_each_state(schema, tx, rows).await;
         };
         stream_builder.spawn(background_task);
         stream_builder.build()
@@ -75,12 +67,11 @@ async fn for_each_state(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     mut rows: GetStream<'_, InboxEntry>,
-    resolver: impl RestateKeyConverter + Clone,
 ) {
     let mut builder = InboxBuilder::new(schema.clone());
     let mut temp = String::new();
     while let Some(Ok(row)) = rows.next().await {
-        append_inbox_row(&mut builder, &mut temp, row, resolver.clone());
+        append_inbox_row(&mut builder, &mut temp, row);
         if builder.full() {
             let batch = builder.finish();
             if tx.send(Ok(batch)).await.is_err() {

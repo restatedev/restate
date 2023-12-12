@@ -10,8 +10,6 @@
 
 use crate::status::schema::{StatusBuilder, StatusRowBuilder};
 use crate::table_util::format_using;
-use crate::udfs::restate_keys;
-use restate_schema_api::key::RestateKeyConverter;
 use restate_storage_api::status_table::{
     InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
@@ -19,48 +17,19 @@ use restate_storage_rocksdb::status_table::OwnedStatusRow;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ServiceInvocationResponseSink;
 
-use uuid::Uuid;
-
 #[inline]
 pub(crate) fn append_status_row(
     builder: &mut StatusBuilder,
     output: &mut String,
     status_row: OwnedStatusRow,
-    resolver: impl RestateKeyConverter,
 ) {
     let mut row = builder.row();
 
     row.partition_key(status_row.partition_key);
     row.service(&status_row.service);
-    row.service_key(&status_row.service_key);
-    if row.is_service_key_utf8_defined() {
-        if let Some(utf8) = restate_keys::try_decode_restate_key_as_utf8(&status_row.service_key) {
-            row.service_key_utf8(utf8);
-        }
-    }
-    if row.is_service_key_int32_defined() {
-        if let Some(key) = restate_keys::try_decode_restate_key_as_int32(&status_row.service_key) {
-            row.service_key_int32(key);
-        }
-    }
-    if row.is_service_key_uuid_defined() {
-        let mut buffer = Uuid::encode_buffer();
-        if let Some(key) =
-            restate_keys::try_decode_restate_key_as_uuid(&status_row.service_key, &mut buffer)
-        {
-            row.service_key_uuid(key);
-        }
-    }
-    if row.is_service_key_json_defined() {
-        if let Some(key) = restate_keys::try_decode_restate_key_as_json(
-            &status_row.service,
-            &status_row.service_key,
-            output,
-            resolver,
-        ) {
-            row.service_key_json(key);
-        }
-    }
+    row.service_key(
+        std::str::from_utf8(&status_row.service_key).expect("The key must be a string!"),
+    );
 
     // Invocation id
     if row.is_id_defined() {

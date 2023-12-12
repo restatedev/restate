@@ -12,36 +12,16 @@ syntax = "proto3";
 package dev.restate;
 
 import "dev/restate/ext.proto";
-import "google/protobuf/empty.proto";
-import "google/protobuf/struct.proto";
 
 option java_multiple_files = true;
 option java_package = "dev.restate.generated";
 option go_package = "restate.dev/sdk-go/pb";
 
 message Event {
-  bytes ordering_key = 1 [(dev.restate.ext.field) = KEY];
+  string ordering_key = 1 [(dev.restate.ext.field) = KEY];
 
   bytes key = 2;
   bytes payload = 3;
 
   map<string, string> attributes = 15;
-}
-
-message KeyedEvent {
-  option deprecated = true;
-
-  // Payload
-  bytes key = 1 [(dev.restate.ext.field) = KEY];
-  bytes payload = 2 [(dev.restate.ext.field) = EVENT_PAYLOAD];
-  map<string, string> attributes = 15 [(dev.restate.ext.field) = EVENT_METADATA];
-}
-
-message StringKeyedEvent {
-  option deprecated = true;
-
-  // Payload
-  string key = 1 [(dev.restate.ext.field) = KEY];
-  bytes payload = 2 [(dev.restate.ext.field) = EVENT_PAYLOAD];
-  map<string, string> attributes = 15 [(dev.restate.ext.field) = EVENT_METADATA];
 }
