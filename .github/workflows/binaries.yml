@@ -187,7 +187,7 @@ jobs:
               continue
             fi
             pushd "${bin}"
-            sed -i "s/0.5.1/${node_version}/" package.json
+            sed -i "s/\"version\": \".*\",/\"version\": \"${node_version}\",/" package.json
             npm install
             npm run build
             npm publish --access public
