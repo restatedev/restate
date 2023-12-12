@@ -15,7 +15,7 @@ on:
         type: string
 
 jobs:
-  build-and-npm-publish:
+  build:
     permissions:
       contents: read
       packages: read
@@ -25,20 +25,12 @@ jobs:
         build:
           - target: aarch64-apple-darwin
             os: macos-12
-            node_arch: arm64
-            node_os: darwin
           - target: x86_64-apple-darwin
             os: macos-12
-            node_arch: x64
-            node_os: darwin
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
-            node_arch: x64
-            node_os: linux
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04
-            node_arch: arm64
-            node_os: linux
     env:
       RUST_BACKTRACE: full
       RUSTC_WRAPPER: "sccache"
@@ -58,11 +50,6 @@ jobs:
       - name: Install aarch64-apple-darwin Rust toolchain
         if: ${{ matrix.build.target == 'aarch64-apple-darwin' }}
         run: rustup target add aarch64-apple-darwin
-
-      - uses: actions/setup-node@v3
-        with:
-          node-version: "18.x"
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.3
@@ -125,73 +112,3 @@ jobs:
           path: restate.${{ matrix.build.target }}.tar.gz
           retention-days: 1
           if-no-files-found: error
-
-      - name: Publish to NPM
-        shell: bash
-        run: |
-          cd npm
-          for bin in restate restate-server
-          do
-            export node_os="${{ matrix.build.node_os }}"
-            export node_os
-            node_arch="${{ matrix.build.node_arch }}"
-            export node_arch
-            # set the version
-            node_version="${{ inputs.version }}"
-            node_version="${node_version#v}"
-            export node_version
-            # set the package name
-            export node_pkg="${bin}-${node_os}-${node_arch}"
-            if npm view "@restatedev/${node_pkg}@${node_version}"
-            then
-              continue
-            fi
-            # create the package directory
-            mkdir -p "${node_pkg}/bin"
-            # generate package.json from the template
-            envsubst < package.json.tmpl > "${node_pkg}/package.json"
-            # copy the binary into the package
-            cp "../target/${{ matrix.build.target }}/release/${bin}" "${node_pkg}/bin"
-            cp ../NOTICE "${node_pkg}"
-            cp ../LICENSE "${node_pkg}"
-            # publish the package
-            pushd "${node_pkg}"
-            npm publish --access public
-            popd
-          done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  publish-npm-base:
-    needs: build-and-npm-publish
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - uses: actions/setup-node@v3
-        with:
-          node-version: "18.x"
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Publish to npm
-        shell: bash
-        run: |
-          node_version="${{ inputs.version }}"
-          node_version="${node_version#v}"
-          cd npm
-          for bin in restate restate-server
-          do
-            if npm view "@restatedev/${bin}@${node_version}"
-            then
-              continue
-            fi
-            pushd "${bin}"
-            sed -i "s/\"version\": \".*\",/\"version\": \"${node_version}\",/" package.json
-            npm install
-            npm run build
-            npm publish --access public
-            popd
-          done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
