@@ -76,7 +76,6 @@ pub(crate) mod expand_impls {
             //  which converts groups to nested messages.
             encode_key(root_number, field_descriptor_kind.wire_type(), &mut b);
 
-            // TODO remove this assumes the key is string!
             encode_varint(restate_key.as_ref().len() as u64, &mut b);
 
             // Append the restate key buffer
@@ -91,8 +90,6 @@ pub(crate) mod expand_impls {
 
     #[cfg(test)]
     mod tests {
-        #![allow(dead_code)]
-
         use super::*;
 
         use crate::key_extraction::extract_impls::extract;
@@ -100,7 +97,7 @@ pub(crate) mod expand_impls {
         use restate_pb::mocks::test::*;
         use restate_pb::mocks::DESCRIPTOR_POOL;
         use restate_schema_api::discovery::KeyStructure;
-        use std::collections::{BTreeMap, HashMap};
+        use std::collections::HashMap;
 
         static METHOD_NAME: &str = "test";
 
@@ -122,18 +119,6 @@ pub(crate) mod expand_impls {
                     ..Default::default()
                 }),
             }
-        }
-
-        fn nested_key_structure() -> KeyStructure {
-            KeyStructure::Nested(BTreeMap::from([
-                (1, KeyStructure::Scalar),
-                (2, KeyStructure::Scalar),
-                (3, KeyStructure::Scalar),
-                (
-                    4,
-                    KeyStructure::Nested(BTreeMap::from([(1, KeyStructure::Scalar)])),
-                ),
-            ]))
         }
 
         fn mock_keyed_service_instance_type(
@@ -212,35 +197,5 @@ pub(crate) mod expand_impls {
         }
 
         expand_tests!(string);
-        // expand_tests!(bytes);
-        // expand_tests!(number);
-        // expand_tests!(nested_message, nested_key_structure());
-        // expand_tests!(
-        //     test: nested_message_with_default,
-        //     field_name: nested_message,
-        //     key_structure: nested_key_structure(),
-        //     test_message: TestMessage {
-        //         nested_message: Some(NestedKey {
-        //             b: "b".to_string(),
-        //             ..Default::default()
-        //         }),
-        //         ..Default::default()
-        //     }
-        // );
-        // expand_tests!(
-        //     test: double_nested_message,
-        //     field_name: nested_message,
-        //     key_structure: nested_key_structure(),
-        //     test_message: TestMessage {
-        //         nested_message: Some(NestedKey {
-        //             b: "b".to_string(),
-        //             other: Some(OtherMessage {
-        //                 d: "d".to_string()
-        //             }),
-        //             ..Default::default()
-        //         }),
-        //         ..Default::default()
-        //     }
-        // );
     }
 }

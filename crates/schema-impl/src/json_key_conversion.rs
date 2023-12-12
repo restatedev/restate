@@ -145,7 +145,6 @@ fn json_to_key(
 
 #[cfg(test)]
 mod tests {
-    #![allow(dead_code)]
     use super::*;
 
     use key_extraction::extract_impls::extract;
@@ -154,7 +153,7 @@ mod tests {
     use restate_pb::mocks::test::*;
     use restate_schema_api::discovery::KeyStructure;
     use serde::Serialize;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
     use uuid::Uuid;
 
     static METHOD_NAME: &str = "Test";
@@ -185,18 +184,6 @@ mod tests {
                 ..Default::default()
             }),
         }
-    }
-
-    fn nested_key_structure() -> KeyStructure {
-        KeyStructure::Nested(BTreeMap::from([
-            (1, KeyStructure::Scalar),
-            (2, KeyStructure::Scalar),
-            (3, KeyStructure::Scalar),
-            (
-                4,
-                KeyStructure::Nested(BTreeMap::from([(1, KeyStructure::Scalar)])),
-            ),
-        ]))
     }
 
     fn mock_keyed_service_instance_type(
@@ -326,36 +313,6 @@ mod tests {
     }
 
     json_tests!(string);
-    // json_tests!(bytes);
-    // json_tests!(number);
-    // json_tests!(nested_message, nested_key_structure());
-    // json_tests!(
-    //     test: nested_message_with_default,
-    //     field_name: nested_message,
-    //     key_structure: nested_key_structure(),
-    //     test_message: TestMessage {
-    //         nested_message: Some(NestedKey {
-    //             b: "b".to_string(),
-    //             ..Default::default()
-    //         }),
-    //         ..Default::default()
-    //     }
-    // );
-    // json_tests!(
-    //     test: double_nested_message,
-    //     field_name: nested_message,
-    //     key_structure: nested_key_structure(),
-    //     test_message: TestMessage {
-    //         nested_message: Some(NestedKey {
-    //             b: "b".to_string(),
-    //             other: Some(OtherMessage {
-    //                 d: "d".to_string()
-    //             }),
-    //             ..Default::default()
-    //         }),
-    //         ..Default::default()
-    //     }
-    // );
 
     #[test]
     fn unkeyed_convert_key_to_json() {
