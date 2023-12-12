@@ -1,6 +1,6 @@
 {
   "name": "@restatedev/restate-server",
-  "description": "The Restate runtime",
+  "description": "The Restate server",
   "version": "0.5.1",
   "bin": "lib/index.js",
   "repository": {
