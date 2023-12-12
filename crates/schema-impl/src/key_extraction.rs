@@ -171,8 +171,12 @@ pub(crate) mod extract_impls {
             (ThirtyTwoBit, _) => result_buf.put(slice_const_bytes(buf, 4)?),
             (SixtyFourBit, _) => result_buf.put(slice_const_bytes(buf, 8)?),
             (LengthDelimited, KeyStructure::Scalar) => {
-                let (length, field_slice) = slice_length_delimited_bytes(buf)?;
-                encode_varint(length, &mut result_buf);
+                let (_length, field_slice) = slice_length_delimited_bytes(buf)?;
+                // TODO IMPORTANT!!!!
+                // We have removed this varint here because of https://github.com/restatedev/restate/pull/968
+                // if we ever re-enable the key-extraction, including composite keys and/or different key types
+                // we must uncomment the next line of code.
+                //encode_varint(length, &mut result_buf);
                 result_buf.put(field_slice)
             }
 
