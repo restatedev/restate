@@ -407,11 +407,12 @@ impl SchemasInner {
                             removed_methods
                         );
                     } else {
-                        return Err(RegistrationError::IncompatibleSchemaMissingMethod(format!(
-                            "Service {} does not define all the methods currently exposed in revision {}.",
-                            proposed_service.name,
-                            existing_service.revision,
-                        ), removed_methods));
+                        return Err(RegistrationError::IncompatibleServiceChange(
+                            IncompatibleServiceChangeError::RemovedMethods(
+                                proposed_service.name.clone(),
+                                removed_methods,
+                            ),
+                        ));
                     }
                 }
 
@@ -426,8 +427,10 @@ impl SchemasInner {
                             instance_type
                         );
                     } else {
-                        return Err(RegistrationError::DifferentServiceInstanceType(
-                            proposed_service.name.clone(),
+                        return Err(RegistrationError::IncompatibleServiceChange(
+                            IncompatibleServiceChangeError::DifferentServiceInstanceType(
+                                proposed_service.name.clone(),
+                            ),
                         ));
                     }
                 }
@@ -993,7 +996,7 @@ mod tests {
             false,
         );
 
-        assert!(let Err(RegistrationError::DifferentServiceInstanceType(_)) = compute_result);
+        assert!(let Err(RegistrationError::IncompatibleServiceChange(IncompatibleServiceChangeError::DifferentServiceInstanceType(_))) = compute_result);
     }
 
     #[test]
@@ -1215,7 +1218,7 @@ mod tests {
         schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 1);
 
         let registered_methods = schemas
-            .resolve_latest_service_metadata(mocks::GREETER_SERVICE_NAME.to_string())
+            .resolve_latest_service_metadata(mocks::GREETER_SERVICE_NAME)
             .unwrap()
             .methods
             .iter()
@@ -1227,12 +1230,14 @@ mod tests {
 
     macro_rules! load_mock_descriptor {
         ($name:ident, $path:literal) => {
-            static $name: once_cell::sync::Lazy<DescriptorPool> = once_cell::sync::Lazy::new(|| {
-                DescriptorPool::decode(
-                    include_bytes!(concat!(env!("OUT_DIR"), "/pb/", $path, "/descriptor.bin")).as_ref(),
-                )
+            static $name: once_cell::sync::Lazy<DescriptorPool> =
+                once_cell::sync::Lazy::new(|| {
+                    DescriptorPool::decode(
+                        include_bytes!(concat!(env!("OUT_DIR"), "/pb/", $path, "/descriptor.bin"))
+                            .as_ref(),
+                    )
                     .expect("The built-in descriptor pool should be valid")
-            });
+                });
         };
     }
 
@@ -1244,7 +1249,6 @@ mod tests {
         load_mock_descriptor!(REMOVE_METHOD_DESCRIPTOR_V1, "remove_method/v1");
         load_mock_descriptor!(REMOVE_METHOD_DESCRIPTOR_V2, "remove_method/v2");
         const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
-
 
         #[test]
         fn reject_removing_existing_methods() {
@@ -1275,15 +1279,13 @@ mod tests {
             schemas.assert_service_revision(GREETER_SERVICE_NAME, 1); // unchanged
 
             let_assert!(
-            Err(RegistrationError::IncompatibleSchemaMissingMethod(
-                message,
-                missing_methods
-            )) = rejection
-        );
-            check!(message == "Service greeter.Greeter does not define all the methods currently exposed in revision 1.");
+                Err(RegistrationError::IncompatibleServiceChange(
+                    IncompatibleServiceChangeError::RemovedMethods(service, missing_methods)
+                )) = rejection
+            );
+            check!(service == "greeter.Greeter");
             check!(missing_methods == std::vec!["Greet"]);
         }
-
     }
 
     #[test]

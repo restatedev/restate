@@ -71,7 +71,7 @@ impl IntoResponse for MetaApiError {
                 _,
             )))
             | MetaApiError::Meta(MetaError::SchemaRegistry(
-                RegistrationError::IncompatibleSchemaMissingMethod(_, _),
+                RegistrationError::IncompatibleServiceChange(_),
             )) => StatusCode::CONFLICT,
             MetaApiError::Meta(MetaError::SchemaRegistry(RegistrationError::UnknownService(_))) => {
                 StatusCode::NOT_FOUND

@@ -36,16 +36,22 @@ use self::schemas_impl::InstanceTypeMetadata;
 use self::schemas_impl::ServiceSchemas;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
+#[code(restate_errors::META0006)]
+pub enum IncompatibleServiceChangeError {
+    #[error("detected a new service {0} revision with a service instance type different from the previous revision")]
+    #[code(restate_errors::META0006)]
+    DifferentServiceInstanceType(String),
+    #[error("the service {0} already exists but the new revision removed the methods {1:?}")]
+    #[code(restate_errors::META0006)]
+    RemovedMethods(String, Vec<String>),
+}
+
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(unknown)]
 pub enum RegistrationError {
     #[error("an endpoint with the same id {0} already exists in the registry")]
     #[code(restate_errors::META0004)]
     OverrideEndpoint(EndpointId),
-    #[error("detected a new service {0} revision with a service instance type different from the previous revision")]
-    #[code(restate_errors::META0006)]
-    DifferentServiceInstanceType(String),
-    #[error("missing expected field {0} in descriptor")]
-    MissingFieldInDescriptor(&'static str),
     #[error("missing service {0} in descriptor")]
     #[code(restate_errors::META0005)]
     MissingServiceInDescriptor(String),
@@ -64,9 +70,12 @@ pub enum RegistrationError {
     InvalidSubscription(anyhow::Error),
     #[error("a subscription with the same id {0} already exists in the registry")]
     OverrideSubscription(EndpointId),
-    #[error("schema update removes methods from an existing service endpoint")]
-    #[code(restate_errors::META0006)]
-    IncompatibleSchemaMissingMethod(String, Vec<String>),
+    #[error(transparent)]
+    IncompatibleServiceChange(
+        #[from]
+        #[code]
+        IncompatibleServiceChangeError,
+    ),
 }
 
 /// Insert (or replace) service

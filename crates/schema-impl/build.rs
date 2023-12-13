@@ -13,7 +13,10 @@ use std::fs::read_dir;
 use std::path::{Path, PathBuf};
 
 // Walk recursively and create descriptors, combining all the .proto in a sub-directory
-fn walk_and_create_descriptors(root: impl AsRef<Path>, this_dir: impl AsRef<Path>) -> std::io::Result<()> {
+fn walk_and_create_descriptors(
+    root: impl AsRef<Path>,
+    this_dir: impl AsRef<Path>,
+) -> std::io::Result<()> {
     let mut subdirs = vec![];
     let mut proto_files = vec![];
 
@@ -31,9 +34,11 @@ fn walk_and_create_descriptors(root: impl AsRef<Path>, this_dir: impl AsRef<Path
     if !proto_files.is_empty() {
         // Compute sub-dir
         let this_subdir = this_dir.as_ref().strip_prefix(root.as_ref()).unwrap();
-        let rust_out_dir =      PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR environment variable not set")).join(this_subdir);
+        let rust_out_dir =
+            PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR environment variable not set"))
+                .join(this_subdir);
         std::fs::create_dir_all(rust_out_dir.clone())?;
-        let out_descriptor =  rust_out_dir.clone().join("descriptor.bin");
+        let out_descriptor = rust_out_dir.clone().join("descriptor.bin");
 
         println!("Compiling {:?} to {}", proto_files, rust_out_dir.display());
 
