@@ -171,7 +171,7 @@ mod tests {
 
         // Generate some commands for a new endpoint, with new services
         let commands_1 = schemas
-            .compute_new_endpoint_updates(
+            .compute_new_endpoint(
                 EndpointMetadata::mock_with_uri("http://localhost:9080"),
                 vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                     mocks::GREETER_SERVICE_NAME.to_string(),
@@ -188,7 +188,7 @@ mod tests {
         // We need to apply updates to generate a new command list
         schemas.apply_updates(commands_1.clone()).unwrap();
         let commands_2 = schemas
-            .compute_new_endpoint_updates(
+            .compute_new_endpoint(
                 EndpointMetadata::mock_with_uri("http://localhost:9081"),
                 vec![
                     ServiceRegistrationRequest::unkeyed_without_annotations(

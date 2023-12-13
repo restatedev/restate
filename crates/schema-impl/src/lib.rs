@@ -167,22 +167,19 @@ impl Schemas {
     ///
     /// IMPORTANT: It is not safe to consecutively call this method several times and apply the updates all-together with a single [`Self::apply_updates`],
     /// as one change set might depend on the previously computed change set.
-    pub fn compute_new_endpoint_updates(
+    pub fn compute_new_endpoint(
         &self,
         endpoint_metadata: EndpointMetadata,
         services: Vec<ServiceRegistrationRequest>,
         descriptor_pool: DescriptorPool,
         force: bool,
     ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
-        self.0.load().compute_new_endpoint_updates(
-            endpoint_metadata,
-            services,
-            descriptor_pool,
-            force,
-        )
+        self.0
+            .load()
+            .compute_new_endpoint(endpoint_metadata, services, descriptor_pool, force)
     }
 
-    pub fn compute_modify_service_updates(
+    pub fn compute_modify_service(
         &self,
         service_name: String,
         public: bool,
@@ -231,7 +228,30 @@ impl Schemas {
     ) -> Result<(), RegistrationError> {
         let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
         for cmd in updates {
-            schemas_inner.apply_update(cmd)?;
+            match cmd {
+                SchemasUpdateCommand::InsertEndpoint {
+                    metadata,
+                    services,
+                    descriptor_pool,
+                } => {
+                    schemas_inner.apply_insert_endpoint(metadata, services, descriptor_pool)?;
+                }
+                SchemasUpdateCommand::RemoveEndpoint { endpoint_id } => {
+                    schemas_inner.apply_remove_endpoint(endpoint_id)?;
+                }
+                SchemasUpdateCommand::RemoveService { name, revision } => {
+                    schemas_inner.apply_remove_service(name, revision)?;
+                }
+                SchemasUpdateCommand::ModifyService { name, public } => {
+                    schemas_inner.apply_modify_service(name, public)?;
+                }
+                SchemasUpdateCommand::AddSubscription(sub) => {
+                    schemas_inner.apply_add_subscription(sub)?;
+                }
+                SchemasUpdateCommand::RemoveSubscription(sub_id) => {
+                    schemas_inner.apply_remove_subscription(sub_id)?;
+                }
+            }
         }
         self.0.store(Arc::new(schemas_inner));
 
@@ -243,17 +263,49 @@ impl Schemas {
 mod tests {
     use super::*;
 
+    use restate_schema_api::endpoint::EndpointMetadataResolver;
+    use restate_schema_api::service::ServiceMetadataResolver;
+    use restate_test_util::assert_eq;
+
     impl Schemas {
-        pub(crate) fn add_mock_service(
-            &self,
-            service_name: &str,
-            service_schemas: schemas_impl::ServiceSchemas,
-        ) {
+        pub(crate) fn add_mock_service(&self, service_name: &str, service_schemas: ServiceSchemas) {
             let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
             schemas_inner
                 .services
                 .insert(service_name.to_string(), service_schemas);
             self.0.store(Arc::new(schemas_inner));
         }
+
+        pub(crate) fn assert_service_revision(&self, svc_name: &str, revision: ServiceRevision) {
+            assert_eq!(
+                self.resolve_latest_service_metadata(svc_name)
+                    .unwrap()
+                    .revision,
+                revision
+            );
+        }
+
+        pub(crate) fn assert_resolves_endpoint(&self, svc_name: &str, endpoint_id: EndpointId) {
+            assert_eq!(
+                self.resolve_latest_endpoint_for_service(svc_name)
+                    .unwrap()
+                    .id(),
+                endpoint_id
+            );
+        }
+    }
+
+    #[macro_export]
+    macro_rules! load_mock_descriptor {
+        ($name:ident, $path:literal) => {
+            static $name: once_cell::sync::Lazy<DescriptorPool> =
+                once_cell::sync::Lazy::new(|| {
+                    DescriptorPool::decode(
+                        include_bytes!(concat!(env!("OUT_DIR"), "/pb/", $path, "/descriptor.bin"))
+                            .as_ref(),
+                    )
+                    .expect("The built-in descriptor pool should be valid")
+                });
+        };
     }
 }

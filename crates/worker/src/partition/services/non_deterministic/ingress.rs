@@ -137,7 +137,7 @@ mod tests {
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_endpoint_updates(
+                    .compute_new_endpoint(
                         EndpointMetadata::mock(),
                         vec![ServiceRegistrationRequest::new(
                             restate_pb::mocks::GREETER_SERVICE_NAME.to_string(),

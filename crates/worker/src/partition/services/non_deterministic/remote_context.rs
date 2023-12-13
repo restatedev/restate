@@ -2610,7 +2610,7 @@ mod tests {
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_endpoint_updates(
+                    .compute_new_endpoint(
                         EndpointMetadata::mock_with_uri("http://localhost:8080"),
                         vec![ServiceRegistrationRequest::new(
                             GREETER_SERVICE_NAME.to_string(),
