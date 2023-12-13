@@ -2,6 +2,11 @@ name: Publish npm binary packages
 
 on:
   workflow_call:
+    inputs:
+      version:
+        description: 'version to label npm packages'
+        required: true
+        type: string
 
 jobs:
   publish-npm-binaries:
@@ -77,7 +82,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-npm-base:
-    needs: build-and-npm-publish
+    needs: publish-npm-binaries
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

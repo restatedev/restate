@@ -46,15 +46,48 @@ jobs:
     with:
       pushToDockerHub: true
 
+  build-binaries:
+    name: Build binaries
+    needs: [ run-tests ]
+    uses: ./.github/workflows/binaries.yml
+    secrets: inherit
+    with:
+      npmVersion: ${{ github.ref_name }}
+
   create-release:
     name: Create release
     runs-on: ubuntu-latest
     needs: [build-docker-image]
 
     steps:
+      - name: Download aarch64-apple-darwin binaries
+        uses: actions/download-artifact@v3
+        with:
+          name: restate.aarch64-apple-darwin.tar.gz
+
+      - name: Download x86_64-apple-darwin binaries
+        uses: actions/download-artifact@v3
+        with:
+          name: restate.x86_64-apple-darwin.tar.gz
+
+      - name: Download x86_64-unknown-linux-gnu binaries
+        uses: actions/download-artifact@v3
+        with:
+          name: restate.x86_64-unknown-linux-gnu.tar.gz
+
+      - name: Download aarch64-unknown-linux-gnu binaries
+        uses: actions/download-artifact@v3
+        with:
+          name: restate.aarch64-unknown-linux-gnu.tar.gz
+
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
           # create a draft release which needs manual approval
           draft: true
+          files: |
+            restate.aarch64-apple-darwin.tar.gz
+            restate.x86_64-apple-darwin.tar.gz
+            restate.x86_64-unknown-linux-gnu.tar.gz
+            restate.aarch64-unknown-linux-gnu.tar.gz
 
