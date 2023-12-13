@@ -1205,8 +1205,8 @@ mod tests {
     use crate::partition::state_machine::effects::Effect;
     use bytestring::ByteString;
     use futures::future::ok;
-    use futures::FutureExt;
-    use googletest::{all, assert_that, pat};
+    use futures::{stream, FutureExt};
+    use googletest::{all, any, assert_that, pat};
     use restate_invoker_api::EffectKind;
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -1224,16 +1224,22 @@ mod tests {
     struct StateReaderMock {
         invocations: HashMap<ServiceId, InvocationStatus>,
         inboxes: HashMap<ServiceId, Vec<InboxEntry>>,
+        journals: HashMap<ServiceId, Vec<JournalEntry>>,
     }
 
     impl StateReaderMock {
-        fn register_invocation_status(&mut self, fid: FullInvocationId, length: EntryIndex) {
+        fn register_invocation_status(
+            &mut self,
+            fid: FullInvocationId,
+            journal: Vec<JournalEntry>,
+        ) {
+            let service_id = fid.service_id.clone();
             self.invocations.insert(
                 fid.service_id,
                 InvocationStatus::Invoked(InvocationMetadata {
                     invocation_uuid: fid.invocation_uuid,
                     journal_metadata: JournalMetadata {
-                        length,
+                        length: u32::try_from(journal.len()).unwrap(),
                         span_context: ServiceInvocationSpanContext::empty(),
                     },
                     endpoint_id: None,
@@ -1242,6 +1248,8 @@ mod tests {
                     timestamps: StatusTimestamps::now(),
                 }),
             );
+
+            self.journals.insert(service_id, journal);
         }
 
         fn enqueue_into_inbox(&mut self, service_id: ServiceId, inbox_entry: InboxEntry) {
@@ -1345,10 +1353,25 @@ mod tests {
 
         fn get_journal<'a>(
             &'a mut self,
-            _service_id: &'a ServiceId,
-            _length: EntryIndex,
+            service_id: &'a ServiceId,
+            length: EntryIndex,
         ) -> BoxStream<'a, Result<JournalEntry, StorageError>> {
-            todo!()
+            let journal = self.journals.get(service_id);
+
+            let cloned_journal: Vec<JournalEntry> = journal
+                .map(|journal| {
+                    journal
+                        .iter()
+                        .take(
+                            usize::try_from(length)
+                                .expect("Converting from u32 to usize should be possible"),
+                        )
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            stream::iter(cloned_journal.into_iter().map(Ok)).boxed()
         }
     }
 
@@ -1378,7 +1401,15 @@ mod tests {
             },
         });
 
-        state_reader.register_invocation_status(sid_caller.clone(), 1);
+        state_reader.register_invocation_status(
+            sid_caller.clone(),
+            vec![JournalEntry::Entry(EnrichedRawEntry::new(
+                EnrichedEntryHeader::Awakeable {
+                    is_completed: false,
+                },
+                Bytes::default(),
+            ))],
+        );
 
         state_machine
             .on_apply(cmd, &mut effects, &mut state_reader)
@@ -1428,7 +1459,15 @@ mod tests {
             },
         });
 
-        state_reader.register_invocation_status(sid_caller.clone(), 1);
+        state_reader.register_invocation_status(
+            sid_caller.clone(),
+            vec![JournalEntry::Entry(EnrichedRawEntry::new(
+                EnrichedEntryHeader::Awakeable {
+                    is_completed: false,
+                },
+                Bytes::default(),
+            ))],
+        );
 
         state_machine
             .on_apply(cmd, &mut effects, &mut state_reader)
@@ -1465,7 +1504,7 @@ mod tests {
             result: ResponseResult::Success(Bytes::from_static(b"hello")),
         });
 
-        state_reader.register_invocation_status(fid.clone(), 1);
+        state_reader.register_invocation_status(fid.clone(), vec![]);
 
         state_machine
             .on_apply(cmd, &mut effects, &mut state_reader)
@@ -1496,7 +1535,7 @@ mod tests {
         let inboxed_fid = FullInvocationId::generate("svc", "key");
         let caller_fid = FullInvocationId::mock_random();
 
-        state_reader.register_invocation_status(fid, 0);
+        state_reader.register_invocation_status(fid, vec![]);
         state_reader.enqueue_into_inbox(
             inboxed_fid.service_id.clone(),
             InboxEntry {
@@ -1541,6 +1580,91 @@ mod tests {
                         ))
                     )
                 }))
+            )
+        );
+
+        Ok(())
+    }
+
+    #[test(tokio::test)]
+    async fn kill_call_tree() -> Result<(), Error> {
+        let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
+        let mut state_reader = StateReaderMock::default();
+        let mut effects = Effects::default();
+
+        let fid = FullInvocationId::mock_random();
+        let call_fid = FullInvocationId::mock_random();
+        let background_fid = FullInvocationId::mock_random();
+        let finished_call_fid = FullInvocationId::mock_random();
+
+        state_reader.register_invocation_status(
+            fid.clone(),
+            vec![
+                JournalEntry::Entry(EnrichedRawEntry::new(
+                    EnrichedEntryHeader::Invoke {
+                        is_completed: false,
+                        resolution_result: Some(ResolutionResult {
+                            invocation_uuid: call_fid.invocation_uuid,
+                            service_key: call_fid.service_id.key.clone(),
+                            service_name: call_fid.service_id.service_name.clone(),
+                            span_context: ServiceInvocationSpanContext::empty(),
+                        }),
+                    },
+                    Bytes::default(),
+                )),
+                JournalEntry::Entry(EnrichedRawEntry::new(
+                    EnrichedEntryHeader::BackgroundInvoke {
+                        resolution_result: ResolutionResult {
+                            invocation_uuid: background_fid.invocation_uuid,
+                            service_key: background_fid.service_id.key.clone(),
+                            service_name: background_fid.service_id.service_name.clone(),
+                            span_context: ServiceInvocationSpanContext::empty(),
+                        },
+                    },
+                    Bytes::default(),
+                )),
+                JournalEntry::Entry(EnrichedRawEntry::new(
+                    EnrichedEntryHeader::Invoke {
+                        is_completed: true,
+                        resolution_result: Some(ResolutionResult {
+                            invocation_uuid: finished_call_fid.invocation_uuid,
+                            service_key: finished_call_fid.service_id.key.clone(),
+                            service_name: finished_call_fid.service_id.service_name.clone(),
+                            span_context: ServiceInvocationSpanContext::empty(),
+                        }),
+                    },
+                    Bytes::default(),
+                )),
+            ],
+        );
+
+        command_interpreter
+            .on_apply(
+                Command::Kill(MaybeFullInvocationId::from(fid.clone())),
+                &mut effects,
+                &mut state_reader,
+            )
+            .await?;
+
+        let effects = effects.into_inner();
+
+        assert_that!(
+            effects,
+            all!(
+                contains(pat!(Effect::AbortInvocation(eq(fid.clone())))),
+                contains(pat!(Effect::DropJournalAndFreeService {
+                    service_id: eq(fid.service_id.clone()),
+                })),
+                contains(pat!(Effect::EnqueueIntoOutbox {
+                    message: pat!(restate_storage_api::outbox_table::OutboxMessage::Kill(eq(
+                        call_fid
+                    )))
+                })),
+                not(contains(pat!(Effect::EnqueueIntoOutbox {
+                    message: pat!(restate_storage_api::outbox_table::OutboxMessage::Kill(
+                        any!(eq(background_fid), eq(finished_call_fid))
+                    ))
+                })))
             )
         );
 

@@ -14,7 +14,7 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::CompletionResult;
 
 /// Different types of journal entries persisted by the runtime
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum JournalEntry {
     Entry(EnrichedRawEntry),
     Completion(CompletionResult),
