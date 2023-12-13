@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use crate::c_error;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::MetaClientInterface;
@@ -46,8 +47,14 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
     let services = client.get_services().await?.into_body().await?.services;
 
     let endpoints = client.get_endpoints().await?.into_body().await?.endpoints;
-    // For each endpoint, we need to calculate the status and # of invocations.
 
+    if endpoints.is_empty() {
+        c_error!(
+            "No deployments were found! Did you forget to register your deployment with 'restate dep register'?"
+        );
+        return Ok(());
+    }
+    // For each endpoint, we need to calculate the status and # of invocations.
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     for svc in services {
         latest_services.insert(svc.name.clone(), svc);
@@ -58,7 +65,7 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
         "ENDPOINT",
         "TYPE",
         "STATUS",
-        "# OF INVOCATIONS",
+        "ACTIVE INVOCATIONS",
         "ID",
         "CREATED AT",
     ];
@@ -106,7 +113,6 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
                 &endpoint.services,
                 &latest_services,
             ));
-            // Include services + revision +
         }
 
         table.add_row(row);

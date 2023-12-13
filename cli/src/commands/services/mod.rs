@@ -10,6 +10,7 @@
 
 mod describe;
 mod list;
+mod status;
 
 use cling::prelude::*;
 
@@ -20,4 +21,6 @@ pub enum Services {
     List(list::List),
     /// Prints detailed information about a given service
     Describe(describe::Describe),
+    /// Prints activity information about a given service (and method)
+    Status(status::Status),
 }
