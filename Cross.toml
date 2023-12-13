@@ -1,0 +1,42 @@
+[build]
+pre-build = [
+    "apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/*",
+    "curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip",
+    "unzip -o protoc-21.12-linux-x86_64.zip -d /usr/local bin/protoc",
+    "unzip -o protoc-21.12-linux-x86_64.zip -d /usr/local 'include/*'",
+    "rm -f protoc-21.12-linux-x86_64.zip",
+    "chmod +x /usr/local/bin/protoc",
+    "cd $(mktemp -d) && curl -LSfs https://github.com/mozilla/sccache/releases/download/v0.7.4/sccache-v0.7.4-x86_64-unknown-linux-musl.tar.gz -o sccache.tar.gz && tar -xvf sccache.tar.gz && rm sccache.tar.gz && cp sccache-v0.7.4-x86_64-unknown-linux-musl/sccache /usr/bin/sccache",
+]
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:edge"
+
+[target.aarch64-unknown-linux-gnu.env]
+passthrough = [
+    "CC_aarch64_unknown_linux_gnu=/usr/bin/sccache aarch64-linux-gnu-gcc",
+    "CXX_aarch64_unknown_linux_gnu=/usr/bin/sccache aarch64-linux-gnu-g++",
+    "CC=/usr/bin/sccache aarch64-linux-gnu-gcc",
+    "CXX=/usr/bin/sccache aarch64-linux-gnu-g++",
+    "ACTIONS_CACHE_URL",
+    "ACTIONS_RUNTIME_TOKEN",
+    "SCCACHE_PATH",
+    "SCCACHE_DIR",
+    "SCCACHE_GHA_ENABLED",
+    "RUSTC_WRAPPER=/usr/bin/sccache"
+]
+
+[target.x86_64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:edge"
+
+[target.x86_64-unknown-linux-gnu.env]
+passthrough = [
+    "CC=/usr/bin/sccache gcc",
+    "CXX=/usr/bin/sccache g++",
+    "ACTIONS_CACHE_URL",
+    "ACTIONS_RUNTIME_TOKEN",
+    "SCCACHE_PATH",
+    "SCCACHE_DIR",
+    "SCCACHE_GHA_ENABLED",
+    "RUSTC_WRAPPER=/usr/bin/sccache"
+]

@@ -26,7 +26,7 @@ derive_builder = { workspace = true }
 drain = { workspace = true }
 opentelemetry_api = { workspace = true }
 prost = { workspace = true }
-rdkafka = { version = "0.34", features = ["cmake-build"] }
+rdkafka = { version = "0.34", features = ["libz-static"] }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
