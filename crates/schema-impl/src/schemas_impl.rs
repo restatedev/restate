@@ -356,26 +356,25 @@ impl SchemasInner {
 
         let mut result_commands = Vec::with_capacity(1 + registration_requests.len());
 
-        // TODO what to do with this
-        // if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
-        //     if force {
-        //         // If we need to overwrite the endpoint we need to remove old services
-        //         for (svc_name, revision) in &existing_endpoint.services {
-        //             warn!(
-        //                 restate.service_endpoint.id = %endpoint_id,
-        //                 restate.service_endpoint.address = %endpoint_metadata.address_display(),
-        //                 "Going to remove service {} due to a forced service endpoint update",
-        //                 svc_name
-        //             );
-        //             result_commands.push(SchemasUpdateCommand::RemoveService {
-        //                 name: svc_name.to_string(),
-        //                 revision: *revision,
-        //             });
-        //         }
-        //     } else {
-        //         return Err(RegistrationError::OverrideEndpoint(endpoint_id));
-        //     }
-        // }
+        if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
+            if force {
+                // If we need to overwrite the endpoint we need to remove old services
+                for svc in &existing_endpoint.services {
+                    warn!(
+                        restate.service_endpoint.id = %endpoint_id,
+                        restate.service_endpoint.address = %endpoint_metadata.address_display(),
+                        "Going to remove service {} due to a forced service endpoint update",
+                        svc.name
+                    );
+                    result_commands.push(SchemasUpdateCommand::RemoveService {
+                        name: svc.name.clone(),
+                        revision: svc.revision,
+                    });
+                }
+            } else {
+                return Err(RegistrationError::OverrideEndpoint(endpoint_id));
+            }
+        }
 
         // Compute service revision numbers
         let mut computed_revisions = HashMap::with_capacity(registration_requests.len());
@@ -1254,8 +1253,11 @@ mod tests {
         fn reject_removing_existing_methods() {
             let schemas = Schemas::default();
 
+            let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
+            let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:9081");
+
             let commands = schemas.compute_new_endpoint_updates(
-                EndpointMetadata::mock(),
+                endpoint_1,
                 vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                     GREETER_SERVICE_NAME.to_string(),
                     &["Greet" /*, "GetCount", "GreetStream"*/],
@@ -1267,7 +1269,7 @@ mod tests {
             schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
 
             let rejection = schemas.compute_new_endpoint_updates(
-                EndpointMetadata::mock(),
+                endpoint_2,
                 vec![ServiceRegistrationRequest::unkeyed_without_annotations(
                     GREETER_SERVICE_NAME.to_string(),
                     &["Greetings" /*, "GetCount", "GreetStream"*/],
