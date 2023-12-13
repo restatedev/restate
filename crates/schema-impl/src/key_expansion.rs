@@ -97,7 +97,7 @@ pub(crate) mod expand_impls {
         use prost::Message;
         use restate_pb::mocks::test::*;
         use restate_pb::mocks::DESCRIPTOR_POOL;
-        use std::collections::{BTreeMap, HashMap};
+        use std::collections::HashMap;
 
         static METHOD_NAME: &str = "test";
 

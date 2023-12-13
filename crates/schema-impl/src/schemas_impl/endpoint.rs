@@ -528,12 +528,7 @@ fn resolve_key_field(
     };
 
     // Validate type
-    if field_descriptor.is_map() {
-        return Err(BadDescriptorError::BadKeyFieldType(
-            method_descriptor.clone(),
-        ));
-    }
-    if field_descriptor.is_list() {
+    if field_descriptor.kind() != Kind::String {
         return Err(BadDescriptorError::BadKeyFieldType(
             method_descriptor.clone(),
         ));
@@ -989,6 +984,33 @@ mod tests {
             );
             check!(service == "greeter.Greeter");
             check!(missing_methods == std::vec!["Greet"]);
+        }
+    }
+
+    mod bad_key_wrong_type {
+        use super::*;
+
+        use restate_test_util::{assert_eq, let_assert, test};
+
+        load_mock_descriptor!(BAD_KEY_WRONG_TYPE_DESCRIPTOR, "bad_key_wrong_type");
+
+        #[test]
+        fn reject_bad_key_wrong_type() {
+            let schemas = Schemas::default();
+
+            let rejection = schemas.compute_new_endpoint(
+                EndpointMetadata::mock(),
+                vec![GREETER_SERVICE_NAME.to_owned()],
+                BAD_KEY_WRONG_TYPE_DESCRIPTOR.clone(),
+                false,
+            );
+
+            let_assert!(
+                Err(SchemasUpdateError::BadDescriptor(
+                    BadDescriptorError::BadKeyFieldType(method_desc)
+                )) = rejection
+            );
+            assert_eq!(method_desc.full_name(), "greeter.Greeter.Greet");
         }
     }
 }
