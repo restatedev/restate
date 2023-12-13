@@ -17,7 +17,7 @@ use comfy_table::{Cell, Color, Table};
 
 pub fn create_service_methods_table(ui_config: &UiConfig, methods: &[MethodMetadata]) -> Table {
     let mut table = Table::new_styled(ui_config);
-    table.set_styled_header(vec!["NAME", "INPUT TYPE", "OUTPUT TYPE"]);
+    table.set_styled_header(vec!["METHOD", "INPUT TYPE", "OUTPUT TYPE"]);
 
     for method in methods {
         table.add_row(vec![
@@ -41,7 +41,7 @@ pub fn create_service_methods_table_diff(
         .collect::<std::collections::HashMap<_, _>>();
 
     let mut table = Table::new_styled(ui_config);
-    let mut headers = vec!["", "NAME", "INPUT TYPE", "OUTPUT TYPE"];
+    let mut headers = vec!["", "METHOD", "INPUT TYPE", "OUTPUT TYPE"];
 
     if service_type != InstanceType::Unkeyed {
         headers.push("KEY FIELD INDEX");

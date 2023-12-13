@@ -22,6 +22,7 @@ arrow = { version = "49.0.0", default-features = false, features = ["ipc", "pret
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
+chrono-humanize = { version = "0.2.3" }
 clap = { version = "4.1", features = ["derive", "env", "wrap_help", "color"] }
 clap-verbosity-flag = { version = "2.0.1" }
 cling = { version = "0.1.0", default-features = false, features = ["derive"] }

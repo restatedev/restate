@@ -58,6 +58,8 @@ impl StyledTable for comfy_table::Table {
         }
         if !crate::console::colors_enabled() {
             table.force_no_tty();
+        } else {
+            table.enforce_styling();
         }
         table
     }
