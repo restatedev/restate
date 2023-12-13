@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 restate-errors = { workspace = true }
 restate-pb = { workspace = true }
-restate-schema-api = { workspace = true, features = ["key_extraction", "key_expansion", "json_key_conversion", "endpoint", "service", "discovery", "subscription", "json_conversion", "proto_symbol", "serde"] }
+restate-schema-api = { workspace = true, features = ["key_extraction", "key_expansion", "json_key_conversion", "endpoint", "service", "subscription", "json_conversion", "proto_symbol", "serde"] }
 restate-serde-util = { workspace = true }
 restate-types = { workspace = true }
 

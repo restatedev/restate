@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Schemas;
+use super::{KeyStructure, Schemas};
 
 use bytes::Bytes;
 use restate_schema_api::key::extraction::Error;
@@ -37,7 +37,6 @@ pub(crate) mod extract_impls {
     use prost::encoding::{
         decode_key, decode_varint, encode_key, skip_field, DecodeContext, WireType,
     };
-    use restate_schema_api::discovery::KeyStructure;
     use uuid::Uuid;
 
     fn generate_random_key() -> Bytes {

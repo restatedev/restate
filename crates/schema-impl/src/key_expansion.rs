@@ -93,11 +93,11 @@ pub(crate) mod expand_impls {
         use super::*;
 
         use crate::key_extraction::extract_impls::extract;
+        use crate::KeyStructure;
         use prost::Message;
         use restate_pb::mocks::test::*;
         use restate_pb::mocks::DESCRIPTOR_POOL;
-        use restate_schema_api::discovery::KeyStructure;
-        use std::collections::HashMap;
+        use std::collections::{BTreeMap, HashMap};
 
         static METHOD_NAME: &str = "test";
 

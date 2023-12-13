@@ -13,7 +13,7 @@ schema = ["dep:schemars", "restate-schema-api/serde_schema", "restate-serde-util
 
 [dependencies]
 restate-types = { workspace = true, features = ["serde"] }
-restate-schema-api = { workspace = true, features = [ "service", "endpoint", "discovery", "serde", "subscription" ] }
+restate-schema-api = { workspace = true, features = [ "service", "endpoint", "serde", "subscription" ] }
 restate-serde-util = { workspace = true }
 
 http = { workspace = true }

@@ -11,9 +11,6 @@
 use arc_swap::ArcSwap;
 use http::Uri;
 use prost_reflect::{DescriptorPool, ServiceDescriptor};
-use restate_schema_api::discovery::{
-    DiscoveredInstanceType, DiscoveredMethodMetadata, ServiceRegistrationRequest,
-};
 use restate_schema_api::endpoint::EndpointMetadata;
 use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
@@ -32,50 +29,36 @@ mod schemas_impl;
 mod service;
 mod subscriptions;
 
+use self::schemas_impl::endpoint::{BadDescriptorError, IncompatibleServiceChangeError};
 use self::schemas_impl::InstanceTypeMetadata;
 use self::schemas_impl::ServiceSchemas;
 
-#[derive(Debug, thiserror::Error, codederror::CodedError)]
-#[code(restate_errors::META0006)]
-pub enum IncompatibleServiceChangeError {
-    #[error("detected a new service {0} revision with a service instance type different from the previous revision")]
-    #[code(restate_errors::META0006)]
-    DifferentServiceInstanceType(String),
-    #[error("the service {0} already exists but the new revision removed the methods {1:?}")]
-    #[code(restate_errors::META0006)]
-    RemovedMethods(String, Vec<String>),
+// --- Update commands data structure
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FieldAnnotation {
+    Key,
+    EventPayload,
+    EventMetadata,
 }
 
-#[derive(Debug, thiserror::Error, codederror::CodedError)]
-#[code(unknown)]
-pub enum RegistrationError {
-    #[error("an endpoint with the same id {0} already exists in the registry")]
-    #[code(restate_errors::META0004)]
-    OverrideEndpoint(EndpointId),
-    #[error("missing service {0} in descriptor")]
-    #[code(restate_errors::META0005)]
-    MissingServiceInDescriptor(String),
-    #[error("service {0} does not exist in the registry")]
-    #[code(restate_errors::META0005)]
-    UnknownService(String),
-    #[error("cannot insert/modify service {0} as it's a reserved name")]
-    #[code(restate_errors::META0005)]
-    ModifyInternalService(String),
-    #[error("unknown endpoint id {0}")]
-    UnknownEndpoint(EndpointId),
-    #[error("unknown subscription id {0}")]
-    UnknownSubscription(String),
-    #[error("invalid subscription: {0}")]
-    #[code(restate_errors::META0009)]
-    InvalidSubscription(anyhow::Error),
-    #[error("a subscription with the same id {0} already exists in the registry")]
-    OverrideSubscription(EndpointId),
-    #[error(transparent)]
-    IncompatibleServiceChange(
-        #[from]
-        #[code]
-        IncompatibleServiceChangeError,
-    ),
+/// This structure provides the directives to the key parser to parse nested messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeyStructure {
+    Scalar,
+    Nested(std::collections::BTreeMap<u32, KeyStructure>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiscoveredInstanceType {
+    Keyed(KeyStructure),
+    Unkeyed,
+    Singleton,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DiscoveredMethodMetadata {
+    input_fields_annotations: HashMap<FieldAnnotation, u32>,
 }
 
 /// Insert (or replace) service
@@ -157,6 +140,44 @@ mod descriptor_pool_serde {
 #[derive(Debug, Default, Clone)]
 pub struct Schemas(Arc<ArcSwap<schemas_impl::SchemasInner>>);
 
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+#[code(unknown)]
+pub enum SchemasUpdateError {
+    #[error("an endpoint with the same id {0} already exists in the registry")]
+    #[code(restate_errors::META0004)]
+    OverrideEndpoint(EndpointId),
+    #[error("missing service {0} in descriptor")]
+    #[code(restate_errors::META0005)]
+    MissingServiceInDescriptor(String),
+    #[error("service {0} does not exist in the registry")]
+    #[code(restate_errors::META0005)]
+    UnknownService(String),
+    #[error("cannot insert/modify service {0} as it's a reserved name")]
+    #[code(restate_errors::META0005)]
+    ModifyInternalService(String),
+    #[error("unknown endpoint id {0}")]
+    UnknownEndpoint(EndpointId),
+    #[error("unknown subscription id {0}")]
+    UnknownSubscription(String),
+    #[error("invalid subscription: {0}")]
+    #[code(restate_errors::META0009)]
+    InvalidSubscription(anyhow::Error),
+    #[error("a subscription with the same id {0} already exists in the registry")]
+    OverrideSubscription(EndpointId),
+    #[error(transparent)]
+    IncompatibleServiceChange(
+        #[from]
+        #[code]
+        IncompatibleServiceChangeError,
+    ),
+    #[error(transparent)]
+    BadDescriptor(
+        #[from]
+        #[code]
+        BadDescriptorError,
+    ),
+}
+
 impl Schemas {
     /// Compute the commands to update the schema registry with a new endpoint.
     /// This method doesn't execute any in-memory update of the registry.
@@ -170,10 +191,10 @@ impl Schemas {
     pub fn compute_new_endpoint(
         &self,
         endpoint_metadata: EndpointMetadata,
-        services: Vec<ServiceRegistrationRequest>,
+        services: Vec<String>,
         descriptor_pool: DescriptorPool,
         force: bool,
-    ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
+    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
         self.0
             .load()
             .compute_new_endpoint(endpoint_metadata, services, descriptor_pool, force)
@@ -183,7 +204,7 @@ impl Schemas {
         &self,
         service_name: String,
         public: bool,
-    ) -> Result<SchemasUpdateCommand, RegistrationError> {
+    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
         self.0
             .load()
             .compute_modify_service_updates(service_name, public)
@@ -192,7 +213,7 @@ impl Schemas {
     pub fn compute_remove_endpoint(
         &self,
         endpoint_id: EndpointId,
-    ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
+    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
         self.0.load().compute_remove_endpoint(endpoint_id)
     }
 
@@ -204,7 +225,7 @@ impl Schemas {
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
         validator: V,
-    ) -> Result<(Subscription, SchemasUpdateCommand), RegistrationError> {
+    ) -> Result<(Subscription, SchemasUpdateCommand), SchemasUpdateError> {
         self.0
             .load()
             .compute_add_subscription(id, source, sink, metadata, validator)
@@ -213,7 +234,7 @@ impl Schemas {
     pub fn compute_remove_subscription(
         &self,
         id: String,
-    ) -> Result<SchemasUpdateCommand, RegistrationError> {
+    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
         self.0.load().compute_remove_subscription(id)
     }
 
@@ -225,7 +246,7 @@ impl Schemas {
     pub fn apply_updates(
         &self,
         updates: impl IntoIterator<Item = SchemasUpdateCommand>,
-    ) -> Result<(), RegistrationError> {
+    ) -> Result<(), SchemasUpdateError> {
         let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
         for cmd in updates {
             match cmd {

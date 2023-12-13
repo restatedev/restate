@@ -10,7 +10,6 @@ publish = false
 [features]
 default = []
 
-discovery = []
 endpoint = ["dep:restate-types", "dep:http", "dep:base64", "dep:restate-base64-util", "dep:bytestring"]
 json_conversion = ["dep:prost-reflect", "prost-reflect?/serde", "dep:anyhow", "dep:serde_json"]
 json_key_conversion = ["key_extraction", "key_expansion", "dep:serde_json", "dep:thiserror"]

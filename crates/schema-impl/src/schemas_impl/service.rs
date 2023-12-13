@@ -5,10 +5,10 @@ impl SchemasInner {
         &self,
         name: String,
         public: bool,
-    ) -> Result<SchemasUpdateCommand, RegistrationError> {
+    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
         check_service_name_reserved(&name)?;
         if !self.services.contains_key(&name) {
-            return Err(RegistrationError::UnknownService(name));
+            return Err(SchemasUpdateError::UnknownService(name));
         }
 
         Ok(SchemasUpdateCommand::ModifyService { name, public })
@@ -18,11 +18,11 @@ impl SchemasInner {
         &mut self,
         name: String,
         new_public_value: bool,
-    ) -> Result<(), RegistrationError> {
+    ) -> Result<(), SchemasUpdateError> {
         let schemas = self
             .services
             .get_mut(&name)
-            .ok_or_else(|| RegistrationError::UnknownService(name.clone()))?;
+            .ok_or_else(|| SchemasUpdateError::UnknownService(name.clone()))?;
 
         // Update proto_symbols
         if let ServiceLocation::ServiceEndpoint {
@@ -59,7 +59,7 @@ impl SchemasInner {
         &mut self,
         name: String,
         revision: ServiceRevision,
-    ) -> Result<(), RegistrationError> {
+    ) -> Result<(), SchemasUpdateError> {
         let entry = self.services.entry(name);
         match entry {
             Entry::Occupied(e) if e.get().revision == revision => {
@@ -74,11 +74,14 @@ impl SchemasInner {
     }
 }
 
-pub fn check_service_name_reserved(svc_name: &str) -> Result<(), RegistrationError> {
+const RESTATE_SERVICE_NAME_PREFIX: &str = "dev.restate.";
+const GRPC_SERVICE_NAME_PREFIX: &str = "grpc.";
+
+pub fn check_service_name_reserved(svc_name: &str) -> Result<(), SchemasUpdateError> {
     if svc_name.starts_with(GRPC_SERVICE_NAME_PREFIX)
         || svc_name.starts_with(RESTATE_SERVICE_NAME_PREFIX)
     {
-        return Err(RegistrationError::ModifyInternalService(
+        return Err(SchemasUpdateError::ModifyInternalService(
             svc_name.to_string(),
         ));
     }

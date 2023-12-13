@@ -151,7 +151,6 @@ mod tests {
     use prost::Message;
     use prost_reflect::{MessageDescriptor, ServiceDescriptor};
     use restate_pb::mocks::test::*;
-    use restate_schema_api::discovery::KeyStructure;
     use serde::Serialize;
     use std::collections::HashMap;
     use uuid::Uuid;

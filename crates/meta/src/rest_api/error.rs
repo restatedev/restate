@@ -16,7 +16,7 @@ use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
-use restate_schema_impl::RegistrationError;
+use restate_schema_impl::SchemasUpdateError;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -64,23 +64,23 @@ impl IntoResponse for MetaApiError {
             | MetaApiError::MethodNotFound { .. }
             | MetaApiError::ServiceEndpointNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
-            MetaApiError::Meta(MetaError::Discovery(desc_error)) if desc_error.is_user_error() => {
+            MetaApiError::Meta(MetaError::SchemaRegistry(SchemasUpdateError::BadDescriptor(_))) => {
                 StatusCode::BAD_REQUEST
             }
-            MetaApiError::Meta(MetaError::SchemaRegistry(RegistrationError::OverrideEndpoint(
-                _,
-            )))
+            MetaApiError::Meta(MetaError::SchemaRegistry(
+                SchemasUpdateError::OverrideEndpoint(_),
+            ))
             | MetaApiError::Meta(MetaError::SchemaRegistry(
-                RegistrationError::IncompatibleServiceChange(_),
+                SchemasUpdateError::IncompatibleServiceChange(_),
             )) => StatusCode::CONFLICT,
-            MetaApiError::Meta(MetaError::SchemaRegistry(RegistrationError::UnknownService(_))) => {
-                StatusCode::NOT_FOUND
-            }
-            MetaApiError::Meta(MetaError::SchemaRegistry(RegistrationError::UnknownEndpoint(
+            MetaApiError::Meta(MetaError::SchemaRegistry(SchemasUpdateError::UnknownService(
+                _,
+            ))) => StatusCode::NOT_FOUND,
+            MetaApiError::Meta(MetaError::SchemaRegistry(SchemasUpdateError::UnknownEndpoint(
                 _,
             ))) => StatusCode::NOT_FOUND,
             MetaApiError::Meta(MetaError::SchemaRegistry(
-                RegistrationError::ModifyInternalService(_),
+                SchemasUpdateError::ModifyInternalService(_),
             )) => StatusCode::FORBIDDEN,
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
             MetaApiError::Worker(_) => StatusCode::SERVICE_UNAVAILABLE,

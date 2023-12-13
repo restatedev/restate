@@ -8,13 +8,13 @@ impl SchemasInner {
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
         validator: V,
-    ) -> Result<(Subscription, SchemasUpdateCommand), RegistrationError> {
+    ) -> Result<(Subscription, SchemasUpdateCommand), SchemasUpdateError> {
         // TODO We could generate a more human readable uuid here by taking the source and sink,
         // and adding an incremental number in case of collision.
         let id = id.unwrap_or_else(|| uuid::Uuid::now_v7().as_simple().to_string());
 
         if self.subscriptions.contains_key(&id) {
-            return Err(RegistrationError::OverrideSubscription(id));
+            return Err(SchemasUpdateError::OverrideSubscription(id));
         }
 
         // TODO This logic to parse source and sink should be moved elsewhere to abstract over the known source/sink providers
@@ -23,7 +23,7 @@ impl SchemasInner {
         // Parse source
         let source = match source.scheme_str() {
             Some("kafka") => {
-                let cluster_name = source.authority().ok_or_else(|| RegistrationError::InvalidSubscription(anyhow!(
+                let cluster_name = source.authority().ok_or_else(|| SchemasUpdateError::InvalidSubscription(anyhow!(
                     "source URI of Kafka type must have a authority segment containing the cluster name. Was '{}'",
                     source
                 )))?.as_str();
@@ -35,7 +35,7 @@ impl SchemasInner {
                 }
             }
             _ => {
-                return Err(RegistrationError::InvalidSubscription(anyhow!(
+                return Err(SchemasUpdateError::InvalidSubscription(anyhow!(
                     "source URI must have a scheme segment, with supported schemes: {:?}. Was '{}'",
                     ["kafka"],
                     source
@@ -46,7 +46,7 @@ impl SchemasInner {
         // Parse sink
         let sink = match sink.scheme_str() {
             Some("service") => {
-                let service_name = sink.authority().ok_or_else(|| RegistrationError::InvalidSubscription(anyhow!(
+                let service_name = sink.authority().ok_or_else(|| SchemasUpdateError::InvalidSubscription(anyhow!(
                     "sink URI of service type must have a authority segment containing the service name. Was '{}'",
                     sink
                 )))?.as_str();
@@ -54,13 +54,13 @@ impl SchemasInner {
 
                 // Retrieve service and method in the schema registry
                 let service_schemas = self.services.get(service_name).ok_or_else(|| {
-                    RegistrationError::InvalidSubscription(anyhow!(
+                    SchemasUpdateError::InvalidSubscription(anyhow!(
                         "cannot find service specified in the sink URI. Was '{}'",
                         sink
                     ))
                 })?;
                 let method_schemas = service_schemas.methods.get(method_name).ok_or_else(|| {
-                    RegistrationError::InvalidSubscription(anyhow!(
+                    SchemasUpdateError::InvalidSubscription(anyhow!(
                         "cannot find service method specified in the sink URI. Was '{}'",
                         sink
                     ))
@@ -112,7 +112,7 @@ impl SchemasInner {
                             method_schemas.input_field_annotated(FieldAnnotation::Key).expect("There must be a key field for every method input type")
                         ).unwrap().kind();
                         if key_field_kind != Kind::String && key_field_kind != Kind::Bytes {
-                            return Err(RegistrationError::InvalidSubscription(anyhow!(
+                            return Err(SchemasUpdateError::InvalidSubscription(anyhow!(
                                 "Key type {:?} for sink {} is invalid, only bytes and string are supported.",
                                 key_field_kind, sink
                             )));
@@ -123,7 +123,7 @@ impl SchemasInner {
                     InstanceTypeMetadata::Unkeyed => EventReceiverServiceInstanceType::Unkeyed,
                     InstanceTypeMetadata::Singleton => EventReceiverServiceInstanceType::Singleton,
                     InstanceTypeMetadata::Unsupported | InstanceTypeMetadata::Custom { .. } => {
-                        return Err(RegistrationError::InvalidSubscription(anyhow!(
+                        return Err(SchemasUpdateError::InvalidSubscription(anyhow!(
                             "trying to use a built-in service as sink {}. This is currently unsupported.",
                             sink
                         )))
@@ -138,7 +138,7 @@ impl SchemasInner {
                 }
             }
             _ => {
-                return Err(RegistrationError::InvalidSubscription(anyhow!(
+                return Err(SchemasUpdateError::InvalidSubscription(anyhow!(
                     "sink URI must have a scheme segment, with supported schemes: {:?}. Was '{}'",
                     ["service"],
                     sink
@@ -153,7 +153,7 @@ impl SchemasInner {
                 sink,
                 metadata.unwrap_or_default(),
             ))
-            .map_err(|e| RegistrationError::InvalidSubscription(e.into()))?;
+            .map_err(|e| SchemasUpdateError::InvalidSubscription(e.into()))?;
 
         Ok((
             subscription.clone(),
@@ -164,7 +164,7 @@ impl SchemasInner {
     pub(crate) fn apply_add_subscription(
         &mut self,
         sub: Subscription,
-    ) -> Result<(), RegistrationError> {
+    ) -> Result<(), SchemasUpdateError> {
         self.subscriptions.insert(sub.id().to_string(), sub);
 
         Ok(())
@@ -173,9 +173,9 @@ impl SchemasInner {
     pub(crate) fn compute_remove_subscription(
         &self,
         id: String,
-    ) -> Result<SchemasUpdateCommand, RegistrationError> {
+    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
         if !self.subscriptions.contains_key(&id) {
-            return Err(RegistrationError::UnknownSubscription(id));
+            return Err(SchemasUpdateError::UnknownSubscription(id));
         }
 
         Ok(SchemasUpdateCommand::RemoveSubscription(id))
@@ -184,7 +184,7 @@ impl SchemasInner {
     pub(crate) fn apply_remove_subscription(
         &mut self,
         sub_id: String,
-    ) -> Result<(), RegistrationError> {
+    ) -> Result<(), SchemasUpdateError> {
         self.subscriptions.remove(&sub_id);
 
         Ok(())

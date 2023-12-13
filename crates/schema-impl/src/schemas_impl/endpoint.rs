@@ -1,16 +1,124 @@
 use super::*;
+
 use crate::schemas_impl::service::check_service_name_reserved;
+use prost::DecodeError;
+use prost_reflect::{Cardinality, DescriptorError, ExtensionDescriptor, FieldDescriptor};
+use restate_errors::*;
+
+const SERVICE_TYPE_EXT: &str = "dev.restate.ext.service_type";
+const FIELD_EXT: &str = "dev.restate.ext.field";
+
+const UNKEYED_SERVICE_EXT: i32 = 0;
+const KEYED_SERVICE_EXT: i32 = 1;
+const SINGLETON_SERVICE_EXT: i32 = 2;
+
+const KEY_FIELD_EXT: i32 = 0;
+const EVENT_PAYLOAD_FIELD_EXT: i32 = 1;
+const EVENT_METADATA_FIELD_EXT: i32 = 2;
+
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+pub enum BadDescriptorError {
+    // User errors
+    #[error("bad uri '{0}'. The uri must contain either `http` or `https` scheme, a valid authority and can contain a path where the service endpoint is exposed.")]
+    #[code(unknown)]
+    BadUri(String),
+    #[error("cannot find the dev.restate.ext.service_type extension in the descriptor of service '{0}'. You must annotate a service using the dev.restate.ext.service_type extension to specify whether your service is KEYED, UNKEYED or SINGLETON")]
+    #[code(META0001)]
+    MissingServiceTypeExtension(String),
+    #[error("the service '{0}' is keyed but has no methods. You must specify at least one method")]
+    #[code(META0001)]
+    KeyedServiceWithoutMethods(String),
+    #[error("the service name '{0}' is reserved. Service name should must not start with 'dev.restate' or 'grpc'")]
+    #[code(META0001)]
+    ServiceNameReserved(String),
+    #[error(
+        "error when trying to parse the key of service method '{}' with input type '{}'. No key field found",
+        MethodDescriptor::full_name(.0),
+        MethodDescriptor::input(.0).full_name()
+    )]
+    #[code(META0002)]
+    MissingKeyField(MethodDescriptor),
+    #[error(
+        "error when trying to parse the annotation {1:?} of service method '{}' with input type '{}'. More than one field annotated with the same annotation found",
+        MethodDescriptor::full_name(.0),
+        MethodDescriptor::input(.0).full_name()
+    )]
+    #[code(META0007)]
+    MoreThanOneAnnotatedField(MethodDescriptor, FieldAnnotation),
+    #[error(
+        "error when trying to parse the key of service method '{}' with input type '{}'. Bad key field type",
+        MethodDescriptor::full_name(.0),
+        MethodDescriptor::input(.0).full_name()
+    )]
+    #[code(META0002)]
+    BadKeyFieldType(MethodDescriptor),
+    #[error(
+        "error when trying to parse the key of service method '{}' with input type '{}'. The key type is different from other methods key types",
+        MethodDescriptor::full_name(.0),
+        MethodDescriptor::input(.0).full_name()
+    )]
+    #[code(META0002)]
+    DifferentKeyTypes(MethodDescriptor),
+    #[error(
+        "error when parsing the annotation EVENT_PAYLOAD of service method '{}' with input type '{}'. Bad type",
+        MethodDescriptor::full_name(.0),
+        MethodDescriptor::input(.0).full_name()
+    )]
+    #[code(META0008)]
+    BadEventPayloadFieldType(MethodDescriptor),
+    #[error(
+        "error when parsing the annotation EVENT_METADATA of service method '{}' with input type '{}'. Bad type",
+        MethodDescriptor::full_name(.0),
+        MethodDescriptor::input(.0).full_name()
+    )]
+    #[code(META0008)]
+    BadEventMetadataFieldType(MethodDescriptor),
+
+    // Errors most likely related to SDK bugs
+    #[error("cannot find service '{0}' in descriptor set. This might be a symptom of an SDK bug, or of the build tool/pipeline used to generate the descriptor")]
+    #[code(unknown)]
+    ServiceNotFoundInDescriptor(String),
+    #[error("received a bad response from the SDK: {0}. This might be a symptom of an SDK bug")]
+    #[code(unknown)]
+    BadResponse(&'static str),
+    #[error("received a bad response from the SDK that cannot be decoded: {0}. This might be a symptom of an SDK bug")]
+    #[code(unknown)]
+    Decode(#[from] DecodeError),
+    #[error("received a bad response from the SDK with a descriptor set that cannot be reconstructed: {0}. This might be a symptom of an SDK bug")]
+    #[code(unknown)]
+    Descriptor(#[from] DescriptorError),
+    #[error("bad or missing Restate dependency in the descriptor pool. This might be a symptom of an SDK bug")]
+    #[code(unknown)]
+    BadOrMissingRestateDependencyInDescriptor,
+}
+
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+#[code(restate_errors::META0006)]
+pub enum IncompatibleServiceChangeError {
+    #[error("detected a new service {0} revision with a service instance type different from the previous revision")]
+    #[code(restate_errors::META0006)]
+    DifferentServiceInstanceType(String),
+    #[error("the service {0} already exists but the new revision removed the methods {1:?}")]
+    #[code(restate_errors::META0006)]
+    RemovedMethods(String, Vec<String>),
+}
 
 impl SchemasInner {
     /// When `force` is set, allow incompatible service definition updates to existing services.
     pub(crate) fn compute_new_endpoint(
         &self,
         endpoint_metadata: EndpointMetadata,
-        services: Vec<ServiceRegistrationRequest>,
+        services: Vec<String>,
         descriptor_pool: DescriptorPool,
         force: bool,
-    ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
+    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
         let endpoint_id = endpoint_metadata.id();
+
+        let services: Vec<ServiceRegistrationRequest> =
+            ServiceRegistrationRequest::infer_all_services_from_descriptor_pool(
+                services,
+                &descriptor_pool,
+            )?;
 
         let mut result_commands = Vec::with_capacity(1 + services.len());
 
@@ -30,7 +138,7 @@ impl SchemasInner {
                     });
                 }
             } else {
-                return Err(RegistrationError::OverrideEndpoint(endpoint_id));
+                return Err(SchemasUpdateError::OverrideEndpoint(endpoint_id));
             }
         }
 
@@ -64,7 +172,7 @@ impl SchemasInner {
                             removed_methods
                         );
                     } else {
-                        return Err(RegistrationError::IncompatibleServiceChange(
+                        return Err(SchemasUpdateError::IncompatibleServiceChange(
                             IncompatibleServiceChangeError::RemovedMethods(
                                 proposed_service.name.clone(),
                                 removed_methods,
@@ -84,7 +192,7 @@ impl SchemasInner {
                             instance_type
                         );
                     } else {
-                        return Err(RegistrationError::IncompatibleServiceChange(
+                        return Err(SchemasUpdateError::IncompatibleServiceChange(
                             IncompatibleServiceChangeError::DifferentServiceInstanceType(
                                 proposed_service.name.clone(),
                             ),
@@ -126,7 +234,7 @@ impl SchemasInner {
         metadata: EndpointMetadata,
         services: Vec<InsertServiceUpdateCommand>,
         descriptor_pool: DescriptorPool,
-    ) -> Result<(), RegistrationError> {
+    ) -> Result<(), SchemasUpdateError> {
         let endpoint_id = metadata.id();
         info!(
             restate.service_endpoint.id = %endpoint_id,
@@ -150,7 +258,7 @@ impl SchemasInner {
             );
             let service_descriptor = descriptor_pool
                 .get_service_by_name(&name)
-                .ok_or_else(|| RegistrationError::MissingServiceInDescriptor(name.clone()))?;
+                .ok_or_else(|| SchemasUpdateError::MissingServiceInDescriptor(name.clone()))?;
 
             if tracing::enabled!(tracing::Level::DEBUG) {
                 service_descriptor.methods().for_each(|method| {
@@ -223,9 +331,9 @@ impl SchemasInner {
     pub(crate) fn compute_remove_endpoint(
         &self,
         endpoint_id: EndpointId,
-    ) -> Result<Vec<SchemasUpdateCommand>, RegistrationError> {
+    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
         if !self.endpoints.contains_key(&endpoint_id) {
-            return Err(RegistrationError::UnknownEndpoint(endpoint_id));
+            return Err(SchemasUpdateError::UnknownEndpoint(endpoint_id));
         }
         let endpoint_schemas = self.endpoints.get(&endpoint_id).unwrap();
 
@@ -244,35 +352,333 @@ impl SchemasInner {
     pub(crate) fn apply_remove_endpoint(
         &mut self,
         endpoint_id: EndpointId,
-    ) -> Result<(), RegistrationError> {
+    ) -> Result<(), SchemasUpdateError> {
         self.endpoints.remove(&endpoint_id);
 
         Ok(())
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServiceRegistrationRequest {
+    name: String,
+    instance_type: DiscoveredInstanceType,
+    methods: HashMap<String, DiscoveredMethodMetadata>,
+}
+
+impl ServiceRegistrationRequest {
+    fn infer_all_services_from_descriptor_pool(
+        services: Vec<String>,
+        descriptor_pool: &DescriptorPool,
+    ) -> Result<Vec<Self>, SchemasUpdateError> {
+        // Find the Restate extensions in the DescriptorPool.
+        // If they're not available, the descriptor pool is incomplete/doesn't contain the restate dependencies.
+        let restate_service_type_extension = descriptor_pool
+            .get_extension_by_name(SERVICE_TYPE_EXT)
+            .ok_or(BadDescriptorError::BadOrMissingRestateDependencyInDescriptor)?;
+        let restate_key_extension = descriptor_pool
+            .get_extension_by_name(FIELD_EXT)
+            .ok_or(BadDescriptorError::BadOrMissingRestateDependencyInDescriptor)?;
+
+        // Collect all the service descriptors
+        let service_descriptors = services
+            .into_iter()
+            .map(|svc| {
+                descriptor_pool
+                    .get_service_by_name(&svc)
+                    .ok_or(BadDescriptorError::ServiceNotFoundInDescriptor(svc))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Compute ServiceRegistrationRequest
+        let mut services = Vec::with_capacity(service_descriptors.len());
+        for svc_desc in service_descriptors {
+            services.push(ServiceRegistrationRequest::from_service_descriptor(
+                svc_desc,
+                &restate_service_type_extension,
+                &restate_key_extension,
+            )?);
+        }
+
+        Ok(services)
+    }
+
+    fn from_service_descriptor(
+        svc_desc: ServiceDescriptor,
+        restate_service_type_extension: &ExtensionDescriptor,
+        restate_key_extension: &ExtensionDescriptor,
+    ) -> Result<Self, SchemasUpdateError> {
+        check_service_name_reserved(svc_desc.full_name())?;
+        let mut methods = HashMap::with_capacity(svc_desc.methods().len());
+
+        let instance_type = infer_service_type(
+            &svc_desc,
+            restate_service_type_extension,
+            restate_key_extension,
+            &mut methods,
+        )?;
+
+        infer_event_fields_annotations(&svc_desc, restate_key_extension, &mut methods)?;
+
+        Ok(ServiceRegistrationRequest {
+            name: svc_desc.full_name().to_owned(),
+            instance_type,
+            methods,
+        })
+    }
+}
+
+fn infer_service_type(
+    desc: &ServiceDescriptor,
+    restate_service_type_ext: &ExtensionDescriptor,
+    restate_field_ext: &ExtensionDescriptor,
+    methods: &mut HashMap<String, DiscoveredMethodMetadata>,
+) -> Result<DiscoveredInstanceType, BadDescriptorError> {
+    if !desc.options().has_extension(restate_service_type_ext) {
+        return Err(BadDescriptorError::MissingServiceTypeExtension(
+            desc.full_name().to_string(),
+        ));
+    }
+
+    let service_instance_type = desc
+        .options()
+        .get_extension(restate_service_type_ext)
+        .as_enum_number()
+        // This can happen only if the restate dependency is bad?
+        .ok_or_else(|| BadDescriptorError::BadOrMissingRestateDependencyInDescriptor)?;
+
+    match service_instance_type {
+        UNKEYED_SERVICE_EXT => Ok(DiscoveredInstanceType::Unkeyed),
+        KEYED_SERVICE_EXT => infer_keyed_service_type(desc, restate_field_ext, methods),
+        SINGLETON_SERVICE_EXT => Ok(DiscoveredInstanceType::Singleton),
+        _ => Err(BadDescriptorError::BadOrMissingRestateDependencyInDescriptor),
+    }
+}
+
+fn infer_keyed_service_type(
+    desc: &ServiceDescriptor,
+    restate_field_ext: &ExtensionDescriptor,
+    methods: &mut HashMap<String, DiscoveredMethodMetadata>,
+) -> Result<DiscoveredInstanceType, BadDescriptorError> {
+    if desc.methods().len() == 0 {
+        return Err(BadDescriptorError::KeyedServiceWithoutMethods(
+            desc.full_name().to_string(),
+        ));
+    }
+
+    // Parse the key from the first method
+    let first_method = desc.methods().next().unwrap();
+    let first_key_field_descriptor = resolve_key_field(&first_method, restate_field_ext)?;
+
+    // Generate the KeyStructure out of it
+    let key_structure = infer_key_structure(&first_key_field_descriptor);
+    methods
+        .entry(first_method.name().to_string())
+        .or_default()
+        .input_fields_annotations
+        .insert(FieldAnnotation::Key, first_key_field_descriptor.number());
+
+    // Now parse the next methods
+    for method_desc in desc.methods().skip(1) {
+        let key_field_descriptor = resolve_key_field(&method_desc, restate_field_ext)?;
+
+        // Validate every method has the same key field type
+        if key_field_descriptor.kind() != first_key_field_descriptor.kind() {
+            return Err(BadDescriptorError::DifferentKeyTypes(method_desc));
+        }
+
+        methods
+            .entry(method_desc.name().to_string())
+            .or_default()
+            .input_fields_annotations
+            .insert(FieldAnnotation::Key, key_field_descriptor.number());
+    }
+
+    Ok(DiscoveredInstanceType::Keyed(key_structure))
+}
+
+fn infer_key_structure(field_descriptor: &FieldDescriptor) -> KeyStructure {
+    match field_descriptor.kind() {
+        Kind::Message(message_descriptor) => KeyStructure::Nested(
+            message_descriptor
+                .fields()
+                .map(|f| (f.number(), infer_key_structure(&f)))
+                .collect(),
+        ),
+        _ => KeyStructure::Scalar,
+    }
+}
+
+fn resolve_key_field(
+    method_descriptor: &MethodDescriptor,
+    restate_field_extension: &ExtensionDescriptor,
+) -> Result<FieldDescriptor, BadDescriptorError> {
+    let field_descriptor = match get_annotated_field(
+        method_descriptor,
+        restate_field_extension,
+        KEY_FIELD_EXT,
+        FieldAnnotation::Key,
+    )? {
+        Some(f) => f,
+        None => {
+            return Err(BadDescriptorError::MissingKeyField(
+                method_descriptor.clone(),
+            ));
+        }
+    };
+
+    // Validate type
+    if field_descriptor.is_map() {
+        return Err(BadDescriptorError::BadKeyFieldType(
+            method_descriptor.clone(),
+        ));
+    }
+    if field_descriptor.is_list() {
+        return Err(BadDescriptorError::BadKeyFieldType(
+            method_descriptor.clone(),
+        ));
+    }
+
+    Ok(field_descriptor)
+}
+
+fn infer_event_fields_annotations(
+    service_desc: &ServiceDescriptor,
+    restate_field_ext: &ExtensionDescriptor,
+    methods: &mut HashMap<String, DiscoveredMethodMetadata>,
+) -> Result<(), BadDescriptorError> {
+    for method_desc in service_desc.methods() {
+        let method_meta = methods.entry(method_desc.name().to_string()).or_default();
+
+        // Infer event annotations
+        if let Some(field_desc) = resolve_event_payload_field(&method_desc, restate_field_ext)? {
+            method_meta
+                .input_fields_annotations
+                .insert(FieldAnnotation::EventPayload, field_desc.number());
+        }
+        if let Some(field_desc) = resolve_event_metadata_field(&method_desc, restate_field_ext)? {
+            method_meta
+                .input_fields_annotations
+                .insert(FieldAnnotation::EventMetadata, field_desc.number());
+        }
+    }
+    Ok(())
+}
+
+fn resolve_event_payload_field(
+    method_descriptor: &MethodDescriptor,
+    restate_field_extension: &ExtensionDescriptor,
+) -> Result<Option<FieldDescriptor>, BadDescriptorError> {
+    let field_descriptor = match get_annotated_field(
+        method_descriptor,
+        restate_field_extension,
+        EVENT_PAYLOAD_FIELD_EXT,
+        FieldAnnotation::EventPayload,
+    )? {
+        Some(f) => f,
+        None => return Ok(None),
+    };
+
+    // Validate type
+    if field_descriptor.kind() != Kind::String && field_descriptor.kind() != Kind::Bytes {
+        return Err(BadDescriptorError::BadEventPayloadFieldType(
+            method_descriptor.clone(),
+        ));
+    }
+
+    Ok(Some(field_descriptor))
+}
+
+fn resolve_event_metadata_field(
+    method_descriptor: &MethodDescriptor,
+    restate_field_extension: &ExtensionDescriptor,
+) -> Result<Option<FieldDescriptor>, BadDescriptorError> {
+    let field_descriptor = match get_annotated_field(
+        method_descriptor,
+        restate_field_extension,
+        EVENT_METADATA_FIELD_EXT,
+        FieldAnnotation::EventMetadata,
+    )? {
+        Some(f) => f,
+        None => return Ok(None),
+    };
+
+    // Validate type
+    if !is_map_with(&field_descriptor, Kind::String, Kind::String) {
+        return Err(BadDescriptorError::BadEventMetadataFieldType(
+            method_descriptor.clone(),
+        ));
+    }
+
+    Ok(Some(field_descriptor))
+}
+
+fn get_annotated_field(
+    method_descriptor: &MethodDescriptor,
+    restate_field_extension: &ExtensionDescriptor,
+    extension_value: i32,
+    field_annotation: FieldAnnotation,
+) -> Result<Option<FieldDescriptor>, BadDescriptorError> {
+    let message_desc = method_descriptor.input();
+    let mut iter = message_desc.fields().filter(|f| {
+        f.options().has_extension(restate_field_extension)
+            && f.options()
+                .get_extension(restate_field_extension)
+                .as_enum_number()
+                == Some(extension_value)
+    });
+
+    let field = iter.next();
+    if field.is_none() {
+        return Ok(None);
+    }
+
+    // Check there is only one
+    if iter.next().is_some() {
+        return Err(BadDescriptorError::MoreThanOneAnnotatedField(
+            method_descriptor.clone(),
+            field_annotation,
+        ));
+    }
+
+    Ok(field)
+}
+
+// Expanded version of FieldDescriptor::is_map
+fn is_map_with(field_descriptor: &FieldDescriptor, key_kind: Kind, value_kind: Kind) -> bool {
+    field_descriptor.cardinality() == Cardinality::Repeated
+        && match field_descriptor.kind() {
+            Kind::Message(message) => {
+                message.is_map_entry()
+                    && message.map_entry_key_field().kind() == key_kind
+                    && message.map_entry_value_field().kind() == value_kind
+            }
+            _ => false,
+        }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use restate_pb::mocks;
     use restate_schema_api::endpoint::EndpointMetadataResolver;
     use restate_schema_api::service::ServiceMetadataResolver;
-    use restate_test_util::{assert, assert_eq, check, let_assert, test};
+    use restate_test_util::{assert, assert_eq, let_assert, test};
+
+    load_mock_descriptor!(DESCRIPTOR, "generic");
+    const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
+    const ANOTHER_GREETER_SERVICE_NAME: &str = "greeter.AnotherGreeter";
 
     #[test]
-    fn register_new_endpoint_empty_registry() {
+    fn register_new_endpoint() {
         let schemas = Schemas::default();
 
         let endpoint = EndpointMetadata::mock();
         let commands = schemas
             .compute_new_endpoint(
                 endpoint.clone(),
-                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                    mocks::GREETER_SERVICE_NAME.to_string(),
-                    &["Greet"],
-                )],
-                mocks::DESCRIPTOR_POOL.clone(),
+                vec![GREETER_SERVICE_NAME.to_owned()],
+                DESCRIPTOR.clone(),
                 false,
             )
             .unwrap();
@@ -282,13 +688,13 @@ mod tests {
 
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 1);
-        schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint.id());
-        // assert_eq!(schemas.list_services().first().unwrap().methods.len(), 1);
+        schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
+        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint.id());
+        assert_eq!(schemas.list_services().first().unwrap().methods.len(), 3);
     }
 
     #[test]
-    fn register_new_endpoint_updating_old_service() {
+    fn register_new_endpoint_add_unregistered_service() {
         let schemas = Schemas::default();
 
         let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
@@ -297,11 +703,8 @@ mod tests {
         let commands = schemas
             .compute_new_endpoint(
                 endpoint_1.clone(),
-                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                    mocks::GREETER_SERVICE_NAME.to_string(),
-                    &["Greet"],
-                )],
-                mocks::DESCRIPTOR_POOL.clone(),
+                vec![GREETER_SERVICE_NAME.to_owned()],
+                DESCRIPTOR.clone(),
                 false,
             )
             .unwrap();
@@ -311,22 +714,19 @@ mod tests {
 
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_1.id());
+        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint_1.id());
+        assert!(schemas
+            .resolve_latest_service_metadata(ANOTHER_GREETER_SERVICE_NAME)
+            .is_none());
 
         let commands = schemas
             .compute_new_endpoint(
                 endpoint_2.clone(),
                 vec![
-                    ServiceRegistrationRequest::unkeyed_without_annotations(
-                        mocks::GREETER_SERVICE_NAME.to_string(),
-                        &["Greet"],
-                    ),
-                    ServiceRegistrationRequest::unkeyed_without_annotations(
-                        mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
-                        &["Greet"],
-                    ),
+                    GREETER_SERVICE_NAME.to_owned(),
+                    ANOTHER_GREETER_SERVICE_NAME.to_owned(),
                 ],
-                mocks::DESCRIPTOR_POOL.clone(),
+                DESCRIPTOR.clone(),
                 false,
             )
             .unwrap();
@@ -336,52 +736,61 @@ mod tests {
 
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_2.id());
-        schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 2);
-        schemas.assert_resolves_endpoint(mocks::ANOTHER_GREETER_SERVICE_NAME, endpoint_2.id());
-        schemas.assert_service_revision(mocks::ANOTHER_GREETER_SERVICE_NAME, 1);
+        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint_2.id());
+        schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
+        schemas.assert_resolves_endpoint(ANOTHER_GREETER_SERVICE_NAME, endpoint_2.id());
+        schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
     }
 
-    #[test]
-    fn register_new_endpoint_updating_old_service_fails_with_different_instance_type() {
-        let schemas = Schemas::default();
+    mod change_instance_type {
+        use super::*;
 
-        let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
-        let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:9081");
+        use restate_test_util::{assert, test};
 
-        schemas
-            .apply_updates(
-                schemas
-                    .compute_new_endpoint(
-                        endpoint_1.clone(),
-                        vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                            mocks::GREETER_SERVICE_NAME.to_string(),
-                            &["Greet"],
-                        )],
-                        mocks::DESCRIPTOR_POOL.clone(),
-                        false,
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
-
-        schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_1.id());
-
-        let compute_result = schemas.compute_new_endpoint(
-            endpoint_2,
-            vec![ServiceRegistrationRequest::singleton_without_annotations(
-                mocks::GREETER_SERVICE_NAME.to_string(),
-                &["Greet"],
-            )],
-            mocks::DESCRIPTOR_POOL.clone(),
-            false,
+        load_mock_descriptor!(
+            CHANGE_INSTANCE_TYPE_DESCRIPTOR_V1,
+            "change_instance_type/v1"
+        );
+        load_mock_descriptor!(
+            CHANGE_INSTANCE_TYPE_DESCRIPTOR_V2,
+            "change_instance_type/v2"
         );
 
-        assert!(let Err(RegistrationError::IncompatibleServiceChange(IncompatibleServiceChangeError::DifferentServiceInstanceType(_))) = compute_result);
+        #[test]
+        fn register_new_endpoint_fails_changing_instance_type() {
+            let schemas = Schemas::default();
+
+            let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
+            let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:9081");
+
+            schemas
+                .apply_updates(
+                    schemas
+                        .compute_new_endpoint(
+                            endpoint_1.clone(),
+                            vec![GREETER_SERVICE_NAME.to_owned()],
+                            CHANGE_INSTANCE_TYPE_DESCRIPTOR_V1.clone(),
+                            false,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
+
+            schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint_1.id());
+
+            let compute_result = schemas.compute_new_endpoint(
+                endpoint_2,
+                vec![GREETER_SERVICE_NAME.to_owned()],
+                CHANGE_INSTANCE_TYPE_DESCRIPTOR_V2.clone(),
+                false,
+            );
+
+            assert!(let Err(SchemasUpdateError::IncompatibleServiceChange(IncompatibleServiceChangeError::DifferentServiceInstanceType(_))) = compute_result);
+        }
     }
 
     #[test]
-    fn override_existing_endpoint() {
+    fn override_existing_endpoint_removing_a_service() {
         let schemas = Schemas::default();
 
         let endpoint = EndpointMetadata::mock();
@@ -389,40 +798,31 @@ mod tests {
             .compute_new_endpoint(
                 endpoint.clone(),
                 vec![
-                    ServiceRegistrationRequest::unkeyed_without_annotations(
-                        mocks::GREETER_SERVICE_NAME.to_string(),
-                        &["Greet"],
-                    ),
-                    ServiceRegistrationRequest::unkeyed_without_annotations(
-                        mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
-                        &["Greet"],
-                    ),
+                    GREETER_SERVICE_NAME.to_owned(),
+                    ANOTHER_GREETER_SERVICE_NAME.to_owned(),
                 ],
-                mocks::DESCRIPTOR_POOL.clone(),
+                DESCRIPTOR.clone(),
                 false,
             )
             .unwrap();
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint.id());
-        schemas.assert_resolves_endpoint(mocks::ANOTHER_GREETER_SERVICE_NAME, endpoint.id());
+        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint.id());
+        schemas.assert_resolves_endpoint(ANOTHER_GREETER_SERVICE_NAME, endpoint.id());
 
         let commands = schemas
             .compute_new_endpoint(
                 endpoint.clone(),
-                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                    mocks::GREETER_SERVICE_NAME.to_string(),
-                    &["Greet"],
-                )],
-                mocks::DESCRIPTOR_POOL.clone(),
+                vec![GREETER_SERVICE_NAME.to_owned()],
+                DESCRIPTOR.clone(),
                 true,
             )
             .unwrap();
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint.id());
+        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint.id());
         assert!(schemas
-            .resolve_latest_endpoint_for_service(mocks::ANOTHER_GREETER_SERVICE_NAME)
+            .resolve_latest_endpoint_for_service(ANOTHER_GREETER_SERVICE_NAME)
             .is_none());
     }
 
@@ -431,22 +831,23 @@ mod tests {
         let schemas = Schemas::default();
 
         let endpoint = EndpointMetadata::mock();
-        let services = vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-            mocks::GREETER_SERVICE_NAME.to_string(),
-            &["Greet"],
-        )];
 
         let commands = schemas
             .compute_new_endpoint(
                 endpoint.clone(),
-                services.clone(),
-                mocks::DESCRIPTOR_POOL.clone(),
+                vec![GREETER_SERVICE_NAME.to_owned()],
+                DESCRIPTOR.clone(),
                 false,
             )
             .unwrap();
         schemas.apply_updates(commands).unwrap();
 
-        assert!(let Err(RegistrationError::OverrideEndpoint(_)) = schemas.compute_new_endpoint(endpoint, services, mocks::DESCRIPTOR_POOL.clone(), false));
+        assert!(let Err(SchemasUpdateError::OverrideEndpoint(_)) = schemas.compute_new_endpoint(
+            endpoint,
+            vec![GREETER_SERVICE_NAME.to_owned()],
+            DESCRIPTOR.clone(),
+            false)
+        );
     }
 
     #[test]
@@ -462,16 +863,10 @@ mod tests {
                     .compute_new_endpoint(
                         endpoint_1.clone(),
                         vec![
-                            ServiceRegistrationRequest::unkeyed_without_annotations(
-                                mocks::GREETER_SERVICE_NAME.to_string(),
-                                &["Greet"],
-                            ),
-                            ServiceRegistrationRequest::unkeyed_without_annotations(
-                                mocks::ANOTHER_GREETER_SERVICE_NAME.to_string(),
-                                &["Greet"],
-                            ),
+                            GREETER_SERVICE_NAME.to_owned(),
+                            ANOTHER_GREETER_SERVICE_NAME.to_owned(),
                         ],
-                        mocks::DESCRIPTOR_POOL.clone(),
+                        DESCRIPTOR.clone(),
                         false,
                     )
                     .unwrap(),
@@ -482,21 +877,18 @@ mod tests {
                 schemas
                     .compute_new_endpoint(
                         endpoint_2.clone(),
-                        vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                            mocks::GREETER_SERVICE_NAME.to_string(),
-                            &["Greet"],
-                        )],
-                        mocks::DESCRIPTOR_POOL.clone(),
+                        vec![GREETER_SERVICE_NAME.to_owned()],
+                        DESCRIPTOR.clone(),
                         false,
                     )
                     .unwrap(),
             )
             .unwrap();
 
-        schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_2.id());
-        schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 2);
-        schemas.assert_resolves_endpoint(mocks::ANOTHER_GREETER_SERVICE_NAME, endpoint_1.id());
-        schemas.assert_service_revision(mocks::ANOTHER_GREETER_SERVICE_NAME, 1);
+        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint_2.id());
+        schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
+        schemas.assert_resolves_endpoint(ANOTHER_GREETER_SERVICE_NAME, endpoint_1.id());
+        schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
 
         let commands = schemas.compute_remove_endpoint(endpoint_1.id()).unwrap();
 
@@ -512,10 +904,10 @@ mod tests {
 
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_resolves_endpoint(mocks::GREETER_SERVICE_NAME, endpoint_2.id());
-        schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 2);
+        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint_2.id());
+        schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
         assert!(schemas
-            .resolve_latest_endpoint_for_service(mocks::ANOTHER_GREETER_SERVICE_NAME)
+            .resolve_latest_endpoint_for_service(ANOTHER_GREETER_SERVICE_NAME)
             .is_none());
         assert!(schemas.get_endpoint(&endpoint_1.id()).is_none());
     }
@@ -532,11 +924,8 @@ mod tests {
                 schemas
                     .compute_new_endpoint(
                         endpoint.clone(),
-                        vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                            svc_name.to_string(),
-                            &["Greet"],
-                        )],
-                        mocks::DESCRIPTOR_POOL.clone(),
+                        vec![GREETER_SERVICE_NAME.to_owned()],
+                        DESCRIPTOR.clone(),
                         false,
                     )
                     .unwrap(),
@@ -550,63 +939,14 @@ mod tests {
                 schemas
                     .compute_new_endpoint(
                         endpoint,
-                        vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                            svc_name.to_string(),
-                            &["Greet"],
-                        )],
-                        mocks::DESCRIPTOR_POOL.clone(),
+                        vec![GREETER_SERVICE_NAME.to_owned()],
+                        DESCRIPTOR.clone(),
                         true,
                     )
                     .unwrap(),
             )
             .unwrap();
         schemas.assert_service_revision(svc_name, 2);
-    }
-
-    #[test]
-    fn compute_updates_only_registers_requested_methods() {
-        let schemas = Schemas::default();
-
-        let svc = mocks::DESCRIPTOR_POOL.clone();
-        svc.services()
-            .filter(|s| s.name() == mocks::GREETER_SERVICE_NAME)
-            .for_each(|s| {
-                let method_names = s
-                    .methods()
-                    .map(|m| m.name().to_string())
-                    .collect::<Vec<_>>();
-                check!(method_names == std::vec!["Greet", "GetCount", "GreetStream"]);
-            });
-
-        let commands = schemas
-            .compute_new_endpoint(
-                EndpointMetadata::mock(),
-                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                    mocks::GREETER_SERVICE_NAME.to_string(),
-                    &["Greet"],
-                )],
-                mocks::DESCRIPTOR_POOL.clone(),
-                false,
-            )
-            .unwrap();
-
-        assert_eq!(commands.len(), 1);
-        let_assert!(Some(SchemasUpdateCommand::InsertEndpoint { services, .. }) = commands.get(0));
-        let_assert!(Some(InsertServiceUpdateCommand { methods, .. }) = services.get(0));
-        check!(methods.keys().collect::<Vec<_>>() == std::vec!["Greet"]);
-
-        schemas.apply_updates(commands).unwrap();
-        schemas.assert_service_revision(mocks::GREETER_SERVICE_NAME, 1);
-
-        let registered_methods = schemas
-            .resolve_latest_service_metadata(mocks::GREETER_SERVICE_NAME)
-            .unwrap()
-            .methods
-            .iter()
-            .map(|m| m.name.clone())
-            .collect::<Vec<_>>();
-
-        check!(registered_methods == std::vec!["Greet"]);
     }
 
     mod remove_method {
@@ -616,7 +956,6 @@ mod tests {
 
         load_mock_descriptor!(REMOVE_METHOD_DESCRIPTOR_V1, "remove_method/v1");
         load_mock_descriptor!(REMOVE_METHOD_DESCRIPTOR_V2, "remove_method/v2");
-        const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
 
         #[test]
         fn reject_removing_existing_methods() {
@@ -627,10 +966,7 @@ mod tests {
 
             let commands = schemas.compute_new_endpoint(
                 endpoint_1,
-                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                    GREETER_SERVICE_NAME.to_string(),
-                    &["Greet" /*, "GetCount", "GreetStream"*/],
-                )],
+                vec![GREETER_SERVICE_NAME.to_owned()],
                 REMOVE_METHOD_DESCRIPTOR_V1.clone(),
                 false,
             );
@@ -639,10 +975,7 @@ mod tests {
 
             let rejection = schemas.compute_new_endpoint(
                 endpoint_2,
-                vec![ServiceRegistrationRequest::unkeyed_without_annotations(
-                    GREETER_SERVICE_NAME.to_string(),
-                    &["Greetings" /*, "GetCount", "GreetStream"*/],
-                )],
+                vec![GREETER_SERVICE_NAME.to_owned()],
                 REMOVE_METHOD_DESCRIPTOR_V2.clone(),
                 false,
             );
@@ -650,7 +983,7 @@ mod tests {
             schemas.assert_service_revision(GREETER_SERVICE_NAME, 1); // unchanged
 
             let_assert!(
-                Err(RegistrationError::IncompatibleServiceChange(
+                Err(SchemasUpdateError::IncompatibleServiceChange(
                     IncompatibleServiceChangeError::RemovedMethods(service, missing_methods)
                 )) = rejection
             );

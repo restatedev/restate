@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 // Walk recursively and create descriptors, combining all the .proto in a sub-directory
 fn walk_and_create_descriptors(
     root: impl AsRef<Path>,
+    includes: impl AsRef<Path>,
     this_dir: impl AsRef<Path>,
 ) -> std::io::Result<()> {
     let mut subdirs = vec![];
@@ -47,12 +48,12 @@ fn walk_and_create_descriptors(
             .out_dir(rust_out_dir)
             .file_descriptor_set_path(out_descriptor)
             .extern_path(".dev.restate", "crate::restate")
-            .compile_protos(&proto_files, &[this_dir.as_ref()])?;
+            .compile_protos(&proto_files, &[this_dir.as_ref(), includes.as_ref()])?;
     }
 
     // Recursively check the other subdirs
     for subdir in subdirs {
-        walk_and_create_descriptors(root.as_ref(), subdir)?;
+        walk_and_create_descriptors(root.as_ref(), includes.as_ref(), subdir)?;
     }
 
     Ok(())
@@ -60,8 +61,9 @@ fn walk_and_create_descriptors(
 
 fn main() -> std::io::Result<()> {
     let proto_dir = std::fs::canonicalize("tests")?;
+    let includes = std::fs::canonicalize("../pb/proto")?;
 
-    walk_and_create_descriptors(proto_dir.clone(), proto_dir.join("pb"))?;
+    walk_and_create_descriptors(proto_dir.clone(), includes, proto_dir.join("pb"))?;
 
     Ok(())
 }

@@ -105,7 +105,6 @@ impl ConnectInfo {
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
-    use restate_schema_api::discovery::ServiceRegistrationRequest;
     use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
     use restate_schema_impl::Schemas;
 
@@ -121,10 +120,7 @@ mod mocks {
                             ProtocolType::BidiStream,
                             DeliveryOptions::default(),
                         ),
-                        vec![ServiceRegistrationRequest::singleton_without_annotations(
-                            "greeter.Greeter".to_string(),
-                            &["Greet"],
-                        )],
+                        vec!["greeter.Greeter".to_owned()],
                         restate_pb::mocks::DESCRIPTOR_POOL.clone(),
                         false,
                     )

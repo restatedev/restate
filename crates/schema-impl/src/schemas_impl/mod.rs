@@ -14,10 +14,6 @@ use crate::service::map_to_service_metadata;
 use anyhow::anyhow;
 use prost_reflect::{DescriptorPool, Kind, MethodDescriptor, ServiceDescriptor};
 use proto_symbol::ProtoSymbols;
-use restate_schema_api::discovery::KeyStructure;
-use restate_schema_api::discovery::{
-    DiscoveredInstanceType, FieldAnnotation, ServiceRegistrationRequest,
-};
 use restate_schema_api::service::InstanceType;
 use restate_schema_api::subscription::{
     EventReceiverServiceInstanceType, FieldRemapType, InputEventRemap, Sink, Source,
@@ -27,12 +23,9 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
-mod endpoint;
+pub(crate) mod endpoint;
 mod service;
 mod subscription;
-
-const RESTATE_SERVICE_NAME_PREFIX: &str = "dev.restate.";
-const GRPC_SERVICE_NAME_PREFIX: &str = "grpc.";
 
 impl Schemas {
     pub(crate) fn use_service_schema<F, R>(&self, service_name: impl AsRef<str>, f: F) -> Option<R>

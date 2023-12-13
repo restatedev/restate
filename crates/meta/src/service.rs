@@ -16,7 +16,7 @@ use restate_futures_util::command::{Command, UnboundedCommandReceiver, Unbounded
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
 use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
-use restate_schema_impl::{RegistrationError, Schemas, SchemasUpdateCommand};
+use restate_schema_impl::{Schemas, SchemasUpdateCommand, SchemasUpdateError};
 use restate_service_protocol::discovery::{
     DiscoverEndpoint, ServiceDiscovery, ServiceDiscoveryError,
 };
@@ -43,7 +43,7 @@ pub enum MetaError {
     Storage(#[from] MetaStorageError),
     #[error(transparent)]
     #[code(unknown)]
-    SchemaRegistry(#[from] RegistrationError),
+    SchemaRegistry(#[from] SchemasUpdateError),
     #[error("meta closed")]
     #[code(unknown)]
     MetaClosed,
