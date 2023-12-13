@@ -1249,6 +1249,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cassowary"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df8670b8c7b9dae1793364eafadf7239c40d669904660c5960d74cfd80b46a53"
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1292,6 +1298,15 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-targets 0.48.5",
+]
+
+[[package]]
+name = "chrono-humanize"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "799627e6b4d27827a814e837b9d8a504832086081806d45b1afa34dc982b023b"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]
@@ -1760,7 +1775,10 @@ dependencies = [
  "bitflags 2.4.1",
  "crossterm_winapi",
  "libc",
+ "mio",
  "parking_lot",
+ "signal-hook",
+ "signal-hook-mio",
  "winapi",
 ]
 
@@ -1808,6 +1826,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5efa2b3d7902f4b634a20cae3c9c4e6209dc4779feb6863329607560143efa70"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "ctrlc"
+version = "3.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82e95fbd621905b854affdc67943b043a0fbb6ed7385fd5a25650d19a8a6cfdf"
+dependencies = [
+ "nix 0.27.1",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -3073,6 +3101,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 
 [[package]]
+name = "lru"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2994eeba8ed550fd9b47a0b38f0242bc3344e496483c6180b69139cc2fa5d1d7"
+dependencies = [
+ "hashbrown 0.14.3",
+]
+
+[[package]]
 name = "lua-src"
 version = "546.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3264,6 +3301,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
 dependencies = [
  "bitflags 1.3.2",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.27.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eb04e9c688eff1c89d72b407f168cf79bb9e867a9d3323ed6c01519eb9cc053"
+dependencies = [
+ "bitflags 2.4.1",
  "cfg-if",
  "libc",
 ]
@@ -4052,7 +4100,7 @@ dependencies = [
  "inferno",
  "libc",
  "log",
- "nix",
+ "nix 0.26.4",
  "once_cell",
  "parking_lot",
  "smallvec",
@@ -4293,6 +4341,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratatui"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ebc917cfb527a566c37ecb94c7e3fd098353516fb4eb6bea17015ade0182425"
+dependencies = [
+ "bitflags 2.4.1",
+ "cassowary",
+ "crossterm 0.27.0",
+ "indoc",
+ "itertools 0.11.0",
+ "lru",
+ "paste",
+ "strum",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "rayon"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4491,11 +4557,14 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "chrono-humanize",
  "clap",
  "clap-verbosity-flag",
  "cling",
  "comfy-table",
  "convert_case",
+ "crossterm 0.27.0",
+ "ctrlc",
  "dialoguer",
  "dirs",
  "dotenvy",
@@ -4506,6 +4575,7 @@ dependencies = [
  "is-terminal",
  "octocrab",
  "once_cell",
+ "ratatui",
  "reqwest",
  "restate-meta-rest-model",
  "restate-serde-util",

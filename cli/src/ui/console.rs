@@ -157,6 +157,16 @@ macro_rules! _gecho {
             let _ = writeln!(std::io::$where(), $($arg)*);
         }
     };
+    (@indented, ($indent:expr), $where:tt, $($arg:tt)*) => {
+        {
+            use std::io::Write;
+
+            let mut lock = std::io::$where().lock();
+            let _padding = $indent * 2;
+            let _ = write!(lock, "{:>_padding$}", "");
+            let _ = write!(lock, $($arg)*);
+        }
+    };
     (@indented_newline, ($indent:expr), $where:tt, $($arg:tt)*) => {
         {
             use std::io::Write;
@@ -264,6 +274,13 @@ macro_rules! c_warn {
 
 /// Padded printing
 #[macro_export]
+macro_rules! c_indent {
+    ($indent:expr, $($arg:tt)*) => {
+        $crate::ui::console::_gecho!(@indented, ($indent), stdout, $($arg)*);
+    };
+}
+
+#[macro_export]
 macro_rules! c_indentln {
     ($indent:expr, $($arg:tt)*) => {
         $crate::ui::console::_gecho!(@indented_newline, ($indent), stdout, $($arg)*);
@@ -289,4 +306,4 @@ pub use {_gecho, c_eprint, c_eprintln, c_print, c_println};
 // Convenience macros with emojis/icons upfront
 pub use {c_error, c_success, c_warn};
 // padded printing
-pub use {c_indent_table, c_indentln};
+pub use {c_indent, c_indent_table, c_indentln};

@@ -14,5 +14,12 @@ use restate_cli::CliApp;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ClingFinished<CliApp> {
+    let _ = ctrlc::set_handler(move || {
+        // Showning cursor again if it was hidden by dialoguer.
+        let stdout = dialoguer::console::Term::stdout();
+        let _ = stdout.write_line("");
+        let _ = stdout.show_cursor();
+    });
+
     Cling::parse_and_run().await
 }

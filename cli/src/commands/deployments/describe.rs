@@ -122,10 +122,10 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
         c_indentln!(2, "Revision: {} {}", svc.revision, latest_revision_message);
         let mut methods_table = Table::new_styled(&env.ui_config);
         methods_table.set_styled_header(vec![
-            "NAME",
+            "METHOD",
             "INPUT TYPE",
             "OUTPUT TYPE",
-            "# OF INVOCATIONS",
+            "ACTIVE INVOCATIONS",
         ]);
 
         for method in &svc.methods {

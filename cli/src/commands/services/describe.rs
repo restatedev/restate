@@ -121,7 +121,7 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
         "ADDRESS",
         "TYPE",
         "SERVICE REVISION",
-        "# OF INVOCATIONS",
+        "ACTIVE INVOCATIONS",
         "DEPLOYMENT ID",
     ];
     table.set_styled_header(headers);

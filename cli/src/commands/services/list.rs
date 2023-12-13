@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use crate::c_error;
 use crate::cli_env::CliEnv;
 use crate::clients::MetaClientInterface;
 use crate::console::c_println;
@@ -41,6 +42,13 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
     let client = crate::clients::MetasClient::new(&env)?;
     let defs = client.get_services().await?.into_body().await?;
 
+    if defs.services.is_empty() {
+        c_error!(
+            "No services were found! Services are added by registering deployments with 'restate dep register'"
+        );
+        return Ok(());
+    }
+
     let endpoints = client.get_endpoints().await?.into_body().await?;
 
     let mut endpoint_cache: HashMap<String, ServiceEndpointResponse> = HashMap::new();
@@ -54,13 +62,13 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
     let mut header = vec![
         "",
         "NAME",
-        "REV",
+        "REVISION",
         "FLAVOR",
         "DEPLOYMENT TYPE",
         "DEPLOYMENT ID",
     ];
     if list_opts.extra {
-        header.push("ADDRESS");
+        header.push("ENDPOINT");
         header.push("METHODS");
     }
     table.set_styled_header(header);
@@ -102,7 +110,7 @@ fn render_methods(methods: Vec<MethodMetadata>) -> String {
 
     let mut out = String::new();
     for method in methods {
-        writeln!(&mut out, "- {}", method.name).unwrap();
+        writeln!(&mut out, "{}", method.name).unwrap();
     }
     out
 }
