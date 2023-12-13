@@ -1291,9 +1291,14 @@ mod tests {
 
         fn peek_inbox<'a>(
             &'a mut self,
-            _service_id: &'a ServiceId,
+            service_id: &'a ServiceId,
         ) -> BoxFuture<'a, Result<Option<InboxEntry>, restate_storage_api::StorageError>> {
-            todo!()
+            let result = self
+                .inboxes
+                .get(service_id)
+                .and_then(|inbox| inbox.first().cloned());
+
+            ok(result).boxed()
         }
 
         fn get_inbox_entry(
