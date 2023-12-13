@@ -44,9 +44,10 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           # need to provide a toolchain version because this action cannot read rust-toolchain.toml. See https://github.com/actions-rs/toolchain/issues/126
+          # note, however, that this does not just install stable but also whatever is in rust-toolchain.toml, which is what we will use
           toolchain: stable
 
-      # necessary because the toolchain@v1 action would install this target for stable only
+      # necessary because the toolchain@v1 action would install this target for stable only, whereas this command respects rust-toolchain.toml
       - name: Install aarch64-apple-darwin Rust toolchain
         if: ${{ matrix.build.target == 'aarch64-apple-darwin' }}
         run: rustup target add aarch64-apple-darwin
@@ -77,12 +78,12 @@ jobs:
         uses: actions-rs/cargo@v1
         env:
           MACOSX_DEPLOYMENT_TARGET: 10.14.0
+          # -target seems to be needed here, or librdkafka will always be built for amd64
           CC: sccache clang -target ${{ matrix.build.target }}
           CXX: sccache clang++ -target ${{ matrix.build.target }}
         with:
           command: build
           args: --release --bins --target ${{ matrix.build.target }}
-          use-cross: false
 
       - name: Compile Linux binaries
         if: ${{ matrix.build.os == 'ubuntu-latest' }}
