@@ -195,19 +195,14 @@ impl ServiceSchemas {
     ) -> HashMap<String, MethodSchemas> {
         svc_desc
             .methods()
-            .filter(|descriptor| method_meta.contains_key(&descriptor.name().to_string()))
-            .map(|descriptor| {
+            .flat_map(|descriptor| {
                 let method_name = descriptor.name().to_string();
-                let input_fields_annotations = method_meta
-                    .get(&method_name)
-                    .cloned()
-                    .unwrap()
-                    .input_fields_annotations;
-
-                (
-                    method_name,
-                    MethodSchemas::new(descriptor, input_fields_annotations),
-                )
+                method_meta.get(&method_name).map(|metadata| {
+                    (
+                        method_name,
+                        MethodSchemas::new(descriptor, metadata.input_fields_annotations.clone()),
+                    )
+                })
             })
             .collect()
     }
