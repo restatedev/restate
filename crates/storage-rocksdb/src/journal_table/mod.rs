@@ -24,6 +24,7 @@ use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::{ready, GetStream, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{EntryIndex, PartitionKey, ServiceId, WithPartitionKey};
+use std::io::Cursor;
 use std::ops::RangeInclusive;
 
 define_table_key!(
@@ -92,18 +93,25 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
         &mut self,
         service_id: &ServiceId,
         journal_length: EntryIndex,
-    ) -> GetStream<'static, JournalEntry> {
+    ) -> GetStream<'static, (EntryIndex, JournalEntry)> {
         let key = JournalKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
-        self.for_each_key_value(TableScan::KeyPrefix(key), move |_k, v| {
+        self.for_each_key_value(TableScan::KeyPrefix(key), move |k, v| {
+            let key = JournalKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
+                journal_key
+                    .journal_index
+                    .expect("The journal index must be part of the journal key.")
+            });
             let entry = storage::v1::JournalEntry::decode(v)
                 .map_err(|error| StorageError::Generic(error.into()))
                 .and_then(|entry| JournalEntry::try_from(entry).map_err(Into::into));
 
-            TableScanIterationDecision::Emit(entry)
+            let result = key.and_then(|key| entry.map(|entry| (key, entry)));
+
+            TableScanIterationDecision::Emit(result)
         })
         .take(journal_length as usize)
         .boxed()

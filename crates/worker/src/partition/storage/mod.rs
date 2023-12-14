@@ -294,7 +294,7 @@ where
         &'a mut self,
         service_id: &'a ServiceId,
         length: EntryIndex,
-    ) -> BoxStream<'a, Result<JournalEntry, StorageError>> {
+    ) -> BoxStream<'a, Result<(EntryIndex, JournalEntry), StorageError>> {
         self.inner.get_journal(service_id, length)
     }
 }

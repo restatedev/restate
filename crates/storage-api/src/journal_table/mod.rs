@@ -38,7 +38,7 @@ pub trait JournalTable {
         &mut self,
         service_id: &ServiceId,
         journal_length: EntryIndex,
-    ) -> GetStream<JournalEntry>;
+    ) -> GetStream<(EntryIndex, JournalEntry)>;
 
     fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) -> PutFuture;
 }

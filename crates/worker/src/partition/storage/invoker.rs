@@ -64,12 +64,13 @@ where
                     .map(|entry| {
                         entry
                             .map_err(InvokerStorageReaderError::Storage)
-                            .map(|journal_entry| match journal_entry {
+                            .map(|(_, journal_entry)| match journal_entry {
                                 JournalEntry::Entry(entry) => entry.erase_enrichment(),
                                 JournalEntry::Completion(_) => {
                                     panic!("should only read entries when reading the journal")
                                 }
-                            })
+                            },
+                        )
                     })
                     // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
                     // collecting the stream because we cannot keep the transaction open

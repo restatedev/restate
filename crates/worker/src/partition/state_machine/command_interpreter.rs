@@ -99,7 +99,7 @@ pub trait StateReader {
         &'a mut self,
         service_id: &'a ServiceId,
         length: EntryIndex,
-    ) -> BoxStream<'a, Result<JournalEntry, restate_storage_api::StorageError>>;
+    ) -> BoxStream<'a, Result<(EntryIndex, JournalEntry), restate_storage_api::StorageError>>;
 }
 
 pub(crate) struct CommandInterpreter<Codec> {
@@ -491,7 +491,7 @@ where
     ) -> Result<(), Error> {
         let mut journal_entries = state.get_journal(&full_invocation_id.service_id, journal_length);
         while let Some(journal_entry) = journal_entries.next().await {
-            let journal_entry = journal_entry?;
+            let (_, journal_entry) = journal_entry?;
 
             if let JournalEntry::Entry(enriched_entry) = journal_entry {
                 let (h, _) = enriched_entry.into_inner();
@@ -1351,7 +1351,7 @@ mod tests {
             &'a mut self,
             service_id: &'a ServiceId,
             length: EntryIndex,
-        ) -> BoxStream<'a, Result<JournalEntry, StorageError>> {
+        ) -> BoxStream<'a, Result<(EntryIndex, JournalEntry), StorageError>> {
             let journal = self.journals.get(service_id);
 
             let cloned_journal: Vec<JournalEntry> = journal
@@ -1367,7 +1367,18 @@ mod tests {
                 })
                 .unwrap_or_default();
 
-            stream::iter(cloned_journal.into_iter().map(Ok)).boxed()
+            stream::iter(
+                cloned_journal
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, entry)| {
+                        Ok((
+                            u32::try_from(index).expect("Journal must not be larger than 2^32 - 1"),
+                            entry,
+                        ))
+                    }),
+            )
+            .boxed()
         }
     }
 
