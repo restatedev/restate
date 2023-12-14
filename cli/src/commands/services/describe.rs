@@ -12,17 +12,17 @@ use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use indicatif::ProgressBar;
 
+use crate::c_title;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::{MetaClientInterface, MetasClient};
 use crate::console::c_println;
-use crate::ui::console::{Styled, StyledTable};
+use crate::ui::console::StyledTable;
 use crate::ui::deployments::{
     add_deployment_to_kv_table, render_active_invocations, render_deployment_type,
     render_endpoint_url,
 };
 use crate::ui::service_methods::create_service_methods_table;
-use crate::ui::stylesheet::Style;
 
 use anyhow::Result;
 
@@ -59,12 +59,12 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
         .await?;
     add_deployment_to_kv_table(&endpoint.service_endpoint, &mut table);
 
-    c_println!("{}", Styled(Style::Info, "Service Information"));
+    c_title!("📜", "Service Information");
     c_println!("{}", table);
 
     // Methods
     c_println!();
-    c_println!("{}", Styled(Style::Info, "Methods"));
+    c_title!("🔌", "Methods");
     let table = create_service_methods_table(&env.ui_config, &svc.methods);
     c_println!("{}", table);
 
@@ -143,7 +143,7 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
     progress.finish_and_clear();
 
     c_println!();
-    c_println!("Older Revisions:");
+    c_title!("👵", "Older Revisions");
     c_println!("{}", table);
 
     Ok(())

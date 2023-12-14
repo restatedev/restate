@@ -18,7 +18,10 @@ async fn main() -> ClingFinished<CliApp> {
         // Showning cursor again if it was hidden by dialoguer.
         let stdout = dialoguer::console::Term::stdout();
         let _ = stdout.write_line("");
+        let _ = stdout.write_line("Ctrl-C pressed, aborting...");
         let _ = stdout.show_cursor();
+
+        std::process::exit(1);
     });
 
     Cling::parse_and_run().await
