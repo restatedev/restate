@@ -95,7 +95,7 @@ pub struct Http2KeepAliveOptions {
     /// Sets an interval for HTTP/2 PING frames should be sent to keep a
     /// connection alive.
     ///
-    /// You should set this timeout with a value lower than the `response_abort_timeout`.
+    /// You should set this timeout with a value lower than the `abort_timeout`.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     pub(crate) interval: humantime::Duration,
