@@ -26,7 +26,7 @@ use crate::ui::deployments::{
 };
 use crate::ui::service_methods::icon_for_service_flavor;
 use crate::ui::stylesheet::Style;
-use crate::{c_eprintln, c_indent_table, c_indentln, c_println};
+use crate::{c_eprintln, c_indent_table, c_indentln, c_println, c_title};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
@@ -82,12 +82,13 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
     table.add_kv_row("Status:", render_deployment_status(status));
     table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
 
-    c_println!("{}", Styled(Style::Info, "Deployment Information:"));
+    c_title!("📜", "Deployment Information");
     c_println!("{}", table);
 
     // Services and methods.
     c_println!();
-    c_println!("{}", Styled(Style::Info, "Services:"));
+
+    c_title!("🤖", "Services");
     for svc in endpoint.services {
         let Some(latest_svc) = latest_services.get(&svc.name) else {
             // if we can't find this service in the latest set of service, something is off. A

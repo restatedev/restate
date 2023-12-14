@@ -25,10 +25,10 @@
 use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::stylesheet::Style;
 use crate::app::UiConfig;
 use crate::cli_env::CliEnv;
 
-use super::stylesheet::Style;
 use dialoguer::console::Style as DStyle;
 
 static SHOULD_COLORIZE: AtomicBool = AtomicBool::new(true);
@@ -157,6 +157,19 @@ macro_rules! _gecho {
             let _ = writeln!(std::io::$where(), $($arg)*);
         }
     };
+    (@title, ($icon:expr), $where:tt, $($arg:tt)*) => {
+        {
+            use std::io::Write;
+            use unicode_width::UnicodeWidthStr;
+
+            let mut lock = std::io::$where().lock();
+            let _icon = $crate::ui::console::Icon($icon, "");
+            let _ = writeln!(lock);
+            let _message = format!("{_icon} {}:", $($arg)*);
+            let _ = writeln!(lock, "{_message}");
+            let _ = writeln!(lock, "{:―<1$}", "", _message.width_cjk());
+        }
+    };
     (@indented, ($indent:expr), $where:tt, $($arg:tt)*) => {
         {
             use std::io::Write;
@@ -272,6 +285,14 @@ macro_rules! c_warn {
     };
 }
 
+/// Title
+#[macro_export]
+macro_rules! c_title {
+    ($icon:expr, $($arg:tt)*) => {
+        $crate::ui::console::_gecho!(@title, ($icon), stdout, $($arg)*);
+    };
+}
+
 /// Padded printing
 #[macro_export]
 macro_rules! c_indent {
@@ -304,6 +325,6 @@ macro_rules! c_indent_table {
 // Macros with a "c_" prefix to emits console output with no panics.
 pub use {_gecho, c_eprint, c_eprintln, c_print, c_println};
 // Convenience macros with emojis/icons upfront
-pub use {c_error, c_success, c_warn};
+pub use {c_error, c_success, c_title, c_warn};
 // padded printing
 pub use {c_indent, c_indent_table, c_indentln};

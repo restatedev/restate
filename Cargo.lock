@@ -4560,6 +4560,7 @@ dependencies = [
  "tracing",
  "tracing-log 0.2.0",
  "tracing-subscriber",
+ "unicode-width",
  "url",
  "vergen",
  "zip",

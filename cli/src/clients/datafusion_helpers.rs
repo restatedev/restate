@@ -117,8 +117,9 @@ impl ServiceStatusMap {
     }
 }
 
-#[derive(Copy, Clone, Eq, Hash, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, Hash, PartialEq, Debug, Default)]
 pub enum EnrichedInvocationState {
+    #[default]
     Unknown,
     Pending,
     Ready,
@@ -385,6 +386,10 @@ impl ServiceMethodLockedKeysMap {
     pub fn into_inner(self) -> HashMap<String, HashMap<String, LockedKeyInfo>> {
         self.services
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.services.is_empty()
+    }
 }
 
 pub async fn get_locked_keys_status(
@@ -596,4 +601,284 @@ pub async fn get_locked_keys_status(
     }
 
     Ok(key_map)
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Invocation {
+    pub id: String,
+    pub service: String,
+    pub method: String,
+    pub key: Option<String>, // Set only on keyed service
+    pub created_at: chrono::DateTime<Local>,
+    // None if invoked directly (e.g. ingress)
+    pub invoked_by_id: Option<String>,
+    pub invoked_by_service: Option<String>,
+    pub status: EnrichedInvocationState,
+
+    // If it **requires** this deployment.
+    pub pinned_deployment_id: Option<String>,
+    // Last attempted deployment
+    pub last_attempt_deployment_id: Option<String>,
+
+    // if running, how long has it been running?
+    pub current_attempt_duration: Option<Duration>,
+    // E.g. If suspended, how long has it been suspended?
+    pub duration_in_state: Option<Duration>,
+
+    // If backing-off
+    pub num_retries: Option<u64>,
+    pub next_retry_at: Option<DateTime<Local>>,
+
+    // Last attempt failed?
+    pub last_failure_message: Option<String>,
+}
+
+pub async fn get_service_invocations(
+    client: &DataFusionHttpClient,
+    service: &str,
+    is_keyed: bool,
+    limit_inbox: usize,
+    limit_active: usize,
+) -> Result<(Vec<Invocation>, Vec<Invocation>)> {
+    let mut inbox: Vec<Invocation> = Vec::new();
+    // Inbox...
+    {
+        let query = format!(
+            "SELECT
+                service_name,
+                method,
+                id,
+                created_at,
+                invoked_by_id,
+                invoked_by_service,
+                service_key
+             FROM sys_inbox WHERE service_name = '{}'
+             ORDER BY created_at DESC
+             LIMIT {}",
+            service, limit_inbox,
+        );
+        let resp = client.run_query(query).await?;
+        for batch in resp.batches {
+            let col = batch.column(0);
+            let services = as_string_array(col);
+
+            let col = batch.column(1);
+            let methods = as_string_array(col);
+
+            let col = batch.column(2);
+            let ids = as_string_array(col);
+
+            let col = batch.column(3);
+            let created_ats = col.as_primitive::<arrow::datatypes::Date64Type>();
+
+            let col = batch.column(4);
+            let invoked_by_ids = as_string_array(col);
+
+            let col = batch.column(5);
+            let invoked_by_svcs = as_string_array(col);
+
+            let col = batch.column(6);
+            let service_keys = as_string_array(col);
+
+            for i in 0..batch.num_rows() {
+                let created_at: DateTime<Local> = Local
+                    .timestamp_millis_opt(created_ats.value(i))
+                    .latest()
+                    .expect("Invalid timestamp");
+
+                let invoked_by_id = if !invoked_by_ids.is_null(i) {
+                    Some(invoked_by_ids.value(i).to_owned())
+                } else {
+                    None
+                };
+
+                let invoked_by_service = if !invoked_by_svcs.is_null(i) {
+                    Some(invoked_by_svcs.value(i).to_owned())
+                } else {
+                    None
+                };
+
+                let key = if is_keyed {
+                    Some(service_keys.value(i).to_owned())
+                } else {
+                    None
+                };
+
+                let invocation = Invocation {
+                    status: EnrichedInvocationState::Pending,
+                    service: services.value(i).to_owned(),
+                    method: methods.value(i).to_owned(),
+                    id: ids.value(i).to_owned(),
+                    created_at,
+                    key,
+                    invoked_by_id,
+                    invoked_by_service,
+                    ..Default::default()
+                };
+                inbox.push(invocation);
+            }
+        }
+    }
+
+    // Active invocations analysis
+    let mut active: Vec<Invocation> = Vec::new();
+    {
+        let query = format!(
+            "SELECT
+                ss.id,
+                ss.service,
+                ss.method,
+                ss.service_key,
+                CASE
+                 WHEN ss.status = 'suspended' THEN 'suspended'
+                 WHEN sis.in_flight THEN 'running'
+                 WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
+                 ELSE 'ready'
+                END AS combined_status,
+                ss.created_at,
+                ss.modified_at,
+                ss.pinned_endpoint_id,
+                sis.retry_count,
+                sis.last_failure,
+                sis.last_attempt_endpoint_id,
+                sis.next_retry_at,
+                sis.last_start_at,
+                ss.invoked_by_id,
+                ss.invoked_by_service
+            FROM sys_status ss
+            LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
+            WHERE ss.service = '{}'
+            ORDER BY ss.created_at DESC
+            LIMIT {}",
+            service, limit_active,
+        );
+        let resp = client.run_query(query).await?;
+        for batch in resp.batches {
+            let col = batch.column(0);
+            let ids = as_string_array(col);
+
+            let col = batch.column(1);
+            let services = as_string_array(col);
+
+            let col = batch.column(2);
+            let methods = as_string_array(col);
+
+            let col = batch.column(3);
+            let service_keys = as_string_array(col);
+
+            let col = batch.column(4);
+            let statuses = as_string_array(col);
+
+            let col = batch.column(5);
+            let created_ats = col.as_primitive::<arrow::datatypes::Date64Type>();
+
+            let col = batch.column(6);
+            let modified_ats = col.as_primitive::<arrow::datatypes::Date64Type>();
+
+            let col = batch.column(7);
+            let pinned_eps = as_string_array(col);
+
+            let col = batch.column(8);
+            let num_retries = col.as_primitive::<arrow::datatypes::UInt64Type>();
+
+            let col = batch.column(9);
+            let last_failures = as_string_array(col);
+
+            let col = batch.column(10);
+            let last_attempt_eps = as_string_array(col);
+
+            let col = batch.column(11);
+            let next_retries = col.as_primitive::<arrow::datatypes::Date64Type>();
+
+            let col = batch.column(12);
+            let last_starts = col.as_primitive::<arrow::datatypes::Date64Type>();
+
+            let col = batch.column(13);
+            let invoked_by_ids = as_string_array(col);
+
+            let col = batch.column(14);
+            let invoked_by_svcs = as_string_array(col);
+
+            for i in 0..batch.num_rows() {
+                let status = statuses.value(i).parse().expect("Unexpected status");
+
+                let created_at: DateTime<Local> = Local
+                    .timestamp_millis_opt(created_ats.value(i))
+                    .latest()
+                    .expect("Invalid timestamp");
+
+                let mut invocation = Invocation {
+                    status,
+                    service: services.value(i).to_owned(),
+                    method: methods.value(i).to_owned(),
+                    id: ids.value(i).to_owned(),
+                    created_at,
+                    ..Default::default()
+                };
+
+                if is_keyed {
+                    invocation.key = Some(service_keys.value(i).to_owned());
+                }
+
+                if !invoked_by_ids.is_null(i) {
+                    invocation.invoked_by_id = Some(invoked_by_ids.value(i).to_owned());
+                }
+
+                if !invoked_by_svcs.is_null(i) {
+                    invocation.invoked_by_service = Some(invoked_by_svcs.value(i).to_owned());
+                }
+
+                // State duration
+                if !modified_ats.is_null(i) {
+                    let last_modified = Local
+                        .timestamp_millis_opt(modified_ats.value(i))
+                        .latest()
+                        .expect("Invalid timestamp");
+                    invocation.duration_in_state =
+                        Some(Local::now().signed_duration_since(last_modified));
+                }
+
+                // Running duration
+                if status == EnrichedInvocationState::Running && !last_starts.is_null(i) {
+                    let last_start = Local
+                        .timestamp_millis_opt(last_starts.value(i))
+                        .latest()
+                        .expect("Invalid timestamp");
+                    invocation.current_attempt_duration =
+                        Some(Local::now().signed_duration_since(last_start));
+                }
+
+                // Num retries
+                if !num_retries.is_null(i) {
+                    invocation.num_retries = Some(num_retries.value(i));
+                }
+                // Next retry
+                if !next_retries.is_null(i) {
+                    invocation.next_retry_at = Some(
+                        Local
+                            .timestamp_millis_opt(next_retries.value(i))
+                            .latest()
+                            .expect("Invalid timestamp"),
+                    );
+                }
+
+                if !pinned_eps.is_null(i) {
+                    invocation.pinned_deployment_id = Some(pinned_eps.value(i).to_owned());
+                }
+
+                if !last_failures.is_null(i) {
+                    invocation.last_failure_message = Some(last_failures.value(i).to_owned());
+                }
+
+                if !last_attempt_eps.is_null(i) {
+                    invocation.last_attempt_deployment_id =
+                        Some(last_attempt_eps.value(i).to_owned());
+                }
+
+                active.push(invocation);
+            }
+        }
+    }
+
+    Ok((inbox, active))
 }

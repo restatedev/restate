@@ -49,6 +49,7 @@ tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 tracing-log = { version = "0.2.0" }
 tracing-subscriber = { workspace = true }
+unicode-width = { version = "0.1.11" }
 url = { version = "2.4.1" }
 zip = "0.6"
 zip-extensions = "0.6"
