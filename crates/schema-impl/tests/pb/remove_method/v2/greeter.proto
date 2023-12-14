@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package greeter;
+
+service Greeter {
+  // Simulate renaming "Greet" to "Greetings" - this represents a backwards-incompatible change
+  // rpc Greet(GreetingRequest) returns (GreetingResponse);
+  rpc Greetings(GreetingRequest) returns (GreetingResponse);
+  rpc GetCount(google.protobuf.Empty) returns (CountResponse);
+  rpc GreetStream(GreetingRequest) returns (stream CountResponse);
+}
+
+message GreetingRequest {
+  string person = 1;
+}
+
+message GreetingResponse {
+  string greeting = 1;
+}
+
+message CountResponse {
+  int32 greetings = 1;
+}
+
+service AnotherGreeter {
+  rpc Greet(GreetingRequest) returns (GreetingResponse);
+  rpc GetCount(google.protobuf.Empty) returns (CountResponse);
+}

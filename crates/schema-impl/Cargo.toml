@@ -37,3 +37,6 @@ restate-test-util = { workspace = true }
 prost-reflect = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
