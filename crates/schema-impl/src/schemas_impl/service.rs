@@ -25,9 +25,9 @@ impl SchemasInner {
             .ok_or_else(|| SchemasUpdateError::UnknownService(name.clone()))?;
 
         // Update proto_symbols
-        if let ServiceLocation::ServiceEndpoint {
+        if let ServiceLocation::Deployment {
             public: old_public_value,
-            latest_endpoint,
+            latest_deployment,
         } = &schemas.location
         {
             match (*old_public_value, new_public_value) {
@@ -37,14 +37,14 @@ impl SchemasInner {
                 }
                 (false, true) => {
                     self.proto_symbols
-                        .add_service(latest_endpoint, schemas.service_descriptor());
+                        .add_service(latest_deployment, schemas.service_descriptor());
                 }
                 _ => {}
             }
         }
 
         // Update the public field
-        if let ServiceLocation::ServiceEndpoint {
+        if let ServiceLocation::Deployment {
             public: old_public_value,
             ..
         } = &mut schemas.location

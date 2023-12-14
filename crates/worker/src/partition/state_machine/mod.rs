@@ -282,7 +282,7 @@ mod tests {
         //   But this means that once the awakeable entry X is received, it will be merged with completion X and thus X is resumable,
         //   contradicting the condition to end up in the Suspended state.
 
-        // * In case of a crash of the service endpoint:
+        // * In case of a crash of the deployment:
         //   * If the awakeable entry has been received, everything goes through the regular flow of the journal reader.
         //   * If the awakeable entry has not been received yet, when receiving it the completion will be sent through.
 

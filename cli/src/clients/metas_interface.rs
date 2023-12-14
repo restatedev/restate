@@ -11,7 +11,7 @@
 use super::metas_client::Envelope;
 use super::MetasClient;
 
-use restate_meta_rest_model::endpoints::*;
+use restate_meta_rest_model::deployments::*;
 use restate_meta_rest_model::services::*;
 
 use async_trait::async_trait;
@@ -22,17 +22,17 @@ pub trait MetaClientInterface {
     async fn health(&self) -> reqwest::Result<Envelope<()>>;
     async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>>;
     async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>>;
-    async fn get_endpoints(&self) -> reqwest::Result<Envelope<ListServiceEndpointsResponse>>;
-    async fn get_endpoint(
+    async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentResponse>>;
+    async fn get_deployment(
         &self,
         id: &str,
-    ) -> reqwest::Result<Envelope<DetailedServiceEndpointResponse>>;
-    async fn remove_endpoint(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>>;
+    ) -> reqwest::Result<Envelope<DetailedDeploymentResponse>>;
+    async fn remove_deployment(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>>;
 
-    async fn discover_endpoint(
+    async fn discover_deployment(
         &self,
-        body: RegisterServiceEndpointRequest,
-    ) -> reqwest::Result<Envelope<RegisterServiceEndpointResponse>>;
+        body: RegisterDeploymentRequest,
+    ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>>;
 }
 
 #[async_trait]
@@ -56,34 +56,34 @@ impl MetaClientInterface for MetasClient {
         Ok(self.run(reqwest::Method::GET, url).await?)
     }
 
-    async fn get_endpoints(&self) -> reqwest::Result<Envelope<ListServiceEndpointsResponse>> {
-        let url = self.base_url.join("/endpoints").expect("Bad url!");
+    async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentResponse>> {
+        let url = self.base_url.join("/deployments").expect("Bad url!");
         Ok(self.run(reqwest::Method::GET, url).await?)
     }
 
-    async fn get_endpoint(
+    async fn get_deployment(
         &self,
         id: &str,
-    ) -> reqwest::Result<Envelope<DetailedServiceEndpointResponse>> {
+    ) -> reqwest::Result<Envelope<DetailedDeploymentResponse>> {
         let url = self
             .base_url
-            .join(&format!("/endpoints/{}", id))
+            .join(&format!("/deployments/{}", id))
             .expect("Bad url!");
         Ok(self.run(reqwest::Method::GET, url).await?)
     }
 
-    async fn discover_endpoint(
+    async fn discover_deployment(
         &self,
-        body: RegisterServiceEndpointRequest,
-    ) -> reqwest::Result<Envelope<RegisterServiceEndpointResponse>> {
-        let url = self.base_url.join("/endpoints").expect("Bad url!");
+        body: RegisterDeploymentRequest,
+    ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>> {
+        let url = self.base_url.join("/deployments").expect("Bad url!");
         Ok(self.run_with_body(reqwest::Method::POST, url, body).await?)
     }
 
-    async fn remove_endpoint(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>> {
+    async fn remove_deployment(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>> {
         let mut url = self
             .base_url
-            .join(&format!("/endpoints/{}", id))
+            .join(&format!("/deployments/{}", id))
             .expect("Bad url!");
 
         url.set_query(Some(&format!("force={}", force)));

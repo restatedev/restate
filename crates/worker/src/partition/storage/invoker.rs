@@ -58,7 +58,7 @@ where
                     invoked_status.journal_metadata.length,
                     invoked_status.journal_metadata.span_context,
                     invoked_status.method,
-                    invoked_status.endpoint_id,
+                    invoked_status.deployment_id,
                 );
                 let journal_stream = transaction
                     .get_journal(&fid.service_id, journal_metadata.length)

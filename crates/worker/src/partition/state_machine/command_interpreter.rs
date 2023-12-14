@@ -594,10 +594,10 @@ where
             .as_parent();
 
         match kind {
-            InvokerEffectKind::SelectedEndpoint(endpoint_id) => {
-                effects.store_chosen_endpoint(
+            InvokerEffectKind::SelectedDeployment(deployment_id) => {
+                effects.store_chosen_deployment(
                     full_invocation_id.service_id,
-                    endpoint_id,
+                    deployment_id,
                     invocation_metadata,
                 );
             }
@@ -868,7 +868,7 @@ where
                         effects,
                     );
                 } else {
-                    // no action needed for an invoke entry that has been completed by the service endpoint
+                    // no action needed for an invoke entry that has been completed by the deployment
                 }
             }
             EnrichedEntryHeader::BackgroundInvoke {
@@ -1242,7 +1242,7 @@ mod tests {
                         length: u32::try_from(journal.len()).unwrap(),
                         span_context: ServiceInvocationSpanContext::empty(),
                     },
-                    endpoint_id: None,
+                    deployment_id: None,
                     method: ByteString::from("".to_string()),
                     response_sink: None,
                     timestamps: StatusTimestamps::now(),

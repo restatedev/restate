@@ -17,22 +17,22 @@ use std::str::FromStr;
 use super::DataFusionHttpClient;
 
 use arrow::array::{as_string_array, Array, AsArray};
-use restate_meta_rest_model::endpoints::EndpointId;
+use restate_meta_rest_model::deployments::DeploymentId;
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local, TimeZone};
 
 pub async fn count_deployment_active_inv(
     client: &DataFusionHttpClient,
-    endpoint_id: &EndpointId,
+    deployment_id: &DeploymentId,
 ) -> Result<i64> {
     Ok(client
         .run_count_agg_query(format!(
             "SELECT COUNT(id) AS inv_count \
             FROM sys_status \
-            WHERE pinned_endpoint_id = '{}' \
-            GROUP BY pinned_endpoint_id",
-            endpoint_id
+            WHERE pinned_deployment_id = '{}' \
+            GROUP BY pinned_deployment_id",
+            deployment_id
         ))
         .await?)
 }
@@ -45,14 +45,14 @@ pub struct ServiceMethodUsage {
 
 pub async fn count_deployment_active_inv_by_method(
     client: &DataFusionHttpClient,
-    endpoint_id: &EndpointId,
+    deployment_id: &DeploymentId,
 ) -> Result<Vec<ServiceMethodUsage>> {
     let query = format!(
         "SELECT service, method, COUNT(id) AS inv_count \
             FROM sys_status \
-            WHERE pinned_endpoint_id = '{}' \
-            GROUP BY pinned_endpoint_id, service, method",
-        endpoint_id
+            WHERE pinned_deployment_id = '{}' \
+            GROUP BY pinned_deployment_id, service, method",
+        deployment_id
     );
 
     let resp = client.run_query(query).await?;
@@ -464,10 +464,10 @@ pub async fn get_locked_keys_status(
                 ss.id,
                 ss.created_at,
                 ss.modified_at,
-                ss.pinned_endpoint_id,
+                ss.pinned_deployment_id,
                 sis.retry_count,
                 sis.last_failure,
-                sis.last_attempt_endpoint_id,
+                sis.last_attempt_deployment_id,
                 sis.next_retry_at,
                 sis.last_start_at
             FROM sys_status ss
@@ -482,8 +482,8 @@ pub async fn get_locked_keys_status(
                 first_value(method),
                 first_value(created_at),
                 first_value(modified_at),
-                first_value(pinned_endpoint_id),
-                first_value(last_attempt_endpoint_id),
+                first_value(pinned_deployment_id),
+                first_value(last_attempt_deployment_id),
                 first_value(last_failure),
                 first_value(next_retry_at),
                 first_value(last_start_at),

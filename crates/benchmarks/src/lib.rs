@@ -27,14 +27,14 @@ pub mod counter {
     include!(concat!(env!("OUT_DIR"), "/counter.rs"));
 }
 
-pub fn discover_endpoint(current_thread_rt: &Runtime, address: Uri) {
+pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     let discovery_payload = serde_json::json!({"uri": address.to_string()}).to_string();
     let discovery_result = current_thread_rt.block_on(async {
         RetryPolicy::fixed_delay(Duration::from_millis(200), 50)
             .retry_operation(|| {
                 hyper::Client::new()
                     .request(
-                        hyper::Request::post("http://localhost:9070/endpoints")
+                        hyper::Request::post("http://localhost:9070/deployments")
                             .header(CONTENT_TYPE, "application/json")
                             .body(Body::from(discovery_payload.clone()))
                             .expect("building discovery request should not fail"),

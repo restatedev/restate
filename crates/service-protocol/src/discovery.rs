@@ -24,10 +24,8 @@ use prost_reflect::{DescriptorError, DescriptorPool};
 
 use codederror::CodedError;
 use restate_errors::{warn_it, META0003};
-use restate_schema_api::endpoint::ProtocolType;
-use restate_service_client::{
-    Parts, Request, ServiceClient, ServiceClientError, ServiceEndpointAddress,
-};
+use restate_schema_api::deployment::ProtocolType;
+use restate_service_client::{Endpoint, Parts, Request, ServiceClient, ServiceClientError};
 
 use restate_types::retries::{RetryIter, RetryPolicy};
 
@@ -93,21 +91,18 @@ impl ServiceDiscovery {
 }
 
 #[derive(Clone)]
-pub struct DiscoverEndpoint(ServiceEndpointAddress, HashMap<HeaderName, HeaderValue>);
+pub struct DiscoverEndpoint(Endpoint, HashMap<HeaderName, HeaderValue>);
 
 impl DiscoverEndpoint {
-    pub fn new(
-        address: ServiceEndpointAddress,
-        additional_headers: HashMap<HeaderName, HeaderValue>,
-    ) -> Self {
+    pub fn new(address: Endpoint, additional_headers: HashMap<HeaderName, HeaderValue>) -> Self {
         Self(address, additional_headers)
     }
 
-    pub fn into_inner(self) -> (ServiceEndpointAddress, HashMap<HeaderName, HeaderValue>) {
+    pub fn into_inner(self) -> (Endpoint, HashMap<HeaderName, HeaderValue>) {
         (self.0, self.1)
     }
 
-    pub fn address(&self) -> &ServiceEndpointAddress {
+    pub fn address(&self) -> &Endpoint {
         &self.0
     }
 
@@ -239,13 +234,13 @@ impl ServiceDiscovery {
             if let Some(next_retry_interval) = retry_iter.next() {
                 warn_it!(
                     e,
-                    "Error when discovering service endpoint at address '{}'. Retrying in {} seconds",
+                    "Error when discovering deployment at address '{}'. Retrying in {} seconds",
                     address,
                     next_retry_interval.as_secs()
                 );
                 tokio::time::sleep(next_retry_interval).await;
             } else {
-                warn_it!(e, "Error when discovering service endpoint '{}'", address);
+                warn_it!(e, "Error when discovering deployment '{}'", address);
                 return Err(e);
             }
         }

@@ -20,8 +20,8 @@ use prost::Message;
 use restate_invoker_api::entry_enricher::mocks::MockEntryEnricher;
 use restate_invoker_api::{Effect, EffectKind};
 use restate_invoker_impl::{ChannelServiceHandle, Service};
-use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
-use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
+use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
+use restate_schema_api::deployment::{DeliveryOptions, DeploymentMetadata, ProtocolType};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_test_util::{assert, assert_eq, let_assert, test};
 use restate_types::identifiers::FullInvocationId;
@@ -138,10 +138,10 @@ async fn bidi_stream() {
     // Mock journal reader
     let journal_reader = InMemoryJournalStorage::default();
 
-    let mut endpoint_metadata_registry = MockEndpointMetadataRegistry::default();
-    endpoint_metadata_registry.mock_service_with_metadata(
+    let mut deployment_metadata_registry = MockDeploymentMetadataRegistry::default();
+    deployment_metadata_registry.mock_service_with_metadata(
         &fid.service_id.service_name,
-        EndpointMetadata::new_http(
+        DeploymentMetadata::new_http(
             Uri::from_static("http://localhost:9080"),
             ProtocolType::BidiStream,
             DeliveryOptions::default(),
@@ -154,12 +154,12 @@ async fn bidi_stream() {
         InMemoryJournalStorage,
         InMemoryStateStorage,
         MockEntryEnricher,
-        MockEndpointMetadataRegistry,
+        MockDeploymentMetadataRegistry,
     > = options.build(
         journal_reader.clone(),
         InMemoryStateStorage::default(),
         MockEntryEnricher,
-        endpoint_metadata_registry,
+        deployment_metadata_registry,
     );
 
     // Build the partition processor simulator

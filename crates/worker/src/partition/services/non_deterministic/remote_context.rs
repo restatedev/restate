@@ -1071,7 +1071,7 @@ mod tests {
     use restate_pb::mocks::GREETER_SERVICE_NAME;
     use restate_pb::restate::internal::{get_result_response, start_response, CleanupRequest};
     use restate_pb::REMOTE_CONTEXT_SERVICE_NAME;
-    use restate_schema_api::endpoint::EndpointMetadata;
+    use restate_schema_api::deployment::DeploymentMetadata;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_test_util::matchers::*;
     use restate_test_util::{assert_eq, test};
@@ -2607,8 +2607,8 @@ mod tests {
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_endpoint(
-                        EndpointMetadata::mock_with_uri("http://localhost:8080"),
+                    .compute_new_deployment(
+                        DeploymentMetadata::mock_with_uri("http://localhost:8080"),
                         vec![restate_pb::mocks::GREETER_SERVICE_NAME.to_owned()],
                         restate_pb::mocks::DESCRIPTOR_POOL.clone(),
                         false,

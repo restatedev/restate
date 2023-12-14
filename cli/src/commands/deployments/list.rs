@@ -18,13 +18,11 @@ use crate::console::c_println;
 use crate::ui::console::{Styled, StyledTable};
 use crate::ui::deployments::{
     calculate_deployment_status, render_active_invocations, render_deployment_status,
-    render_deployment_type, render_endpoint_url, EndpointStatus,
+    render_deployment_type, render_deployment_url, DeploymentStatus,
 };
 use crate::ui::stylesheet::Style;
 
-use restate_meta_rest_model::endpoints::{
-    ServiceEndpoint, ServiceEndpointResponse, ServiceNameRevPair,
-};
+use restate_meta_rest_model::deployments::{Deployment, DeploymentResponse, ServiceNameRevPair};
 use restate_meta_rest_model::services::ServiceMetadata;
 
 use anyhow::Result;
@@ -46,15 +44,20 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
     // To know the latest version of every service.
     let services = client.get_services().await?.into_body().await?.services;
 
-    let endpoints = client.get_endpoints().await?.into_body().await?.endpoints;
+    let deployments = client
+        .get_deployments()
+        .await?
+        .into_body()
+        .await?
+        .deployments;
 
-    if endpoints.is_empty() {
+    if deployments.is_empty() {
         c_error!(
             "No deployments were found! Did you forget to register your deployment with 'restate dep register'?"
         );
         return Ok(());
     }
-    // For each endpoint, we need to calculate the status and # of invocations.
+    // For each deployment, we need to calculate the status and # of invocations.
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     for svc in services {
         latest_services.insert(svc.name.clone(), svc);
@@ -62,7 +65,7 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
     //
     let mut table = Table::new_styled(&env.ui_config);
     let mut header = vec![
-        "ENDPOINT",
+        "DEPLOYMENT",
         "TYPE",
         "STATUS",
         "ACTIVE INVOCATIONS",
@@ -74,43 +77,43 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
     }
     table.set_styled_header(header);
 
-    let mut enriched_endpoints: Vec<(ServiceEndpointResponse, EndpointStatus, i64)> =
-        Vec::with_capacity(endpoints.len());
+    let mut enriched_deployments: Vec<(DeploymentResponse, DeploymentStatus, i64)> =
+        Vec::with_capacity(deployments.len());
 
-    for endpoint in endpoints {
+    for deployment in deployments {
         // calculate status and counters.
-        let active_inv = count_deployment_active_inv(&sql_client, &endpoint.id).await?;
+        let active_inv = count_deployment_active_inv(&sql_client, &deployment.id).await?;
         let status = calculate_deployment_status(
-            &endpoint.id,
-            &endpoint.services,
+            &deployment.id,
+            &deployment.services,
             active_inv,
             &latest_services,
         );
-        enriched_endpoints.push((endpoint, status, active_inv));
+        enriched_deployments.push((deployment, status, active_inv));
     }
     // Sort by active, draining, then drained.
-    enriched_endpoints.sort_unstable_by_key(|(_, status, _)| match status {
-        EndpointStatus::Active => 0,
-        EndpointStatus::Draining => 1,
-        EndpointStatus::Drained => 2,
+    enriched_deployments.sort_unstable_by_key(|(_, status, _)| match status {
+        DeploymentStatus::Active => 0,
+        DeploymentStatus::Draining => 1,
+        DeploymentStatus::Drained => 2,
     });
 
-    for (endpoint, status, active_inv) in enriched_endpoints {
+    for (deployment, status, active_inv) in enriched_deployments {
         let mut row = vec![
-            Cell::new(render_endpoint_url(&endpoint.service_endpoint)),
-            Cell::new(render_deployment_type(&endpoint.service_endpoint)),
+            Cell::new(render_deployment_url(&deployment.deployment)),
+            Cell::new(render_deployment_type(&deployment.deployment)),
             render_deployment_status(status),
             render_active_invocations(active_inv),
-            Cell::new(&endpoint.id),
-            Cell::new(match &endpoint.service_endpoint {
-                ServiceEndpoint::Http { created_at, .. } => created_at,
-                ServiceEndpoint::Lambda { created_at, .. } => created_at,
+            Cell::new(&deployment.id),
+            Cell::new(match &deployment.deployment {
+                Deployment::Http { created_at, .. } => created_at,
+                Deployment::Lambda { created_at, .. } => created_at,
             }),
         ];
         if list_opts.extra {
             row.push(render_services(
-                &endpoint.id,
-                &endpoint.services,
+                &deployment.id,
+                &deployment.services,
                 &latest_services,
             ));
         }
@@ -124,7 +127,7 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
 }
 
 fn render_services(
-    endpoint_id: &str,
+    deployment_id: &str,
     services: &[ServiceNameRevPair],
     latest_services: &HashMap<String, ServiceMetadata>,
 ) -> Cell {
@@ -133,7 +136,7 @@ fn render_services(
     let mut out = String::new();
     for svc in services {
         if let Some(latest_svc) = latest_services.get(&svc.name) {
-            let style = if latest_svc.endpoint_id == endpoint_id {
+            let style = if latest_svc.deployment_id == deployment_id {
                 // We are hosting the latest revision of this service.
                 Style::Success
             } else {

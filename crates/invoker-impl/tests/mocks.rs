@@ -219,7 +219,7 @@ impl InMemoryJournalStorage {
             fid,
             (
                 JournalMetadata {
-                    endpoint_id: None,
+                    deployment_id: None,
                     method: method.into().into(),
                     span_context,
                     length: 0,

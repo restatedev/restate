@@ -183,13 +183,12 @@ pub mod storage {
                             "Cannot decode method_name string {e}"
                         ))
                     })?;
-                    let endpoint_id =
-                        value
-                            .endpoint_id
-                            .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
-                                invocation_status::invoked::EndpointId::None(_) => None,
-                                invocation_status::invoked::EndpointId::Value(id) => Some(id),
-                            });
+                    let deployment_id = value.deployment_id.and_then(|one_of_deployment_id| {
+                        match one_of_deployment_id {
+                            invocation_status::invoked::DeploymentId::None(_) => None,
+                            invocation_status::invoked::DeploymentId::Value(id) => Some(id),
+                        }
+                    });
 
                     let journal_metadata =
                         restate_storage_api::status_table::JournalMetadata::try_from(
@@ -208,7 +207,7 @@ pub mod storage {
                     Ok(restate_storage_api::status_table::InvocationMetadata::new(
                         invocation_uuid,
                         journal_metadata,
-                        endpoint_id,
+                        deployment_id,
                         method_name,
                         response_sink,
                         restate_storage_api::status_table::StatusTimestamps::new(
@@ -223,7 +222,7 @@ pub mod storage {
                 fn from(value: restate_storage_api::status_table::InvocationMetadata) -> Self {
                     let restate_storage_api::status_table::InvocationMetadata {
                         invocation_uuid,
-                        endpoint_id,
+                        deployment_id: deployment_id,
                         method,
                         response_sink,
                         journal_metadata,
@@ -234,10 +233,10 @@ pub mod storage {
                         response_sink: Some(ServiceInvocationResponseSink::from(response_sink)),
                         invocation_uuid: invocation_uuid_to_bytes(&invocation_uuid),
                         method_name: method.into_bytes(),
-                        endpoint_id: Some(match endpoint_id {
-                            None => invocation_status::invoked::EndpointId::None(()),
-                            Some(endpoint_id) => {
-                                invocation_status::invoked::EndpointId::Value(endpoint_id)
+                        deployment_id: Some(match deployment_id {
+                            None => invocation_status::invoked::DeploymentId::None(()),
+                            Some(deployment_id) => {
+                                invocation_status::invoked::DeploymentId::Value(deployment_id)
                             }
                         }),
                         journal_meta: Some(JournalMeta::from(journal_metadata)),
@@ -263,13 +262,12 @@ pub mod storage {
                             "Cannot decode method_name string {e}"
                         ))
                     })?;
-                    let endpoint_id =
-                        value
-                            .endpoint_id
-                            .and_then(|one_of_endpoint_id| match one_of_endpoint_id {
-                                invocation_status::suspended::EndpointId::None(_) => None,
-                                invocation_status::suspended::EndpointId::Value(id) => Some(id),
-                            });
+                    let deployment_id = value.deployment_id.and_then(|one_of_deployment_id| {
+                        match one_of_deployment_id {
+                            invocation_status::suspended::DeploymentId::None(_) => None,
+                            invocation_status::suspended::DeploymentId::Value(id) => Some(id),
+                        }
+                    });
 
                     let journal_metadata =
                         restate_storage_api::status_table::JournalMetadata::try_from(
@@ -292,7 +290,7 @@ pub mod storage {
                         restate_storage_api::status_table::InvocationMetadata::new(
                             invocation_uuid,
                             journal_metadata,
-                            endpoint_id,
+                            deployment_id,
                             method_name,
                             response_sink,
                             restate_storage_api::status_table::StatusTimestamps::new(
@@ -328,10 +326,10 @@ pub mod storage {
                         response_sink: Some(response_sink),
                         journal_meta: Some(journal_meta),
                         method_name: metadata.method.into_bytes(),
-                        endpoint_id: Some(match metadata.endpoint_id {
-                            None => invocation_status::suspended::EndpointId::None(()),
-                            Some(endpoint_id) => {
-                                invocation_status::suspended::EndpointId::Value(endpoint_id)
+                        deployment_id: Some(match metadata.deployment_id {
+                            None => invocation_status::suspended::DeploymentId::None(()),
+                            Some(deployment_id) => {
+                                invocation_status::suspended::DeploymentId::Value(deployment_id)
                             }
                         }),
                         creation_time: metadata.timestamps.creation_time().as_u64(),

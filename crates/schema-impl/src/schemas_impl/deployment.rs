@@ -19,7 +19,7 @@ const EVENT_METADATA_FIELD_EXT: i32 = 2;
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum BadDescriptorError {
     // User errors
-    #[error("bad uri '{0}'. The uri must contain either `http` or `https` scheme, a valid authority and can contain a path where the service endpoint is exposed.")]
+    #[error("bad uri '{0}'. The uri must contain either `http` or `https` scheme, a valid authority and can contain a path where the deployment is exposed.")]
     #[code(unknown)]
     BadUri(String),
     #[error("cannot find the dev.restate.ext.service_type extension in the descriptor of service '{0}'. You must annotate a service using the dev.restate.ext.service_type extension to specify whether your service is KEYED, UNKEYED or SINGLETON")]
@@ -105,14 +105,14 @@ pub enum IncompatibleServiceChangeError {
 
 impl SchemasInner {
     /// When `force` is set, allow incompatible service definition updates to existing services.
-    pub(crate) fn compute_new_endpoint(
+    pub(crate) fn compute_new_deployment(
         &self,
-        endpoint_metadata: EndpointMetadata,
+        deployment_metadata: DeploymentMetadata,
         services: Vec<String>,
         descriptor_pool: DescriptorPool,
         force: bool,
     ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
-        let endpoint_id = endpoint_metadata.id();
+        let deployment_id = deployment_metadata.id();
 
         let services: Vec<ServiceRegistrationRequest> =
             ServiceRegistrationRequest::infer_all_services_from_descriptor_pool(
@@ -122,14 +122,14 @@ impl SchemasInner {
 
         let mut result_commands = Vec::with_capacity(1 + services.len());
 
-        if let Some(existing_endpoint) = self.endpoints.get(&endpoint_id) {
+        if let Some(existing_deployment) = self.deployments.get(&deployment_id) {
             if force {
-                // If we need to overwrite the endpoint we need to remove old services
-                for svc in &existing_endpoint.services {
+                // If we need to overwrite the deployment we need to remove old services
+                for svc in &existing_deployment.services {
                     warn!(
-                        restate.service_endpoint.id = %endpoint_id,
-                        restate.service_endpoint.address = %endpoint_metadata.address_display(),
-                        "Going to remove service {} due to a forced service endpoint update",
+                        restate.deployment.id = %deployment_id,
+                        restate.deployment.address = %deployment_metadata.address_display(),
+                        "Going to remove service {} due to a forced deployment update",
                         svc.name
                     );
                     result_commands.push(SchemasUpdateCommand::RemoveService {
@@ -138,7 +138,7 @@ impl SchemasInner {
                     });
                 }
             } else {
-                return Err(SchemasUpdateError::OverrideEndpoint(endpoint_id));
+                return Err(SchemasUpdateError::OverrideDeployment(deployment_id));
             }
         }
 
@@ -165,9 +165,9 @@ impl SchemasInner {
                 if !removed_methods.is_empty() {
                     if force {
                         warn!(
-                            restate.service_endpoint.id = %endpoint_id,
-                            restate.service_endpoint.address = %endpoint_metadata.address_display(),
-                            "Going to remove the following methods from service instance type {} due to a forced service endpoint update: {:?}.",
+                            restate.deployment.id = %deployment_id,
+                            restate.deployment.address = %deployment_metadata.address_display(),
+                            "Going to remove the following methods from service instance type {} due to a forced deployment update: {:?}.",
                             proposed_service.name,
                             removed_methods
                         );
@@ -184,9 +184,9 @@ impl SchemasInner {
                 if existing_service.instance_type != instance_type {
                     if force {
                         warn!(
-                            restate.service_endpoint.id = %endpoint_id,
-                            restate.service_endpoint.address = %endpoint_metadata.address_display(),
-                            "Going to overwrite service instance type {} due to a forced service endpoint update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
+                            restate.deployment.id = %deployment_id,
+                            restate.deployment.address = %deployment_metadata.address_display(),
+                            "Going to overwrite service instance type {} due to a forced deployment update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
                             proposed_service.name,
                             existing_service.instance_type,
                             instance_type
@@ -207,9 +207,9 @@ impl SchemasInner {
             computed_revisions.insert(proposed_service.name.clone(), revision);
         }
 
-        // Create the InsertEndpoint command
-        result_commands.push(SchemasUpdateCommand::InsertEndpoint {
-            metadata: endpoint_metadata,
+        // Create the InsertDeployment command
+        result_commands.push(SchemasUpdateCommand::InsertDeployment {
+            metadata: deployment_metadata,
             services: services
                 .into_iter()
                 .map(|request| {
@@ -229,20 +229,20 @@ impl SchemasInner {
         Ok(result_commands)
     }
 
-    pub(crate) fn apply_insert_endpoint(
+    pub(crate) fn apply_insert_deployment(
         &mut self,
-        metadata: EndpointMetadata,
+        metadata: DeploymentMetadata,
         services: Vec<InsertServiceUpdateCommand>,
         descriptor_pool: DescriptorPool,
     ) -> Result<(), SchemasUpdateError> {
-        let endpoint_id = metadata.id();
+        let deployment_id = metadata.id();
         info!(
-            restate.service_endpoint.id = %endpoint_id,
-            restate.service_endpoint.address = %metadata.address_display(),
-            "Registering endpoint"
+            restate.deployment.id = %deployment_id,
+            restate.deployment.address = %metadata.address_display(),
+            "Registering deployment"
         );
 
-        let mut endpoint_services = vec![];
+        let mut deployment_services = vec![];
 
         for InsertServiceUpdateCommand {
             name,
@@ -253,7 +253,7 @@ impl SchemasInner {
         {
             info!(
                 rpc.service = name,
-                restate.service_endpoint.address = %metadata.address_display(),
+                restate.deployment.address = %metadata.address_display(),
                 "Registering service"
             );
             let service_descriptor = descriptor_pool
@@ -284,15 +284,15 @@ impl SchemasInner {
                     );
                     service_schemas.methods =
                         ServiceSchemas::compute_service_methods(&service_descriptor, &methods);
-                    if let ServiceLocation::ServiceEndpoint {
-                        latest_endpoint, ..
+                    if let ServiceLocation::Deployment {
+                        latest_deployment, ..
                     } = &mut service_schemas.location
                     {
-                        *latest_endpoint = endpoint_id.clone();
+                        *latest_deployment = deployment_id.clone();
                     }
 
                     // We need to remove the service from the proto_symbols.
-                    // We re-insert it later with the new endpoint id
+                    // We re-insert it later with the new deployment id
                     self.proto_symbols.remove_service(&service_descriptor);
                 })
                 .or_insert_with(|| {
@@ -303,24 +303,24 @@ impl SchemasInner {
                             instance_type.clone(),
                             &methods,
                         ),
-                        endpoint_id.clone(),
+                        deployment_id.clone(),
                     )
                 });
 
             self.proto_symbols
-                .add_service(&endpoint_id, &service_descriptor);
+                .add_service(&deployment_id, &service_descriptor);
 
-            endpoint_services.push(
+            deployment_services.push(
                 map_to_service_metadata(&name, service_schemas)
                     .expect("Should not be a built-in service"),
             );
         }
 
-        self.endpoints.insert(
-            endpoint_id,
-            EndpointSchemas {
+        self.deployments.insert(
+            deployment_id,
+            DeploymentSchemas {
                 metadata,
-                services: endpoint_services,
+                services: deployment_services,
                 descriptor_pool,
             },
         );
@@ -328,32 +328,32 @@ impl SchemasInner {
         Ok(())
     }
 
-    pub(crate) fn compute_remove_endpoint(
+    pub(crate) fn compute_remove_deployment(
         &self,
-        endpoint_id: EndpointId,
+        deployment_id: DeploymentId,
     ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
-        if !self.endpoints.contains_key(&endpoint_id) {
-            return Err(SchemasUpdateError::UnknownEndpoint(endpoint_id));
+        if !self.deployments.contains_key(&deployment_id) {
+            return Err(SchemasUpdateError::UnknownDeployment(deployment_id));
         }
-        let endpoint_schemas = self.endpoints.get(&endpoint_id).unwrap();
+        let deployment_schemas = self.deployments.get(&deployment_id).unwrap();
 
-        let mut commands = Vec::with_capacity(1 + endpoint_schemas.services.len());
-        for svc in endpoint_schemas.services.clone() {
+        let mut commands = Vec::with_capacity(1 + deployment_schemas.services.len());
+        for svc in deployment_schemas.services.clone() {
             commands.push(SchemasUpdateCommand::RemoveService {
                 name: svc.name,
                 revision: svc.revision,
             });
         }
-        commands.push(SchemasUpdateCommand::RemoveEndpoint { endpoint_id });
+        commands.push(SchemasUpdateCommand::RemoveDeployment { deployment_id });
 
         Ok(commands)
     }
 
-    pub(crate) fn apply_remove_endpoint(
+    pub(crate) fn apply_remove_deployment(
         &mut self,
-        endpoint_id: EndpointId,
+        deployment_id: DeploymentId,
     ) -> Result<(), SchemasUpdateError> {
-        self.endpoints.remove(&endpoint_id);
+        self.deployments.remove(&deployment_id);
 
         Ok(())
     }
@@ -656,7 +656,7 @@ fn is_map_with(field_descriptor: &FieldDescriptor, key_kind: Kind, value_kind: K
 mod tests {
     use super::*;
 
-    use restate_schema_api::endpoint::EndpointMetadataResolver;
+    use restate_schema_api::deployment::DeploymentMetadataResolver;
     use restate_schema_api::service::ServiceMetadataResolver;
     use restate_test_util::{assert, assert_eq, let_assert, test};
 
@@ -665,58 +665,62 @@ mod tests {
     const ANOTHER_GREETER_SERVICE_NAME: &str = "greeter.AnotherGreeter";
 
     #[test]
-    fn register_new_endpoint() {
+    fn register_new_deployment() {
         let schemas = Schemas::default();
 
-        let endpoint = EndpointMetadata::mock();
+        let deployment = DeploymentMetadata::mock();
         let commands = schemas
-            .compute_new_endpoint(
-                endpoint.clone(),
+            .compute_new_deployment(
+                deployment.clone(),
                 vec![GREETER_SERVICE_NAME.to_owned()],
                 DESCRIPTOR.clone(),
                 false,
             )
             .unwrap();
 
-        let_assert!(Some(SchemasUpdateCommand::InsertEndpoint { services, .. }) = commands.get(0));
+        let_assert!(
+            Some(SchemasUpdateCommand::InsertDeployment { services, .. }) = commands.get(0)
+        );
         assert_eq!(services.len(), 1);
 
         schemas.apply_updates(commands).unwrap();
 
         schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
-        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint.id());
+        schemas.assert_resolves_deployment(GREETER_SERVICE_NAME, deployment.id());
         assert_eq!(schemas.list_services().first().unwrap().methods.len(), 3);
     }
 
     #[test]
-    fn register_new_endpoint_add_unregistered_service() {
+    fn register_new_deplooyment_add_unregistered_service() {
         let schemas = Schemas::default();
 
-        let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
-        let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:9081");
+        let deployment_1 = DeploymentMetadata::mock_with_uri("http://localhost:9080");
+        let deployment_2 = DeploymentMetadata::mock_with_uri("http://localhost:9081");
 
         let commands = schemas
-            .compute_new_endpoint(
-                endpoint_1.clone(),
+            .compute_new_deployment(
+                deployment_1.clone(),
                 vec![GREETER_SERVICE_NAME.to_owned()],
                 DESCRIPTOR.clone(),
                 false,
             )
             .unwrap();
 
-        let_assert!(Some(SchemasUpdateCommand::InsertEndpoint { services, .. }) = commands.get(0));
+        let_assert!(
+            Some(SchemasUpdateCommand::InsertDeployment { services, .. }) = commands.get(0)
+        );
         assert_eq!(services.len(), 1);
 
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint_1.id());
+        schemas.assert_resolves_deployment(GREETER_SERVICE_NAME, deployment_1.id());
         assert!(schemas
             .resolve_latest_service_metadata(ANOTHER_GREETER_SERVICE_NAME)
             .is_none());
 
         let commands = schemas
-            .compute_new_endpoint(
-                endpoint_2.clone(),
+            .compute_new_deployment(
+                deployment_2.clone(),
                 vec![
                     GREETER_SERVICE_NAME.to_owned(),
                     ANOTHER_GREETER_SERVICE_NAME.to_owned(),
@@ -726,14 +730,16 @@ mod tests {
             )
             .unwrap();
 
-        let_assert!(Some(SchemasUpdateCommand::InsertEndpoint { services, .. }) = commands.get(0));
+        let_assert!(
+            Some(SchemasUpdateCommand::InsertDeployment { services, .. }) = commands.get(0)
+        );
         assert_eq!(services.len(), 2);
 
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint_2.id());
+        schemas.assert_resolves_deployment(GREETER_SERVICE_NAME, deployment_2.id());
         schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
-        schemas.assert_resolves_endpoint(ANOTHER_GREETER_SERVICE_NAME, endpoint_2.id());
+        schemas.assert_resolves_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_2.id());
         schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
     }
 
@@ -752,17 +758,17 @@ mod tests {
         );
 
         #[test]
-        fn register_new_endpoint_fails_changing_instance_type() {
+        fn register_new_deployment_fails_changing_instance_type() {
             let schemas = Schemas::default();
 
-            let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
-            let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:9081");
+            let deployment_1 = DeploymentMetadata::mock_with_uri("http://localhost:9080");
+            let deployment_2 = DeploymentMetadata::mock_with_uri("http://localhost:9081");
 
             schemas
                 .apply_updates(
                     schemas
-                        .compute_new_endpoint(
-                            endpoint_1.clone(),
+                        .compute_new_deployment(
+                            deployment_1.clone(),
                             vec![GREETER_SERVICE_NAME.to_owned()],
                             CHANGE_INSTANCE_TYPE_DESCRIPTOR_V1.clone(),
                             false,
@@ -771,10 +777,10 @@ mod tests {
                 )
                 .unwrap();
 
-            schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint_1.id());
+            schemas.assert_resolves_deployment(GREETER_SERVICE_NAME, deployment_1.id());
 
-            let compute_result = schemas.compute_new_endpoint(
-                endpoint_2,
+            let compute_result = schemas.compute_new_deployment(
+                deployment_2,
                 vec![GREETER_SERVICE_NAME.to_owned()],
                 CHANGE_INSTANCE_TYPE_DESCRIPTOR_V2.clone(),
                 false,
@@ -785,13 +791,13 @@ mod tests {
     }
 
     #[test]
-    fn override_existing_endpoint_removing_a_service() {
+    fn override_existing_deployment_removing_a_service() {
         let schemas = Schemas::default();
 
-        let endpoint = EndpointMetadata::mock();
+        let deployment = DeploymentMetadata::mock();
         let commands = schemas
-            .compute_new_endpoint(
-                endpoint.clone(),
+            .compute_new_deployment(
+                deployment.clone(),
                 vec![
                     GREETER_SERVICE_NAME.to_owned(),
                     ANOTHER_GREETER_SERVICE_NAME.to_owned(),
@@ -802,12 +808,12 @@ mod tests {
             .unwrap();
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint.id());
-        schemas.assert_resolves_endpoint(ANOTHER_GREETER_SERVICE_NAME, endpoint.id());
+        schemas.assert_resolves_deployment(GREETER_SERVICE_NAME, deployment.id());
+        schemas.assert_resolves_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment.id());
 
         let commands = schemas
-            .compute_new_endpoint(
-                endpoint.clone(),
+            .compute_new_deployment(
+                deployment.clone(),
                 vec![GREETER_SERVICE_NAME.to_owned()],
                 DESCRIPTOR.clone(),
                 true,
@@ -815,21 +821,21 @@ mod tests {
             .unwrap();
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint.id());
+        schemas.assert_resolves_deployment(GREETER_SERVICE_NAME, deployment.id());
         assert!(schemas
-            .resolve_latest_endpoint_for_service(ANOTHER_GREETER_SERVICE_NAME)
+            .resolve_latest_deployment_for_service(ANOTHER_GREETER_SERVICE_NAME)
             .is_none());
     }
 
     #[test]
-    fn cannot_override_existing_endpoint() {
+    fn cannot_override_existing_deployment() {
         let schemas = Schemas::default();
 
-        let endpoint = EndpointMetadata::mock();
+        let deployment = DeploymentMetadata::mock();
 
         let commands = schemas
-            .compute_new_endpoint(
-                endpoint.clone(),
+            .compute_new_deployment(
+                deployment.clone(),
                 vec![GREETER_SERVICE_NAME.to_owned()],
                 DESCRIPTOR.clone(),
                 false,
@@ -837,8 +843,8 @@ mod tests {
             .unwrap();
         schemas.apply_updates(commands).unwrap();
 
-        assert!(let Err(SchemasUpdateError::OverrideEndpoint(_)) = schemas.compute_new_endpoint(
-            endpoint,
+        assert!(let Err(SchemasUpdateError::OverrideDeployment(_)) = schemas.compute_new_deployment(
+            deployment,
             vec![GREETER_SERVICE_NAME.to_owned()],
             DESCRIPTOR.clone(),
             false)
@@ -846,17 +852,17 @@ mod tests {
     }
 
     #[test]
-    fn register_two_endpoints_then_remove_first() {
+    fn register_two_deployments_then_remove_first() {
         let schemas = Schemas::default();
 
-        let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
-        let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:9081");
+        let deployment_1 = DeploymentMetadata::mock_with_uri("http://localhost:9080");
+        let deployment_2 = DeploymentMetadata::mock_with_uri("http://localhost:9081");
 
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_endpoint(
-                        endpoint_1.clone(),
+                    .compute_new_deployment(
+                        deployment_1.clone(),
                         vec![
                             GREETER_SERVICE_NAME.to_owned(),
                             ANOTHER_GREETER_SERVICE_NAME.to_owned(),
@@ -870,8 +876,8 @@ mod tests {
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_endpoint(
-                        endpoint_2.clone(),
+                    .compute_new_deployment(
+                        deployment_2.clone(),
                         vec![GREETER_SERVICE_NAME.to_owned()],
                         DESCRIPTOR.clone(),
                         false,
@@ -880,12 +886,14 @@ mod tests {
             )
             .unwrap();
 
-        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint_2.id());
+        schemas.assert_resolves_deployment(GREETER_SERVICE_NAME, deployment_2.id());
         schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
-        schemas.assert_resolves_endpoint(ANOTHER_GREETER_SERVICE_NAME, endpoint_1.id());
+        schemas.assert_resolves_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_1.id());
         schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
 
-        let commands = schemas.compute_remove_endpoint(endpoint_1.id()).unwrap();
+        let commands = schemas
+            .compute_remove_deployment(deployment_1.id())
+            .unwrap();
 
         assert!(
             let Some(SchemasUpdateCommand::RemoveService { .. }) = commands.get(0)
@@ -894,17 +902,17 @@ mod tests {
             let Some(SchemasUpdateCommand::RemoveService { .. }) = commands.get(1)
         );
         assert!(
-            let Some(SchemasUpdateCommand::RemoveEndpoint { .. }) = commands.get(2)
+            let Some(SchemasUpdateCommand::RemoveDeployment { .. }) = commands.get(2)
         );
 
         schemas.apply_updates(commands).unwrap();
 
-        schemas.assert_resolves_endpoint(GREETER_SERVICE_NAME, endpoint_2.id());
+        schemas.assert_resolves_deployment(GREETER_SERVICE_NAME, deployment_2.id());
         schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
         assert!(schemas
-            .resolve_latest_endpoint_for_service(ANOTHER_GREETER_SERVICE_NAME)
+            .resolve_latest_deployment_for_service(ANOTHER_GREETER_SERVICE_NAME)
             .is_none());
-        assert!(schemas.get_endpoint(&endpoint_1.id()).is_none());
+        assert!(schemas.get_deployment(&deployment_1.id()).is_none());
     }
 
     // Reproducer for issue where the service name is the same of the method name
@@ -913,12 +921,12 @@ mod tests {
         let schemas = Schemas::default();
         let svc_name = "greeter.Greeter";
 
-        let endpoint = EndpointMetadata::mock();
+        let deployment = DeploymentMetadata::mock();
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_endpoint(
-                        endpoint.clone(),
+                    .compute_new_deployment(
+                        deployment.clone(),
                         vec![GREETER_SERVICE_NAME.to_owned()],
                         DESCRIPTOR.clone(),
                         false,
@@ -932,8 +940,8 @@ mod tests {
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_endpoint(
-                        endpoint,
+                    .compute_new_deployment(
+                        deployment,
                         vec![GREETER_SERVICE_NAME.to_owned()],
                         DESCRIPTOR.clone(),
                         true,
@@ -956,11 +964,11 @@ mod tests {
         fn reject_removing_existing_methods() {
             let schemas = Schemas::default();
 
-            let endpoint_1 = EndpointMetadata::mock_with_uri("http://localhost:9080");
-            let endpoint_2 = EndpointMetadata::mock_with_uri("http://localhost:9081");
+            let deployment_1 = DeploymentMetadata::mock_with_uri("http://localhost:9080");
+            let deployment_2 = DeploymentMetadata::mock_with_uri("http://localhost:9081");
 
-            let commands = schemas.compute_new_endpoint(
-                endpoint_1,
+            let commands = schemas.compute_new_deployment(
+                deployment_1,
                 vec![GREETER_SERVICE_NAME.to_owned()],
                 REMOVE_METHOD_DESCRIPTOR_V1.clone(),
                 false,
@@ -968,8 +976,8 @@ mod tests {
             schemas.apply_updates(commands.unwrap()).unwrap();
             schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
 
-            let rejection = schemas.compute_new_endpoint(
-                endpoint_2,
+            let rejection = schemas.compute_new_deployment(
+                deployment_2,
                 vec![GREETER_SERVICE_NAME.to_owned()],
                 REMOVE_METHOD_DESCRIPTOR_V2.clone(),
                 false,
@@ -998,8 +1006,8 @@ mod tests {
         fn reject_bad_key_wrong_type() {
             let schemas = Schemas::default();
 
-            let rejection = schemas.compute_new_endpoint(
-                EndpointMetadata::mock(),
+            let rejection = schemas.compute_new_deployment(
+                DeploymentMetadata::mock(),
                 vec![GREETER_SERVICE_NAME.to_owned()],
                 BAD_KEY_WRONG_TYPE_DESCRIPTOR.clone(),
                 false,

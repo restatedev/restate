@@ -28,10 +28,10 @@ use restate_invoker_api::{
     StateReader,
 };
 use restate_queue::SegmentQueue;
-use restate_schema_api::endpoint::EndpointMetadataResolver;
+use restate_schema_api::deployment::DeploymentMetadataResolver;
 use restate_timer_queue::TimerQueue;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EndpointId, FullInvocationId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::{DeploymentId, FullInvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::Completion;
@@ -76,7 +76,7 @@ trait InvocationTaskRunner {
 }
 
 #[derive(Debug)]
-struct DefaultInvocationTaskRunner<JR, SR, EE, EMR> {
+struct DefaultInvocationTaskRunner<JR, SR, EE, DMR> {
     client: ServiceClient,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
@@ -86,17 +86,17 @@ struct DefaultInvocationTaskRunner<JR, SR, EE, EMR> {
     journal_reader: JR,
     state_reader: SR,
     entry_enricher: EE,
-    endpoint_metadata_resolver: EMR,
+    deployment_metadata_resolver: DMR,
 }
 
-impl<JR, SR, EE, EMR> InvocationTaskRunner for DefaultInvocationTaskRunner<JR, SR, EE, EMR>
+impl<JR, SR, EE, DMR> InvocationTaskRunner for DefaultInvocationTaskRunner<JR, SR, EE, DMR>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
-    EMR: EndpointMetadataResolver + Clone + Send + 'static,
+    DMR: DeploymentMetadataResolver + Clone + Send + 'static,
 {
     fn start_invocation_task(
         &self,
@@ -121,7 +121,7 @@ where
                 self.journal_reader.clone(),
                 self.state_reader.clone(),
                 self.entry_enricher.clone(),
-                self.endpoint_metadata_resolver.clone(),
+                self.deployment_metadata_resolver.clone(),
                 invoker_tx,
                 invoker_rx,
             )
@@ -133,7 +133,7 @@ where
 // -- Service implementation
 
 #[derive(Debug)]
-pub struct Service<JournalReader, StateReader, EntryEnricher, ServiceEndpointRegistry> {
+pub struct Service<JournalReader, StateReader, EntryEnricher, DeploymentRegistry> {
     // Used for constructing the invoker sender
     input_tx: mpsc::UnboundedSender<InputCommand>,
     // For the segment queue
@@ -141,19 +141,14 @@ pub struct Service<JournalReader, StateReader, EntryEnricher, ServiceEndpointReg
     // We have this level of indirection to hide the InvocationTaskRunner,
     // which is a rather internal thing we have only for mocking.
     inner: ServiceInner<
-        DefaultInvocationTaskRunner<
-            JournalReader,
-            StateReader,
-            EntryEnricher,
-            ServiceEndpointRegistry,
-        >,
+        DefaultInvocationTaskRunner<JournalReader, StateReader, EntryEnricher, DeploymentRegistry>,
     >,
 }
 
-impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
+impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        endpoint_metadata_resolver: EMR,
+        deployment_metadata_resolver: DMR,
         retry_policy: RetryPolicy,
         inactivity_timeout: Duration,
         abort_timeout: Duration,
@@ -166,7 +161,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
-    ) -> Service<JR, SR, EE, EMR> {
+    ) -> Service<JR, SR, EE, DMR> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
@@ -187,7 +182,7 @@ impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR> {
                     journal_reader,
                     state_reader,
                     entry_enricher,
-                    endpoint_metadata_resolver,
+                    deployment_metadata_resolver,
                 },
                 retry_policy,
                 invocation_tasks: Default::default(),
@@ -207,7 +202,7 @@ where
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
-    EMR: EndpointMetadataResolver + Clone + Send + 'static,
+    EMR: DeploymentMetadataResolver + Clone + Send + 'static,
 {
     pub fn handle(&self) -> ChannelServiceHandle {
         ChannelServiceHandle {
@@ -330,11 +325,11 @@ where
                     inner
                 } = invocation_task_msg;
                 match inner {
-                    InvocationTaskOutputInner::SelectedEndpoint(endpoint_id, has_changed) => {
-                        self.handle_selected_endpoint(
+                    InvocationTaskOutputInner::SelectedDeployment(deployment_id, has_changed) => {
+                        self.handle_selected_deployment(
                             partition,
                             full_invocation_id,
-                            endpoint_id,
+                            deployment_id,
                             has_changed,
                         ).await
                     }
@@ -487,14 +482,14 @@ where
             rpc.service = %full_invocation_id.service_id.service_name,
             restate.invocation.id = %full_invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
-            restate.service_endpoint.id = %endpoint_id,
+            restate.deployment.id = %deployment_id,
         )
     )]
-    async fn handle_selected_endpoint(
+    async fn handle_selected_deployment(
         &mut self,
         partition: PartitionLeaderEpoch,
         full_invocation_id: FullInvocationId,
-        endpoint_id: EndpointId,
+        deployment_id: DeploymentId,
         has_changed: bool,
     ) {
         if let Some((_, ism)) = self
@@ -502,24 +497,24 @@ where
             .resolve_invocation(partition, &full_invocation_id)
         {
             trace!(
-                "Chosen endpoint {}. Invocation state: {:?}",
-                endpoint_id,
+                "Chosen deployment {}. Invocation state: {:?}",
+                deployment_id,
                 ism.invocation_state_debug()
             );
 
-            self.status_store.on_endpoint_chosen(
+            self.status_store.on_deployment_chosen(
                 &partition,
                 &full_invocation_id,
-                endpoint_id.clone(),
+                deployment_id.clone(),
             );
-            // If we think this selected endpoint has been freshly picked, otherwise
+            // If we think this selected deployment has been freshly picked, otherwise
             // we assume that we have stored it previously.
             if has_changed {
-                ism.notify_chosen_endpoint(endpoint_id);
+                ism.notify_chosen_deployment(deployment_id);
             }
         } else {
             // If no state machine, this might be an event for an aborted invocation.
-            trace!("No state machine found for selected endpoint id");
+            trace!("No state machine found for selected deployment id");
         }
     }
 
@@ -550,11 +545,11 @@ where
                 "Received a new entry. Invocation state: {:?}",
                 ism.invocation_state_debug()
             );
-            if let Some(endpoint_id) = ism.chosen_endpoint_to_notify() {
+            if let Some(deployment_id) = ism.chosen_deployment_to_notify() {
                 let _ = output_tx
                     .send(Effect {
                         full_invocation_id: full_invocation_id.clone(),
-                        kind: EffectKind::SelectedEndpoint(endpoint_id),
+                        kind: EffectKind::SelectedDeployment(deployment_id),
                     })
                     .await;
             }
@@ -907,7 +902,7 @@ mod tests {
     use bytes::Bytes;
     use quota::InvokerConcurrencyQuota;
     use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
-    use restate_schema_api::endpoint::mocks::MockEndpointMetadataRegistry;
+    use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
     use restate_test_util::{check, let_assert, test};
     use restate_types::identifiers::FullInvocationId;
     use restate_types::identifiers::InvocationUuid;
@@ -996,7 +991,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let service = Service::new(
             // all invocations are unknown leading to immediate retries
-            MockEndpointMetadataRegistry::default(),
+            MockDeploymentMetadataRegistry::default(),
             // fixed amount of retries so that an invocation eventually completes with a failure
             RetryPolicy::fixed_delay(Duration::ZERO, 1),
             Duration::ZERO,
@@ -1039,8 +1034,7 @@ mod tests {
 
         // If input order between 'register partition' and 'invoke' is not maintained, then it can happen
         // that 'invoke' arrives before 'register partition'. In this case, the invoker service will drop
-        // the invocation and we won't see a result for the invocation (failure because the service endpoint
-        // cannot be resolved).
+        // the invocation and we won't see a result for the invocation (failure because the deployment cannot be resolved).
         check!(let Some(_) = output_rx.recv().await);
 
         signal.drain().await;

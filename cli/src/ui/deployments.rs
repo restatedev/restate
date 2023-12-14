@@ -12,13 +12,13 @@ use std::collections::HashMap;
 
 use comfy_table::{Cell, Color, Table};
 
-use restate_meta_rest_model::endpoints::{ProtocolType, ServiceEndpoint, ServiceNameRevPair};
+use restate_meta_rest_model::deployments::{Deployment, ProtocolType, ServiceNameRevPair};
 use restate_meta_rest_model::services::ServiceMetadata;
 
 use super::console::StyledTable;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EndpointStatus {
+pub enum DeploymentStatus {
     /// An active endpoint is an endpoint that has the latest revision of one or more services.
     Active,
     /// A draining endpoint is an endpoint that has all of its services replaced
@@ -29,16 +29,16 @@ pub enum EndpointStatus {
     Drained,
 }
 
-pub fn render_endpoint_url(svc_endpoint: &ServiceEndpoint) -> String {
-    match svc_endpoint {
-        ServiceEndpoint::Http { uri, .. } => uri.to_string(),
-        ServiceEndpoint::Lambda { arn, .. } => arn.to_string(),
+pub fn render_deployment_url(deployment: &Deployment) -> String {
+    match deployment {
+        Deployment::Http { uri, .. } => uri.to_string(),
+        Deployment::Lambda { arn, .. } => arn.to_string(),
     }
 }
 
-pub fn render_deployment_type(svc_endpoint: &ServiceEndpoint) -> String {
-    match svc_endpoint {
-        ServiceEndpoint::Http { protocol_type, .. } => {
+pub fn render_deployment_type(deployment: &Deployment) -> String {
+    match deployment {
+        Deployment::Http { protocol_type, .. } => {
             format!(
                 "HTTP {}",
                 if protocol_type == &ProtocolType::BidiStream {
@@ -48,43 +48,43 @@ pub fn render_deployment_type(svc_endpoint: &ServiceEndpoint) -> String {
                 }
             )
         }
-        ServiceEndpoint::Lambda { .. } => "AWS Lambda".to_string(),
+        Deployment::Lambda { .. } => "AWS Lambda".to_string(),
     }
 }
 
 pub fn calculate_deployment_status(
-    endpoint_id: &str,
+    deployment_id: &str,
     owned_services: &[ServiceNameRevPair],
     active_inv: i64,
     latest_services: &HashMap<String, ServiceMetadata>,
-) -> EndpointStatus {
-    let mut status = EndpointStatus::Draining;
+) -> DeploymentStatus {
+    let mut status = DeploymentStatus::Draining;
 
     for svc in owned_services {
         if let Some(latest_svc) = latest_services.get(&svc.name) {
-            if latest_svc.endpoint_id == endpoint_id {
-                status = EndpointStatus::Active;
+            if latest_svc.deployment_id == deployment_id {
+                status = DeploymentStatus::Active;
                 break;
             }
         } else {
             // We couldn't find that service in latest_services? that's odd but
             // we'll ignore and err on the side of assuming it's an active endpoint.
-            status = EndpointStatus::Active;
+            status = DeploymentStatus::Active;
         }
     }
 
-    if status == EndpointStatus::Draining && active_inv == 0 {
-        status = EndpointStatus::Drained;
+    if status == DeploymentStatus::Draining && active_inv == 0 {
+        status = DeploymentStatus::Drained;
     }
 
     status
 }
 
-pub fn render_deployment_status(status: EndpointStatus) -> Cell {
+pub fn render_deployment_status(status: DeploymentStatus) -> Cell {
     let color = match status {
-        EndpointStatus::Active => Color::Green,
-        EndpointStatus::Draining => Color::Yellow,
-        EndpointStatus::Drained => Color::Grey,
+        DeploymentStatus::Active => Color::Green,
+        DeploymentStatus::Draining => Color::Yellow,
+        DeploymentStatus::Drained => Color::Grey,
     };
     Cell::new(format!("{:?}", status)).fg(color)
 }
@@ -97,10 +97,10 @@ pub fn render_active_invocations(active_inv: i64) -> Cell {
     }
 }
 
-pub fn add_deployment_to_kv_table(endpoint: &ServiceEndpoint, table: &mut Table) {
-    table.add_kv_row("Deployment Type:", render_deployment_type(endpoint));
-    let (additional_headers, created_at) = match &endpoint {
-        ServiceEndpoint::Http {
+pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
+    table.add_kv_row("Deployment Type:", render_deployment_type(deployment));
+    let (additional_headers, created_at) = match &deployment {
+        Deployment::Http {
             uri,
             protocol_type,
             additional_headers,
@@ -116,7 +116,7 @@ pub fn add_deployment_to_kv_table(endpoint: &ServiceEndpoint, table: &mut Table)
             table.add_kv_row("Endpoint:", uri);
             (additional_headers.clone(), created_at)
         }
-        ServiceEndpoint::Lambda {
+        Deployment::Lambda {
             arn,
             assume_role_arn,
             additional_headers,
@@ -125,7 +125,7 @@ pub fn add_deployment_to_kv_table(endpoint: &ServiceEndpoint, table: &mut Table)
             table.add_kv_row("Protocol Style:", "Request/Response");
             table.add_kv_row_if(
                 || assume_role_arn.is_some(),
-                "Endpoint Assume Role ARN:",
+                "Deployment Assume Role ARN:",
                 assume_role_arn.as_ref().unwrap(),
             );
 
@@ -140,7 +140,7 @@ pub fn add_deployment_to_kv_table(endpoint: &ServiceEndpoint, table: &mut Table)
     table.add_kv_row("Created at:", created_at);
     for (header, value) in additional_headers.iter() {
         table.add_kv_row(
-            "Endpoint Additional Header:",
+            "Deployment Additional Header:",
             &format!("{}: {}", header, value.to_str().unwrap_or("<BINARY>")),
         );
     }

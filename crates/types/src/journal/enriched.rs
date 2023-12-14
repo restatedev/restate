@@ -45,7 +45,7 @@ pub enum EnrichedEntryHeader {
     },
     Invoke {
         is_completed: bool,
-        // None if invoke entry is completed by service endpoint
+        // None if invoke entry is completed by deployment
         resolution_result: Option<ResolutionResult>,
     },
     BackgroundInvoke {

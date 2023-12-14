@@ -15,7 +15,7 @@ use cling::prelude::*;
 use comfy_table::Table;
 use indoc::indoc;
 
-use restate_meta_rest_model::endpoints::ServiceNameRevPair;
+use restate_meta_rest_model::deployments::ServiceNameRevPair;
 use restate_meta_rest_model::services::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
@@ -50,13 +50,13 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     let client = MetasClient::new(&env)?;
     let sql_client = crate::clients::DataFusionHttpClient::new(&env)?;
 
-    let endpoint = client
-        .get_endpoint(&opts.deployment_id)
+    let deployment = client
+        .get_deployment(&opts.deployment_id)
         .await?
         .into_body()
         .await?;
 
-    let active_inv = count_deployment_active_inv_by_method(&sql_client, &endpoint.id).await?;
+    let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
 
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     // To know the latest version of every service.
@@ -68,7 +68,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     // sum inv_count in active_inv
     let total_active_inv = active_inv.iter().fold(0, |acc, x| acc + x.inv_count);
 
-    let svc_rev_pairs: Vec<_> = endpoint
+    let svc_rev_pairs: Vec<_> = deployment
         .services
         .iter()
         .map(|s| ServiceNameRevPair {
@@ -78,21 +78,21 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         .collect();
 
     let status = calculate_deployment_status(
-        &endpoint.id,
+        &deployment.id,
         &svc_rev_pairs,
         total_active_inv,
         &latest_services,
     );
 
     let mut table = Table::new_styled(&env.ui_config);
-    table.add_kv_row("ID:", &endpoint.id);
+    table.add_kv_row("ID:", &deployment.id);
 
-    add_deployment_to_kv_table(&endpoint.service_endpoint, &mut table);
+    add_deployment_to_kv_table(&deployment.deployment, &mut table);
     table.add_kv_row("Status:", render_deployment_status(status));
     table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
     c_println!("{}", table);
     c_println!("{}", Styled(Style::Info, "Services:"));
-    for svc in endpoint.services {
+    for svc in deployment.services {
         let Some(latest_svc) = latest_services.get(&svc.name) else {
             // if we can't find this service in the latest set of service, something is off. A
             // deployment cannot remove services defined by other deployment, so we should warn that
@@ -118,7 +118,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             format!(
                 "[Latest {} is in deployment ID {}]",
                 Styled(Style::Success, latest_svc.revision),
-                latest_svc.endpoint_id
+                latest_svc.deployment_id
             )
         };
         c_indentln!(2, "Revision: {} {}", svc.revision, latest_revision_message);
@@ -128,7 +128,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     // Now, if this is a drained deployment, it's safe to remove. If not, we ask the user to use
     // --force.
     let safe = match status {
-        crate::ui::deployments::EndpointStatus::Active => {
+        crate::ui::deployments::DeploymentStatus::Active => {
             // unsafe to remove, use --force
             c_error!(
                 indoc! {
@@ -141,7 +141,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             );
             false
         }
-        crate::ui::deployments::EndpointStatus::Draining => {
+        crate::ui::deployments::DeploymentStatus::Draining => {
             // unsafe to remove, use --force
             c_error!(
                 indoc! {
@@ -155,7 +155,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             );
             false
         }
-        crate::ui::deployments::EndpointStatus::Drained => {
+        crate::ui::deployments::DeploymentStatus::Drained => {
             // safe to remove
             c_success!("The deployment is fully drained and is safe to remove");
             true
@@ -173,7 +173,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     confirm_or_exit(&env, "Are you sure you want to remove this deployment?")?;
 
     let result = client
-        .remove_endpoint(
+        .remove_deployment(
             &opts.deployment_id,
             //TODO: Use opts.force when the server implements the false + validation case!
             true,

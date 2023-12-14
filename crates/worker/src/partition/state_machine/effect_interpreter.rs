@@ -319,18 +319,18 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .delete_timer(full_invocation_id, wake_up_time, entry_index)
                     .await?;
             }
-            Effect::StoreEndpointId {
+            Effect::StoreDeploymentId {
                 service_id,
-                endpoint_id,
+                deployment_id,
                 mut metadata,
             } => {
                 debug_assert_eq!(
-                    metadata.endpoint_id, None,
-                    "No endpoint_id should be fixed for the current invocation"
+                    metadata.deployment_id, None,
+                    "No deployment_id should be fixed for the current invocation"
                 );
-                metadata.endpoint_id = Some(endpoint_id);
+                metadata.deployment_id = Some(deployment_id);
                 // We recreate the InvocationStatus in Invoked state as the invoker can notify the
-                // chosen endpoint_id only when the invocation is in-flight.
+                // chosen deployment_id only when the invocation is in-flight.
                 state_storage
                     .store_invocation_status(&service_id, InvocationStatus::Invoked(metadata))
                     .await?;

@@ -28,8 +28,8 @@ use crate::service::MetaError;
 pub enum MetaApiError {
     #[error("The request field '{0}' is invalid. Reason: {1}")]
     InvalidField(&'static str, String),
-    #[error("The requested service endpoint '{0}' does not exist")]
-    ServiceEndpointNotFound(String),
+    #[error("The requested deployment '{0}' does not exist")]
+    DeploymentNotFound(String),
     #[error("The requested service '{0}' does not exist")]
     ServiceNotFound(String),
     #[error("The requested method '{method_name}' on service '{service_name}' does not exist")]
@@ -62,13 +62,13 @@ impl IntoResponse for MetaApiError {
         let status_code = match &self {
             MetaApiError::ServiceNotFound(_)
             | MetaApiError::MethodNotFound { .. }
-            | MetaApiError::ServiceEndpointNotFound(_)
+            | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
             MetaApiError::Meta(MetaError::SchemaRegistry(SchemasUpdateError::BadDescriptor(_))) => {
                 StatusCode::BAD_REQUEST
             }
             MetaApiError::Meta(MetaError::SchemaRegistry(
-                SchemasUpdateError::OverrideEndpoint(_),
+                SchemasUpdateError::OverrideDeployment(_),
             ))
             | MetaApiError::Meta(MetaError::SchemaRegistry(
                 SchemasUpdateError::IncompatibleServiceChange(_),
@@ -76,9 +76,9 @@ impl IntoResponse for MetaApiError {
             MetaApiError::Meta(MetaError::SchemaRegistry(SchemasUpdateError::UnknownService(
                 _,
             ))) => StatusCode::NOT_FOUND,
-            MetaApiError::Meta(MetaError::SchemaRegistry(SchemasUpdateError::UnknownEndpoint(
-                _,
-            ))) => StatusCode::NOT_FOUND,
+            MetaApiError::Meta(MetaError::SchemaRegistry(
+                SchemasUpdateError::UnknownDeployment(_),
+            )) => StatusCode::NOT_FOUND,
             MetaApiError::Meta(MetaError::SchemaRegistry(
                 SchemasUpdateError::ModifyInternalService(_),
             )) => StatusCode::FORBIDDEN,

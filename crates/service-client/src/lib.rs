@@ -52,13 +52,13 @@ impl ServiceClient {
         let (parts, body) = req.into_parts();
 
         match parts.address {
-            ServiceEndpointAddress::Http(uri, version) => {
+            Endpoint::Http(uri, version) => {
                 let fut = self
                     .http
                     .request(uri, version, body, parts.path, parts.headers);
                 Either::Left(async move { Ok(fut.await?) })
             }
-            ServiceEndpointAddress::Lambda(arn, assume_role_arn) => {
+            Endpoint::Lambda(arn, assume_role_arn) => {
                 let fut = self
                     .lambda
                     .invoke(arn, assume_role_arn, body, parts.path, parts.headers);
@@ -90,7 +90,7 @@ impl<B> Request<B> {
         (self.head, self.body)
     }
 
-    pub fn address(&self) -> &ServiceEndpointAddress {
+    pub fn address(&self) -> &Endpoint {
         &self.head.address
     }
 
@@ -102,7 +102,7 @@ impl<B> Request<B> {
 #[derive(Clone, Debug)]
 pub struct Parts {
     /// The request's target address
-    address: ServiceEndpointAddress,
+    address: Endpoint,
 
     /// The request's path, for example /discover or /invoke/xyz/abc
     path: PathAndQuery,
@@ -112,11 +112,7 @@ pub struct Parts {
 }
 
 impl Parts {
-    pub fn new(
-        address: ServiceEndpointAddress,
-        path: PathAndQuery,
-        headers: HeaderMap<HeaderValue>,
-    ) -> Self {
+    pub fn new(address: Endpoint, path: PathAndQuery, headers: HeaderMap<HeaderValue>) -> Self {
         Self {
             address,
             path,
@@ -126,12 +122,12 @@ impl Parts {
 }
 
 #[derive(Clone, Debug)]
-pub enum ServiceEndpointAddress {
+pub enum Endpoint {
     Http(Uri, hyper::http::Version),
     Lambda(LambdaARN, Option<ByteString>),
 }
 
-impl fmt::Display for ServiceEndpointAddress {
+impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Http(uri, _) => uri.fmt(f),

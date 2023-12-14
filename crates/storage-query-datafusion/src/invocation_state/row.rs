@@ -35,8 +35,8 @@ pub(crate) fn append_state_row(
     row.in_flight(status_row.in_flight());
     row.retry_count(status_row.retry_count() as u64);
     row.last_start_at(MillisSinceEpoch::as_u64(&status_row.last_start_at().into()) as i64);
-    if let Some(last_attempt_endpoint_id) = status_row.last_attempt_endpoint_id() {
-        row.last_attempt_endpoint_id(last_attempt_endpoint_id);
+    if let Some(last_attempt_deployment_id) = status_row.last_attempt_deployment_id() {
+        row.last_attempt_deployment_id(last_attempt_deployment_id);
     }
 
     if let Some(next_retry_at) = status_row.next_retry_at() {

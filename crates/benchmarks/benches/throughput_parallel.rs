@@ -31,7 +31,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
         .build()
         .expect("current thread runtime must build");
 
-    restate_benchmarks::discover_endpoint(
+    restate_benchmarks::discover_deployment(
         &current_thread_rt,
         Uri::from_static("http://localhost:9080"),
     );

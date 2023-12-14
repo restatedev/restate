@@ -39,7 +39,7 @@ pub struct Options {
     keep_alive_options: Option<Http2KeepAliveOptions>,
     /// # Proxy URI
     ///
-    /// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with the `Host` header set to the service endpoint URI.
+    /// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with the `Host` header set to the deployment URI.
     /// HTTPS proxy URIs are supported, but only HTTP endpoint traffic will be proxied currently.
     /// Can be overridden by the `HTTP_PROXY` environment variable.
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
@@ -84,7 +84,7 @@ impl Options {
 /// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
 ///
 /// Please note: most gateways don't propagate the HTTP/2 keep-alive between downstream and upstream hosts.
-/// In those environments, you need to make sure the gateway can detect a broken connection to the upstream service endpoint(s).
+/// In those environments, you need to make sure the gateway can detect a broken connection to the upstream deployment(s).
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]

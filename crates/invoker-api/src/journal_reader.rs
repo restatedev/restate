@@ -10,7 +10,7 @@
 
 use bytestring::ByteString;
 use futures::Stream;
-use restate_types::identifiers::{EndpointId, FullInvocationId};
+use restate_types::identifiers::{DeploymentId, FullInvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryIndex;
@@ -22,7 +22,7 @@ pub struct JournalMetadata {
     pub length: EntryIndex,
     pub span_context: ServiceInvocationSpanContext,
     pub method: ByteString,
-    pub endpoint_id: Option<EndpointId>,
+    pub deployment_id: Option<DeploymentId>,
 }
 
 impl JournalMetadata {
@@ -30,10 +30,10 @@ impl JournalMetadata {
         length: EntryIndex,
         span_context: ServiceInvocationSpanContext,
         method: ByteString,
-        endpoint_id: Option<String>,
+        deployment_id: Option<String>,
     ) -> Self {
         Self {
-            endpoint_id,
+            deployment_id,
             method,
             span_context,
             length,

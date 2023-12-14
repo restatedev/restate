@@ -13,19 +13,19 @@ use super::storage::{MetaStorage, MetaStorageError};
 use hyper::Uri;
 use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
-use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
+use restate_schema_api::deployment::{DeliveryOptions, DeploymentMetadata};
 use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
 use restate_schema_impl::{Schemas, SchemasUpdateCommand, SchemasUpdateError};
 use restate_service_protocol::discovery::{
     DiscoverEndpoint, ServiceDiscovery, ServiceDiscoveryError,
 };
-use restate_types::identifiers::EndpointId;
+use restate_types::identifiers::DeploymentId;
 use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
 use std::collections::HashMap;
 
-use restate_service_client::{ServiceClient, ServiceEndpointAddress};
+use restate_service_client::{Endpoint, ServiceClient};
 use std::future::Future;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -83,8 +83,8 @@ impl ApplyMode {
 }
 
 enum MetaHandleRequest {
-    DiscoverEndpoint {
-        endpoint: DiscoverEndpoint,
+    DiscoverDeployment {
+        deployment_endpoint: DiscoverEndpoint,
         force: Force,
         apply_changes: ApplyMode,
     },
@@ -92,8 +92,8 @@ enum MetaHandleRequest {
         service_name: String,
         public: bool,
     },
-    RemoveEndpoint {
-        endpoint_id: EndpointId,
+    RemoveDeployment {
+        deployment_id: DeploymentId,
     },
     CreateSubscription {
         id: Option<String>,
@@ -106,28 +106,28 @@ enum MetaHandleRequest {
     },
 }
 
-pub(crate) struct DiscoverEndpointResponse {
-    pub(crate) endpoint: EndpointId,
+pub(crate) struct DiscoverDeploymentResponse {
+    pub(crate) deployment: DeploymentId,
     pub(crate) services: Vec<ServiceMetadata>,
 }
 
 enum MetaHandleResponse {
-    DiscoverEndpoint(Result<DiscoverEndpointResponse, MetaError>),
+    DiscoverDeployment(Result<DiscoverDeploymentResponse, MetaError>),
     ModifyService(Result<(), MetaError>),
-    RemoveEndpoint(Result<(), MetaError>),
+    RemoveDeployment(Result<(), MetaError>),
     CreateSubscription(Result<Subscription, MetaError>),
     DeleteSubscription(Result<(), MetaError>),
 }
 
 impl MetaHandle {
-    pub(crate) async fn register_endpoint(
+    pub(crate) async fn register_deployment(
         &self,
-        endpoint: DiscoverEndpoint,
+        deployment_endpoint: DiscoverEndpoint,
         force: Force,
         apply_changes: ApplyMode,
-    ) -> Result<DiscoverEndpointResponse, MetaError> {
-        let (cmd, response_tx) = Command::prepare(MetaHandleRequest::DiscoverEndpoint {
-            endpoint,
+    ) -> Result<DiscoverDeploymentResponse, MetaError> {
+        let (cmd, response_tx) = Command::prepare(MetaHandleRequest::DiscoverDeployment {
+            deployment_endpoint,
             force,
             apply_changes,
         });
@@ -135,7 +135,7 @@ impl MetaHandle {
         response_tx
             .await
             .map(|res| match res {
-                MetaHandleResponse::DiscoverEndpoint(res) => res,
+                MetaHandleResponse::DiscoverDeployment(res) => res,
                 #[allow(unreachable_patterns)]
                 _ => panic!("Unexpected response message, this is a bug"),
             })
@@ -162,14 +162,17 @@ impl MetaHandle {
             .map_err(|_e| MetaError::MetaClosed)?
     }
 
-    pub(crate) async fn remove_endpoint(&self, endpoint_id: EndpointId) -> Result<(), MetaError> {
+    pub(crate) async fn remove_deployment(
+        &self,
+        deployment_id: DeploymentId,
+    ) -> Result<(), MetaError> {
         let (cmd, response_tx) =
-            Command::prepare(MetaHandleRequest::RemoveEndpoint { endpoint_id });
+            Command::prepare(MetaHandleRequest::RemoveDeployment { deployment_id });
         self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
         response_tx
             .await
             .map(|res| match res {
-                MetaHandleResponse::RemoveEndpoint(res) => res,
+                MetaHandleResponse::RemoveDeployment(res) => res,
                 #[allow(unreachable_patterns)]
                 _ => panic!("Unexpected response message, this is a bug"),
             })
@@ -288,8 +291,8 @@ where
                     let (req, mut replier) = cmd.expect("This channel should never be closed").into_inner();
 
                     let res = match req {
-                        MetaHandleRequest::DiscoverEndpoint { endpoint, force, apply_changes } => MetaHandleResponse::DiscoverEndpoint(
-                            self.discover_endpoint(endpoint, force, apply_changes, replier.aborted()).await
+                        MetaHandleRequest::DiscoverDeployment { deployment_endpoint, force, apply_changes } => MetaHandleResponse::DiscoverDeployment(
+                            self.discover_deployment(deployment_endpoint, force, apply_changes, replier.aborted()).await
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
@@ -300,8 +303,8 @@ where
                                     warn_it!(e); e
                                 })
                         ),
-                        MetaHandleRequest::RemoveEndpoint { endpoint_id } => MetaHandleResponse::RemoveEndpoint(
-                            self.remove_endpoint(endpoint_id).await
+                        MetaHandleRequest::RemoveDeployment { deployment_id } => MetaHandleResponse::RemoveDeployment(
+                            self.remove_deployment(deployment_id).await
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
@@ -351,34 +354,34 @@ where
         }
     }
 
-    async fn discover_endpoint(
+    async fn discover_deployment(
         &mut self,
         endpoint: DiscoverEndpoint,
         force: Force,
         apply_changes: ApplyMode,
         abort_signal: impl Future<Output = ()>,
-    ) -> Result<DiscoverEndpointResponse, MetaError> {
-        debug!(endpoint.address = %endpoint.address(), "Discovering service endpoint");
+    ) -> Result<DiscoverDeploymentResponse, MetaError> {
+        debug!(restate.deployment.address = %endpoint.address(), "Discovering deployment");
 
         let discovered_metadata = tokio::select! {
             res = self.service_discovery.discover(&endpoint) => res,
             _ = abort_signal => return Err(MetaError::RequestAborted),
         }?;
 
-        let endpoint_metadata = match endpoint.into_inner() {
-            (ServiceEndpointAddress::Http(uri, _), headers) => EndpointMetadata::new_http(
+        let deployment_metadata = match endpoint.into_inner() {
+            (Endpoint::Http(uri, _), headers) => DeploymentMetadata::new_http(
                 uri.clone(),
                 discovered_metadata.protocol_type,
                 DeliveryOptions::new(headers),
             ),
-            (ServiceEndpointAddress::Lambda(arn, assume_role_arn), headers) => {
-                EndpointMetadata::new_lambda(arn, assume_role_arn, DeliveryOptions::new(headers))
+            (Endpoint::Lambda(arn, assume_role_arn), headers) => {
+                DeploymentMetadata::new_lambda(arn, assume_role_arn, DeliveryOptions::new(headers))
             }
         };
 
         // Compute the diff with the current state of Schemas
-        let schemas_update_commands = self.schemas.compute_new_endpoint(
-            endpoint_metadata,
+        let schemas_update_commands = self.schemas.compute_new_deployment(
+            deployment_metadata,
             discovered_metadata.services,
             discovered_metadata.descriptor_pool,
             force.force_enabled(),
@@ -413,11 +416,11 @@ where
         Ok(())
     }
 
-    async fn remove_endpoint(&mut self, endpoint_id: EndpointId) -> Result<(), MetaError> {
-        debug!(restate.service_endpoint.id = %endpoint_id, "Remove endpoint");
+    async fn remove_deployment(&mut self, deployment_id: DeploymentId) -> Result<(), MetaError> {
+        debug!(restate.deployment.id = %deployment_id, "Remove deployment");
 
         // Compute the diff and propagate updates
-        let update_commands = self.schemas.compute_remove_endpoint(endpoint_id)?;
+        let update_commands = self.schemas.compute_remove_deployment(deployment_id)?;
         self.store_and_apply_updates(update_commands).await?;
 
         Ok(())
@@ -483,16 +486,16 @@ where
 
     fn infer_discovery_response_from_update_commands(
         commands: &[SchemasUpdateCommand],
-    ) -> DiscoverEndpointResponse {
+    ) -> DiscoverDeploymentResponse {
         for schema_update_command in commands {
-            if let SchemasUpdateCommand::InsertEndpoint {
+            if let SchemasUpdateCommand::InsertDeployment {
                 metadata,
                 services,
                 descriptor_pool,
             } = schema_update_command
             {
-                return DiscoverEndpointResponse {
-                    endpoint: metadata.id(),
+                return DiscoverDeploymentResponse {
+                    deployment: metadata.id(),
                     services: services
                         .iter()
                         .map(|update_command| {
@@ -510,6 +513,6 @@ where
             }
         }
 
-        panic!("Expecting a SchemasUpdateCommand::InsertEndpoint command. This looks like a bug");
+        panic!("Expecting a SchemasUpdateCommand::InsertDeployment command. This looks like a bug");
     }
 }

@@ -15,7 +15,7 @@ use prost::Message;
 use prost_reflect::prost_types::FileDescriptorProto;
 use prost_reflect::{EnumDescriptor, FileDescriptor, MessageDescriptor, ServiceDescriptor};
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
-use restate_types::identifiers::EndpointId;
+use restate_types::identifiers::DeploymentId;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{debug, trace};
@@ -68,7 +68,7 @@ impl FilesIndex {
     fn add(
         &mut self,
         normalized_file_name: String,
-        endpoint_id: &EndpointId,
+        deployment_id: &DeploymentId,
         file_desc: FileDescriptor,
         message_or_enum_symbols: HashSet<String>,
     ) {
@@ -84,7 +84,7 @@ impl FilesIndex {
             .or_insert_with(|| FileEntry {
                 reference_count: 1,
                 serialized: normalize_self_and_dependencies_file_names(
-                    endpoint_id,
+                    deployment_id,
                     file_desc.file_descriptor_proto().clone(),
                 )
                 .encode_to_vec()
@@ -235,7 +235,7 @@ pub(super) struct ProtoSymbols {
 impl ProtoSymbols {
     pub(super) fn add_service(
         &mut self,
-        endpoint_id: &EndpointId,
+        deployment_id: &DeploymentId,
         service_desc: &ServiceDescriptor,
     ) {
         debug_assert!(
@@ -250,7 +250,7 @@ impl ProtoSymbols {
                 .into_iter()
                 .map(|file_desc| {
                     (
-                        normalize_file_name(endpoint_id, file_desc.name()),
+                        normalize_file_name(deployment_id, file_desc.name()),
                         file_desc,
                     )
                 })
@@ -279,7 +279,7 @@ impl ProtoSymbols {
 
             // Add the file descriptor
             self.files
-                .add(file_name, endpoint_id, file_desc, message_or_enum_symbols);
+                .add(file_name, deployment_id, file_desc, message_or_enum_symbols);
         }
     }
 
@@ -324,25 +324,25 @@ impl ProtoSymbols {
     }
 }
 
-// We rename files prepending them with the endpoint id
-// to avoid collision between file names of unrelated endpoints
+// We rename files prepending them with the deployment id
+// to avoid collision between file names of unrelated deployments
 // TODO with schema checks in place,
 //  should we move this or remove this normalization of the file name?
-fn normalize_file_name(endpoint_id: &str, file_name: &str) -> String {
+fn normalize_file_name(deployment_id: &str, file_name: &str) -> String {
     // Because file_name is a path (either relative or absolute),
-    // prepending endpoint_id/ should always be fine
-    format!("{endpoint_id}/{file_name}")
+    // prepending deployment_id/ should always be fine
+    format!("{deployment_id}/{file_name}")
 }
 
 fn normalize_self_and_dependencies_file_names(
-    endpoint_id: &str,
+    deployment_id: &str,
     mut file_desc_proto: FileDescriptorProto,
 ) -> FileDescriptorProto {
     file_desc_proto.name = file_desc_proto
         .name
-        .map(|name| normalize_file_name(endpoint_id, &name));
+        .map(|name| normalize_file_name(deployment_id, &name));
     for dep in file_desc_proto.dependency.iter_mut() {
-        *dep = normalize_file_name(endpoint_id, dep)
+        *dep = normalize_file_name(deployment_id, dep)
     }
     file_desc_proto
 }

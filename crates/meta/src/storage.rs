@@ -157,7 +157,7 @@ mod tests {
     use super::*;
 
     use restate_pb::mocks;
-    use restate_schema_api::endpoint::EndpointMetadata;
+    use restate_schema_api::deployment::DeploymentMetadata;
     use restate_schema_impl::Schemas;
     use restate_test_util::test;
     use tempfile::tempdir;
@@ -168,10 +168,10 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let mut file_storage = FileMetaStorage::new(temp_dir.path().to_path_buf());
 
-        // Generate some commands for a new endpoint, with new services
+        // Generate some commands for a new deployment, with new services
         let commands_1 = schemas
-            .compute_new_endpoint(
-                EndpointMetadata::mock_with_uri("http://localhost:9080"),
+            .compute_new_deployment(
+                DeploymentMetadata::mock_with_uri("http://localhost:9080"),
                 vec![mocks::GREETER_SERVICE_NAME.to_owned()],
                 mocks::DESCRIPTOR_POOL.clone(),
                 false,
@@ -180,12 +180,12 @@ mod tests {
 
         file_storage.store(commands_1.clone()).await.unwrap();
 
-        // Generate some commands for a new endpoint, with a new and old service
+        // Generate some commands for a new deployment, with a new and old service
         // We need to apply updates to generate a new command list
         schemas.apply_updates(commands_1.clone()).unwrap();
         let commands_2 = schemas
-            .compute_new_endpoint(
-                EndpointMetadata::mock_with_uri("http://localhost:9081"),
+            .compute_new_deployment(
+                DeploymentMetadata::mock_with_uri("http://localhost:9081"),
                 vec![
                     mocks::GREETER_SERVICE_NAME.to_owned(),
                     mocks::ANOTHER_GREETER_SERVICE_NAME.to_owned(),
@@ -233,12 +233,12 @@ mod tests {
         fn eq(&self, other: &Self) -> bool {
             match (&self.0, &other.0) {
                 (
-                    SchemasUpdateCommand::InsertEndpoint {
+                    SchemasUpdateCommand::InsertDeployment {
                         metadata: self_metadata,
                         services: self_services,
                         ..
                     },
-                    SchemasUpdateCommand::InsertEndpoint {
+                    SchemasUpdateCommand::InsertDeployment {
                         metadata: other_metadata,
                         services: other_services,
                         ..

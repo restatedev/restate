@@ -263,7 +263,7 @@ impl InvocationError {
     pub fn service_not_found(service: impl Display) -> Self {
         Self {
             code: UserErrorCode::NotFound.into(),
-            message: Cow::Owned(format!("Service '{}' not found. Check whether the service endpoint containing the service is registered.", service)),
+            message: Cow::Owned(format!("Service '{}' not found. Check whether the deployment containing the service is registered.", service)),
             description: None,
         }
     }

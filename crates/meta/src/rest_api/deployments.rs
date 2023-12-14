@@ -16,9 +16,9 @@ use crate::service::Force;
 use super::error::*;
 use super::state::*;
 
-use restate_meta_rest_model::endpoints::*;
-use restate_schema_api::endpoint::EndpointMetadataResolver;
-use restate_service_client::ServiceEndpointAddress;
+use restate_meta_rest_model::deployments::*;
+use restate_schema_api::deployment::DeploymentMetadataResolver;
+use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::InvalidLambdaARN;
 
@@ -33,34 +33,32 @@ use okapi_operation::okapi::Map;
 use okapi_operation::*;
 use serde::Deserialize;
 
-/// Create service endpoint and return discovered services.
+/// Create deployment and return discovered services.
 #[openapi(
-    summary = "Create service endpoint",
-    description = "Create service endpoint. Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the service endpoint and their Protobuf descriptor. If the service endpoint is already registered, this method will fail unless `force` is set to `true`.",
-    operation_id = "create_service_endpoint",
-    tags = "service_endpoint",
+    summary = "Create deployment",
+    description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment and their Protobuf descriptor. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
+    operation_id = "create_deployment",
+    tags = "deployment",
     responses(
         ignore_return_type = true,
         response(
             status = "201",
             description = "Created",
-            content = "Json<RegisterServiceEndpointResponse>",
+            content = "Json<RegisterDeploymentResponse>",
         ),
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_service_endpoint<S, W>(
+pub async fn create_deployment<S, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
-    #[request_body(required = true)] Json(payload): Json<RegisterServiceEndpointRequest>,
+    #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
-    let address = match payload.endpoint_metadata {
-        RegisterServiceEndpointMetadata::Http { uri } => {
-            ServiceEndpointAddress::Http(uri, Default::default())
-        }
-        RegisterServiceEndpointMetadata::Lambda {
+    let address = match payload.deployment_metadata {
+        RegisterDeploymentMetadata::Http { uri } => Endpoint::Http(uri, Default::default()),
+        RegisterDeploymentMetadata::Lambda {
             arn,
             assume_role_arn,
-        } => ServiceEndpointAddress::Lambda(
+        } => Endpoint::Lambda(
             arn.parse()
                 .map_err(|e: InvalidLambdaARN| MetaApiError::InvalidField("arn", e.to_string()))?,
             assume_role_arn.map(Into::into),
@@ -80,11 +78,11 @@ pub async fn create_service_endpoint<S, W>(
     let force = if payload.force { Force::Yes } else { Force::No };
     let registration_result = state
         .meta_handle()
-        .register_endpoint(endpoint, force, apply_changes)
+        .register_deployment(endpoint, force, apply_changes)
         .await?;
 
-    let response_body = RegisterServiceEndpointResponse {
-        id: registration_result.endpoint,
+    let response_body = RegisterDeploymentResponse {
+        id: registration_result.deployment,
         services: registration_result.services,
     };
 
@@ -92,83 +90,83 @@ pub async fn create_service_endpoint<S, W>(
         StatusCode::CREATED,
         [(
             http::header::LOCATION,
-            format!("/endpoints/{}", response_body.id),
+            format!("/deployments/{}", response_body.id),
         )],
         Json(response_body),
     ))
 }
 
-/// Return discovered endpoints.
+/// Return deployment
 #[openapi(
-    summary = "Get service endpoint",
-    description = "Get service endpoint metadata",
-    operation_id = "get_service_endpoint",
-    tags = "service_endpoint",
+    summary = "Get deployment",
+    description = "Get deployment metadata",
+    operation_id = "get_deployment",
+    tags = "deployment",
     parameters(path(
-        name = "endpoint",
-        description = "Endpoint identifier",
+        name = "deployment",
+        description = "Deployment identifier",
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service_endpoint<S: EndpointMetadataResolver, W>(
+pub async fn get_deployment<S: DeploymentMetadataResolver, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
-    Path(endpoint_id): Path<String>,
-) -> Result<Json<DetailedServiceEndpointResponse>, MetaApiError> {
+    Path(deployment_id): Path<String>,
+) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
     let (endpoint_meta, services) = state
         .schemas()
-        .get_endpoint_and_services(&endpoint_id)
-        .ok_or_else(|| MetaApiError::ServiceEndpointNotFound(endpoint_id.clone()))?;
+        .get_deployment_and_services(&deployment_id)
+        .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id.clone()))?;
 
-    Ok(DetailedServiceEndpointResponse {
-        id: endpoint_id,
-        service_endpoint: endpoint_meta.into(),
+    Ok(DetailedDeploymentResponse {
+        id: deployment_id,
+        deployment: endpoint_meta.into(),
         services,
     }
     .into())
 }
 
-/// Return discovered endpoints.
+/// Return deployment descriptors
 #[openapi(
-    summary = "Get service endpoint descriptors",
-    description = "Get service endpoint Protobuf descriptor pool, serialized as protobuf type google.protobuf.FileDescriptorSet",
-    operation_id = "get_service_endpoint_descriptors",
-    tags = "service_endpoint",
+    summary = "Get deployment descriptors",
+    description = "Get deployment Protobuf descriptor pool, serialized as protobuf type google.protobuf.FileDescriptorSet",
+    operation_id = "get_deployment_descriptors",
+    tags = "deployment",
     parameters(path(
-        name = "endpoint",
-        description = "Endpoint identifier",
+        name = "deployment",
+        description = "Deployment identifier",
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service_endpoint_descriptors<S: EndpointMetadataResolver, W>(
+pub async fn get_deployment_descriptors<S: DeploymentMetadataResolver, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
-    Path(endpoint_id): Path<String>,
+    Path(deployment_id): Path<String>,
 ) -> Result<ProtoBytes, MetaApiError> {
     Ok(ProtoBytes(
         state
             .schemas()
-            .get_endpoint_descriptor_pool(&endpoint_id)
-            .ok_or_else(|| MetaApiError::ServiceEndpointNotFound(endpoint_id.clone()))?,
+            .get_deployment_descriptor_pool(&deployment_id)
+            .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id.clone()))?,
     ))
 }
 
 /// List services
 #[openapi(
-    summary = "List service endpoints",
-    description = "List all registered endpoints.",
-    operation_id = "list_service_endpoints",
-    tags = "service_endpoint"
+    summary = "List deployments",
+    description = "List all registered deployments.",
+    operation_id = "list_deployments",
+    tags = "deployment"
 )]
-pub async fn list_service_endpoints<S: EndpointMetadataResolver, W>(
+pub async fn list_deployments<S: DeploymentMetadataResolver, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
-) -> Json<ListServiceEndpointsResponse> {
-    ListServiceEndpointsResponse {
-        endpoints: state
+) -> Json<ListDeploymentResponse> {
+    ListDeploymentResponse {
+        deployments: state
             .schemas()
-            .get_endpoints()
+            .get_deployments()
             .into_iter()
-            .map(|(endpoint_meta, services)| ServiceEndpointResponse {
+            .map(|(endpoint_meta, services)| DeploymentResponse {
                 id: endpoint_meta.id(),
-                service_endpoint: endpoint_meta.into(),
+                deployment: endpoint_meta.into(),
                 services: services
                     .into_iter()
                     .map(|(name, revision)| ServiceNameRevPair { name, revision })
@@ -180,25 +178,25 @@ pub async fn list_service_endpoints<S: EndpointMetadataResolver, W>(
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct DeleteServiceEndpointParams {
+pub struct DeleteDeploymentParams {
     pub force: Option<bool>,
 }
 
 /// Discover endpoint and return discovered endpoints.
 #[openapi(
-    summary = "Delete service endpoint",
-    description = "Delete service endpoint. Currently it's supported to remove a service endpoint only using the force flag",
-    operation_id = "delete_service_endpoint",
-    tags = "service_endpoint",
+    summary = "Delete deployment",
+    description = "Delete deployment. Currently it's supported to remove a deployment only using the force flag",
+    operation_id = "delete_deployment",
+    tags = "deployment",
     parameters(
         path(
-            name = "endpoint",
-            description = "Endpoint identifier",
+            name = "deployment",
+            description = "Deployment identifier",
             schema = "std::string::String"
         ),
         query(
             name = "force",
-            description = "If true, the service endpoint will be forcefully deleted. This might break in-flight invocations, use with caution.",
+            description = "If true, the deployment will be forcefully deleted. This might break in-flight invocations, use with caution.",
             required = false,
             style = "simple",
             allow_empty_value = false,
@@ -220,13 +218,13 @@ pub struct DeleteServiceEndpointParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_service_endpoint<S, W>(
+pub async fn delete_deployment<S, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
-    Path(endpoint_id): Path<String>,
-    Query(DeleteServiceEndpointParams { force }): Query<DeleteServiceEndpointParams>,
+    Path(deployment_id): Path<String>,
+    Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
 ) -> Result<StatusCode, MetaApiError> {
     if let Some(true) = force {
-        state.meta_handle().remove_endpoint(endpoint_id).await?;
+        state.meta_handle().remove_deployment(deployment_id).await?;
         Ok(StatusCode::ACCEPTED)
     } else {
         Ok(StatusCode::NOT_IMPLEMENTED)
