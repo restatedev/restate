@@ -14,9 +14,7 @@
 //! [Counter example](https://github.com/restatedev/sdk-java/blob/main/examples/src/main/java/dev/restate/sdk/examples/BlockingCounter.java) in sdk-java.
 
 use hyper::Uri;
-use restate_service_client::{
-    AssumeRoleCacheMode, Options as ServiceClientOptions, ServiceEndpointAddress,
-};
+use restate_service_client::{AssumeRoleCacheMode, Endpoint, Options as ServiceClientOptions};
 use restate_service_protocol::discovery::*;
 use restate_test_util::test;
 use restate_types::retries::RetryPolicy;
@@ -31,7 +29,7 @@ async fn counter_discovery() {
 
     let discovered_metadata = discovery
         .discover(&DiscoverEndpoint::new(
-            ServiceEndpointAddress::Http(
+            Endpoint::Http(
                 Uri::from_static("http://localhost:9080"),
                 Default::default(),
             ),

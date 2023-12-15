@@ -13,7 +13,7 @@ options_schema = []
 
 [dependencies]
 restate-errors = { workspace = true }
-restate-schema-api = { workspace = true, features = [ "service", "endpoint", "serde", "serde_schema", ] }
+restate-schema-api = { workspace = true, features = [ "service", "deployment", "serde", "serde_schema", ] }
 restate-storage-query-datafusion = { workspace = true }
 restate-worker-api = { workspace = true }
 

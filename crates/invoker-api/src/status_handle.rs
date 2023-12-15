@@ -10,7 +10,7 @@
 
 use codederror::Code;
 use restate_types::errors::{InvocationError, InvocationErrorCode};
-use restate_types::identifiers::{EndpointId, FullInvocationId, PartitionKey};
+use restate_types::identifiers::{DeploymentId, FullInvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use std::fmt;
 use std::future::Future;
@@ -26,7 +26,7 @@ pub struct InvocationStatusReportInner {
     pub last_start_at: SystemTime,
     pub last_retry_attempt_failure: Option<InvocationErrorReport>,
     pub next_retry_at: Option<SystemTime>,
-    pub last_attempt_endpoint_id: Option<EndpointId>,
+    pub last_attempt_deployment_id: Option<DeploymentId>,
 }
 
 impl Default for InvocationStatusReportInner {
@@ -37,7 +37,7 @@ impl Default for InvocationStatusReportInner {
             last_start_at: SystemTime::now(),
             last_retry_attempt_failure: None,
             next_retry_at: None,
-            last_attempt_endpoint_id: None,
+            last_attempt_deployment_id: None,
         }
     }
 }
@@ -90,8 +90,8 @@ impl InvocationStatusReport {
         self.2.last_retry_attempt_failure.as_ref()
     }
 
-    pub fn last_attempt_endpoint_id(&self) -> Option<&EndpointId> {
-        self.2.last_attempt_endpoint_id.as_ref()
+    pub fn last_attempt_deployment_id(&self) -> Option<&DeploymentId> {
+        self.2.last_attempt_deployment_id.as_ref()
     }
 }
 

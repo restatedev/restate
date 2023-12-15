@@ -15,10 +15,10 @@ use crate::cli_env::CliEnv;
 use crate::clients::MetaClientInterface;
 use crate::console::c_println;
 use crate::ui::console::StyledTable;
-use crate::ui::deployments::{render_deployment_type, render_endpoint_url};
+use crate::ui::deployments::{render_deployment_type, render_deployment_url};
 use crate::ui::service_methods::{icon_for_is_public, icon_for_service_flavor};
 
-use restate_meta_rest_model::endpoints::ServiceEndpointResponse;
+use restate_meta_rest_model::deployments::DeploymentResponse;
 use restate_meta_rest_model::services::MethodMetadata;
 
 use anyhow::{Context, Result};
@@ -49,13 +49,13 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
         return Ok(());
     }
 
-    let endpoints = client.get_endpoints().await?.into_body().await?;
+    let deployments = client.get_deployments().await?.into_body().await?;
 
-    let mut endpoint_cache: HashMap<String, ServiceEndpointResponse> = HashMap::new();
+    let mut deployment_cache: HashMap<String, DeploymentResponse> = HashMap::new();
 
     // Caching endpoints
-    for endpoint in endpoints.endpoints {
-        endpoint_cache.insert(endpoint.id.to_string(), endpoint);
+    for endpoint in deployments.deployments {
+        deployment_cache.insert(endpoint.id.to_string(), endpoint);
     }
 
     let mut table = Table::new_styled(&env.ui_config);
@@ -82,20 +82,20 @@ pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()>
         let public = icon_for_is_public(svc.public);
         let flavor = icon_for_service_flavor(&svc.instance_type);
 
-        let endpoint = endpoint_cache
-            .get(&svc.endpoint_id)
-            .with_context(|| format!("Deployment {} was not found!", svc.endpoint_id))?;
+        let deployment = deployment_cache
+            .get(&svc.deployment_id)
+            .with_context(|| format!("Deployment {} was not found!", svc.deployment_id))?;
 
         let mut row = vec![
             public.to_string(),
             svc.name,
             svc.revision.to_string(),
             flavor.to_string(),
-            render_deployment_type(&endpoint.service_endpoint),
-            endpoint.id.clone(),
+            render_deployment_type(&deployment.deployment),
+            deployment.id.clone(),
         ];
         if list_opts.extra {
-            row.push(render_endpoint_url(&endpoint.service_endpoint));
+            row.push(render_deployment_url(&deployment.deployment));
             row.push(render_methods(svc.methods));
         }
 

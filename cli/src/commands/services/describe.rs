@@ -20,7 +20,7 @@ use crate::console::c_println;
 use crate::ui::console::StyledTable;
 use crate::ui::deployments::{
     add_deployment_to_kv_table, render_active_invocations, render_deployment_type,
-    render_endpoint_url,
+    render_deployment_url,
 };
 use crate::ui::service_methods::create_service_methods_table;
 
@@ -50,14 +50,14 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
     );
     table.add_kv_row("Revision:", svc.revision);
     table.add_kv_row("Public:", svc.public);
-    table.add_kv_row("Deployment ID:", &svc.endpoint_id);
+    table.add_kv_row("Deployment ID:", &svc.deployment_id);
 
-    let endpoint = client
-        .get_endpoint(&svc.endpoint_id)
+    let deployment = client
+        .get_deployment(&svc.deployment_id)
         .await?
         .into_body()
         .await?;
-    add_deployment_to_kv_table(&endpoint.service_endpoint, &mut table);
+    add_deployment_to_kv_table(&deployment.deployment, &mut table);
 
     c_title!("📜", "Service Information");
     c_println!("{}", table);
@@ -79,12 +79,12 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
 
     let svc_name = svc.name;
     let latest_rev = svc.revision;
-    let mut other_endpoints: Vec<_> = client
-        .get_endpoints()
+    let mut other_deployments: Vec<_> = client
+        .get_deployments()
         .await?
         .into_body()
         .await?
-        .endpoints
+        .deployments
         .into_iter()
         .filter_map(|e| {
             // endpoints that serve the same service.
@@ -106,11 +106,11 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
 
             svc_match
                 .get(0)
-                .map(|svc_match| (e.id, e.service_endpoint, svc_match.revision))
+                .map(|svc_match| (e.id, e.deployment, svc_match.revision))
         })
         .collect();
 
-    if other_endpoints.is_empty() {
+    if other_deployments.is_empty() {
         return Ok(());
     }
 
@@ -126,17 +126,17 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
     ];
     table.set_styled_header(headers);
     // sort other_endpoints by revision in descending order
-    other_endpoints.sort_by(|(_, _, rev1), (_, _, rev2)| rev2.cmp(rev1));
+    other_deployments.sort_by(|(_, _, rev1), (_, _, rev2)| rev2.cmp(rev1));
 
-    for (endpoint_id, endpoint_metadata, rev) in other_endpoints {
-        let active_inv = count_deployment_active_inv(&sql_client, &endpoint_id).await?;
+    for (deployment_id, deployment_metadata, rev) in other_deployments {
+        let active_inv = count_deployment_active_inv(&sql_client, &deployment_id).await?;
 
         table.add_row(vec![
-            Cell::new(render_endpoint_url(&endpoint_metadata)),
-            Cell::new(render_deployment_type(&endpoint_metadata)),
+            Cell::new(render_deployment_url(&deployment_metadata)),
+            Cell::new(render_deployment_type(&deployment_metadata)),
             Cell::new(rev),
             render_active_invocations(active_inv),
-            Cell::new(endpoint_id),
+            Cell::new(deployment_id),
         ]);
     }
 

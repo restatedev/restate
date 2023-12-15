@@ -24,7 +24,7 @@ define_table!(status(
     invoked_by: DataType::LargeUtf8,
     invoked_by_service: DataType::LargeUtf8,
     invoked_by_id: DataType::LargeUtf8,
-    pinned_endpoint_id: DataType::LargeUtf8,
+    pinned_deployment_id: DataType::LargeUtf8,
     trace_id: DataType::LargeUtf8,
     journal_size: DataType::UInt32,
     created_at: DataType::Date64,

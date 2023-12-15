@@ -11,15 +11,15 @@
 use arc_swap::ArcSwap;
 use http::Uri;
 use prost_reflect::{DescriptorPool, ServiceDescriptor};
-use restate_schema_api::endpoint::EndpointMetadata;
+use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
-use restate_types::identifiers::{EndpointId, ServiceRevision};
+use restate_types::identifiers::{DeploymentId, ServiceRevision};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-mod endpoint;
+mod deployment;
 mod json;
 mod json_key_conversion;
 mod key_expansion;
@@ -29,7 +29,7 @@ mod schemas_impl;
 mod service;
 mod subscriptions;
 
-use self::schemas_impl::endpoint::{BadDescriptorError, IncompatibleServiceChangeError};
+use self::schemas_impl::deployment::{BadDescriptorError, IncompatibleServiceChangeError};
 use self::schemas_impl::InstanceTypeMetadata;
 use self::schemas_impl::ServiceSchemas;
 
@@ -73,7 +73,7 @@ pub struct InsertServiceUpdateCommand {
 impl InsertServiceUpdateCommand {
     pub fn as_service_metadata(
         &self,
-        latest_endpoint_id: EndpointId,
+        latest_deployment_id: DeploymentId,
         service_descriptor: &ServiceDescriptor,
     ) -> Option<ServiceMetadata> {
         let schemas = ServiceSchemas::new(
@@ -83,7 +83,7 @@ impl InsertServiceUpdateCommand {
                 self.instance_type.clone(),
                 &self.methods,
             ),
-            latest_endpoint_id,
+            latest_deployment_id,
         );
         service::map_to_service_metadata(&self.name, &schemas)
     }
@@ -92,15 +92,15 @@ impl InsertServiceUpdateCommand {
 /// Represents an update command to update the [`Schemas`] object. See [`Schemas::apply_updates`] for more info.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SchemasUpdateCommand {
-    /// Insert (or replace) endpoint
-    InsertEndpoint {
-        metadata: EndpointMetadata,
+    /// Insert (or replace) deployment
+    InsertDeployment {
+        metadata: DeploymentMetadata,
         services: Vec<InsertServiceUpdateCommand>,
         #[serde(with = "descriptor_pool_serde")]
         descriptor_pool: DescriptorPool,
     },
-    RemoveEndpoint {
-        endpoint_id: EndpointId,
+    RemoveDeployment {
+        deployment_id: DeploymentId,
     },
     /// Remove only if the revision is matching
     RemoveService {
@@ -143,9 +143,9 @@ pub struct Schemas(Arc<ArcSwap<schemas_impl::SchemasInner>>);
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(unknown)]
 pub enum SchemasUpdateError {
-    #[error("an endpoint with the same id {0} already exists in the registry")]
+    #[error("a deployment with the same id {0} already exists in the registry")]
     #[code(restate_errors::META0004)]
-    OverrideEndpoint(EndpointId),
+    OverrideDeployment(DeploymentId),
     #[error("missing service {0} in descriptor")]
     #[code(restate_errors::META0005)]
     MissingServiceInDescriptor(String),
@@ -155,15 +155,15 @@ pub enum SchemasUpdateError {
     #[error("cannot insert/modify service {0} as it's a reserved name")]
     #[code(restate_errors::META0005)]
     ModifyInternalService(String),
-    #[error("unknown endpoint id {0}")]
-    UnknownEndpoint(EndpointId),
+    #[error("unknown deployment id {0}")]
+    UnknownDeployment(DeploymentId),
     #[error("unknown subscription id {0}")]
     UnknownSubscription(String),
     #[error("invalid subscription: {0}")]
     #[code(restate_errors::META0009)]
     InvalidSubscription(anyhow::Error),
     #[error("a subscription with the same id {0} already exists in the registry")]
-    OverrideSubscription(EndpointId),
+    OverrideSubscription(DeploymentId),
     #[error(transparent)]
     IncompatibleServiceChange(
         #[from]
@@ -179,25 +179,25 @@ pub enum SchemasUpdateError {
 }
 
 impl Schemas {
-    /// Compute the commands to update the schema registry with a new endpoint.
+    /// Compute the commands to update the schema registry with a new deployment.
     /// This method doesn't execute any in-memory update of the registry.
     /// To update the registry, compute the commands and apply them with [`Self::apply_updates`].
     ///
-    /// If `allow_override` is true, this method compares the endpoint registered services with the given `services`,
-    /// and generates remove commands for services no longer available at that endpoint.
+    /// If `allow_override` is true, this method compares the deployment registered services with the given `services`,
+    /// and generates remove commands for services no longer available at that deployment.
     ///
     /// IMPORTANT: It is not safe to consecutively call this method several times and apply the updates all-together with a single [`Self::apply_updates`],
     /// as one change set might depend on the previously computed change set.
-    pub fn compute_new_endpoint(
+    pub fn compute_new_deployment(
         &self,
-        endpoint_metadata: EndpointMetadata,
+        deployment_metadata: DeploymentMetadata,
         services: Vec<String>,
         descriptor_pool: DescriptorPool,
         force: bool,
     ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
         self.0
             .load()
-            .compute_new_endpoint(endpoint_metadata, services, descriptor_pool, force)
+            .compute_new_deployment(deployment_metadata, services, descriptor_pool, force)
     }
 
     pub fn compute_modify_service(
@@ -210,11 +210,11 @@ impl Schemas {
             .compute_modify_service_updates(service_name, public)
     }
 
-    pub fn compute_remove_endpoint(
+    pub fn compute_remove_deployment(
         &self,
-        endpoint_id: EndpointId,
+        deployment_id: DeploymentId,
     ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
-        self.0.load().compute_remove_endpoint(endpoint_id)
+        self.0.load().compute_remove_deployment(deployment_id)
     }
 
     // Returns the [`Subscription`] id together with the update command
@@ -250,15 +250,15 @@ impl Schemas {
         let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
         for cmd in updates {
             match cmd {
-                SchemasUpdateCommand::InsertEndpoint {
+                SchemasUpdateCommand::InsertDeployment {
                     metadata,
                     services,
                     descriptor_pool,
                 } => {
-                    schemas_inner.apply_insert_endpoint(metadata, services, descriptor_pool)?;
+                    schemas_inner.apply_insert_deployment(metadata, services, descriptor_pool)?;
                 }
-                SchemasUpdateCommand::RemoveEndpoint { endpoint_id } => {
-                    schemas_inner.apply_remove_endpoint(endpoint_id)?;
+                SchemasUpdateCommand::RemoveDeployment { deployment_id } => {
+                    schemas_inner.apply_remove_deployment(deployment_id)?;
                 }
                 SchemasUpdateCommand::RemoveService { name, revision } => {
                     schemas_inner.apply_remove_service(name, revision)?;
@@ -284,7 +284,7 @@ impl Schemas {
 mod tests {
     use super::*;
 
-    use restate_schema_api::endpoint::EndpointMetadataResolver;
+    use restate_schema_api::deployment::DeploymentMetadataResolver;
     use restate_schema_api::service::ServiceMetadataResolver;
     use restate_test_util::assert_eq;
 
@@ -306,12 +306,16 @@ mod tests {
             );
         }
 
-        pub(crate) fn assert_resolves_endpoint(&self, svc_name: &str, endpoint_id: EndpointId) {
+        pub(crate) fn assert_resolves_deployment(
+            &self,
+            svc_name: &str,
+            deployment_id: DeploymentId,
+        ) {
             assert_eq!(
-                self.resolve_latest_endpoint_for_service(svc_name)
+                self.resolve_latest_deployment_for_service(svc_name)
                     .unwrap()
                     .id(),
-                endpoint_id
+                deployment_id
             );
         }
     }

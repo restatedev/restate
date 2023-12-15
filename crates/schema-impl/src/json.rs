@@ -131,8 +131,8 @@ mod tests {
                 .into_iter()
                 .collect(),
                 instance_type: InstanceTypeMetadata::Unkeyed,
-                location: ServiceLocation::ServiceEndpoint {
-                    latest_endpoint: "".to_string(),
+                location: ServiceLocation::Deployment {
+                    latest_deployment: "".to_string(),
                     public: true,
                 },
             },

@@ -11,7 +11,7 @@
 use crate::{GetFuture, GetStream, PutFuture};
 use bytestring::ByteString;
 use restate_types::identifiers::{
-    EndpointId, EntryIndex, FullInvocationId, InvocationUuid, PartitionKey, ServiceId,
+    DeploymentId, EntryIndex, FullInvocationId, InvocationUuid, PartitionKey, ServiceId,
 };
 use restate_types::invocation::{ServiceInvocationResponseSink, ServiceInvocationSpanContext};
 use restate_types::time::MillisSinceEpoch;
@@ -178,7 +178,7 @@ impl JournalMetadata {
 pub struct InvocationMetadata {
     pub invocation_uuid: InvocationUuid,
     pub journal_metadata: JournalMetadata,
-    pub endpoint_id: Option<EndpointId>,
+    pub deployment_id: Option<DeploymentId>,
     pub method: ByteString,
     pub response_sink: Option<ServiceInvocationResponseSink>,
     pub timestamps: StatusTimestamps,
@@ -188,7 +188,7 @@ impl InvocationMetadata {
     pub fn new(
         invocation_uuid: InvocationUuid,
         journal_metadata: JournalMetadata,
-        endpoint_id: Option<String>,
+        deployment_id: Option<String>,
         method: ByteString,
         response_sink: Option<ServiceInvocationResponseSink>,
         timestamps: StatusTimestamps,
@@ -196,7 +196,7 @@ impl InvocationMetadata {
         Self {
             invocation_uuid,
             journal_metadata,
-            endpoint_id,
+            deployment_id,
             method,
             response_sink,
             timestamps,

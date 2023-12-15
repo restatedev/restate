@@ -12,7 +12,7 @@ use super::Service;
 
 use futures::Stream;
 use restate_invoker_api::{EntryEnricher, JournalReader};
-use restate_schema_api::endpoint::EndpointMetadataResolver;
+use restate_schema_api::deployment::DeploymentMetadataResolver;
 use restate_service_client::AssumeRoleCacheMode;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::retries::RetryPolicy;
@@ -71,12 +71,12 @@ pub struct Options {
 
     /// # Message size warning
     ///
-    /// Threshold to log a warning in case protocol messages coming from service endpoint are larger than the specified amount.
+    /// Threshold to log a warning in case protocol messages coming from a service are larger than the specified amount.
     message_size_warning: usize,
 
     /// # Message size limit
     ///
-    /// Threshold to fail the invocation in case protocol messages coming from service endpoint are larger than the specified amount.
+    /// Threshold to fail the invocation in case protocol messages coming from a service are larger than the specified amount.
     message_size_limit: Option<usize>,
 
     /// # Temporary directory
@@ -119,23 +119,23 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn build<JR, JS, SR, EE, EMR>(
+    pub fn build<JR, JS, SR, EE, DMR>(
         self,
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
-        service_endpoint_registry: EMR,
-    ) -> Service<JR, SR, EE, EMR>
+        deployment_registry: DMR,
+    ) -> Service<JR, SR, EE, DMR>
     where
         JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
         EE: EntryEnricher,
-        EMR: EndpointMetadataResolver,
+        DMR: DeploymentMetadataResolver,
     {
         let client = self.service_client.build(AssumeRoleCacheMode::Unbounded);
 
         Service::new(
-            service_endpoint_registry,
+            deployment_registry,
             self.retry_policy,
             *self.inactivity_timeout,
             *self.abort_timeout,

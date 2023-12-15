@@ -105,7 +105,7 @@ impl ConnectInfo {
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
-    use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata, ProtocolType};
+    use restate_schema_api::deployment::{DeliveryOptions, DeploymentMetadata, ProtocolType};
     use restate_schema_impl::Schemas;
 
     pub(super) fn test_schemas() -> Schemas {
@@ -114,8 +114,8 @@ mod mocks {
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_endpoint(
-                        EndpointMetadata::new_http(
+                    .compute_new_deployment(
+                        DeploymentMetadata::new_http(
                             "http://localhost:9080".parse().unwrap(),
                             ProtocolType::BidiStream,
                             DeliveryOptions::default(),

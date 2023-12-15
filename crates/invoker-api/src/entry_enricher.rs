@@ -66,7 +66,7 @@ pub mod mocks {
                             }),
                         }
                     } else {
-                        // No need to service resolution if the entry was completed by the service endpoint
+                        // No need to service resolution if the entry was completed by the service
                         EnrichedEntryHeader::Invoke {
                             is_completed,
                             resolution_result: None,

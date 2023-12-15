@@ -17,7 +17,7 @@ restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-queue = { workspace = true }
-restate-schema-api = { workspace = true, features = ["endpoint"] }
+restate-schema-api = { workspace = true, features = ["deployment"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message"] }
 restate-timer-queue = { workspace = true }

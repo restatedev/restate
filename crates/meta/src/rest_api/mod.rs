@@ -10,7 +10,7 @@
 
 //! This module implements the Meta API endpoint.
 
-mod endpoints;
+mod deployments;
 mod error;
 mod health;
 mod invocations;
@@ -26,7 +26,7 @@ use futures::FutureExt;
 use hyper::Server;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
-use restate_schema_api::endpoint::EndpointMetadataResolver;
+use restate_schema_api::deployment::DeploymentMetadataResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_schema_api::subscription::SubscriptionResolver;
 use std::net::SocketAddr;
@@ -65,7 +65,7 @@ impl MetaRestEndpoint {
 
     pub async fn run<
         S: ServiceMetadataResolver
-            + EndpointMetadataResolver
+            + DeploymentMetadataResolver
             + SubscriptionResolver
             + Send
             + Sync
@@ -87,26 +87,24 @@ impl MetaRestEndpoint {
         // Setup the router
         let meta_api = axum_integration::Router::new()
             .route(
-                "/endpoints",
-                get(openapi_handler!(endpoints::list_service_endpoints)),
+                "/deployments",
+                get(openapi_handler!(deployments::list_deployments)),
             )
             .route(
-                "/endpoints",
-                post(openapi_handler!(endpoints::create_service_endpoint)),
+                "/deployments",
+                post(openapi_handler!(deployments::create_deployment)),
             )
             .route(
-                "/endpoints/:endpoint",
-                get(openapi_handler!(endpoints::get_service_endpoint)),
+                "/deployments/:deployment",
+                get(openapi_handler!(deployments::get_deployment)),
             )
             .route(
-                "/endpoints/:endpoint/descriptors",
-                get(openapi_handler!(
-                    endpoints::get_service_endpoint_descriptors
-                )),
+                "/deployments/:deployment/descriptors",
+                get(openapi_handler!(deployments::get_deployment_descriptors)),
             )
             .route(
-                "/endpoints/:endpoint",
-                delete(openapi_handler!(endpoints::delete_service_endpoint)),
+                "/deployments/:deployment",
+                delete(openapi_handler!(deployments::delete_deployment)),
             )
             .route("/services", get(openapi_handler!(services::list_services)))
             .route(

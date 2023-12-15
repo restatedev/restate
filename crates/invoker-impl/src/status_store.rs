@@ -49,15 +49,15 @@ impl InvocationStatusStore {
         report.in_flight = true;
     }
 
-    pub(super) fn on_endpoint_chosen(
+    pub(super) fn on_deployment_chosen(
         &mut self,
         partition: &PartitionLeaderEpoch,
         fid: &FullInvocationId,
-        endpoint_id: EndpointId,
+        deployment_id: DeploymentId,
     ) {
         if let Some(inner) = self.0.get_mut(partition) {
             if let Some(report) = inner.get_mut(fid) {
-                report.last_attempt_endpoint_id = Some(endpoint_id);
+                report.last_attempt_deployment_id = Some(deployment_id);
             }
         }
     }

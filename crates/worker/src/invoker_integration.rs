@@ -123,7 +123,7 @@ where
                         resolution_result: Some(resolution_result),
                     }
                 } else {
-                    // No need to service resolution if the entry was completed by the service endpoint
+                    // No need to service resolution if the entry was completed by the deployment
                     EnrichedEntryHeader::Invoke {
                         is_completed,
                         resolution_result: None,

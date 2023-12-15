@@ -20,7 +20,7 @@ use cling::prelude::*;
 pub enum Deployments {
     /// List the registered deployments
     List(list::List),
-    /// Add or update deployments through endpoint discovery
+    /// Add or update deployments through deployment discovery
     Register(register::Register),
     /// Prints detailed information about a given deployment
     Describe(describe::Describe),

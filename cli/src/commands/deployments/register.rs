@@ -16,7 +16,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::{MetaClientInterface, MetasClient, MetasClientError};
 use crate::console::c_println;
 use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
-use crate::ui::deployments::render_endpoint_url;
+use crate::ui::deployments::render_deployment_url;
 use crate::ui::service_methods::{
     create_service_methods_table, create_service_methods_table_diff, icon_for_service_flavor,
 };
@@ -24,9 +24,7 @@ use crate::ui::stylesheet::Style;
 use crate::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
 
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
-use restate_meta_rest_model::endpoints::{
-    LambdaARN, RegisterServiceEndpointMetadata, RegisterServiceEndpointRequest, ServiceEndpoint,
-};
+use restate_meta_rest_model::deployments::{Deployment, LambdaARN, RegisterDeploymentRequest};
 
 use anyhow::Result;
 use cling::prelude::*;
@@ -58,8 +56,8 @@ pub struct Register {
     ///
     /// The URL must be network-accessible from Restate server. In case of using
     /// Lambda ARN, the ARN should include the function version.
-    #[clap(value_parser = parse_endpoint)]
-    endpoint: Endpoint,
+    #[clap(value_parser = parse_deployment)]
+    deployment: DeploymentEndpoint,
 }
 
 #[derive(Clone)]
@@ -69,16 +67,16 @@ struct HeaderKeyValue {
 }
 
 #[derive(Clone, Debug)]
-enum Endpoint {
+enum DeploymentEndpoint {
     Uri(Uri),
     Lambda(LambdaARN),
 }
 
-impl Display for Endpoint {
+impl Display for DeploymentEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Endpoint::Uri(uri) => write!(f, "URL {}", uri),
-            Endpoint::Lambda(arn) => write!(f, "AWS Lambda ARN {}", arn),
+            DeploymentEndpoint::Uri(uri) => write!(f, "URL {}", uri),
+            DeploymentEndpoint::Lambda(arn) => write!(f, "AWS Lambda ARN {}", arn),
         }
     }
 }
@@ -99,12 +97,12 @@ fn parse_header(
     })
 }
 
-// Needed as a function to allow clap to parse to [`Endpoint`]
-fn parse_endpoint(
+// Needed as a function to allow clap to parse to [`Deployment`]
+fn parse_deployment(
     raw: &str,
-) -> Result<Endpoint, Box<dyn std::error::Error + Send + Sync + 'static>> {
-    let endpoint = if raw.starts_with("arn:") {
-        Endpoint::Lambda(LambdaARN::from_str(raw)?)
+) -> Result<DeploymentEndpoint, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let deployment = if raw.starts_with("arn:") {
+        DeploymentEndpoint::Lambda(LambdaARN::from_str(raw)?)
     } else {
         let mut uri = Uri::from_str(raw).map_err(|e| format!("invalid URL({e})"))?;
         let mut parts = uri.into_parts();
@@ -115,9 +113,9 @@ fn parse_endpoint(
             parts.path_and_query = Some(http::uri::PathAndQuery::from_str("/")?);
         }
         uri = Uri::from_parts(parts)?;
-        Endpoint::Uri(uri)
+        DeploymentEndpoint::Uri(uri)
     };
-    Ok(endpoint)
+    Ok(deployment)
 }
 
 // NOTE: Without parsing the proto descriptor, we can't detect the details of the
@@ -130,19 +128,21 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     // Preparing the discovery request
     let client = crate::clients::MetasClient::new(&env)?;
-    let endpoint_metadata = match &discover_opts.endpoint {
-        Endpoint::Uri(uri) => RegisterServiceEndpointMetadata::Http { uri: uri.clone() },
-        Endpoint::Lambda(arn) => RegisterServiceEndpointMetadata::Lambda {
+
+    let mk_request_body = |force, dry_run| match &discover_opts.deployment {
+        DeploymentEndpoint::Uri(uri) => RegisterDeploymentRequest::Http {
+            uri: uri.clone(),
+            additional_headers: headers.clone().map(Into::into),
+            force,
+            dry_run,
+        },
+        DeploymentEndpoint::Lambda(arn) => RegisterDeploymentRequest::Lambda {
             arn: arn.to_string(),
             assume_role_arn: discover_opts.assume_role_arn.clone(),
+            additional_headers: headers.clone().map(Into::into),
+            force,
+            dry_run,
         },
-    };
-
-    let mk_request_body = |force, dry_run| RegisterServiceEndpointRequest {
-        endpoint_metadata: endpoint_metadata.clone(),
-        additional_headers: headers.clone().map(Into::into),
-        force,
-        dry_run,
     };
 
     let progress = ProgressBar::new_spinner();
@@ -152,14 +152,14 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     progress.set_message(format!(
         "Asking restate server at {} for a dry-run discovery of {}",
-        env.meta_base_url, discover_opts.endpoint
+        env.meta_base_url, discover_opts.deployment
     ));
 
     // This fails if the endpoint exists and --force is not set.
     let dry_run_result = client
         // We use force in the dry-run to make sure we get the result of the discovery
         // even if there is it's an existing endpoint
-        .discover_endpoint(mk_request_body(
+        .discover_deployment(mk_request_body(
             /* force = */ true, /* dry_run = */ true,
         ))
         .await?
@@ -168,27 +168,27 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     progress.finish_and_clear();
 
-    // Is this an existing endpoint?
-    let existing_endpoint = match client
-        .get_endpoint(&dry_run_result.id)
+    // Is this an existing deployment?
+    let existing_deployment = match client
+        .get_deployment(&dry_run_result.id)
         .await?
         .into_body()
         .await
     {
-        Ok(existing_endpoint) => {
+        Ok(existing_deployment) => {
             // Appears to be an existing endpoint.
-            Some(existing_endpoint)
+            Some(existing_deployment)
         }
         Err(MetasClientError::Api(err)) if err.http_status_code == StatusCode::NOT_FOUND => None,
-        // We cannot get existing endpoint details. This is a problem.
+        // We cannot get existing deployment details. This is a problem.
         Err(err) => return Err(err.into()),
     };
 
-    if let Some(ref existing_endpoint) = existing_endpoint {
+    if let Some(ref existing_deployment) = existing_deployment {
         if !discover_opts.force {
             c_error!(
                 "A deployment already exists that uses this endpoint (ID: {}). Use --force to overwrite it.",
-                existing_endpoint.id,
+                existing_deployment.id,
             );
             return Ok(());
         } else {
@@ -201,7 +201,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 \n\nThis is a DANGEROUS operation! \n
                 In production, we recommend creating a new deployment with a unique endpoint while \
                 keeping the old one active until the old deployment is drained.",
-                existing_endpoint.id
+                existing_deployment.id
             );
             c_eprintln!();
         }
@@ -251,8 +251,8 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     // The following services will be updated:
     if !updated.is_empty() {
         c_println!();
-        // used to resolving old endpoints.
-        let mut endpoint_cache: HashMap<String, ServiceEndpoint> = HashMap::new();
+        // used to resolving old deployments.
+        let mut deployment_cache: HashMap<String, Deployment> = HashMap::new();
         // A single spinner spans all requests.
         let progress = ProgressBar::new_spinner();
         progress.set_style(
@@ -303,17 +303,20 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                     &existing_svc.revision,
                     Styled(Style::Success, &svc.revision),
                 );
-                if existing_svc.endpoint_id != dry_run_result.id {
-                    let maybe_old_endpoint =
-                        resolve_endpoint(&client, &mut endpoint_cache, &existing_svc.endpoint_id)
-                            .await;
-                    let old_endpoint_message =
-                        maybe_old_endpoint.map(|old_endpoint| render_endpoint_url(&old_endpoint));
+                if existing_svc.deployment_id != dry_run_result.id {
+                    let maybe_old_deployment = resolve_deployment(
+                        &client,
+                        &mut deployment_cache,
+                        &existing_svc.deployment_id,
+                    )
+                    .await;
+                    let old_deployment_message = maybe_old_deployment
+                        .map(|old_endpoint| render_deployment_url(&old_endpoint));
                     c_indentln!(
                         2,
                         "Old Deployment: {} (at {})",
-                        old_endpoint_message.as_deref().unwrap_or("<UNKNOWN>"),
-                        &existing_svc.endpoint_id,
+                        old_deployment_message.as_deref().unwrap_or("<UNKNOWN>"),
+                        &existing_svc.deployment_id,
                     );
                 }
 
@@ -337,7 +340,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     }
 
     // The following services will be removed/forgotten:
-    if let Some(existing_endpoint) = existing_endpoint {
+    if let Some(existing_endpoint) = existing_deployment {
         // The following services will be removed/forgotten:
         let services_removed = existing_endpoint
             .services
@@ -366,11 +369,11 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     progress.set_message(format!(
         "Asking restate server {} to confirm this deployment (at {})",
-        env.meta_base_url, discover_opts.endpoint
+        env.meta_base_url, discover_opts.deployment
     ));
 
     let dry_run_result = client
-        .discover_endpoint(mk_request_body(
+        .discover_deployment(mk_request_body(
             /* force = */ discover_opts.force,
             /* dry_run = */ false,
         ))
@@ -391,13 +394,13 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     Ok(())
 }
 
-async fn resolve_endpoint(
+async fn resolve_deployment(
     client: &MetasClient,
-    cache: &mut HashMap<String, ServiceEndpoint>,
-    endpoint_id: &str,
-) -> Option<ServiceEndpoint> {
-    if cache.contains_key(endpoint_id) {
-        return cache.get(endpoint_id).cloned();
+    cache: &mut HashMap<String, Deployment>,
+    deployment_id: &str,
+) -> Option<Deployment> {
+    if cache.contains_key(deployment_id) {
+        return cache.get(deployment_id).cloned();
     }
 
     let progress = ProgressBar::new_spinner();
@@ -407,22 +410,22 @@ async fn resolve_endpoint(
 
     progress.set_message(format!(
         "Fetching information about existing deployments at {}",
-        endpoint_id,
+        deployment_id,
     ));
 
-    let endpoint = client
-        .get_endpoint(endpoint_id)
+    let deployment = client
+        .get_deployment(deployment_id)
         .await
         .ok()?
         .into_body()
         .await
         .ok()
         .map(|endpoint| {
-            let service_endpoint = endpoint.service_endpoint;
-            cache.insert(endpoint_id.to_string(), service_endpoint.clone());
+            let service_endpoint = endpoint.deployment;
+            cache.insert(deployment_id.to_string(), service_endpoint.clone());
             Some(service_endpoint)
         })?;
     progress.finish_and_clear();
 
-    endpoint
+    deployment
 }

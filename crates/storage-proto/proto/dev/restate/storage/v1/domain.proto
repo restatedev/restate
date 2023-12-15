@@ -32,7 +32,7 @@ message InvocationStatus {
         uint64 creation_time = 4;
         uint64 modification_time = 5;
         bytes method_name = 6;
-        oneof endpoint_id {
+        oneof deployment_id {
             google.protobuf.Empty none = 7;
             string value = 8;
         }
@@ -46,7 +46,7 @@ message InvocationStatus {
         uint64 modification_time = 5;
         repeated uint32 waiting_for_completed_entries = 6;
         bytes method_name = 7;
-        oneof endpoint_id {
+        oneof deployment_id {
             google.protobuf.Empty none = 8;
             string value = 9;
         }

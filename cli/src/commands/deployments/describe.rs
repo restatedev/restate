@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
-use restate_meta_rest_model::endpoints::ServiceNameRevPair;
+use restate_meta_rest_model::deployments::ServiceNameRevPair;
 use restate_meta_rest_model::services::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
@@ -48,18 +48,18 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
         latest_services.insert(svc.name.clone(), svc);
     }
 
-    let endpoint = client
-        .get_endpoint(&opts.deployment_id)
+    let deployment = client
+        .get_deployment(&opts.deployment_id)
         .await?
         .into_body()
         .await?;
 
     let sql_client = crate::clients::DataFusionHttpClient::new(&env)?;
-    let active_inv = count_deployment_active_inv_by_method(&sql_client, &endpoint.id).await?;
+    let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
     // sum inv_count in active_inv
     let total_active_inv = active_inv.iter().fold(0, |acc, x| acc + x.inv_count);
 
-    let svc_rev_pairs: Vec<_> = endpoint
+    let svc_rev_pairs: Vec<_> = deployment
         .services
         .iter()
         .map(|s| ServiceNameRevPair {
@@ -69,16 +69,16 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
         .collect();
 
     let status = calculate_deployment_status(
-        &endpoint.id,
+        &deployment.id,
         &svc_rev_pairs,
         total_active_inv,
         &latest_services,
     );
 
     let mut table = Table::new_styled(&env.ui_config);
-    table.add_kv_row("ID:", &endpoint.id);
+    table.add_kv_row("ID:", &deployment.id);
 
-    add_deployment_to_kv_table(&endpoint.service_endpoint, &mut table);
+    add_deployment_to_kv_table(&deployment.deployment, &mut table);
     table.add_kv_row("Status:", render_deployment_status(status));
     table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
 
@@ -89,7 +89,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
     c_println!();
 
     c_title!("🤖", "Services");
-    for svc in endpoint.services {
+    for svc in deployment.services {
         let Some(latest_svc) = latest_services.get(&svc.name) else {
             // if we can't find this service in the latest set of service, something is off. A
             // deployment cannot remove services defined by other deployment, so we should warn that
@@ -117,7 +117,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
             format!(
                 "[Latest {} is in deployment ID {}]",
                 Styled(Style::Success, latest_svc.revision),
-                latest_svc.endpoint_id
+                latest_svc.deployment_id
             )
         };
         c_indentln!(2, "Revision: {} {}", svc.revision, latest_revision_message);
@@ -130,7 +130,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
         ]);
 
         for method in &svc.methods {
-            // how many inv pinned on this endpoint+service+method.
+            // how many inv pinned on this deployment+service+method.
             let active_inv = active_inv
                 .iter()
                 .filter(|x| x.service == svc.name && x.method == method.name)

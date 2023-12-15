@@ -29,7 +29,7 @@ use restate_storage_api::status_table::InvocationMetadata;
 use restate_storage_api::timer_table::Timer;
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{
-    EndpointId, EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
+    DeploymentId, EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
 };
 use restate_types::invocation::{
     InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext,
@@ -105,15 +105,15 @@ pub(crate) enum Effect {
     },
 
     // Journal operations
-    StoreEndpointId {
+    StoreDeploymentId {
         service_id: ServiceId,
-        endpoint_id: EndpointId,
+        deployment_id: DeploymentId,
         metadata: InvocationMetadata,
     },
     AppendJournalEntry {
         service_id: ServiceId,
         // We pass around the invocation_status here to avoid an additional read.
-        // We could in theory get rid of this here (and in other places, such as StoreEndpointId),
+        // We could in theory get rid of this here (and in other places, such as StoreDeploymentId),
         // by using a merge operator in rocksdb.
         previous_invocation_status: InvocationStatus,
         entry_index: EntryIndex,
@@ -476,10 +476,10 @@ impl Effect {
                 restate.timer.wake_up_time = %wake_up_time,
                 "Effect: Delete timer"
             ),
-            Effect::StoreEndpointId { endpoint_id, .. } => debug_if_leader!(
+            Effect::StoreDeploymentId { deployment_id, .. } => debug_if_leader!(
                 is_leader,
-                restate.service_endpoint.id = %endpoint_id,
-                "Effect: Store endpoint id to storage"
+                restate.deployment.id = %deployment_id,
+                "Effect: Store deployment id to storage"
             ),
             Effect::AppendJournalEntry {
                 journal_entry,
@@ -514,7 +514,7 @@ impl Effect {
             } => debug_if_leader!(
                 is_leader,
                 restate.journal.index = entry_index,
-                "Effect: Forward completion {} to service endpoint",
+                "Effect: Forward completion {} to deployment",
                 CompletionResultFmt(result)
             ),
             Effect::CreateVirtualJournal {
@@ -796,15 +796,15 @@ impl Effects {
         });
     }
 
-    pub(crate) fn store_chosen_endpoint(
+    pub(crate) fn store_chosen_deployment(
         &mut self,
         service_id: ServiceId,
-        endpoint_id: EndpointId,
+        deployment_id: DeploymentId,
         metadata: InvocationMetadata,
     ) {
-        self.effects.push(Effect::StoreEndpointId {
+        self.effects.push(Effect::StoreDeploymentId {
             service_id,
-            endpoint_id,
+            deployment_id,
             metadata,
         })
     }

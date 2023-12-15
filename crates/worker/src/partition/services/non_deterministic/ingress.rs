@@ -123,7 +123,7 @@ mod tests {
     use googletest::{all, pat};
     use prost::Message;
     use prost_reflect::DynamicMessage;
-    use restate_schema_api::endpoint::EndpointMetadata;
+    use restate_schema_api::deployment::DeploymentMetadata;
     use restate_test_util::matchers::*;
     use restate_test_util::test;
     use restate_types::invocation::ServiceInvocation;
@@ -134,8 +134,8 @@ mod tests {
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_endpoint(
-                        EndpointMetadata::mock(),
+                    .compute_new_deployment(
+                        DeploymentMetadata::mock(),
                         vec![restate_pb::mocks::GREETER_SERVICE_NAME.to_owned()],
                         restate_pb::mocks::DESCRIPTOR_POOL.clone(),
                         false,

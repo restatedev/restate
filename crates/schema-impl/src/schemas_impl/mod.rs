@@ -18,12 +18,12 @@ use restate_schema_api::service::InstanceType;
 use restate_schema_api::subscription::{
     EventReceiverServiceInstanceType, FieldRemapType, InputEventRemap, Sink, Source,
 };
-use restate_types::identifiers::{EndpointId, ServiceRevision};
+use restate_types::identifiers::{DeploymentId, ServiceRevision};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
-pub(crate) mod endpoint;
+pub(crate) mod deployment;
 mod service;
 mod subscription;
 
@@ -41,7 +41,7 @@ impl Schemas {
 #[derive(Debug, Clone)]
 pub(crate) struct SchemasInner {
     pub(crate) services: HashMap<String, ServiceSchemas>,
-    pub(crate) endpoints: HashMap<EndpointId, EndpointSchemas>,
+    pub(crate) deployments: HashMap<DeploymentId, DeploymentSchemas>,
     pub(crate) subscriptions: HashMap<String, Subscription>,
     pub(crate) proto_symbols: ProtoSymbols,
 }
@@ -152,14 +152,14 @@ impl ServiceSchemas {
         revision: ServiceRevision,
         methods: HashMap<String, MethodSchemas>,
         instance_type: InstanceTypeMetadata,
-        latest_endpoint: EndpointId,
+        latest_deployment: DeploymentId,
     ) -> Self {
         Self {
             revision,
             methods,
             instance_type,
-            location: ServiceLocation::ServiceEndpoint {
-                latest_endpoint,
+            location: ServiceLocation::Deployment {
+                latest_deployment,
                 public: true,
             },
         }
@@ -223,9 +223,9 @@ pub(crate) enum ServiceLocation {
         // Available at the ingress
         ingress_available: bool,
     },
-    ServiceEndpoint {
+    Deployment {
         // None if this is a built-in service
-        latest_endpoint: EndpointId,
+        latest_deployment: DeploymentId,
         public: bool,
     },
 }
@@ -236,14 +236,14 @@ impl ServiceLocation {
             ServiceLocation::BuiltIn {
                 ingress_available, ..
             } => *ingress_available,
-            ServiceLocation::ServiceEndpoint { public, .. } => *public,
+            ServiceLocation::Deployment { public, .. } => *public,
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct EndpointSchemas {
-    pub(crate) metadata: EndpointMetadata,
+pub(crate) struct DeploymentSchemas {
+    pub(crate) metadata: DeploymentMetadata,
 
     // We need to store ServiceSchemas and DescriptorPool here only for queries
     // We could optimize the memory impact of this by reading these info from disk
@@ -255,7 +255,7 @@ impl Default for SchemasInner {
     fn default() -> Self {
         let mut inner = Self {
             services: Default::default(),
-            endpoints: Default::default(),
+            deployments: Default::default(),
             subscriptions: Default::default(),
             proto_symbols: Default::default(),
         };

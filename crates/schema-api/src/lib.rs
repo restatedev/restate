@@ -10,14 +10,14 @@
 
 //! This crate contains all the different APIs for accessing schemas.
 
-#[cfg(feature = "endpoint")]
-pub mod endpoint {
+#[cfg(feature = "deployment")]
+pub mod deployment {
     use super::service::ServiceMetadata;
     use bytes::Bytes;
     use bytestring::ByteString;
     use http::header::{HeaderName, HeaderValue};
     use http::Uri;
-    use restate_types::identifiers::{EndpointId, LambdaARN, ServiceRevision};
+    use restate_types::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
     use restate_types::time::MillisSinceEpoch;
     use std::collections::HashMap;
     use std::fmt;
@@ -55,8 +55,8 @@ pub mod endpoint {
     #[cfg_attr(feature = "serde", serde_with::serde_as)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub struct EndpointMetadata {
-        pub ty: EndpointType,
+    pub struct DeploymentMetadata {
+        pub ty: DeploymentType,
         pub delivery_options: DeliveryOptions,
         pub created_at: MillisSinceEpoch,
     }
@@ -65,7 +65,7 @@ pub mod endpoint {
     #[cfg_attr(feature = "serde", serde_with::serde_as)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub enum EndpointType {
+    pub enum DeploymentType {
         Http {
             #[cfg_attr(
                 feature = "serde",
@@ -82,14 +82,14 @@ pub mod endpoint {
         },
     }
 
-    impl EndpointMetadata {
+    impl DeploymentMetadata {
         pub fn new_http(
             address: Uri,
             protocol_type: ProtocolType,
             delivery_options: DeliveryOptions,
         ) -> Self {
             Self {
-                ty: EndpointType::Http {
+                ty: DeploymentType::Http {
                     address,
                     protocol_type,
                 },
@@ -104,7 +104,7 @@ pub mod endpoint {
             delivery_options: DeliveryOptions,
         ) -> Self {
             Self {
-                ty: EndpointType::Lambda {
+                ty: DeploymentType::Lambda {
                     arn,
                     assume_role_arn,
                 },
@@ -114,14 +114,14 @@ pub mod endpoint {
         }
 
         // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
-        // and for Lambda endpoints its the ARN
+        // and for Lambda deployments its the ARN
         pub fn address_display(&self) -> impl Display + '_ {
-            struct Wrapper<'a>(&'a EndpointType);
+            struct Wrapper<'a>(&'a DeploymentType);
             impl<'a> Display for Wrapper<'a> {
                 fn fmt(&self, f: &mut Formatter) -> fmt::Result {
                     match self {
-                        Wrapper(EndpointType::Http { address, .. }) => address.fmt(f),
-                        Wrapper(EndpointType::Lambda { arn, .. }) => arn.fmt(f),
+                        Wrapper(DeploymentType::Http { address, .. }) => address.fmt(f),
+                        Wrapper(DeploymentType::Lambda { arn, .. }) => arn.fmt(f),
                     }
                 }
             }
@@ -130,18 +130,18 @@ pub mod endpoint {
 
         pub fn protocol_type(&self) -> ProtocolType {
             match &self.ty {
-                EndpointType::Http { protocol_type, .. } => *protocol_type,
-                EndpointType::Lambda { .. } => ProtocolType::RequestResponse,
+                DeploymentType::Http { protocol_type, .. } => *protocol_type,
+                DeploymentType::Lambda { .. } => ProtocolType::RequestResponse,
             }
         }
 
-        pub fn id(&self) -> EndpointId {
+        pub fn id(&self) -> DeploymentId {
             use base64::Engine;
 
             match &self.ty {
-                EndpointType::Http { address, .. } => {
+                DeploymentType::Http { address, .. } => {
                     // For the time being we generate this from the URI
-                    // We use only authority and path, as those uniquely identify the endpoint.
+                    // We use only authority and path, as those uniquely identify the deployment.
                     let authority_and_path = format!(
                         "{}{}",
                         address.authority().expect("Must have authority"),
@@ -149,7 +149,7 @@ pub mod endpoint {
                     );
                     restate_base64_util::URL_SAFE.encode(authority_and_path.as_bytes())
                 }
-                EndpointType::Lambda { arn, .. } => {
+                DeploymentType::Lambda { arn, .. } => {
                     restate_base64_util::URL_SAFE.encode(arn.to_string().as_bytes())
                 }
             }
@@ -160,22 +160,22 @@ pub mod endpoint {
         }
     }
 
-    pub trait EndpointMetadataResolver {
-        fn resolve_latest_endpoint_for_service(
+    pub trait DeploymentMetadataResolver {
+        fn resolve_latest_deployment_for_service(
             &self,
             service_name: impl AsRef<str>,
-        ) -> Option<EndpointMetadata>;
+        ) -> Option<DeploymentMetadata>;
 
-        fn get_endpoint(&self, endpoint_id: &EndpointId) -> Option<EndpointMetadata>;
+        fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<DeploymentMetadata>;
 
-        fn get_endpoint_descriptor_pool(&self, endpoint_id: &EndpointId) -> Option<Bytes>;
+        fn get_deployment_descriptor_pool(&self, deployment_id: &DeploymentId) -> Option<Bytes>;
 
-        fn get_endpoint_and_services(
+        fn get_deployment_and_services(
             &self,
-            endpoint_id: &EndpointId,
-        ) -> Option<(EndpointMetadata, Vec<ServiceMetadata>)>;
+            deployment_id: &DeploymentId,
+        ) -> Option<(DeploymentMetadata, Vec<ServiceMetadata>)>;
 
-        fn get_endpoints(&self) -> Vec<(EndpointMetadata, Vec<(String, ServiceRevision)>)>;
+        fn get_deployments(&self) -> Vec<(DeploymentMetadata, Vec<(String, ServiceRevision)>)>;
     }
 
     #[cfg(feature = "mocks")]
@@ -184,17 +184,17 @@ pub mod endpoint {
 
         use std::collections::HashMap;
 
-        impl EndpointMetadata {
-            pub fn mock() -> EndpointMetadata {
-                EndpointMetadata::new_http(
+        impl DeploymentMetadata {
+            pub fn mock() -> DeploymentMetadata {
+                DeploymentMetadata::new_http(
                     "http://localhost:9080".parse().unwrap(),
                     ProtocolType::BidiStream,
                     Default::default(),
                 )
             }
 
-            pub fn mock_with_uri(uri: &str) -> EndpointMetadata {
-                EndpointMetadata::new_http(
+            pub fn mock_with_uri(uri: &str) -> DeploymentMetadata {
+                DeploymentMetadata::new_http(
                     uri.parse().unwrap(),
                     ProtocolType::BidiStream,
                     Default::default(),
@@ -203,52 +203,55 @@ pub mod endpoint {
         }
 
         #[derive(Default, Clone)]
-        pub struct MockEndpointMetadataRegistry {
-            pub endpoints: HashMap<EndpointId, EndpointMetadata>,
-            pub latest_endpoint: HashMap<String, EndpointId>,
+        pub struct MockDeploymentMetadataRegistry {
+            pub deployments: HashMap<DeploymentId, DeploymentMetadata>,
+            pub latest_deployment: HashMap<String, DeploymentId>,
         }
 
-        impl MockEndpointMetadataRegistry {
+        impl MockDeploymentMetadataRegistry {
             pub fn mock_service(&mut self, name: &str) {
-                self.mock_service_with_metadata(name, EndpointMetadata::mock());
+                self.mock_service_with_metadata(name, DeploymentMetadata::mock());
             }
 
-            pub fn mock_service_with_metadata(&mut self, name: &str, meta: EndpointMetadata) {
-                self.latest_endpoint.insert(name.to_string(), meta.id());
-                self.endpoints.insert(meta.id(), meta);
+            pub fn mock_service_with_metadata(&mut self, name: &str, meta: DeploymentMetadata) {
+                self.latest_deployment.insert(name.to_string(), meta.id());
+                self.deployments.insert(meta.id(), meta);
             }
         }
 
-        impl EndpointMetadataResolver for MockEndpointMetadataRegistry {
-            fn resolve_latest_endpoint_for_service(
+        impl DeploymentMetadataResolver for MockDeploymentMetadataRegistry {
+            fn resolve_latest_deployment_for_service(
                 &self,
                 service_name: impl AsRef<str>,
-            ) -> Option<EndpointMetadata> {
-                self.latest_endpoint
+            ) -> Option<DeploymentMetadata> {
+                self.latest_deployment
                     .get(service_name.as_ref())
-                    .and_then(|endpoint_id| self.get_endpoint(endpoint_id))
+                    .and_then(|deployment_id| self.get_deployment(deployment_id))
             }
 
-            fn get_endpoint(&self, endpoint_id: &EndpointId) -> Option<EndpointMetadata> {
-                self.endpoints.get(endpoint_id).cloned()
+            fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<DeploymentMetadata> {
+                self.deployments.get(deployment_id).cloned()
             }
 
-            fn get_endpoint_descriptor_pool(&self, _endpoint_id: &EndpointId) -> Option<Bytes> {
+            fn get_deployment_descriptor_pool(
+                &self,
+                _deployment_id: &DeploymentId,
+            ) -> Option<Bytes> {
                 todo!()
             }
 
-            fn get_endpoint_and_services(
+            fn get_deployment_and_services(
                 &self,
-                endpoint_id: &EndpointId,
-            ) -> Option<(EndpointMetadata, Vec<ServiceMetadata>)> {
-                self.endpoints
-                    .get(endpoint_id)
+                deployment_id: &DeploymentId,
+            ) -> Option<(DeploymentMetadata, Vec<ServiceMetadata>)> {
+                self.deployments
+                    .get(deployment_id)
                     .cloned()
                     .map(|e| (e, vec![]))
             }
 
-            fn get_endpoints(&self) -> Vec<(EndpointMetadata, Vec<(String, ServiceRevision)>)> {
-                self.endpoints
+            fn get_deployments(&self) -> Vec<(DeploymentMetadata, Vec<(String, ServiceRevision)>)> {
+                self.deployments
                     .values()
                     .map(|e| (e.clone(), vec![]))
                     .collect()
@@ -260,7 +263,7 @@ pub mod endpoint {
 #[cfg(feature = "service")]
 pub mod service {
     use bytes::Bytes;
-    use restate_types::identifiers::{EndpointId, ServiceRevision};
+    use restate_types::identifiers::{DeploymentId, ServiceRevision};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -278,11 +281,11 @@ pub mod service {
         pub name: String,
         pub methods: Vec<MethodMetadata>,
         pub instance_type: InstanceType,
-        /// # Endpoint Id
+        /// # Deployment Id
         ///
-        /// Endpoint exposing the latest revision of the service.
+        /// Deployment exposing the latest revision of the service.
         #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
-        pub endpoint_id: EndpointId,
+        pub deployment_id: DeploymentId,
         /// # Revision
         ///
         /// Latest revision of the service.

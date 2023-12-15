@@ -20,7 +20,7 @@ protocol = []
 [dependencies]
 restate-base64-util = { workspace = true, optional = true }
 restate-errors = { workspace = true, optional = true }
-restate-schema-api = { workspace = true, optional = true, features = ["endpoint"] }
+restate-schema-api = { workspace = true, optional = true, features = ["deployment"] }
 restate-service-client =  { workspace = true, optional = true }
 restate-types = { workspace = true, optional = true }
 

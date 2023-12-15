@@ -37,10 +37,10 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 // Just an alias
 pub type EntryIndex = u32;
 
-/// Unique Id of an endpoint.
+/// Unique Id of a deployment.
 ///
-/// Currently this will contain the endpoint url authority and path base64 encoded, but this might change in future.
-pub type EndpointId = String;
+/// Currently this will contain the deployment url authority and path base64 encoded, or alternatively the ARN for Lambda, but this might change in future.
+pub type DeploymentId = String;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

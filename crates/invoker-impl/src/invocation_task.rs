@@ -24,17 +24,17 @@ use restate_errors::warn_it;
 use restate_invoker_api::{
     EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
 };
-use restate_schema_api::endpoint::{
-    EndpointMetadata, EndpointMetadataResolver, EndpointType, ProtocolType,
+use restate_schema_api::deployment::{
+    DeploymentMetadata, DeploymentMetadataResolver, DeploymentType, ProtocolType,
 };
-use restate_service_client::{
-    Parts, Request, ServiceClient, ServiceClientError, ServiceEndpointAddress,
-};
+use restate_service_client::{Endpoint, Parts, Request, ServiceClient, ServiceClientError};
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EndpointId, EntryIndex, FullInvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::{
+    DeploymentId, EntryIndex, FullInvocationId, PartitionLeaderEpoch,
+};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryHeader};
@@ -62,10 +62,10 @@ const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/r
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(restate_errors::RT0006)]
 pub(crate) enum InvocationTaskError {
-    #[error("no endpoint was found to process the invocation")]
-    NoEndpointForService,
-    #[error("the invocation has an endpoint id associated, but it was not found in the registry. This might indicate that an endpoint was forcefully removed from the registry, but there are still in-flight invocations for that endpoint")]
-    UnknownEndpoint(EndpointId),
+    #[error("no deployment was found to process the invocation")]
+    NoDeploymentForService,
+    #[error("the invocation has a deployment id associated, but it was not found in the registry. This might indicate that a deployment was forcefully removed from the registry, but there are still in-flight invocations pinned to it")]
+    UnknownDeployment(DeploymentId),
     #[error("unexpected http status code: {0}")]
     UnexpectedResponse(http::StatusCode),
     #[error("unexpected content type: {0:?}")]
@@ -170,7 +170,7 @@ pub(super) struct InvocationTaskOutput {
 
 pub(super) enum InvocationTaskOutputInner {
     // `has_changed` indicates if we believe this is a freshly selected endpoint or not.
-    SelectedEndpoint(EndpointId, /* has_changed: */ bool),
+    SelectedDeployment(DeploymentId, /* has_changed: */ bool),
     NewEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
@@ -187,7 +187,7 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 }
 
 /// Represents an open invocation stream
-pub(super) struct InvocationTask<JR, SR, EE, EMR> {
+pub(super) struct InvocationTask<JR, SR, EE, DMR> {
     // Shared client
     client: ServiceClient,
 
@@ -202,7 +202,7 @@ pub(super) struct InvocationTask<JR, SR, EE, EMR> {
     journal_reader: JR,
     state_reader: SR,
     entry_enricher: EE,
-    endpoint_metadata_resolver: EMR,
+    deployment_metadata_resolver: DMR,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Completion>,
 
@@ -244,14 +244,14 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<JR, SR, EE, EMR> InvocationTask<JR, SR, EE, EMR>
+impl<JR, SR, EE, DMR> InvocationTask<JR, SR, EE, DMR>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher,
-    EMR: EndpointMetadataResolver,
+    DMR: DeploymentMetadataResolver,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -267,7 +267,7 @@ where
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
-        endpoint_metadata_resolver: EMR,
+        deployment_metadata_resolver: DMR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Completion>,
     ) -> Self {
@@ -282,7 +282,7 @@ where
             journal_reader,
             state_reader,
             entry_enricher,
-            endpoint_metadata_resolver,
+            deployment_metadata_resolver,
             invoker_tx,
             invoker_rx,
             encoder: Encoder::new(protocol_version),
@@ -291,7 +291,7 @@ where
         }
     }
 
-    /// Loop opening the request to service endpoint and consuming the stream
+    /// Loop opening the request to deployment and consuming the stream
     #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.full_invocation_id.service_id.service_name, restate.invocation.id = %self.full_invocation_id), skip_all)]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
         // Execute the task
@@ -369,34 +369,34 @@ where
         let ((journal_metadata, journal_stream), state_iter) =
             shortcircuit!(tokio::try_join!(read_journal_future, read_state_future));
 
-        // Resolve the endpoint metadata
-        let (endpoint_metadata, endpoint_changed) =
-            if let Some(endpoint_id) = journal_metadata.endpoint_id {
-                // We have a pinned endpoint that we can't change even if newer
-                // endpoints have been registered for the same service.
-                let endpoint_metadata = shortcircuit!(self
-                    .endpoint_metadata_resolver
-                    .get_endpoint(&endpoint_id)
-                    .ok_or_else(|| InvocationTaskError::UnknownEndpoint(endpoint_id.clone())));
-                (endpoint_metadata, /* has_changed= */ false)
+        // Resolve the deployment metadata
+        let (deployment_metadata, deployment_changed) =
+            if let Some(deployment_id) = journal_metadata.deployment_id {
+                // We have a pinned deployment that we can't change even if newer
+                // deployments have been registered for the same service.
+                let deployment_metadata = shortcircuit!(self
+                    .deployment_metadata_resolver
+                    .get_deployment(&deployment_id)
+                    .ok_or_else(|| InvocationTaskError::UnknownDeployment(deployment_id.clone())));
+                (deployment_metadata, /* has_changed= */ false)
             } else {
-                // We can choose the freshest endpoint for the latest revision
+                // We can choose the freshest deployment for the latest revision
                 // of the registered service.
-                let endpoint_metadata = shortcircuit!(self
-                    .endpoint_metadata_resolver
-                    .resolve_latest_endpoint_for_service(
+                let deployment_metadata = shortcircuit!(self
+                    .deployment_metadata_resolver
+                    .resolve_latest_deployment_for_service(
                         &self.full_invocation_id.service_id.service_name
                     )
-                    .ok_or(InvocationTaskError::NoEndpointForService));
-                (endpoint_metadata, /* has_changed= */ true)
+                    .ok_or(InvocationTaskError::NoDeploymentForService));
+                (deployment_metadata, /* has_changed= */ true)
             };
 
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             full_invocation_id: self.full_invocation_id.clone(),
-            inner: InvocationTaskOutputInner::SelectedEndpoint(
-                endpoint_metadata.id(),
-                endpoint_changed,
+            inner: InvocationTaskOutputInner::SelectedDeployment(
+                deployment_metadata.id(),
+                deployment_changed,
             ),
         });
 
@@ -404,7 +404,7 @@ where
         let protocol_type = if self.inactivity_timeout.is_zero() {
             ProtocolType::RequestResponse
         } else {
-            endpoint_metadata.protocol_type()
+            deployment_metadata.protocol_type()
         };
 
         // Close the invoker_rx in case it's request response, this avoids further buffering of messages in this channel.
@@ -434,9 +434,9 @@ where
             .attach_to_span(&invocation_task_span);
 
         info!(
-            endpoint.address = %endpoint_metadata.address_display(),
+            deployment.address = %deployment_metadata.address_display(),
             path = %path,
-            "Executing invocation at service endpoint"
+            "Executing invocation at deployment"
         );
 
         // Create an arc of the parent SpanContext.
@@ -444,7 +444,7 @@ where
         let service_invocation_span_context = journal_metadata.span_context;
 
         // Prepare the request and send start message
-        let (mut http_stream_tx, request) = self.prepare_request(path, endpoint_metadata);
+        let (mut http_stream_tx, request) = self.prepare_request(path, deployment_metadata);
         shortcircuit!(
             self.write_start(&mut http_stream_tx, journal_size, state_iter)
                 .await
@@ -475,7 +475,7 @@ where
             );
         } else {
             // Drop the http_stream_tx.
-            // This is required in HTTP/1.1 to let the service endpoint send the headers back
+            // This is required in HTTP/1.1 to let the deployment send the headers back
             drop(http_stream_tx)
         }
 
@@ -627,7 +627,7 @@ where
 
         if let Err(hyper_err) = http_stream_tx.send_data(buf).await {
             // is_closed() is try only if the request channel (Sender) has been closed.
-            // This can happen if the service endpoint is suspending.
+            // This can happen if the deployment is suspending.
             if !hyper_err.is_closed() {
                 return Err(InvocationTaskError::Client(ServiceClientError::Http(
                     hyper_err.into(),
@@ -719,7 +719,7 @@ where
     fn prepare_request(
         &mut self,
         path: PathAndQuery,
-        endpoint_metadata: EndpointMetadata,
+        deployment_metadata: DeploymentMetadata,
     ) -> (Sender, Request<Body>) {
         let (http_stream_tx, req_body) = Body::channel();
 
@@ -734,15 +734,15 @@ where
             &mut HeaderInjector(&mut headers),
         );
 
-        let address = match endpoint_metadata.ty {
-            EndpointType::Lambda {
+        let address = match deployment_metadata.ty {
+            DeploymentType::Lambda {
                 arn,
                 assume_role_arn,
-            } => ServiceEndpointAddress::Lambda(arn, assume_role_arn),
-            EndpointType::Http {
+            } => Endpoint::Lambda(arn, assume_role_arn),
+            DeploymentType::Http {
                 address,
                 protocol_type,
-            } => ServiceEndpointAddress::Http(
+            } => Endpoint::Http(
                 address,
                 match protocol_type {
                     ProtocolType::RequestResponse => http::Version::default(),
@@ -751,7 +751,7 @@ where
             ),
         };
 
-        headers.extend(endpoint_metadata.delivery_options.additional_headers);
+        headers.extend(deployment_metadata.delivery_options.additional_headers);
 
         (
             http_stream_tx,

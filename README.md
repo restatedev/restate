@@ -61,7 +61,7 @@ RUST_LOG=info,restate=debug just run --bin restate-server --release
 After the runtime is running on `localhost:9070`, you can register a service running on `localhost:9080` via `curl`:
 
 ```shell
-curl -X POST localhost:9070/endpoints -H 'content-type: application/json' -d '{"uri": "http://localhost:9080"}'
+curl -X POST localhost:9070/deployments -H 'content-type: application/json' -d '{"uri": "http://localhost:9080"}'
 ```
 
 For more information check [how to register services](https://docs.restate.dev/services/registration).

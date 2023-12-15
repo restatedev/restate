@@ -12,59 +12,59 @@ use super::Schemas;
 use bytes::Bytes;
 
 use crate::schemas_impl::ServiceLocation;
-use restate_schema_api::endpoint::{EndpointMetadata, EndpointMetadataResolver};
+use restate_schema_api::deployment::{DeploymentMetadata, DeploymentMetadataResolver};
 use restate_schema_api::service::ServiceMetadata;
-use restate_types::identifiers::{EndpointId, ServiceRevision};
+use restate_types::identifiers::{DeploymentId, ServiceRevision};
 
-impl EndpointMetadataResolver for Schemas {
-    fn resolve_latest_endpoint_for_service(
+impl DeploymentMetadataResolver for Schemas {
+    fn resolve_latest_deployment_for_service(
         &self,
         service_name: impl AsRef<str>,
-    ) -> Option<EndpointMetadata> {
+    ) -> Option<DeploymentMetadata> {
         let schemas = self.0.load();
         let service = schemas.services.get(service_name.as_ref())?;
         match &service.location {
             ServiceLocation::BuiltIn { .. } => None,
-            ServiceLocation::ServiceEndpoint {
-                latest_endpoint, ..
+            ServiceLocation::Deployment {
+                latest_deployment, ..
             } => schemas
-                .endpoints
-                .get(latest_endpoint)
+                .deployments
+                .get(latest_deployment)
                 .map(|schemas| schemas.metadata.clone()),
         }
     }
 
-    fn get_endpoint(&self, endpoint_id: &EndpointId) -> Option<EndpointMetadata> {
+    fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<DeploymentMetadata> {
         let schemas = self.0.load();
         schemas
-            .endpoints
-            .get(endpoint_id)
+            .deployments
+            .get(deployment_id)
             .map(|schemas| schemas.metadata.clone())
     }
 
-    fn get_endpoint_descriptor_pool(&self, endpoint_id: &EndpointId) -> Option<Bytes> {
+    fn get_deployment_descriptor_pool(&self, deployment_id: &DeploymentId) -> Option<Bytes> {
         let schemas = self.0.load();
         schemas
-            .endpoints
-            .get(endpoint_id)
+            .deployments
+            .get(deployment_id)
             .map(|schemas| schemas.descriptor_pool.encode_to_vec().into())
     }
 
-    fn get_endpoint_and_services(
+    fn get_deployment_and_services(
         &self,
-        endpoint_id: &EndpointId,
-    ) -> Option<(EndpointMetadata, Vec<ServiceMetadata>)> {
+        deployment_id: &DeploymentId,
+    ) -> Option<(DeploymentMetadata, Vec<ServiceMetadata>)> {
         let schemas = self.0.load();
         schemas
-            .endpoints
-            .get(endpoint_id)
+            .deployments
+            .get(deployment_id)
             .map(|schemas| (schemas.metadata.clone(), schemas.services.clone()))
     }
 
-    fn get_endpoints(&self) -> Vec<(EndpointMetadata, Vec<(String, ServiceRevision)>)> {
+    fn get_deployments(&self) -> Vec<(DeploymentMetadata, Vec<(String, ServiceRevision)>)> {
         let schemas = self.0.load();
         schemas
-            .endpoints
+            .deployments
             .values()
             .map(|schemas| {
                 (

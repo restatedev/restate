@@ -54,8 +54,8 @@ pub(crate) fn map_to_service_metadata(
 ) -> Option<ServiceMetadata> {
     match &service_schemas.location {
         ServiceLocation::BuiltIn { .. } => None, // We filter out from this interface ingress only services
-        ServiceLocation::ServiceEndpoint {
-            latest_endpoint,
+        ServiceLocation::Deployment {
+            latest_deployment,
             public,
         } => Some(ServiceMetadata {
             name: service_name.to_string(),
@@ -79,7 +79,7 @@ pub(crate) fn map_to_service_metadata(
             instance_type: (&service_schemas.instance_type)
                 .try_into()
                 .expect("Checked in the line above whether this is a built-in service or not"),
-            endpoint_id: latest_endpoint.clone(),
+            deployment_id: latest_deployment.clone(),
             revision: service_schemas.revision,
             public: *public,
         }),

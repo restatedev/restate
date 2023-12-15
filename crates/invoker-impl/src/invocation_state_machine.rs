@@ -10,7 +10,7 @@
 
 use super::*;
 
-use restate_types::identifiers::EndpointId;
+use restate_types::identifiers::DeploymentId;
 use restate_types::journal::Completion;
 use restate_types::retries;
 use std::fmt;
@@ -81,8 +81,8 @@ enum InvocationState {
         journal_tracker: JournalTracker,
         abort_handle: AbortHandle,
 
-        // If Some, we need to notify the endpoint id to the partition processor
-        chosen_endpoint: Option<EndpointId>,
+        // If Some, we need to notify the deployment id to the partition processor
+        chosen_deployment: Option<DeploymentId>,
     },
 
     WaitingRetry {
@@ -146,7 +146,7 @@ impl InvocationStateMachine {
             completions_tx: Some(completions_tx),
             journal_tracker: Default::default(),
             abort_handle,
-            chosen_endpoint: None,
+            chosen_deployment: None,
         };
     }
 
@@ -156,34 +156,34 @@ impl InvocationStateMachine {
         }
     }
 
-    pub(super) fn notify_chosen_endpoint(&mut self, endpoint_id: EndpointId) {
+    pub(super) fn notify_chosen_deployment(&mut self, endpoint_id: DeploymentId) {
         debug_assert!(matches!(
             &self.invocation_state,
             InvocationState::InFlight {
-                chosen_endpoint: None,
+                chosen_deployment: None,
                 ..
             }
         ));
 
         if let InvocationState::InFlight {
-            chosen_endpoint, ..
+            chosen_deployment, ..
         } = &mut self.invocation_state
         {
-            *chosen_endpoint = Some(endpoint_id);
+            *chosen_deployment = Some(endpoint_id);
         }
     }
 
-    pub(super) fn chosen_endpoint_to_notify(&mut self) -> Option<EndpointId> {
+    pub(super) fn chosen_deployment_to_notify(&mut self) -> Option<DeploymentId> {
         debug_assert!(matches!(
             &self.invocation_state,
             InvocationState::InFlight { .. }
         ));
 
         if let InvocationState::InFlight {
-            chosen_endpoint, ..
+            chosen_deployment, ..
         } = &mut self.invocation_state
         {
-            chosen_endpoint.take()
+            chosen_deployment.take()
         } else {
             None
         }

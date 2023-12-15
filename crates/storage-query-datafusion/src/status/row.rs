@@ -83,8 +83,8 @@ fn fill_invocation_metadata(
 ) {
     // journal_metadata and stats are filled by other functions
     row.method(meta.method);
-    if let Some(endpoint_id) = meta.endpoint_id {
-        row.pinned_endpoint_id(endpoint_id);
+    if let Some(deployment_id) = meta.deployment_id {
+        row.pinned_deployment_id(deployment_id);
     }
     match meta.response_sink {
         Some(ServiceInvocationResponseSink::PartitionProcessor { caller, .. }) => {
