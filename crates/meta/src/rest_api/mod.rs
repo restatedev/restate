@@ -129,7 +129,7 @@ impl MetaRestEndpoint {
             )
             .route(
                 "/invocations/:invocation_id",
-                delete(openapi_handler!(invocations::cancel_invocation)),
+                delete(openapi_handler!(invocations::delete_invocation)),
             )
             .route(
                 "/subscriptions",

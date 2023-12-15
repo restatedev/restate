@@ -11,28 +11,65 @@
 use super::error::*;
 use super::state::*;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTermination;
+use serde::Deserialize;
 use std::sync::Arc;
 
-/// Cancel/kill an invocation
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub enum TerminationMode {
+    #[default]
+    #[serde(alias = "cancel")]
+    Cancel,
+    #[serde(alias = "kill")]
+    Kill,
+}
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct DeleteInvocationParams {
+    pub mode: Option<TerminationMode>,
+}
+
+/// Terminate an invocation
 #[openapi(
-    summary = "Kill an invocation",
-    description = "Kill the given invocation. When killing, consistency is not guaranteed for service instance state, in-flight invocation to other services, etc. Future releases will support graceful invocation cancellation.",
-    operation_id = "cancel_invocation",
+    summary = "Terminate an invocation",
+    description = "Terminate the given invocation. By default, an invocation is terminated by gracefully \
+    cancelling it. This ensures service state consistency. Alternatively, an invocation can be killed which \
+    does not guarantee consistency for service instance state, in-flight invocation to other services, etc.",
+    operation_id = "terminate_invocation",
     tags = "invocation",
-    parameters(path(
-        name = "invocation_id",
-        description = "Invocation identifier.",
-        schema = "std::string::String"
-    ))
+    parameters(
+        path(
+            name = "invocation_id",
+            description = "Invocation identifier.",
+            schema = "std::string::String"
+        ),
+        query(
+            name = "mode",
+            description = "If cancel, it will gracefully terminate the invocation. If kill, it will terminate the invocation with a hard stop.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = "TerminationMode",
+        )
+    ),
+    responses(
+        ignore_return_type = true,
+        response(
+            status = "202",
+            description = "Accepted",
+            content = "okapi_operation::Empty",
+        ),
+        from_type = "MetaApiError",
+    )
 )]
-pub async fn cancel_invocation<S, W>(
+pub async fn delete_invocation<S, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
     Path(invocation_id): Path<String>,
-) -> Result<(), MetaApiError>
+    Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
+) -> Result<StatusCode, MetaApiError>
 where
     W: restate_worker_api::Handle + Send,
     W::Future: Send,
@@ -41,9 +78,15 @@ where
         .parse::<InvocationId>()
         .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
 
+    let invocation_termination = match mode.unwrap_or_default() {
+        TerminationMode::Cancel => InvocationTermination::cancel(invocation_id),
+        TerminationMode::Kill => InvocationTermination::kill(invocation_id),
+    };
+
     state
         .worker_handle()
-        .terminate_invocation(InvocationTermination::kill(invocation_id))
+        .terminate_invocation(invocation_termination)
         .await?;
-    Ok(())
+
+    Ok(StatusCode::ACCEPTED)
 }
