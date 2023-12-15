@@ -62,9 +62,8 @@ where
                 let journal_stream = transaction
                     .get_journal(&fid.service_id, journal_metadata.length)
                     .map(|entry| {
-                        entry
-                            .map_err(InvokerStorageReaderError::Storage)
-                            .map(|(_, journal_entry)| match journal_entry {
+                        entry.map_err(InvokerStorageReaderError::Storage).map(
+                            |(_, journal_entry)| match journal_entry {
                                 JournalEntry::Entry(entry) => entry.erase_enrichment(),
                                 JournalEntry::Completion(_) => {
                                     panic!("should only read entries when reading the journal")

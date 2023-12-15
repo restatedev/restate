@@ -379,6 +379,38 @@ impl SpanRelation {
     }
 }
 
+/// Message to terminate an invocation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InvocationTermination {
+    pub maybe_fid: MaybeFullInvocationId,
+    pub flavor: TerminationFlavor,
+}
+
+impl InvocationTermination {
+    pub fn kill(maybe_fid: impl Into<MaybeFullInvocationId>) -> Self {
+        Self {
+            maybe_fid: maybe_fid.into(),
+            flavor: TerminationFlavor::Kill,
+        }
+    }
+
+    pub fn cancel(maybe_fid: impl Into<MaybeFullInvocationId>) -> Self {
+        Self {
+            maybe_fid: maybe_fid.into(),
+            flavor: TerminationFlavor::Cancel,
+        }
+    }
+}
+
+/// Flavor of the termination. Can be kill (hard stop) or graceful cancel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TerminationFlavor {
+    /// hard termination, no clean up
+    Kill,
+    /// graceful termination allowing the invocation to clean up
+    Cancel,
+}
+
 #[cfg(any(test, feature = "mocks"))]
 mod mocks {
     use super::*;

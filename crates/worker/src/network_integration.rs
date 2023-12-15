@@ -139,7 +139,7 @@ mod shuffle_integration {
     use restate_types::errors::InvocationError;
     use restate_types::identifiers::WithPartitionKey;
     use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
-    use restate_types::invocation::{MaybeFullInvocationId, ResponseResult};
+    use restate_types::invocation::ResponseResult;
     use restate_types::message::MessageIndex;
 
     #[derive(Debug)]
@@ -159,7 +159,9 @@ mod shuffle_integration {
                 shuffle::PartitionProcessorMessage::Response(response) => {
                     response.id.partition_key()
                 }
-                PartitionProcessorMessage::Kill(fid) => fid.partition_key(),
+                PartitionProcessorMessage::InvocationTermination(invocation_termination) => {
+                    invocation_termination.maybe_fid.partition_key()
+                }
             }
         }
     }
@@ -192,12 +194,12 @@ mod shuffle_integration {
                         deduplication_source,
                     )
                 }
-                shuffle::PartitionProcessorMessage::Kill(fid) => {
-                    partition::StateMachineAckCommand::dedup(
-                        partition::StateMachineCommand::Kill(MaybeFullInvocationId::from(fid)),
-                        deduplication_source,
-                    )
-                }
+                shuffle::PartitionProcessorMessage::InvocationTermination(
+                    invocation_termination,
+                ) => partition::StateMachineAckCommand::dedup(
+                    partition::StateMachineCommand::TerminateInvocation(invocation_termination),
+                    deduplication_source,
+                ),
             }
         }
     }

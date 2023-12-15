@@ -284,13 +284,13 @@ impl Effect {
             ),
             Effect::EnqueueIntoOutbox {
                 seq_number,
-                message: OutboxMessage::Kill(fid),
+                message: OutboxMessage::InvocationTermination(invocation_termination),
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %fid.service_id.service_name,
-                restate.invocation.id = %fid,
+                restate.invocation.id = %invocation_termination.maybe_fid,
                 restate.outbox.seq = seq_number,
-                "Effect: Send kill command to partition processor",
+                "Effect: Send invocation termination command '{:?}' to partition processor",
+                invocation_termination.flavor
             ),
             Effect::EnqueueIntoOutbox {
                 seq_number,

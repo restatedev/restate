@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::Error;
+use std::collections::HashSet;
 
 use crate::partition::services::deterministic;
 use crate::partition::services::non_deterministic::{Effect as NBISEffect, Effects as NBISEffects};
@@ -25,20 +26,25 @@ use futures::StreamExt;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus};
+use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, NotificationTarget};
 use restate_storage_api::timer_table::Timer;
-use restate_types::errors::{InvocationError, InvocationErrorCode, KILLED_INVOCATION_ERROR};
+use restate_types::errors::{
+    InvocationError, InvocationErrorCode, UserErrorCode, CANCELED_INVOCATION_ERROR,
+    KILLED_INVOCATION_ERROR,
+};
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
 };
 use restate_types::invocation::{
-    InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation, SpanRelationCause,
+    InvocationResponse, InvocationTermination, MaybeFullInvocationId, ResponseResult,
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation,
+    SpanRelationCause, TerminationFlavor,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
 };
 use restate_types::journal::raw::RawEntryCodec;
+use restate_types::journal::Completion;
 use restate_types::journal::*;
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
@@ -191,7 +197,10 @@ where
                 Ok((None, SpanRelation::None))
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
-            Command::Kill(maybe_fid) => self.try_kill_invocation(maybe_fid, state, effects).await,
+            Command::TerminateInvocation(invocation_termination) => {
+                self.try_terminate_invocation(invocation_termination, state, effects)
+                    .await
+            }
             Command::BuiltInInvoker(nbis_effects) => {
                 self.try_built_in_invoker_effect(effects, state, nbis_effects)
                     .await
@@ -353,14 +362,29 @@ where
         Ok(())
     }
 
+    async fn try_terminate_invocation<State: StateReader>(
+        &mut self,
+        InvocationTermination {
+            maybe_fid,
+            flavor: termination_flavor,
+        }: InvocationTermination,
+        state: &mut State,
+        effects: &mut Effects,
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        match termination_flavor {
+            TerminationFlavor::Kill => self.try_kill_invocation(maybe_fid, state, effects).await,
+            TerminationFlavor::Cancel => {
+                self.try_cancel_invocation(maybe_fid, state, effects).await
+            }
+        }
+    }
+
     async fn try_kill_invocation<State: StateReader>(
         &mut self,
         maybe_fid: MaybeFullInvocationId,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        // TODO: Introduce distinction between invocation_status and service_instance_status to
-        //      properly handle case when the given invocation is not executing + avoid cloning maybe_fid
         let (full_invocation_id, status) =
             Self::read_invocation_status(maybe_fid.clone(), state).await?;
 
@@ -368,10 +392,12 @@ where
             InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. }
                 if metadata.invocation_uuid == full_invocation_id.invocation_uuid =>
             {
-                let (fid, related_span) = self
-                    .kill_invocation(full_invocation_id, metadata, state, effects)
+                let related_span = metadata.journal_metadata.span_context.as_parent();
+
+                self.kill_invocation(full_invocation_id.clone(), metadata, state, effects)
                     .await?;
-                Ok((Some(fid), related_span))
+
+                Ok((Some(full_invocation_id), related_span))
             }
             InvocationStatus::Virtual {
                 kill_notification_target,
@@ -397,30 +423,129 @@ where
                 Ok((Some(full_invocation_id), SpanRelation::None))
             }
             _ => {
-                // check if service invocation is in inbox
-                let inbox_entry = state.get_inbox_entry(maybe_fid).await?;
-
-                if let Some(inbox_entry) = inbox_entry {
-                    self.kill_inboxed_invocation(effects, inbox_entry)
-                } else {
-                    trace!("Received kill command for unknown invocation with fid '{full_invocation_id}'.");
-                    // We still try to send the abort signal to the invoker,
-                    // as it might be the case that previously the user sent an abort signal
-                    // but some message was still between the invoker/PP queues.
-                    // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
-                    // and the abort message can overtake the invoke/resume.
-                    // Consequently the invoker might have not received the abort and the user tried to send it again.
-                    effects.abort_invocation(full_invocation_id.clone());
-                    Ok((Some(full_invocation_id), SpanRelation::None))
-                }
+                self.try_terminate_inboxed_invocation(
+                    TerminationFlavor::Kill,
+                    maybe_fid,
+                    state,
+                    effects,
+                    full_invocation_id,
+                )
+                .await?
             }
         }
     }
 
-    fn kill_inboxed_invocation(
+    async fn try_terminate_inboxed_invocation<State: StateReader>(
         &mut self,
+        termination_flavor: TerminationFlavor,
+        maybe_fid: MaybeFullInvocationId,
+        state: &mut State,
         effects: &mut Effects,
+        full_invocation_id: FullInvocationId,
+    ) -> Result<Result<(Option<FullInvocationId>, SpanRelation), Error>, Error> {
+        let (termination_command, error) = match termination_flavor {
+            TerminationFlavor::Kill => ("kill", KILLED_INVOCATION_ERROR),
+            TerminationFlavor::Cancel => ("cancel", CANCELED_INVOCATION_ERROR),
+        };
+
+        // check if service invocation is in inbox
+        let inbox_entry = state.get_inbox_entry(maybe_fid).await?;
+
+        Ok(if let Some(inbox_entry) = inbox_entry {
+            self.terminate_inboxed_invocation(inbox_entry, error, effects)
+        } else {
+            trace!("Received {termination_command} command for unknown invocation with fid '{full_invocation_id}'.");
+            // We still try to send the abort signal to the invoker,
+            // as it might be the case that previously the user sent an abort signal
+            // but some message was still between the invoker/PP queues.
+            // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
+            // and the abort message can overtake the invoke/resume.
+            // Consequently the invoker might have not received the abort and the user tried to send it again.
+            effects.abort_invocation(full_invocation_id.clone());
+            Ok((Some(full_invocation_id), SpanRelation::None))
+        })
+    }
+
+    async fn try_cancel_invocation<State: StateReader>(
+        &mut self,
+        maybe_fid: MaybeFullInvocationId,
+        state: &mut State,
+        effects: &mut Effects,
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        let (full_invocation_id, status) =
+            Self::read_invocation_status(maybe_fid.clone(), state).await?;
+
+        match status {
+            InvocationStatus::Invoked(metadata)
+                if metadata.invocation_uuid == full_invocation_id.invocation_uuid =>
+            {
+                let related_span = metadata.journal_metadata.span_context.as_parent();
+
+                self.cancel_journal_leaves(
+                    full_invocation_id.clone(),
+                    InvocationStatusProjection::Invoked,
+                    metadata.journal_metadata.length,
+                    state,
+                    effects,
+                )
+                .await?;
+
+                Ok((Some(full_invocation_id), related_span))
+            }
+            InvocationStatus::Suspended {
+                metadata,
+                waiting_for_completed_entries,
+            } if metadata.invocation_uuid == full_invocation_id.invocation_uuid => {
+                let related_span = metadata.journal_metadata.span_context.as_parent();
+
+                if self
+                    .cancel_journal_leaves(
+                        full_invocation_id.clone(),
+                        InvocationStatusProjection::Suspended(waiting_for_completed_entries),
+                        metadata.journal_metadata.length,
+                        state,
+                        effects,
+                    )
+                    .await?
+                {
+                    effects.resume_service(full_invocation_id.service_id.clone(), metadata);
+                }
+
+                Ok((Some(full_invocation_id), related_span))
+            }
+            InvocationStatus::Virtual {
+                journal_metadata,
+                completion_notification_target,
+                ..
+            } => {
+                self.cancel_journal_leaves(
+                    full_invocation_id.clone(),
+                    InvocationStatusProjection::Virtual(completion_notification_target),
+                    journal_metadata.length,
+                    state,
+                    effects,
+                )
+                .await?;
+                Ok((Some(full_invocation_id), SpanRelation::None))
+            }
+            _ => {
+                self.try_terminate_inboxed_invocation(
+                    TerminationFlavor::Cancel,
+                    maybe_fid,
+                    state,
+                    effects,
+                    full_invocation_id,
+                )
+                .await?
+            }
+        }
+    }
+
+    fn terminate_inboxed_invocation(
+        &mut self,
         inbox_entry: InboxEntry,
+        error: InvocationError,
+        effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         // remove service invocation from inbox and send failure response
         let service_invocation = inbox_entry.service_invocation;
@@ -428,22 +553,14 @@ where
         let span_context = service_invocation.span_context;
         let parent_span = span_context.as_parent();
 
-        self.try_send_failure_response(
-            effects,
-            &fid,
-            service_invocation.response_sink,
-            &KILLED_INVOCATION_ERROR,
-        );
+        self.try_send_failure_response(effects, &fid, service_invocation.response_sink, &error);
 
         self.notify_invocation_result(
             &fid,
             service_invocation.method_name,
             span_context,
             MillisSinceEpoch::now(),
-            Err((
-                KILLED_INVOCATION_ERROR.code(),
-                KILLED_INVOCATION_ERROR.to_string(),
-            )),
+            Err((error.code(), error.to_string())),
             effects,
         );
 
@@ -458,9 +575,7 @@ where
         metadata: InvocationMetadata,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(FullInvocationId, SpanRelation), Error> {
-        let related_span = metadata.journal_metadata.span_context.as_parent();
-
+    ) -> Result<(), Error> {
         self.kill_child_invocations(
             &full_invocation_id,
             state,
@@ -477,9 +592,8 @@ where
             KILLED_INVOCATION_ERROR,
         )
         .await?;
-        effects.abort_invocation(full_invocation_id.clone());
-
-        Ok((full_invocation_id, related_span))
+        effects.abort_invocation(full_invocation_id);
+        Ok(())
     }
 
     async fn kill_child_invocations<State: StateReader>(
@@ -506,7 +620,12 @@ where
                             enrichment_result.service_key,
                             enrichment_result.invocation_uuid,
                         );
-                        self.send_message(OutboxMessage::Kill(target_fid), effects);
+                        self.send_message(
+                            OutboxMessage::InvocationTermination(InvocationTermination::kill(
+                                target_fid,
+                            )),
+                            effects,
+                        );
                     }
                     // we neither kill background calls nor delayed calls since we are considering them detached from this
                     // call tree. In the future we want to support a mode which also kills these calls (causally related).
@@ -516,6 +635,92 @@ where
             }
         }
         Ok(())
+    }
+
+    async fn cancel_journal_leaves<State: StateReader>(
+        &mut self,
+        full_invocation_id: FullInvocationId,
+        invocation_status: InvocationStatusProjection,
+        journal_length: EntryIndex,
+        state: &mut State,
+        effects: &mut Effects,
+    ) -> Result<bool, Error> {
+        let mut journal = state.get_journal(&full_invocation_id.service_id, journal_length);
+
+        let canceled_result = CompletionResult::Failure(
+            UserErrorCode::from(CANCELED_INVOCATION_ERROR.code()),
+            CANCELED_INVOCATION_ERROR.message().into(),
+        );
+
+        let mut resume_invocation = false;
+
+        while let Some(journal_entry) = journal.next().await {
+            let (journal_index, journal_entry) = journal_entry?;
+
+            if let JournalEntry::Entry(journal_entry) = journal_entry {
+                let (header, _) = journal_entry.into_inner();
+                match header {
+                    // cancel uncompleted invocations
+                    EnrichedEntryHeader::Invoke {
+                        is_completed,
+                        enrichment_result: Some(enrichment_result),
+                    } if !is_completed => {
+                        let target_fid = FullInvocationId::new(
+                            enrichment_result.service_name,
+                            enrichment_result.service_key,
+                            enrichment_result.invocation_uuid,
+                        );
+
+                        self.send_message(
+                            OutboxMessage::InvocationTermination(InvocationTermination::cancel(
+                                target_fid,
+                            )),
+                            effects,
+                        );
+                    }
+                    EnrichedEntryHeader::Awakeable { is_completed }
+                    | EnrichedEntryHeader::GetState { is_completed }
+                    | EnrichedEntryHeader::Sleep { is_completed }
+                    | EnrichedEntryHeader::PollInputStream { is_completed }
+                        if !is_completed =>
+                    {
+                        match &invocation_status {
+                            InvocationStatusProjection::Invoked => {
+                                Self::handle_completion_for_invoked(
+                                    full_invocation_id.clone(),
+                                    Completion::new(journal_index, canceled_result.clone()),
+                                    effects,
+                                )
+                            }
+                            InvocationStatusProjection::Suspended(waiting_for_completed_entry) => {
+                                resume_invocation |= Self::handle_completion_for_suspended(
+                                    full_invocation_id.clone(),
+                                    Completion::new(journal_index, canceled_result.clone()),
+                                    waiting_for_completed_entry,
+                                    effects,
+                                );
+                            }
+                            InvocationStatusProjection::Virtual(notification_target) => {
+                                Self::handle_completion_for_virtual(
+                                    full_invocation_id.clone(),
+                                    Completion::new(journal_index, canceled_result.clone()),
+                                    notification_target.clone(),
+                                    effects,
+                                )
+                            }
+                        }
+                    }
+                    header => {
+                        assert!(
+                            header.is_completed().unwrap_or(true),
+                            "All non canceled journal entries must be completed."
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(resume_invocation)
     }
 
     async fn on_timer<State: StateReader>(
@@ -999,8 +1204,11 @@ where
         match status {
             InvocationStatus::Invoked(metadata) => {
                 if metadata.invocation_uuid == full_invocation_id.invocation_uuid {
-                    effects.store_completion(full_invocation_id.clone(), completion.clone());
-                    effects.forward_completion(full_invocation_id.clone(), completion);
+                    Self::handle_completion_for_invoked(
+                        full_invocation_id.clone(),
+                        completion,
+                        effects,
+                    );
                     related_sid = Some(full_invocation_id);
                     span_relation = metadata.journal_metadata.span_context.as_parent();
                 } else {
@@ -1018,9 +1226,13 @@ where
             } => {
                 if metadata.invocation_uuid == full_invocation_id.invocation_uuid {
                     span_relation = metadata.journal_metadata.span_context.as_parent();
-                    effects.store_completion(full_invocation_id.clone(), completion.clone());
 
-                    if waiting_for_completed_entries.contains(&completion.entry_index) {
+                    if Self::handle_completion_for_suspended(
+                        full_invocation_id.clone(),
+                        completion,
+                        &waiting_for_completed_entries,
+                        effects,
+                    ) {
                         effects.resume_service(full_invocation_id.service_id.clone(), metadata);
                     }
                     related_sid = Some(full_invocation_id);
@@ -1042,16 +1254,14 @@ where
                 )
             }
             InvocationStatus::Virtual {
-                invocation_uuid,
                 completion_notification_target,
                 ..
             } => {
-                effects.store_completion(full_invocation_id.clone(), completion.clone());
-                effects.notify_virtual_journal_completion(
-                    completion_notification_target.service,
-                    completion_notification_target.method,
-                    invocation_uuid,
+                Self::handle_completion_for_virtual(
+                    full_invocation_id,
                     completion,
+                    completion_notification_target,
+                    effects,
                 );
             }
         }
@@ -1059,6 +1269,46 @@ where
         Ok((related_sid, span_relation))
     }
 
+    fn handle_completion_for_virtual(
+        full_invocation_id: FullInvocationId,
+        completion: Completion,
+        completion_notification_target: NotificationTarget,
+        effects: &mut Effects,
+    ) {
+        let invocation_uuid = full_invocation_id.invocation_uuid;
+
+        effects.store_completion(full_invocation_id, completion.clone());
+        effects.notify_virtual_journal_completion(
+            completion_notification_target.service,
+            completion_notification_target.method,
+            invocation_uuid,
+            completion,
+        );
+    }
+
+    fn handle_completion_for_suspended(
+        full_invocation_id: FullInvocationId,
+        completion: Completion,
+        waiting_for_completed_entries: &HashSet<EntryIndex>,
+        effects: &mut Effects,
+    ) -> bool {
+        let resume_invocation = waiting_for_completed_entries.contains(&completion.entry_index);
+        effects.store_completion(full_invocation_id, completion);
+
+        resume_invocation
+    }
+
+    fn handle_completion_for_invoked(
+        full_invocation_id: FullInvocationId,
+        completion: Completion,
+        effects: &mut Effects,
+    ) {
+        effects.store_completion(full_invocation_id.clone(), completion.clone());
+        effects.forward_completion(full_invocation_id, completion);
+    }
+
+    // TODO: Introduce distinction between invocation_status and service_instance_status to
+    //  properly handle case when the given invocation is not executing + avoid cloning maybe_fid
     async fn read_invocation_status<State: StateReader>(
         maybe_full_invocation_id: MaybeFullInvocationId,
         state: &mut State,
@@ -1180,6 +1430,13 @@ where
     }
 }
 
+/// Projected [`InvocationStatus`] for cancellation purposes.
+enum InvocationStatusProjection {
+    Invoked,
+    Suspended(HashSet<EntryIndex>),
+    Virtual(NotificationTarget),
+}
+
 fn extract_span_relation(status: &InvocationStatus) -> SpanRelation {
     match status {
         InvocationStatus::Invoked(metadata) => metadata.journal_metadata.span_context.as_parent(),
@@ -1202,7 +1459,8 @@ mod tests {
     use bytestring::ByteString;
     use futures::future::ok;
     use futures::{stream, FutureExt};
-    use googletest::{all, any, assert_that, pat};
+    use googletest::matcher::Matcher;
+    use googletest::{all, any, assert_that, pat, unordered_elements_are};
     use restate_invoker_api::EffectKind;
     use restate_service_protocol::awakeable_id::AwakeableIdentifier;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -1224,26 +1482,91 @@ mod tests {
     }
 
     impl StateReaderMock {
-        fn register_invocation_status(
+        fn register_invoked_status(&mut self, fid: FullInvocationId, journal: Vec<JournalEntry>) {
+            let invocation_uuid = fid.invocation_uuid;
+
+            self.register_invocation_status(
+                fid,
+                InvocationStatus::Invoked(Self::mock_invocation_metadata(
+                    u32::try_from(journal.len()).unwrap(),
+                    invocation_uuid,
+                )),
+                journal,
+            );
+        }
+
+        fn mock_invocation_metadata(
+            journal_length: u32,
+            invocation_uuid: InvocationUuid,
+        ) -> InvocationMetadata {
+            InvocationMetadata {
+                invocation_uuid,
+                journal_metadata: JournalMetadata {
+                    length: journal_length,
+                    span_context: ServiceInvocationSpanContext::empty(),
+                },
+                deployment_id: None,
+                method: ByteString::from("".to_string()),
+                response_sink: None,
+                timestamps: StatusTimestamps::now(),
+            }
+        }
+
+        fn register_suspended_status(
             &mut self,
             fid: FullInvocationId,
+            waiting_for_completed_entries: impl IntoIterator<Item = EntryIndex>,
             journal: Vec<JournalEntry>,
         ) {
-            let service_id = fid.service_id.clone();
-            self.invocations.insert(
-                fid.service_id,
-                InvocationStatus::Invoked(InvocationMetadata {
-                    invocation_uuid: fid.invocation_uuid,
+            let invocation_uuid = fid.invocation_uuid;
+
+            self.register_invocation_status(
+                fid,
+                InvocationStatus::Suspended {
+                    metadata: Self::mock_invocation_metadata(
+                        u32::try_from(journal.len()).unwrap(),
+                        invocation_uuid,
+                    ),
+                    waiting_for_completed_entries: HashSet::from_iter(
+                        waiting_for_completed_entries,
+                    ),
+                },
+                journal,
+            );
+        }
+
+        fn register_virtual_status(
+            &mut self,
+            fid: FullInvocationId,
+            completion_notification_target: NotificationTarget,
+            kill_notification_target: NotificationTarget,
+            journal: Vec<JournalEntry>,
+        ) {
+            let invocation_uuid = fid.invocation_uuid;
+            self.register_invocation_status(
+                fid,
+                InvocationStatus::Virtual {
+                    invocation_uuid,
                     journal_metadata: JournalMetadata {
                         length: u32::try_from(journal.len()).unwrap(),
                         span_context: ServiceInvocationSpanContext::empty(),
                     },
-                    deployment_id: None,
-                    method: ByteString::from("".to_string()),
-                    response_sink: None,
+                    completion_notification_target,
+                    kill_notification_target,
                     timestamps: StatusTimestamps::now(),
-                }),
+                },
+                journal,
             );
+        }
+
+        fn register_invocation_status(
+            &mut self,
+            fid: FullInvocationId,
+            invocation_status: InvocationStatus,
+            journal: Vec<JournalEntry>,
+        ) {
+            let service_id = fid.service_id.clone();
+            self.invocations.insert(fid.service_id, invocation_status);
 
             self.journals.insert(service_id, journal);
         }
@@ -1408,7 +1731,7 @@ mod tests {
             },
         });
 
-        state_reader.register_invocation_status(
+        state_reader.register_invoked_status(
             sid_caller.clone(),
             vec![JournalEntry::Entry(EnrichedRawEntry::new(
                 EnrichedEntryHeader::Awakeable {
@@ -1466,7 +1789,7 @@ mod tests {
             },
         });
 
-        state_reader.register_invocation_status(
+        state_reader.register_invoked_status(
             sid_caller.clone(),
             vec![JournalEntry::Entry(EnrichedRawEntry::new(
                 EnrichedEntryHeader::Awakeable {
@@ -1511,7 +1834,7 @@ mod tests {
             result: ResponseResult::Success(Bytes::from_static(b"hello")),
         });
 
-        state_reader.register_invocation_status(fid.clone(), vec![]);
+        state_reader.register_invoked_status(fid.clone(), vec![]);
 
         state_machine
             .on_apply(cmd, &mut effects, &mut state_reader)
@@ -1542,7 +1865,7 @@ mod tests {
         let inboxed_fid = FullInvocationId::generate("svc", "key");
         let caller_fid = FullInvocationId::mock_random();
 
-        state_reader.register_invocation_status(fid, vec![]);
+        state_reader.register_invoked_status(fid, vec![]);
         state_reader.enqueue_into_inbox(
             inboxed_fid.service_id.clone(),
             InboxEntry {
@@ -1560,7 +1883,9 @@ mod tests {
 
         command_interpreter
             .on_apply(
-                Command::Kill(MaybeFullInvocationId::from(inboxed_fid.clone())),
+                Command::TerminateInvocation(InvocationTermination::kill(
+                    MaybeFullInvocationId::from(inboxed_fid.clone()),
+                )),
                 &mut effects,
                 &mut state_reader,
             )
@@ -1604,50 +1929,20 @@ mod tests {
         let background_fid = FullInvocationId::mock_random();
         let finished_call_fid = FullInvocationId::mock_random();
 
-        state_reader.register_invocation_status(
+        state_reader.register_invoked_status(
             fid.clone(),
             vec![
-                JournalEntry::Entry(EnrichedRawEntry::new(
-                    EnrichedEntryHeader::Invoke {
-                        is_completed: false,
-                        enrichment_result: Some(InvokeEnrichmentResult {
-                            invocation_uuid: call_fid.invocation_uuid,
-                            service_key: call_fid.service_id.key.clone(),
-                            service_name: call_fid.service_id.service_name.clone(),
-                            span_context: ServiceInvocationSpanContext::empty(),
-                        }),
-                    },
-                    Bytes::default(),
-                )),
-                JournalEntry::Entry(EnrichedRawEntry::new(
-                    EnrichedEntryHeader::BackgroundInvoke {
-                        enrichment_result: InvokeEnrichmentResult {
-                            invocation_uuid: background_fid.invocation_uuid,
-                            service_key: background_fid.service_id.key.clone(),
-                            service_name: background_fid.service_id.service_name.clone(),
-                            span_context: ServiceInvocationSpanContext::empty(),
-                        },
-                    },
-                    Bytes::default(),
-                )),
-                JournalEntry::Entry(EnrichedRawEntry::new(
-                    EnrichedEntryHeader::Invoke {
-                        is_completed: true,
-                        enrichment_result: Some(InvokeEnrichmentResult {
-                            invocation_uuid: finished_call_fid.invocation_uuid,
-                            service_key: finished_call_fid.service_id.key.clone(),
-                            service_name: finished_call_fid.service_id.service_name.clone(),
-                            span_context: ServiceInvocationSpanContext::empty(),
-                        }),
-                    },
-                    Bytes::default(),
-                )),
+                uncompleted_invoke_entry(call_fid.clone()),
+                background_invoke_entry(background_fid.clone()),
+                completed_invoke_entry(finished_call_fid.clone()),
             ],
         );
 
         command_interpreter
             .on_apply(
-                Command::Kill(MaybeFullInvocationId::from(fid.clone())),
+                Command::TerminateInvocation(InvocationTermination::kill(
+                    MaybeFullInvocationId::from(fid.clone()),
+                )),
                 &mut effects,
                 &mut state_reader,
             )
@@ -1662,19 +1957,315 @@ mod tests {
                 contains(pat!(Effect::DropJournalAndFreeService {
                     service_id: eq(fid.service_id.clone()),
                 })),
-                contains(pat!(Effect::EnqueueIntoOutbox {
-                    message: pat!(restate_storage_api::outbox_table::OutboxMessage::Kill(eq(
-                        call_fid
-                    )))
-                })),
+                contains(terminate_invocation_outbox_message_matcher(
+                    call_fid,
+                    TerminationFlavor::Kill
+                )),
                 not(contains(pat!(Effect::EnqueueIntoOutbox {
-                    message: pat!(restate_storage_api::outbox_table::OutboxMessage::Kill(
-                        any!(eq(background_fid), eq(finished_call_fid))
-                    ))
+                    message: pat!(
+                        restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
+                            pat!(InvocationTermination {
+                                maybe_fid: any!(
+                                    eq(MaybeFullInvocationId::from(background_fid)),
+                                    eq(MaybeFullInvocationId::from(finished_call_fid))
+                                )
+                            })
+                        )
+                    )
                 })))
             )
         );
 
         Ok(())
+    }
+
+    fn completed_invoke_entry(target_fid: FullInvocationId) -> JournalEntry {
+        JournalEntry::Entry(EnrichedRawEntry::new(
+            EnrichedEntryHeader::Invoke {
+                is_completed: true,
+                enrichment_result: Some(InvokeEnrichmentResult {
+                    invocation_uuid: target_fid.invocation_uuid,
+                    service_key: target_fid.service_id.key,
+                    service_name: target_fid.service_id.service_name,
+                    span_context: ServiceInvocationSpanContext::empty(),
+                }),
+            },
+            Bytes::default(),
+        ))
+    }
+
+    fn background_invoke_entry(target_fid: FullInvocationId) -> JournalEntry {
+        JournalEntry::Entry(EnrichedRawEntry::new(
+            EnrichedEntryHeader::BackgroundInvoke {
+                enrichment_result: InvokeEnrichmentResult {
+                    invocation_uuid: target_fid.invocation_uuid,
+                    service_key: target_fid.service_id.key,
+                    service_name: target_fid.service_id.service_name,
+                    span_context: ServiceInvocationSpanContext::empty(),
+                },
+            },
+            Bytes::default(),
+        ))
+    }
+
+    fn uncompleted_invoke_entry(target_fid: FullInvocationId) -> JournalEntry {
+        JournalEntry::Entry(EnrichedRawEntry::new(
+            EnrichedEntryHeader::Invoke {
+                is_completed: false,
+                enrichment_result: Some(InvokeEnrichmentResult {
+                    invocation_uuid: target_fid.invocation_uuid,
+                    service_key: target_fid.service_id.key,
+                    service_name: target_fid.service_id.service_name,
+                    span_context: ServiceInvocationSpanContext::empty(),
+                }),
+            },
+            Bytes::default(),
+        ))
+    }
+
+    #[test(tokio::test)]
+    async fn cancel_invoked_invocation() -> Result<(), Error> {
+        let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
+        let mut state_reader = StateReaderMock::default();
+        let mut effects = Effects::default();
+
+        let fid = FullInvocationId::mock_random();
+        let call_fid = FullInvocationId::mock_random();
+        let background_fid = FullInvocationId::mock_random();
+        let finished_call_fid = FullInvocationId::mock_random();
+
+        state_reader.register_invoked_status(
+            fid.clone(),
+            create_termination_journal(
+                call_fid.clone(),
+                background_fid.clone(),
+                finished_call_fid.clone(),
+            ),
+        );
+
+        command_interpreter
+            .on_apply(
+                Command::TerminateInvocation(InvocationTermination::cancel(
+                    MaybeFullInvocationId::from(fid.clone()),
+                )),
+                &mut effects,
+                &mut state_reader,
+            )
+            .await?;
+
+        let effects = effects.into_inner();
+
+        assert_that!(
+            effects,
+            unordered_elements_are![
+                terminate_invocation_outbox_message_matcher(call_fid, TerminationFlavor::Cancel),
+                store_canceled_completion_matcher(3),
+                store_canceled_completion_matcher(4),
+                store_canceled_completion_matcher(5),
+                store_canceled_completion_matcher(6),
+                forward_canceled_completion_matcher(3),
+                forward_canceled_completion_matcher(4),
+                forward_canceled_completion_matcher(5),
+                forward_canceled_completion_matcher(6),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test(tokio::test)]
+    async fn cancel_suspended_invocation() -> Result<(), Error> {
+        let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
+        let mut state_reader = StateReaderMock::default();
+        let mut effects = Effects::default();
+
+        let fid = FullInvocationId::mock_random();
+        let call_fid = FullInvocationId::mock_random();
+        let background_fid = FullInvocationId::mock_random();
+        let finished_call_fid = FullInvocationId::mock_random();
+
+        let journal = create_termination_journal(
+            call_fid.clone(),
+            background_fid.clone(),
+            finished_call_fid.clone(),
+        );
+        state_reader.register_suspended_status(fid.clone(), vec![3, 4, 5, 6], journal);
+
+        command_interpreter
+            .on_apply(
+                Command::TerminateInvocation(InvocationTermination::cancel(
+                    MaybeFullInvocationId::from(fid.clone()),
+                )),
+                &mut effects,
+                &mut state_reader,
+            )
+            .await?;
+
+        let effects = effects.into_inner();
+
+        assert_that!(
+            effects,
+            unordered_elements_are![
+                terminate_invocation_outbox_message_matcher(call_fid, TerminationFlavor::Cancel),
+                store_canceled_completion_matcher(3),
+                store_canceled_completion_matcher(4),
+                store_canceled_completion_matcher(5),
+                store_canceled_completion_matcher(6),
+                pat!(Effect::ResumeService {
+                    service_id: eq(fid.service_id),
+                }),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test(tokio::test)]
+    async fn cancel_virtual_invocation() -> Result<(), Error> {
+        let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
+        let mut state_reader = StateReaderMock::default();
+        let mut effects = Effects::default();
+
+        let fid = FullInvocationId::mock_random();
+        let call_fid = FullInvocationId::mock_random();
+        let background_fid = FullInvocationId::mock_random();
+        let finished_call_fid = FullInvocationId::mock_random();
+
+        let notification_service_id = ServiceId::new("notification", "key");
+
+        let completion_notification_target = NotificationTarget {
+            service: notification_service_id.clone(),
+            method: "completion".to_owned(),
+        };
+        let kill_notification_target = NotificationTarget {
+            service: notification_service_id,
+            method: "kill".to_owned(),
+        };
+
+        state_reader.register_virtual_status(
+            fid.clone(),
+            completion_notification_target,
+            kill_notification_target,
+            create_termination_journal(
+                call_fid.clone(),
+                background_fid.clone(),
+                finished_call_fid.clone(),
+            ),
+        );
+
+        command_interpreter
+            .on_apply(
+                Command::TerminateInvocation(InvocationTermination::cancel(
+                    MaybeFullInvocationId::from(fid.clone()),
+                )),
+                &mut effects,
+                &mut state_reader,
+            )
+            .await?;
+
+        let effects = effects.into_inner();
+
+        assert_that!(
+            effects,
+            unordered_elements_are![
+                terminate_invocation_outbox_message_matcher(call_fid, TerminationFlavor::Cancel),
+                store_canceled_completion_matcher(3),
+                store_canceled_completion_matcher(4),
+                store_canceled_completion_matcher(5),
+                store_canceled_completion_matcher(6),
+                notify_virtual_journal_canceled_completion_matcher(3),
+                notify_virtual_journal_canceled_completion_matcher(4),
+                notify_virtual_journal_canceled_completion_matcher(5),
+                notify_virtual_journal_canceled_completion_matcher(6),
+            ]
+        );
+
+        Ok(())
+    }
+
+    fn create_termination_journal(
+        call_fid: FullInvocationId,
+        background_fid: FullInvocationId,
+        finished_call_fid: FullInvocationId,
+    ) -> Vec<JournalEntry> {
+        vec![
+            uncompleted_invoke_entry(call_fid),
+            completed_invoke_entry(finished_call_fid),
+            background_invoke_entry(background_fid),
+            JournalEntry::Entry(EnrichedRawEntry::new(
+                EnrichedEntryHeader::PollInputStream {
+                    is_completed: false,
+                },
+                Bytes::default(),
+            )),
+            JournalEntry::Entry(EnrichedRawEntry::new(
+                EnrichedEntryHeader::GetState {
+                    is_completed: false,
+                },
+                Bytes::default(),
+            )),
+            JournalEntry::Entry(EnrichedRawEntry::new(
+                EnrichedEntryHeader::Sleep {
+                    is_completed: false,
+                },
+                Bytes::default(),
+            )),
+            JournalEntry::Entry(EnrichedRawEntry::new(
+                EnrichedEntryHeader::Awakeable {
+                    is_completed: false,
+                },
+                Bytes::default(),
+            )),
+        ]
+    }
+
+    fn canceled_completion_matcher(entry_index: EntryIndex) -> impl Matcher<ActualT = Completion> {
+        pat!(Completion {
+            entry_index: eq(entry_index),
+            result: pat!(CompletionResult::Failure(
+                eq(UserErrorCode::Cancelled),
+                eq(ByteString::from_static("canceled"))
+            ))
+        })
+    }
+
+    fn store_canceled_completion_matcher(
+        entry_index: EntryIndex,
+    ) -> impl Matcher<ActualT = Effect> {
+        pat!(Effect::StoreCompletion {
+            completion: canceled_completion_matcher(entry_index),
+        })
+    }
+
+    fn forward_canceled_completion_matcher(
+        entry_index: EntryIndex,
+    ) -> impl Matcher<ActualT = Effect> {
+        pat!(Effect::ForwardCompletion {
+            completion: canceled_completion_matcher(entry_index),
+        })
+    }
+
+    fn notify_virtual_journal_canceled_completion_matcher(
+        entry_index: EntryIndex,
+    ) -> impl Matcher<ActualT = Effect> {
+        pat!(Effect::NotifyVirtualJournalCompletion {
+            completion: canceled_completion_matcher(entry_index),
+        })
+    }
+
+    fn terminate_invocation_outbox_message_matcher(
+        target_fid: impl Into<MaybeFullInvocationId>,
+        termination_flavor: TerminationFlavor,
+    ) -> impl Matcher<ActualT = Effect> {
+        pat!(Effect::EnqueueIntoOutbox {
+            message: pat!(
+                restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(pat!(
+                    InvocationTermination {
+                        maybe_fid: eq(target_fid.into()),
+                        flavor: eq(termination_flavor)
+                    }
+                ))
+            )
+        })
     }
 }

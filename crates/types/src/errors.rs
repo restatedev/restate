@@ -322,6 +322,13 @@ pub const KILLED_INVOCATION_ERROR: InvocationError = InvocationError::new_static
     "killed",
 );
 
+// TODO: Once we want to distinguish server side cancellations from user code returning the
+//  UserErrorCode::Cancelled, we need to add a new RestateErrorCode.
+pub const CANCELED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
+    InvocationErrorCode::User(UserErrorCode::Cancelled),
+    "canceled",
+);
+
 #[cfg(feature = "tonic_conversions")]
 mod tonic_conversions_impl {
     use super::{InvocationError, InvocationErrorCode};

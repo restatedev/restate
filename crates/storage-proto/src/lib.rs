@@ -32,7 +32,7 @@ pub mod storage {
                 completion_result, CompletionResult, Entry, Kind,
             };
             use crate::storage::v1::outbox_message::{
-                OutboxIngressResponse, OutboxKill, OutboxServiceInvocation,
+                OutboxCancel, OutboxIngressResponse, OutboxKill, OutboxServiceInvocation,
                 OutboxServiceInvocationResponse,
             };
             use crate::storage::v1::service_invocation_response_sink::{
@@ -40,12 +40,11 @@ pub mod storage {
             };
             use crate::storage::v1::{
                 enriched_entry_header, invocation_resolution_result, invocation_status,
-                outbox_message, outbox_message::outbox_service_invocation_response,
-                response_result, span_relation, timer, BackgroundCallResolutionResult,
-                EnrichedEntryHeader, FullInvocationId, InboxEntry, InvocationResolutionResult,
-                InvocationStatus, JournalEntry, JournalMeta, OutboxMessage, ResponseResult,
-                SequencedTimer, ServiceInvocation, ServiceInvocationResponseSink, SpanContext,
-                SpanRelation, Timer,
+                maybe_full_invocation_id, outbox_message, response_result, span_relation, timer,
+                BackgroundCallResolutionResult, EnrichedEntryHeader, FullInvocationId, InboxEntry,
+                InvocationResolutionResult, InvocationStatus, JournalEntry, JournalMeta,
+                MaybeFullInvocationId, OutboxMessage, ResponseResult, SequencedTimer,
+                ServiceInvocation, ServiceInvocationResponseSink, SpanContext, SpanRelation, Timer,
             };
             use anyhow::anyhow;
             use bytes::{Buf, Bytes};
@@ -53,7 +52,7 @@ pub mod storage {
             use opentelemetry_api::trace::TraceState;
             use restate_storage_api::StorageError;
             use restate_types::identifiers::ServiceId;
-            use restate_types::invocation::MaybeFullInvocationId;
+            use restate_types::invocation::{InvocationTermination, TerminationFlavor};
             use restate_types::journal::enriched::AwakeableEnrichmentResult;
             use restate_types::time::MillisSinceEpoch;
             use std::collections::{HashSet, VecDeque};
@@ -585,6 +584,49 @@ pub mod storage {
                         invocation_uuid,
                         service_key,
                         service_name,
+                    }
+                }
+            }
+
+            impl TryFrom<MaybeFullInvocationId> for restate_types::invocation::MaybeFullInvocationId {
+                type Error = ConversionError;
+
+                fn try_from(value: MaybeFullInvocationId) -> Result<Self, Self::Error> {
+                    match value.kind.ok_or(ConversionError::missing_field("kind"))? {
+                        maybe_full_invocation_id::Kind::FullInvocationId(fid) => {
+                            Ok(restate_types::invocation::MaybeFullInvocationId::Full(
+                                restate_types::identifiers::FullInvocationId::try_from(fid)?,
+                            ))
+                        }
+                        maybe_full_invocation_id::Kind::InvocationId(invocation_id) => {
+                            Ok(restate_types::invocation::MaybeFullInvocationId::Partial(
+                                restate_types::identifiers::InvocationId::from_slice(
+                                    &invocation_id,
+                                )
+                                .map_err(|e| ConversionError::invalid_data(e))?,
+                            ))
+                        }
+                    }
+                }
+            }
+
+            impl From<restate_types::invocation::MaybeFullInvocationId> for MaybeFullInvocationId {
+                fn from(value: restate_types::invocation::MaybeFullInvocationId) -> Self {
+                    match value {
+                        restate_types::invocation::MaybeFullInvocationId::Full(fid) => {
+                            MaybeFullInvocationId {
+                                kind: Some(maybe_full_invocation_id::Kind::FullInvocationId(
+                                    FullInvocationId::from(fid),
+                                )),
+                            }
+                        }
+                        restate_types::invocation::MaybeFullInvocationId::Partial(
+                            invocation_id,
+                        ) => MaybeFullInvocationId {
+                            kind: Some(maybe_full_invocation_id::Kind::InvocationId(
+                                Bytes::copy_from_slice(&invocation_id.as_bytes()),
+                            )),
+                        },
                     }
                 }
             }
@@ -1248,26 +1290,10 @@ pub mod storage {
                         ) => restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
                             restate_types::invocation::InvocationResponse {
                                 entry_index: invocation_response.entry_index,
-                                id: match invocation_response
-                                    .id
-                                    .ok_or(ConversionError::missing_field("id"))?
-                                {
-                                    outbox_service_invocation_response::Id::FullInvocationId(
-                                        fid,
-                                    ) => MaybeFullInvocationId::Full(
-                                        restate_types::identifiers::FullInvocationId::try_from(
-                                            fid,
-                                        )?,
-                                    ),
-                                    outbox_service_invocation_response::Id::InvocationId(
-                                        invocation_id_bytes,
-                                    ) => MaybeFullInvocationId::Partial(
-                                        restate_types::identifiers::InvocationId::from_slice(
-                                            &invocation_id_bytes,
-                                        )
-                                        .map_err(ConversionError::invalid_data)?,
-                                    ),
-                                },
+                                id: invocation_response
+                                    .maybe_fid
+                                    .ok_or(ConversionError::missing_field("maybe_fid"))?
+                                    .try_into()?,
                                 result: restate_types::invocation::ResponseResult::try_from(
                                     invocation_response
                                         .response_result
@@ -1294,11 +1320,27 @@ pub mod storage {
                             }
                         }
                         outbox_message::OutboxMessage::Kill(outbox_kill) => {
-                            let fid = outbox_kill
-                                .full_invocation_id
-                                .ok_or(ConversionError::missing_field("full_invocation_id"))?;
-                            restate_storage_api::outbox_table::OutboxMessage::Kill(
-                                restate_types::identifiers::FullInvocationId::try_from(fid)?,
+                            let maybe_fid = outbox_kill.maybe_full_invocation_id.ok_or(
+                                ConversionError::missing_field("maybe_full_invocation_id"),
+                            )?;
+                            restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
+                                InvocationTermination::kill(
+                                    restate_types::invocation::MaybeFullInvocationId::try_from(
+                                        maybe_fid,
+                                    )?,
+                                ),
+                            )
+                        }
+                        outbox_message::OutboxMessage::Cancel(outbox_cancel) => {
+                            let maybe_fid = outbox_cancel.maybe_full_invocation_id.ok_or(
+                                ConversionError::missing_field("maybe_full_invocation_id"),
+                            )?;
+                            restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
+                                InvocationTermination::cancel(
+                                    restate_types::invocation::MaybeFullInvocationId::try_from(
+                                        maybe_fid,
+                                    )?,
+                                ),
                             )
                         }
                     };
@@ -1324,18 +1366,9 @@ pub mod storage {
                         ) => outbox_message::OutboxMessage::ServiceInvocationResponse(
                             OutboxServiceInvocationResponse {
                                 entry_index: invocation_response.entry_index,
-                                id: Some(match invocation_response.id {
-                                    MaybeFullInvocationId::Partial(iid) => {
-                                        outbox_service_invocation_response::Id::InvocationId(
-                                            Bytes::copy_from_slice(&iid.as_bytes()),
-                                        )
-                                    }
-                                    MaybeFullInvocationId::Full(fid) => {
-                                        outbox_service_invocation_response::Id::FullInvocationId(
-                                            FullInvocationId::from(fid),
-                                        )
-                                    }
-                                }),
+                                maybe_fid: Some(MaybeFullInvocationId::from(
+                                    invocation_response.id,
+                                )),
                                 response_result: Some(ResponseResult::from(
                                     invocation_response.result,
                                 )),
@@ -1354,11 +1387,24 @@ pub mod storage {
                                 response_result: Some(ResponseResult::from(response)),
                             })
                         }
-                        restate_storage_api::outbox_table::OutboxMessage::Kill(fid) => {
-                            outbox_message::OutboxMessage::Kill(OutboxKill {
-                                full_invocation_id: Some(FullInvocationId::from(fid)),
-                            })
-                        }
+                        restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
+                            invocation_termination,
+                        ) => match invocation_termination.flavor {
+                            TerminationFlavor::Kill => {
+                                outbox_message::OutboxMessage::Kill(OutboxKill {
+                                    maybe_full_invocation_id: Some(MaybeFullInvocationId::from(
+                                        invocation_termination.maybe_fid,
+                                    )),
+                                })
+                            }
+                            TerminationFlavor::Cancel => {
+                                outbox_message::OutboxMessage::Cancel(OutboxCancel {
+                                    maybe_full_invocation_id: Some(MaybeFullInvocationId::from(
+                                        invocation_termination.maybe_fid,
+                                    )),
+                                })
+                            }
+                        },
                     };
 
                     OutboxMessage {

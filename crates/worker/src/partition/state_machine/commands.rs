@@ -11,7 +11,7 @@
 use crate::partition::services::non_deterministic::Effects as NBISEffects;
 use crate::partition::types::{InvokerEffect, TimerValue};
 use restate_types::identifiers::{IngressDispatcherId, PartitionId, PeerId};
-use restate_types::invocation::{InvocationResponse, MaybeFullInvocationId, ServiceInvocation};
+use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use restate_types::message::{AckKind, MessageIndex};
 
 /// Envelope for [`partition::Command`] that might require an explicit acknowledge.
@@ -202,7 +202,7 @@ pub struct IngressAckResponse {
 /// State machine input commands
 #[derive(Debug)]
 pub enum Command {
-    Kill(MaybeFullInvocationId),
+    TerminateInvocation(InvocationTermination),
     Invoker(InvokerEffect),
     Timer(TimerValue),
     OutboxTruncation(MessageIndex),

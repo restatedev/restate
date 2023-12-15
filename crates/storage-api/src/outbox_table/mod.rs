@@ -10,7 +10,9 @@
 
 use crate::{GetFuture, PutFuture};
 use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PartitionId};
-use restate_types::invocation::{InvocationResponse, ResponseResult, ServiceInvocation};
+use restate_types::invocation::{
+    InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
+};
 use std::ops::Range;
 
 /// Types of outbox messages.
@@ -29,8 +31,8 @@ pub enum OutboxMessage {
         response: ResponseResult,
     },
 
-    /// Kill command to send to another partition processor
-    Kill(FullInvocationId),
+    /// Terminate invocation to send to another partition processor
+    InvocationTermination(InvocationTermination),
 }
 
 pub trait OutboxTable {

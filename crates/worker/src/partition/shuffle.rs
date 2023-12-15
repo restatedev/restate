@@ -12,7 +12,9 @@ use crate::partition::shuffle::state_machine::StateMachine;
 use futures::future::BoxFuture;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PartitionId, PeerId};
-use restate_types::invocation::{InvocationResponse, ResponseResult, ServiceInvocation};
+use restate_types::invocation::{
+    InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
+};
 use restate_types::message::{AckKind, MessageIndex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -53,7 +55,7 @@ pub(crate) struct ShuffleInput(pub(crate) AckKind);
 pub(crate) enum PartitionProcessorMessage {
     Invocation(ServiceInvocation),
     Response(InvocationResponse),
-    Kill(FullInvocationId),
+    InvocationTermination(InvocationTermination),
 }
 
 #[derive(Debug, Clone)]
@@ -126,8 +128,10 @@ impl From<OutboxMessage> for ShuffleMessageDestination {
                     PartitionProcessorMessage::Invocation(invocation),
                 )
             }
-            OutboxMessage::Kill(fid) => {
-                ShuffleMessageDestination::PartitionProcessor(PartitionProcessorMessage::Kill(fid))
+            OutboxMessage::InvocationTermination(invocation_termination) => {
+                ShuffleMessageDestination::PartitionProcessor(
+                    PartitionProcessorMessage::InvocationTermination(invocation_termination),
+                )
             }
         }
     }

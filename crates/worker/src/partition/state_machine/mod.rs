@@ -106,8 +106,8 @@ mod tests {
         FullInvocationId, InvocationUuid, PartitionId, PartitionKey, ServiceId, WithPartitionKey,
     };
     use restate_types::invocation::{
-        InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
-        ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+        InvocationResponse, InvocationTermination, MaybeFullInvocationId, ResponseResult,
+        ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
     };
     use restate_types::journal::enriched::EnrichedRawEntry;
     use restate_types::journal::{Completion, CompletionResult};
@@ -346,8 +346,8 @@ mod tests {
         assert!(result.is_some());
 
         let actions = state_machine
-            .apply_cmd(Command::Kill(MaybeFullInvocationId::from(
-                inboxed_fid.clone(),
+            .apply_cmd(Command::TerminateInvocation(InvocationTermination::kill(
+                MaybeFullInvocationId::from(inboxed_fid.clone()),
             )))
             .await;
 

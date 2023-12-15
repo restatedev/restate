@@ -14,6 +14,13 @@ message FullInvocationId {
     bytes invocation_uuid = 3;
 }
 
+message MaybeFullInvocationId {
+    oneof kind {
+        FullInvocationId full_invocation_id = 1;
+        bytes invocation_id = 2;
+    }
+}
+
 // ---------------------------------------------------------------------
 // Service Invocation
 // ---------------------------------------------------------------------
@@ -283,10 +290,7 @@ message OutboxMessage {
     }
 
     message OutboxServiceInvocationResponse {
-        oneof id {
-            FullInvocationId full_invocation_id = 1;
-            bytes invocation_id = 4;
-        }
+        MaybeFullInvocationId maybe_fid = 1;
         uint32 entry_index = 2;
         ResponseResult response_result = 3;
     }
@@ -298,7 +302,11 @@ message OutboxMessage {
     }
 
     message OutboxKill {
-        FullInvocationId full_invocation_id = 1;
+        MaybeFullInvocationId maybe_full_invocation_id = 1;
+    }
+
+    message OutboxCancel {
+        MaybeFullInvocationId maybe_full_invocation_id = 1;
     }
 
     oneof outbox_message {
@@ -306,6 +314,7 @@ message OutboxMessage {
         OutboxServiceInvocationResponse service_invocation_response = 2;
         OutboxIngressResponse ingress_response = 3;
         OutboxKill kill = 4;
+        OutboxCancel cancel = 5;
     }
 
 }
