@@ -22,10 +22,14 @@ This release policy applies to all the aforementioned artifacts.
 
 When performing a full release of all the artifacts, this order should be followed:
 
-1. Runtime
-1. Proto: After executing the release make sure the SDKs are using the latest `proto` version.
-1. SDKs: After runtime and SDK artifacts are published, execute a manual run of the [e2e tests](https://github.com/restatedev/e2e/actions/workflows/e2e.yaml) to check everything works fine.
-1. Documentation and examples
+1. [Runtime](#releasing-the-restate-runtime)
+1. [Proto](https://github.com/restatedev/proto/)
+1. After releasing proto you might need to update the descriptors in the SDKs and examples (`buf.lock` files or `git subtree` updates, refer to the specific release docs of repos)
+1. [Java SDK](https://github.com/restatedev/sdk-java/blob/main/development/release.md)
+1. [Typescript SDK](https://github.com/restatedev/sdk-typescript#releasing-the-package) and [Node template generator](https://github.com/restatedev/node-template-generator#releasing)
+1. Execute a manual run of the [e2e tests](https://github.com/restatedev/e2e/actions/workflows/e2e.yaml) to check everything works fine.
+1. [Examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
+1. [Documentation](https://github.com/restatedev/documentation#releasing-the-documentation) and [Tour](https://github.com/restatedev/tour-of-restate-typescript#releasing)
 
 ## Releasing the Restate runtime
 
@@ -42,10 +46,3 @@ In order to finish the release, you have to publish it [here](https://github.com
 Please also bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version after the release.
 
 If you are releasing a new major/minor version of the runtime, please also create a new release of the [documentation](https://github.com/restatedev/restate) and update the [website](https://github.com/restatedev/placeholder-website).
-
-## Releasing the other artifacts
-
-1. [Release the proto](https://github.com/restatedev/proto/)
-1. [Release the Typescript SDK](https://github.com/restatedev/sdk-typescript#releasing-the-package) and [Release the Node template generator](https://github.com/restatedev/node-template-generator#releasing)
-1. [Release the documentation](https://github.com/restatedev/documentation#releasing-the-documentation) and https://github.com/restatedev/tour-of-restate-typescript#releasing
-1. [Release the examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
