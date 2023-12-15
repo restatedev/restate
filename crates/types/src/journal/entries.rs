@@ -12,7 +12,7 @@
 
 use super::*;
 
-use crate::errors::UserErrorCode;
+use crate::errors::{InvocationError, UserErrorCode};
 use crate::identifiers::EntryIndex;
 use crate::time::MillisSinceEpoch;
 use std::fmt;
@@ -122,6 +122,12 @@ impl From<ResponseResult> for CompletionResult {
                 CompletionResult::Failure(error_code, error_msg)
             }
         }
+    }
+}
+
+impl From<&InvocationError> for CompletionResult {
+    fn from(value: &InvocationError) -> Self {
+        CompletionResult::Failure(UserErrorCode::from(value.code()), value.message().into())
     }
 }
 

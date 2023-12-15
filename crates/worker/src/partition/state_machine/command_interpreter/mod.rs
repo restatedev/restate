@@ -29,8 +29,7 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, NotificationTarget};
 use restate_storage_api::timer_table::Timer;
 use restate_types::errors::{
-    InvocationError, InvocationErrorCode, UserErrorCode, CANCELED_INVOCATION_ERROR,
-    KILLED_INVOCATION_ERROR,
+    InvocationError, InvocationErrorCode, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
@@ -647,10 +646,7 @@ where
     ) -> Result<bool, Error> {
         let mut journal = state.get_journal(&full_invocation_id.service_id, journal_length);
 
-        let canceled_result = CompletionResult::Failure(
-            UserErrorCode::from(CANCELED_INVOCATION_ERROR.code()),
-            CANCELED_INVOCATION_ERROR.message().into(),
-        );
+        let canceled_result = CompletionResult::from(&CANCELED_INVOCATION_ERROR);
 
         let mut resume_invocation = false;
 
