@@ -53,32 +53,51 @@ pub async fn create_deployment<S, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
-    let address = match payload.deployment_metadata {
-        RegisterDeploymentMetadata::Http { uri } => Endpoint::Http(uri, Default::default()),
-        RegisterDeploymentMetadata::Lambda {
+    let (discover_endpoint, force, dry_run) = match payload {
+        RegisterDeploymentRequest::Http {
+            uri,
+            additional_headers,
+            force,
+            dry_run,
+        } => (
+            DiscoverEndpoint::new(
+                Endpoint::Http(uri, Default::default()),
+                additional_headers.unwrap_or_default().into(),
+            ),
+            force,
+            dry_run,
+        ),
+        RegisterDeploymentRequest::Lambda {
             arn,
             assume_role_arn,
-        } => Endpoint::Lambda(
-            arn.parse()
-                .map_err(|e: InvalidLambdaARN| MetaApiError::InvalidField("arn", e.to_string()))?,
-            assume_role_arn.map(Into::into),
+            additional_headers,
+            force,
+            dry_run,
+        } => (
+            DiscoverEndpoint::new(
+                Endpoint::Lambda(
+                    arn.parse().map_err(|e: InvalidLambdaARN| {
+                        MetaApiError::InvalidField("arn", e.to_string())
+                    })?,
+                    assume_role_arn.map(Into::into),
+                ),
+                additional_headers.unwrap_or_default().into(),
+            ),
+            force,
+            dry_run,
         ),
     };
-    let endpoint = DiscoverEndpoint::new(
-        address,
-        payload.additional_headers.unwrap_or_default().into(),
-    );
 
-    let apply_changes = if payload.dry_run {
+    let apply_changes = if dry_run {
         ApplyMode::DryRun
     } else {
         ApplyMode::Apply
     };
 
-    let force = if payload.force { Force::Yes } else { Force::No };
+    let force = if force { Force::Yes } else { Force::No };
     let registration_result = state
         .meta_handle()
-        .register_deployment(endpoint, force, apply_changes)
+        .register_deployment(discover_endpoint, force, apply_changes)
         .await?;
 
     let response_body = RegisterDeploymentResponse {

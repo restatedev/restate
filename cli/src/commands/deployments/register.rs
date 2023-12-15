@@ -24,9 +24,7 @@ use crate::ui::stylesheet::Style;
 use crate::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
 
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
-use restate_meta_rest_model::deployments::{
-    Deployment, LambdaARN, RegisterDeploymentMetadata, RegisterDeploymentRequest,
-};
+use restate_meta_rest_model::deployments::{Deployment, LambdaARN, RegisterDeploymentRequest};
 
 use anyhow::Result;
 use cling::prelude::*;
@@ -130,19 +128,21 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     // Preparing the discovery request
     let client = crate::clients::MetasClient::new(&env)?;
-    let endpoint_metadata = match &discover_opts.deployment {
-        DeploymentEndpoint::Uri(uri) => RegisterDeploymentMetadata::Http { uri: uri.clone() },
-        DeploymentEndpoint::Lambda(arn) => RegisterDeploymentMetadata::Lambda {
+
+    let mk_request_body = |force, dry_run| match &discover_opts.deployment {
+        DeploymentEndpoint::Uri(uri) => RegisterDeploymentRequest::Http {
+            uri: uri.clone(),
+            additional_headers: headers.clone().map(Into::into),
+            force,
+            dry_run,
+        },
+        DeploymentEndpoint::Lambda(arn) => RegisterDeploymentRequest::Lambda {
             arn: arn.to_string(),
             assume_role_arn: discover_opts.assume_role_arn.clone(),
+            additional_headers: headers.clone().map(Into::into),
+            force,
+            dry_run,
         },
-    };
-
-    let mk_request_body = |force, dry_run| RegisterDeploymentRequest {
-        deployment_metadata: endpoint_metadata.clone(),
-        additional_headers: headers.clone().map(Into::into),
-        force,
-        dry_run,
     };
 
     let progress = ProgressBar::new_spinner();

@@ -80,41 +80,12 @@ impl From<DeploymentMetadata> for Deployment {
     }
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RegisterDeploymentRequest {
-    #[serde(flatten)]
-    pub deployment_metadata: RegisterDeploymentMetadata,
-
-    /// # Additional headers
-    ///
-    /// Additional headers added to the discover/invoke requests to the deployment.
-    ///
-    pub additional_headers: Option<SerdeableHeaderHashMap>,
-    /// # Force
-    ///
-    /// If `true`, it will override, if existing, any deployment using the same `uri`.
-    /// Beware that this can lead in-flight invocations to an unrecoverable error state.
-    ///
-    /// By default, this is `true` but it might change in future to `false`.
-    ///
-    /// See the [versioning documentation](https://docs.restate.dev/services/upgrades-removal) for more information.
-    #[serde(default = "restate_serde_util::default::bool::<true>")]
-    pub force: bool,
-
-    /// # Dry-run mode
-    ///
-    /// If `true`, discovery will run but the deployment will not be registered.
-    /// This is useful to see the impact of a new deployment before registering it.
-    #[serde(default = "restate_serde_util::default::bool::<false>")]
-    pub dry_run: bool,
-}
-
+// This enum could be a struct with a nested enum to avoid repeating some fields, but serde(flatten) unfortunately breaks the openapi code generation
 #[serde_as]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum RegisterDeploymentMetadata {
+pub enum RegisterDeploymentRequest {
     Http {
         /// # Uri
         ///
@@ -122,16 +93,63 @@ pub enum RegisterDeploymentMetadata {
         #[serde_as(as = "serde_with::DisplayFromStr")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         uri: Uri,
+
+        /// # Additional headers
+        ///
+        /// Additional headers added to the discover/invoke requests to the deployment.
+        ///
+        additional_headers: Option<SerdeableHeaderHashMap>,
+        /// # Force
+        ///
+        /// If `true`, it will override, if existing, any deployment using the same `uri`.
+        /// Beware that this can lead in-flight invocations to an unrecoverable error state.
+        ///
+        /// By default, this is `true` but it might change in future to `false`.
+        ///
+        /// See the [versioning documentation](https://docs.restate.dev/services/upgrades-removal) for more information.
+        #[serde(default = "restate_serde_util::default::bool::<true>")]
+        force: bool,
+
+        /// # Dry-run mode
+        ///
+        /// If `true`, discovery will run but the deployment will not be registered.
+        /// This is useful to see the impact of a new deployment before registering it.
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        dry_run: bool,
     },
     Lambda {
         /// # ARN
         ///
         /// ARN to use to discover/invoke the lambda deployment.
         arn: String,
+
         /// # Assume role ARN
         ///
         /// Optional ARN of a role to assume when invoking the addressed Lambda, to support role chaining
         assume_role_arn: Option<String>,
+
+        /// # Additional headers
+        ///
+        /// Additional headers added to the discover/invoke requests to the deployment.
+        ///
+        additional_headers: Option<SerdeableHeaderHashMap>,
+        /// # Force
+        ///
+        /// If `true`, it will override, if existing, any deployment using the same `uri`.
+        /// Beware that this can lead in-flight invocations to an unrecoverable error state.
+        ///
+        /// By default, this is `true` but it might change in future to `false`.
+        ///
+        /// See the [versioning documentation](https://docs.restate.dev/services/upgrades-removal) for more information.
+        #[serde(default = "restate_serde_util::default::bool::<true>")]
+        force: bool,
+
+        /// # Dry-run mode
+        ///
+        /// If `true`, discovery will run but the deployment will not be registered.
+        /// This is useful to see the impact of a new deployment before registering it.
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        dry_run: bool,
     },
 }
 
