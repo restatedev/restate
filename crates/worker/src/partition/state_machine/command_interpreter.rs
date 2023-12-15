@@ -1202,67 +1202,52 @@ where
         let mut span_relation = SpanRelation::None;
 
         match status {
-            InvocationStatus::Invoked(metadata) => {
-                if metadata.invocation_uuid == full_invocation_id.invocation_uuid {
-                    Self::handle_completion_for_invoked(
-                        full_invocation_id.clone(),
-                        completion,
-                        effects,
-                    );
-                    related_sid = Some(full_invocation_id);
-                    span_relation = metadata.journal_metadata.span_context.as_parent();
-                } else {
-                    debug!(
-                        rpc.service = %full_invocation_id.service_id.service_name,
-                        restate.invocation.id = %full_invocation_id,
-                        ?completion,
-                        "Ignoring completion for invocation that is no longer running."
-                    );
-                }
+            InvocationStatus::Invoked(metadata)
+                if metadata.invocation_uuid == full_invocation_id.invocation_uuid =>
+            {
+                Self::handle_completion_for_invoked(
+                    full_invocation_id.clone(),
+                    completion,
+                    effects,
+                );
+                related_sid = Some(full_invocation_id);
+                span_relation = metadata.journal_metadata.span_context.as_parent();
             }
             InvocationStatus::Suspended {
                 metadata,
                 waiting_for_completed_entries,
-            } => {
-                if metadata.invocation_uuid == full_invocation_id.invocation_uuid {
-                    span_relation = metadata.journal_metadata.span_context.as_parent();
+            } if metadata.invocation_uuid == full_invocation_id.invocation_uuid => {
+                span_relation = metadata.journal_metadata.span_context.as_parent();
 
-                    if Self::handle_completion_for_suspended(
-                        full_invocation_id.clone(),
-                        completion,
-                        &waiting_for_completed_entries,
-                        effects,
-                    ) {
-                        effects.resume_service(full_invocation_id.service_id.clone(), metadata);
-                    }
-                    related_sid = Some(full_invocation_id);
-                } else {
-                    debug!(
-                        rpc.service = %full_invocation_id.service_id.service_name,
-                        restate.invocation.id = %full_invocation_id,
-                        ?completion,
-                        "Ignoring completion for invocation that is no longer running."
-                    );
+                if Self::handle_completion_for_suspended(
+                    full_invocation_id.clone(),
+                    completion,
+                    &waiting_for_completed_entries,
+                    effects,
+                ) {
+                    effects.resume_service(full_invocation_id.service_id.clone(), metadata);
                 }
-            }
-            InvocationStatus::Free => {
-                debug!(
-                    rpc.service = %full_invocation_id.service_id.service_name,
-                    restate.invocation.id = %full_invocation_id,
-                    ?completion,
-                    "Ignoring completion for invocation that is no longer running."
-                )
+                related_sid = Some(full_invocation_id);
             }
             InvocationStatus::Virtual {
                 completion_notification_target,
+                invocation_uuid,
                 ..
-            } => {
+            } if invocation_uuid == full_invocation_id.invocation_uuid => {
                 Self::handle_completion_for_virtual(
                     full_invocation_id,
                     completion,
                     completion_notification_target,
                     effects,
                 );
+            }
+            _ => {
+                debug!(
+                    rpc.service = %full_invocation_id.service_id.service_name,
+                    restate.invocation.id = %full_invocation_id,
+                    ?completion,
+                    "Ignoring completion for invocation that is no longer running."
+                )
             }
         }
 
