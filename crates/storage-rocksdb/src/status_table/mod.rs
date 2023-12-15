@@ -106,24 +106,26 @@ impl<'a> StatusTable for RocksDBTransaction<'a> {
     ) -> GetFuture<Option<(ServiceId, InvocationStatus)>> {
         let key = StatusKey::default().partition_key(partition_key);
 
-        let mut stream = self.for_each_key_value(TableScan::KeyPrefix(key), move |k, v| {
-            let invocation_status = match decode_status(v) {
-                Ok(invocation_status)
-                    if invocation_status.invocation_uuid() == Some(invocation_uuid) =>
-                {
-                    invocation_status
-                }
-                Ok(_) => {
-                    return TableScanIterationDecision::Continue;
-                }
-                Err(err) => {
-                    return TableScanIterationDecision::BreakWith(Err(err));
-                }
-            };
-            TableScanIterationDecision::BreakWith(
-                status_key_from_bytes(Bytes::copy_from_slice(k)).map(|id| (id, invocation_status)),
-            )
-        });
+        let mut stream =
+            self.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, v| {
+                let invocation_status = match decode_status(v) {
+                    Ok(invocation_status)
+                        if invocation_status.invocation_uuid() == Some(invocation_uuid) =>
+                    {
+                        invocation_status
+                    }
+                    Ok(_) => {
+                        return TableScanIterationDecision::Continue;
+                    }
+                    Err(err) => {
+                        return TableScanIterationDecision::BreakWith(Err(err));
+                    }
+                };
+                TableScanIterationDecision::BreakWith(
+                    status_key_from_bytes(Bytes::copy_from_slice(k))
+                        .map(|id| (id, invocation_status)),
+                )
+            });
 
         async move { stream.next().await.transpose() }.boxed()
     }

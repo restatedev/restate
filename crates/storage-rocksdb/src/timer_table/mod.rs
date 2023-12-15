@@ -123,7 +123,7 @@ impl<'a> TimerTable for RocksDBTransaction<'a> {
     ) -> GetStream<(TimerKey, Timer)> {
         let scan = exclusive_start_key_range(partition_id, exclusive_start);
         let mut produced = 0;
-        self.for_each_key_value(scan, move |k, v| {
+        self.for_each_key_value_in_place(scan, move |k, v| {
             if produced >= limit {
                 return TableScanIterationDecision::Break;
             }

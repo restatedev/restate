@@ -86,7 +86,7 @@ impl<'a> StateTable for RocksDBTransaction<'a> {
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
-        self.for_each_key_value(TableScan::KeyPrefix(key), |k, v| {
+        self.for_each_key_value_in_place(TableScan::KeyPrefix(key), |k, v| {
             TableScanIterationDecision::Emit(decode_user_state_key_value(k, v))
         })
     }

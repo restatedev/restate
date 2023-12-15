@@ -18,7 +18,6 @@ use crate::{GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures_util::StreamExt;
 use prost::Message;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::{ready, GetStream, StorageError};
@@ -99,7 +98,8 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
-        self.for_each_key_value(TableScan::KeyPrefix(key), move |k, v| {
+        let mut n = 0;
+        self.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, v| {
             let key = JournalKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
                 journal_key
                     .journal_index
@@ -111,10 +111,13 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
 
             let result = key.and_then(|key| entry.map(|entry| (key, entry)));
 
-            TableScanIterationDecision::Emit(result)
+            n += 1;
+            if n < journal_length {
+                TableScanIterationDecision::Emit(result)
+            } else {
+                TableScanIterationDecision::BreakWith(result)
+            }
         })
-        .take(journal_length as usize)
-        .boxed()
     }
 
     fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) -> PutFuture {

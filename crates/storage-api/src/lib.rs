@@ -20,6 +20,8 @@ pub enum StorageError {
     Conversion(anyhow::Error),
     #[error("Integrity constrained is violated")]
     DataIntegrityError,
+    #[error("Operational error that can be caused during a graceful shutdown")]
+    OperationalError,
 }
 
 //

@@ -1,3 +1,4 @@
+#![allow(clippy::async_yields_async)]
 // Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
@@ -64,10 +65,12 @@ pub fn spawn_restate(
         .tokio_runtime
         .build()
         .expect("Tokio runtime must build");
-    let app = Application::new(config.meta, config.worker).expect("Application must build");
+
     let (signal, drain) = drain::channel();
-    let app_future = app.run(drain);
-    let app_handle = rt.spawn(app_future);
+    let app_handle = rt.block_on(async move {
+        let app = Application::new(config.meta, config.worker).expect("Application must build");
+        tokio::task::spawn(app.run(drain))
+    });
 
     (rt, signal, app_handle)
 }

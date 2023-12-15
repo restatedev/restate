@@ -16,7 +16,7 @@ use crate::{Result, TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
 
-use futures_util::FutureExt;
+use futures_util::{FutureExt, StreamExt};
 use prost::Message;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::{ready, GetStream, StorageError};
@@ -25,7 +25,6 @@ use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
 use std::io::Cursor;
 use std::ops::RangeInclusive;
-use tokio_stream::StreamExt;
 
 define_table_key!(
     Inbox,
@@ -91,7 +90,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
-        self.for_each_key_value(TableScan::KeyPrefix(key), |k, v| {
+        self.for_each_key_value_in_place(TableScan::KeyPrefix(key), |k, v| {
             let inbox_entry = decode_inbox_key_value(k, v);
             TableScanIterationDecision::Emit(inbox_entry)
         })
@@ -123,7 +122,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         };
 
         let mut result =
-            self.for_each_key_value(TableScan::KeyPrefix(inbox_key), move |key, value| {
+            self.for_each_key_value_in_place(TableScan::KeyPrefix(inbox_key), move |key, value| {
                 let inbox_entry = decode_inbox_key_value(key, value);
 
                 match inbox_entry {
