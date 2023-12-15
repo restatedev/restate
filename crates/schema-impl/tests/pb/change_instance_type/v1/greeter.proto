@@ -9,8 +9,6 @@ service Greeter {
   option (dev.restate.ext.service_type) = UNKEYED;
 
   rpc Greet(GreetingRequest) returns (GreetingResponse);
-  rpc GetCount(google.protobuf.Empty) returns (CountResponse);
-  rpc GreetStream(GreetingRequest) returns (stream CountResponse);
 }
 
 message GreetingRequest {
@@ -19,13 +17,4 @@ message GreetingRequest {
 
 message GreetingResponse {
   string greeting = 1;
-}
-
-message CountResponse {
-  int32 greetings = 1;
-}
-
-service AnotherGreeter {
-  rpc Greet(GreetingRequest) returns (GreetingResponse);
-  rpc GetCount(google.protobuf.Empty) returns (CountResponse);
 }

@@ -1,10 +1,13 @@
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
+import "dev/restate/ext.proto";
 
 package greeter;
 
 service Greeter {
+  option (dev.restate.ext.service_type) = UNKEYED;
+
   // Simulate renaming "Greet" to "Greetings" - this represents a backwards-incompatible change
   // rpc Greet(GreetingRequest) returns (GreetingResponse);
   rpc Greetings(GreetingRequest) returns (GreetingResponse);

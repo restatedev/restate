@@ -16,7 +16,7 @@ use restate_futures_util::command::{Command, UnboundedCommandReceiver, Unbounded
 use restate_schema_api::endpoint::{DeliveryOptions, EndpointMetadata};
 use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
-use restate_schema_impl::{RegistrationError, Schemas, SchemasUpdateCommand};
+use restate_schema_impl::{Schemas, SchemasUpdateCommand, SchemasUpdateError};
 use restate_service_protocol::discovery::{
     DiscoverEndpoint, ServiceDiscovery, ServiceDiscoveryError,
 };
@@ -43,7 +43,7 @@ pub enum MetaError {
     Storage(#[from] MetaStorageError),
     #[error(transparent)]
     #[code(unknown)]
-    SchemaRegistry(#[from] RegistrationError),
+    SchemaRegistry(#[from] SchemasUpdateError),
     #[error("meta closed")]
     #[code(unknown)]
     MetaClosed,
@@ -377,7 +377,7 @@ where
         };
 
         // Compute the diff with the current state of Schemas
-        let schemas_update_commands = self.schemas.compute_new_endpoint_updates(
+        let schemas_update_commands = self.schemas.compute_new_endpoint(
             endpoint_metadata,
             discovered_metadata.services,
             discovered_metadata.descriptor_pool,
@@ -407,9 +407,7 @@ where
         debug!(rpc.service = service_name, "Modify service");
 
         // Compute the diff and propagate updates
-        let update_commands = vec![self
-            .schemas
-            .compute_modify_service_updates(service_name, public)?];
+        let update_commands = vec![self.schemas.compute_modify_service(service_name, public)?];
         self.store_and_apply_updates(update_commands).await?;
 
         Ok(())

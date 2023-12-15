@@ -8,12 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Schemas;
-use bytes::Bytes;
-use restate_schema_api::discovery::FieldAnnotation;
-use restate_schema_api::proto_symbol::ProtoSymbolResolver;
+use super::*;
 
-use crate::schemas_impl::{InstanceTypeMetadata, ServiceLocation, ServiceSchemas};
+use crate::schemas_impl::ServiceLocation;
+use bytes::Bytes;
+use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::{MethodMetadata, ServiceMetadata, ServiceMetadataResolver};
 
 impl ServiceMetadataResolver for Schemas {

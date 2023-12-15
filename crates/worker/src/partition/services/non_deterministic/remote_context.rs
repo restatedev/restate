@@ -1071,9 +1071,6 @@ mod tests {
     use restate_pb::mocks::GREETER_SERVICE_NAME;
     use restate_pb::restate::internal::{get_result_response, start_response, CleanupRequest};
     use restate_pb::REMOTE_CONTEXT_SERVICE_NAME;
-    use restate_schema_api::discovery::{
-        DiscoveredInstanceType, DiscoveredMethodMetadata, ServiceRegistrationRequest,
-    };
     use restate_schema_api::endpoint::EndpointMetadata;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_test_util::matchers::*;
@@ -2610,16 +2607,9 @@ mod tests {
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_endpoint_updates(
+                    .compute_new_endpoint(
                         EndpointMetadata::mock_with_uri("http://localhost:8080"),
-                        vec![ServiceRegistrationRequest::new(
-                            GREETER_SERVICE_NAME.to_string(),
-                            DiscoveredInstanceType::Unkeyed,
-                            HashMap::from([(
-                                "Greet".to_string(),
-                                DiscoveredMethodMetadata::default(),
-                            )]),
-                        )],
+                        vec![restate_pb::mocks::GREETER_SERVICE_NAME.to_owned()],
                         restate_pb::mocks::DESCRIPTOR_POOL.clone(),
                         false,
                     )

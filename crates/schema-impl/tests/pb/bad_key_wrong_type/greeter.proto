@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+import "dev/restate/ext.proto";
+
+package greeter;
+
+service Greeter {
+  option (dev.restate.ext.service_type) = KEYED;
+
+  rpc Greet(GreetingRequest) returns (GreetingResponse);
+}
+
+message GreetingRequest {
+  int32 my_key = 1 [(dev.restate.ext.field) = KEY];
+}
+
+message GreetingResponse {
+  string greeting = 1;
+}
