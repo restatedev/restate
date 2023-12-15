@@ -114,7 +114,7 @@ pub mod deployment {
         }
 
         // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
-        // and for Lambda Deployments its the ARN
+        // and for Lambda deployments its the ARN
         pub fn address_display(&self) -> impl Display + '_ {
             struct Wrapper<'a>(&'a DeploymentType);
             impl<'a> Display for Wrapper<'a> {
@@ -141,7 +141,7 @@ pub mod deployment {
             match &self.ty {
                 DeploymentType::Http { address, .. } => {
                     // For the time being we generate this from the URI
-                    // We use only authority and path, as those uniquely identify the Deployment.
+                    // We use only authority and path, as those uniquely identify the deployment.
                     let authority_and_path = format!(
                         "{}{}",
                         address.authority().expect("Must have authority"),

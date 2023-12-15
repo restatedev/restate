@@ -187,7 +187,7 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 }
 
 /// Represents an open invocation stream
-pub(super) struct InvocationTask<JR, SR, EE, EMR> {
+pub(super) struct InvocationTask<JR, SR, EE, DMR> {
     // Shared client
     client: ServiceClient,
 
@@ -202,7 +202,7 @@ pub(super) struct InvocationTask<JR, SR, EE, EMR> {
     journal_reader: JR,
     state_reader: SR,
     entry_enricher: EE,
-    deployment_metadata_resolver: EMR,
+    deployment_metadata_resolver: DMR,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Completion>,
 
@@ -244,14 +244,14 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<JR, SR, EE, EMR> InvocationTask<JR, SR, EE, EMR>
+impl<JR, SR, EE, DMR> InvocationTask<JR, SR, EE, DMR>
 where
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher,
-    EMR: DeploymentMetadataResolver,
+    DMR: DeploymentMetadataResolver,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -267,7 +267,7 @@ where
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
-        deployment_metadata_resolver: EMR,
+        deployment_metadata_resolver: DMR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Completion>,
     ) -> Self {

@@ -22,7 +22,7 @@ pub trait MetaClientInterface {
     async fn health(&self) -> reqwest::Result<Envelope<()>>;
     async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>>;
     async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>>;
-    async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentResponse>>;
+    async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentsResponse>>;
     async fn get_deployment(
         &self,
         id: &str,
@@ -56,7 +56,7 @@ impl MetaClientInterface for MetasClient {
         Ok(self.run(reqwest::Method::GET, url).await?)
     }
 
-    async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentResponse>> {
+    async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentsResponse>> {
         let url = self.base_url.join("/deployments").expect("Bad url!");
         Ok(self.run(reqwest::Method::GET, url).await?)
     }

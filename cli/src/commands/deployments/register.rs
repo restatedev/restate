@@ -168,27 +168,27 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     progress.finish_and_clear();
 
-    // Is this an existing endpoint?
-    let existing_endpoint = match client
+    // Is this an existing deployment?
+    let existing_deployment = match client
         .get_deployment(&dry_run_result.id)
         .await?
         .into_body()
         .await
     {
-        Ok(existing_endpoint) => {
+        Ok(existing_deployment) => {
             // Appears to be an existing endpoint.
-            Some(existing_endpoint)
+            Some(existing_deployment)
         }
         Err(MetasClientError::Api(err)) if err.http_status_code == StatusCode::NOT_FOUND => None,
-        // We cannot get existing endpoint details. This is a problem.
+        // We cannot get existing deployment details. This is a problem.
         Err(err) => return Err(err.into()),
     };
 
-    if let Some(ref existing_endpoint) = existing_endpoint {
+    if let Some(ref existing_deployment) = existing_deployment {
         if !discover_opts.force {
             c_error!(
                 "A deployment already exists that uses this endpoint (ID: {}). Use --force to overwrite it.",
-                existing_endpoint.id,
+                existing_deployment.id,
             );
             return Ok(());
         } else {
@@ -201,7 +201,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 \n\nThis is a DANGEROUS operation! \n
                 In production, we recommend creating a new deployment with a unique endpoint while \
                 keeping the old one active until the old deployment is drained.",
-                existing_endpoint.id
+                existing_deployment.id
             );
             c_eprintln!();
         }
@@ -251,7 +251,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     // The following services will be updated:
     if !updated.is_empty() {
         c_println!();
-        // used to resolving old endpoints.
+        // used to resolving old deployments.
         let mut deployment_cache: HashMap<String, Deployment> = HashMap::new();
         // A single spinner spans all requests.
         let progress = ProgressBar::new_spinner();
@@ -340,7 +340,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     }
 
     // The following services will be removed/forgotten:
-    if let Some(existing_endpoint) = existing_endpoint {
+    if let Some(existing_endpoint) = existing_deployment {
         // The following services will be removed/forgotten:
         let services_removed = existing_endpoint
             .services

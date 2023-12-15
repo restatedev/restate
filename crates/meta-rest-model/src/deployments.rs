@@ -151,7 +151,7 @@ pub struct RegisterDeploymentResponse {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ListDeploymentResponse {
+pub struct ListDeploymentsResponse {
     pub deployments: Vec<DeploymentResponse>,
 }
 

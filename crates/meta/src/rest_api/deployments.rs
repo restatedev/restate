@@ -158,8 +158,8 @@ pub async fn get_deployment_descriptors<S: DeploymentMetadataResolver, W>(
 )]
 pub async fn list_deployments<S: DeploymentMetadataResolver, W>(
     State(state): State<Arc<RestEndpointState<S, W>>>,
-) -> Json<ListDeploymentResponse> {
-    ListDeploymentResponse {
+) -> Json<ListDeploymentsResponse> {
+    ListDeploymentsResponse {
         deployments: state
             .schemas()
             .get_deployments()

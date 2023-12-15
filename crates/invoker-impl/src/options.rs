@@ -71,12 +71,12 @@ pub struct Options {
 
     /// # Message size warning
     ///
-    /// Threshold to log a warning in case protocol messages coming from service are larger than the specified amount.
+    /// Threshold to log a warning in case protocol messages coming from a service are larger than the specified amount.
     message_size_warning: usize,
 
     /// # Message size limit
     ///
-    /// Threshold to fail the invocation in case protocol messages coming from service are larger than the specified amount.
+    /// Threshold to fail the invocation in case protocol messages coming from a service are larger than the specified amount.
     message_size_limit: Option<usize>,
 
     /// # Temporary directory
