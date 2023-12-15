@@ -11,7 +11,7 @@
 use anyhow::bail;
 use reqwest::header::ACCEPT;
 use restate_schema_api::subscription::Subscription;
-use restate_types::identifiers::InvocationId;
+use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;
 use schemars::gen::SchemaSettings;
 use std::env;
@@ -42,7 +42,7 @@ impl restate_worker_api::Handle for Mock {
     type Future = std::future::Ready<Result<(), restate_worker_api::Error>>;
     type SubscriptionControllerHandle = Mock;
 
-    fn kill_invocation(&self, _: InvocationId) -> Self::Future {
+    fn terminate_invocation(&self, _: InvocationTermination) -> Self::Future {
         ready(Ok(()))
     }
 

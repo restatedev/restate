@@ -380,7 +380,7 @@ impl SpanRelation {
 }
 
 /// Message to terminate an invocation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct InvocationTermination {
     pub maybe_fid: MaybeFullInvocationId,
     pub flavor: TerminationFlavor,
@@ -403,7 +403,7 @@ impl InvocationTermination {
 }
 
 /// Flavor of the termination. Can be kill (hard stop) or graceful cancel.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum TerminationFlavor {
     /// hard termination, no clean up
     Kill,

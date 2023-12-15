@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
-use restate_types::identifiers::InvocationId;
+use restate_types::invocation::InvocationTermination;
 use std::future::Future;
 
 #[derive(Debug, thiserror::Error)]
@@ -31,8 +31,8 @@ pub trait Handle {
     type Future: Future<Output = Result<(), Error>> + Send;
     type SubscriptionControllerHandle: SubscriptionController + Send + Sync;
 
-    /// Send a command to kill an invocation. This command is best-effort.
-    fn kill_invocation(&self, invocation_id: InvocationId) -> Self::Future;
+    /// Send a command to terminate an invocation. This command is best-effort.
+    fn terminate_invocation(&self, invocation_termination: InvocationTermination) -> Self::Future;
 
     fn subscription_controller_handle(&self) -> Self::SubscriptionControllerHandle;
 }

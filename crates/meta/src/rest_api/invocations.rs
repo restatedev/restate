@@ -14,6 +14,7 @@ use super::state::*;
 use axum::extract::{Path, State};
 use okapi_operation::*;
 use restate_types::identifiers::InvocationId;
+use restate_types::invocation::InvocationTermination;
 use std::sync::Arc;
 
 /// Cancel/kill an invocation
@@ -36,13 +37,13 @@ where
     W: restate_worker_api::Handle + Send,
     W::Future: Send,
 {
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
+
     state
         .worker_handle()
-        .kill_invocation(
-            invocation_id
-                .parse::<InvocationId>()
-                .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?,
-        )
+        .terminate_invocation(InvocationTermination::kill(invocation_id))
         .await?;
     Ok(())
 }

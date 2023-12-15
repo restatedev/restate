@@ -15,9 +15,8 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 use restate_consensus::ProposalSender;
 use restate_network::PartitionTableError;
-use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::WithPartitionKey;
-use restate_types::invocation::{InvocationTermination, MaybeFullInvocationId};
+use restate_types::invocation::InvocationTermination;
 use restate_types::message::PeerTarget;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -25,7 +24,7 @@ use tracing::debug;
 /// Commands that can be sent to a worker.
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum WorkerCommand {
-    KillInvocation(InvocationId),
+    TerminateInvocation(InvocationTermination),
 }
 
 #[derive(Debug, Clone)]
@@ -50,10 +49,10 @@ impl restate_worker_api::Handle for WorkerCommandSender {
     type Future = BoxFuture<'static, Result<(), restate_worker_api::Error>>;
     type SubscriptionControllerHandle = subscription_integration::SubscriptionControllerHandle;
 
-    fn kill_invocation(&self, invocation_id: InvocationId) -> Self::Future {
+    fn terminate_invocation(&self, invocation_termination: InvocationTermination) -> Self::Future {
         let tx = self.command_tx.clone();
         async move {
-            tx.send(WorkerCommand::KillInvocation(invocation_id))
+            tx.send(WorkerCommand::TerminateInvocation(invocation_termination))
                 .await
                 .map_err(|_| restate_worker_api::Error::Unreachable)
         }
@@ -127,11 +126,11 @@ where
                 },
                 Some(command) = command_rx.recv() => {
                     match command {
-                        WorkerCommand::KillInvocation(invocation_id) => {
+                        WorkerCommand::TerminateInvocation(invocation_termination) => {
                             let target_peer_id = partition_table
-                                .partition_key_to_target_peer(invocation_id.partition_key())
+                                .partition_key_to_target_peer(invocation_termination.maybe_fid.partition_key())
                                 .await?;
-                            let msg = StateMachineAckCommand::no_ack(StateMachineCommand::TerminateInvocation(InvocationTermination::kill(MaybeFullInvocationId::from(invocation_id))));
+                            let msg = StateMachineAckCommand::no_ack(StateMachineCommand::TerminateInvocation(invocation_termination));
                             proposal_tx.send((target_peer_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
                         }
                     }
