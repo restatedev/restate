@@ -75,25 +75,18 @@ jobs:
 
       - name: Compile Mac binaries
         if: ${{ matrix.build.os == 'macos-latest' }}
-        uses: actions-rs/cargo@v1
         env:
           MACOSX_DEPLOYMENT_TARGET: 10.14.0
-          # -target seems to be needed here, or librdkafka will always be built for amd64
-          CC: sccache clang -target ${{ matrix.build.target }}
-          CXX: sccache clang++ -target ${{ matrix.build.target }}
-        with:
-          command: build
-          args: --release --bins --target ${{ matrix.build.target }}
+        run: cargo build --release --bins --target ${{ matrix.build.target }}
 
       - name: Compile Linux binaries
         if: ${{ matrix.build.os == 'ubuntu-latest' }}
-        uses: actions-rs/cargo@v1
-        env:
-          RUSTC_WRAPPER: "" # Cross.toml sets it back
+        uses: addnab/docker-run-action@v3
         with:
-          command: build
-          args: --release --bins --target ${{ matrix.build.target }}
-          use-cross: true
+          image: ghcr.io/restatedev/dev-tools:latest
+          options: -v ${{ github.workspace }}:/workspace -w /workspace -e ACTIONS_CACHE_URL -e ACTIONS_RUNTIME_TOKEN -e SCCACHE_GHA_ENABLED
+          run: |
+            cargo build --release --bins --target ${{ matrix.build.target }}
 
       - name: Sign binaries
         if: ${{ matrix.build.os == 'macos-latest' }}
