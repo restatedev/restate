@@ -17,6 +17,7 @@ ARG TARGETARCH
 # Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
 # Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
 ARG CARGO_PROFILE_RELEASE_DEBUG=false
+# https://github.com/mozilla/sccache/blob/main/docs/GHA.md
 ARG ACTIONS_CACHE_URL=''
 ARG ACTIONS_RUNTIME_TOKEN=''
 ARG SCCACHE_GHA_ENABLED=''
