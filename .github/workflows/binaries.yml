@@ -3,15 +3,25 @@ name: Build binaries
 on:
   workflow_call:
     inputs:
-      version:
-        description: 'version to label binaries'
-        required: true
+      ref:
+        description: 'ref to build eg v0.5.1'
+        required: false
+        type: string
+      npmVersion:
+        description: 'if provided, also push npm packages with this version'
+        default: ''
+        required: false
         type: string
   workflow_dispatch:
     inputs:
-      version:
-        description: 'version to label binaries'
-        required: true
+      ref:
+        description: 'ref to build eg v0.5.1'
+        required: false
+        type: string
+      npmVersion:
+        description: 'if provided, also push npm packages with this version'
+        default: ''
+        required: false
         type: string
 
 jobs:
@@ -37,6 +47,8 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: ./.github/actions/clean-runner
 
@@ -106,3 +118,12 @@ jobs:
           path: restate.${{ matrix.build.target }}.tar.gz
           retention-days: 1
           if-no-files-found: error
+
+  publish-npm:
+    name: Publish to NPM
+    if: ${{ inputs.npmVersion != '' }}
+    needs: [ build ]
+    uses: ./.github/workflows/npm.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.npmVersion }}
