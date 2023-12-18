@@ -37,6 +37,14 @@ _arch := if arch == "" {
         error("unsupported arch=" + arch)
     }
 
+_docker_arch := if _arch == "x86_64" {
+        "amd64"
+    } else if _arch == "aarch64" {
+        "arm64"
+    } else {
+        _arch
+    }
+
 _os := if os == "" {
         os()
     } else {
@@ -117,7 +125,8 @@ test: (_target-installed target)
 verify: lint test
 
 docker:
-    docker buildx build . --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}'
+    # podman builds do not work without --platform set, even though it claims to default to host arch
+    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}'
 
 notice-file:
     cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2023 Restate Software, Inc., Restate GmbH <code@restate.dev>\n" && cat) > NOTICE
