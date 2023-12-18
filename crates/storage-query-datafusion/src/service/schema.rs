@@ -8,19 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod analyzer;
-pub mod context;
-mod deployment;
-mod generic_table;
-mod inbox;
-mod invocation_state;
-mod journal;
-mod options;
-mod physical_optimizer;
-mod service;
-mod state;
-mod status;
-mod table_macro;
-mod table_util;
+#![allow(dead_code)]
 
-pub use crate::options::{BuildError, Options, OptionsBuilder, OptionsBuilderError};
+use crate::table_macro::*;
+
+use datafusion::arrow::datatypes::DataType;
+
+define_table!(service(
+    name: DataType::LargeUtf8,
+    revision: DataType::UInt64,
+
+    public: DataType::Boolean,
+
+    instance_type: DataType::LargeUtf8,
+    deployment_id: DataType::LargeUtf8,
+));

@@ -8,19 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod analyzer;
-pub mod context;
-mod deployment;
-mod generic_table;
-mod inbox;
-mod invocation_state;
-mod journal;
-mod options;
-mod physical_optimizer;
-mod service;
-mod state;
-mod status;
-mod table_macro;
-mod table_util;
+mod row;
+mod schema;
+mod table;
 
-pub use crate::options::{BuildError, Options, OptionsBuilder, OptionsBuilderError};
+pub(crate) use table::register_self;
