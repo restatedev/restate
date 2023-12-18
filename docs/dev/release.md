@@ -31,6 +31,10 @@ When performing a full release of all the artifacts, this order should be follow
 1. [Examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
 1. [Documentation](https://github.com/restatedev/documentation#releasing-the-documentation) and [Tour](https://github.com/restatedev/tour-of-restate-typescript#releasing)
 
+## Post release
+
+1. Update the sdk-java version the e2e tests is using to the new snapshot: https://github.com/restatedev/e2e/blob/main/gradle/libs.versions.toml
+
 ## Releasing the Restate runtime
 
 In order to release the Restate runtime, you first have to make sure that the version field in the [Cargo.toml](/Cargo.toml) is set to the new release version `X.Y.Z`. 
