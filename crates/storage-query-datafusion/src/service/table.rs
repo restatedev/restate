@@ -42,7 +42,7 @@ pub(crate) fn register_self(
 #[derive(Debug, Clone)]
 struct ServiceMetadataScanner<SMR>(SMR);
 
-/// TODO This trait makes little sense for sys_deployment,
+/// TODO This trait makes little sense for sys_service,
 ///  but it's fine nevertheless as the caller always uses the full range
 impl<SMR: ServiceMetadataResolver + Debug + Sync + Send + 'static> RangeScanner
     for ServiceMetadataScanner<SMR>
