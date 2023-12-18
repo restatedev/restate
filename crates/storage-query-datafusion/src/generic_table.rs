@@ -29,6 +29,8 @@ use datafusion::physical_plan::{
 pub use datafusion_expr::UserDefinedLogicalNode;
 use restate_types::identifiers::PartitionKey;
 
+// TODO This trait assumes every table's primary key contains a PartitionKey.
+//      This assumption is incorrect with some tables, such as sys_deployment.
 pub(crate) trait RangeScanner: Send + Sync + Debug + 'static {
     fn scan(
         &self,

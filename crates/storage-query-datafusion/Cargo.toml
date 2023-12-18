@@ -14,7 +14,7 @@ options_schema = ["dep:schemars"]
 [dependencies]
 restate-storage-rocksdb = { workspace = true }
 restate-types = { workspace = true }
-restate-schema-api = { workspace = true, features = ["key_extraction"] }
+restate-schema-api = { workspace = true, features = ["key_extraction", "deployment"] }
 restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-storage-api = { workspace = true }
 restate-invoker-api = { workspace = true }

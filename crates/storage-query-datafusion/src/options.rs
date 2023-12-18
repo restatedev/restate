@@ -12,6 +12,7 @@ use crate::context::QueryContext;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
 use restate_invoker_api::StatusHandle;
+use restate_schema_api::deployment::DeploymentMetadataResolver;
 use restate_storage_rocksdb::RocksDBStorage;
 use std::fmt::Debug;
 
@@ -45,6 +46,7 @@ impl Options {
         self,
         rocksdb: RocksDBStorage,
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
+        schemas: impl DeploymentMetadataResolver + Send + Sync + Debug + 'static,
     ) -> Result<QueryContext, BuildError> {
         let Options {
             memory_limit,
@@ -58,6 +60,7 @@ impl Options {
         crate::journal::register_self(&ctx, rocksdb.clone())?;
         crate::invocation_state::register_self(&ctx, status)?;
         crate::inbox::register_self(&ctx, rocksdb)?;
+        crate::deployment::register_self(&ctx, schemas)?;
 
         Ok(ctx)
     }
