@@ -13,14 +13,6 @@ COPY . .
 RUN just chef-prepare
 
 FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS base
-ARG TARGETARCH
-# Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
-# Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
-ARG CARGO_PROFILE_RELEASE_DEBUG=false
-# https://github.com/mozilla/sccache/blob/main/docs/GHA.md
-ARG ACTIONS_CACHE_URL=''
-ARG ACTIONS_RUNTIME_TOKEN=''
-ARG SCCACHE_GHA_ENABLED=''
 COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
 
@@ -32,11 +24,20 @@ FROM base AS base-arm64
 ARG SCCACHE_SERVER_PORT=4227
 
 FROM base-$TARGETARCH AS builder
+ARG SCCACHE_SERVER_PORT
+ARG TARGETARCH
+# https://github.com/mozilla/sccache/blob/main/docs/GHA.md
+ARG ACTIONS_CACHE_URL=''
+ARG ACTIONS_RUNTIME_TOKEN=''
+ARG SCCACHE_GHA_ENABLED=''
+# Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
+# Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
+ARG CARGO_PROFILE_RELEASE_DEBUG=false
 # Caching layer if nothing has changed
 # Only build restate binary to avoid compiling unneeded crates
-RUN CARGO_PROFILE_RELEASE_DEBUG=$CARGO_PROFILE_RELEASE_DEBUG just arch=$TARGETARCH chef-cook --release --bin restate-server
+RUN just arch=$TARGETARCH chef-cook --release --bin restate-server
 COPY . .
-RUN CARGO_PROFILE_RELEASE_DEBUG=$CARGO_PROFILE_RELEASE_DEBUG just arch=$TARGETARCH build --release --bin restate-server && \
+RUN just arch=$TARGETARCH build --release --bin restate-server && \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH print-target)/release/restate-server target/restate-server
 
