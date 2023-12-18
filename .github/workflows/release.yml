@@ -57,7 +57,7 @@ jobs:
   create-release:
     name: Create release
     runs-on: ubuntu-latest
-    needs: [build-docker-image]
+    needs: [build-docker-image, build-binaries]
 
     steps:
       - name: Download aarch64-apple-darwin binaries

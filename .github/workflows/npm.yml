@@ -39,7 +39,6 @@ jobs:
         uses: actions/download-artifact@v3
         with:
           name: restate.${{ matrix.build.target }}.tar.gz
-          path: restate.${{ matrix.build.target }}.tar.gz
 
       - name: Extract binaries
         run: tar -xvzf restate.${{ matrix.build.target }}.tar.gz
