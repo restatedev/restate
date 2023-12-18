@@ -43,7 +43,12 @@ mod pb_into {
 
         fn try_from(msg: PollInputStreamEntryMessage) -> Result<Self, Self::Error> {
             Ok(Self::PollInputStream(PollInputStreamEntry {
-                result: msg.value,
+                result: match msg.result.ok_or("result")? {
+                    poll_input_stream_entry_message::Result::Value(r) => EntryResult::Success(r),
+                    poll_input_stream_entry_message::Result::Failure(Failure { code, message }) => {
+                        EntryResult::Failure(code.into(), message.into())
+                    }
+                },
             }))
         }
     }
@@ -70,8 +75,11 @@ mod pb_into {
             Ok(Self::GetState(GetStateEntry {
                 key: msg.key,
                 value: msg.result.map(|v| match v {
-                    get_state_entry_message::Result::Empty(_) => GetStateValue::Empty,
-                    get_state_entry_message::Result::Value(b) => GetStateValue::Value(b),
+                    get_state_entry_message::Result::Empty(_) => GetStateResult::Empty,
+                    get_state_entry_message::Result::Value(b) => GetStateResult::Result(b),
+                    get_state_entry_message::Result::Failure(failure) => {
+                        GetStateResult::Failure(failure.code.into(), failure.message.into())
+                    }
                 }),
             }))
         }
@@ -102,7 +110,12 @@ mod pb_into {
         fn try_from(msg: SleepEntryMessage) -> Result<Self, Self::Error> {
             Ok(Self::Sleep(SleepEntry {
                 wake_up_time: msg.wake_up_time,
-                fired: msg.result.is_some(),
+                result: msg.result.map(|r| match r {
+                    sleep_entry_message::Result::Empty(_) => SleepResult::Fired,
+                    sleep_entry_message::Result::Failure(failure) => {
+                        SleepResult::Failure(failure.code.into(), failure.message.into())
+                    }
+                }),
             }))
         }
     }

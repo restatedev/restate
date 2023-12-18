@@ -40,7 +40,7 @@ pub enum Entry {
 impl Entry {
     pub fn poll_input_stream(result: impl Into<Bytes>) -> Self {
         Entry::PollInputStream(PollInputStreamEntry {
-            result: result.into(),
+            result: EntryResult::Success(result.into()),
         })
     }
 
@@ -48,7 +48,7 @@ impl Entry {
         Entry::OutputStream(OutputStreamEntry { result })
     }
 
-    pub fn get_state(key: impl Into<Bytes>, value: Option<GetStateValue>) -> Self {
+    pub fn get_state(key: impl Into<Bytes>, value: Option<GetStateResult>) -> Self {
         Entry::GetState(GetStateEntry {
             key: key.into(),
             value,
@@ -178,7 +178,7 @@ mod private {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PollInputStreamEntry {
-    pub result: Bytes,
+    pub result: EntryResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,15 +187,16 @@ pub struct OutputStreamEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GetStateValue {
+pub enum GetStateResult {
     Empty,
-    Value(Bytes),
+    Result(Bytes),
+    Failure(UserErrorCode, ByteString),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetStateEntry {
     pub key: Bytes,
-    pub value: Option<GetStateValue>,
+    pub value: Option<GetStateResult>,
 }
 
 impl CompletableEntry for GetStateEntry {
@@ -216,14 +217,20 @@ pub struct ClearStateEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SleepResult {
+    Fired,
+    Failure(UserErrorCode, ByteString),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SleepEntry {
     pub wake_up_time: u64,
-    pub fired: bool,
+    pub result: Option<SleepResult>,
 }
 
 impl CompletableEntry for SleepEntry {
     fn is_completed(&self) -> bool {
-        self.fired
+        self.result.is_some()
     }
 }
 

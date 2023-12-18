@@ -317,9 +317,9 @@ mod tests {
 
     use super::*;
 
-    use crate::pb;
-    use restate_types::journal::raw::PlainEntryHeader;
+    use restate_types::journal::raw::RawEntryCodec;
 
+    use crate::codec::ProtobufRawEntryCodec;
     use restate_test_util::{assert, assert_eq, let_assert};
 
     #[test]
@@ -330,15 +330,13 @@ mod tests {
 
         let expected_msg_0 =
             ProtocolMessage::new_start_message("key".into(), "key".into(), 1, true, vec![]);
-        let expected_msg_1: ProtocolMessage = RawEntry::new(
-            PlainEntryHeader::PollInputStream { is_completed: true },
-            pb::protocol::PollInputStreamEntryMessage {
-                value: Bytes::from_static("input".as_bytes()),
-            }
-            .encode_to_vec()
-            .into(),
-        )
-        .into();
+
+        let expected_msg_1: ProtocolMessage =
+            ProtobufRawEntryCodec::serialize_as_unary_input_entry(Bytes::from_static(
+                "input".as_bytes(),
+            ))
+            .erase_enrichment()
+            .into();
         let expected_msg_2: ProtocolMessage = Completion {
             entry_index: 1,
             result: CompletionResult::Empty,
@@ -386,14 +384,10 @@ mod tests {
         let encoder = Encoder::new(0);
         let mut decoder = Decoder::default();
 
-        let expected_msg: ProtocolMessage = RawEntry::new(
-            PlainEntryHeader::PollInputStream { is_completed: true },
-            pb::protocol::PollInputStreamEntryMessage {
-                value: Bytes::from_static("input".as_bytes()),
-            }
-            .encode_to_vec()
-            .into(),
+        let expected_msg: ProtocolMessage = ProtobufRawEntryCodec::serialize_as_unary_input_entry(
+            Bytes::from_static("input".as_bytes()),
         )
+        .erase_enrichment()
         .into();
         let expected_msg_encoded = encoder.encode(expected_msg.clone());
 
@@ -419,14 +413,10 @@ mod tests {
 
         let encoder = Encoder::new(0);
         let msg = encoder.encode(
-            RawEntry::new(
-                PlainEntryHeader::PollInputStream { is_completed: true },
-                pb::protocol::PollInputStreamEntryMessage {
-                    value: (0..=u8::MAX).collect::<Vec<_>>().into(),
-                }
-                .encode_to_vec()
-                .into(),
+            ProtobufRawEntryCodec::serialize_as_unary_input_entry(
+                (0..=u8::MAX).collect::<Vec<_>>().into(),
             )
+            .erase_enrichment()
             .into(),
         );
 

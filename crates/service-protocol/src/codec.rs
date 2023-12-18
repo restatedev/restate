@@ -10,6 +10,7 @@
 
 use super::pb::protocol;
 
+use crate::pb::protocol::poll_input_stream_entry_message;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
@@ -42,9 +43,11 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
     fn serialize_as_unary_input_entry(value: Bytes) -> EnrichedRawEntry {
         RawEntry::new(
             EnrichedEntryHeader::PollInputStream { is_completed: true },
-            protocol::PollInputStreamEntryMessage { value }
-                .encode_to_vec()
-                .into(),
+            protocol::PollInputStreamEntryMessage {
+                result: Some(poll_input_stream_entry_message::Result::Value(value)),
+            }
+            .encode_to_vec()
+            .into(),
         )
     }
 
@@ -128,7 +131,7 @@ mod mocks {
         AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
     };
     use restate_types::journal::{
-        AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateValue,
+        AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateResult,
         PollInputStreamEntry,
     };
 
@@ -164,8 +167,14 @@ mod mocks {
                     GetStateEntryMessage {
                         key: entry.key,
                         result: entry.value.map(|value| match value {
-                            GetStateValue::Empty => get_state_entry_message::Result::Empty(()),
-                            GetStateValue::Value(v) => get_state_entry_message::Result::Value(v),
+                            GetStateResult::Empty => get_state_entry_message::Result::Empty(()),
+                            GetStateResult::Result(v) => get_state_entry_message::Result::Value(v),
+                            GetStateResult::Failure(code, reason) => {
+                                get_state_entry_message::Result::Failure(Failure {
+                                    code: code.into(),
+                                    message: reason.to_string(),
+                                })
+                            }
                         }),
                     }
                     .encode_to_vec()
@@ -285,9 +294,21 @@ mod mocks {
         fn serialize_poll_input_stream_entry(
             PollInputStreamEntry { result }: PollInputStreamEntry,
         ) -> Bytes {
-            PollInputStreamEntryMessage { value: result }
-                .encode_to_vec()
-                .into()
+            PollInputStreamEntryMessage {
+                result: Some(match result {
+                    EntryResult::Success(value) => {
+                        poll_input_stream_entry_message::Result::Value(value)
+                    }
+                    EntryResult::Failure(code, reason) => {
+                        poll_input_stream_entry_message::Result::Failure(Failure {
+                            code: code.into(),
+                            message: reason.to_string(),
+                        })
+                    }
+                }),
+            }
+            .encode_to_vec()
+            .into()
         }
 
         fn serialize_awakeable_entry(AwakeableEntry { result }: AwakeableEntry) -> Bytes {
