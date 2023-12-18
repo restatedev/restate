@@ -71,10 +71,10 @@ jobs:
             # generate package.json from the template
             envsubst < package.json.tmpl > "${node_pkg}/package.json"
             # copy the binary into the package
-            cp "${bin}" "${node_pkg}/bin"
-            cp NOTICE "${node_pkg}"
-            cp LICENSE "${node_pkg}"
-            cp README.md "${node_pkg}"
+            cp "../${bin}" "${node_pkg}/bin"
+            cp ../NOTICE "${node_pkg}"
+            cp ../LICENSE "${node_pkg}"
+            cp ../README.md "${node_pkg}"
             # publish the package
             pushd "${node_pkg}"
             npm publish --access public
