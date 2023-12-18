@@ -161,49 +161,38 @@ Flags:
 
 ### Entries and Completions
 
-We distinguish among two types of journal entries:
+For each journal entry the runtime commits the entry message and executes the corresponding action atomically. The
+runtime won't commit the entry, nor perform the action, if the entry is invalid. If an entry is not committed, all the
+subsequent entries are not committed as well.
 
-- Completable journal entries. These represent actions the runtime will perform, and for which consequently provide a
-  completion value. All these entries have a `result` field defined in the message descriptor, defining the different
-  variants of the completion value, and have a `COMPLETED` flag in the header.
-- Non-completable journal entries. These represent actions the runtime will perform, but won't provide any completion
-  value to it.
+Entries can be:
 
-Whether a journal entry is completable or not is intrinsic in the definition of the journal action itself.
+- Completable or not: These represent actions the runtime will perform, and for which consequently provide a completion
+  value. All these entries have a `result` field defined in the message descriptor, defining the different variants of
+  the completion value, and have a `COMPLETED` flag in the header.
+- Fallible or not: These can be rejected by the runtime when trying to commit them. The failure is not recorded in the
+  journal, thus the runtime will abort the stream after receiving an invalid entry from the SDK.
+
+The type of the journal entry is intrinsic in the definition of the journal action itself.
 
 The header format for journal entries applies both when the runtime is sending entries to the SDK during a replay, and
 when the SDK sends entries to the runtime during processing.
 
 **Headers**
 
-Completable journal entries:
-
     0                   1                   2                   3
     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |              Type             |           Reserved          |C|
+    |              Type             |A|          Reserved         |C|
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |                             Length                            |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
 Flags:
 
-- 15 bits (MSB): Reserved
-- 1 bit `C`: `COMPLETED` flag. Mask: `0x0000_0001_0000_0000`
-
-Non-Completable journal entries:
-
-    0                   1                   2                   3
-    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |              Type             |            Reserved           |
-    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                             Length                            |
-    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-
-Flags:
-
-- 16 bits (MSB): Reserved
+- 1 bit (MSB) `A`: [`REQUIRES_ACK` flag](#acknowledgment-of-stored-entries). Mask: `0x0000_8000_0000_0000`
+- 14 bits: Reserved
+- 1 bit `C`: `COMPLETED` flag (only Completable journal entries). Mask: `0x0000_0001_0000_0000`
 
 #### Completable journal entries and `CompletionMessage`
 
@@ -240,30 +229,39 @@ which `result`s the SDK is interested, and in which order.
     |                             Length                            |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
+#### Acknowledgment of stored entries
+
+If the SDK needs an acknowledgment that a journal entry, of any type, has been persisted, it can set the `REQUIRES_ACK`
+flag in the header. When set, as soon as the entry is persisted, the runtime will send back a `EntryAckMessage` with the
+index of the corresponding entry.
+
+**`EntryAckMessage` Header**
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |             0x0004            |            Reserved           |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                             Length                            |
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
 ### Journal entries reference
 
 The following tables describe the currently available journal entries. For more details, check the protobuf message
 descriptions in [`protocol.proto`](dev/restate/service/protocol.proto).
 
-**Completable journal entries**
-
-| Message                       | Type     | Description                                                                                                                                                      |
-| ----------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PollInputStreamEntryMessage` | `0x0400` | Carries the service method input message(s) of the invocation. Note: currently the runtime always sends this entry completed, but this may change in future.     |
-| `GetStateEntryMessage`        | `0x0800` | Get the value of a service instance state key.                                                                                                                   |
-| `SleepEntryMessage`           | `0x0C00` | Initiate a timer that completes after the given time.                                                                                                            |
-| `InvokeEntryMessage`          | `0x0C01` | Invoke another Restate service.                                                                                                                                  |
-| `AwakeableEntryMessage`       | `0x0C03` | Arbitrary result container which can be completed from another service, given a specific id. See [Awakeable identifier](#awakeable-identifier) for more details. |
-
-**Non-Completable journal entries**
-
-| Message                         | Type     | Description                                                                                                                                                                         |
-| ------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OutputStreamEntryMessage`      | `0x0401` | Carries the service method output message(s) or terminal failure of the invocation. Note: currently the runtime accepts only one entry of this type, but this may change in future. |
-| `SetStateEntryMessage`          | `0x0800` | Set the value of a service instance state key.                                                                                                                                      |
-| `ClearStateEntryMessage`        | `0x0801` | Clear the value of a service instance state key.                                                                                                                                    |
-| `BackgroundInvokeEntryMessage`  | `0x0C02` | Invoke another Restate service at the given time, without waiting for the response.                                                                                                 |
-| `CompleteAwakeableEntryMessage` | `0x0C04` | Complete an `Awakeable`, given its id. See [Awakeable identifier](#awakeable-identifier) for more details.                                                                          |
+| Message                         | Type     | Completable | Fallible | Description                                                                                                                                                                         |
+| ------------------------------- | -------- | ----------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PollInputStreamEntryMessage`   | `0x0400` | Yes         | No       | Carries the service method input message(s) of the invocation. Note: currently the runtime always sends this entry completed, but this may change in future.                        |
+| `GetStateEntryMessage`          | `0x0800` | Yes         | No       | Get the value of a service instance state key.                                                                                                                                      |
+| `SleepEntryMessage`             | `0x0C00` | Yes         | No       | Initiate a timer that completes after the given time.                                                                                                                               |
+| `InvokeEntryMessage`            | `0x0C01` | Yes         | Yes      | Invoke another Restate service.                                                                                                                                                     |
+| `AwakeableEntryMessage`         | `0x0C03` | Yes         | No       | Arbitrary result container which can be completed from another service, given a specific id. See [Awakeable identifier](#awakeable-identifier) for more details.                    |
+| `BackgroundInvokeEntryMessage`  | `0x0C02` | No          | Yes      | Invoke another Restate service at the given time, without waiting for the response.                                                                                                 |
+| `CompleteAwakeableEntryMessage` | `0x0C04` | No          | Yes      | Complete an `Awakeable`, given its id. See [Awakeable identifier](#awakeable-identifier) for more details.                                                                          |
+| `OutputStreamEntryMessage`      | `0x0401` | No          | No       | Carries the service method output message(s) or terminal failure of the invocation. Note: currently the runtime accepts only one entry of this type, but this may change in future. |
+| `SetStateEntryMessage`          | `0x0800` | No          | No       | Set the value of a service instance state key.                                                                                                                                      |
+| `ClearStateEntryMessage`        | `0x0801` | No          | No       | Clear the value of a service instance state key.                                                                                                                                    |
 
 #### Awakeable identifier
 
@@ -332,16 +330,12 @@ additional features to the users.
 The protocol allows the SDK to register an arbitrary entry type within the journal. The type MUST be `>= 0xFC00`. The
 runtime will treat this entry as any other entry, persisting it and sending it during replay in the correct order.
 
-If the SDK needs an acknowledgment that the entry has been persisted, it can set the `REQUIRES_ACK` flag in the header.
-When set, as soon as the entry is persisted, the runtime will send back a `CompletionMessage` with the `result.empty`
-field set, as described in [Entries and Completions section](#entries-and-completions).
-
 **Header**
 
     0                   1                   2                   3
     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |              Type             |           Reserved          |A|
+    |              Type             |A|           Reserved          |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |                             Length                            |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -350,8 +344,8 @@ field set, as described in [Entries and Completions section](#entries-and-comple
 
 Flags:
 
-- 15 bits (MSB): Reserved
-- 1 bit `A`: `REQUIRES_ACK` flag. Mask: `0x0000_0001_0000_0000`
+- 1 bit (MSB) `A`: [`REQUIRES_ACK` flag](#acknowledgment-of-stored-entries). Mask: `0x0000_8000_0000_0000`
+- 15 bits: Reserved
 
 ### Eager state
 
