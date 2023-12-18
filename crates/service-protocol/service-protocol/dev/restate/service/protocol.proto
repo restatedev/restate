@@ -100,7 +100,10 @@ message ErrorMessage {
 // Fallible: No
 // Type: 0x0400 + 0
 message PollInputStreamEntryMessage {
-  bytes value = 14;
+  oneof result {
+    bytes value = 14;
+    Failure failure = 15;
+  }
 }
 
 // Completable: No
@@ -124,6 +127,7 @@ message GetStateEntryMessage {
   oneof result {
     google.protobuf.Empty empty = 13;
     bytes value = 14;
+    Failure failure = 15;
   };
 }
 
@@ -152,7 +156,10 @@ message SleepEntryMessage {
   // The time is set as duration since UNIX Epoch.
   uint64 wake_up_time = 1;
 
-  google.protobuf.Empty result = 13;
+  oneof result {
+    google.protobuf.Empty empty = 13;
+    Failure failure = 15;
+  }
 }
 
 // Completable: Yes
