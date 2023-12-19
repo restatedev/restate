@@ -18,7 +18,9 @@ use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 
 use crate::table_util::format_using;
-use restate_types::journal::{BackgroundInvokeEntry, Entry, InvokeEntry, InvokeRequest};
+use restate_types::journal::{
+    BackgroundInvokeEntry, Entry, InvokeEntry, InvokeRequest, SleepEntry,
+};
 
 #[inline]
 pub(crate) fn append_journal_row(
@@ -78,6 +80,13 @@ pub(crate) fn append_journal_row(
                         }
                     }
                 }
+                EnrichedEntryHeader::Sleep { .. } => {
+                    if row.is_sleep_wakeup_at_defined() {
+                        if let Some(sleep_entry) = deserialize_sleep_entry(&entry) {
+                            row.sleep_wakeup_at(sleep_entry.wake_up_time as i64);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -100,6 +109,18 @@ fn deserialize_invocation_request(entry: &EnrichedRawEntry) -> Option<InvokeRequ
     match decoded_entry {
         Entry::Invoke(InvokeEntry { request, .. })
         | Entry::BackgroundInvoke(BackgroundInvokeEntry { request, .. }) => Some(request),
+        _ => None,
+    }
+}
+
+fn deserialize_sleep_entry(entry: &EnrichedRawEntry) -> Option<SleepEntry> {
+    let decoded_entry = entry
+        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+        .expect("journal entry must deserialize");
+
+    debug_assert!(matches!(decoded_entry, Entry::Sleep(_)));
+    match decoded_entry {
+        Entry::Sleep(entry) => Some(entry),
         _ => None,
     }
 }

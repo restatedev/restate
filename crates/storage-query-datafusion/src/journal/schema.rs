@@ -25,4 +25,5 @@ define_table!(journal(
     invoked_service: DataType::LargeUtf8,
     invoked_method: DataType::LargeUtf8,
     invoked_service_key: DataType::LargeUtf8,
+    sleep_wakeup_at: DataType::Date64,
 ));
