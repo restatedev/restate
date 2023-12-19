@@ -406,7 +406,7 @@ mod tests {
         use restate_test_util::test;
         use restate_types::identifiers::InvocationId;
         use restate_types::invocation::{
-            InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocationSpanContext,
+            InvocationResponse, MaybeFullInvocationId, ResponseResult,
         };
         use restate_types::journal::enriched::EnrichedRawEntry;
         use restate_types::journal::EntryType;
@@ -432,15 +432,10 @@ mod tests {
             let mut t = state_machine.storage().transaction();
             t.put_invocation_status(
                 &notification_service_service_id,
-                InvocationStatus::Invoked(InvocationMetadata::new(
-                    fid_virtual_invocation_creator.invocation_uuid,
-                    JournalMetadata::new(0, ServiceInvocationSpanContext::empty()),
-                    None,
-                    ByteString::from_static("OtherMethod"),
-                    None,
-                    StatusTimestamps::now(),
-                    Source::Ingress,
-                )),
+                InvocationStatus::Invoked(InvocationMetadata {
+                    invocation_uuid: fid_virtual_invocation_creator.invocation_uuid,
+                    ..InvocationMetadata::mock()
+                }),
             )
             .await;
             t.commit().await.unwrap();
@@ -534,15 +529,10 @@ mod tests {
             .await;
             t.put_invocation_status(
                 &notification_service_service_id,
-                InvocationStatus::Invoked(InvocationMetadata::new(
-                    fid_virtual_invocation_creator.invocation_uuid,
-                    JournalMetadata::new(0, ServiceInvocationSpanContext::empty()),
-                    None,
-                    ByteString::from_static("OtherMethod"),
-                    None,
-                    StatusTimestamps::now(),
-                    Source::Ingress,
-                )),
+                InvocationStatus::Invoked(InvocationMetadata {
+                    invocation_uuid: fid_virtual_invocation_creator.invocation_uuid,
+                    ..InvocationMetadata::mock()
+                }),
             )
             .await;
             t.commit().await.unwrap();

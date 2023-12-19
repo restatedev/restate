@@ -28,6 +28,20 @@ struct StateReaderMock {
 }
 
 impl StateReaderMock {
+    pub fn mock_invocation_metadata(
+        journal_length: u32,
+        invocation_uuid: InvocationUuid,
+    ) -> InvocationMetadata {
+        InvocationMetadata {
+            invocation_uuid,
+            journal_metadata: JournalMetadata {
+                length: journal_length,
+                span_context: ServiceInvocationSpanContext::empty(),
+            },
+            ..InvocationMetadata::mock()
+        }
+    }
+
     fn register_invoked_status(&mut self, fid: FullInvocationId, journal: Vec<JournalEntry>) {
         let invocation_uuid = fid.invocation_uuid;
 
@@ -39,24 +53,6 @@ impl StateReaderMock {
             )),
             journal,
         );
-    }
-
-    fn mock_invocation_metadata(
-        journal_length: u32,
-        invocation_uuid: InvocationUuid,
-    ) -> InvocationMetadata {
-        InvocationMetadata {
-            invocation_uuid,
-            journal_metadata: JournalMetadata {
-                length: journal_length,
-                span_context: ServiceInvocationSpanContext::empty(),
-            },
-            deployment_id: None,
-            method: ByteString::from("".to_string()),
-            response_sink: None,
-            timestamps: StatusTimestamps::now(),
-            source: Source::Ingress,
-        }
     }
 
     fn register_suspended_status(

@@ -74,6 +74,7 @@ tracing-opentelemetry = { workspace = true }
 restate-pb = { workspace = true, features = ["mocks"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-service-protocol = { workspace = true, features = ["mocks"] }
+restate-storage-api = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true, features = ["prost"] }
 restate-types = { workspace = true, features = ["mocks"] }
 

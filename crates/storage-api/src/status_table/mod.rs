@@ -234,3 +234,22 @@ pub trait StatusTable {
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> GetStream<FullInvocationId>;
 }
+
+#[cfg(any(test, feature = "mocks"))]
+mod mocks {
+    use super::*;
+
+    impl InvocationMetadata {
+        pub fn mock() -> Self {
+            InvocationMetadata {
+                invocation_uuid: InvocationUuid::now_v7(),
+                journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
+                deployment_id: None,
+                method: ByteString::from("mock"),
+                response_sink: None,
+                timestamps: StatusTimestamps::now(),
+                source: Source::Ingress,
+            }
+        }
+    }
+}
