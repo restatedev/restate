@@ -15,7 +15,7 @@ use restate_storage_api::status_table::{
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
-use restate_types::invocation::ServiceInvocationSpanContext;
+use restate_types::invocation::{ServiceInvocationSpanContext, Source};
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 
@@ -27,6 +27,7 @@ fn invoked_status(invocation_id: impl Into<InvocationUuid>) -> InvocationStatus 
         "service".into(),
         None,
         StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
+        Source::Ingress,
     ))
 }
 
@@ -39,6 +40,7 @@ fn suspended_status(invocation_id: impl Into<InvocationUuid>) -> InvocationStatu
             "service".into(),
             None,
             StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
+            Source::Ingress,
         ),
         waiting_for_completed_entries: HashSet::default(),
     }

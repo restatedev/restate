@@ -107,7 +107,7 @@ mod tests {
     };
     use restate_types::invocation::{
         InvocationResponse, InvocationTermination, MaybeFullInvocationId, ResponseResult,
-        ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+        ServiceInvocation, ServiceInvocationResponseSink, Source,
     };
     use restate_types::journal::enriched::EnrichedRawEntry;
     use restate_types::journal::{Completion, CompletionResult};
@@ -406,7 +406,7 @@ mod tests {
         use restate_test_util::test;
         use restate_types::identifiers::InvocationId;
         use restate_types::invocation::{
-            InvocationResponse, MaybeFullInvocationId, ResponseResult,
+            InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocationSpanContext,
         };
         use restate_types::journal::enriched::EnrichedRawEntry;
         use restate_types::journal::EntryType;
@@ -439,6 +439,7 @@ mod tests {
                     ByteString::from_static("OtherMethod"),
                     None,
                     StatusTimestamps::now(),
+                    Source::Ingress,
                 )),
             )
             .await;
@@ -540,6 +541,7 @@ mod tests {
                     ByteString::from_static("OtherMethod"),
                     None,
                     StatusTimestamps::now(),
+                    Source::Ingress,
                 )),
             )
             .await;
@@ -641,6 +643,7 @@ mod tests {
                 fid: fid.clone(),
                 method_name: ByteString::from("MyMethod"),
                 argument: Default::default(),
+                source: Source::Ingress,
                 response_sink: None,
                 span_context: Default::default(),
             })))

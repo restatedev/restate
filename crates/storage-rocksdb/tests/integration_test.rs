@@ -12,7 +12,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use restate_storage_api::GetStream;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
-use restate_types::invocation::{ServiceInvocation, SpanRelation};
+use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use std::fmt::Debug;
 use std::str::FromStr;
 use tempfile::tempdir;
@@ -66,6 +66,7 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         FullInvocationId::with_service_id(service_id, InvocationUuid::now_v7()),
         ByteString::from_static("service"),
         Bytes::new(),
+        Source::Ingress,
         None,
         SpanRelation::None,
     )
@@ -76,6 +77,7 @@ pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {
         FullInvocationId::mock_random(),
         ByteString::from_static("service"),
         Bytes::new(),
+        Source::Ingress,
         None,
         SpanRelation::None,
     )

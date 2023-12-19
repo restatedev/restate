@@ -265,6 +265,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         fid: fid.clone(),
                         method_name: request.method_name,
                         argument: request.parameter,
+                        source: Source::Service(virtual_journal_fid.clone()),
                         response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
                             caller: virtual_journal_fid.clone(),
                             entry_index,
@@ -313,6 +314,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         fid.clone(),
                         request.method_name.into(),
                         request.parameter,
+                        Source::Service(virtual_journal_fid.clone()),
                         None,
                         invoke_time.into(),
                         entry_index,
@@ -322,6 +324,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         fid: fid.clone(),
                         method_name: request.method_name,
                         argument: request.parameter,
+                        source: Source::Service(virtual_journal_fid.clone()),
                         response_sink: None,
                         span_context: span_context.clone(),
                     }))
@@ -526,6 +529,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             }
             .encode_to_vec()
             .into(),
+            Source::Internal,
             None,
             expiry_time.into(),
             entry_index,
@@ -562,6 +566,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             }
             .encode_to_vec()
             .into(),
+            Source::Internal,
             None,
             (SystemTime::now() + Duration::from_secs(STREAM_TIMEOUT_SEC as u64)).into(),
             // The timer index is per "timer registrar", in this case the FID of the RemoteContext invocation.

@@ -24,7 +24,7 @@ use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationUuid};
 use restate_types::invocation::{
-    ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::time::MillisSinceEpoch;
 use std::borrow::Cow;
@@ -86,6 +86,7 @@ pub(crate) enum Effect {
         target_fid: FullInvocationId,
         target_method: String,
         argument: Bytes,
+        source: Source,
         response_sink: Option<ServiceInvocationResponseSink>,
         time: MillisSinceEpoch,
         timer_index: EntryIndex,
@@ -379,11 +380,13 @@ impl<S: StateReader> InvocationContext<'_, S> {
         self.state_transitions.0.insert(key.0.to_string(), None);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn delay_invoke(
         &mut self,
         target_fid: FullInvocationId,
         target_method: String,
         argument: Bytes,
+        source: Source,
         response_sink: Option<ServiceInvocationResponseSink>,
         time: MillisSinceEpoch,
         timer_index: EntryIndex,
@@ -393,6 +396,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
             target_fid,
             target_method,
             argument,
+            source,
             response_sink,
             time,
             timer_index,

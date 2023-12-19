@@ -12,7 +12,7 @@ use super::*;
 
 use restate_pb::restate::internal::*;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::invocation::ServiceInvocation;
+use restate_types::invocation::{ServiceInvocation, Source};
 use tracing::{instrument, trace};
 
 #[async_trait::async_trait]
@@ -31,6 +31,8 @@ impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
             target_fid,
             req.target_method,
             req.input,
+            // Proxy service is only used by the ingress dispatcher to for deduplication purposes.
+            Source::Ingress,
             None,
             self.span_context.as_parent(),
         )));

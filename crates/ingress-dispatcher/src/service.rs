@@ -21,7 +21,7 @@ use restate_pb::restate::internal::{
 };
 use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::IngressDispatcherId;
-use restate_types::invocation::ServiceInvocationResponseSink;
+use restate_types::invocation::{ServiceInvocationResponseSink, Source};
 use std::collections::HashMap;
 use std::future::poll_fn;
 use tokio::select;
@@ -302,6 +302,7 @@ impl DispatcherLoopHandler {
                         }
                         .encode_to_vec()
                         .into(),
+                        source: Source::Ingress,
                         response_sink,
                         span_context,
                     },
@@ -313,6 +314,7 @@ impl DispatcherLoopHandler {
                         fid,
                         method_name,
                         argument,
+                        source: Source::Ingress,
                         response_sink,
                         span_context,
                     },

@@ -55,6 +55,7 @@ impl StateReaderMock {
             method: ByteString::from("".to_string()),
             response_sink: None,
             timestamps: StatusTimestamps::now(),
+            source: Source::Ingress,
         }
     }
 

@@ -40,11 +40,12 @@ pub mod storage {
             };
             use crate::storage::v1::{
                 enriched_entry_header, invocation_resolution_result, invocation_status,
-                maybe_full_invocation_id, outbox_message, response_result, span_relation, timer,
-                BackgroundCallResolutionResult, EnrichedEntryHeader, FullInvocationId, InboxEntry,
-                InvocationResolutionResult, InvocationStatus, JournalEntry, JournalMeta,
-                MaybeFullInvocationId, OutboxMessage, ResponseResult, SequencedTimer,
-                ServiceInvocation, ServiceInvocationResponseSink, SpanContext, SpanRelation, Timer,
+                maybe_full_invocation_id, outbox_message, response_result, source, span_relation,
+                timer, BackgroundCallResolutionResult, EnrichedEntryHeader, FullInvocationId,
+                InboxEntry, InvocationResolutionResult, InvocationStatus, JournalEntry,
+                JournalMeta, MaybeFullInvocationId, OutboxMessage, ResponseResult, SequencedTimer,
+                ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
+                SpanRelation, Timer,
             };
             use anyhow::anyhow;
             use bytes::{Buf, Bytes};
@@ -93,12 +94,12 @@ pub mod storage {
                         .ok_or(ConversionError::missing_field("status"))?
                     {
                         invocation_status::Status::Invoked(invoked) => {
-                            let invoked_status =
+                            let invocation_metadata =
                                 restate_storage_api::status_table::InvocationMetadata::try_from(
                                     invoked,
                                 )?;
                             restate_storage_api::status_table::InvocationStatus::Invoked(
-                                invoked_status,
+                                invocation_metadata,
                             )
                         }
                         invocation_status::Status::Suspended(suspended) => {
@@ -202,6 +203,12 @@ pub mod storage {
                             .ok_or(ConversionError::missing_field("response_sink"))?,
                     )?;
 
+                    let source = restate_types::invocation::Source::try_from(
+                        value
+                            .source
+                            .ok_or(ConversionError::missing_field("source"))?,
+                    )?;
+
                     Ok(restate_storage_api::status_table::InvocationMetadata::new(
                         invocation_uuid,
                         journal_metadata,
@@ -212,6 +219,7 @@ pub mod storage {
                             MillisSinceEpoch::new(value.creation_time),
                             MillisSinceEpoch::new(value.modification_time),
                         ),
+                        source,
                     ))
                 }
             }
@@ -220,11 +228,12 @@ pub mod storage {
                 fn from(value: restate_storage_api::status_table::InvocationMetadata) -> Self {
                     let restate_storage_api::status_table::InvocationMetadata {
                         invocation_uuid,
-                        deployment_id: deployment_id,
+                        deployment_id,
                         method,
                         response_sink,
                         journal_metadata,
                         timestamps,
+                        source,
                     } = value;
 
                     Invoked {
@@ -240,6 +249,7 @@ pub mod storage {
                         journal_meta: Some(JournalMeta::from(journal_metadata)),
                         creation_time: timestamps.creation_time().as_u64(),
                         modification_time: timestamps.modification_time().as_u64(),
+                        source: Some(Source::from(source)),
                     }
                 }
             }
@@ -284,6 +294,12 @@ pub mod storage {
                     let waiting_for_completed_entries =
                         value.waiting_for_completed_entries.into_iter().collect();
 
+                    let caller = restate_types::invocation::Source::try_from(
+                        value
+                            .source
+                            .ok_or(ConversionError::missing_field("source"))?,
+                    )?;
+
                     Ok((
                         restate_storage_api::status_table::InvocationMetadata::new(
                             invocation_uuid,
@@ -295,6 +311,7 @@ pub mod storage {
                                 MillisSinceEpoch::new(value.creation_time),
                                 MillisSinceEpoch::new(value.modification_time),
                             ),
+                            caller,
                         ),
                         waiting_for_completed_entries,
                     ))
@@ -333,6 +350,7 @@ pub mod storage {
                         creation_time: metadata.timestamps.creation_time().as_u64(),
                         modification_time: metadata.timestamps.modification_time().as_u64(),
                         waiting_for_completed_entries,
+                        source: Some(Source::from(metadata.source)),
                     }
                 }
             }
@@ -470,6 +488,41 @@ pub mod storage {
                 }
             }
 
+            impl TryFrom<Source> for restate_types::invocation::Source {
+                type Error = ConversionError;
+
+                fn try_from(value: Source) -> Result<Self, Self::Error> {
+                    let source = match value
+                        .source
+                        .ok_or(ConversionError::missing_field("source"))?
+                    {
+                        source::Source::Ingress(_) => restate_types::invocation::Source::Ingress,
+                        source::Source::Service(fid) => restate_types::invocation::Source::Service(
+                            restate_types::identifiers::FullInvocationId::try_from(fid)?,
+                        ),
+                        source::Source::Internal(_) => restate_types::invocation::Source::Internal,
+                    };
+
+                    Ok(source)
+                }
+            }
+
+            impl From<restate_types::invocation::Source> for Source {
+                fn from(value: restate_types::invocation::Source) -> Self {
+                    let source = match value {
+                        restate_types::invocation::Source::Ingress => source::Source::Ingress(()),
+                        restate_types::invocation::Source::Service(fid) => {
+                            source::Source::Service(FullInvocationId::from(fid))
+                        }
+                        restate_types::invocation::Source::Internal => source::Source::Internal(()),
+                    };
+
+                    Source {
+                        source: Some(source),
+                    }
+                }
+            }
+
             impl TryFrom<InboxEntry> for restate_types::invocation::ServiceInvocation {
                 type Error = ConversionError;
 
@@ -505,6 +558,7 @@ pub mod storage {
                         response_sink,
                         span_context,
                         argument,
+                        source,
                     } = value;
 
                     let id = restate_types::identifiers::FullInvocationId::try_from(
@@ -525,10 +579,15 @@ pub mod storage {
                     let method_name =
                         ByteString::try_from(method_name).map_err(ConversionError::invalid_data)?;
 
+                    let source = restate_types::invocation::Source::try_from(
+                        source.ok_or(ConversionError::missing_field("source"))?,
+                    )?;
+
                     Ok(restate_types::invocation::ServiceInvocation {
                         fid: id,
                         method_name,
                         argument,
+                        source,
                         response_sink,
                         span_context,
                     })
@@ -541,6 +600,7 @@ pub mod storage {
                     let span_context = SpanContext::from(value.span_context);
                     let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
                     let method_name = value.method_name.into_bytes();
+                    let source = Source::from(value.source);
 
                     ServiceInvocation {
                         id: Some(id),
@@ -548,6 +608,7 @@ pub mod storage {
                         response_sink: Some(response_sink),
                         method_name,
                         argument: value.argument,
+                        source: Some(source),
                     }
                 }
             }

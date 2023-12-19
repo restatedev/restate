@@ -107,6 +107,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             fid,
             request.method,
             request.argument,
+            Source::Service(self.full_invocation_id.clone()),
             Some(ServiceInvocationResponseSink::NewInvocation {
                 target: FullInvocationId::with_service_id(
                     self.full_invocation_id.service_id.clone(),
@@ -175,6 +176,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             ),
             restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME.to_string(),
             Bytes::new(),
+            Source::Service(self.full_invocation_id.clone()),
             None,
             expiry_time.into(),
             0,

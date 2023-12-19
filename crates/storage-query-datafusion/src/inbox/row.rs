@@ -12,7 +12,7 @@ use super::schema::InboxBuilder;
 use crate::table_util::format_using;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink};
+use restate_types::invocation::{ServiceInvocation, Source};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -28,7 +28,7 @@ pub(crate) fn append_inbox_row(
             ServiceInvocation {
                 fid,
                 method_name,
-                response_sink,
+                source: caller,
                 span_context,
                 ..
             },
@@ -48,19 +48,19 @@ pub(crate) fn append_inbox_row(
 
     row.sequence_number(inbox_sequence_number);
 
-    match response_sink {
-        Some(ServiceInvocationResponseSink::PartitionProcessor { caller, .. }) => {
+    match caller {
+        Source::Service(caller) => {
             row.invoked_by("service");
             row.invoked_by_service(&caller.service_id.service_name);
             if row.is_invoked_by_id_defined() {
                 row.invoked_by_id(format_using(output, &caller));
             }
         }
-        Some(ServiceInvocationResponseSink::Ingress(..)) => {
+        Source::Ingress => {
             row.invoked_by("ingress");
         }
-        _ => {
-            row.invoked_by("unknown");
+        Source::Internal => {
+            row.invoked_by("restate");
         }
     }
     if row.is_trace_id_defined() {

@@ -30,6 +30,14 @@ message JournalMeta {
     SpanContext span_context = 2;
 }
 
+message Source {
+    oneof source {
+        google.protobuf.Empty ingress = 9;
+        FullInvocationId service = 10;
+        google.protobuf.Empty internal = 11;
+    }
+}
+
 message InvocationStatus {
 
     message Invoked {
@@ -43,6 +51,7 @@ message InvocationStatus {
             google.protobuf.Empty none = 7;
             string value = 8;
         }
+        Source source = 9;
     }
 
     message Suspended {
@@ -57,6 +66,7 @@ message InvocationStatus {
             google.protobuf.Empty none = 8;
             string value = 9;
         }
+        Source source = 10;
     }
 
     message Free {
@@ -142,6 +152,7 @@ message ServiceInvocation {
     bytes argument = 3;
     ServiceInvocationResponseSink response_sink = 4;
     SpanContext span_context = 5;
+    Source source = 6;
 }
 
 message InboxEntry {

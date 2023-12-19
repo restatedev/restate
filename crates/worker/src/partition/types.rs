@@ -15,7 +15,7 @@ use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{
     InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, SpanRelation,
+    ServiceInvocationResponseSink, Source, SpanRelation,
 };
 use restate_types::time::MillisSinceEpoch;
 use std::cmp::Ordering;
@@ -197,6 +197,7 @@ impl OutboxMessageExt for OutboxMessage {
                         caller_context,
                     }
                     .encode_to_vec(),
+                    Source::Service(callee.clone()),
                     None,
                     SpanRelation::None,
                 ))

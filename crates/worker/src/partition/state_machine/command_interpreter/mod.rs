@@ -36,8 +36,8 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::{
     InvocationResponse, InvocationTermination, MaybeFullInvocationId, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation,
-    SpanRelationCause, TerminationFlavor,
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    SpanRelation, SpanRelationCause, TerminationFlavor,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
@@ -317,6 +317,7 @@ where
                 response_sink,
                 time,
                 timer_index,
+                source: caller,
             } => {
                 effects.register_timer(
                     TimerValue::new_invoke(
@@ -327,6 +328,7 @@ where
                             target_fid,
                             target_method,
                             argument,
+                            caller,
                             response_sink,
                             SpanRelation::default(),
                         ),
@@ -1063,6 +1065,7 @@ where
                         *invocation_id,
                         service_key.clone(),
                         request,
+                        Source::Service(full_invocation_id.clone()),
                         Some((full_invocation_id.clone(), entry_index)),
                         span_context.clone(),
                     );
@@ -1097,6 +1100,7 @@ where
                     *invocation_id,
                     service_key.clone(),
                     request,
+                    Source::Service(full_invocation_id.clone()),
                     None,
                     span_context.clone(),
                 );
@@ -1383,6 +1387,7 @@ where
         invocation_id: InvocationUuid,
         invocation_key: Bytes,
         invoke_request: InvokeRequest,
+        source: Source,
         response_target: Option<(FullInvocationId, EntryIndex)>,
         span_context: ServiceInvocationSpanContext,
     ) -> ServiceInvocation {
@@ -1405,6 +1410,7 @@ where
             fid: FullInvocationId::new(service_name, invocation_key, invocation_id),
             method_name,
             argument: parameter,
+            source,
             response_sink,
             span_context,
         }

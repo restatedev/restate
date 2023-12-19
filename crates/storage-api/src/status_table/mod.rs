@@ -13,7 +13,9 @@ use bytestring::ByteString;
 use restate_types::identifiers::{
     DeploymentId, EntryIndex, FullInvocationId, InvocationUuid, PartitionKey, ServiceId,
 };
-use restate_types::invocation::{ServiceInvocationResponseSink, ServiceInvocationSpanContext};
+use restate_types::invocation::{
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+};
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 use std::ops::RangeInclusive;
@@ -182,6 +184,7 @@ pub struct InvocationMetadata {
     pub method: ByteString,
     pub response_sink: Option<ServiceInvocationResponseSink>,
     pub timestamps: StatusTimestamps,
+    pub source: Source,
 }
 
 impl InvocationMetadata {
@@ -192,6 +195,7 @@ impl InvocationMetadata {
         method: ByteString,
         response_sink: Option<ServiceInvocationResponseSink>,
         timestamps: StatusTimestamps,
+        source: Source,
     ) -> Self {
         Self {
             invocation_uuid,
@@ -200,6 +204,7 @@ impl InvocationMetadata {
             method,
             response_sink,
             timestamps,
+            source,
         }
     }
 }

@@ -106,6 +106,7 @@ impl<'a, State: StateReader + Send + Sync> IngressBuiltInService for InvocationC
             fid,
             request.method,
             argument,
+            Source::Service(self.full_invocation_id.clone()),
             None,
             self.span_context.as_linked(),
         )));

@@ -23,7 +23,7 @@ use prost::Message;
 use restate_errors::NotRunningError;
 use restate_invoker_api::ServiceHandle;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, PartitionLeaderEpoch};
-use restate_types::invocation::{ServiceInvocation, SpanRelation};
+use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::journal::CompletionResult;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
@@ -197,6 +197,7 @@ where
                             ),
                             method_name,
                             journal_notification_request,
+                            Source::Internal,
                             None,
                             SpanRelation::None,
                         )),
@@ -222,6 +223,7 @@ where
                                 invocation_uuid: Bytes::copy_from_slice(invocation_uuid.as_bytes()),
                             }
                             .encode_to_vec(),
+                            Source::Internal,
                             None,
                             SpanRelation::None,
                         )),

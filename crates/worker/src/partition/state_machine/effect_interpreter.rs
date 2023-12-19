@@ -469,6 +469,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     service_invocation.method_name.clone(),
                     service_invocation.response_sink.clone(),
                     StatusTimestamps::now(),
+                    service_invocation.source,
                 )),
             )
             .await?;

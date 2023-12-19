@@ -15,7 +15,7 @@ use restate_storage_api::status_table::{
 };
 use restate_storage_rocksdb::status_table::OwnedStatusRow;
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::ServiceInvocationResponseSink;
+use restate_types::invocation::Source;
 
 #[inline]
 pub(crate) fn append_status_row(
@@ -86,19 +86,19 @@ fn fill_invocation_metadata(
     if let Some(deployment_id) = meta.deployment_id {
         row.pinned_deployment_id(deployment_id);
     }
-    match meta.response_sink {
-        Some(ServiceInvocationResponseSink::PartitionProcessor { caller, .. }) => {
+    match meta.source {
+        Source::Service(caller) => {
             row.invoked_by("service");
             row.invoked_by_service(&caller.service_id.service_name);
             if row.is_invoked_by_id_defined() {
                 row.invoked_by_id(format_using(output, &caller));
             }
         }
-        Some(ServiceInvocationResponseSink::Ingress(..)) => {
+        Source::Ingress => {
             row.invoked_by("ingress");
         }
-        _ => {
-            row.invoked_by("unknown");
+        Source::Internal => {
+            row.invoked_by("restate");
         }
     }
 }

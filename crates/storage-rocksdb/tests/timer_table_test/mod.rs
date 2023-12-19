@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
+use crate::mock_service_invocation;
 use futures_util::StreamExt;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{FullInvocationId, ServiceId};
-use restate_types::invocation::{ServiceInvocation, SpanRelation};
+use restate_types::invocation::ServiceInvocation;
 
 async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
@@ -45,13 +45,10 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     )
     .await;
 
-    let service_invocation = ServiceInvocation::new(
-        FullInvocationId::generate("svc-2", "key-2"),
-        "mymethod".to_string(),
-        Bytes::default(),
-        None,
-        SpanRelation::None,
-    );
+    let service_invocation = ServiceInvocation {
+        method_name: "mymethod".into(),
+        ..mock_service_invocation(ServiceId::new("svc-2", "key-2"))
+    };
     txn.add_timer(
         1337,
         &TimerKey {
