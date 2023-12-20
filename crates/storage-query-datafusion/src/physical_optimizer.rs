@@ -36,6 +36,14 @@ impl PhysicalOptimizerRule for JoinRewrite {
                 return Ok(Transformed::No(plan));
             };
 
+            let has_partition_key = hash_join
+                .on()
+                .iter()
+                .any(|(l, r)| l.name() == "partition_key" || r.name() == "partition_key");
+            if !has_partition_key {
+                return Ok(Transformed::No(plan));
+            }
+
             let Ok(new_plan) = SymmetricHashJoinExec::try_new(
                 hash_join.left().clone(),
                 hash_join.right().clone(),

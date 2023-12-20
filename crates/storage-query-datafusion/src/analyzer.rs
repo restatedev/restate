@@ -10,7 +10,6 @@
 
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
-use datafusion::error::DataFusionError;
 use datafusion::optimizer::analyzer::AnalyzerRule;
 use datafusion_expr::{col, Join, LogicalPlan};
 
@@ -43,25 +42,29 @@ impl AnalyzerRule for UseSymmetricHashJoinWhenPartitionKeyIsPresent {
                 return Ok(Transformed::No(plan));
             };
 
-            let mut new_on = on.to_vec();
+            // if a partition_key exists add that to the join, otherwise use u64::max.
+            let left_pk = left
+                .schema()
+                .field_with_unqualified_name("partition_key")
+                .map(|df| col(df.qualified_column()))
+                .ok();
 
-            let left_pk = left.schema().field_with_unqualified_name("partition_key");
-            let right_pk = right.schema().field_with_unqualified_name("partition_key");
+            // if a partition_key exists add that to the join, otherwise use u64::max.
+            let right_pk = right
+                .schema()
+                .field_with_unqualified_name("partition_key")
+                .map(|df| col(df.qualified_column()))
+                .ok();
 
-            if left_pk.is_ok() != right_pk.is_ok() {
-                return Err(DataFusionError::Plan(
-                    "Unable to find a partition_key column, which is required in a join"
-                        .to_string(),
-                ));
-            }
-            if left_pk.is_err() {
+            let both_have_pk = left_pk.is_some() && right_pk.is_some();
+            if !both_have_pk {
                 return Ok(Transformed::No(plan));
             }
-            let left_pk = col(left_pk.unwrap().qualified_column());
-            let right_pk = col(right_pk.unwrap().qualified_column());
-
-            new_on.push((left_pk, right_pk));
-
+            //
+            // both sides have a partition_key, lets do a equijoin.
+            //
+            let mut new_on = on.to_vec();
+            new_on.push((left_pk.unwrap(), right_pk.unwrap()));
             let new_plan = LogicalPlan::Join(Join {
                 left: left.clone(),
                 right: right.clone(),
