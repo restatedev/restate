@@ -33,6 +33,7 @@ pub enum ProtocolMessage {
     Completion(pb::protocol::CompletionMessage),
     Suspension(pb::protocol::SuspensionMessage),
     Error(pb::protocol::ErrorMessage),
+    End(pb::protocol::EndMessage),
     EntryAck(pb::protocol::EntryAckMessage),
 
     // Entries are not parsed at this point
@@ -69,6 +70,7 @@ impl ProtocolMessage {
             ProtocolMessage::Completion(m) => m.encoded_len(),
             ProtocolMessage::Suspension(m) => m.encoded_len(),
             ProtocolMessage::Error(m) => m.encoded_len(),
+            ProtocolMessage::End(m) => m.encoded_len(),
             ProtocolMessage::EntryAck(m) => m.encoded_len(),
             ProtocolMessage::UnparsedEntry(entry) => entry.serialized_entry().len(),
         }

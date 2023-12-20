@@ -102,10 +102,6 @@ pub(crate) enum InvocationTaskError {
     ErrorMessageReceived(#[from] InvocationError),
     #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry. This is probably an SDK bug")]
     WriteAfterEndOfStream,
-    #[error("Unexpected end of invocation stream, as it was closed with both a SuspensionMessage and an OutputStreamEntry. This is probably an SDK bug")]
-    TooManyTerminalMessages,
-    #[error("Unexpected end of invocation stream, as it was closed with too many OutputStreamEntry. Only one is allowed. This is probably an SDK bug")]
-    TooManyOutputStreamEntry,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -218,7 +214,6 @@ pub(super) struct InvocationTask<JR, SR, EE, DMR> {
 
     // Task state
     next_journal_index: EntryIndex,
-    saw_output_stream_entry: bool,
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
@@ -293,7 +288,6 @@ where
             invoker_rx,
             encoder: Encoder::new(protocol_version),
             decoder: Decoder::new(message_size_warning, message_size_limit),
-            saw_output_stream_entry: false,
         }
     }
 
@@ -312,25 +306,13 @@ where
         }
 
         // Sanity check of the final state
-        let inner = match (terminal_state, self.saw_output_stream_entry) {
-            (TerminalLoopState::Continue(_), _) => {
+        let inner = match terminal_state {
+            TerminalLoopState::Continue(_) => {
                 unreachable!("This is not supposed to happen. This is a runtime bug")
             }
-            (TerminalLoopState::Closed, true) => {
-                // For the time being, seeing a OutputStreamEntry marks a correct closing of the invocation stream.
-                InvocationTaskOutputInner::Closed
-            }
-            (TerminalLoopState::Closed, false) => {
-                // Stream closed without output stream entry is same as receiving a default invocation error message.
-                InvocationTaskOutputInner::Failed(InvocationTaskError::ErrorMessageReceived(
-                    InvocationError::default(),
-                ))
-            }
-            (TerminalLoopState::Suspended(_), true) => {
-                InvocationTaskOutputInner::Failed(InvocationTaskError::TooManyTerminalMessages)
-            }
-            (TerminalLoopState::Suspended(v), false) => InvocationTaskOutputInner::Suspended(v),
-            (TerminalLoopState::Failed(e), _) => InvocationTaskOutputInner::Failed(e),
+            TerminalLoopState::Closed => InvocationTaskOutputInner::Closed,
+            TerminalLoopState::Suspended(v) => InvocationTaskOutputInner::Suspended(v),
+            TerminalLoopState::Failed(e) => InvocationTaskOutputInner::Failed(e),
         };
 
         let _ = self.invoker_tx.send(InvocationTaskOutput {
@@ -516,9 +498,6 @@ where
                 opt_je = journal_stream.next() => {
                     match opt_je {
                         Some(je) => {
-                            if je.header().as_entry_type() == EntryType::OutputStream {
-                                shortcircuit!(self.notify_saw_output_stream_entry());
-                            }
                             shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
                             self.next_journal_index += 1;
                         },
@@ -564,8 +543,10 @@ where
                     match shortcircuit!(opt_buf) {
                         Some(buf) => shortcircuit!(self.handle_read(parent_span_context, buf)),
                         None => {
-                            // Response stream is closed. No further processing is needed.
-                            return TerminalLoopState::Closed
+                            // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
+                            return TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
+                                InvocationError::default()
+                            ))
                         }
                     }
                 },
@@ -590,8 +571,10 @@ where
                     match shortcircuit!(opt_buf) {
                         Some(buf) => shortcircuit!(self.handle_read(parent_span_context, buf)),
                         None => {
-                            // Response stream is closed. No further processing is needed.
-                            return TerminalLoopState::Closed
+                            // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
+                            return TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
+                                InvocationError::default()
+                            ))
                         }
                     }
                 },
@@ -680,9 +663,11 @@ where
             ),
             ProtocolMessage::Suspension(suspension) => {
                 let suspension_indexes = HashSet::from_iter(suspension.entry_indexes);
+                // We currently don't support empty suspension_indexes set
                 if suspension_indexes.is_empty() {
                     return TerminalLoopState::Failed(InvocationTaskError::EmptySuspensionMessage);
                 }
+                // Sanity check on the suspension indexes
                 if *suspension_indexes.iter().max().unwrap() >= self.next_journal_index {
                     return TerminalLoopState::Failed(InvocationTaskError::BadSuspensionMessage(
                         suspension_indexes,
@@ -694,11 +679,9 @@ where
             ProtocolMessage::Error(e) => TerminalLoopState::Failed(
                 InvocationTaskError::ErrorMessageReceived(InvocationError::from(e)),
             ),
+            ProtocolMessage::End(_) => TerminalLoopState::Closed,
             ProtocolMessage::UnparsedEntry(entry) => {
                 let entry_type = entry.header().as_entry_type();
-                if entry_type == EntryType::OutputStream {
-                    shortcircuit!(self.notify_saw_output_stream_entry());
-                }
                 let enriched_entry = shortcircuit!(self
                     .entry_enricher
                     .enrich_entry(entry, parent_span_context)
@@ -722,14 +705,6 @@ where
                 TerminalLoopState::Continue(())
             }
         }
-    }
-
-    fn notify_saw_output_stream_entry(&mut self) -> Result<(), InvocationTaskError> {
-        if self.saw_output_stream_entry {
-            return Err(InvocationTaskError::TooManyOutputStreamEntry);
-        }
-        self.saw_output_stream_entry = true;
-        Ok(())
     }
 
     fn prepare_request(

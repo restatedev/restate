@@ -85,6 +85,7 @@ fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeade
         ProtocolMessage::Completion(_) => MessageHeader::new(MessageType::Completion, len),
         ProtocolMessage::Suspension(_) => MessageHeader::new(MessageType::Suspension, len),
         ProtocolMessage::Error(_) => MessageHeader::new(MessageType::Error, len),
+        ProtocolMessage::End(_) => MessageHeader::new(MessageType::End, len),
         ProtocolMessage::EntryAck(_) => MessageHeader::new(MessageType::EntryAck, len),
         ProtocolMessage::UnparsedEntry(entry) => {
             let completed_flag = entry.header().is_completed();
@@ -103,6 +104,7 @@ fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost:
         ProtocolMessage::Completion(m) => m.encode(buf),
         ProtocolMessage::Suspension(m) => m.encode(buf),
         ProtocolMessage::Error(m) => m.encode(buf),
+        ProtocolMessage::End(m) => m.encode(buf),
         ProtocolMessage::EntryAck(m) => m.encode(buf),
         ProtocolMessage::UnparsedEntry(entry) => {
             buf.put(entry.serialized_entry().clone());
@@ -228,6 +230,7 @@ fn decode_protocol_message(
             ProtocolMessage::Suspension(pb::protocol::SuspensionMessage::decode(buf)?)
         }
         MessageType::Error => ProtocolMessage::Error(pb::protocol::ErrorMessage::decode(buf)?),
+        MessageType::End => ProtocolMessage::End(pb::protocol::EndMessage::decode(buf)?),
         MessageType::EntryAck => {
             ProtocolMessage::EntryAck(pb::protocol::EntryAckMessage::decode(buf)?)
         }
@@ -257,6 +260,7 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
                 | MessageType::Suspension
                 | MessageType::EntryAck
                 | MessageType::Error
+                | MessageType::End
         ),
         "Message is not an entry type. This is a Restate bug. Please contact the developers."
     );
@@ -265,6 +269,7 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
         MessageType::Completion => unreachable!(),
         MessageType::Suspension => unreachable!(),
         MessageType::Error => unreachable!(),
+        MessageType::End => unreachable!(),
         MessageType::EntryAck => unreachable!(),
 
         MessageType::PollInputStreamEntry => PlainEntryHeader::PollInputStream {

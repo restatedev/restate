@@ -1188,7 +1188,7 @@ mod tests {
             .handle_invocation_task_failed(
                 MOCK_PARTITION,
                 fid.clone(),
-                InvocationTaskError::TooManyTerminalMessages, /* any error is fine */
+                InvocationTaskError::EmptySuspensionMessage, /* any error is fine */
             )
             .await;
 

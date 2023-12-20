@@ -30,6 +30,7 @@ pub enum MessageType {
     Completion,
     Suspension,
     Error,
+    End,
     EntryAck,
     PollInputStreamEntry,
     OutputStreamEntry,
@@ -51,6 +52,7 @@ impl MessageType {
             MessageType::Completion => MessageKind::Core,
             MessageType::Suspension => MessageKind::Core,
             MessageType::Error => MessageKind::Core,
+            MessageType::End => MessageKind::Core,
             MessageType::EntryAck => MessageKind::Core,
             MessageType::PollInputStreamEntry => MessageKind::IO,
             MessageType::OutputStreamEntry => MessageKind::IO,
@@ -94,6 +96,7 @@ const COMPLETION_MESSAGE_TYPE: u16 = 0x0001;
 const SUSPENSION_MESSAGE_TYPE: u16 = 0x0002;
 const ERROR_MESSAGE_TYPE: u16 = 0x0003;
 const ENTRY_ACK_MESSAGE_TYPE: u16 = 0x0004;
+const END_MESSAGE_TYPE: u16 = 0x0005;
 const POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE: u16 = 0x0400;
 const OUTPUT_STREAM_ENTRY_MESSAGE_TYPE: u16 = 0x0401;
 const GET_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0800;
@@ -112,6 +115,7 @@ impl From<MessageType> for MessageTypeId {
             MessageType::Completion => COMPLETION_MESSAGE_TYPE,
             MessageType::Suspension => SUSPENSION_MESSAGE_TYPE,
             MessageType::Error => ERROR_MESSAGE_TYPE,
+            MessageType::End => END_MESSAGE_TYPE,
             MessageType::EntryAck => ENTRY_ACK_MESSAGE_TYPE,
             MessageType::PollInputStreamEntry => POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE,
             MessageType::OutputStreamEntry => OUTPUT_STREAM_ENTRY_MESSAGE_TYPE,
@@ -141,6 +145,7 @@ impl TryFrom<MessageTypeId> for MessageType {
             COMPLETION_MESSAGE_TYPE => Ok(MessageType::Completion),
             SUSPENSION_MESSAGE_TYPE => Ok(MessageType::Suspension),
             ERROR_MESSAGE_TYPE => Ok(MessageType::Error),
+            END_MESSAGE_TYPE => Ok(MessageType::End),
             ENTRY_ACK_MESSAGE_TYPE => Ok(MessageType::EntryAck),
             POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE => Ok(MessageType::PollInputStreamEntry),
             OUTPUT_STREAM_ENTRY_MESSAGE_TYPE => Ok(MessageType::OutputStreamEntry),

@@ -40,8 +40,8 @@ use restate_types::journal::enriched::{
 };
 use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntryCodec};
 use restate_types::journal::{
-    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Entry, GetStateEntry,
-    InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry,
+    BackgroundInvokeEntry, ClearStateEntry, CompleteAwakeableEntry, Entry, EntryResult,
+    GetStateEntry, InvokeEntry, InvokeRequest, OutputStreamEntry, SetStateEntry,
 };
 use restate_types::journal::{Completion, CompletionResult};
 use serde::{Deserialize, Serialize};
@@ -100,13 +100,44 @@ const INACTIVITY_TRACKER: StateKey<Bincode<InactivityTracker>> =
     StateKey::new_bincode("_inactivity");
 
 impl<'a, State: StateReader> InvocationContext<'a, State> {
+    // Please note: this method doesn't take in account the current state transitions
+    async fn load_journal(
+        &self,
+        service_id: &ServiceId,
+    ) -> Result<Option<(InvocationUuid, JournalMetadata, Vec<EnrichedRawEntry>)>, InvocationError>
+    {
+        if let Some((invocation_uuid, journal_metadata)) = self
+            .state_reader
+            .read_virtual_journal_metadata(service_id)
+            .await
+            .map_err(InvocationError::internal)?
+        {
+            let mut vec = Vec::with_capacity(journal_metadata.length as usize);
+            for i in 0..journal_metadata.length {
+                vec.insert(
+                    i as usize,
+                    self.state_reader
+                        .read_virtual_journal_entry(service_id, i)
+                        .await
+                        .map_err(InvocationError::internal)?
+                        .ok_or_else(|| {
+                            InvocationError::internal(format!("Missing journal entry {}", i))
+                        })?,
+                );
+            }
+            Ok(Some((invocation_uuid, journal_metadata, vec)))
+        } else {
+            Ok(None)
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn handle_protocol_message(
         &mut self,
         operation_id: &str,
         stream_id: &str,
         retention_period_sec: u32,
-        entry_index: EntryIndex,
+        virtual_journal_length: EntryIndex,
         virtual_journal_fid: &FullInvocationId,
         journal_span_context: ServiceInvocationSpanContext,
         header: MessageHeader,
@@ -138,11 +169,13 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     "Error when executing the invocation");
                 Ok(())
             }
+            ProtocolMessage::End(_) => {
+                self.complete_invocation(operation_id, retention_period_sec, virtual_journal_length)
+                    .await
+            }
             ProtocolMessage::UnparsedEntry(entry) => {
                 self.handle_entry(
-                    operation_id,
-                    retention_period_sec,
-                    entry_index,
+                    virtual_journal_length,
                     header
                         .requires_ack()
                         .expect("Entry message supports requires_ack"),
@@ -155,11 +188,8 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn handle_entry(
         &mut self,
-        operation_id: &str,
-        retention_period_sec: u32,
         entry_index: EntryIndex,
         requires_ack: bool,
         virtual_journal_fid: &FullInvocationId,
@@ -168,26 +198,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
     ) -> Result<(), InvocationError> {
         let enriched_entry = match entry.header() {
             PlainEntryHeader::OutputStream { .. } => {
-                let_assert!(
-                    Entry::OutputStream(OutputStreamEntry { result }) = entry
-                        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
-                        .map_err(InvocationError::internal)?
-                );
-
-                if requires_ack {
-                    self.enqueue_protocol_message(ProtocolMessage::new_entry_ack(entry_index))
-                        .await?;
-                }
-                self.complete_invocation(
-                    operation_id,
-                    retention_period_sec,
-                    entry_index,
-                    result.into(),
-                )
-                .await?;
-
-                // We don't store the entry, as we drop the journal in complete_invocation
-                return Ok(());
+                EnrichedRawEntry::new(EnrichedEntryHeader::OutputStream, entry.into_inner().1)
             }
             PlainEntryHeader::GetState { is_completed, .. } => {
                 let_assert!(
@@ -482,16 +493,33 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         &mut self,
         operation_id: &str,
         retention_period_sec: u32,
-        entry_index: EntryIndex,
-        result: ResponseResult,
+        virtual_journal_length: EntryIndex,
     ) -> Result<(), InvocationError> {
         let expiry_time = SystemTime::now() + Duration::from_secs(retention_period_sec as u64);
+        let journal_service_id = self.journal_service_id();
+
+        // Load the result from the journal's last entry
+        let output_stream_entry_index = virtual_journal_length - 1;
+        let entry = self
+            .read_journal_entry(&journal_service_id, output_stream_entry_index)
+            .await?
+            .ok_or_else(|| {
+                InvocationError::internal(format!(
+                    "expected entry at index {}",
+                    output_stream_entry_index
+                ))
+            })?;
+        let_assert!(
+            Entry::OutputStream(OutputStreamEntry { result }) = entry
+                .deserialize_entry::<ProtobufRawEntryCodec>()
+                .map_err(InvocationError::internal)?
+        );
 
         let get_result_response = GetResultResponse {
             expiry_time: humantime::format_rfc3339(expiry_time).to_string(),
             response: Some(match result {
-                ResponseResult::Success(s) => get_result_response::Response::Success(s),
-                ResponseResult::Failure(code, msg) => {
+                EntryResult::Success(s) => get_result_response::Response::Success(s),
+                EntryResult::Failure(code, msg) => {
                     get_result_response::Response::Failure(InvocationFailure {
                         code: code.into(),
                         message: msg.to_string(),
@@ -500,6 +528,50 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             }),
         };
 
+        self.transition_to_done(journal_service_id, get_result_response)
+            .await?;
+
+        self.schedule_cleanup(operation_id, expiry_time, virtual_journal_length);
+
+        Ok(())
+    }
+
+    async fn kill_invocation(
+        &mut self,
+        retention_period_sec: u32,
+        err: InvocationError,
+    ) -> Result<(), InvocationError> {
+        let expiry_time = SystemTime::now() + Duration::from_secs(retention_period_sec as u64);
+
+        let get_result_response = GetResultResponse {
+            expiry_time: humantime::format_rfc3339(expiry_time).to_string(),
+            response: Some(get_result_response::Response::Failure(InvocationFailure {
+                code: UserErrorCode::from(err.code()).into(),
+                message: err.message().to_owned(),
+            })),
+        };
+
+        self.transition_to_done(self.journal_service_id(), get_result_response)
+            .await?;
+
+        // Schedule the cleanup
+        self.schedule_cleanup(
+            // It's ok to not set the operation_id here, because this is used for the CleanupRequest,
+            // and it's used only for observability purposes.
+            // The delivery of the cleanup request is hardwired with the service id, so it won't go through key extraction
+            "",
+            expiry_time,
+            0,
+        );
+
+        Ok(())
+    }
+
+    async fn transition_to_done(
+        &mut self,
+        journal_service_id: ServiceId,
+        get_result_response: GetResultResponse,
+    ) -> Result<(), InvocationError> {
         // Save the done state
         self.set_state(
             &STATUS,
@@ -507,9 +579,8 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         )?;
 
         // Cleanup the journal
-        let journal_service_id = self.journal_service_id();
         if let Some((_, journal_meta)) = self.load_journal_metadata(&journal_service_id).await? {
-            self.drop_journal(self.journal_service_id(), journal_meta.length)
+            self.drop_journal(journal_service_id, journal_meta.length)
         }
 
         // Close pending recv and get result
@@ -517,7 +588,15 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             .await?;
         self.close_pending_get_result(get_result_response).await?;
 
-        // Schedule the cleanup
+        Ok(())
+    }
+
+    fn schedule_cleanup(
+        &mut self,
+        operation_id: &str,
+        expiry_time: SystemTime,
+        timer_index: EntryIndex,
+    ) {
         self.delay_invoke(
             FullInvocationId::with_service_id(
                 self.full_invocation_id.service_id.clone(),
@@ -532,10 +611,8 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             Source::Internal,
             None,
             expiry_time.into(),
-            entry_index,
+            timer_index,
         );
-
-        Ok(())
     }
 
     async fn reset_inactivity_timer(
@@ -1045,16 +1122,8 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         }) = self.load_state(&STATUS).await?
         {
             if invocation_uuid.as_bytes() == request.invocation_uuid {
-                self.complete_invocation(
-                    // It's ok to not set the operation_id here, because this is used for the CleanupRequest,
-                    // and it's used only for observability purposes.
-                    // The delivery of the cleanup request is hardwired with the service id, so it won't go through key extraction.
-                    "",
-                    retention_period_sec,
-                    0,
-                    KILLED_INVOCATION_ERROR.into(),
-                )
-                .await?;
+                self.kill_invocation(retention_period_sec, KILLED_INVOCATION_ERROR)
+                    .await?;
             } else {
                 trace!(
                     "Ignoring kill because invocation uuid don't match: {:?} != {:?}",
@@ -1538,12 +1607,13 @@ mod tests {
     async fn send_output() {
         let result = Bytes::copy_from_slice(b"my-output");
 
-        let (ctx, operation_id, _, _, effects) = send_test(
+        let (ctx, operation_id, _, _, effects) = send_multiple_test(vec![
             ProtobufRawEntryCodec::serialize(Entry::output_stream(EntryResult::Success(
                 result.clone(),
             )))
             .into(),
-        )
+            ProtocolMessage::End(restate_service_protocol::pb::protocol::EndMessage::default()),
+        ])
         .await;
 
         assert_that!(
@@ -1619,9 +1689,14 @@ mod tests {
                     SendRequest {
                         operation_id: operation_id.clone(),
                         stream_id: "my-stream".to_string(),
-                        messages: encode_entries(vec![Entry::output_stream(EntryResult::Success(
-                            output.clone(),
-                        ))]),
+                        messages: encode_messages(vec![
+                            ProtocolMessage::from(ProtobufRawEntryCodec::serialize(
+                                Entry::output_stream(EntryResult::Success(output.clone())),
+                            )),
+                            ProtocolMessage::End(
+                                restate_service_protocol::pb::protocol::EndMessage::default(),
+                            ),
+                        ]),
                     },
                     Default::default(),
                 )
@@ -2671,7 +2746,7 @@ mod tests {
                 schemas
                     .compute_new_deployment(
                         DeploymentMetadata::mock_with_uri("http://localhost:8080"),
-                        vec![restate_pb::mocks::GREETER_SERVICE_NAME.to_owned()],
+                        vec![GREETER_SERVICE_NAME.to_owned()],
                         restate_pb::mocks::DESCRIPTOR_POOL.clone(),
                         false,
                     )
@@ -2786,7 +2861,19 @@ mod tests {
     }
 
     async fn send_test(
-        send_msg: ProtocolMessage,
+        msg: ProtocolMessage,
+    ) -> (
+        TestInvocationContext,
+        String,
+        String,
+        FullInvocationId,
+        Vec<Effect>,
+    ) {
+        send_multiple_test(vec![msg]).await
+    }
+
+    async fn send_multiple_test(
+        msgs: Vec<ProtocolMessage>,
     ) -> (
         TestInvocationContext,
         String,
@@ -2801,7 +2888,7 @@ mod tests {
                     SendRequest {
                         operation_id: operation_id.clone(),
                         stream_id: stream_id.clone(),
-                        messages: encode_messages(vec![send_msg]),
+                        messages: encode_messages(msgs),
                     },
                     Default::default(),
                 )

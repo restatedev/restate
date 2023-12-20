@@ -143,7 +143,7 @@ impl<'a> ServiceInvoker<'a> {
         argument: Bytes,
     ) {
         let mut out_effects = vec![];
-        let mut state_transitions = StateTransitions::default();
+        let mut state_and_journal_transitions = StateAndJournalTransitions::default();
         let invocation_context = InvocationContext {
             full_invocation_id: &full_invocation_id,
             span_context: &span_context,
@@ -151,7 +151,7 @@ impl<'a> ServiceInvoker<'a> {
             schemas: self.schemas,
             response_sink: response_sink.as_ref(),
             effects_buffer: &mut out_effects,
-            state_transitions: &mut state_transitions,
+            state_and_journal_transitions: &mut state_and_journal_transitions,
         };
 
         let result = match full_invocation_id.service_id.service_name.deref() {
@@ -175,8 +175,8 @@ impl<'a> ServiceInvoker<'a> {
             )),
         };
 
-        // Fill effect buffers with set state and end effect
-        state_transitions.fill_effects_buffer(&mut out_effects);
+        // Fill effect buffers with set/clear state, append journal and end effect
+        state_and_journal_transitions.fill_effects_buffer(&mut out_effects);
         match result {
             Ok(()) => {
                 // Just append End
@@ -203,19 +203,35 @@ impl<'a> ServiceInvoker<'a> {
 }
 
 #[derive(Clone, Default)]
-struct StateTransitions(HashMap<String, Option<Bytes>>);
+struct StateAndJournalTransitions {
+    state_entries: HashMap<String, Option<Bytes>>,
+    journal_entries: HashMap<(ServiceId, EntryIndex), EnrichedRawEntry>,
+}
 
-impl StateTransitions {
-    fn fill_effects_buffer(self, effects: &mut Vec<Effect>) {
-        for (key, opt_value) in self.0.into_iter() {
+impl StateAndJournalTransitions {
+    fn fill_effects_buffer(mut self, effects: &mut Vec<Effect>) {
+        for (key, opt_value) in self.state_entries.into_iter() {
             if let Some(value) = opt_value {
                 effects.push(Effect::SetState {
                     key: key.into(),
                     value,
-                })
+                });
             } else {
-                effects.push(Effect::ClearState(key.into()))
+                effects.push(Effect::ClearState(key.into()));
             }
+        }
+
+        // We need to send effects in order for journal entries.
+        let mut order: Vec<_> = self.journal_entries.keys().cloned().collect();
+        order.sort();
+        for key in order {
+            let ((service_id, entry_index), journal_entry) =
+                self.journal_entries.remove_entry(&key).unwrap();
+            effects.push(Effect::StoreEntry {
+                service_id,
+                entry_index,
+                journal_entry,
+            });
         }
     }
 }
@@ -229,7 +245,7 @@ struct InvocationContext<'a, S> {
     response_sink: Option<&'a ServiceInvocationResponseSink>,
 
     effects_buffer: &'a mut Vec<Effect>,
-    state_transitions: &'a mut StateTransitions,
+    state_and_journal_transitions: &'a mut StateAndJournalTransitions,
 }
 
 impl<S: StateReader> InvocationContext<'_, S> {
@@ -241,36 +257,6 @@ impl<S: StateReader> InvocationContext<'_, S> {
             .read_virtual_journal_metadata(service_id)
             .await
             .map_err(InvocationError::internal)
-    }
-
-    async fn load_journal(
-        &self,
-        service_id: &ServiceId,
-    ) -> Result<Option<(InvocationUuid, JournalMetadata, Vec<EnrichedRawEntry>)>, InvocationError>
-    {
-        if let Some((invocation_uuid, journal_metadata)) = self
-            .state_reader
-            .read_virtual_journal_metadata(service_id)
-            .await
-            .map_err(InvocationError::internal)?
-        {
-            let mut vec = Vec::with_capacity(journal_metadata.length as usize);
-            for i in 0..journal_metadata.length {
-                vec.insert(
-                    i as usize,
-                    self.state_reader
-                        .read_virtual_journal_entry(service_id, i)
-                        .await
-                        .map_err(InvocationError::internal)?
-                        .ok_or_else(|| {
-                            InvocationError::internal(format!("Missing journal entry {}", i))
-                        })?,
-                );
-            }
-            Ok(Some((invocation_uuid, journal_metadata, vec)))
-        } else {
-            Ok(None)
-        }
     }
 
     fn create_journal(
@@ -290,20 +276,40 @@ impl<S: StateReader> InvocationContext<'_, S> {
         });
     }
 
+    async fn read_journal_entry(
+        &mut self,
+        service_id: &ServiceId,
+        entry_index: EntryIndex,
+    ) -> Result<Option<EnrichedRawEntry>, InvocationError> {
+        Ok(
+            if let Some(enriched_entry) = self
+                .state_and_journal_transitions
+                .journal_entries
+                .get(&(service_id.clone(), entry_index))
+            {
+                Some(enriched_entry.clone())
+            } else {
+                self.state_reader
+                    .read_virtual_journal_entry(service_id, entry_index)
+                    .await
+                    .map_err(InvocationError::internal)?
+            },
+        )
+    }
+
     fn store_journal_entry(
         &mut self,
         service_id: ServiceId,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) {
-        self.effects_buffer.push(Effect::StoreEntry {
-            service_id,
-            entry_index,
-            journal_entry,
-        });
+        self.state_and_journal_transitions
+            .journal_entries
+            .insert((service_id, entry_index), journal_entry);
     }
 
     fn drop_journal(&mut self, service_id: ServiceId, journal_length: EntryIndex) {
+        self.state_and_journal_transitions.journal_entries.clear();
         self.effects_buffer.push(Effect::DropJournal {
             service_id,
             journal_length,
@@ -315,7 +321,11 @@ impl<S: StateReader> InvocationContext<'_, S> {
         key: &StateKey<Serde>,
     ) -> Result<Option<Bytes>, InvocationError> {
         Ok(
-            if let Some(opt_val) = self.state_transitions.0.get(key.0.as_ref()) {
+            if let Some(opt_val) = self
+                .state_and_journal_transitions
+                .state_entries
+                .get(key.0.as_ref())
+            {
                 opt_val.clone()
             } else {
                 self.state_reader
@@ -369,7 +379,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
         key: &StateKey<Serde>,
         value: &Serde::MaterializedType,
     ) -> Result<(), InvocationError> {
-        self.state_transitions.0.insert(
+        self.state_and_journal_transitions.state_entries.insert(
             key.0.to_string(),
             Some(Serde::encode(value).map_err(InvocationError::internal)?),
         );
@@ -377,7 +387,9 @@ impl<S: StateReader> InvocationContext<'_, S> {
     }
 
     fn clear_state<Serde>(&mut self, key: &StateKey<Serde>) {
-        self.state_transitions.0.insert(key.0.to_string(), None);
+        self.state_and_journal_transitions
+            .state_entries
+            .insert(key.0.to_string(), None);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -522,7 +534,7 @@ mod tests {
                 InvocationUuid::now_v7(),
             );
             let mut out_effects = vec![];
-            let mut state_transitions = StateTransitions::default();
+            let mut state_and_journal_transitions = StateAndJournalTransitions::default();
             let mut invocation_ctx = InvocationContext {
                 full_invocation_id: &fid,
                 span_context: &ServiceInvocationSpanContext::empty(),
@@ -530,13 +542,13 @@ mod tests {
                 schemas: &self.schemas,
                 response_sink: self.response_sink.as_ref(),
                 effects_buffer: &mut out_effects,
-                state_transitions: &mut state_transitions,
+                state_and_journal_transitions: &mut state_and_journal_transitions,
             };
 
             f(&mut invocation_ctx).await?;
 
             // Apply effects
-            state_transitions.fill_effects_buffer(&mut out_effects);
+            state_and_journal_transitions.fill_effects_buffer(&mut out_effects);
             self.state_reader.apply_effects(&out_effects);
 
             Ok((fid, out_effects))

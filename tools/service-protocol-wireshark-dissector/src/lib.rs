@@ -14,7 +14,6 @@ use mlua::{Table, Value};
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{Decoder, MessageType, ProtocolMessage};
-use restate_types::errors::InvocationError;
 
 #[derive(Debug, thiserror::Error)]
 #[error("unexpected lua value received")]
@@ -62,8 +61,11 @@ fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Tabl
                 ProtocolMessage::EntryAck(a) => {
                     format!("{:#?}", a)
                 }
+                ProtocolMessage::End(e) => {
+                    format!("{:?}", e)
+                }
                 ProtocolMessage::Error(e) => {
-                    format!("{:?}", InvocationError::from(e))
+                    format!("{:?}", e)
                 }
                 ProtocolMessage::UnparsedEntry(e) => {
                     format!("{:#?}", e.deserialize_entry::<ProtobufRawEntryCodec>().map_err(LuaError::external)?)
