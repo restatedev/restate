@@ -37,7 +37,7 @@ pub(crate) fn append_inbox_row(
     let mut row = builder.row();
     row.partition_key(fid.partition_key());
 
-    row.service_name(&fid.service_id.service_name);
+    row.service(&fid.service_id.service_name);
     row.method(&method_name);
 
     row.service_key(std::str::from_utf8(&fid.service_id.key).expect("The key must be a string!"));
