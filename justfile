@@ -6,7 +6,7 @@ dev_tools_image := "ghcr.io/restatedev/dev-tools:latest"
 # Docker image name & tag.
 docker_repo := "localhost/restatedev/restate"
 docker_tag := if path_exists(justfile_directory() / ".git") == "true" {
-        `git rev-parse --abbrev-ref HEAD | sed 's|/|.|'` + "." + `git rev-parse --short HEAD`
+        `git rev-parse --abbrev-ref HEAD | sed 's|/|.|g'` + "." + `git rev-parse --short HEAD`
     } else {
         "unknown"
     }
