@@ -4546,6 +4546,7 @@ dependencies = [
  "indicatif",
  "indoc",
  "is-terminal",
+ "itertools 0.11.0",
  "octocrab",
  "once_cell",
  "reqwest",

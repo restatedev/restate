@@ -15,6 +15,7 @@ use super::console::{Icon, StyledTable};
 pub const SUCCESS_ICON: Icon = Icon("✅", "[OK]:");
 pub const ERR_ICON: Icon = Icon("❌", "[ERR]:");
 pub const WARN_ICON: Icon = Icon("⚠️", "[WARNING]:");
+pub const TIP_ICON: Icon = Icon("💡", "[TIP]:");
 
 #[derive(Copy, Clone)]
 pub enum Style {

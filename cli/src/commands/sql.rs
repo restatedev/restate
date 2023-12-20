@@ -21,6 +21,7 @@ use comfy_table::Table;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::c_eprintln;
 use crate::c_println;
 use crate::cli_env::CliEnv;
 use crate::ui::console::Styled;
@@ -75,7 +76,7 @@ pub async fn run_sql(State(env): State<CliEnv>, sql_opts: &Sql) -> Result<()> {
         c_println!();
     }
 
-    c_println!(
+    c_eprintln!(
         "{} rows. Query took {:?}",
         table.row_count(),
         Styled(Style::Notice, start_time.elapsed())

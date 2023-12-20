@@ -16,11 +16,261 @@ use std::str::FromStr;
 
 use super::DataFusionHttpClient;
 
-use arrow::array::{as_string_array, Array, AsArray};
+use arrow::array::{Array, ArrayAccessor, AsArray, StringArray};
+use arrow::datatypes::ArrowTemporalType;
+use arrow::record_batch::RecordBatch;
+use clap::ValueEnum;
 use restate_meta_rest_model::deployments::DeploymentId;
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local, TimeZone};
+use restate_meta_rest_model::services::InstanceType;
+
+static JOURNAL_QUERY_LIMIT: usize = 100;
+
+trait OptionalArrowLocalDateTime {
+    fn value_as_local_datetime_opt(&self, index: usize) -> Option<chrono::DateTime<Local>>;
+}
+
+impl<T> OptionalArrowLocalDateTime for &arrow::array::PrimitiveArray<T>
+where
+    T: ArrowTemporalType,
+    i64: From<T::Native>,
+{
+    fn value_as_local_datetime_opt(&self, index: usize) -> Option<chrono::DateTime<Local>> {
+        if !self.is_null(index) {
+            self.value_as_datetime(index)
+                .map(|naive| Local.from_utc_datetime(&naive))
+        } else {
+            None
+        }
+    }
+}
+
+trait OptionalArrowValue
+where
+    Self: ArrayAccessor,
+{
+    fn value_opt(&self, index: usize) -> Option<<Self as ArrayAccessor>::Item> {
+        if !self.is_null(index) {
+            Some(self.value(index))
+        } else {
+            None
+        }
+    }
+}
+
+impl<T> OptionalArrowValue for T where T: ArrayAccessor {}
+
+trait OptionalArrowOwnedString
+where
+    Self: ArrayAccessor,
+{
+    fn value_string_opt(&self, index: usize) -> Option<String>;
+    fn value_string(&self, index: usize) -> String;
+}
+
+impl OptionalArrowOwnedString for &StringArray {
+    fn value_string_opt(&self, index: usize) -> Option<String> {
+        if !self.is_null(index) {
+            Some(self.value(index).to_owned())
+        } else {
+            None
+        }
+    }
+
+    fn value_string(&self, index: usize) -> String {
+        self.value(index).to_owned()
+    }
+}
+
+fn value_as_string(batch: &RecordBatch, col: usize, row: usize) -> String {
+    batch.column(col).as_string::<i32>().value_string(row)
+}
+
+fn value_as_string_opt(batch: &RecordBatch, col: usize, row: usize) -> Option<String> {
+    batch.column(col).as_string::<i32>().value_string_opt(row)
+}
+
+fn value_as_i64(batch: &RecordBatch, col: usize, row: usize) -> i64 {
+    batch
+        .column(col)
+        .as_primitive::<arrow::datatypes::Int64Type>()
+        .value(row)
+}
+
+fn value_as_u64_opt(batch: &RecordBatch, col: usize, row: usize) -> Option<u64> {
+    batch
+        .column(col)
+        .as_primitive::<arrow::datatypes::UInt64Type>()
+        .value_opt(row)
+}
+
+fn value_as_dt_opt(batch: &RecordBatch, col: usize, row: usize) -> Option<chrono::DateTime<Local>> {
+    batch
+        .column(col)
+        .as_primitive::<arrow::datatypes::Date64Type>()
+        .value_as_local_datetime_opt(row)
+}
+
+#[derive(ValueEnum, Copy, Clone, Eq, Hash, PartialEq, Debug, Default)]
+pub enum InvocationState {
+    #[default]
+    #[clap(hide = true)]
+    Unknown,
+    Pending,
+    Ready,
+    Running,
+    Suspended,
+    BackingOff,
+}
+
+impl FromStr for InvocationState {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "pending" => Self::Pending,
+            "ready" => Self::Ready,
+            "running" => Self::Running,
+            "suspended" => Self::Suspended,
+            "backing-off" => Self::BackingOff,
+            _ => Self::Unknown,
+        })
+    }
+}
+
+impl Display for InvocationState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InvocationState::Unknown => write!(f, "unknown"),
+            InvocationState::Pending => write!(f, "pending"),
+            InvocationState::Ready => write!(f, "ready"),
+            InvocationState::Running => write!(f, "running"),
+            InvocationState::Suspended => write!(f, "suspended"),
+            InvocationState::BackingOff => write!(f, "backing-off"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OutgoingInvoke {
+    pub invocation_id: Option<String>,
+    pub invoked_service: Option<String>,
+    pub invoked_method: Option<String>,
+    pub invoked_service_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct JournalEntry {
+    pub seq: u32,
+    pub entry_type: JournalEntryType,
+    completed: bool,
+}
+
+impl JournalEntry {
+    pub fn is_completed(&self) -> bool {
+        if self.entry_type.is_completable() {
+            self.completed
+        } else {
+            true
+        }
+    }
+
+    pub fn should_present(&self) -> bool {
+        self.entry_type.should_present()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum JournalEntryType {
+    Sleep {
+        wakeup_at: Option<chrono::DateTime<Local>>,
+    },
+    Invoke(OutgoingInvoke),
+    BackgroundInvoke(OutgoingInvoke),
+    Awakeable,
+    GetState,
+    SetState,
+    ClearState,
+    Other(String),
+}
+
+impl JournalEntryType {
+    fn is_completable(&self) -> bool {
+        matches!(
+            self,
+            JournalEntryType::Sleep { .. }
+                | JournalEntryType::Invoke(_)
+                | JournalEntryType::BackgroundInvoke(_)
+                | JournalEntryType::Awakeable
+                | JournalEntryType::GetState
+        )
+    }
+
+    fn should_present(&self) -> bool {
+        matches!(
+            self,
+            JournalEntryType::Sleep { .. }
+                | JournalEntryType::Invoke(_)
+                | JournalEntryType::BackgroundInvoke(_)
+                | JournalEntryType::Awakeable
+        )
+    }
+}
+
+impl Display for JournalEntryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JournalEntryType::Sleep { .. } => write!(f, "Sleep"),
+            JournalEntryType::Invoke(_) => write!(f, "Invoke"),
+            JournalEntryType::BackgroundInvoke(_) => write!(f, "BackgroundInvoke"),
+            JournalEntryType::Awakeable => write!(f, "Awakeable"),
+            JournalEntryType::GetState => write!(f, "GetState"),
+            JournalEntryType::SetState => write!(f, "SetState"),
+            JournalEntryType::ClearState => write!(f, "ClearState"),
+            JournalEntryType::Other(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InvocationDetailed {
+    pub invocation: Invocation,
+    pub journal: Vec<JournalEntry>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Invocation {
+    pub id: String,
+    pub service: String,
+    pub method: String,
+    pub key: Option<String>, // Set only on keyed service
+    pub created_at: chrono::DateTime<Local>,
+    // None if invoked directly (e.g. ingress)
+    pub invoked_by_id: Option<String>,
+    pub invoked_by_service: Option<String>,
+    pub status: InvocationState,
+
+    // If it **requires** this deployment.
+    pub pinned_deployment_id: Option<String>,
+    pub pinned_deployment_exists: bool,
+    pub deployment_id_at_latest_svc_revision: String,
+    // Last attempted deployment
+    pub last_attempt_deployment_id: Option<String>,
+
+    // if running, how long has it been running?
+    pub current_attempt_duration: Option<Duration>,
+    // E.g. If suspended, how long has it been suspended?
+    pub duration_in_state: Option<Duration>,
+
+    // If backing-off
+    pub num_retries: Option<u64>,
+    pub next_retry_at: Option<DateTime<Local>>,
+
+    pub last_attempt_started_at: Option<DateTime<Local>>,
+    // Last attempt failed?
+    pub last_failure_message: Option<String>,
+}
 
 pub async fn count_deployment_active_inv(
     client: &DataFusionHttpClient,
@@ -43,46 +293,6 @@ pub struct ServiceMethodUsage {
     pub inv_count: i64,
 }
 
-pub async fn count_deployment_active_inv_by_method(
-    client: &DataFusionHttpClient,
-    deployment_id: &DeploymentId,
-) -> Result<Vec<ServiceMethodUsage>> {
-    let query = format!(
-        "SELECT service, method, COUNT(id) AS inv_count \
-            FROM sys_status \
-            WHERE pinned_deployment_id = '{}' \
-            GROUP BY pinned_deployment_id, service, method",
-        deployment_id
-    );
-
-    let resp = client.run_query(query).await?;
-    let batches = resp.batches;
-
-    let mut output = vec![];
-    for batch in batches {
-        let col = batch.column(0);
-        let services = as_string_array(col);
-        let col = batch.column(1);
-        let methods = as_string_array(col);
-        let col = batch.column(2);
-        let inv_counts = col.as_primitive::<arrow::datatypes::Int64Type>();
-
-        for i in 0..batch.num_rows() {
-            let service = services.value(i).to_owned();
-            let method = methods.value(i).to_owned();
-            let inv_count = inv_counts.value(i);
-            output.push(ServiceMethodUsage {
-                service,
-                method,
-                inv_count,
-            });
-        }
-    }
-    Ok(output)
-}
-
-// -- Service status helpers and types --
-
 /// Key is service name
 #[derive(Clone, Default)]
 pub struct ServiceStatusMap(HashMap<String, ServiceStatus>);
@@ -92,7 +302,7 @@ impl ServiceStatusMap {
         &mut self,
         service: &str,
         method: &str,
-        state: EnrichedInvocationState,
+        state: InvocationState,
         stats: MethodStateStats,
     ) {
         let svc_methods = self
@@ -117,44 +327,6 @@ impl ServiceStatusMap {
     }
 }
 
-#[derive(Copy, Clone, Eq, Hash, PartialEq, Debug, Default)]
-pub enum EnrichedInvocationState {
-    #[default]
-    Unknown,
-    Pending,
-    Ready,
-    Running,
-    Suspended,
-    BackingOff,
-}
-
-impl FromStr for EnrichedInvocationState {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "pending" => Self::Pending,
-            "ready" => Self::Ready,
-            "running" => Self::Running,
-            "suspended" => Self::Suspended,
-            "backing-off" => Self::BackingOff,
-            _ => Self::Unknown,
-        })
-    }
-}
-
-impl Display for EnrichedInvocationState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EnrichedInvocationState::Unknown => write!(f, "unknown"),
-            EnrichedInvocationState::Pending => write!(f, "pending"),
-            EnrichedInvocationState::Ready => write!(f, "ready"),
-            EnrichedInvocationState::Running => write!(f, "running"),
-            EnrichedInvocationState::Suspended => write!(f, "suspended"),
-            EnrichedInvocationState::BackingOff => write!(f, "backing-off"),
-        }
-    }
-}
-
 #[derive(Default, Clone)]
 pub struct ServiceStatus {
     methods: HashMap<String, MethodInfo>,
@@ -163,7 +335,7 @@ pub struct ServiceStatus {
 impl ServiceStatus {
     pub fn get_method_stats(
         &self,
-        state: EnrichedInvocationState,
+        state: InvocationState,
         method: &str,
     ) -> Option<&MethodStateStats> {
         self.methods.get(method).and_then(|x| x.get_stats(state))
@@ -176,20 +348,20 @@ impl ServiceStatus {
 
 #[derive(Default, Clone)]
 pub struct MethodInfo {
-    per_state_totals: HashMap<EnrichedInvocationState, MethodStateStats>,
+    per_state_totals: HashMap<InvocationState, MethodStateStats>,
 }
 
 impl MethodInfo {
-    pub fn get_stats(&self, state: EnrichedInvocationState) -> Option<&MethodStateStats> {
+    pub fn get_stats(&self, state: InvocationState) -> Option<&MethodStateStats> {
         self.per_state_totals.get(&state)
     }
 
     pub fn oldest_non_suspended_invocation_state(
         &self,
-    ) -> Option<(EnrichedInvocationState, &MethodStateStats)> {
-        let mut oldest: Option<(EnrichedInvocationState, &MethodStateStats)> = None;
+    ) -> Option<(InvocationState, &MethodStateStats)> {
+        let mut oldest: Option<(InvocationState, &MethodStateStats)> = None;
         for (state, stats) in &self.per_state_totals {
-            if state == &EnrichedInvocationState::Suspended {
+            if state == &InvocationState::Suspended {
                 continue;
             }
             if oldest.is_none() || oldest.is_some_and(|oldest| stats.oldest_at < oldest.1.oldest_at)
@@ -206,6 +378,35 @@ pub struct MethodStateStats {
     pub num_invocations: i64,
     pub oldest_at: chrono::DateTime<Local>,
     pub oldest_invocation: String,
+}
+
+pub async fn count_deployment_active_inv_by_method(
+    client: &DataFusionHttpClient,
+    deployment_id: &DeploymentId,
+) -> Result<Vec<ServiceMethodUsage>> {
+    let mut output = vec![];
+
+    let query = format!(
+        "SELECT 
+            service,
+            method,
+            COUNT(id) AS inv_count
+            FROM sys_status
+            WHERE pinned_deployment_id = '{}'
+            GROUP BY pinned_deployment_id, service, method",
+        deployment_id
+    );
+
+    for batch in client.run_query(query).await?.batches {
+        for i in 0..batch.num_rows() {
+            output.push(ServiceMethodUsage {
+                service: value_as_string(&batch, 0, i),
+                method: value_as_string(&batch, 1, i),
+                inv_count: value_as_i64(&batch, 2, i),
+            });
+        }
+    }
+    Ok(output)
 }
 
 pub async fn get_services_status(
@@ -226,50 +427,38 @@ pub async fn get_services_status(
     {
         let query = format!(
             "SELECT 
-                service_name, 
+                service, 
                 method,
                 COUNT(id),
                 MIN(created_at),
                 FIRST_VALUE(id ORDER BY created_at ASC)
-             FROM sys_inbox WHERE service_name IN {}
-             GROUP BY service_name, method",
+             FROM sys_inbox WHERE service IN {}
+             GROUP BY service, method",
             query_filter
         );
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
-            let col = batch.column(0);
-            let services = as_string_array(col);
-            let col = batch.column(1);
-            let methods = as_string_array(col);
-            let col = batch.column(2);
-            let inv_counts = col.as_primitive::<arrow::datatypes::Int64Type>();
-            let col = batch.column(3);
-            let oldest_ats = col.as_primitive::<arrow::datatypes::Date64Type>();
-            let col = batch.column(4);
-            let oldest_invs = as_string_array(col);
-
             for i in 0..batch.num_rows() {
-                let service = services.value(i).to_owned();
-                let method = methods.value(i).to_owned();
-                let num_invocations = inv_counts.value(i);
-                let oldest_at: DateTime<Local> = Local
-                    .timestamp_millis_opt(oldest_ats.value(i))
-                    .latest()
-                    .expect("Invalid timestamp");
+                let service = batch.column(0).as_string::<i32>().value_string(i);
+                let method = batch.column(1).as_string::<i32>().value_string(i);
+                let num_invocations = batch
+                    .column(2)
+                    .as_primitive::<arrow::datatypes::Int64Type>()
+                    .value(i);
+                let oldest_at = batch
+                    .column(3)
+                    .as_primitive::<arrow::datatypes::Date64Type>()
+                    .value_as_local_datetime_opt(i)
+                    .unwrap();
 
-                let oldest_invocation = oldest_invs.value(i).to_owned();
+                let oldest_invocation = batch.column(4).as_string::<i32>().value_string(i);
 
                 let stats = MethodStateStats {
                     num_invocations,
                     oldest_at,
                     oldest_invocation,
                 };
-                status_map.set_method_stats(
-                    &service,
-                    &method,
-                    EnrichedInvocationState::Pending,
-                    stats,
-                );
+                status_map.set_method_stats(&service, &method, InvocationState::Pending, stats);
             }
         }
     }
@@ -293,47 +482,21 @@ pub async fn get_services_status(
             LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
             WHERE ss.service IN {}
             )
-            SELECT service, method, combined_status, COUNT(id), MIN(created_at), FIRST_VALUE(id
-            ORDER BY created_at ASC)
+            SELECT service, method, combined_status, COUNT(id), MIN(created_at), FIRST_VALUE(id ORDER BY created_at ASC)
             FROM enriched_invokes GROUP BY service, method, combined_status ORDER BY method",
             query_filter
         );
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
-            let col = batch.column(0);
-            let services = as_string_array(col);
-
-            let col = batch.column(1);
-            let methods = as_string_array(col);
-
-            let col = batch.column(2);
-            let statuses = as_string_array(col);
-
-            let col = batch.column(3);
-            let inv_counts = col.as_primitive::<arrow::datatypes::Int64Type>();
-
-            let col = batch.column(4);
-            let oldest = col.as_primitive::<arrow::datatypes::Date64Type>();
-
-            let col = batch.column(5);
-            let oldest_invs = as_string_array(col);
-
             for i in 0..batch.num_rows() {
-                let service = services.value(i).to_owned();
-                let method = methods.value(i).to_owned();
-                let status = statuses.value(i).to_owned();
-                let num_invocations = inv_counts.value(i);
-                let oldest_at: DateTime<Local> = Local
-                    .timestamp_millis_opt(oldest.value(i))
-                    .latest()
-                    .expect("Invalid timestamp");
-
-                let oldest_invocation = oldest_invs.value(i).to_owned();
+                let service = value_as_string(&batch, 0, i);
+                let method = value_as_string(&batch, 1, i);
+                let status = value_as_string(&batch, 2, i);
 
                 let stats = MethodStateStats {
-                    num_invocations,
-                    oldest_at,
-                    oldest_invocation,
+                    num_invocations: value_as_i64(&batch, 3, i),
+                    oldest_at: value_as_dt_opt(&batch, 4, i).unwrap(),
+                    oldest_invocation: value_as_string(&batch, 5, i),
                 };
 
                 status_map.set_method_stats(&service, &method, status.parse().unwrap(), stats);
@@ -357,7 +520,7 @@ pub struct LockedKeyInfo {
     // Who is holding the lock
     pub invocation_holding_lock: Option<String>,
     pub invocation_method_holding_lock: Option<String>,
-    pub invocation_status: Option<EnrichedInvocationState>,
+    pub invocation_status: Option<InvocationState>,
     pub invocation_created_at: Option<DateTime<Local>>,
     // if running, how long has it been running?
     pub invocation_attempt_duration: Option<Duration>,
@@ -410,39 +573,31 @@ pub async fn get_locked_keys_status(
     // Inbox analysis (pending invocations)....
     {
         let query = format!(
-            "SELECT service_name, service_key, COUNT(id), MIN(created_at)
-             FROM sys_inbox WHERE service_name IN {}
-             GROUP BY service_name, service_key ORDER BY COUNT(id) DESC",
+            "SELECT 
+                service,
+                service_key,
+                COUNT(id),
+                MIN(created_at)
+             FROM sys_inbox
+             WHERE service IN {}
+             GROUP BY service, service_key
+             ORDER BY COUNT(id) DESC",
             query_filter
         );
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
-            let col = batch.column(0);
-            let services = as_string_array(col);
-            let col = batch.column(1);
-            let keys = as_string_array(col);
-            let col = batch.column(2);
-            let inv_counts = col.as_primitive::<arrow::datatypes::Int64Type>();
-            let col = batch.column(3);
-            let oldest = col.as_primitive::<arrow::datatypes::Date64Type>();
-
             for i in 0..batch.num_rows() {
-                let service = services.value(i);
-                let key = keys.value(i);
-                let num_pending = inv_counts.value(i);
-                let oldest_pending = Some(
-                    Local
-                        .timestamp_millis_opt(oldest.value(i))
-                        .latest()
-                        .expect("Invalid timestamp"),
-                );
+                let service = batch.column(0).as_string::<i32>().value(i);
+                let key = value_as_string(&batch, 1, i);
+                let num_pending = value_as_i64(&batch, 2, i);
+                let oldest_pending = value_as_dt_opt(&batch, 3, i);
 
                 let info = LockedKeyInfo {
                     num_pending,
                     oldest_pending,
                     ..LockedKeyInfo::default()
                 };
-                key_map.insert(service, key.to_owned(), info);
+                key_map.insert(service, key, info);
             }
         }
     }
@@ -494,108 +649,49 @@ pub async fn get_locked_keys_status(
 
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
-            let col = batch.column(0);
-            let services = as_string_array(col);
-
-            let col = batch.column(1);
-            let keys = as_string_array(col);
-
-            let col = batch.column(2);
-            let statuses = as_string_array(col);
-
-            let col = batch.column(3);
-            let ids = as_string_array(col);
-
-            let col = batch.column(4);
-            let methods = as_string_array(col);
-
-            let col = batch.column(5);
-            let created_ats = col.as_primitive::<arrow::datatypes::Date64Type>();
-
-            let col = batch.column(6);
-            let modified_ats = col.as_primitive::<arrow::datatypes::Date64Type>();
-
-            let col = batch.column(7);
-            let pinned_eps = as_string_array(col);
-
-            let col = batch.column(8);
-            let last_attempt_eps = as_string_array(col);
-
-            let col = batch.column(9);
-            let last_failures = as_string_array(col);
-
-            let col = batch.column(10);
-            let next_retries = col.as_primitive::<arrow::datatypes::Date64Type>();
-
-            let col = batch.column(11);
-            let last_starts = col.as_primitive::<arrow::datatypes::Date64Type>();
-
-            let col = batch.column(12);
-            let num_retries = col.as_primitive::<arrow::datatypes::UInt64Type>();
-
             for i in 0..batch.num_rows() {
-                let service = services.value(i);
-                let key = keys.value(i);
+                let service = value_as_string(&batch, 0, i);
+                let key = value_as_string(&batch, 1, i);
+                let status = batch
+                    .column(2)
+                    .as_string::<i32>()
+                    .value(i)
+                    .parse()
+                    .expect("Unexpected status");
+                let id = value_as_string_opt(&batch, 3, i);
+                let method = value_as_string_opt(&batch, 4, i);
+                let created_at = value_as_dt_opt(&batch, 5, i);
+                let modified_at = value_as_dt_opt(&batch, 6, i);
+                let pinned_deployment_id = value_as_string_opt(&batch, 7, i);
+                let last_attempt_eps = batch.column(8).as_string::<i32>();
+                let last_failure_message = value_as_string_opt(&batch, 9, i);
+                let next_retry_at = value_as_dt_opt(&batch, 10, i);
+                let last_start = value_as_dt_opt(&batch, 11, i);
+                let num_retries = value_as_u64_opt(&batch, 12, i);
 
-                let info = key_map.locked_key_info_mut(service, key);
+                let info = key_map.locked_key_info_mut(&service, &key);
 
-                // current invocation
-                let status = statuses.value(i).parse().expect("Unexpected status");
                 info.invocation_status = Some(status);
-                info.invocation_holding_lock = Some(ids.value(i).to_owned());
-                info.invocation_method_holding_lock = Some(methods.value(i).to_owned());
-                info.invocation_created_at = Some(
-                    Local
-                        .timestamp_millis_opt(created_ats.value(i))
-                        .latest()
-                        .expect("Invalid timestamp"),
-                );
+                info.invocation_holding_lock = id;
+                info.invocation_method_holding_lock = method;
+                info.invocation_created_at = created_at;
 
                 // Running duration
-                if status == EnrichedInvocationState::Running && !last_starts.is_null(i) {
-                    let last_start = Local
-                        .timestamp_millis_opt(last_starts.value(i))
-                        .latest()
-                        .expect("Invalid timestamp");
+                if status == InvocationState::Running {
                     info.invocation_attempt_duration =
-                        Some(Local::now().signed_duration_since(last_start));
+                        last_start.map(|last_start| Local::now().signed_duration_since(last_start));
                 }
 
                 // State duration
-                if !modified_ats.is_null(i) {
-                    let last_modified = Local
-                        .timestamp_millis_opt(modified_ats.value(i))
-                        .latest()
-                        .expect("Invalid timestamp");
-                    info.invocation_state_duration =
-                        Some(Local::now().signed_duration_since(last_modified));
-                }
+                info.invocation_state_duration = modified_at
+                    .map(|last_modified| Local::now().signed_duration_since(last_modified));
 
-                // Num retries
-                if !num_retries.is_null(i) {
-                    info.num_retries = Some(num_retries.value(i));
-                }
-                // Next retry
-                if !next_retries.is_null(i) {
-                    info.next_retry_at = Some(
-                        Local
-                            .timestamp_millis_opt(next_retries.value(i))
-                            .latest()
-                            .expect("Invalid timestamp"),
-                    );
-                }
-
-                if !pinned_eps.is_null(i) {
-                    info.pinned_deployment_id = Some(pinned_eps.value(i).to_owned());
-                }
-
-                if !last_failures.is_null(i) {
-                    info.last_failure_message = Some(last_failures.value(i).to_owned());
-                }
-
-                if !last_attempt_eps.is_null(i) {
-                    info.last_attempt_deployment_id = Some(last_attempt_eps.value(i).to_owned());
-                }
+                // Retries
+                info.num_retries = num_retries;
+                info.next_retry_at = next_retry_at;
+                info.pinned_deployment_id = pinned_deployment_id;
+                info.last_failure_message = last_failure_message;
+                info.last_attempt_deployment_id = last_attempt_eps.value_string_opt(i);
             }
         }
     }
@@ -603,282 +699,334 @@ pub async fn get_locked_keys_status(
     Ok(key_map)
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Invocation {
-    pub id: String,
-    pub service: String,
-    pub method: String,
-    pub key: Option<String>, // Set only on keyed service
-    pub created_at: chrono::DateTime<Local>,
-    // None if invoked directly (e.g. ingress)
-    pub invoked_by_id: Option<String>,
-    pub invoked_by_service: Option<String>,
-    pub status: EnrichedInvocationState,
-
-    // If it **requires** this deployment.
-    pub pinned_deployment_id: Option<String>,
-    // Last attempted deployment
-    pub last_attempt_deployment_id: Option<String>,
-
-    // if running, how long has it been running?
-    pub current_attempt_duration: Option<Duration>,
-    // E.g. If suspended, how long has it been suspended?
-    pub duration_in_state: Option<Duration>,
-
-    // If backing-off
-    pub num_retries: Option<u64>,
-    pub next_retry_at: Option<DateTime<Local>>,
-
-    // Last attempt failed?
-    pub last_failure_message: Option<String>,
-}
-
-pub async fn get_service_invocations(
+pub async fn find_active_invocations(
     client: &DataFusionHttpClient,
-    service: &str,
-    is_keyed: bool,
-    limit_inbox: usize,
-    limit_active: usize,
-) -> Result<(Vec<Invocation>, Vec<Invocation>)> {
-    let mut inbox: Vec<Invocation> = Vec::new();
-    // Inbox...
-    {
-        let query = format!(
-            "SELECT
-                service_name,
-                method,
+    filter: &str,
+    post_filter: &str,
+    order: &str,
+    limit: usize,
+) -> Result<(Vec<Invocation>, usize)> {
+    let mut full_count = 0;
+    let mut active = vec![];
+    let query = format!(
+        "WITH enriched_invocations AS
+        (SELECT
+            ss.id,
+            ss.service,
+            ss.method,
+            ss.service_key,
+            CASE
+             WHEN ss.status = 'suspended' THEN 'suspended'
+             WHEN sis.in_flight THEN 'running'
+             WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
+             ELSE 'ready'
+            END AS combined_status,
+            ss.created_at,
+            ss.modified_at,
+            ss.pinned_deployment_id,
+            sis.retry_count,
+            sis.last_failure,
+            sis.last_attempt_deployment_id,
+            sis.next_retry_at,
+            sis.last_start_at,
+            ss.invoked_by_id,
+            ss.invoked_by_service,
+            svc.instance_type,
+            svc.deployment_id as svc_latest_deployment,
+            dp.id as known_deployment_id
+        FROM sys_status ss
+        LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
+        LEFT JOIN sys_service svc ON svc.name = ss.service
+        LEFT JOIN sys_deployment dp ON dp.id = ss.pinned_deployment_id
+        {}
+        {}
+        )
+        SELECT *, COUNT(*) OVER() AS full_count from enriched_invocations
+        {}
+        LIMIT {}",
+        filter, order, post_filter, limit,
+    );
+    let resp = client.run_query(query).await?;
+    for batch in resp.batches {
+        for i in 0..batch.num_rows() {
+            if full_count == 0 {
+                full_count = value_as_i64(&batch, batch.num_columns() - 1, i) as usize;
+            }
+            let id = value_as_string(&batch, 0, i);
+            let service = value_as_string(&batch, 1, i);
+            let method = value_as_string(&batch, 2, i);
+            let service_key = value_as_string_opt(&batch, 3, i);
+            let status: InvocationState = value_as_string(&batch, 4, i)
+                .parse()
+                .expect("Unexpected status");
+            let created_at = value_as_dt_opt(&batch, 5, i).expect("Missing created_at");
+
+            let modified_at = value_as_dt_opt(&batch, 6, i);
+            let duration_in_state =
+                modified_at.map(|modified_at| Local::now().signed_duration_since(modified_at));
+
+            let pinned_deployment_id = value_as_string_opt(&batch, 7, i);
+
+            let num_retries = value_as_u64_opt(&batch, 8, i);
+
+            let last_failure_message = value_as_string_opt(&batch, 9, i);
+            let last_attempt_deployment_id = value_as_string_opt(&batch, 10, i);
+
+            let next_retry_at = value_as_dt_opt(&batch, 11, i);
+            let last_start = value_as_dt_opt(&batch, 12, i);
+
+            let invoked_by_id = value_as_string_opt(&batch, 13, i);
+            let invoked_by_service = value_as_string_opt(&batch, 14, i);
+            let instance_type = parse_instance_type(&value_as_string(&batch, 15, i));
+            let deployment_id_at_latest_svc_revision = value_as_string(&batch, 16, i);
+
+            let existing_pinned_deployment_id = value_as_string_opt(&batch, 17, i);
+
+            let key = if instance_type == InstanceType::Keyed {
+                service_key
+            } else {
+                None
+            };
+
+            let mut invocation = Invocation {
                 id,
+                status,
+                service,
+                key,
+                method,
                 created_at,
                 invoked_by_id,
                 invoked_by_service,
-                service_key
-             FROM sys_inbox WHERE service_name = '{}'
-             ORDER BY created_at DESC
-             LIMIT {}",
-            service, limit_inbox,
+                duration_in_state,
+                num_retries,
+                next_retry_at,
+                pinned_deployment_id,
+                pinned_deployment_exists: existing_pinned_deployment_id.is_some(),
+                deployment_id_at_latest_svc_revision,
+                last_failure_message,
+                last_attempt_deployment_id,
+
+                ..Default::default()
+            };
+
+            // Running duration
+            if status == InvocationState::Running {
+                invocation.current_attempt_duration =
+                    last_start.map(|last_start| Local::now().signed_duration_since(last_start));
+            }
+
+            if invocation.status == InvocationState::BackingOff {
+                invocation.last_attempt_started_at = last_start;
+            }
+
+            active.push(invocation);
+        }
+    }
+    Ok((active, full_count))
+}
+
+pub async fn find_inbox_invocations(
+    client: &DataFusionHttpClient,
+    filter: &str,
+    order: &str,
+    limit: usize,
+) -> Result<(Vec<Invocation>, usize)> {
+    let mut inbox: Vec<Invocation> = Vec::new();
+    // Inbox...
+    let mut full_count = 0;
+    {
+        let query = format!(
+            "WITH inbox_table AS
+            (SELECT
+                ss.service,
+                ss.method,
+                ss.id,
+                ss.created_at,
+                ss.invoked_by_id,
+                ss.invoked_by_service,
+                ss.service_key,
+                svc.instance_type
+             FROM sys_inbox ss
+             LEFT JOIN sys_service svc ON svc.name = ss.service
+             {}
+             {}
+            )
+            SELECT *, COUNT(*) OVER() AS full_count FROM inbox_table
+            LIMIT {}",
+            filter, order, limit
         );
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
-            let col = batch.column(0);
-            let services = as_string_array(col);
-
-            let col = batch.column(1);
-            let methods = as_string_array(col);
-
-            let col = batch.column(2);
-            let ids = as_string_array(col);
-
-            let col = batch.column(3);
-            let created_ats = col.as_primitive::<arrow::datatypes::Date64Type>();
-
-            let col = batch.column(4);
-            let invoked_by_ids = as_string_array(col);
-
-            let col = batch.column(5);
-            let invoked_by_svcs = as_string_array(col);
-
-            let col = batch.column(6);
-            let service_keys = as_string_array(col);
-
             for i in 0..batch.num_rows() {
-                let created_at: DateTime<Local> = Local
-                    .timestamp_millis_opt(created_ats.value(i))
-                    .latest()
-                    .expect("Invalid timestamp");
-
-                let invoked_by_id = if !invoked_by_ids.is_null(i) {
-                    Some(invoked_by_ids.value(i).to_owned())
-                } else {
-                    None
-                };
-
-                let invoked_by_service = if !invoked_by_svcs.is_null(i) {
-                    Some(invoked_by_svcs.value(i).to_owned())
-                } else {
-                    None
-                };
-
-                let key = if is_keyed {
-                    Some(service_keys.value(i).to_owned())
+                if full_count == 0 {
+                    full_count = value_as_i64(&batch, batch.num_columns() - 1, i) as usize;
+                }
+                let instance_type = parse_instance_type(&value_as_string(&batch, 7, i));
+                let key = if instance_type == InstanceType::Keyed {
+                    value_as_string_opt(&batch, 6, i)
                 } else {
                     None
                 };
 
                 let invocation = Invocation {
-                    status: EnrichedInvocationState::Pending,
-                    service: services.value(i).to_owned(),
-                    method: methods.value(i).to_owned(),
-                    id: ids.value(i).to_owned(),
-                    created_at,
+                    status: InvocationState::Pending,
+                    service: value_as_string(&batch, 0, i),
+                    method: value_as_string(&batch, 1, i),
+                    id: value_as_string(&batch, 2, i),
+                    created_at: value_as_dt_opt(&batch, 3, i).expect("Missing created_at"),
                     key,
-                    invoked_by_id,
-                    invoked_by_service,
+                    invoked_by_id: value_as_string_opt(&batch, 4, i),
+                    invoked_by_service: value_as_string_opt(&batch, 5, i),
                     ..Default::default()
                 };
                 inbox.push(invocation);
             }
         }
     }
+    Ok((inbox, full_count))
+}
+
+pub async fn get_service_invocations(
+    client: &DataFusionHttpClient,
+    service: &str,
+    limit_inbox: usize,
+    limit_active: usize,
+) -> Result<(Vec<Invocation>, Vec<Invocation>)> {
+    // Inbox...
+    let inbox: Vec<Invocation> = find_inbox_invocations(
+        client,
+        &format!("WHERE ss.service = '{}'", service),
+        "ORDER BY ss.created_at DESC",
+        limit_inbox,
+    )
+    .await?
+    .0;
 
     // Active invocations analysis
-    let mut active: Vec<Invocation> = Vec::new();
-    {
-        let query = format!(
-            "SELECT
-                ss.id,
-                ss.service,
-                ss.method,
-                ss.service_key,
-                CASE
-                 WHEN ss.status = 'suspended' THEN 'suspended'
-                 WHEN sis.in_flight THEN 'running'
-                 WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
-                 ELSE 'ready'
-                END AS combined_status,
-                ss.created_at,
-                ss.modified_at,
-                ss.pinned_endpoint_id,
-                sis.retry_count,
-                sis.last_failure,
-                sis.last_attempt_endpoint_id,
-                sis.next_retry_at,
-                sis.last_start_at,
-                ss.invoked_by_id,
-                ss.invoked_by_service
-            FROM sys_status ss
-            LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-            WHERE ss.service = '{}'
-            ORDER BY ss.created_at DESC
-            LIMIT {}",
-            service, limit_active,
-        );
-        let resp = client.run_query(query).await?;
-        for batch in resp.batches {
-            let col = batch.column(0);
-            let ids = as_string_array(col);
+    let active: Vec<Invocation> = find_active_invocations(
+        client,
+        &format!("WHERE ss.service = '{}'", service),
+        "",
+        "ORDER BY ss.created_at DESC",
+        limit_active,
+    )
+    .await?
+    .0;
 
-            let col = batch.column(1);
-            let services = as_string_array(col);
+    Ok((inbox, active))
+}
 
-            let col = batch.column(2);
-            let methods = as_string_array(col);
+fn parse_instance_type(s: &str) -> InstanceType {
+    match s {
+        "keyed" => InstanceType::Keyed,
+        "unkeyed" => InstanceType::Unkeyed,
+        "singleton" => InstanceType::Singleton,
+        _ => panic!("Unexpected instance type"),
+    }
+}
 
-            let col = batch.column(3);
-            let service_keys = as_string_array(col);
+pub async fn get_invocation(
+    client: &DataFusionHttpClient,
+    invocation_id: &str,
+) -> Result<Option<Invocation>> {
+    // Is it in inbox?
+    let result =
+        find_inbox_invocations(client, &format!("WHERE ss.id = '{}'", invocation_id), "", 1)
+            .await?
+            .0
+            .pop();
 
-            let col = batch.column(4);
-            let statuses = as_string_array(col);
+    if result.is_none() {
+        // Maybe it's active
+        return Ok(find_active_invocations(
+            client,
+            &format!("WHERE ss.id = '{}'", invocation_id),
+            "",
+            "",
+            1,
+        )
+        .await?
+        .0
+        .pop());
+    }
 
-            let col = batch.column(5);
-            let created_ats = col.as_primitive::<arrow::datatypes::Date64Type>();
+    Ok(result)
+}
 
-            let col = batch.column(6);
-            let modified_ats = col.as_primitive::<arrow::datatypes::Date64Type>();
+pub async fn get_invocation_journal(
+    client: &DataFusionHttpClient,
+    invocation_id: &str,
+) -> Result<Vec<JournalEntry>> {
+    // We are only looking for one...
+    // Let's get journal details.
+    let query = format!(
+        "SELECT
+            sj.index,
+            sj.entry_type,
+            sj.completed,
+            sj.invoked_id,
+            sj.invoked_service,
+            sj.invoked_method,
+            sj.invoked_service_key,
+            sj.sleep_wakeup_at
+        FROM sys_status ss
+        LEFT JOIN sys_journal sj
+            ON ss.service_key = sj.service_key
+            AND ss.service = sj.service
+        WHERE
+            ss.id = '{}'
+        ORDER BY index DESC
+        LIMIT {}",
+        invocation_id, JOURNAL_QUERY_LIMIT,
+    );
 
-            let col = batch.column(7);
-            let pinned_eps = as_string_array(col);
+    let resp = client.run_query(query).await?;
+    let mut journal = vec![];
+    for batch in resp.batches {
+        for i in 0..batch.num_rows() {
+            let index = batch
+                .column(0)
+                .as_primitive::<arrow::datatypes::UInt32Type>()
+                .value(i);
 
-            let col = batch.column(8);
-            let num_retries = col.as_primitive::<arrow::datatypes::UInt64Type>();
+            let entry_type = value_as_string(&batch, 1, i);
+            let completed = batch.column(2).as_boolean().value(i);
+            let invocation_id = value_as_string_opt(&batch, 3, i);
+            let invoked_service = value_as_string_opt(&batch, 4, i);
+            let invoked_method = value_as_string_opt(&batch, 5, i);
+            let invoked_service_key = value_as_string_opt(&batch, 6, i);
+            let wakeup_at = value_as_dt_opt(&batch, 7, i);
 
-            let col = batch.column(9);
-            let last_failures = as_string_array(col);
+            let entry_type = match entry_type.as_str() {
+                "Sleep" => JournalEntryType::Sleep { wakeup_at },
+                "Invoke" => JournalEntryType::Invoke(OutgoingInvoke {
+                    invocation_id,
+                    invoked_service,
+                    invoked_method,
+                    invoked_service_key,
+                }),
+                "BackgroundInvoke" => JournalEntryType::BackgroundInvoke(OutgoingInvoke {
+                    invocation_id,
+                    invoked_service,
+                    invoked_method,
+                    invoked_service_key,
+                }),
+                "Awaitable" => JournalEntryType::Awakeable,
+                "GetState" => JournalEntryType::GetState,
+                "SetState" => JournalEntryType::SetState,
+                "ClearState" => JournalEntryType::ClearState,
+                t => JournalEntryType::Other(t.to_owned()),
+            };
 
-            let col = batch.column(10);
-            let last_attempt_eps = as_string_array(col);
-
-            let col = batch.column(11);
-            let next_retries = col.as_primitive::<arrow::datatypes::Date64Type>();
-
-            let col = batch.column(12);
-            let last_starts = col.as_primitive::<arrow::datatypes::Date64Type>();
-
-            let col = batch.column(13);
-            let invoked_by_ids = as_string_array(col);
-
-            let col = batch.column(14);
-            let invoked_by_svcs = as_string_array(col);
-
-            for i in 0..batch.num_rows() {
-                let status = statuses.value(i).parse().expect("Unexpected status");
-
-                let created_at: DateTime<Local> = Local
-                    .timestamp_millis_opt(created_ats.value(i))
-                    .latest()
-                    .expect("Invalid timestamp");
-
-                let mut invocation = Invocation {
-                    status,
-                    service: services.value(i).to_owned(),
-                    method: methods.value(i).to_owned(),
-                    id: ids.value(i).to_owned(),
-                    created_at,
-                    ..Default::default()
-                };
-
-                if is_keyed {
-                    invocation.key = Some(service_keys.value(i).to_owned());
-                }
-
-                if !invoked_by_ids.is_null(i) {
-                    invocation.invoked_by_id = Some(invoked_by_ids.value(i).to_owned());
-                }
-
-                if !invoked_by_svcs.is_null(i) {
-                    invocation.invoked_by_service = Some(invoked_by_svcs.value(i).to_owned());
-                }
-
-                // State duration
-                if !modified_ats.is_null(i) {
-                    let last_modified = Local
-                        .timestamp_millis_opt(modified_ats.value(i))
-                        .latest()
-                        .expect("Invalid timestamp");
-                    invocation.duration_in_state =
-                        Some(Local::now().signed_duration_since(last_modified));
-                }
-
-                // Running duration
-                if status == EnrichedInvocationState::Running && !last_starts.is_null(i) {
-                    let last_start = Local
-                        .timestamp_millis_opt(last_starts.value(i))
-                        .latest()
-                        .expect("Invalid timestamp");
-                    invocation.current_attempt_duration =
-                        Some(Local::now().signed_duration_since(last_start));
-                }
-
-                // Num retries
-                if !num_retries.is_null(i) {
-                    invocation.num_retries = Some(num_retries.value(i));
-                }
-                // Next retry
-                if !next_retries.is_null(i) {
-                    invocation.next_retry_at = Some(
-                        Local
-                            .timestamp_millis_opt(next_retries.value(i))
-                            .latest()
-                            .expect("Invalid timestamp"),
-                    );
-                }
-
-                if !pinned_eps.is_null(i) {
-                    invocation.pinned_deployment_id = Some(pinned_eps.value(i).to_owned());
-                }
-
-                if !last_failures.is_null(i) {
-                    invocation.last_failure_message = Some(last_failures.value(i).to_owned());
-                }
-
-                if !last_attempt_eps.is_null(i) {
-                    invocation.last_attempt_deployment_id =
-                        Some(last_attempt_eps.value(i).to_owned());
-                }
-
-                active.push(invocation);
-            }
+            journal.push(JournalEntry {
+                seq: index,
+                entry_type,
+                completed,
+            });
         }
     }
 
-    Ok((inbox, active))
+    // Sort by seq.
+    journal.reverse();
+    Ok(journal)
 }

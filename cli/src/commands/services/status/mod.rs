@@ -14,18 +14,19 @@ mod detailed_status;
 use crate::c_println;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
-    EnrichedInvocationState, ServiceMethodLockedKeysMap, ServiceStatus, ServiceStatusMap,
+    InvocationState, ServiceMethodLockedKeysMap, ServiceStatus, ServiceStatusMap,
 };
 use crate::clients::MetasClient;
 use crate::ui::console::{Styled, StyledTable};
+use crate::ui::invocations::invocation_status;
 use crate::ui::service_methods::icon_for_service_flavor;
 use crate::ui::stylesheet::Style;
+use crate::ui::{duration_to_human_precise, duration_to_human_rough};
 
 use restate_meta_rest_model::services::ServiceMetadata;
 
 use anyhow::Result;
-use chrono::Duration;
-use chrono_humanize::{Accuracy, Tense};
+use chrono_humanize::Tense;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 
@@ -88,23 +89,23 @@ async fn render_services_status(
 fn render_method_state_stats(
     svc_status: &ServiceStatus,
     method: &str,
-    state: EnrichedInvocationState,
+    state: InvocationState,
 ) -> Cell {
     use comfy_table::Color;
     // Pending
     if let Some(state_stats) = svc_status.get_method_stats(state, method) {
         let cell = Cell::new(state_stats.num_invocations);
         let color = match state {
-            EnrichedInvocationState::Unknown => Color::Magenta,
-            EnrichedInvocationState::Pending if state_stats.num_invocations > 10 => Color::Yellow,
-            EnrichedInvocationState::Running if state_stats.num_invocations > 0 => Color::Green,
-            EnrichedInvocationState::BackingOff if state_stats.num_invocations > 5 => Color::Red,
-            EnrichedInvocationState::BackingOff if state_stats.num_invocations > 0 => Color::Yellow,
+            InvocationState::Unknown => Color::Magenta,
+            InvocationState::Pending if state_stats.num_invocations > 10 => Color::Yellow,
+            InvocationState::Running if state_stats.num_invocations > 0 => Color::Green,
+            InvocationState::BackingOff if state_stats.num_invocations > 5 => Color::Red,
+            InvocationState::BackingOff if state_stats.num_invocations > 0 => Color::Yellow,
             _ => comfy_table::Color::Reset,
         };
         cell.fg(color)
     } else {
-        Cell::new("0")
+        Cell::new("-")
     }
 }
 
@@ -120,34 +121,34 @@ async fn render_methods_status(
         row.push(render_method_state_stats(
             svc_status,
             &method.name,
-            EnrichedInvocationState::Pending,
+            InvocationState::Pending,
         ));
 
         // Ready
         row.push(render_method_state_stats(
             svc_status,
             &method.name,
-            EnrichedInvocationState::Ready,
+            InvocationState::Ready,
         ));
 
         // Running
         row.push(render_method_state_stats(
             svc_status,
             &method.name,
-            EnrichedInvocationState::Running,
+            InvocationState::Running,
         ));
 
         // Backing-off
         row.push(render_method_state_stats(
             svc_status,
             &method.name,
-            EnrichedInvocationState::BackingOff,
+            InvocationState::BackingOff,
         ));
 
         row.push(render_method_state_stats(
             svc_status,
             &method.name,
-            EnrichedInvocationState::Suspended,
+            InvocationState::Suspended,
         ));
 
         let oldest_cell = if let Some(current_method) = svc_status.get_method(&method.name) {
@@ -167,7 +168,7 @@ async fn render_methods_status(
                 Cell::new(format!(
                     "{} {} (invoked {})",
                     oldest_stats.oldest_invocation,
-                    Styled(style, oldest_state),
+                    invocation_status(oldest_state),
                     Styled(style, oldest_at_human)
                 ))
             } else {
@@ -229,9 +230,11 @@ async fn render_locked_keys(
                 row.push(Cell::new(format!(
                     "{} ({})",
                     invocation,
-                    key_info
-                        .invocation_status
-                        .unwrap_or(EnrichedInvocationState::Unknown)
+                    invocation_status(
+                        key_info
+                            .invocation_status
+                            .unwrap_or(InvocationState::Unknown)
+                    )
                 )));
             } else {
                 row.push(Cell::new("-"));
@@ -251,7 +254,7 @@ async fn render_locked_keys(
                     // Heuristic for issues, it's not accurate since we don't have the full picture
                     // in the CLI. Ideally, we should get metrics like "total flight duration" and
                     // "total suspension duration", "time_of_first_attempt", etc.
-                    EnrichedInvocationState::Running => {
+                    InvocationState::Running => {
                         // Check for duration...,
                         if let Some(run_duration) = key_info.invocation_attempt_duration {
                             let lock_held_period_msg = if let Some(state_duration) =
@@ -271,7 +274,7 @@ async fn render_locked_keys(
                             if run_duration.num_seconds() > 5 {
                                 // too long...
                                 notes = Cell::new(format!(
-                                    "Current invocation attempt has been in-flight for {}. {}",
+                                    "Current attempt has been in-flight for {}. {}",
                                     Styled(
                                         Style::Danger,
                                         duration_to_human_precise(run_duration, Tense::Present)
@@ -281,12 +284,12 @@ async fn render_locked_keys(
                             }
                         }
                     }
-                    EnrichedInvocationState::Suspended => {
+                    InvocationState::Suspended => {
                         if let Some(suspend_duration) = key_info.invocation_state_duration {
                             if suspend_duration.num_seconds() > 5 {
                                 // too long...
                                 notes = Cell::new(format!(
-                                    "Invocation has been suspended for {}. The lock will not be \
+                                    "Suspended for {}. The lock will not be \
                                     released until this invocation is complete",
                                     Styled(
                                         Style::Danger,
@@ -296,7 +299,7 @@ async fn render_locked_keys(
                             }
                         }
                     }
-                    EnrichedInvocationState::BackingOff => {
+                    InvocationState::BackingOff => {
                         // Important to note,
                         let next_retry = key_info.next_retry_at.expect("No scheduled retry!");
                         let next_retry = next_retry.signed_duration_since(chrono::Local::now());
@@ -309,7 +312,7 @@ async fn render_locked_keys(
                             Styled(Style::Notice, num_retries)
                         };
                         notes = Cell::new(format!(
-                            "Invocation is fail-looping, retried {} time(s). Next retry {}",
+                            "Retried {} time(s). Next retry {}.",
                             num_retries, next_retry,
                         ));
                     }
@@ -325,15 +328,4 @@ async fn render_locked_keys(
     }
     c_println!("{}", table);
     Ok(())
-}
-
-fn duration_to_human_precise(duration: Duration, tense: Tense) -> String {
-    let duration =
-        chrono_humanize::HumanTime::from(Duration::milliseconds(duration.num_milliseconds()));
-    duration.to_text_en(Accuracy::Precise, tense)
-}
-
-fn duration_to_human_rough(duration: Duration, tense: Tense) -> String {
-    let duration = chrono_humanize::HumanTime::from(duration);
-    duration.to_text_en(Accuracy::Rough, tense)
 }
