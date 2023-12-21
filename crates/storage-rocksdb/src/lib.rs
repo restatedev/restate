@@ -26,6 +26,7 @@ mod writer;
 use crate::codec::Codec;
 use crate::keys::TableKey;
 use crate::scan::{PhysicalScan, TableScan};
+use crate::writer::{Writer, WriterHandle};
 use crate::TableKind::{
     Deduplication, Inbox, Journal, Outbox, PartitionStateMachine, State, Status, Timers,
 };
@@ -52,7 +53,6 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot::Sender;
 use tokio::task::JoinHandle;
-use crate::writer::{Writer, WriterHandle};
 
 type DB = rocksdb::DBWithThreadMode<SingleThreaded>;
 pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
@@ -329,9 +329,13 @@ impl RocksDBStorage {
         let rdb2 = Clone::clone(&rdb);
         let writer = Writer::new(rdb2);
         let writer_handle = writer.create_writer_handle();
-        tokio::task::spawn_blocking(move || writer.run());
 
-        Ok(Self { db: rdb, writer_handle })
+        let _ = writer.run();
+
+        Ok(Self {
+            db: rdb,
+            writer_handle,
+        })
     }
 
     #[inline]

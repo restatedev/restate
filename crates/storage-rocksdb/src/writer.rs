@@ -12,6 +12,7 @@ use crate::{try_write_batch, DB};
 use restate_storage_api::StorageError;
 use rocksdb::WriteBatch;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::Sender;
 
@@ -49,7 +50,14 @@ impl Writer {
         }
     }
 
-    pub fn run(self) -> Result<(), StorageError> {
+    pub fn run(self) -> JoinHandle<Result<(), StorageError>> {
+        std::thread::Builder::new()
+            .name("rs:rocksdb".to_owned())
+            .spawn(|| self.run_inner())
+            .expect("failed to spawn writer thread")
+    }
+
+    fn run_inner(self) -> Result<(), StorageError> {
         let db = self.db;
         let mut rx = self.rx;
         drop(self.tx);
