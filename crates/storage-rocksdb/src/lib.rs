@@ -21,6 +21,8 @@ pub mod state_table;
 pub mod status_table;
 pub mod timer_table;
 
+mod writer;
+
 use crate::codec::Codec;
 use crate::keys::TableKey;
 use crate::scan::{PhysicalScan, TableScan};
@@ -47,9 +49,10 @@ use rocksdb::WriteBatch;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot::Sender;
 use tokio::task::JoinHandle;
+use crate::writer::{Writer, WriterHandle};
 
 type DB = rocksdb::DBWithThreadMode<SingleThreaded>;
 pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
@@ -178,7 +181,7 @@ impl BuildError {
 #[derive(Clone, Debug)]
 pub struct RocksDBStorage {
     db: Arc<DB>,
-    tx: UnboundedSender<(WriteBatch, Sender<std::result::Result<(), StorageError>>)>,
+    writer_handle: WriterHandle,
 }
 
 fn db_options(opts: &Options) -> rocksdb::Options {
@@ -323,15 +326,12 @@ impl RocksDBStorage {
             .map_err(BuildError::from_rocksdb_error)?;
         let rdb = Arc::new(rdb);
 
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<(
-            WriteBatch,
-            Sender<std::result::Result<(), StorageError>>,
-        )>();
-
         let rdb2 = Clone::clone(&rdb);
-        tokio::task::spawn_blocking(move || commit_loop(rdb2, rx));
+        let writer = Writer::new(rdb2);
+        let writer_handle = writer.create_writer_handle();
+        tokio::task::spawn_blocking(move || writer.run());
 
-        Ok(Self { db: rdb, tx })
+        Ok(Self { db: rdb, writer_handle })
     }
 
     #[inline]
@@ -410,16 +410,7 @@ impl RocksDBStorage {
         &self,
         write_batch: WriteBatch,
     ) -> std::result::Result<(), StorageError> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-
-        self.tx
-            .send((write_batch, tx))
-            .map_err(|_| StorageError::OperationalError)?;
-
-        match rx.await {
-            Err(_) => Err(StorageError::OperationalError),
-            Ok(res) => res,
-        }
+        self.writer_handle.write(write_batch).await
     }
 }
 
@@ -675,38 +666,4 @@ fn try_write_batch(
     let oneshot = futures.drain(..).last().unwrap();
     let _ = oneshot.send(result);
     false
-}
-
-fn commit_loop(
-    db: Arc<DB>,
-    mut rx: UnboundedReceiver<(WriteBatch, Sender<std::result::Result<(), StorageError>>)>,
-) {
-    let mut replies: Vec<Sender<std::result::Result<(), StorageError>>> = Vec::new();
-    'out: while let Some((batch, reply)) = rx.blocking_recv() {
-        replies.push(reply);
-        if !try_write_batch(&db, &mut replies, batch) {
-            continue;
-        }
-        //
-        // optimistically try taking more batches
-        //
-        while let Ok((batch, reply)) = rx.try_recv() {
-            replies.push(reply);
-            if !try_write_batch(&db, &mut replies, batch) {
-                continue 'out;
-            }
-        }
-        //
-        // okay now that we wrote everything, let us commit
-        //
-        db.flush_wal(true)
-            .map_err(|error| StorageError::Generic(error.into()))
-            .expect("Unable to flush the WAL");
-        //
-        // notify everyone of the success
-        //
-        replies.drain(..).for_each(|f| {
-            let _ = f.send(Ok(()));
-        });
-    }
 }
