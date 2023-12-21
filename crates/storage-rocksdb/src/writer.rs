@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{try_write_batch, DB};
+use crate::DB;
 use futures::ready;
 use futures_util::FutureExt;
+use log::debug;
 use restate_storage_api::StorageError;
 use restate_types::errors::ThreadJoinError;
 use rocksdb::WriteBatch;
@@ -59,14 +60,19 @@ impl Writer {
         }
     }
 
-    pub fn run(self) -> JoinHandle {
+    pub fn run(self, shutdown_watch: drain::Watch) -> JoinHandle {
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         std::thread::Builder::new()
             .name("rs:rocksdb".to_owned())
             .spawn(|| {
                 // AssertUnwindSafe is safe because we don't access self after catch_unwind again
-                let result = panic::catch_unwind(AssertUnwindSafe(|| self.run_inner()));
+                let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .expect("current thread runtime should be creatable")
+                        .block_on(self.run_inner(shutdown_watch))
+                }));
 
                 // we don't care if the receiver is dropped
                 let _ = tx.send(result);
@@ -76,49 +82,89 @@ impl Writer {
         JoinHandle::new(rx)
     }
 
-    fn run_inner(self) -> Result<(), Error> {
-        let db = self.db;
-        let mut rx = self.rx;
-        drop(self.tx);
-
+    async fn run_inner(mut self, shutdown_watch: drain::Watch) -> Result<(), Error> {
         let mut replies: Vec<Sender<Result<(), StorageError>>> = Vec::new();
 
-        'out: while let Some(WriteCommand {
-            write_batch,
-            response_tx,
-        }) = rx.blocking_recv()
-        {
-            replies.push(response_tx);
-            if !try_write_batch(&db, &mut replies, write_batch) {
-                continue;
-            }
-            //
-            // optimistically try taking more batches
-            //
-            while let Ok(WriteCommand {
-                write_batch,
-                response_tx,
-            }) = rx.try_recv()
-            {
-                replies.push(response_tx);
-                if !try_write_batch(&db, &mut replies, write_batch) {
-                    continue 'out;
+        let shutdown_signal = shutdown_watch.signaled();
+        tokio::pin!(shutdown_signal);
+
+        loop {
+            tokio::select! {
+                Some(write_command) = self.rx.recv() => {
+                    self.handle_write_command(write_command, &mut replies)?;
+                },
+                _ = &mut shutdown_signal => {
+                    debug!("Stopping RocksDB writer thread");
+                    break;
                 }
             }
-            //
-            // okay now that we wrote everything, let us commit
-            //
-            db.flush_wal(true)?;
-            //
-            // notify everyone of the success
-            //
-            replies.drain(..).for_each(|f| {
-                let _ = f.send(Ok(()));
-            });
         }
 
         Ok(())
     }
+
+    fn handle_write_command(
+        &mut self,
+        WriteCommand {
+            write_batch,
+            response_tx,
+        }: WriteCommand,
+        replies: &mut Vec<Sender<Result<(), StorageError>>>,
+    ) -> Result<(), Error> {
+        replies.push(response_tx);
+        if !try_write_batch(&self.db, replies, write_batch) {
+            return Ok(());
+        }
+        //
+        // optimistically try taking more batches
+        //
+        while let Ok(WriteCommand {
+            write_batch,
+            response_tx,
+        }) = self.rx.try_recv()
+        {
+            replies.push(response_tx);
+            if !try_write_batch(&self.db, replies, write_batch) {
+                return Ok(());
+            }
+        }
+        //
+        // okay now that we wrote everything, let us commit
+        //
+        self.db.flush_wal(true)?;
+        //
+        // notify everyone of the success
+        //
+        replies.drain(..).for_each(|f| {
+            let _ = f.send(Ok(()));
+        });
+
+        Ok(())
+    }
+}
+
+fn try_write_batch(
+    db: &Arc<DB>,
+    futures: &mut Vec<Sender<Result<(), StorageError>>>,
+    batch: WriteBatch,
+) -> bool {
+    let result = db
+        .write(batch)
+        .map_err(|error| StorageError::Generic(error.into()));
+    if result.is_ok() {
+        return true;
+    }
+    //
+    // oops one of the batches failed, notify the others.
+    //
+    debug_assert!(!futures.is_empty());
+    let last = futures.len() - 1;
+    for f in futures.drain(..last) {
+        let _ = f.send(Err(StorageError::OperationalError));
+    }
+    let oneshot = futures.drain(..).last().unwrap();
+    let _ = oneshot.send(result);
+    false
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +204,11 @@ impl Future for JoinHandle {
         Poll::Ready(
             result
                 .map_err(|_| ThreadJoinError::UnexpectedTermination)
-                .and_then(|result| result.map_err(|panic| ThreadJoinError::Panic(panic))),
+                .and_then(|result| {
+                    result.map_err(|panic| {
+                        ThreadJoinError::Panic(sync_wrapper::SyncWrapper::new(panic))
+                    })
+                }),
         )
     }
 }

@@ -27,7 +27,7 @@ mod status_table_test;
 mod timer_table_test;
 
 #[tokio::test]
-async fn test_read_write() {
+async fn test_read_write() -> anyhow::Result<()> {
     //
     // create a rocksdb storage from options
     //
@@ -46,7 +46,8 @@ async fn test_read_write() {
         .build()
         .expect("RocksDB storage creation should succeed");
 
-    drop(writer.run());
+    let (signal, watch) = drain::channel();
+    let writer_join_handle = writer.run(watch);
 
     //
     // run the tests
@@ -57,6 +58,10 @@ async fn test_read_write() {
     state_table_test::run_tests(rocksdb.clone()).await;
     status_table_test::run_tests(rocksdb.clone()).await;
     timer_table_test::run_tests(rocksdb).await;
+
+    signal.drain().await;
+    writer_join_handle.await??;
+    Ok(())
 }
 
 pub(crate) fn uuid_str(uuid: &str) -> Uuid {

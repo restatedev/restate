@@ -27,7 +27,8 @@ async fn writing_to_rocksdb(base_path: &path::Path) {
         .build()
         .expect("RocksDB storage creation should succeed");
 
-    drop(writer.run());
+    let (signal, watch) = drain::channel();
+    let writer_join_handler = writer.run(watch);
 
     //
     // write
@@ -40,6 +41,9 @@ async fn writing_to_rocksdb(base_path: &path::Path) {
         }
         txn.commit().await.unwrap();
     }
+
+    signal.drain().await;
+    writer_join_handler.await.unwrap().unwrap();
 }
 
 fn basic_writing_reading_benchmark(c: &mut Criterion) {

@@ -50,9 +50,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc::Receiver;
-use tokio::sync::oneshot::Sender;
 use tokio::task::JoinHandle;
 
+pub use writer::JoinHandle as RocksDBWriterJoinHandle;
 pub use writer::Writer as RocksDBWriter;
 
 type DB = rocksdb::DBWithThreadMode<SingleThreaded>;
@@ -648,28 +648,4 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
         let write_batch = self.write_batch.unwrap();
         self.storage.commit_write_batch(write_batch).boxed()
     }
-}
-
-fn try_write_batch(
-    db: &Arc<DB>,
-    futures: &mut Vec<Sender<std::result::Result<(), StorageError>>>,
-    batch: WriteBatch,
-) -> bool {
-    let result = db
-        .write(batch)
-        .map_err(|error| StorageError::Generic(error.into()));
-    if result.is_ok() {
-        return true;
-    }
-    //
-    // oops one of the batches failed, notify the others.
-    //
-    debug_assert!(!futures.is_empty());
-    let last = futures.len() - 1;
-    for f in futures.drain(..last) {
-        let _ = f.send(Err(StorageError::OperationalError));
-    }
-    let oneshot = futures.drain(..).last().unwrap();
-    let _ = oneshot.send(result);
-    false
 }

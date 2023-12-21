@@ -424,8 +424,8 @@ impl Worker {
             .map(|partition_processor| tokio::spawn(partition_processor.run()))
             .collect();
         let mut ingress_kafka_handle = tokio::spawn(self.ingress_kafka.run(shutdown_watch.clone()));
-        let mut services_handle = tokio::spawn(self.services.run(shutdown_watch));
-        let mut rocksdb_writer_handle = self.rocksdb_writer.run();
+        let mut services_handle = tokio::spawn(self.services.run(shutdown_watch.clone()));
+        let mut rocksdb_writer_handle = self.rocksdb_writer.run(shutdown_watch);
 
         let shutdown = drain.signaled();
 

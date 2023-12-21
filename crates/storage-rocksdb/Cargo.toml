@@ -22,6 +22,7 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
+drain = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 paste = { workspace = true }
@@ -29,11 +30,13 @@ prost = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+sync_wrapper = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 uuid = { workspace = true }
 once_cell = "1.18.0"
+log = "0.4.20"
 
 [dev-dependencies]
 restate-types = { workspace = true, features = ["mocks"] }

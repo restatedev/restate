@@ -29,6 +29,7 @@ rand = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
+sync_wrapper = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
 tonic = { workspace = true, optional = true }
