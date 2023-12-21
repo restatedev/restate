@@ -30,7 +30,7 @@ use restate_schema_impl::Schemas;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_http::service::HTTPQueryService;
 use restate_storage_query_postgres::service::PostgresQueryService;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{IngressDispatcherId, PartitionKey, PeerId};
 use restate_types::message::PeerTarget;
 use std::ops::RangeInclusive;
@@ -175,6 +175,12 @@ pub enum Error {
         component: &'static str,
         cause: tokio::task::JoinError,
     },
+    #[error("thread '{thread}' panicked: {cause}")]
+    #[code(unknown)]
+    ThreadPanic {
+        thread: &'static str,
+        cause: restate_types::errors::ThreadJoinError,
+    },
     #[error("network failed: {0}")]
     #[code(unknown)]
     Network(#[from] restate_network::RoutingError),
@@ -202,11 +208,18 @@ pub enum Error {
     #[error("worker services failed: {0}")]
     #[code(unknown)]
     Services(#[from] services::Error),
+    #[error("rocksdb writer failed: {0}")]
+    #[code(unknown)]
+    RocksDBWriter(#[from] anyhow::Error),
 }
 
 impl Error {
     fn component_panic(component: &'static str, cause: tokio::task::JoinError) -> Self {
         Error::ComponentPanic { component, cause }
+    }
+
+    fn thread_panic(thread: &'static str, cause: restate_types::errors::ThreadJoinError) -> Self {
+        Error::ThreadPanic { thread, cause }
     }
 }
 
@@ -226,6 +239,7 @@ pub struct Worker {
     external_client_ingress_runner: ExternalClientIngressRunner,
     ingress_kafka: IngressKafkaService,
     services: Services<FixedConsecutivePartitions>,
+    rocksdb_writer: RocksDBWriter,
 }
 
 impl Worker {
@@ -287,9 +301,9 @@ impl Worker {
 
         let network_handle = network.create_network_handle();
 
-        let rocksdb = storage_rocksdb.build()?;
+        let (rocksdb_storage, rocksdb_writer) = storage_rocksdb.build()?;
 
-        let invoker_storage_reader = InvokerStorageReader::new(rocksdb.clone());
+        let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());
         let invoker = opts.invoker.build(
             invoker_storage_reader.clone(),
             invoker_storage_reader,
@@ -298,7 +312,7 @@ impl Worker {
         );
 
         let query_context = storage_query_datafusion.build(
-            rocksdb.clone(),
+            rocksdb_storage.clone(),
             invoker.status_reader(),
             schemas.clone(),
         )?;
@@ -321,7 +335,7 @@ impl Worker {
                     invoker_sender,
                     network_handle.clone(),
                     network.create_partition_processor_sender(),
-                    rocksdb.clone(),
+                    rocksdb_storage.clone(),
                     schemas.clone(),
                 )
             })
@@ -350,6 +364,7 @@ impl Worker {
             ),
             ingress_kafka,
             services,
+            rocksdb_writer,
         })
     }
 
@@ -410,6 +425,7 @@ impl Worker {
             .collect();
         let mut ingress_kafka_handle = tokio::spawn(self.ingress_kafka.run(shutdown_watch.clone()));
         let mut services_handle = tokio::spawn(self.services.run(shutdown_watch));
+        let mut rocksdb_writer_handle = self.rocksdb_writer.run();
 
         let shutdown = drain.signaled();
 
@@ -430,7 +446,8 @@ impl Worker {
                     invoker_handle,
                     external_client_ingress_handle,
                     ingress_kafka_handle,
-                    services_handle);
+                    services_handle,
+                    rocksdb_writer_handle,);
 
                 debug!("Completed shutdown of worker");
             },
@@ -475,6 +492,11 @@ impl Worker {
                 services_result.map_err(|err| Error::component_panic("worker services", err))??;
                 panic!("Unexpected termination of worker services.");
             },
+            rocksdb_result = &mut rocksdb_writer_handle => {
+                rocksdb_result.map_err(|err| Error::thread_panic("rocksdb writer", err))?
+                .map_err(Error::RocksDBWriter)?;
+                panic!("Unexpected termination of rocksdb writer.");
+            }
         }
 
         Ok(())

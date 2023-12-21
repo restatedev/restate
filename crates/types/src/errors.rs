@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::any::Any;
 use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
@@ -369,4 +370,12 @@ mod tonic_conversions_impl {
             Status::new(value.code().into(), value.message)
         }
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ThreadJoinError {
+    #[error("thread panicked: {0:?}")]
+    Panic(Box<dyn Any + Send + 'static>),
+    #[error("thread terminated unexpectedly")]
+    UnexpectedTermination,
 }

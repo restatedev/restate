@@ -9,10 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use crate::{try_write_batch, DB};
+use futures::ready;
+use futures_util::FutureExt;
 use restate_storage_api::StorageError;
+use restate_types::errors::ThreadJoinError;
 use rocksdb::WriteBatch;
+use std::future::Future;
+use std::panic;
+use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::thread::JoinHandle;
+use std::task::{Context, Poll};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::Sender;
 
@@ -29,6 +36,8 @@ impl WriteCommand {
         }
     }
 }
+
+type Error = anyhow::Error;
 
 pub struct Writer {
     db: Arc<DB>,
@@ -50,14 +59,24 @@ impl Writer {
         }
     }
 
-    pub fn run(self) -> JoinHandle<Result<(), StorageError>> {
+    pub fn run(self) -> JoinHandle {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
         std::thread::Builder::new()
             .name("rs:rocksdb".to_owned())
-            .spawn(|| self.run_inner())
-            .expect("failed to spawn writer thread")
+            .spawn(|| {
+                // AssertUnwindSafe is safe because we don't access self after catch_unwind again
+                let result = panic::catch_unwind(AssertUnwindSafe(|| self.run_inner()));
+
+                // we don't care if the receiver is dropped
+                let _ = tx.send(result);
+            })
+            .expect("RocksDB writer thread should be spawnable");
+
+        JoinHandle::new(rx)
     }
 
-    fn run_inner(self) -> Result<(), StorageError> {
+    fn run_inner(self) -> Result<(), Error> {
         let db = self.db;
         let mut rx = self.rx;
         drop(self.tx);
@@ -89,8 +108,7 @@ impl Writer {
             //
             // okay now that we wrote everything, let us commit
             //
-            db.flush_wal(true)
-                .map_err(|error| StorageError::Generic(error.into()))?;
+            db.flush_wal(true)?;
             //
             // notify everyone of the success
             //
@@ -118,5 +136,29 @@ impl WriterHandle {
         response_rx
             .await
             .map_err(|_| StorageError::OperationalError)?
+    }
+}
+
+pub struct JoinHandle {
+    rx: tokio::sync::oneshot::Receiver<std::thread::Result<Result<(), Error>>>,
+}
+
+impl JoinHandle {
+    fn new(rx: tokio::sync::oneshot::Receiver<std::thread::Result<Result<(), Error>>>) -> Self {
+        Self { rx }
+    }
+}
+
+impl Future for JoinHandle {
+    type Output = Result<Result<(), Error>, ThreadJoinError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let result = ready!(self.rx.poll_unpin(cx));
+
+        Poll::Ready(
+            result
+                .map_err(|_| ThreadJoinError::UnexpectedTermination)
+                .and_then(|result| result.map_err(|panic| ThreadJoinError::Panic(panic))),
+        )
     }
 }

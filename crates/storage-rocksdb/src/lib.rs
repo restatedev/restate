@@ -20,7 +20,6 @@ pub mod scan;
 pub mod state_table;
 pub mod status_table;
 pub mod timer_table;
-
 mod writer;
 
 use crate::codec::Codec;
@@ -53,6 +52,8 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot::Sender;
 use tokio::task::JoinHandle;
+
+pub use writer::Writer as RocksDBWriter;
 
 type DB = rocksdb::DBWithThreadMode<SingleThreaded>;
 pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
@@ -149,7 +150,7 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn build(self) -> std::result::Result<RocksDBStorage, BuildError> {
+    pub fn build(self) -> std::result::Result<(RocksDBStorage, Writer), BuildError> {
         RocksDBStorage::new(self)
     }
 }
@@ -286,7 +287,7 @@ fn cf_options(opts: &Options, cache: Option<Cache>) -> rocksdb::Options {
 }
 
 impl RocksDBStorage {
-    fn new(opts: Options) -> std::result::Result<Self, BuildError> {
+    fn new(opts: Options) -> std::result::Result<(Self, Writer), BuildError> {
         let cache = if opts.cache_size > 0 {
             Some(Cache::new_lru_cache(opts.cache_size))
         } else {
@@ -330,12 +331,13 @@ impl RocksDBStorage {
         let writer = Writer::new(rdb2);
         let writer_handle = writer.create_writer_handle();
 
-        let _ = writer.run();
-
-        Ok(Self {
-            db: rdb,
-            writer_handle,
-        })
+        Ok((
+            Self {
+                db: rdb,
+                writer_handle,
+            },
+            writer,
+        ))
     }
 
     #[inline]

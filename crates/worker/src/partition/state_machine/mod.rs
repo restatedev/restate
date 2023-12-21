@@ -146,14 +146,18 @@ mod tests {
         pub fn new(inbox_seq_number: MessageIndex, outbox_seq_number: MessageIndex) -> Self {
             let temp_dir = tempdir().unwrap();
             info!("Using RocksDB temp directory {}", temp_dir.path().display());
+            let (rocksdb_storage, writer) = restate_storage_rocksdb::OptionsBuilder::default()
+                .path(temp_dir.into_path().to_str().unwrap().to_string())
+                .build()
+                .unwrap()
+                .build()
+                .unwrap();
+
+            drop(writer.run());
+
             Self {
                 state_machine: StateMachine::new(inbox_seq_number, outbox_seq_number),
-                rocksdb_storage: restate_storage_rocksdb::OptionsBuilder::default()
-                    .path(temp_dir.into_path().to_str().unwrap().to_string())
-                    .build()
-                    .unwrap()
-                    .build()
-                    .unwrap(),
+                rocksdb_storage,
                 effects_buffer: Default::default(),
             }
         }
