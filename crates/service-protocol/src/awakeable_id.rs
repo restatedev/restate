@@ -13,9 +13,10 @@ use bytes::{BufMut, BytesMut};
 use restate_types::identifiers::{
     EncodedInvocationId, EntryIndex, InvocationId, InvocationIdParseError,
 };
+use std::fmt::Display;
 use std::mem::size_of;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AwakeableIdentifier {
     invocation_id: InvocationId,
     entry_index: EntryIndex,
@@ -69,6 +70,12 @@ impl AwakeableIdentifier {
 
     pub fn into_inner(self) -> (InvocationId, EntryIndex) {
         (self.invocation_id, self.entry_index)
+    }
+}
+
+impl Display for AwakeableIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.encode())
     }
 }
 
