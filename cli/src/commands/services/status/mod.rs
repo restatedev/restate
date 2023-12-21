@@ -21,6 +21,7 @@ use crate::ui::console::{Styled, StyledTable};
 use crate::ui::invocations::invocation_status;
 use crate::ui::service_methods::icon_for_service_flavor;
 use crate::ui::stylesheet::Style;
+use crate::ui::watcher::Watch;
 use crate::ui::{duration_to_human_precise, duration_to_human_rough};
 
 use restate_meta_rest_model::services::ServiceMetadata;
@@ -41,11 +42,18 @@ pub struct Status {
 
     /// Service name, prints all services if omitted
     service: Option<String>,
+
+    #[clap(flatten)]
+    watch: Watch,
 }
 
 pub async fn run_status(State(env): State<CliEnv>, opts: &Status) -> Result<()> {
-    let metas_client = MetasClient::new(&env)?;
-    let sql_client = crate::clients::DataFusionHttpClient::new(&env)?;
+    opts.watch.run(|| status(&env, opts)).await
+}
+
+async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
+    let metas_client = MetasClient::new(env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
 
     if let Some(svc) = &opts.service {
         detailed_status::run_detailed_status(env, svc, opts, metas_client, sql_client).await

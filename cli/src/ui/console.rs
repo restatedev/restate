@@ -147,70 +147,72 @@ macro_rules! _gecho {
     // Ignore errors (don't panic on broken pipes, unlike default behaviour)
     (@empty_line, $where:tt) => {
         {
-            use std::io::Write;
-            let _ = writeln!(std::io::$where());
+            use std::fmt::Write;
+            let mut _lock = $crate::ui::output::$where();
+            let _ = writeln!(_lock);
         }
     };
     (@newline, $where:tt, $($arg:tt)*) => {
         {
-            use std::io::Write;
-            let _ = writeln!(std::io::$where(), $($arg)*);
+            use std::fmt::Write;
+            let mut _lock = $crate::ui::output::$where();
+            let _ = writeln!(_lock, $($arg)*);
         }
     };
     (@title, ($icon:expr), $where:tt, $($arg:tt)*) => {
         {
-            use std::io::Write;
+            use std::fmt::Write;
             use unicode_width::UnicodeWidthStr;
 
-            let mut lock = std::io::$where().lock();
+            let mut _lock = $crate::ui::output::$where();
             let _icon = $crate::ui::console::Icon($icon, "");
-            let _ = writeln!(lock);
+            let _ = writeln!(_lock);
             let _message = format!("{_icon} {}:", $($arg)*);
-            let _ = writeln!(lock, "{_message}");
-            let _ = writeln!(lock, "{:―<1$}", "", _message.width_cjk());
+            let _ = writeln!(_lock, "{_message}");
+            let _ = writeln!(_lock, "{:―<1$}", "", _message.width_cjk());
         }
     };
     (@indented, ($indent:expr), $where:tt, $($arg:tt)*) => {
         {
-            use std::io::Write;
-
-            let mut lock = std::io::$where().lock();
+            use std::fmt::Write;
+            let mut _lock = $crate::ui::output::$where();
             let _padding = $indent * 2;
-            let _ = write!(lock, "{:>_padding$}", "");
-            let _ = write!(lock, $($arg)*);
+            let _ = write!(_lock, "{:>_padding$}", "");
+            let _ = write!(_lock, $($arg)*);
         }
     };
     (@indented_newline, ($indent:expr), $where:tt, $($arg:tt)*) => {
         {
-            use std::io::Write;
+            use std::fmt::Write;
 
-            let mut lock = std::io::$where().lock();
+            let mut _lock = $crate::ui::output::$where();
             let _padding = $indent * 2;
-            let _ = write!(lock, "{:>_padding$}", "");
-            let _ = writeln!(lock, $($arg)*);
+            let _ = write!(_lock, "{:>_padding$}", "");
+            let _ = writeln!(_lock, $($arg)*);
         }
     };
     (@nl_with_prefix, ($prefix:expr), $where:tt, $($arg:tt)*) => {
         {
-            use std::io::Write;
-            let mut lock = std::io::$where().lock();
-            let _ = write!(lock, "{} ", $prefix);
-            let _ = writeln!(lock, $($arg)*);
+            use std::fmt::Write;
+            let mut _lock = $crate::ui::output::$where();
+            let _ = write!(_lock, "{} ", $prefix);
+            let _ = writeln!(_lock, $($arg)*);
         }
     };
     (@nl_with_prefix_styled, ($prefix:expr), ($style:expr), $where:tt, $($arg:tt)*) => {
         {
-            use std::io::Write;
-            let mut lock = std::io::$where().lock();
-            let _ = write!(lock, " ❯ {}  ", $prefix);
+            use std::fmt::Write;
+            let mut _lock = $crate::ui::output::$where();
+            let _ = write!(_lock, " ❯ {}  ", $prefix);
             let formatted = format!($($arg)*);
-            let _ = writeln!(lock, "{}", $crate::ui::console::Styled($style ,formatted));
+            let _ = writeln!(_lock, "{}", $crate::ui::console::Styled($style ,formatted));
         }
     };
     (@bare, $where:tt, $($arg:tt)*) => {
         {
-            use std::io::Write;
-            let _ = write!(std::io::$where(), $($arg)*);
+            use std::fmt::Write;
+            let mut _lock = $crate::ui::output::$where();
+            let _ = write!(_lock, $($arg)*);
         }
     };
 }
@@ -331,9 +333,9 @@ macro_rules! c_indentln {
 #[macro_export]
 macro_rules! c_indent_table {
     ($indent:expr, $table:expr) => {{
-        use std::io::Write;
+        use std::fmt::Write;
 
-        let mut _lock = std::io::stdout().lock();
+        let mut _lock = $crate::ui::output::stdout();
         let _padding = $indent * 2;
         for _l in $table.lines() {
             let _ = write!(_lock, "{:>_padding$}", "");

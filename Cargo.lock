@@ -1778,7 +1778,10 @@ dependencies = [
  "bitflags 2.4.1",
  "crossterm_winapi",
  "libc",
+ "mio",
  "parking_lot",
+ "signal-hook",
+ "signal-hook-mio",
  "winapi",
 ]
 
@@ -4537,6 +4540,7 @@ dependencies = [
  "cling",
  "comfy-table",
  "convert_case",
+ "crossterm 0.27.0",
  "ctrlc",
  "dialoguer",
  "dirs",

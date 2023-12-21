@@ -17,6 +17,7 @@ use crate::console::c_println;
 use crate::ui::console::StyledTable;
 use crate::ui::deployments::{render_deployment_type, render_deployment_url};
 use crate::ui::service_methods::{icon_for_is_public, icon_for_service_flavor};
+use crate::ui::watcher::Watch;
 
 use restate_meta_rest_model::deployments::DeploymentResponse;
 use restate_meta_rest_model::services::MethodMetadata;
@@ -36,10 +37,17 @@ pub struct List {
     //// Show additional columns
     #[clap(long)]
     extra: bool,
+
+    #[clap(flatten)]
+    watch: Watch,
 }
 
-pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()> {
-    let client = crate::clients::MetasClient::new(&env)?;
+pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
+    opts.watch.run(|| list(&env, opts)).await
+}
+
+async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
+    let client = crate::clients::MetasClient::new(env)?;
     let defs = client.get_services().await?.into_body().await?;
 
     if defs.services.is_empty() {

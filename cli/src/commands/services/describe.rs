@@ -23,6 +23,7 @@ use crate::ui::deployments::{
     render_deployment_url,
 };
 use crate::ui::service_methods::create_service_methods_table;
+use crate::ui::watcher::Watch;
 
 use anyhow::Result;
 
@@ -32,15 +33,18 @@ use anyhow::Result;
 pub struct Describe {
     /// Service name
     name: String,
+
+    #[clap(flatten)]
+    watch: Watch,
 }
 
-pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -> Result<()> {
-    let client = MetasClient::new(&env)?;
-    let svc = client
-        .get_service(&describe_opts.name)
-        .await?
-        .into_body()
-        .await?;
+pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<()> {
+    opts.watch.run(|| describe(&env, opts)).await
+}
+
+async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
+    let client = MetasClient::new(env)?;
+    let svc = client.get_service(&opts.name).await?.into_body().await?;
 
     let mut table = Table::new_styled(&env.ui_config);
     table.add_kv_row("Name:", &svc.name);
@@ -114,7 +118,7 @@ pub async fn run_describe(State(env): State<CliEnv>, describe_opts: &Describe) -
         return Ok(());
     }
 
-    let sql_client = crate::clients::DataFusionHttpClient::new(&env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
     // We have older deployments for this service, let's grab
     let mut table = Table::new_styled(&env.ui_config);
     let headers = vec![

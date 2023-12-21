@@ -9,17 +9,26 @@
 // by the Apache License, Version 2.0.
 
 use cling::prelude::*;
+use std::io::Write;
 
+use crossterm::execute;
 use restate_cli::CliApp;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ClingFinished<CliApp> {
     let _ = ctrlc::set_handler(move || {
         // Showning cursor again if it was hidden by dialoguer.
-        let stdout = dialoguer::console::Term::stdout();
-        let _ = stdout.write_line("");
-        let _ = stdout.write_line("Ctrl-C pressed, aborting...");
-        let _ = stdout.show_cursor();
+        let mut stdout = std::io::stdout();
+        let _ = execute!(
+            stdout,
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::cursor::Show,
+            crossterm::style::ResetColor
+        );
+
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(stderr);
+        let _ = writeln!(stderr, "Ctrl-C pressed, aborting...");
 
         std::process::exit(1);
     });
