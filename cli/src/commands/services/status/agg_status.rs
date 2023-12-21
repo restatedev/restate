@@ -20,7 +20,7 @@ use anyhow::Result;
 use indicatif::ProgressBar;
 
 pub async fn run_aggregated_status(
-    env: CliEnv,
+    env: &CliEnv,
     opts: &Status,
     metas_client: MetasClient,
     sql_client: DataFusionHttpClient,
@@ -61,11 +61,11 @@ pub async fn run_aggregated_status(
     progress.finish_and_clear();
     // Render Status Table
     c_title!("📷", "Summary");
-    render_services_status(&env, services, status_map).await?;
+    render_services_status(env, services, status_map).await?;
     // Render Locked Keys
     if !locked_keys.is_empty() {
         c_title!("📨", "Active Keys");
-        render_locked_keys(&env, locked_keys, opts.locked_keys_limit).await?;
+        render_locked_keys(env, locked_keys, opts.locked_keys_limit).await?;
     }
     Ok(())
 }

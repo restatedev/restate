@@ -21,6 +21,7 @@ use crate::ui::deployments::{
     render_deployment_type, render_deployment_url, DeploymentStatus,
 };
 use crate::ui::stylesheet::Style;
+use crate::ui::watcher::Watch;
 
 use restate_meta_rest_model::deployments::{Deployment, DeploymentResponse, ServiceNameRevPair};
 use restate_meta_rest_model::services::ServiceMetadata;
@@ -36,11 +37,18 @@ pub struct List {
     //// Show additional columns
     #[clap(long)]
     extra: bool,
+
+    #[clap(flatten)]
+    watch: Watch,
 }
 
-pub async fn run_list(State(env): State<CliEnv>, list_opts: &List) -> Result<()> {
-    let client = crate::clients::MetasClient::new(&env)?;
-    let sql_client = crate::clients::DataFusionHttpClient::new(&env)?;
+pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
+    opts.watch.run(|| list(&env, opts)).await
+}
+
+async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
+    let client = crate::clients::MetasClient::new(env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
     // To know the latest version of every service.
     let services = client.get_services().await?.into_body().await?.services;
 

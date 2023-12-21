@@ -27,6 +27,7 @@ use crate::ui::deployments::{
 };
 use crate::ui::service_methods::icon_for_service_flavor;
 use crate::ui::stylesheet::Style;
+use crate::ui::watcher::Watch;
 use crate::{c_eprintln, c_indent_table, c_indentln, c_println, c_title};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -37,10 +38,17 @@ pub struct Describe {
     // ID to follow a more constrained format
     /// Deployment ID
     deployment_id: String,
+
+    #[clap(flatten)]
+    watch: Watch,
 }
 
 pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<()> {
-    let client = MetasClient::new(&env)?;
+    opts.watch.run(|| describe(&env, opts)).await
+}
+
+async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
+    let client = MetasClient::new(env)?;
 
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     // To know the latest version of every service.
@@ -55,7 +63,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
         .into_body()
         .await?;
 
-    let sql_client = crate::clients::DataFusionHttpClient::new(&env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
     let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
     let total_active_inv = active_inv.iter().map(|x| x.inv_count).sum();
 

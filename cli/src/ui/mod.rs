@@ -14,8 +14,10 @@ use chrono_humanize::{Accuracy, Tense};
 pub mod console;
 pub mod deployments;
 pub mod invocations;
+pub mod output;
 pub mod service_methods;
 pub mod stylesheet;
+pub mod watcher;
 
 pub fn duration_to_human_precise(duration: Duration, tense: Tense) -> String {
     let duration =

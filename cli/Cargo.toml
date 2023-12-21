@@ -30,6 +30,7 @@ clap-verbosity-flag = { version = "2.0.1" }
 cling = { version = "0.1.0", default-features = false, features = ["derive"] }
 comfy-table = "7.1"
 convert_case = "0.6"
+crossterm = { version = "0.27.0" }
 ctrlc = { version = "3.4.1" }
 dialoguer = { version = "0.11.0" }
 dirs = { version = "5.0" }

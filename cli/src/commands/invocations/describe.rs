@@ -22,6 +22,7 @@ use crate::ui::duration_to_human_rough;
 use crate::ui::invocations::{
     add_invocation_to_kv_table, format_journal_entry, invocation_qualified_name, invocation_status,
 };
+use crate::ui::watcher::Watch;
 use crate::{c_println, c_tip, c_title};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -30,10 +31,17 @@ use crate::{c_println, c_tip, c_title};
 pub struct Describe {
     /// The ID of the invocation
     invocation_id: String,
+
+    #[clap(flatten)]
+    watch: Watch,
 }
 
 pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<()> {
-    let sql_client = clients::DataFusionHttpClient::new(&env)?;
+    opts.watch.run(|| describe(&env, opts)).await
+}
+
+async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
+    let sql_client = clients::DataFusionHttpClient::new(env)?;
 
     let Some(inv) = get_invocation(&sql_client, &opts.invocation_id).await? else {
         bail!("Invocation {} not found!", opts.invocation_id);

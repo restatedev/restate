@@ -19,6 +19,7 @@ use crate::clients::datafusion_helpers::{
 use crate::ui::console::Styled;
 use crate::ui::invocations::render_invocation_compact;
 use crate::ui::stylesheet::Style;
+use crate::ui::watcher::Watch;
 
 use anyhow::Result;
 use cling::prelude::*;
@@ -56,10 +57,17 @@ pub struct List {
     /// Order the results by older invocations first
     #[clap(long)]
     oldest_first: bool,
+
+    #[clap(flatten)]
+    watch: Watch,
 }
 
 pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
-    let sql_client = crate::clients::DataFusionHttpClient::new(&env)?;
+    opts.watch.run(|| list(&env, opts)).await
+}
+
+async fn list(env: &CliEnv, opts: &List) -> Result<()> {
+    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
     let mut total: usize = 0;
     let statuses: HashSet<InvocationState> = HashSet::from_iter(opts.status.clone());
     // Prepare filters
@@ -216,7 +224,7 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
         // Truncate the output to fit the requested limit
         results.truncate(opts.limit);
         for inv in &results {
-            render_invocation_compact(&env, inv);
+            render_invocation_compact(env, inv);
         }
     }
 

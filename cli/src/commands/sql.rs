@@ -27,12 +27,16 @@ use crate::cli_env::CliEnv;
 use crate::ui::console::Styled;
 use crate::ui::console::StyledTable;
 use crate::ui::stylesheet::Style;
+use crate::ui::watcher::Watch;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_sql")]
 pub struct Sql {
     /// The SQL query to run.
     query: String,
+
+    #[clap(flatten)]
+    watch: Watch,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -40,8 +44,12 @@ pub struct SqlQueryRequest {
     pub query: String,
 }
 
-pub async fn run_sql(State(env): State<CliEnv>, sql_opts: &Sql) -> Result<()> {
-    let client = crate::clients::DataFusionHttpClient::new(&env)?;
+pub async fn run_sql(State(env): State<CliEnv>, opts: &Sql) -> Result<()> {
+    opts.watch.run(|| run_query(&env, opts)).await
+}
+
+async fn run_query(env: &CliEnv, sql_opts: &Sql) -> Result<()> {
+    let client = crate::clients::DataFusionHttpClient::new(env)?;
     let start_time = Instant::now();
     let resp = client.run_query(sql_opts.query.clone()).await?;
 
