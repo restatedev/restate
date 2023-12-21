@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
+
 use restate_meta_rest_model::deployments::ServiceNameRevPair;
 use restate_meta_rest_model::services::ServiceMetadata;
 
@@ -56,8 +57,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 
     let sql_client = crate::clients::DataFusionHttpClient::new(&env)?;
     let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
-    // sum inv_count in active_inv
-    let total_active_inv = active_inv.iter().fold(0, |acc, x| acc + x.inv_count);
+    let total_active_inv = active_inv.iter().map(|x| x.inv_count).sum();
 
     let svc_rev_pairs: Vec<_> = deployment
         .services

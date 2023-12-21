@@ -16,6 +16,8 @@ default = []
 [dependencies]
 restate-meta-rest-model = { workspace = true }
 restate-serde-util = { workspace = true }
+restate-service-protocol = { workspace = true }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 arrow = { version = "49.0.0", default-features = false, features = ["ipc", "prettyprint"] }
@@ -37,6 +39,7 @@ http = { workspace = true }
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
 is-terminal = { version = "0.4.9" }
+itertools = { workspace = true }
 octocrab = { version = "0.32.0", features = ["stream"] }
 once_cell = { workspace = true }
 reqwest = { version = "0.11.22", default-features = false, features = ["json", "rustls-tls"] }

@@ -8,7 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use chrono::Duration;
+use chrono_humanize::{Accuracy, Tense};
+
 pub mod console;
 pub mod deployments;
+pub mod invocations;
 pub mod service_methods;
 pub mod stylesheet;
+
+pub fn duration_to_human_precise(duration: Duration, tense: Tense) -> String {
+    let duration =
+        chrono_humanize::HumanTime::from(Duration::milliseconds(duration.num_milliseconds()));
+    duration.to_text_en(Accuracy::Precise, tense)
+}
+
+pub fn duration_to_human_rough(duration: Duration, tense: Tense) -> String {
+    let duration = chrono_humanize::HumanTime::from(duration);
+    duration.to_text_en(Accuracy::Rough, tense)
+}

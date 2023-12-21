@@ -8,9 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod deployments;
-pub mod examples;
-pub mod invocations;
-pub mod services;
-pub mod sql;
-pub mod whoami;
+mod cancel;
+mod describe;
+mod list;
+
+use cling::prelude::*;
+
+#[derive(Run, Subcommand, Clone)]
+pub enum Invocations {
+    /// List invocations of a service
+    List(list::List),
+    /// Prints detailed information about a given invocation
+    Describe(describe::Describe),
+    /// Cancel a given invocation and its children
+    Cancel(cancel::Cancel),
+}

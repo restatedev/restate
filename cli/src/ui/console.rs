@@ -285,6 +285,26 @@ macro_rules! c_warn {
     };
 }
 
+#[macro_export]
+macro_rules! c_tip {
+    ($($arg:tt)*) => {
+        {
+            let mut table = comfy_table::Table::new();
+            table.load_preset(comfy_table::presets::NOTHING);
+            table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
+            table.set_width(120);
+            let formatted = format!($($arg)*);
+
+            table.add_row(vec![
+                comfy_table::Cell::new(format!(" {} ",
+        $crate::ui::stylesheet::TIP_ICON)).set_alignment(comfy_table::CellAlignment::Center),
+                comfy_table::Cell::new(formatted).add_attribute(comfy_table::Attribute::Italic).add_attribute(comfy_table::Attribute::Dim),
+            ]);
+            $crate::ui::console::c_eprintln!("{}", table);
+        }
+    };
+}
+
 /// Title
 #[macro_export]
 macro_rules! c_title {
@@ -325,6 +345,6 @@ macro_rules! c_indent_table {
 // Macros with a "c_" prefix to emits console output with no panics.
 pub use {_gecho, c_eprint, c_eprintln, c_print, c_println};
 // Convenience macros with emojis/icons upfront
-pub use {c_error, c_success, c_title, c_warn};
+pub use {c_error, c_success, c_tip, c_title, c_warn};
 // padded printing
 pub use {c_indent, c_indent_table, c_indentln};
