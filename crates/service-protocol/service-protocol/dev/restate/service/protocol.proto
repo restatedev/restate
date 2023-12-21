@@ -52,11 +52,6 @@ message CompletionMessage {
   };
 }
 
-// Type: 0x0000 + 4
-message EntryAckMessage {
-  uint32 entry_index = 1;
-}
-
 // Type: 0x0000 + 2
 // Implementations MUST send this message when suspending an invocation.
 message SuspensionMessage {
@@ -81,6 +76,16 @@ message ErrorMessage {
   string message = 2;
   // Contains a verbose error description, e.g. the exception stacktrace.
   string description = 3;
+}
+
+// Type: 0x0000 + 4
+message EntryAckMessage {
+  uint32 entry_index = 1;
+}
+
+// Type: 0x0000 + 5
+// Implementations MUST send this message when the invocation lifecycle ends.
+message EndMessage {
 }
 
 // --- Journal Entries ---

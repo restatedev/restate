@@ -27,21 +27,31 @@ Every invocation state machine begins when the stream is opened and ends when th
 arbitrary interaction can be performed from the Service endpoint to the Runtime and vice versa via well-defined
 messages.
 
-### Syscalls
+The state machine is summarized in the following diagram:
 
-Most Restate features, such as interaction with other services, accessing service instance state, and so on, are defined
-as _Restate syscalls_ and exposed through the service protocol. The user interacts with these syscalls using the SDK
-APIs, which generate _Journal Entry_ messages that will be handled by the invocation state machine.
-
-Depending on the specific syscall, the Restate runtime generates as response either:
-
-- A completion, that is the response to the syscall
-- An ack, that is a confirmation the syscall has been persisted and **will** be executed
-- Nothing
-
-Each syscall defines a priori whether it replies with an ack or a completion, or doesn't reply at all.
-
-There are a couple of special message streams for initializing and closing the invocation.
+```mermaid
+sequenceDiagram
+    Note over Runtime,SDK: Start
+    Runtime->>SDK: HTTP Request to /invoke/{service}/{method}
+    Runtime->>SDK: StartMessage
+    Note over Runtime,SDK: Replaying
+    Runtime->>SDK: [...]EntryMessage(s)
+    Note over Runtime,SDK: Processing
+    loop
+        SDK->>Runtime: [...]EntryMessage
+        Runtime->>SDK: CompletionMessage and/or EntryAckMessage
+    end
+    Note over SDK: Reached close condition
+    alt
+        SDK->>Runtime: SuspensionMessage
+    else
+        SDK->>Runtime: ErrorMessage
+    else
+        SDK->>Runtime: EndMessage
+    end
+    SDK->>Runtime: Close HTTP Response
+    Note over Runtime,SDK: Closed
+```
 
 ### Replaying and Processing
 
@@ -64,6 +74,20 @@ There are a couple of properties that we enforce through the design of the proto
 - Only in processing state the runtime can send
   [`CompletionMessage`](#completable-journal-entries-and-completionmessage)
 
+### Syscalls
+
+Most Restate features, such as interaction with other services, accessing service instance state, and so on, are defined
+as _Restate syscalls_ and exposed through the service protocol. The user interacts with these syscalls using the SDK
+APIs, which generate _Journal Entry_ messages that will be handled by the invocation state machine.
+
+Depending on the specific syscall, the Restate runtime generates as response either:
+
+- A completion, that is the response to the syscall
+- An ack, that is a confirmation the syscall has been persisted and **will** be executed
+- Nothing
+
+Each syscall defines a priori whether it replies with an ack or a completion, or doesn't reply at all.
+
 ## Messages
 
 The protocol is composed by messages that are sent back and forth between runtime and service Endpoint. The protocol
@@ -73,6 +97,8 @@ mandates the following messages:
 - `[..]EntryMessage`
 - `CompletionMessage`
 - `SuspensionMessage`
+- `EntryAckMessage`
+- `EndMessage`
 
 ### Message stream
 
@@ -112,10 +138,14 @@ the stream replying back with a `404` status code.
 
 A message stream MUST start with `StartMessage` and MUST end with either:
 
-- One `OutputStreamEntry`
 - One [`SuspensionMessage`](#suspension)
-- One [`ErrorMessage`](#failures).
-- None of the above, which is equivalent to sending an empty [`ErrorMessage`](#failures).
+- One [`ErrorMessage`](#failures)
+- One `EndMessage`
+
+If the message stream does not end with any of these two messages, it will be considered equivalent to sending an
+`ErrorMessage` with an [unknown failure](#failures).
+
+The `EndMessage` marks the end of the invocation lifecycle, that is the end of the journal.
 
 ### Message header
 
@@ -250,18 +280,18 @@ index of the corresponding entry.
 The following tables describe the currently available journal entries. For more details, check the protobuf message
 descriptions in [`protocol.proto`](dev/restate/service/protocol.proto).
 
-| Message                         | Type     | Completable | Fallible | Description                                                                                                                                                                         |
-| ------------------------------- | -------- | ----------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PollInputStreamEntryMessage`   | `0x0400` | Yes         | No       | Carries the service method input message(s) of the invocation. Note: currently the runtime always sends this entry completed, but this may change in future.                        |
-| `GetStateEntryMessage`          | `0x0800` | Yes         | No       | Get the value of a service instance state key.                                                                                                                                      |
-| `SleepEntryMessage`             | `0x0C00` | Yes         | No       | Initiate a timer that completes after the given time.                                                                                                                               |
-| `InvokeEntryMessage`            | `0x0C01` | Yes         | Yes      | Invoke another Restate service.                                                                                                                                                     |
-| `AwakeableEntryMessage`         | `0x0C03` | Yes         | No       | Arbitrary result container which can be completed from another service, given a specific id. See [Awakeable identifier](#awakeable-identifier) for more details.                    |
-| `BackgroundInvokeEntryMessage`  | `0x0C02` | No          | Yes      | Invoke another Restate service at the given time, without waiting for the response.                                                                                                 |
-| `CompleteAwakeableEntryMessage` | `0x0C04` | No          | Yes      | Complete an `Awakeable`, given its id. See [Awakeable identifier](#awakeable-identifier) for more details.                                                                          |
-| `OutputStreamEntryMessage`      | `0x0401` | No          | No       | Carries the service method output message(s) or terminal failure of the invocation. Note: currently the runtime accepts only one entry of this type, but this may change in future. |
-| `SetStateEntryMessage`          | `0x0800` | No          | No       | Set the value of a service instance state key.                                                                                                                                      |
-| `ClearStateEntryMessage`        | `0x0801` | No          | No       | Clear the value of a service instance state key.                                                                                                                                    |
+| Message                         | Type     | Completable | Fallible | Description                                                                                                                                                      |
+| ------------------------------- | -------- | ----------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PollInputStreamEntryMessage`   | `0x0400` | Yes         | No       | Carries the invocation input message(s) of the invocation. Note: currently the runtime always sends this entry completed, but this may change in future.         |
+| `GetStateEntryMessage`          | `0x0800` | Yes         | No       | Get the value of a service instance state key.                                                                                                                   |
+| `SleepEntryMessage`             | `0x0C00` | Yes         | No       | Initiate a timer that completes after the given time.                                                                                                            |
+| `InvokeEntryMessage`            | `0x0C01` | Yes         | Yes      | Invoke another Restate service.                                                                                                                                  |
+| `AwakeableEntryMessage`         | `0x0C03` | Yes         | No       | Arbitrary result container which can be completed from another service, given a specific id. See [Awakeable identifier](#awakeable-identifier) for more details. |
+| `BackgroundInvokeEntryMessage`  | `0x0C02` | No          | Yes      | Invoke another Restate service at the given time, without waiting for the response.                                                                              |
+| `CompleteAwakeableEntryMessage` | `0x0C04` | No          | Yes      | Complete an `Awakeable`, given its id. See [Awakeable identifier](#awakeable-identifier) for more details.                                                       |
+| `OutputStreamEntryMessage`      | `0x0401` | No          | No       | Carries the invocation output message(s) or terminal failure of the invocation.                                                                                  |
+| `SetStateEntryMessage`          | `0x0800` | No          | No       | Set the value of a service instance state key.                                                                                                                   |
+| `ClearStateEntryMessage`        | `0x0801` | No          | No       | Clear the value of a service instance state key.                                                                                                                 |
 
 #### Awakeable identifier
 
@@ -299,7 +329,7 @@ To notify a failure, the SDK can either:
 
 - Close the stream with `ErrorMessage` as last message. This message is used by the runtime for accurate reporting to
   the user.
-- Close the stream without `OutputStreamEntry` or `SuspensionMessage` or `ErrorMessage`. This is equivalent to sending
+- Close the stream without `EndMessage` or `SuspensionMessage` or `ErrorMessage`. This is equivalent to sending
   an `ErrorMessage` with unknown reason.
 
 The runtime takes care of retrying to execute the invocation after such failures occur, following a defined set of
