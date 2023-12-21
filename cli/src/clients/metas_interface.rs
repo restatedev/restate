@@ -33,6 +33,8 @@ pub trait MetaClientInterface {
         &self,
         body: RegisterDeploymentRequest,
     ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>>;
+
+    async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>>;
 }
 
 #[async_trait]
@@ -87,6 +89,20 @@ impl MetaClientInterface for MetasClient {
             .expect("Bad url!");
 
         url.set_query(Some(&format!("force={}", force)));
+
+        Ok(self.run(reqwest::Method::DELETE, url).await?)
+    }
+
+    async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>> {
+        let mut url = self
+            .base_url
+            .join(&format!("/invocations/{}", id))
+            .expect("Bad url!");
+
+        url.set_query(Some(&format!(
+            "mode={}",
+            if kill { "kill" } else { "cancel" }
+        )));
 
         Ok(self.run(reqwest::Method::DELETE, url).await?)
     }
