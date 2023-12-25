@@ -10,8 +10,10 @@
 
 use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::leadership::{ActionEffect, LeadershipState, TaskResult};
-use crate::partition::state_machine::{DeduplicatingStateMachine, Effects};
-use crate::partition::storage::PartitionStorage;
+use crate::partition::state_machine::{
+    AckCommand, ActionCollector, DeduplicatingStateMachine, Effects, InterpretationResult,
+};
+use crate::partition::storage::{PartitionStorage, Transaction};
 use crate::util::IdentitySender;
 use futures::StreamExt;
 use restate_schema_impl::Schemas;
@@ -147,14 +149,14 @@ where
 
         loop {
             tokio::select! {
-                mut opt_command = command_rx.recv() => {
-                    if opt_command.is_none() {
+                mut next_command = command_rx.recv() => {
+                    if next_command.is_none() {
                         break;
                     }
 
-                    while let Some(command) = opt_command.take() {
+                    while let Some(command) = next_command.take() {
                         match command {
-                            restate_consensus::Command::Apply(ackable_command) => {
+                            restate_consensus::Command::Apply(command) => {
                                 // Clear the effects to reuse the vector
                                 effects.clear();
 
@@ -165,25 +167,17 @@ where
                                 let is_leader = leadership_state.is_leader();
                                 let message_collector = leadership_state.into_message_collector();
 
-                                // Apply state machine
-                                let mut application_result = state_machine.apply(
-                                    ackable_command,
+                                let (application_result, command) = Self::apply_command(
+                                    &mut state_machine,
+                                    command,
                                     &mut effects,
                                     transaction,
                                     message_collector,
-                                    is_leader
-                                )
+                                    is_leader,
+                                    &mut command_rx)
                                 .await?;
 
-                                while let Ok(command) = command_rx.try_recv() {
-                                    if let restate_consensus::Command::Apply(command) = command {
-                                        let (transaction, message_collector) = application_result.into_inner();
-                                        application_result = state_machine.apply(command, &mut effects, transaction, message_collector, is_leader).await?;
-                                    } else {
-                                        opt_command = Some(command);
-                                        break;
-                                    }
-                                }
+                                next_command = command;
 
                                 // Commit actuator messages
                                 let message_collector = application_result.commit().await?;
@@ -251,6 +245,43 @@ where
         let state_machine = DeduplicatingStateMachine::new(inbox_seq_number, outbox_seq_number);
 
         Ok(state_machine)
+    }
+
+    pub async fn apply_command<
+        TransactionType: restate_storage_api::Transaction + Send,
+        Collector: ActionCollector,
+    >(
+        state_machine: &mut DeduplicatingStateMachine<RawEntryCodec>,
+        command: AckCommand,
+        effects: &mut Effects,
+        transaction: Transaction<TransactionType>,
+        message_collector: Collector,
+        is_leader: bool,
+        command_rx: &mut mpsc::Receiver<restate_consensus::Command<AckCommand>>,
+    ) -> Result<
+        (
+            InterpretationResult<Transaction<TransactionType>, Collector>,
+            Option<restate_consensus::Command<AckCommand>>,
+        ),
+        state_machine::Error,
+    > {
+        // Apply state machine
+        let mut application_result = state_machine
+            .apply(command, effects, transaction, message_collector, is_leader)
+            .await?;
+
+        while let Ok(command) = command_rx.try_recv() {
+            if let restate_consensus::Command::Apply(command) = command {
+                let (transaction, message_collector) = application_result.into_inner();
+                application_result = state_machine
+                    .apply(command, effects, transaction, message_collector, is_leader)
+                    .await?;
+            } else {
+                return Ok((application_result, Some(command)));
+            }
+        }
+
+        Ok((application_result, None))
     }
 }
 
