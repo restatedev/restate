@@ -161,11 +161,11 @@ where
                                 let is_leader = leadership_state.is_leader();
                                 let message_collector = leadership_state.into_message_collector();
 
-                                // Tick state machine
-                                let tick_result = state_machine.apply(ackable_command, &mut effects, transaction, message_collector, is_leader).await?;
+                                // Apply state machine
+                                let application_result = state_machine.apply(ackable_command, &mut effects, transaction, message_collector, is_leader).await?;
 
                                 // Commit actuator messages
-                                let message_collector = tick_result.commit().await?;
+                                let message_collector = application_result.commit().await?;
                                 leadership_state = message_collector.send().await?;
                             }
                             restate_consensus::Command::BecomeLeader(leader_epoch) => {
