@@ -1088,17 +1088,16 @@ dependencies = [
 
 [[package]]
 name = "bindgen"
-version = "0.65.1"
+version = "0.69.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfdf7b466f9a4903edc73f95d6d2bcd5baf8ae620638762244d3f60143643cc5"
+checksum = "9ffcebc3849946a7170a05992aac39da343a90676ab392c51a4280981d6379c2"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.4.1",
  "cexpr",
  "clang-sys",
  "lazy_static",
  "lazycell",
  "peeking_take_while",
- "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -3055,9 +3054,8 @@ dependencies = [
 
 [[package]]
 name = "librocksdb-sys"
-version = "0.11.0+8.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3386f101bcb4bd252d8e9d2fb41ec3b0862a15a62b478c355b2982efa469e3e"
+version = "0.15.0+8.9.1"
+source = "git+https://github.com/rust-rocksdb/rust-rocksdb.git?rev=66f04df013b6e6bd42b5a8c353406e09a7c7da2a#66f04df013b6e6bd42b5a8c353406e09a7c7da2a"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -5369,8 +5367,7 @@ dependencies = [
 [[package]]
 name = "rocksdb"
 version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb6f170a4041d50a0ce04b0d2e14916d6ca863ea2e422689a5b694395d299ffe"
+source = "git+https://github.com/rust-rocksdb/rust-rocksdb.git?rev=66f04df013b6e6bd42b5a8c353406e09a7c7da2a#66f04df013b6e6bd42b5a8c353406e09a7c7da2a"
 dependencies = [
  "libc",
  "librocksdb-sys",

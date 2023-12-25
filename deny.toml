@@ -178,7 +178,9 @@ unknown-registry = "deny"
 # in the allow list is encountered
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = [
+    "https://github.com/rust-rocksdb/rust-rocksdb.git",
+]
 
 [sources.allow-org]
 # 1 or more github.com organizations to allow git sources for
