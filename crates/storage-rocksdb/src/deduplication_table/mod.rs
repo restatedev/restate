@@ -60,7 +60,7 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
         &mut self,
         partition_id: PartitionId,
     ) -> impl Stream<Item = Result<(SequenceNumberSource, u64)>> + Send {
-        self.for_each_key_value(
+        self.for_each_key_value_in_place(
             TableScan::Partition::<DeduplicationKey>(partition_id),
             move |k, v| {
                 let key =

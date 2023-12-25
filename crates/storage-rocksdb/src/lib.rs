@@ -417,6 +417,48 @@ impl RocksDBStorage {
     ) -> std::result::Result<(), StorageError> {
         self.writer_handle.write(write_batch).await
     }
+
+    pub fn for_each_key_value<K, F, R>(
+        &self,
+        scan: TableScan<K>,
+        mut op: F,
+    ) -> impl Stream<Item = Result<R>> + Send
+    where
+        K: TableKey + Send + 'static,
+        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<R>>(256);
+        let clone = self.clone();
+
+        let background_task = move || {
+            let mut iterator = clone.iterator_from(scan);
+            while let Some((k, v)) = iterator.item() {
+                match op(k, v) {
+                    TableScanIterationDecision::Emit(result) => {
+                        if tx.blocking_send(result).is_err() {
+                            return;
+                        }
+                        iterator.next();
+                    }
+                    TableScanIterationDecision::BreakWith(result) => {
+                        let _ = tx.blocking_send(result);
+                        break;
+                    }
+                    TableScanIterationDecision::Continue => {
+                        iterator.next();
+                        continue;
+                    }
+                    TableScanIterationDecision::Break => {
+                        break;
+                    }
+                };
+            }
+        };
+
+        let join_handle = tokio::task::spawn_blocking(background_task);
+        BackgroundScanStream::new(rx, join_handle)
+    }
 }
 
 impl Storage for RocksDBStorage {
@@ -537,48 +579,6 @@ impl<'a> RocksDBTransaction<'a> {
         }
 
         stream::iter(res)
-    }
-
-    pub fn for_each_key_value<K, F, R>(
-        &self,
-        scan: TableScan<K>,
-        mut op: F,
-    ) -> impl Stream<Item = Result<R>> + Send
-    where
-        K: TableKey + Send + 'static,
-        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R> + Send + 'static,
-        R: Send + 'static,
-    {
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<R>>(256);
-        let db = Clone::clone(self.storage);
-
-        let background_task = move || {
-            let mut iterator = db.iterator_from(scan);
-            while let Some((k, v)) = iterator.item() {
-                match op(k, v) {
-                    TableScanIterationDecision::Emit(result) => {
-                        if tx.blocking_send(result).is_err() {
-                            return;
-                        }
-                        iterator.next();
-                    }
-                    TableScanIterationDecision::BreakWith(result) => {
-                        let _ = tx.blocking_send(result);
-                        break;
-                    }
-                    TableScanIterationDecision::Continue => {
-                        iterator.next();
-                        continue;
-                    }
-                    TableScanIterationDecision::Break => {
-                        break;
-                    }
-                };
-            }
-        };
-
-        let join_handle = tokio::task::spawn_blocking(background_task);
-        BackgroundScanStream::new(rx, join_handle)
     }
 
     #[inline]

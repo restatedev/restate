@@ -57,7 +57,7 @@ impl<'a> FsmTable for RocksDBTransaction<'a> {
         &mut self,
         partition_id: PartitionId,
     ) -> impl Stream<Item = Result<(u64, Bytes)>> + Send {
-        self.for_each_key_value(
+        self.for_each_key_value_in_place(
             TableScan::Partition::<PartitionStateMachineKey>(partition_id),
             move |k, v| {
                 let res = decode_key_value(k, v);
