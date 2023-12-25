@@ -145,15 +145,12 @@ async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
 
 pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
-    populate_data(&mut txn).await;
-    txn.commit().await.expect("should not fail");
 
-    let mut txn = rocksdb.transaction();
+    populate_data(&mut txn).await;
     demo_how_to_find_first_timers_in_a_partition(&mut txn).await;
     find_timers_greater_than(&mut txn).await;
-
-    let mut txn = rocksdb.transaction();
     delete_the_first_timer(&mut txn).await;
+
     txn.commit().await.expect("should not fail");
 
     let mut txn = rocksdb.transaction();

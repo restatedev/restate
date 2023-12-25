@@ -44,7 +44,6 @@ use rocksdb::Error;
 use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::SingleThreaded;
-use rocksdb::WriteBatch;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -54,8 +53,11 @@ use tokio::task::JoinHandle;
 pub use writer::JoinHandle as RocksDBWriterJoinHandle;
 pub use writer::Writer as RocksDBWriter;
 
-type DB = rocksdb::DBWithThreadMode<SingleThreaded>;
+type DB = rocksdb::OptimisticTransactionDB<SingleThreaded>;
 pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
+
+pub type DBIteratorTransaction<'b> = DBRawIteratorWithThreadMode<'b, rocksdb::Transaction<'b, DB>>;
+type WriteBatch = rocksdb::WriteBatchWithTransaction<true>;
 
 const STATE_TABLE_NAME: &str = "state";
 const STATUS_TABLE_NAME: &str = "status";
@@ -347,13 +349,6 @@ impl RocksDBStorage {
         )
     }
 
-    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
-        let table = self.table_handle(table);
-        self.db
-            .get_pinned_cf(&table, key)
-            .map_err(|error| StorageError::Generic(error.into()))
-    }
-
     pub fn prefix_iterator<K: Into<Vec<u8>>>(&self, table: TableKind, prefix: K) -> DBIterator {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
@@ -403,7 +398,7 @@ impl RocksDBStorage {
     #[allow(clippy::needless_lifetimes)]
     pub fn transaction(&self) -> RocksDBTransaction {
         RocksDBTransaction {
-            write_batch: Default::default(),
+            txn: self.db.transaction(),
             storage: self,
             key_buffer: Default::default(),
             value_buffer: Default::default(),
@@ -411,10 +406,15 @@ impl RocksDBStorage {
     }
 
     #[inline]
-    async fn commit_write_batch(
+    async fn commit_transaction<'a>(
         &self,
-        write_batch: WriteBatch,
+        txn: rocksdb::Transaction<'a, DB>,
     ) -> std::result::Result<(), StorageError> {
+        // We cannot directly commit the txn because it might fail because of unrelated concurrent
+        // writes to RocksDB. However, it is safe to write the WriteBatch for a given partition,
+        // because there can only be a single writer (the leading PartitionProcessor).
+        let write_batch = txn.get_writebatch();
+
         self.writer_handle.write(write_batch).await
     }
 
@@ -471,7 +471,7 @@ impl Storage for RocksDBStorage {
 }
 
 pub struct RocksDBTransaction<'a> {
-    write_batch: Option<WriteBatch>,
+    txn: rocksdb::Transaction<'a, DB>,
     storage: &'a RocksDBStorage,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
@@ -514,6 +514,57 @@ impl<T: Send + 'static> Stream for BackgroundScanStream<T> {
 }
 
 impl<'a> RocksDBTransaction<'a> {
+    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
+        let table = self.storage.table_handle(table);
+        self.txn
+            .get_pinned_cf(&table, key)
+            .map_err(|error| StorageError::Generic(error.into()))
+    }
+
+    fn iterator_from<K: TableKey>(&self, scan: TableScan<K>) -> DBIteratorTransaction {
+        let scan: PhysicalScan = scan.into();
+        match scan {
+            PhysicalScan::Prefix(table, prefix) => {
+                let mut it = self.prefix_iterator(table, prefix.clone());
+                it.seek(prefix);
+                it
+            }
+            PhysicalScan::RangeExclusive(table, start, end) => {
+                let mut it = self.range_iterator(table, start.clone()..end);
+                it.seek(start);
+                it
+            }
+            PhysicalScan::RangeOpen(table, start) => {
+                let mut it = self.range_iterator(table, start.clone()..);
+                it.seek(start);
+                it
+            }
+        }
+    }
+
+    pub fn prefix_iterator<K: Into<Vec<u8>>>(
+        &self,
+        table: TableKind,
+        prefix: K,
+    ) -> DBIteratorTransaction {
+        let table = self.storage.table_handle(table);
+        let mut opts = ReadOptions::default();
+        opts.set_iterate_range(PrefixRange(prefix));
+
+        self.txn.raw_iterator_cf_opt(&table, opts)
+    }
+
+    pub fn range_iterator(
+        &self,
+        table: TableKind,
+        range: impl rocksdb::IterateBounds,
+    ) -> DBIteratorTransaction {
+        let table = self.storage.table_handle(table);
+        let mut opts = ReadOptions::default();
+        opts.set_iterate_range(range);
+        self.txn.raw_iterator_cf_opt(&table, opts)
+    }
+
     pub async fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
     where
         K: TableKey + Send + 'static,
@@ -524,7 +575,7 @@ impl<'a> RocksDBTransaction<'a> {
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
-        match self.storage.get(K::table(), &buf) {
+        match self.get(K::table(), &buf) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
                 f(&buf, slice)
@@ -540,7 +591,7 @@ impl<'a> RocksDBTransaction<'a> {
         F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let iterator = self.storage.iterator_from(scan);
+        let iterator = self.iterator_from(scan);
         f(iterator.item())
     }
 
@@ -557,7 +608,8 @@ impl<'a> RocksDBTransaction<'a> {
     {
         let mut res = Vec::new();
 
-        let mut iterator = self.storage.iterator_from(scan);
+        let mut iterator = self.iterator_from(scan);
+
         while let Some((k, v)) = iterator.item() {
             match op(k, v) {
                 TableScanIterationDecision::Emit(result) => {
@@ -596,7 +648,6 @@ impl<'a> RocksDBTransaction<'a> {
     }
 
     fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V) {
-        self.ensure_write_batch();
         {
             let buffer = self.key_buffer(key.serialized_length());
             key.serialize_to(buffer);
@@ -606,40 +657,23 @@ impl<'a> RocksDBTransaction<'a> {
             value.encode(buffer);
         }
         let table = self.storage.table_handle(K::table());
-        self.write_batch
-            .as_mut()
-            .unwrap()
-            .put_cf(&table, &self.key_buffer, &self.value_buffer);
+        self.txn
+            .put_cf(&table, &self.key_buffer, &self.value_buffer)
+            .unwrap();
     }
 
     fn delete_key<K: TableKey>(&mut self, key: &K) {
-        self.ensure_write_batch();
         {
             let buffer = self.key_buffer(key.serialized_length());
             key.serialize_to(buffer);
         }
         let table = self.storage.table_handle(K::table());
-        self.write_batch
-            .as_mut()
-            .unwrap()
-            .delete_cf(&table, &self.key_buffer);
-    }
-
-    #[inline]
-    fn ensure_write_batch(&mut self) {
-        if self.write_batch.is_none() {
-            self.write_batch = Some(WriteBatch::default());
-        }
+        self.txn.delete_cf(&table, &self.key_buffer).unwrap();
     }
 }
 
 impl<'a> Transaction for RocksDBTransaction<'a> {
     async fn commit(self) -> Result<()> {
-        if self.write_batch.is_none() {
-            return Ok(());
-        }
-
-        let write_batch = self.write_batch.unwrap();
-        self.storage.commit_write_batch(write_batch).await
+        self.storage.commit_transaction(self.txn).await
     }
 }

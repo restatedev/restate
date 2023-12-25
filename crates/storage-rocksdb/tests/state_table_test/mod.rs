@@ -97,15 +97,12 @@ async fn verify_prefix_scan_after_delete<T: StateTable>(table: &mut T) {
 
 pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
-    populate_data(&mut txn).await;
-    txn.commit().await.expect("should not fail");
 
-    let mut txn = rocksdb.transaction();
+    populate_data(&mut txn).await;
     point_lookup(&mut txn).await;
     prefix_scans(&mut txn).await;
-
-    let mut txn = rocksdb.transaction();
     deletes(&mut txn).await;
+
     txn.commit().await.expect("should not fail");
 
     let mut txn = rocksdb.transaction();

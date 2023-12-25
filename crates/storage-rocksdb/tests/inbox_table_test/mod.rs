@@ -115,15 +115,12 @@ async fn get_inbox_entries_after_delete<T: InboxTable>(table: &mut T) {
 pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
     populate_data(&mut txn).await;
-    txn.commit().await.expect("should not fail");
 
-    let mut txn = rocksdb.transaction();
     find_the_next_message_in_an_inbox(&mut txn).await;
     get_svc_inbox(&mut txn).await;
     get_inbox_entries(&mut txn).await;
-
-    let mut txn = rocksdb.transaction();
     delete_entry(&mut txn).await;
+
     txn.commit().await.expect("should not fail");
 
     let mut txn = rocksdb.transaction();

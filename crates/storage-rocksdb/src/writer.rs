@@ -8,13 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::DB;
+use crate::{WriteBatch, DB};
 use futures::ready;
 use futures_util::FutureExt;
 use log::debug;
 use restate_storage_api::StorageError;
 use restate_types::errors::ThreadJoinError;
-use rocksdb::WriteBatch;
 use std::future::Future;
 use std::panic;
 use std::panic::AssertUnwindSafe;

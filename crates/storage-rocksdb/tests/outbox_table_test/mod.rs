@@ -49,11 +49,10 @@ pub(crate) async fn verify_outbox_is_empty_after_truncation<T: OutboxTable>(txn:
 
 pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
-    populate_data(&mut txn).await;
-    txn.commit().await.expect("should not fail");
 
-    let mut txn = rocksdb.transaction();
+    populate_data(&mut txn).await;
     consume_message_and_truncate(&mut txn).await;
+
     txn.commit().await.expect("should not fail");
 
     let mut txn = rocksdb.transaction();

@@ -12,7 +12,6 @@ use crate::{assert_stream_eq, uuid_str};
 use restate_storage_api::status_table::{
     InvocationMetadata, InvocationStatus, JournalMetadata, StatusTable, StatusTimestamps,
 };
-use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{ServiceInvocationSpanContext, Source};
@@ -167,9 +166,7 @@ async fn verify_last_partition_all_svc_with_status_invoked<T: StatusTable>(txn: 
 pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
     populate_data(&mut txn).await;
-    txn.commit().await.expect("should not fail");
 
-    let mut txn = rocksdb.transaction();
     verify_point_lookups(&mut txn).await;
     verify_lookup_by_invocation_id(&mut txn).await;
     verify_lookup_by_invocation_id_not_found(&mut txn).await;

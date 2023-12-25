@@ -110,14 +110,13 @@ async fn verify_journal_deleted<T: JournalTable>(txn: &mut T) {
 
 pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
-    populate_data(&mut txn).await;
-    txn.commit().await.expect("should not fail");
 
-    let mut txn = rocksdb.transaction();
+    populate_data(&mut txn).await;
     get_entire_journal(&mut txn).await;
     get_subset_of_a_journal(&mut txn).await;
     point_lookups(&mut txn).await;
     delete_journal(&mut txn).await;
+
     txn.commit().await.expect("should not fail");
 
     let mut txn = rocksdb.transaction();
