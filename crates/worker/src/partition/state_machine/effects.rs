@@ -21,7 +21,6 @@ use std::vec::Drain;
 use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
 use types::TimerKeyDisplay;
 
-use crate::partition::state_machine::commands::AckResponse;
 use crate::partition::{types, TimerValue};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::InvocationMetadata;
@@ -163,9 +162,6 @@ pub(crate) enum Effect {
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (InvocationErrorCode, String)>,
     },
-
-    // Acks
-    SendAckResponse(AckResponse),
 
     // Invoker commands
     AbortInvocation(FullInvocationId),
@@ -626,11 +622,6 @@ impl Effect {
                 );
                 // No need to log this
             }
-            Effect::SendAckResponse(ack_response) => {
-                if is_leader {
-                    trace!("Effect: Sending ack response: {ack_response:?}");
-                }
-            }
             Effect::AbortInvocation(_) => {
                 debug_if_leader!(is_leader, "Effect: Abort unknown invocation");
             }
@@ -939,10 +930,6 @@ impl Effects {
             span_context,
             result,
         })
-    }
-
-    pub(crate) fn send_ack_response(&mut self, ack_response: AckResponse) {
-        self.effects.push(Effect::SendAckResponse(ack_response));
     }
 
     pub(crate) fn abort_invocation(&mut self, full_invocation_id: FullInvocationId) {

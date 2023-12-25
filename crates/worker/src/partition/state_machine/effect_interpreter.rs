@@ -430,9 +430,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             Effect::TraceInvocationResult { .. } | Effect::TraceBackgroundInvoke { .. } => {
                 // these effects are only needed for span creation
             }
-            Effect::SendAckResponse(ack_response) => {
-                collector.collect(Action::SendAckResponse(ack_response))
-            }
             Effect::AbortInvocation(full_invocation_id) => {
                 collector.collect(Action::AbortInvocation(full_invocation_id))
             }

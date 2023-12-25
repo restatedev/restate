@@ -10,7 +10,7 @@
 
 use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::leadership::{ActionEffect, LeadershipState, TaskResult};
-use crate::partition::state_machine::{Effects, StateMachine};
+use crate::partition::state_machine::{DeduplicatingStateMachine, Effects};
 use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
 use futures::StreamExt;
@@ -220,7 +220,7 @@ where
 
     async fn create_state_machine<Codec, Storage>(
         partition_storage: &PartitionStorage<Storage>,
-    ) -> Result<StateMachine<Codec>, restate_storage_api::StorageError>
+    ) -> Result<DeduplicatingStateMachine<Codec>, restate_storage_api::StorageError>
     where
         Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
         Storage: restate_storage_api::Storage,
@@ -230,7 +230,7 @@ where
         let outbox_seq_number = transaction.load_outbox_seq_number().await?;
         transaction.commit().await?;
 
-        let state_machine = StateMachine::new(inbox_seq_number, outbox_seq_number);
+        let state_machine = DeduplicatingStateMachine::new(inbox_seq_number, outbox_seq_number);
 
         Ok(state_machine)
     }

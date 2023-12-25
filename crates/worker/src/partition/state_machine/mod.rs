@@ -10,7 +10,6 @@
 
 use crate::partition::storage::Transaction;
 use command_interpreter::CommandInterpreter;
-use dedup::DeduplicatingCommandInterpreter;
 use restate_types::message::MessageIndex;
 
 mod actions;
@@ -26,12 +25,14 @@ pub use commands::{
     AckCommand, AckMode, AckResponse, AckTarget, Command, DeduplicationSource, IngressAckResponse,
     ShuffleDeduplicationResponse,
 };
+pub use dedup::DeduplicatingStateMachine;
 pub use effect_interpreter::StateStorage;
 pub use effect_interpreter::{ActionCollector, InterpretationResult};
 pub use effects::Effects;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
 
-pub struct StateMachine<Codec>(DeduplicatingCommandInterpreter<Codec>);
+#[derive(Debug)]
+pub struct StateMachine<Codec>(CommandInterpreter<Codec>);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -43,9 +44,7 @@ pub enum Error {
 
 impl<Codec> StateMachine<Codec> {
     pub fn new(inbox_seq_number: MessageIndex, outbox_seq_number: MessageIndex) -> Self {
-        Self(DeduplicatingCommandInterpreter::new(
-            CommandInterpreter::new(inbox_seq_number, outbox_seq_number),
-        ))
+        Self(CommandInterpreter::new(inbox_seq_number, outbox_seq_number))
     }
 }
 
@@ -55,7 +54,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Collector: ActionCollector,
     >(
         &mut self,
-        command: AckCommand,
+        command: Command,
         effects: &mut Effects,
         mut transaction: Transaction<TransactionType>,
         message_collector: Collector,
@@ -167,34 +166,12 @@ mod tests {
             }
         }
 
-        pub async fn apply(&mut self, command: AckCommand) -> Vec<Action> {
+        pub async fn apply(&mut self, command: Command) -> Vec<Action> {
             let transaction = self.rocksdb_storage.transaction();
             let partition_id = self.partition_id();
             self.state_machine
                 .apply(
                     command,
-                    &mut self.effects_buffer,
-                    crate::partition::storage::Transaction::new(
-                        partition_id,
-                        0..=PartitionKey::MAX,
-                        transaction,
-                    ),
-                    VecActionCollector::default(),
-                    true,
-                )
-                .await
-                .unwrap()
-                .commit()
-                .await
-                .unwrap()
-        }
-
-        pub async fn apply_cmd(&mut self, command: Command) -> Vec<Action> {
-            let transaction = self.rocksdb_storage.transaction();
-            let partition_id = self.partition_id();
-            self.state_machine
-                .apply(
-                    AckCommand::no_ack(command),
                     &mut self.effects_buffer,
                     crate::partition::storage::Transaction::new(
                         partition_id,
@@ -254,7 +231,7 @@ mod tests {
 
         // Send completion first
         let _ = state_machine
-            .apply_cmd(Command::Response(InvocationResponse {
+            .apply(Command::Response(InvocationResponse {
                 id: MaybeFullInvocationId::Full(fid.clone()),
                 entry_index: 1,
                 result: ResponseResult::Success(Bytes::default()),
@@ -276,7 +253,7 @@ mod tests {
         //   * If the awakeable entry has not been received yet, when receiving it the completion will be sent through.
 
         let actions = state_machine
-            .apply_cmd(Command::Invoker(InvokerEffect {
+            .apply(Command::Invoker(InvokerEffect {
                 full_invocation_id: fid.clone(),
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
@@ -314,7 +291,7 @@ mod tests {
         );
 
         let actions = state_machine
-            .apply_cmd(Command::Invoker(InvokerEffect {
+            .apply(Command::Invoker(InvokerEffect {
                 full_invocation_id: fid.clone(),
                 kind: InvokerEffectKind::Suspended {
                     waiting_for_completed_entries: HashSet::from([1]),
@@ -341,14 +318,14 @@ mod tests {
         let caller_fid = FullInvocationId::mock_random();
 
         let _ = state_machine
-            .apply_cmd(Command::Invocation(ServiceInvocation {
+            .apply(Command::Invocation(ServiceInvocation {
                 fid,
                 ..ServiceInvocation::mock()
             }))
             .await;
 
         let _ = state_machine
-            .apply_cmd(Command::Invocation(ServiceInvocation {
+            .apply(Command::Invocation(ServiceInvocation {
                 fid: inboxed_fid.clone(),
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
                     caller: caller_fid.clone(),
@@ -368,7 +345,7 @@ mod tests {
         assert!(result.is_some());
 
         let actions = state_machine
-            .apply_cmd(Command::TerminateInvocation(InvocationTermination::kill(
+            .apply(Command::TerminateInvocation(InvocationTermination::kill(
                 MaybeFullInvocationId::from(inboxed_fid.clone()),
             )))
             .await;
@@ -468,7 +445,7 @@ mod tests {
             let virtual_invocation_invocation_uuid = InvocationUuid::now_v7();
 
             let actions = state_machine
-                .apply_cmd(Command::BuiltInInvoker(NBISEffects::new(
+                .apply(Command::BuiltInInvoker(NBISEffects::new(
                     fid_virtual_invocation_creator,
                     vec![Effect::CreateJournal {
                         service_id: virtual_invocation_service_id.clone(),
@@ -563,7 +540,7 @@ mod tests {
 
             // Create the entry
             let actions = state_machine
-                .apply_cmd(Command::BuiltInInvoker(NBISEffects::new(
+                .apply(Command::BuiltInInvoker(NBISEffects::new(
                     fid_virtual_invocation_creator,
                     vec![
                         Effect::StoreEntry {
@@ -609,7 +586,7 @@ mod tests {
 
             // Now send completion
             let actions = state_machine
-                .apply_cmd(Command::Response(InvocationResponse {
+                .apply(Command::Response(InvocationResponse {
                     id: MaybeFullInvocationId::Partial(InvocationId::new(
                         virtual_invocation_service_id.partition_key(),
                         virtual_invocation_invocation_uuid,
@@ -655,14 +632,14 @@ mod tests {
         let fid = FullInvocationId::generate("MySvc", Bytes::default());
 
         let actions = state_machine
-            .apply(AckCommand::no_ack(Command::Invocation(ServiceInvocation {
+            .apply(Command::Invocation(ServiceInvocation {
                 fid: fid.clone(),
                 method_name: ByteString::from("MyMethod"),
                 argument: Default::default(),
                 source: Source::Ingress,
                 response_sink: None,
                 span_context: Default::default(),
-            })))
+            }))
             .await;
 
         assert_that!(
