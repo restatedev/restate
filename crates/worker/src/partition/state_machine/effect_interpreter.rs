@@ -169,6 +169,10 @@ where
         txn.commit().await?;
         Ok(collector)
     }
+
+    pub fn into_inner(self) -> (Txn, Collector) {
+        (self.txn, self.collector)
+    }
 }
 
 pub(crate) struct EffectInterpreter<Codec> {

@@ -147,8 +147,12 @@ where
 
         loop {
             tokio::select! {
-                command = command_rx.recv() => {
-                    if let Some(command) = command {
+                mut opt_command = command_rx.recv() => {
+                    if opt_command.is_none() {
+                        break;
+                    }
+
+                    while let Some(command) = opt_command.take() {
                         match command {
                             restate_consensus::Command::Apply(ackable_command) => {
                                 // Clear the effects to reuse the vector
@@ -162,7 +166,24 @@ where
                                 let message_collector = leadership_state.into_message_collector();
 
                                 // Apply state machine
-                                let application_result = state_machine.apply(ackable_command, &mut effects, transaction, message_collector, is_leader).await?;
+                                let mut application_result = state_machine.apply(
+                                    ackable_command,
+                                    &mut effects,
+                                    transaction,
+                                    message_collector,
+                                    is_leader
+                                )
+                                .await?;
+
+                                while let Ok(command) = command_rx.try_recv() {
+                                    if let restate_consensus::Command::Apply(command) = command {
+                                        let (transaction, message_collector) = application_result.into_inner();
+                                        application_result = state_machine.apply(command, &mut effects, transaction, message_collector, is_leader).await?;
+                                    } else {
+                                        opt_command = Some(command);
+                                        break;
+                                    }
+                                }
 
                                 // Commit actuator messages
                                 let message_collector = application_result.commit().await?;
@@ -191,8 +212,6 @@ where
                                 unimplemented!("Not supported yet.");
                             }
                         }
-                    } else {
-                        break;
                     }
                 },
                 actuator_output = actuator_stream.next() => {
@@ -211,7 +230,6 @@ where
                 },
             }
         }
-
         debug!(%peer_id, %partition_id, "Shutting partition processor down.");
         let _ = leadership_state.become_follower().await;
 
