@@ -125,7 +125,7 @@ impl DataFusionHttpClient {
         let resp = self.run_query(query).await?;
 
         Ok(get_column_as::<Int64Type>(&resp.batches, 0)
-            .get(0)
+            .first()
             .map(|v| **v)
             .unwrap_or(0))
     }

@@ -109,7 +109,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             }
 
             svc_match
-                .get(0)
+                .first()
                 .map(|svc_match| (e.id, e.deployment, svc_match.revision))
         })
         .collect();

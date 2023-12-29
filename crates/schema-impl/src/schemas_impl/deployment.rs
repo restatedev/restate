@@ -679,7 +679,7 @@ mod tests {
             .unwrap();
 
         let_assert!(
-            Some(SchemasUpdateCommand::InsertDeployment { services, .. }) = commands.get(0)
+            Some(SchemasUpdateCommand::InsertDeployment { services, .. }) = commands.first()
         );
         assert_eq!(services.len(), 1);
 
@@ -707,7 +707,7 @@ mod tests {
             .unwrap();
 
         let_assert!(
-            Some(SchemasUpdateCommand::InsertDeployment { services, .. }) = commands.get(0)
+            Some(SchemasUpdateCommand::InsertDeployment { services, .. }) = commands.first()
         );
         assert_eq!(services.len(), 1);
 
@@ -731,7 +731,7 @@ mod tests {
             .unwrap();
 
         let_assert!(
-            Some(SchemasUpdateCommand::InsertDeployment { services, .. }) = commands.get(0)
+            Some(SchemasUpdateCommand::InsertDeployment { services, .. }) = commands.first()
         );
         assert_eq!(services.len(), 2);
 
@@ -896,7 +896,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            let Some(SchemasUpdateCommand::RemoveService { .. }) = commands.get(0)
+            let Some(SchemasUpdateCommand::RemoveService { .. }) = commands.first()
         );
         assert!(
             let Some(SchemasUpdateCommand::RemoveService { .. }) = commands.get(1)
