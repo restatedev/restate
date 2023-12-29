@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures::future::BoxFuture;
-use futures::FutureExt;
 use restate_errors::NotRunningError;
 use restate_invoker_api::{
     Effect, InvocationStatusReport, InvokeInputJournal, ServiceHandle, StatusHandle,
@@ -199,23 +197,17 @@ impl StatusHandle for ChannelStatusReader {
         std::iter::Empty<InvocationStatusReport>,
         std::vec::IntoIter<InvocationStatusReport>,
     >;
-    type Future = BoxFuture<'static, Self::Iterator>;
 
-    fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Future {
+    async fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
         let (cmd, rx) = restate_futures_util::command::Command::prepare(keys);
         if self.0.send(InputCommand::ReadStatus(cmd)).is_err() {
-            return std::future::ready(itertools::Either::Left(std::iter::empty::<
-                InvocationStatusReport,
-            >()))
-            .boxed();
+            return itertools::Either::Left(std::iter::empty::<InvocationStatusReport>());
         }
-        async move {
-            if let Ok(status_vec) = rx.await {
-                itertools::Either::Right(status_vec.into_iter())
-            } else {
-                itertools::Either::Left(std::iter::empty::<InvocationStatusReport>())
-            }
+
+        if let Ok(status_vec) = rx.await {
+            itertools::Either::Right(status_vec.into_iter())
+        } else {
+            itertools::Either::Left(std::iter::empty::<InvocationStatusReport>())
         }
-        .boxed()
     }
 }

@@ -125,11 +125,13 @@ impl InvocationErrorReport {
 /// Struct to access the status of the invocations currently handled by the invoker
 pub trait StatusHandle {
     type Iterator: Iterator<Item = InvocationStatusReport> + Send;
-    type Future: Future<Output = Self::Iterator> + Send;
 
     /// This method returns a snapshot of the status of all the invocations currently being processed by this invoker,
     /// filtered by the partition key range
     ///
     /// The data returned by this method is eventually consistent.
-    fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Future;
+    fn read_status(
+        &self,
+        keys: RangeInclusive<PartitionKey>,
+    ) -> impl Future<Output = Self::Iterator> + Send;
 }
