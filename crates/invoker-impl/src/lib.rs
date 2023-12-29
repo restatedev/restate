@@ -51,7 +51,10 @@ use tracing::{debug, trace};
 
 pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
-pub use options::{Options, OptionsBuilder, OptionsBuilderError};
+pub use options::{
+    Options, OptionsBuilder, OptionsBuilderError, ServiceClientOptionsBuilder,
+    ServiceClientOptionsBuilderError,
+};
 use restate_service_client::ServiceClient;
 
 /// Internal error trait for the invoker errors
