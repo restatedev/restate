@@ -32,11 +32,13 @@ pub trait SubscriptionController: SubscriptionValidator {
 }
 
 pub trait Handle {
-    type Future: Future<Output = Result<(), Error>> + Send;
     type SubscriptionControllerHandle: SubscriptionController + Send + Sync;
 
     /// Send a command to terminate an invocation. This command is best-effort.
-    fn terminate_invocation(&self, invocation_termination: InvocationTermination) -> Self::Future;
+    fn terminate_invocation(
+        &self,
+        invocation_termination: InvocationTermination,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 
     fn subscription_controller_handle(&self) -> Self::SubscriptionControllerHandle;
 }

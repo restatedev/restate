@@ -72,7 +72,6 @@ pub async fn delete_invocation<S, W>(
 ) -> Result<StatusCode, MetaApiError>
 where
     W: restate_worker_api::Handle + Send,
-    W::Future: Send,
 {
     let invocation_id = invocation_id
         .parse::<InvocationId>()

@@ -11,8 +11,6 @@
 use super::subscription_integration;
 
 use crate::partition::{StateMachineAckCommand, StateMachineCommand};
-use futures::future::BoxFuture;
-use futures::FutureExt;
 use restate_consensus::ProposalSender;
 use restate_network::PartitionTableError;
 use restate_types::identifiers::WithPartitionKey;
@@ -46,17 +44,16 @@ impl WorkerCommandSender {
 }
 
 impl restate_worker_api::Handle for WorkerCommandSender {
-    type Future = BoxFuture<'static, Result<(), restate_worker_api::Error>>;
     type SubscriptionControllerHandle = subscription_integration::SubscriptionControllerHandle;
 
-    fn terminate_invocation(&self, invocation_termination: InvocationTermination) -> Self::Future {
-        let tx = self.command_tx.clone();
-        async move {
-            tx.send(WorkerCommand::TerminateInvocation(invocation_termination))
-                .await
-                .map_err(|_| restate_worker_api::Error::Unreachable)
-        }
-        .boxed()
+    async fn terminate_invocation(
+        &self,
+        invocation_termination: InvocationTermination,
+    ) -> Result<(), restate_worker_api::Error> {
+        self.command_tx
+            .send(WorkerCommand::TerminateInvocation(invocation_termination))
+            .await
+            .map_err(|_| restate_worker_api::Error::Unreachable)
     }
 
     fn subscription_controller_handle(&self) -> Self::SubscriptionControllerHandle {

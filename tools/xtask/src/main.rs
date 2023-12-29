@@ -15,7 +15,6 @@ use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;
 use schemars::gen::SchemaSettings;
 use std::env;
-use std::future::ready;
 use std::time::Duration;
 
 fn generate_config_schema() -> anyhow::Result<()> {
@@ -39,11 +38,13 @@ fn generate_default_config() -> anyhow::Result<()> {
 struct Mock;
 
 impl restate_worker_api::Handle for Mock {
-    type Future = std::future::Ready<Result<(), restate_worker_api::Error>>;
     type SubscriptionControllerHandle = Mock;
 
-    fn terminate_invocation(&self, _: InvocationTermination) -> Self::Future {
-        ready(Ok(()))
+    async fn terminate_invocation(
+        &self,
+        _: InvocationTermination,
+    ) -> Result<(), restate_worker_api::Error> {
+        Ok(())
     }
 
     fn subscription_controller_handle(&self) -> Self::SubscriptionControllerHandle {
