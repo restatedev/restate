@@ -89,25 +89,24 @@ where
 
 impl<Storage> restate_invoker_api::StateReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + 'a,
+    for<'a> Storage: restate_storage_api::Storage + std::marker::Sync + 'a,
 {
     type StateIter = IntoIter<(Bytes, Bytes)>;
     type Error = InvokerStorageReaderError;
-    type Future<'a> = BoxFuture<'a, Result<EagerState<Self::StateIter>, Self::Error>> where Self: 'a;
 
-    fn read_state<'a>(&'a self, service_id: &'a ServiceId) -> Self::Future<'_> {
+    async fn read_state(
+        &self,
+        service_id: &ServiceId,
+    ) -> Result<EagerState<Self::StateIter>, Self::Error> {
         let mut transaction = self.0.transaction();
 
-        async move {
-            let user_states = transaction
-                .get_all_user_states(service_id)
-                // TODO: Update invoker to maintain transaction while reading the state stream: See https://github.com/restatedev/restate/issues/275
-                // collecting the stream because we cannot keep the transaction open
-                .try_collect::<Vec<_>>()
-                .await?;
+        let user_states = transaction
+            .get_all_user_states(service_id)
+            // TODO: Update invoker to maintain transaction while reading the state stream: See https://github.com/restatedev/restate/issues/275
+            // collecting the stream because we cannot keep the transaction open
+            .try_collect::<Vec<_>>()
+            .await?;
 
-            Ok(EagerState::new_complete(user_states.into_iter()))
-        }
-        .boxed()
+        Ok(EagerState::new_complete(user_states.into_iter()))
     }
 }

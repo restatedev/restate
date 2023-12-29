@@ -69,11 +69,11 @@ impl<I: Iterator<Item = (Bytes, Bytes)>> IntoIterator for EagerState<I> {
 pub trait StateReader {
     type StateIter: Iterator<Item = (Bytes, Bytes)>;
     type Error: std::error::Error + Send + Sync + 'static;
-    type Future<'a>: Future<Output = Result<EagerState<Self::StateIter>, Self::Error>> + Send
-    where
-        Self: 'a;
 
-    fn read_state<'a>(&'a self, service_id: &'a ServiceId) -> Self::Future<'_>;
+    fn read_state(
+        &self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = Result<EagerState<Self::StateIter>, Self::Error>> + Send;
 }
 
 #[cfg(any(test, feature = "mocks"))]
@@ -90,11 +90,12 @@ pub mod mocks {
     impl StateReader for EmptyStateReader {
         type StateIter = std::iter::Empty<(Bytes, Bytes)>;
         type Error = Infallible;
-        type Future<'a> = futures::future::Ready<Result<EagerState<Self::StateIter>, Self::Error>> where
-            Self: 'a;
 
-        fn read_state<'a>(&'a self, _service_id: &'a ServiceId) -> Self::Future<'_> {
-            futures::future::ready(Ok(EagerState::new_complete(empty())))
+        async fn read_state(
+            &self,
+            _service_id: &ServiceId,
+        ) -> Result<EagerState<Self::StateIter>, Self::Error> {
+            Ok(EagerState::new_complete(empty()))
         }
     }
 }
