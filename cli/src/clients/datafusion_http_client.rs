@@ -33,8 +33,8 @@ pub enum Error {
     #[error("(Protocol error) {0}")]
     Serialization(#[from] serde_json::Error),
     Network(#[from] reqwest::Error),
-    ArrowError(#[from] ArrowError),
-    UrlParseError(#[from] url::ParseError),
+    Arrow(#[from] ArrowError),
+    UrlParse(#[from] url::ParseError),
 }
 
 /// A handy client for the datafusion HTTP service.
