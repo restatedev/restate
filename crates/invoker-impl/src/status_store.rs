@@ -37,12 +37,7 @@ impl InvocationStatusStore {
     // -- Methods used by the invoker to notify the status
 
     pub(super) fn on_start(&mut self, partition: PartitionLeaderEpoch, fid: FullInvocationId) {
-        let report = self
-            .0
-            .entry(partition)
-            .or_insert_with(Default::default)
-            .entry(fid)
-            .or_insert_with(Default::default);
+        let report = self.0.entry(partition).or_default().entry(fid).or_default();
         report.start_count += 1;
         report.last_start_at = SystemTime::now();
         report.next_retry_at = None;
@@ -78,12 +73,7 @@ impl InvocationStatusStore {
         reason: InvocationErrorReport,
         next_retry_at: Option<SystemTime>,
     ) {
-        let report = self
-            .0
-            .entry(partition)
-            .or_insert_with(Default::default)
-            .entry(fid)
-            .or_insert_with(Default::default);
+        let report = self.0.entry(partition).or_default().entry(fid).or_default();
         report.in_flight = false;
         report.next_retry_at = next_retry_at;
         report.last_retry_attempt_failure = Some(reason);
