@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures::future::BoxFuture;
-use futures::FutureExt;
 use restate_schema_impl::SchemasUpdateCommand;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::path::PathBuf;
 use tokio::io;
 use tracing::trace;
@@ -33,14 +32,14 @@ pub enum MetaStorageError {
 }
 
 pub trait MetaStorage {
-    // TODO: Replace with async trait or proper future
     fn store(
         &mut self,
         commands: Vec<SchemasUpdateCommand>,
-    ) -> BoxFuture<Result<(), MetaStorageError>>;
+    ) -> impl Future<Output = Result<(), MetaStorageError>> + Send;
 
-    // TODO: Replace with async trait or proper future
-    fn reload(&mut self) -> BoxFuture<Result<Vec<SchemasUpdateCommand>, MetaStorageError>>;
+    fn reload(
+        &mut self,
+    ) -> impl Future<Output = Result<Vec<SchemasUpdateCommand>, MetaStorageError>> + Send;
 }
 
 // --- File based implementation of MetaStorage, using bincode
@@ -67,10 +66,7 @@ impl FileMetaStorage {
 struct CommandsFile(Vec<SchemasUpdateCommand>);
 
 impl MetaStorage for FileMetaStorage {
-    fn store(
-        &mut self,
-        commands: Vec<SchemasUpdateCommand>,
-    ) -> BoxFuture<Result<(), MetaStorageError>> {
+    async fn store(&mut self, commands: Vec<SchemasUpdateCommand>) -> Result<(), MetaStorageError> {
         let file_path = self
             .root_path
             .join(format!("{}.{}", self.next_file_index, RESTATE_EXTENSION));
@@ -79,76 +75,68 @@ impl MetaStorage for FileMetaStorage {
         trace!("Write metadata file {}", file_path.display());
 
         // We use blocking spawn to use bincode::encode_into_std_write
-        async {
-            tokio::task::spawn_blocking(move || {
-                let mut file = std::fs::File::create(file_path)?;
-                bincode::serde::encode_into_std_write(
-                    CommandsFile(commands),
-                    &mut file,
-                    bincode::config::standard(),
-                )?;
-                Result::<(), MetaStorageError>::Ok(file.sync_all()?)
-            })
-            .await??;
-            Ok(())
-        }
-        .boxed()
+        tokio::task::spawn_blocking(move || {
+            let mut file = std::fs::File::create(file_path)?;
+            bincode::serde::encode_into_std_write(
+                CommandsFile(commands),
+                &mut file,
+                bincode::config::standard(),
+            )?;
+            Result::<(), MetaStorageError>::Ok(file.sync_all()?)
+        })
+        .await??;
+        Ok(())
     }
 
-    fn reload(&mut self) -> BoxFuture<Result<Vec<SchemasUpdateCommand>, MetaStorageError>> {
+    async fn reload(&mut self) -> Result<Vec<SchemasUpdateCommand>, MetaStorageError> {
         let root_path = self.root_path.clone();
 
-        async {
-            // Try to create a dir, in case it doesn't exist
-            restate_fs_util::create_dir_all_if_doesnt_exists(&root_path).await?;
+        // Try to create a dir, in case it doesn't exist
+        restate_fs_util::create_dir_all_if_doesnt_exists(&root_path).await?;
 
-            // Find all the metadata files in the root path directory, parse the index and then sort them by index
-            let mut read_dir = tokio::fs::read_dir(root_path).await?;
-            let mut metadata_files = vec![];
-            while let Some(dir_entry) = read_dir.next_entry().await? {
-                if dir_entry
+        // Find all the metadata files in the root path directory, parse the index and then sort them by index
+        let mut read_dir = tokio::fs::read_dir(root_path).await?;
+        let mut metadata_files = vec![];
+        while let Some(dir_entry) = read_dir.next_entry().await? {
+            if dir_entry
+                .path()
+                .extension()
+                .and_then(|os_str| os_str.to_str())
+                == Some(RESTATE_EXTENSION)
+            {
+                let index: usize = dir_entry
                     .path()
-                    .extension()
-                    .and_then(|os_str| os_str.to_str())
-                    == Some(RESTATE_EXTENSION)
-                {
-                    let index: usize = dir_entry
-                        .path()
-                        .file_stem()
-                        .expect("If there is an extension, there must be a file stem")
-                        .to_string_lossy()
-                        .parse()
-                        .map_err(|_| MetaStorageError::BadFilename(dir_entry.path()))?;
+                    .file_stem()
+                    .expect("If there is an extension, there must be a file stem")
+                    .to_string_lossy()
+                    .parse()
+                    .map_err(|_| MetaStorageError::BadFilename(dir_entry.path()))?;
 
-                    // Make sure self.next_file_index = max(self.next_file_index, index + 1)
-                    self.next_file_index = self.next_file_index.max(index + 1);
-                    metadata_files.push((dir_entry.path(), index));
-                }
+                // Make sure self.next_file_index = max(self.next_file_index, index + 1)
+                self.next_file_index = self.next_file_index.max(index + 1);
+                metadata_files.push((dir_entry.path(), index));
             }
-            metadata_files.sort_by(|a, b| a.1.cmp(&b.1));
-
-            // We use blocking spawn to use bincode::decode_from_std_read
-            tokio::task::spawn_blocking(move || {
-                let mut schemas_updates = vec![];
-
-                for (metadata_file_path, _) in metadata_files {
-                    // Metadata_file_path is the json metadata descriptor
-                    trace!("Reloading metadata file {}", metadata_file_path.display());
-
-                    let mut file = std::fs::File::open(metadata_file_path)?;
-
-                    let commands_file: CommandsFile = bincode::serde::decode_from_std_read(
-                        &mut file,
-                        bincode::config::standard(),
-                    )?;
-                    schemas_updates.extend(commands_file.0);
-                }
-
-                Result::<Vec<SchemasUpdateCommand>, MetaStorageError>::Ok(schemas_updates)
-            })
-            .await?
         }
-        .boxed()
+        metadata_files.sort_by(|a, b| a.1.cmp(&b.1));
+
+        // We use blocking spawn to use bincode::decode_from_std_read
+        tokio::task::spawn_blocking(move || {
+            let mut schemas_updates = vec![];
+
+            for (metadata_file_path, _) in metadata_files {
+                // Metadata_file_path is the json metadata descriptor
+                trace!("Reloading metadata file {}", metadata_file_path.display());
+
+                let mut file = std::fs::File::open(metadata_file_path)?;
+
+                let commands_file: CommandsFile =
+                    bincode::serde::decode_from_std_read(&mut file, bincode::config::standard())?;
+                schemas_updates.extend(commands_file.0);
+            }
+
+            Result::<Vec<SchemasUpdateCommand>, MetaStorageError>::Ok(schemas_updates)
+        })
+        .await?
     }
 }
 
