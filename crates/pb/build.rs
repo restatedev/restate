@@ -81,6 +81,7 @@ mod multi_service_generator {
 
 mod built_in_service_gen {
     use prost_build::Service;
+    use std::fmt::Write;
 
     pub struct RestateBuiltInServiceGen;
 
@@ -94,7 +95,12 @@ mod built_in_service_gen {
 
             let service_name = service.name;
             let svc_interface_name = format!("{}BuiltInService", service_name);
-            let svc_interface_method_signatures: String = service.methods.iter().map(|m| format!("async fn {}(&mut self, input: {}) -> Result<{}, restate_types::errors::InvocationError>;\n", m.name, m.input_type, m.output_type)).collect();
+            let svc_interface_method_signatures: String = service.methods
+                .iter()
+                .fold(String::new(), |mut output, m| {
+                    let _ = writeln!(output, "async fn {}(&mut self, input: {}) -> Result<{}, restate_types::errors::InvocationError>;", m.name, m.input_type, m.output_type);
+                    output
+                });
 
             let interface_def = format!(
                 r#"
@@ -109,13 +115,23 @@ mod built_in_service_gen {
 
             buf.push_str(interface_def.as_str());
 
-            let impl_built_in_service_match_arms: String = service.methods.iter().map(|m| format!(r#""{}" => {{
-            use prost::Message;
+            let impl_built_in_service_match_arms: String = service.methods
+                .iter()
+                .fold(String::new(), |mut output, m| {
+                    let _ = write!(
+                        output,
+                        r#""{}" => {{
+                            use prost::Message;
 
-            let mut input_t = {}::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
-            let output_t = T::{}(&mut self.0, input_t).await?;
-            Ok(output_t.encode_to_vec().into())
-        }},"#, m.proto_name, m.input_type, m.name)).collect();
+                            let mut input_t = {}::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
+                            let output_t = T::{}(&mut self.0, input_t).await?;
+                            Ok(output_t.encode_to_vec().into())
+                        }},"#,
+                        m.proto_name, m.input_type, m.name
+                    );
+                    output
+                });
+
             let invoker_name = format!("{}Invoker", service_name);
             let invoker = format!(
                 r#"
@@ -143,6 +159,7 @@ mod built_in_service_gen {
 
 mod manual_response_built_in_service_gen {
     use prost_build::{Method, Service};
+    use std::fmt::Write;
 
     #[derive(Default)]
     pub struct ManualResponseRestateBuiltInServiceGen {
@@ -190,7 +207,18 @@ mod manual_response_built_in_service_gen {
 
             let service_name = service.name;
             let svc_interface_name = format!("{}BuiltInService", service_name);
-            let svc_interface_method_signatures: String = methods_to_generate.iter().map(|m| format!("async fn {}(&mut self, request: {}, response_serializer: crate::builtin_service::ResponseSerializer<{}>) -> Result<(), restate_types::errors::InvocationError>;\n", m.name, m.input_type, m.output_type)).collect();
+            let svc_interface_method_signatures: String = methods_to_generate
+                .iter()
+                .fold(String::new(), |mut output, m| {
+                    let _ = writeln!(
+                        output,
+                        "async fn {}(&mut self, request: {}, response_serializer: crate::builtin_service::ResponseSerializer<{}>) -> Result<(), restate_types::errors::InvocationError>;",
+                        m.name,
+                        m.input_type,
+                        m.output_type
+                    );
+                    output
+                });
 
             let interface_def = format!(
                 r#"
@@ -207,13 +235,25 @@ mod manual_response_built_in_service_gen {
             // --- Generate invoker [SvcName]Invoker to route invocations through service methods
 
             let invoker_name = format!("{}Invoker", service_name);
-            let impl_built_in_service_match_arms: String = methods_to_generate.iter().map(|m| format!(r#""{}" => {{
-            use prost::Message;
+            let impl_built_in_service_match_arms: String = methods_to_generate
+                .iter()
+                .fold(String::new(), |mut output, m| {
+                    let _ = write!(
+                        output,
+                        r#""{}" => {{
+                            use prost::Message;
 
-            let mut input_t = <{}>::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
-            T::{}(&mut self.0, input_t, crate::builtin_service::ResponseSerializer::default()).await?;
-            Ok(())
-        }},"#, m.proto_name, m.input_type, m.name)).collect();
+                            let mut input_t = <{}>::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
+                            T::{}(&mut self.0, input_t, crate::builtin_service::ResponseSerializer::default()).await?;
+                            Ok(())
+                        }},"#,
+                        m.proto_name,
+                        m.input_type,
+                        m.name
+                    );
+                    output
+                });
+
             let invoker = format!(
                 r#"
             #[cfg(feature = "builtin-service")]
