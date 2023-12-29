@@ -52,14 +52,12 @@ impl restate_worker_api::Handle for Mock {
 }
 
 impl restate_worker_api::SubscriptionController for Mock {
-    type Future = std::future::Ready<Result<(), restate_worker_api::Error>>;
-
-    fn start_subscription(&self, _: Subscription) -> Self::Future {
-        ready(Ok(()))
+    async fn start_subscription(&self, _: Subscription) -> Result<(), restate_worker_api::Error> {
+        Ok(())
     }
 
-    fn stop_subscription(&self, _: String) -> Self::Future {
-        ready(Ok(()))
+    async fn stop_subscription(&self, _: String) -> Result<(), restate_worker_api::Error> {
+        Ok(())
     }
 }
 

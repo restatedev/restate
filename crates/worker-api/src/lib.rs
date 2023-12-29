@@ -21,10 +21,14 @@ pub enum Error {
 // This is just an interface to isolate the interaction between meta and subscription controller.
 // Depending on how we evolve the Kafka ingress deployment, this might end up living in a separate process.
 pub trait SubscriptionController: SubscriptionValidator {
-    type Future: Future<Output = Result<(), Error>> + Send;
-
-    fn start_subscription(&self, subscription: Subscription) -> Self::Future;
-    fn stop_subscription(&self, subscription_id: String) -> Self::Future;
+    fn start_subscription(
+        &self,
+        subscription: Subscription,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+    fn stop_subscription(
+        &self,
+        subscription_id: String,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
 pub trait Handle {
