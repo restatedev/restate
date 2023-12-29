@@ -15,7 +15,6 @@ mod metas_client;
 mod metas_interface;
 
 pub use self::datafusion_http_client::DataFusionHttpClient;
-pub use self::datafusion_http_client::Error as DatafusionClientError;
 pub use self::metas_client::Error as MetasClientError;
 pub use self::metas_client::MetasClient;
 pub use self::metas_interface::MetaClientInterface;
