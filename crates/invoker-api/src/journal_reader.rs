@@ -44,12 +44,11 @@ impl JournalMetadata {
 pub trait JournalReader {
     type JournalStream: Stream<Item = PlainRawEntry>;
     type Error: std::error::Error + Send + Sync + 'static;
-    type Future<'a>: Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>>
-        + Send
-    where
-        Self: 'a;
 
-    fn read_journal<'a>(&'a self, fid: &'a FullInvocationId) -> Self::Future<'_>;
+    fn read_journal(
+        &self,
+        fid: &FullInvocationId,
+    ) -> impl Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>> + Send;
 }
 
 #[cfg(any(test, feature = "mocks"))]
@@ -64,11 +63,12 @@ pub mod mocks {
     impl JournalReader for EmptyJournalReader {
         type JournalStream = futures::stream::Empty<PlainRawEntry>;
         type Error = Infallible;
-        type Future<'a> = futures::future::Ready<Result<(JournalMetadata, Self::JournalStream), Self::Error>> where
-            Self: 'a;
 
-        fn read_journal<'a>(&'a self, _sid: &'a FullInvocationId) -> Self::Future<'_> {
-            futures::future::ready(Ok((
+        async fn read_journal(
+            &self,
+            _sid: &FullInvocationId,
+        ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
+            Ok((
                 JournalMetadata::new(
                     0,
                     ServiceInvocationSpanContext::empty(),
@@ -76,7 +76,7 @@ pub mod mocks {
                     None,
                 ),
                 futures::stream::empty(),
-            )))
+            ))
         }
     }
 }

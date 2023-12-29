@@ -9,8 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use futures::future::BoxFuture;
-use futures::{stream, FutureExt, StreamExt, TryStreamExt};
+use futures::{stream, StreamExt, TryStreamExt};
 use restate_invoker_api::{EagerState, JournalMetadata};
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::state_table::StateTable;
@@ -40,50 +39,49 @@ impl<Storage> InvokerStorageReader<Storage> {
 
 impl<Storage> restate_invoker_api::JournalReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + 'a,
+    for<'a> Storage: restate_storage_api::Storage + Sync + 'a,
 {
     type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
     type Error = InvokerStorageReaderError;
-    type Future<'a> = BoxFuture<'a, Result<(JournalMetadata, Self::JournalStream), Self::Error>> where Self: 'a;
 
-    fn read_journal<'a>(&'a self, fid: &'a FullInvocationId) -> Self::Future<'_> {
+    async fn read_journal(
+        &self,
+        fid: &FullInvocationId,
+    ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
         let mut transaction = self.0.transaction();
 
-        async move {
-            let invocation_status = transaction.get_invocation_status(&fid.service_id).await?;
+        let invocation_status = transaction.get_invocation_status(&fid.service_id).await?;
 
-            if let Some(InvocationStatus::Invoked(invoked_status)) = invocation_status {
-                let journal_metadata = JournalMetadata::new(
-                    invoked_status.journal_metadata.length,
-                    invoked_status.journal_metadata.span_context,
-                    invoked_status.method,
-                    invoked_status.deployment_id,
-                );
-                let journal_stream = transaction
-                    .get_journal(&fid.service_id, journal_metadata.length)
-                    .map(|entry| {
-                        entry.map_err(InvokerStorageReaderError::Storage).map(
-                            |(_, journal_entry)| match journal_entry {
-                                JournalEntry::Entry(entry) => entry.erase_enrichment(),
-                                JournalEntry::Completion(_) => {
-                                    panic!("should only read entries when reading the journal")
-                                }
-                            },
-                        )
-                    })
-                    // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
-                    // collecting the stream because we cannot keep the transaction open
-                    .try_collect::<Vec<_>>()
-                    .await?;
+        if let Some(InvocationStatus::Invoked(invoked_status)) = invocation_status {
+            let journal_metadata = JournalMetadata::new(
+                invoked_status.journal_metadata.length,
+                invoked_status.journal_metadata.span_context,
+                invoked_status.method,
+                invoked_status.deployment_id,
+            );
+            let journal_stream = transaction
+                .get_journal(&fid.service_id, journal_metadata.length)
+                .map(|entry| {
+                    entry
+                        .map_err(InvokerStorageReaderError::Storage)
+                        .map(|(_, journal_entry)| match journal_entry {
+                            JournalEntry::Entry(entry) => entry.erase_enrichment(),
+                            JournalEntry::Completion(_) => {
+                                panic!("should only read entries when reading the journal")
+                            }
+                        })
+                })
+                // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
+                // collecting the stream because we cannot keep the transaction open
+                .try_collect::<Vec<_>>()
+                .await?;
 
-                transaction.commit().await?;
+            transaction.commit().await?;
 
-                Ok((journal_metadata, stream::iter(journal_stream)))
-            } else {
-                Err(InvokerStorageReaderError::NotInvoked)
-            }
+            Ok((journal_metadata, stream::iter(journal_stream)))
+        } else {
+            Err(InvokerStorageReaderError::NotInvoked)
         }
-        .boxed()
     }
 }
 
