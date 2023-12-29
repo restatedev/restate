@@ -345,8 +345,11 @@ macro_rules! c_indent_table {
 }
 
 // Macros with a "c_" prefix to emits console output with no panics.
+#[allow(unused_imports)] // not all macros are used yet
 pub use {_gecho, c_eprint, c_eprintln, c_print, c_println};
 // Convenience macros with emojis/icons upfront
+#[allow(unused_imports)] // not all macros are used yet
 pub use {c_error, c_success, c_tip, c_title, c_warn};
 // padded printing
+#[allow(unused_imports)] // not all macros are used yet
 pub use {c_indent, c_indent_table, c_indentln};
