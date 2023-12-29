@@ -23,7 +23,10 @@ use std::fmt::Formatter;
 use std::future::Future;
 
 pub use crate::lambda::AssumeRoleCacheMode;
-pub use options::{Options, OptionsBuilder, OptionsBuilderError};
+pub use options::{
+    HttpClientOptionsBuilder, HttpClientOptionsBuilderError, LambdaClientOptionsBuilder,
+    LambdaClientOptionsBuilderError, Options, OptionsBuilder, OptionsBuilderError,
+};
 
 mod http;
 mod lambda;
