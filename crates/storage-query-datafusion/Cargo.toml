@@ -20,7 +20,7 @@ restate-storage-api = { workspace = true }
 restate-invoker-api = { workspace = true }
 
 ahash = { workspace = true }                                                    # Required to due a yanked version used by datafusion
-async-trait = { version = "0.1.68" }
+async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 chrono = { version = "0.4.26", default-features = false, features = ["clock"] }
