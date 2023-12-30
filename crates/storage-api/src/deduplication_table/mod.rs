@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{GetFuture, GetStream, PutFuture};
+use crate::Result;
 use bytestring::ByteString;
+use futures_util::Stream;
 use restate_types::identifiers::PartitionId;
+use std::future::Future;
 
 #[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone)]
 pub enum SequenceNumberSource {
@@ -23,17 +25,17 @@ pub trait DeduplicationTable {
         &mut self,
         partition_id: PartitionId,
         source: SequenceNumberSource,
-    ) -> GetFuture<Option<u64>>;
+    ) -> impl Future<Output = Result<Option<u64>>> + Send;
 
     fn put_sequence_number(
         &mut self,
         partition_id: PartitionId,
         source: SequenceNumberSource,
         sequence_number: u64,
-    ) -> PutFuture;
+    ) -> impl Future<Output = ()> + Send;
 
     fn get_all_sequence_numbers(
         &mut self,
         partition_id: PartitionId,
-    ) -> GetStream<(SequenceNumberSource, u64)>;
+    ) -> impl Stream<Item = Result<(SequenceNumberSource, u64)>> + Send;
 }

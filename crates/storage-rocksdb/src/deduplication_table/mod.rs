@@ -10,11 +10,10 @@
 
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Deduplication;
-use crate::{
-    GetFuture, GetStream, PutFuture, RocksDBTransaction, TableScan, TableScanIterationDecision,
-};
+use crate::{RocksDBTransaction, TableScan, TableScanIterationDecision};
+use futures::Stream;
 use restate_storage_api::deduplication_table::{DeduplicationTable, SequenceNumberSource};
-use restate_storage_api::{ready, StorageError};
+use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
 use std::io::Cursor;
 
@@ -24,11 +23,11 @@ define_table_key!(
 );
 
 impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
-    fn get_sequence_number(
+    async fn get_sequence_number(
         &mut self,
         partition_id: PartitionId,
         source: SequenceNumberSource,
-    ) -> GetFuture<Option<u64>> {
+    ) -> Result<Option<u64>> {
         let key = DeduplicationKey::default()
             .partition_id(partition_id)
             .source(source);
@@ -42,25 +41,25 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
 
             Ok(maybe_sequence_number)
         })
+        .await
     }
 
-    fn put_sequence_number(
+    async fn put_sequence_number(
         &mut self,
         partition_id: PartitionId,
         source: SequenceNumberSource,
         sequence_number: u64,
-    ) -> PutFuture {
+    ) {
         let key = DeduplicationKey::default()
             .partition_id(partition_id)
             .source(source);
         self.put_kv(key, sequence_number);
-        ready()
     }
 
     fn get_all_sequence_numbers(
         &mut self,
         partition_id: PartitionId,
-    ) -> GetStream<(SequenceNumberSource, u64)> {
+    ) -> impl Stream<Item = Result<(SequenceNumberSource, u64)>> + Send {
         self.for_each_key_value(
             TableScan::Partition::<DeduplicationKey>(partition_id),
             move |k, v| {

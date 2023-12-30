@@ -20,7 +20,7 @@ use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
-use restate_storage_api::{PutFuture, StorageError, Transaction as OtherTransaction};
+use restate_storage_api::{StorageError, Transaction as OtherTransaction};
 use restate_timer::TimerReader;
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
@@ -168,20 +168,23 @@ where
         .boxed()
     }
 
-    pub(super) fn load_dedup_seq_number(
+    pub(super) async fn load_dedup_seq_number(
         &mut self,
         source: SequenceNumberSource,
-    ) -> BoxFuture<'_, Result<Option<MessageIndex>, StorageError>> {
-        self.inner.get_sequence_number(self.partition_id, source)
+    ) -> Result<Option<MessageIndex>, StorageError> {
+        self.inner
+            .get_sequence_number(self.partition_id, source)
+            .await
     }
 
-    pub(super) fn store_dedup_seq_number(
+    pub(super) async fn store_dedup_seq_number(
         &mut self,
         source: SequenceNumberSource,
         dedup_seq_number: MessageIndex,
-    ) -> PutFuture {
+    ) {
         self.inner
             .put_sequence_number(self.partition_id, source, dedup_seq_number)
+            .await
     }
 }
 
