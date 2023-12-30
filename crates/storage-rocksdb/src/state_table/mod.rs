@@ -11,13 +11,15 @@
 use crate::keys::{define_table_key, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableKind::State;
-use crate::{GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
-use crate::{Result, TableScan, TableScanIterationDecision};
+use crate::{RocksDBStorage, RocksDBTransaction};
+use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
+use futures::Stream;
 use restate_storage_api::state_table::StateTable;
-use restate_storage_api::{ready, GetStream, StorageError};
+use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
+use std::future::Future;
 use std::ops::RangeInclusive;
 
 define_table_key!(
@@ -55,32 +57,35 @@ impl<'a> StateTable for RocksDBTransaction<'a> {
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
         state_value: impl AsRef<[u8]>,
-    ) -> PutFuture {
+    ) -> impl Future<Output = ()> + Send {
         let key = write_state_entry_key(service_id, state_key);
         self.put_kv(key, state_value.as_ref());
-        ready()
+        futures::future::ready(())
     }
 
     fn delete_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
-    ) -> PutFuture {
+    ) -> impl Future<Output = ()> + Send {
         let key = write_state_entry_key(service_id, state_key);
         self.delete_key(&key);
-        ready()
+        futures::future::ready(())
     }
 
     fn get_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
-    ) -> GetFuture<Option<Bytes>> {
+    ) -> impl Future<Output = Result<Option<Bytes>>> + Send {
         let key = write_state_entry_key(service_id, state_key);
         self.get_blocking(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
     }
 
-    fn get_all_user_states(&mut self, service_id: &ServiceId) -> GetStream<(Bytes, Bytes)> {
+    fn get_all_user_states(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
         let key = StateKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())

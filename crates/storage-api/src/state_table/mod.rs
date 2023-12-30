@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{GetFuture, GetStream, PutFuture};
+use crate::Result;
 use bytes::Bytes;
+use futures_util::Stream;
 use restate_types::identifiers::ServiceId;
+use std::future::Future;
 
 pub trait StateTable {
     fn put_user_state(
@@ -18,19 +20,22 @@ pub trait StateTable {
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
         state_value: impl AsRef<[u8]>,
-    ) -> PutFuture;
+    ) -> impl Future<Output = ()> + Send;
 
     fn delete_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
-    ) -> PutFuture;
+    ) -> impl Future<Output = ()> + Send;
 
     fn get_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
-    ) -> GetFuture<Option<Bytes>>;
+    ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
 
-    fn get_all_user_states(&mut self, service_id: &ServiceId) -> GetStream<(Bytes, Bytes)>;
+    fn get_all_user_states(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send;
 }

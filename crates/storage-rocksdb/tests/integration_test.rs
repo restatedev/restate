@@ -15,6 +15,7 @@ use restate_storage_api::StorageError;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use std::fmt::Debug;
+use std::pin::pin;
 use std::str::FromStr;
 use tempfile::tempdir;
 use tokio_stream::StreamExt;
@@ -95,7 +96,7 @@ pub(crate) async fn assert_stream_eq<T: Send + Debug + PartialEq + 'static>(
     actual: impl Stream<Item = Result<T, StorageError>>,
     expected: Vec<T>,
 ) {
-    tokio::pin!(actual);
+    let mut actual = pin!(actual);
     let mut items = expected.into_iter();
 
     while let Some(item) = actual.next().await {
