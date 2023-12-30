@@ -32,9 +32,8 @@ use crate::TableKind::{
 use bytes::BytesMut;
 use codederror::CodedError;
 use futures::{ready, FutureExt, Stream};
-use futures_util::future::ready;
-use futures_util::{stream, StreamExt};
-use restate_storage_api::{GetFuture, GetStream, Storage, StorageError, Transaction};
+use futures_util::stream;
+use restate_storage_api::{Storage, StorageError, Transaction};
 use rocksdb::BlockBasedOptions;
 use rocksdb::Cache;
 use rocksdb::ColumnFamily;
@@ -473,7 +472,7 @@ impl<T: Send + 'static> Stream for BackgroundScanStream<T> {
 }
 
 impl<'a> RocksDBTransaction<'a> {
-    pub fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> GetFuture<'static, R>
+    pub async fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
     where
         K: TableKey + Send + 'static,
         F: FnOnce(&[u8], Option<&[u8]>) -> Result<R> + Send + 'static,
@@ -483,27 +482,24 @@ impl<'a> RocksDBTransaction<'a> {
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
-        let res = match self.storage.get(K::table(), &buf) {
+        match self.storage.get(K::table(), &buf) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
                 f(&buf, slice)
             }
             Err(err) => Err(err),
-        };
-
-        ready(res).boxed()
+        }
     }
 
     #[inline]
-    pub fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> GetFuture<'static, R>
+    pub async fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
     where
         K: TableKey + Send + 'static,
         F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
         let iterator = self.storage.iterator_from(scan);
-        let result = f(iterator.item());
-        ready(result).boxed()
+        f(iterator.item())
     }
 
     #[inline]
@@ -511,7 +507,7 @@ impl<'a> RocksDBTransaction<'a> {
         &self,
         scan: TableScan<K>,
         mut op: F,
-    ) -> GetStream<'static, R>
+    ) -> impl Stream<Item = Result<R>> + Send
     where
         K: TableKey + Send + 'static,
         F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R> + Send + 'static,
@@ -540,14 +536,14 @@ impl<'a> RocksDBTransaction<'a> {
             };
         }
 
-        stream::iter(res).boxed()
+        stream::iter(res)
     }
 
     pub fn for_each_key_value<K, F, R>(
         &self,
         scan: TableScan<K>,
         mut op: F,
-    ) -> GetStream<'static, R>
+    ) -> impl Stream<Item = Result<R>> + Send
     where
         K: TableKey + Send + 'static,
         F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R> + Send + 'static,
@@ -582,7 +578,7 @@ impl<'a> RocksDBTransaction<'a> {
         };
 
         let join_handle = tokio::task::spawn_blocking(background_task);
-        BackgroundScanStream::new(rx, join_handle).boxed()
+        BackgroundScanStream::new(rx, join_handle)
     }
 
     #[inline]

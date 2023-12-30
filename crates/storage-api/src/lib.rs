@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures_util::future::BoxFuture;
-use futures_util::stream::BoxStream;
 use std::future::Future;
 
 /// Storage error
@@ -24,13 +22,6 @@ pub enum StorageError {
     #[error("Operational error that can be caused during a graceful shutdown")]
     OperationalError,
 }
-
-//
-// The following future definitions are temporary upto the point
-// where async interfaces will be a thing in Rust.
-//
-pub type GetFuture<'a, T> = BoxFuture<'a, Result<T>>;
-pub type GetStream<'a, T> = BoxStream<'a, Result<T>>;
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
