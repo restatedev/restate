@@ -281,67 +281,55 @@ impl<TransactionType> super::state_machine::StateStorage for Transaction<Transac
 where
     TransactionType: restate_storage_api::Transaction + Send,
 {
-    fn store_invocation_status<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    async fn store_invocation_status(
+        &mut self,
+        service_id: &ServiceId,
         status: InvocationStatus,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    ) -> StorageResult<()> {
         self.assert_partition_key(service_id);
-        async {
-            self.inner.put_invocation_status(service_id, status).await;
-            Ok(())
-        }
-        .boxed()
+        self.inner.put_invocation_status(service_id, status).await;
+        Ok(())
     }
 
-    fn drop_journal<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    async fn drop_journal(
+        &mut self,
+        service_id: &ServiceId,
         journal_length: EntryIndex,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    ) -> StorageResult<()> {
         self.assert_partition_key(service_id);
-        async move {
-            self.inner.delete_journal(service_id, journal_length).await;
-            Ok(())
-        }
-        .boxed()
+        self.inner.delete_journal(service_id, journal_length).await;
+        Ok(())
     }
 
-    fn store_journal_entry<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    async fn store_journal_entry(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    ) -> StorageResult<()> {
         self.assert_partition_key(service_id);
-        async move {
-            self.inner
-                .put_journal_entry(service_id, entry_index, JournalEntry::Entry(journal_entry))
-                .await;
+        self.inner
+            .put_journal_entry(service_id, entry_index, JournalEntry::Entry(journal_entry))
+            .await;
 
-            Ok(())
-        }
-        .boxed()
+        Ok(())
     }
 
-    fn store_completion_result<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    async fn store_completion_result(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
         completion_result: CompletionResult,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    ) -> StorageResult<()> {
         self.assert_partition_key(service_id);
-        async move {
-            self.inner
-                .put_journal_entry(
-                    service_id,
-                    entry_index,
-                    JournalEntry::Completion(completion_result),
-                )
-                .await;
-            Ok(())
-        }
-        .boxed()
+        self.inner
+            .put_journal_entry(
+                service_id,
+                entry_index,
+                JournalEntry::Completion(completion_result),
+            )
+            .await;
+        Ok(())
     }
 
     async fn load_completion_result(
@@ -361,31 +349,28 @@ where
         }))
     }
 
-    fn load_journal_entry<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    async fn load_journal_entry(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<EnrichedRawEntry>, StorageError>> {
+    ) -> StorageResult<Option<EnrichedRawEntry>> {
         self.assert_partition_key(service_id);
-        async move {
-            let result = self
-                .inner
-                .get_journal_entry(service_id, entry_index)
-                .await?;
+        let result = self
+            .inner
+            .get_journal_entry(service_id, entry_index)
+            .await?;
 
-            Ok(result.and_then(|journal_entry| match journal_entry {
-                JournalEntry::Entry(entry) => Some(entry),
-                JournalEntry::Completion(_) => None,
-            }))
-        }
-        .boxed()
+        Ok(result.and_then(|journal_entry| match journal_entry {
+            JournalEntry::Entry(entry) => Some(entry),
+            JournalEntry::Completion(_) => None,
+        }))
     }
 
     async fn enqueue_into_inbox(
         &mut self,
         seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
-    ) -> Result<(), StorageError> {
+    ) -> StorageResult<()> {
         self.assert_partition_key(&service_invocation.fid.service_id);
 
         // TODO: Avoid cloning when moving this logic into the RocksDB storage impl
@@ -398,91 +383,66 @@ where
         Ok(())
     }
 
-    fn enqueue_into_outbox(
+    async fn enqueue_into_outbox(
         &mut self,
         seq_number: MessageIndex,
         message: OutboxMessage,
-    ) -> BoxFuture<Result<(), StorageError>> {
-        async move {
-            self.inner
-                .add_message(self.partition_id, seq_number, message)
-                .await;
+    ) -> StorageResult<()> {
+        self.inner
+            .add_message(self.partition_id, seq_number, message)
+            .await;
 
-            Ok(())
-        }
-        .boxed()
+        Ok(())
     }
 
-    async fn store_inbox_seq_number(
-        &mut self,
-        seq_number: MessageIndex,
-    ) -> Result<(), StorageError> {
+    async fn store_inbox_seq_number(&mut self, seq_number: MessageIndex) -> StorageResult<()> {
         self.store_seq_number(seq_number, fsm_variable::INBOX_SEQ_NUMBER)
             .await
     }
 
-    async fn store_outbox_seq_number(
-        &mut self,
-        seq_number: MessageIndex,
-    ) -> Result<(), StorageError> {
+    async fn store_outbox_seq_number(&mut self, seq_number: MessageIndex) -> StorageResult<()> {
         self.store_seq_number(seq_number, fsm_variable::OUTBOX_SEQ_NUMBER)
             .await
     }
 
-    fn truncate_outbox(
+    async fn truncate_outbox(&mut self, outbox_sequence_number: MessageIndex) -> StorageResult<()> {
+        self.inner
+            .truncate_outbox(
+                self.partition_id,
+                outbox_sequence_number..outbox_sequence_number + 1,
+            )
+            .await;
+
+        Ok(())
+    }
+
+    async fn truncate_inbox(
         &mut self,
-        outbox_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StorageError>> {
-        async move {
-            self.inner
-                .truncate_outbox(
-                    self.partition_id,
-                    outbox_sequence_number..outbox_sequence_number + 1,
-                )
-                .await;
-
-            Ok(())
-        }
-        .boxed()
-    }
-
-    fn truncate_inbox<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+        service_id: &ServiceId,
         inbox_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StorageError>> {
-        async move {
-            self.inner
-                .delete_invocation(service_id, inbox_sequence_number)
-                .await;
-            Ok(())
-        }
-        .boxed()
+    ) -> StorageResult<()> {
+        self.inner
+            .delete_invocation(service_id, inbox_sequence_number)
+            .await;
+        Ok(())
     }
 
-    fn delete_inbox_entry<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-        sequence_number: MessageIndex,
-    ) -> BoxFuture<()> {
+    async fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: MessageIndex) {
         self.inner
             .delete_invocation(service_id, sequence_number)
-            .boxed()
+            .await;
     }
 
-    fn store_state<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    async fn store_state(
+        &mut self,
+        service_id: &ServiceId,
         key: Bytes,
         value: Bytes,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    ) -> StorageResult<()> {
         self.assert_partition_key(service_id);
-        async move {
-            self.inner.put_user_state(service_id, &key, &value).await;
+        self.inner.put_user_state(service_id, &key, &value).await;
 
-            Ok(())
-        }
-        .boxed()
+        Ok(())
     }
 
     async fn load_state(
@@ -494,60 +454,47 @@ where
         self.inner.get_user_state(service_id, key).await
     }
 
-    fn clear_state<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-        key: &'a Bytes,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    async fn clear_state(&mut self, service_id: &ServiceId, key: &Bytes) -> StorageResult<()> {
         self.assert_partition_key(service_id);
-        async move {
-            self.inner.delete_user_state(service_id, key).await;
-            Ok(())
-        }
-        .boxed()
+        self.inner.delete_user_state(service_id, key).await;
+        Ok(())
     }
 
-    fn store_timer(
+    async fn store_timer(
         &mut self,
         full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         timer: Timer,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    ) -> StorageResult<()> {
         self.assert_partition_key(&full_invocation_id.service_id);
-        async move {
-            let timer_key = TimerKey {
-                full_invocation_id,
-                timestamp: wake_up_time.as_u64(),
-                journal_index: entry_index,
-            };
+        let timer_key = TimerKey {
+            full_invocation_id,
+            timestamp: wake_up_time.as_u64(),
+            journal_index: entry_index,
+        };
 
-            self.inner
-                .add_timer(self.partition_id, &timer_key, timer)
-                .await;
-            Ok(())
-        }
-        .boxed()
+        self.inner
+            .add_timer(self.partition_id, &timer_key, timer)
+            .await;
+        Ok(())
     }
 
-    fn delete_timer(
+    async fn delete_timer(
         &mut self,
         full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    ) -> StorageResult<()> {
         self.assert_partition_key(&full_invocation_id.service_id);
-        async move {
-            let timer_key = TimerKey {
-                full_invocation_id,
-                timestamp: wake_up_time.as_u64(),
-                journal_index: entry_index,
-            };
+        let timer_key = TimerKey {
+            full_invocation_id,
+            timestamp: wake_up_time.as_u64(),
+            journal_index: entry_index,
+        };
 
-            self.inner.delete_timer(self.partition_id, &timer_key).await;
-            Ok(())
-        }
-        .boxed()
+        self.inner.delete_timer(self.partition_id, &timer_key).await;
+        Ok(())
     }
 }
 

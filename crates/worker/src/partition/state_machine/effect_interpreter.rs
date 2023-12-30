@@ -16,7 +16,6 @@ use crate::partition::state_machine::actions::Action;
 use crate::partition::state_machine::effects::Effect;
 use crate::partition::{CommitError, Committable};
 use bytes::Bytes;
-use futures::future::BoxFuture;
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{
@@ -40,31 +39,31 @@ pub trait ActionCollector {
 
 pub trait StateStorage {
     // Invocation status
-    fn store_invocation_status<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn store_invocation_status(
+        &mut self,
+        service_id: &ServiceId,
         status: InvocationStatus,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
-    fn drop_journal<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn drop_journal(
+        &mut self,
+        service_id: &ServiceId,
         journal_length: EntryIndex,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
-    fn store_journal_entry<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn store_journal_entry(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
-    fn store_completion_result<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn store_completion_result(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
         completion_result: CompletionResult,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn load_completion_result(
         &mut self,
@@ -72,25 +71,24 @@ pub trait StateStorage {
         entry_index: EntryIndex,
     ) -> impl Future<Output = StorageResult<Option<CompletionResult>>> + Send;
 
-    // TODO: Replace with async trait or proper future
-    fn load_journal_entry<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn load_journal_entry(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<EnrichedRawEntry>, restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<Option<EnrichedRawEntry>>> + Send;
 
     // In-/outbox
-    async fn enqueue_into_inbox(
+    fn enqueue_into_inbox(
         &mut self,
         seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
-    ) -> Result<(), restate_storage_api::StorageError>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn enqueue_into_outbox(
         &mut self,
         seq_number: MessageIndex,
         message: OutboxMessage,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn store_inbox_seq_number(
         &mut self,
@@ -105,27 +103,27 @@ pub trait StateStorage {
     fn truncate_outbox(
         &mut self,
         outbox_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
-    fn truncate_inbox<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn truncate_inbox(
+        &mut self,
+        service_id: &ServiceId,
         inbox_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
-    fn delete_inbox_entry<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn delete_inbox_entry(
+        &mut self,
+        service_id: &ServiceId,
         sequence_number: MessageIndex,
-    ) -> BoxFuture<()>;
+    ) -> impl Future<Output = ()> + Send;
 
     // State
-    fn store_state<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn store_state(
+        &mut self,
+        service_id: &ServiceId,
         key: Bytes,
         value: Bytes,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn load_state(
         &mut self,
@@ -133,11 +131,11 @@ pub trait StateStorage {
         key: &Bytes,
     ) -> impl Future<Output = StorageResult<Option<Bytes>>> + Send;
 
-    fn clear_state<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-        key: &'a Bytes,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    fn clear_state(
+        &mut self,
+        service_id: &ServiceId,
+        key: &Bytes,
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
     // Timer
     fn store_timer(
@@ -146,14 +144,14 @@ pub trait StateStorage {
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         timer: Timer,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn delete_timer(
         &mut self,
         full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 }
 
 #[must_use = "Don't forget to commit the interpretation result"]
