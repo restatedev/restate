@@ -109,7 +109,7 @@ where
 
     pub(super) fn scan_invoked_invocations(
         &mut self,
-    ) -> BoxStream<'_, Result<FullInvocationId, StorageError>> {
+    ) -> impl Stream<Item = Result<FullInvocationId, StorageError>> + Send + '_ {
         self.inner
             .invoked_invocations(self.partition_key_range.clone())
     }

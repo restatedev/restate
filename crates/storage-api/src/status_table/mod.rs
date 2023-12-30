@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{GetFuture, GetStream, PutFuture};
+use crate::Result;
 use bytestring::ByteString;
+use futures_util::Stream;
 use restate_types::identifiers::{
     DeploymentId, EntryIndex, FullInvocationId, InvocationUuid, PartitionKey, ServiceId,
 };
@@ -18,6 +19,7 @@ use restate_types::invocation::{
 };
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
+use std::future::Future;
 use std::ops::RangeInclusive;
 
 /// Holds timestamps of the [`InvocationStatus`].
@@ -214,25 +216,28 @@ pub trait StatusTable {
         &mut self,
         service_id: &ServiceId,
         status: InvocationStatus,
-    ) -> PutFuture;
+    ) -> impl Future<Output = ()> + Send;
 
     fn get_invocation_status(
         &mut self,
         service_id: &ServiceId,
-    ) -> GetFuture<Option<InvocationStatus>>;
+    ) -> impl Future<Output = Result<Option<InvocationStatus>>> + Send;
 
     fn get_invocation_status_from(
         &mut self,
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,
-    ) -> GetFuture<Option<(ServiceId, InvocationStatus)>>;
+    ) -> impl Future<Output = Result<Option<(ServiceId, InvocationStatus)>>> + Send;
 
-    fn delete_invocation_status(&mut self, service_id: &ServiceId) -> PutFuture;
+    fn delete_invocation_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = ()> + Send;
 
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> GetStream<FullInvocationId>;
+    ) -> impl Stream<Item = Result<FullInvocationId>> + Send;
 }
 
 #[cfg(any(test, feature = "mocks"))]
