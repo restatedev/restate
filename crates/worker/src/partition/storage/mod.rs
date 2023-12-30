@@ -122,48 +122,35 @@ where
             .next_timers_greater_than(partition_id, exclusive_start, limit)
     }
 
-    pub(super) fn load_outbox_seq_number(
-        &mut self,
-    ) -> BoxFuture<'_, Result<MessageIndex, StorageError>> {
-        self.load_seq_number(fsm_variable::OUTBOX_SEQ_NUMBER)
+    pub(super) async fn load_outbox_seq_number(&mut self) -> Result<MessageIndex, StorageError> {
+        self.load_seq_number(fsm_variable::OUTBOX_SEQ_NUMBER).await
     }
 
-    pub(super) fn load_inbox_seq_number(
-        &mut self,
-    ) -> BoxFuture<'_, Result<MessageIndex, StorageError>> {
-        self.load_seq_number(fsm_variable::INBOX_SEQ_NUMBER)
+    pub(super) async fn load_inbox_seq_number(&mut self) -> Result<MessageIndex, StorageError> {
+        self.load_seq_number(fsm_variable::INBOX_SEQ_NUMBER).await
     }
 
-    fn store_seq_number(
+    async fn store_seq_number(
         &mut self,
         seq_number: MessageIndex,
         state_id: u64,
-    ) -> BoxFuture<'_, Result<(), StorageError>> {
-        async move {
-            let bytes = Bytes::copy_from_slice(&seq_number.to_be_bytes());
-            self.inner.put(self.partition_id, state_id, &bytes).await;
+    ) -> Result<(), StorageError> {
+        let bytes = Bytes::copy_from_slice(&seq_number.to_be_bytes());
+        self.inner.put(self.partition_id, state_id, &bytes).await;
 
-            Ok(())
-        }
-        .boxed()
+        Ok(())
     }
 
-    fn load_seq_number(
-        &mut self,
-        state_id: u64,
-    ) -> BoxFuture<'_, Result<MessageIndex, StorageError>> {
-        async move {
-            let seq_number = self.inner.get(self.partition_id, state_id).await?;
+    async fn load_seq_number(&mut self, state_id: u64) -> Result<MessageIndex, StorageError> {
+        let seq_number = self.inner.get(self.partition_id, state_id).await?;
 
-            if let Some(mut seq_number) = seq_number {
-                let mut buffer = [0; 8];
-                seq_number.copy_to_slice(&mut buffer);
-                Ok(MessageIndex::from_be_bytes(buffer))
-            } else {
-                Ok(0)
-            }
+        if let Some(mut seq_number) = seq_number {
+            let mut buffer = [0; 8];
+            seq_number.copy_to_slice(&mut buffer);
+            Ok(MessageIndex::from_be_bytes(buffer))
+        } else {
+            Ok(0)
         }
-        .boxed()
     }
 
     pub(super) async fn load_dedup_seq_number(
@@ -439,18 +426,20 @@ where
         .boxed()
     }
 
-    fn store_inbox_seq_number(
+    async fn store_inbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    ) -> Result<(), StorageError> {
         self.store_seq_number(seq_number, fsm_variable::INBOX_SEQ_NUMBER)
+            .await
     }
 
-    fn store_outbox_seq_number(
+    async fn store_outbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    ) -> Result<(), StorageError> {
         self.store_seq_number(seq_number, fsm_variable::OUTBOX_SEQ_NUMBER)
+            .await
     }
 
     fn truncate_outbox(

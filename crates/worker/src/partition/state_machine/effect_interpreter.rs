@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::{Effects, Error};
+use std::future::Future;
 
 use crate::partition::services::non_deterministic;
 use crate::partition::state_machine::actions::Action;
@@ -22,6 +23,7 @@ use restate_storage_api::status_table::{
     InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
 use restate_storage_api::timer_table::Timer;
+use restate_storage_api::Result as StorageResult;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
@@ -94,12 +96,12 @@ pub trait StateStorage {
     fn store_inbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn store_outbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn truncate_outbox(
         &mut self,
