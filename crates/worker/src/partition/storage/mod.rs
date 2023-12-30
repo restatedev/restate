@@ -114,12 +114,12 @@ where
             .invoked_invocations(self.partition_key_range.clone())
     }
 
-    pub(super) fn next_timers_greater_than(
-        &mut self,
+    pub(super) fn next_timers_greater_than<'a>(
+        &'a mut self,
         partition_id: PartitionId,
-        exclusive_start: Option<&TimerKey>,
+        exclusive_start: Option<&'a TimerKey>,
         limit: usize,
-    ) -> BoxStream<'_, Result<(TimerKey, Timer), StorageError>> {
+    ) -> impl Stream<Item = Result<(TimerKey, Timer), StorageError>> + Send + '_ {
         self.inner
             .next_timers_greater_than(partition_id, exclusive_start, limit)
     }

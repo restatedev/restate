@@ -34,7 +34,7 @@ use codederror::CodedError;
 use futures::{ready, FutureExt, Stream};
 use futures_util::future::{ok, ready};
 use futures_util::{stream, StreamExt};
-use restate_storage_api::{GetFuture, GetStream, PutFuture, Storage, StorageError, Transaction};
+use restate_storage_api::{GetFuture, GetStream, Storage, StorageError, Transaction};
 use rocksdb::BlockBasedOptions;
 use rocksdb::Cache;
 use rocksdb::ColumnFamily;

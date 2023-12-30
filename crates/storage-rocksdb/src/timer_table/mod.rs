@@ -10,15 +10,16 @@
 
 use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
+use crate::RocksDBTransaction;
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
-use crate::{PutFuture, RocksDBTransaction};
-use crate::{Result, TableScan, TableScanIterationDecision};
+use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
+use futures::Stream;
 use prost::Message;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
-use restate_storage_api::{ready, GetStream, StorageError};
+use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::PartitionId;
 use uuid::Uuid;
@@ -98,21 +99,17 @@ fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
 }
 
 impl<'a> TimerTable for RocksDBTransaction<'a> {
-    fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) -> PutFuture {
+    async fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) {
         let key = write_timer_key(partition_id, key);
         let value = ProtoValue(storage::v1::Timer::from(timer));
 
         self.put_kv(key, value);
-
-        ready()
     }
 
-    fn delete_timer(&mut self, partition_id: PartitionId, key: &TimerKey) -> PutFuture {
+    async fn delete_timer(&mut self, partition_id: PartitionId, key: &TimerKey) {
         let key = write_timer_key(partition_id, key);
 
         self.delete_key(&key);
-
-        ready()
     }
 
     fn next_timers_greater_than(
@@ -120,7 +117,7 @@ impl<'a> TimerTable for RocksDBTransaction<'a> {
         partition_id: PartitionId,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
-    ) -> GetStream<(TimerKey, Timer)> {
+    ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send {
         let scan = exclusive_start_key_range(partition_id, exclusive_start);
         let mut produced = 0;
         self.for_each_key_value_in_place(scan, move |k, v| {

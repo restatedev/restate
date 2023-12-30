@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{GetStream, PutFuture};
+use crate::Result;
+use futures_util::Stream;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::PartitionId;
 use restate_types::invocation::ServiceInvocation;
+use std::future::Future;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimerKey {
@@ -32,14 +34,18 @@ pub trait TimerTable {
         partition_id: PartitionId,
         timer_key: &TimerKey,
         timer: Timer,
-    ) -> PutFuture;
+    ) -> impl Future<Output = ()> + Send;
 
-    fn delete_timer(&mut self, partition_id: PartitionId, timer_key: &TimerKey) -> PutFuture;
+    fn delete_timer(
+        &mut self,
+        partition_id: PartitionId,
+        timer_key: &TimerKey,
+    ) -> impl Future<Output = ()> + Send;
 
     fn next_timers_greater_than(
         &mut self,
         partition_id: PartitionId,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
-    ) -> GetStream<(TimerKey, Timer)>;
+    ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send;
 }

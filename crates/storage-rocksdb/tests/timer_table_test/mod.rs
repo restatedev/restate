@@ -15,6 +15,7 @@ use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{FullInvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocation;
+use std::pin::pin;
 
 async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
@@ -96,7 +97,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
 }
 
 async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T) {
-    let mut stream = txn.next_timers_greater_than(1337, None, usize::MAX);
+    let mut stream = pin!(txn.next_timers_greater_than(1337, None, usize::MAX));
 
     let mut count = 0;
     while (stream.next().await).is_some() {
@@ -107,18 +108,15 @@ async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T
 }
 
 async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
-    let mut stream = txn.next_timers_greater_than(
-        1337,
-        Some(&TimerKey {
-            full_invocation_id: FullInvocationId {
-                service_id: ServiceId::new("svc-1", "key-1"),
-                invocation_uuid: Default::default(),
-            },
-            journal_index: 0,
-            timestamp: 0,
-        }),
-        usize::MAX,
-    );
+    let timer_key = &TimerKey {
+        full_invocation_id: FullInvocationId {
+            service_id: ServiceId::new("svc-1", "key-1"),
+            invocation_uuid: Default::default(),
+        },
+        journal_index: 0,
+        timestamp: 0,
+    };
+    let mut stream = pin!(txn.next_timers_greater_than(1337, Some(timer_key), usize::MAX,));
 
     if let Some(Ok((key, _))) = stream.next().await {
         // make sure that we skip the first timer that has a journal_index of 0
@@ -151,18 +149,15 @@ async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
 }
 
 async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
-    let mut stream = txn.next_timers_greater_than(
-        1337,
-        Some(&TimerKey {
-            full_invocation_id: FullInvocationId {
-                service_id: ServiceId::new("", ""),
-                invocation_uuid: Default::default(),
-            },
-            journal_index: 0,
-            timestamp: 0,
-        }),
-        usize::MAX,
-    );
+    let timer_key = &TimerKey {
+        full_invocation_id: FullInvocationId {
+            service_id: ServiceId::new("", ""),
+            invocation_uuid: Default::default(),
+        },
+        journal_index: 0,
+        timestamp: 0,
+    };
+    let mut stream = pin!(txn.next_timers_greater_than(1337, Some(timer_key), usize::MAX,));
 
     if let Some(Ok((key, _))) = stream.next().await {
         // make sure that we skip the first timer
