@@ -8,21 +8,34 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{GetFuture, GetStream, PutFuture};
+use crate::Result;
 use bytes::Bytes;
+use futures_util::Stream;
 use restate_types::identifiers::PartitionId;
+use std::future::Future;
 
 pub trait FsmTable {
-    fn get(&mut self, partition_id: PartitionId, state_id: u64) -> GetFuture<Option<Bytes>>;
+    fn get(
+        &mut self,
+        partition_id: PartitionId,
+        state_id: u64,
+    ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
 
     fn put(
         &mut self,
         partition_id: PartitionId,
         state_id: u64,
         state_value: impl AsRef<[u8]>,
-    ) -> PutFuture;
+    ) -> impl Future<Output = ()> + Send;
 
-    fn clear(&mut self, partition_id: PartitionId, state_id: u64) -> PutFuture;
+    fn clear(
+        &mut self,
+        partition_id: PartitionId,
+        state_id: u64,
+    ) -> impl Future<Output = ()> + Send;
 
-    fn get_all_states(&mut self, partition_id: PartitionId) -> GetStream<(u64, Bytes)>;
+    fn get_all_states(
+        &mut self,
+        partition_id: PartitionId,
+    ) -> impl Stream<Item = Result<(u64, Bytes)>> + Send;
 }
