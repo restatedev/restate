@@ -11,7 +11,6 @@
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::{CommitError, Committable, TimerValue};
 use bytes::{Buf, Bytes};
-use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
 use restate_storage_api::deduplication_table::SequenceNumberSource;
@@ -514,31 +513,28 @@ where
 
 impl<Storage> OutboxReader for PartitionStorage<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + 'a,
+    for<'a> Storage: restate_storage_api::Storage + Sync + 'a,
 {
-    fn get_next_message(
+    async fn get_next_message(
         &self,
         next_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>> {
+    ) -> Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError> {
         let mut transaction = self.storage.transaction();
         let partition_id = self.partition_id;
 
-        async move {
-            let result = if let Some((message_index, outbox_message)) = transaction
-                .get_next_outbox_message(partition_id, next_sequence_number)
-                .await?
-            {
-                Some((message_index, outbox_message))
-            } else {
-                None
-            };
+        let result = if let Some((message_index, outbox_message)) = transaction
+            .get_next_outbox_message(partition_id, next_sequence_number)
+            .await?
+        {
+            Some((message_index, outbox_message))
+        } else {
+            None
+        };
 
-            // we have to close the transaction here
-            transaction.commit().await?;
+        // we have to close the transaction here
+        transaction.commit().await?;
 
-            Ok(result)
-        }
-        .boxed()
+        Ok(result)
     }
 }
 

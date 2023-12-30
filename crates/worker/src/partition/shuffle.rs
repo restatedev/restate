@@ -9,13 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::shuffle::state_machine::StateMachine;
-use futures::future::BoxFuture;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PartitionId, PeerId};
 use restate_types::invocation::{
     InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
 };
 use restate_types::message::{AckKind, MessageIndex};
+use std::future::Future;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -147,7 +147,7 @@ pub(super) trait OutboxReader {
     fn get_next_message(
         &self,
         next_sequence_number: MessageIndex,
-    ) -> BoxFuture<Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>>;
+    ) -> impl Future<Output = Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>> + Send;
 }
 
 pub(super) type NetworkSender<T> = mpsc::Sender<T>;
