@@ -18,6 +18,7 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::EntryIndex;
 use std::borrow::Cow;
 use std::fmt;
+use std::future::Future;
 use std::marker::PhantomData;
 
 pub(crate) mod deterministic;
@@ -25,27 +26,25 @@ pub(crate) mod non_deterministic;
 
 // -- StateReader to abstract the partition processor storage
 
-#[async_trait::async_trait]
 trait StateReader {
-    async fn read_state(
+    fn read_state(
         &self,
         service_id: &ServiceId,
         key: &str,
-    ) -> Result<Option<Bytes>, anyhow::Error>;
+    ) -> impl Future<Output = Result<Option<Bytes>, anyhow::Error>> + Send;
 
-    async fn read_virtual_journal_metadata(
+    fn read_virtual_journal_metadata(
         &self,
         service_id: &ServiceId,
-    ) -> Result<Option<(InvocationUuid, JournalMetadata)>, anyhow::Error>;
+    ) -> impl Future<Output = Result<Option<(InvocationUuid, JournalMetadata)>, anyhow::Error>> + Send;
 
-    async fn read_virtual_journal_entry(
+    fn read_virtual_journal_entry(
         &self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> Result<Option<EnrichedRawEntry>, anyhow::Error>;
+    ) -> impl Future<Output = Result<Option<EnrichedRawEntry>, anyhow::Error>> + Send;
 }
 
-#[async_trait::async_trait]
 impl StateReader for &PartitionStorage<RocksDBStorage> {
     async fn read_state(
         &self,
@@ -305,7 +304,6 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
     impl StateReader for &MockStateReader {
         async fn read_state(
             &self,

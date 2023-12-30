@@ -5270,7 +5270,6 @@ version = "0.7.0"
 dependencies = [
  "anyhow",
  "assert2",
- "async-trait",
  "bincode",
  "bytes",
  "bytestring",
