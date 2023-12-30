@@ -21,7 +21,6 @@ restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 arrow = { version = "49.0.0", default-features = false, features = ["ipc", "prettyprint"] }
-async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 chrono-humanize = { version = "0.2.3" }

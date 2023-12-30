@@ -4531,7 +4531,6 @@ version = "0.0.1-dev"
 dependencies = [
  "anyhow",
  "arrow 49.0.0",
- "async-trait",
  "bytes",
  "chrono",
  "chrono-humanize",
