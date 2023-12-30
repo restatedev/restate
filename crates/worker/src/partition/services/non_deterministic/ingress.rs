@@ -66,7 +66,6 @@ impl<'a, State> InvocationContext<'a, State> {
     }
 }
 
-#[async_trait::async_trait]
 impl<'a, State: StateReader + Send + Sync> IngressBuiltInService for InvocationContext<'a, State> {
     #[instrument(
         level = "trace",
@@ -118,6 +117,7 @@ impl<'a, State: StateReader + Send + Sync> IngressBuiltInService for InvocationC
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt;
 
     use crate::partition::services::non_deterministic::tests::TestInvocationContext;
     use googletest::assert_that;
@@ -200,6 +200,7 @@ mod tests {
                     },
                     ResponseSerializer::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();

@@ -16,7 +16,6 @@ use restate_pb::restate::*;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::invocation::ResponseResult;
 
-#[async_trait::async_trait]
 impl AwakeablesBuiltInService for &mut ServiceInvoker<'_> {
     async fn resolve(&mut self, req: ResolveAwakeableRequest) -> Result<(), InvocationError> {
         let (invocation_id, entry_index) = AwakeableIdentifier::decode(req.id)

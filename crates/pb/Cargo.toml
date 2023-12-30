@@ -9,13 +9,11 @@ publish = false
 
 [features]
 default = []
-builtin-service = ["restate-types", "dep:async-trait"]
+builtin-service = ["restate-types"]
 mocks = []
 
 [dependencies]
 restate-types = { workspace = true, optional = true }
-
-async-trait = { workspace = true, optional = true }
 once_cell = { workspace = true }
 prost = { workspace = true }
 prost-reflect = { workspace = true }

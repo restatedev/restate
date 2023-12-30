@@ -98,14 +98,13 @@ mod built_in_service_gen {
             let svc_interface_method_signatures: String = service.methods
                 .iter()
                 .fold(String::new(), |mut output, m| {
-                    let _ = writeln!(output, "async fn {}(&mut self, input: {}) -> Result<{}, restate_types::errors::InvocationError>;", m.name, m.input_type, m.output_type);
+                    let _ = writeln!(output, "fn {}(&mut self, input: {}) -> impl std::future::Future<Output = Result<{}, restate_types::errors::InvocationError>> + Send + '_;", m.name, m.input_type, m.output_type);
                     output
                 });
 
             let interface_def = format!(
                 r#"
             #[cfg(feature = "builtin-service")]
-            #[async_trait::async_trait]
             pub trait {svc_interface_name} {{
                 {svc_interface_method_signatures}
             }}
@@ -140,12 +139,13 @@ mod built_in_service_gen {
             pub struct {invoker_name}<T>(pub T);
 
             #[cfg(feature = "builtin-service")]
-            #[async_trait::async_trait]
             impl<T: {svc_interface_name} + Send> crate::builtin_service::BuiltInService for {invoker_name}<T> {{
-                async fn invoke_builtin(&mut self, method: &str, mut input: prost::bytes::Bytes) -> Result<prost::bytes::Bytes, restate_types::errors::InvocationError> {{
-                    match method {{
-                        {impl_built_in_service_match_arms}
-                        _ => Err(restate_types::errors::InvocationError::service_method_not_found("{service_name}", method))
+                fn invoke_builtin<'a>(&'a mut self, method: &'a str, mut input: prost::bytes::Bytes) -> impl std::future::Future<Output = Result<prost::bytes::Bytes, restate_types::errors::InvocationError>> + Send + '_ {{
+                    async move {{
+                        match method {{
+                            {impl_built_in_service_match_arms}
+                            _ => Err(restate_types::errors::InvocationError::service_method_not_found("{service_name}", method))
+                        }}
                     }}
                 }}
             }}
@@ -212,7 +212,7 @@ mod manual_response_built_in_service_gen {
                 .fold(String::new(), |mut output, m| {
                     let _ = writeln!(
                         output,
-                        "async fn {}(&mut self, request: {}, response_serializer: crate::builtin_service::ResponseSerializer<{}>) -> Result<(), restate_types::errors::InvocationError>;",
+                        "fn {}(&mut self, request: {}, response_serializer: crate::builtin_service::ResponseSerializer<{}>) -> impl std::future::Future<Output = Result<(), restate_types::errors::InvocationError>> + Send;",
                         m.name,
                         m.input_type,
                         m.output_type
@@ -223,7 +223,6 @@ mod manual_response_built_in_service_gen {
             let interface_def = format!(
                 r#"
             #[cfg(feature = "builtin-service")]
-            #[async_trait::async_trait]
             pub trait {svc_interface_name} {{
                 {svc_interface_method_signatures}
             }}
@@ -261,12 +260,13 @@ mod manual_response_built_in_service_gen {
             pub struct {invoker_name}<T>(pub T);
 
             #[cfg(feature = "builtin-service")]
-            #[async_trait::async_trait]
             impl<T: {svc_interface_name} + Send> crate::builtin_service::ManualResponseBuiltInService for {invoker_name}<T> {{
-                async fn invoke_builtin(&mut self, method: &str, mut input: prost::bytes::Bytes) -> Result<(), restate_types::errors::InvocationError> {{
-                    match method {{
-                        {impl_built_in_service_match_arms}
-                        _ => Err(restate_types::errors::InvocationError::service_method_not_found("{service_name}", method))
+                fn invoke_builtin<'a>(&'a mut self, method: &'a str, mut input: prost::bytes::Bytes) -> impl std::future::Future<Output = Result<(), restate_types::errors::InvocationError>> + Send + '_ {{
+                    async move {{
+                        match method {{
+                            {impl_built_in_service_match_arms}
+                            _ => Err(restate_types::errors::InvocationError::service_method_not_found("{service_name}", method))
+                        }}
                     }}
                 }}
             }}

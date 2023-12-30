@@ -36,7 +36,6 @@ const SINKS: StateKey<Bincode<SinksState>> = StateKey::new_bincode("sinks");
 
 const DEFAULT_RETENTION_PERIOD: u32 = 30 * 60;
 
-#[async_trait::async_trait]
 impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
     for InvocationContext<'a, State>
 {
@@ -224,6 +223,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt;
 
     use crate::partition::services::non_deterministic::tests::TestInvocationContext;
     use googletest::{all, pat};
@@ -271,6 +271,7 @@ mod tests {
                     },
                     ResponseSerializer::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -331,6 +332,7 @@ mod tests {
                     },
                     ResponseSerializer::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -378,6 +380,7 @@ mod tests {
                     },
                     ResponseSerializer::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -408,7 +411,10 @@ mod tests {
 
         // Cleanup
         let (_, _) = ctx
-            .invoke(|ctx| ctx.internal_on_timer((), ResponseSerializer::default()))
+            .invoke(|ctx| {
+                ctx.internal_on_timer((), ResponseSerializer::default())
+                    .boxed_local()
+            })
             .await
             .unwrap();
 

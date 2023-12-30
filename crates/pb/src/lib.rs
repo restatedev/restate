@@ -100,24 +100,23 @@ pub mod builtin_service {
     use prost::bytes::Bytes;
     use restate_types::errors::InvocationError;
     use restate_types::invocation::ResponseResult;
+    use std::future::Future;
     use std::marker::PhantomData;
 
-    #[async_trait::async_trait]
     pub trait BuiltInService {
-        async fn invoke_builtin(
-            &mut self,
-            method: &str,
+        fn invoke_builtin<'a>(
+            &'a mut self,
+            method: &'a str,
             input: Bytes,
-        ) -> Result<Bytes, InvocationError>;
+        ) -> impl Future<Output = Result<Bytes, InvocationError>> + Send + '_;
     }
 
-    #[async_trait::async_trait]
     pub trait ManualResponseBuiltInService {
-        async fn invoke_builtin(
-            &mut self,
-            method: &str,
+        fn invoke_builtin<'a>(
+            &'a mut self,
+            method: &'a str,
             input: Bytes,
-        ) -> Result<(), InvocationError>;
+        ) -> impl Future<Output = Result<(), InvocationError>> + Send + '_;
     }
 
     #[derive(Default)]

@@ -15,7 +15,6 @@ use restate_types::identifiers::InvocationUuid;
 use restate_types::invocation::{ServiceInvocation, Source};
 use tracing::{instrument, trace};
 
-#[async_trait::async_trait]
 impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
     #[instrument(level = "trace", skip(self))]
     async fn proxy_through(&mut self, req: ProxyThroughRequest) -> Result<(), InvocationError> {

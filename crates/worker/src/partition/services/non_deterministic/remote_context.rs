@@ -685,7 +685,6 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
     }
 }
 
-#[async_trait::async_trait]
 impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
     for InvocationContext<'a, State>
 {
@@ -1294,6 +1293,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1359,6 +1359,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1386,6 +1387,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1406,6 +1408,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1428,6 +1431,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1482,6 +1486,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1538,16 +1543,18 @@ mod tests {
     async fn new_invocation_send() {
         let mut ctx = TestInvocationContext::new(REMOTE_CONTEXT_SERVICE_NAME);
         assert_eq!(
-            ctx.invoke(|ctx| ctx.send(
-                SendRequest {
-                    stream_id: "my-stream".to_string(),
-                    ..Default::default()
-                },
-                Default::default()
-            ))
-            .await
-            .unwrap_err()
-            .code(),
+            ctx.invoke(|ctx| ctx
+                .send(
+                    SendRequest {
+                        stream_id: "my-stream".to_string(),
+                        ..Default::default()
+                    },
+                    Default::default()
+                )
+                .boxed_local())
+                .await
+                .unwrap_err()
+                .code(),
             InvocationErrorCode::User(UserErrorCode::Internal)
         );
         ctx.state().assert_has_not_state(&STATUS);
@@ -1570,6 +1577,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1596,6 +1604,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1646,6 +1655,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1668,6 +1678,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1700,6 +1711,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1773,6 +1785,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1822,6 +1835,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1848,6 +1862,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -1912,6 +1927,7 @@ mod tests {
                             },
                             Default::default(),
                         )
+                        .boxed_local()
                     })
                     .await
                     .unwrap();
@@ -2048,6 +2064,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2074,6 +2091,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2132,16 +2150,18 @@ mod tests {
     async fn new_invocation_recv() {
         let mut ctx = TestInvocationContext::new(REMOTE_CONTEXT_SERVICE_NAME);
         assert_eq!(
-            ctx.invoke(|ctx| ctx.recv(
-                RecvRequest {
-                    stream_id: "my-stream".to_string(),
-                    ..Default::default()
-                },
-                Default::default()
-            ))
-            .await
-            .unwrap_err()
-            .code(),
+            ctx.invoke(|ctx| ctx
+                .recv(
+                    RecvRequest {
+                        stream_id: "my-stream".to_string(),
+                        ..Default::default()
+                    },
+                    Default::default()
+                )
+                .boxed_local())
+                .await
+                .unwrap_err()
+                .code(),
             InvocationErrorCode::User(UserErrorCode::Internal)
         );
         ctx.state().assert_has_not_state(&STATUS);
@@ -2160,6 +2180,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2187,6 +2208,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2243,6 +2265,7 @@ mod tests {
                         },
                         Default::default(),
                     )
+                    .boxed_local()
                 })
                 .await
                 .unwrap();
@@ -2270,6 +2293,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2314,6 +2338,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2346,6 +2371,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2385,6 +2411,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2424,6 +2451,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2472,6 +2500,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2497,6 +2526,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2516,6 +2546,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2541,6 +2572,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2580,6 +2612,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2601,6 +2634,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2625,6 +2659,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2683,6 +2718,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2710,6 +2746,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2770,6 +2807,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2810,6 +2848,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2838,6 +2877,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
@@ -2892,6 +2932,7 @@ mod tests {
                     },
                     Default::default(),
                 )
+                .boxed_local()
             })
             .await
             .unwrap();
