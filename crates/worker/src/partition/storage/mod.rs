@@ -584,11 +584,8 @@ impl<TransactionType> Committable for Transaction<TransactionType>
 where
     TransactionType: restate_storage_api::Transaction,
 {
-    fn commit<'a>(self) -> BoxFuture<'a, Result<(), CommitError>>
-    where
-        Self: 'a,
-    {
-        async { self.inner.commit().await.map_err(CommitError::with_source) }.boxed()
+    async fn commit(self) -> Result<(), CommitError> {
+        self.inner.commit().await.map_err(CommitError::with_source)
     }
 }
 

@@ -13,12 +13,12 @@ use crate::partition::leadership::{ActionEffect, LeadershipState, TaskResult};
 use crate::partition::state_machine::{Effects, StateMachine};
 use crate::partition::storage::PartitionStorage;
 use crate::util::IdentitySender;
-use futures::future::BoxFuture;
 use futures::StreamExt;
 use restate_schema_impl::Schemas;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
 use std::fmt::Debug;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
@@ -251,8 +251,5 @@ impl CommitError {
 }
 
 pub trait Committable {
-    // TODO: Replace with async trait or proper future
-    fn commit<'a>(self) -> BoxFuture<'a, Result<(), CommitError>>
-    where
-        Self: 'a;
+    fn commit(self) -> impl Future<Output = Result<(), CommitError>> + Send;
 }
