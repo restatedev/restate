@@ -10,16 +10,18 @@
 
 use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
+use crate::RocksDBTransaction;
 use crate::TableKind::Inbox;
-use crate::{GetFuture, PutFuture, RocksDBTransaction};
-use crate::{Result, TableScan, TableScanIterationDecision};
+use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
+use std::future::Future;
 
-use futures_util::{FutureExt, StreamExt};
+use futures::Stream;
+use futures_util::StreamExt;
 use prost::Message;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
-use restate_storage_api::{ready, GetStream, StorageError};
+use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
@@ -37,14 +39,14 @@ define_table_key!(
 );
 
 impl<'a> InboxTable for RocksDBTransaction<'a> {
-    fn put_invocation(
+    async fn put_invocation(
         &mut self,
         service_id: &ServiceId,
         InboxEntry {
             inbox_sequence_number,
             service_invocation,
         }: InboxEntry,
-    ) -> PutFuture {
+    ) {
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -55,10 +57,9 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             key,
             ProtoValue(storage::v1::InboxEntry::from(service_invocation)),
         );
-        ready()
     }
 
-    fn delete_invocation(&mut self, service_id: &ServiceId, sequence_number: u64) -> PutFuture {
+    async fn delete_invocation(&mut self, service_id: &ServiceId, sequence_number: u64) {
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -66,10 +67,9 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             .sequence_number(sequence_number);
 
         self.delete_key(&key);
-        ready()
     }
 
-    fn peek_inbox(&mut self, service_id: &ServiceId) -> GetFuture<Option<InboxEntry>> {
+    async fn peek_inbox(&mut self, service_id: &ServiceId) -> Result<Option<InboxEntry>> {
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -82,9 +82,10 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             }
             None => Ok(None),
         })
+        .await
     }
 
-    fn inbox(&mut self, service_id: &ServiceId) -> GetStream<InboxEntry> {
+    fn inbox(&mut self, service_id: &ServiceId) -> impl Stream<Item = Result<InboxEntry>> + Send {
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -96,7 +97,10 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         })
     }
 
-    fn all_inboxes(&mut self, range: RangeInclusive<PartitionKey>) -> GetStream<InboxEntry> {
+    fn all_inboxes(
+        &mut self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<InboxEntry>> + Send {
         self.for_each_key_value(TableScan::PartitionKeyRange::<InboxKey>(range), |k, v| {
             let inbox_entry = decode_inbox_key_value(k, v);
             TableScanIterationDecision::Emit(inbox_entry)
@@ -106,7 +110,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
     fn get_inbox_entry(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> GetFuture<Option<InboxEntry>> {
+    ) -> impl Future<Output = Result<Option<InboxEntry>>> + Send {
         let (inbox_key, invocation_uuid) = match maybe_fid.into() {
             MaybeFullInvocationId::Partial(invocation_id) => (
                 InboxKey::default().partition_key(invocation_id.partition_key()),
@@ -137,7 +141,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
                 }
             });
 
-        async move { result.next().await.transpose() }.boxed()
+        async move { result.next().await.transpose() }
     }
 }
 

@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{GetFuture, GetStream, PutFuture};
+use crate::Result;
+use futures_util::Stream;
 use restate_types::identifiers::{FullInvocationId, PartitionKey, ServiceId};
 use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
 use restate_types::message::MessageIndex;
+use std::future::Future;
 use std::ops::RangeInclusive;
 
 /// Entry of the inbox
@@ -39,15 +41,29 @@ impl InboxEntry {
 }
 
 pub trait InboxTable {
-    fn put_invocation(&mut self, service_id: &ServiceId, inbox_entry: InboxEntry) -> PutFuture;
+    fn put_invocation(
+        &mut self,
+        service_id: &ServiceId,
+        inbox_entry: InboxEntry,
+    ) -> impl Future<Output = ()> + Send;
 
-    fn delete_invocation(&mut self, service_id: &ServiceId, sequence_number: u64) -> PutFuture;
+    fn delete_invocation(
+        &mut self,
+        service_id: &ServiceId,
+        sequence_number: u64,
+    ) -> impl Future<Output = ()> + Send;
 
-    fn peek_inbox(&mut self, service_id: &ServiceId) -> GetFuture<Option<InboxEntry>>;
+    fn peek_inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = Result<Option<InboxEntry>>> + Send;
 
-    fn inbox(&mut self, service_id: &ServiceId) -> GetStream<InboxEntry>;
+    fn inbox(&mut self, service_id: &ServiceId) -> impl Stream<Item = Result<InboxEntry>> + Send;
 
-    fn all_inboxes(&mut self, range: RangeInclusive<PartitionKey>) -> GetStream<InboxEntry>;
+    fn all_inboxes(
+        &mut self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<InboxEntry>> + Send;
 
     /// Gets an inbox entry for the given invocation id.
     ///
@@ -56,5 +72,5 @@ pub trait InboxTable {
     fn get_inbox_entry(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> GetFuture<Option<InboxEntry>>;
+    ) -> impl Future<Output = Result<Option<InboxEntry>>> + Send;
 }

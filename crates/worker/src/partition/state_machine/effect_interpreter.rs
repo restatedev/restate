@@ -79,11 +79,11 @@ pub trait StateStorage {
     ) -> BoxFuture<Result<Option<EnrichedRawEntry>, restate_storage_api::StorageError>>;
 
     // In-/outbox
-    fn enqueue_into_inbox(
+    async fn enqueue_into_inbox(
         &mut self,
         seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
-    ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
+    ) -> Result<(), restate_storage_api::StorageError>;
 
     fn enqueue_into_outbox(
         &mut self,

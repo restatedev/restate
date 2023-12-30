@@ -28,9 +28,11 @@ pub enum StorageError {
 // The following future definitions are temporary upto the point
 // where async interfaces will be a thing in Rust.
 //
-pub type GetFuture<'a, T> = BoxFuture<'a, Result<T, StorageError>>;
+pub type GetFuture<'a, T> = BoxFuture<'a, Result<T>>;
 pub type PutFuture = futures_util::future::Ready<()>;
-pub type GetStream<'a, T> = BoxStream<'a, Result<T, StorageError>>;
+pub type GetStream<'a, T> = BoxStream<'a, Result<T>>;
+
+pub type Result<T> = std::result::Result<T, StorageError>;
 
 pub fn ready() -> PutFuture {
     futures_util::future::ready(())

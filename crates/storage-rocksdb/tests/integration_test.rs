@@ -10,7 +10,8 @@
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use restate_storage_api::GetStream;
+use futures::Stream;
+use restate_storage_api::StorageError;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use std::fmt::Debug;
@@ -91,9 +92,10 @@ pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {
 }
 
 pub(crate) async fn assert_stream_eq<T: Send + Debug + PartialEq + 'static>(
-    mut actual: GetStream<'_, T>,
+    actual: impl Stream<Item = Result<T, StorageError>>,
     expected: Vec<T>,
 ) {
+    tokio::pin!(actual);
     let mut items = expected.into_iter();
 
     while let Some(item) = actual.next().await {

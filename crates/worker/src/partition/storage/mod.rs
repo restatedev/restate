@@ -406,23 +406,21 @@ where
         .boxed()
     }
 
-    fn enqueue_into_inbox(
+    async fn enqueue_into_inbox(
         &mut self,
         seq_number: MessageIndex,
         service_invocation: ServiceInvocation,
-    ) -> BoxFuture<Result<(), StorageError>> {
+    ) -> Result<(), StorageError> {
         self.assert_partition_key(&service_invocation.fid.service_id);
-        async move {
-            // TODO: Avoid cloning when moving this logic into the RocksDB storage impl
-            let service_id = service_invocation.fid.service_id.clone();
 
-            self.inner
-                .put_invocation(&service_id, InboxEntry::new(seq_number, service_invocation))
-                .await;
+        // TODO: Avoid cloning when moving this logic into the RocksDB storage impl
+        let service_id = service_invocation.fid.service_id.clone();
 
-            Ok(())
-        }
-        .boxed()
+        self.inner
+            .put_invocation(&service_id, InboxEntry::new(seq_number, service_invocation))
+            .await;
+
+        Ok(())
     }
 
     fn enqueue_into_outbox(
