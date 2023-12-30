@@ -15,6 +15,7 @@ use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::ServiceId;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
+use std::pin::pin;
 
 // false positive because of Bytes
 #[allow(clippy::declare_interior_mutable_const)]
@@ -51,7 +52,8 @@ async fn populate_data<T: JournalTable>(txn: &mut T) {
 }
 
 async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
-    let mut journal = txn.get_journal(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), 4);
+    let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
+    let mut journal = pin!(txn.get_journal(service_id, 4));
     let mut count = 0;
     while (journal.next().await).is_some() {
         count += 1;
@@ -61,7 +63,8 @@ async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
 }
 
 async fn get_subset_of_a_journal<T: JournalTable>(txn: &mut T) {
-    let mut journal = txn.get_journal(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), 2);
+    let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
+    let mut journal = pin!(txn.get_journal(service_id, 2));
     let mut count = 0;
     while (journal.next().await).is_some() {
         count += 1;

@@ -21,8 +21,7 @@ use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::BoxFuture;
-use futures::stream::BoxStream;
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -50,6 +49,7 @@ use restate_types::time::MillisSinceEpoch;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::Deref;
+use std::pin::pin;
 use tracing::{debug, instrument, trace};
 
 pub trait StateReader {
@@ -100,11 +100,11 @@ pub trait StateReader {
         entry_index: EntryIndex,
     ) -> BoxFuture<Result<Option<CompletionResult>, restate_storage_api::StorageError>>;
 
-    fn get_journal<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn get_journal(
+        &mut self,
+        service_id: &ServiceId,
         length: EntryIndex,
-    ) -> BoxStream<'a, Result<(EntryIndex, JournalEntry), restate_storage_api::StorageError>>;
+    ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry), restate_storage_api::StorageError>> + Send;
 }
 
 pub(crate) struct CommandInterpreter<Codec> {
@@ -604,7 +604,8 @@ where
         effects: &mut Effects,
         journal_length: EntryIndex,
     ) -> Result<(), Error> {
-        let mut journal_entries = state.get_journal(&full_invocation_id.service_id, journal_length);
+        let mut journal_entries =
+            pin!(state.get_journal(&full_invocation_id.service_id, journal_length));
         while let Some(journal_entry) = journal_entries.next().await {
             let (_, journal_entry) = journal_entry?;
 
@@ -646,7 +647,7 @@ where
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<bool, Error> {
-        let mut journal = state.get_journal(&full_invocation_id.service_id, journal_length);
+        let mut journal = pin!(state.get_journal(&full_invocation_id.service_id, journal_length));
 
         let canceled_result = CompletionResult::from(&CANCELED_INVOCATION_ERROR);
 

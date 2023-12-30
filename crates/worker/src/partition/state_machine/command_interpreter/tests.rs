@@ -211,11 +211,11 @@ impl StateReader for StateReaderMock {
         todo!()
     }
 
-    fn get_journal<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn get_journal(
+        &mut self,
+        service_id: &ServiceId,
         length: EntryIndex,
-    ) -> BoxStream<'a, Result<(EntryIndex, JournalEntry), StorageError>> {
+    ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry), StorageError>> + Send {
         let journal = self.journals.get(service_id);
 
         let cloned_journal: Vec<JournalEntry> = journal
@@ -242,7 +242,6 @@ impl StateReader for StateReaderMock {
                     ))
                 }),
         )
-        .boxed()
     }
 }
 

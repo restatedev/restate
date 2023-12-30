@@ -14,13 +14,14 @@ use crate::keys::TableKey;
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan::PartitionKeyRange;
 use crate::TableKind::Journal;
-use crate::{GetFuture, PutFuture, RocksDBStorage, RocksDBTransaction};
+use crate::{RocksDBStorage, RocksDBTransaction};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
+use futures::Stream;
 use prost::Message;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
-use restate_storage_api::{ready, GetStream, StorageError};
+use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{EntryIndex, PartitionKey, ServiceId, WithPartitionKey};
 use std::io::Cursor;
@@ -45,12 +46,12 @@ fn write_journal_entry_key(service_id: &ServiceId, journal_index: u32) -> Journa
 }
 
 impl<'a> JournalTable for RocksDBTransaction<'a> {
-    fn put_journal_entry(
+    async fn put_journal_entry(
         &mut self,
         service_id: &ServiceId,
         journal_index: u32,
         journal_entry: JournalEntry,
-    ) -> PutFuture {
+    ) {
         let key = JournalKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -60,15 +61,13 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
         let value = ProtoValue(storage::v1::JournalEntry::from(journal_entry));
 
         self.put_kv(key, value);
-
-        ready()
     }
 
-    fn get_journal_entry(
+    async fn get_journal_entry(
         &mut self,
         service_id: &ServiceId,
         journal_index: u32,
-    ) -> GetFuture<Option<JournalEntry>> {
+    ) -> Result<Option<JournalEntry>> {
         let key = JournalKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -86,13 +85,14 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
                 .map_err(StorageError::from)
                 .map(Some)
         })
+        .await
     }
 
     fn get_journal(
         &mut self,
         service_id: &ServiceId,
         journal_length: EntryIndex,
-    ) -> GetStream<'static, (EntryIndex, JournalEntry)> {
+    ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
         let key = JournalKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -120,14 +120,13 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
         })
     }
 
-    fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) -> PutFuture {
+    async fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) {
         let mut key = write_journal_entry_key(service_id, 0);
         let k = &mut key;
         for journal_index in 0..journal_length {
             k.journal_index = Some(journal_index);
             self.delete_key(k);
         }
-        ready()
     }
 }
 
