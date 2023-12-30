@@ -11,11 +11,11 @@
 use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Outbox;
-use crate::{GetFuture, PutFuture, RocksDBTransaction, TableScan};
+use crate::{RocksDBTransaction, TableScan};
 
 use prost::Message;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::{ready, StorageError};
+use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::PartitionId;
 use std::io::Cursor;
@@ -27,27 +27,25 @@ define_table_key!(
 );
 
 impl<'a> OutboxTable for RocksDBTransaction<'a> {
-    fn add_message(
+    async fn add_message(
         &mut self,
         partition_id: PartitionId,
         message_index: u64,
         outbox_message: OutboxMessage,
-    ) -> PutFuture {
+    ) {
         let key = OutboxKey::default()
             .partition_id(partition_id)
             .message_index(message_index);
 
         let value = ProtoValue(storage::v1::OutboxMessage::from(outbox_message));
         self.put_kv(key, value);
-
-        ready()
     }
 
-    fn get_next_outbox_message(
+    async fn get_next_outbox_message(
         &mut self,
         partition_id: PartitionId,
         next_sequence_number: u64,
-    ) -> GetFuture<Option<(u64, OutboxMessage)>> {
+    ) -> Result<Option<(u64, OutboxMessage)>> {
         let start = OutboxKey::default()
             .partition_id(partition_id)
             .message_index(next_sequence_number);
@@ -64,13 +62,10 @@ impl<'a> OutboxTable for RocksDBTransaction<'a> {
                 Ok(None)
             }
         })
+        .await
     }
 
-    fn truncate_outbox(
-        &mut self,
-        partition_id: PartitionId,
-        seq_to_truncate: Range<u64>,
-    ) -> PutFuture {
+    async fn truncate_outbox(&mut self, partition_id: PartitionId, seq_to_truncate: Range<u64>) {
         let mut key = OutboxKey::default().partition_id(partition_id);
         let k = &mut key;
 
@@ -78,8 +73,6 @@ impl<'a> OutboxTable for RocksDBTransaction<'a> {
             k.message_index = Some(seq);
             self.delete_key(k);
         }
-
-        ready()
     }
 }
 

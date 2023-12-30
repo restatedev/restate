@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{GetFuture, PutFuture};
+use crate::Result;
 use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PartitionId};
 use restate_types::invocation::{
     InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
 };
+use std::future::Future;
 use std::ops::Range;
 
 /// Types of outbox messages.
@@ -41,17 +42,17 @@ pub trait OutboxTable {
         partition_id: PartitionId,
         message_index: u64,
         outbox_message: OutboxMessage,
-    ) -> PutFuture;
+    ) -> impl Future<Output = ()> + Send;
 
     fn get_next_outbox_message(
         &mut self,
         partition_id: PartitionId,
         next_sequence_number: u64,
-    ) -> GetFuture<Option<(u64, OutboxMessage)>>;
+    ) -> impl Future<Output = Result<Option<(u64, OutboxMessage)>>> + Send;
 
     fn truncate_outbox(
         &mut self,
         partition_id: PartitionId,
         seq_to_truncate: Range<u64>,
-    ) -> PutFuture;
+    ) -> impl Future<Output = ()> + Send;
 }
