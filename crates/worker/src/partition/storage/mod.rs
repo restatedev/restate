@@ -20,6 +20,7 @@ use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
+use restate_storage_api::Result as StorageResult;
 use restate_storage_api::{StorageError, Transaction as OtherTransaction};
 use restate_timer::TimerReader;
 use restate_types::identifiers::{
@@ -177,112 +178,101 @@ impl<TransactionType> super::state_machine::StateReader for Transaction<Transact
 where
     TransactionType: restate_storage_api::Transaction + Send,
 {
-    fn get_invocation_status<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-    ) -> BoxFuture<Result<InvocationStatus, StorageError>> {
+    async fn get_invocation_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> StorageResult<InvocationStatus> {
         self.assert_partition_key(service_id);
-        async {
-            Ok(self
-                .inner
-                .get_invocation_status(service_id)
-                .await?
-                .unwrap_or_default())
-        }
-        .boxed()
+        Ok(self
+            .inner
+            .get_invocation_status(service_id)
+            .await?
+            .unwrap_or_default())
     }
 
-    fn resolve_invocation_status_from_invocation_id<'a>(
-        &'a mut self,
-        invocation_id: &'a InvocationId,
-    ) -> BoxFuture<'a, Result<(FullInvocationId, InvocationStatus), StorageError>> {
+    async fn resolve_invocation_status_from_invocation_id(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> StorageResult<(FullInvocationId, InvocationStatus)> {
         self.assert_partition_key(invocation_id);
-        async {
-            let (service_id, status) = match self
-                .inner
-                .get_invocation_status_from(
-                    invocation_id.partition_key(),
-                    invocation_id.invocation_uuid(),
-                )
-                .await?
-            {
-                None => {
-                    // We can just default these here for the time being.
-                    // This is similar to the behavior of get_invocation_status.
-                    (ServiceId::new("", ""), InvocationStatus::default())
-                }
-                Some(t) => t,
-            };
+        let (service_id, status) = match self
+            .inner
+            .get_invocation_status_from(
+                invocation_id.partition_key(),
+                invocation_id.invocation_uuid(),
+            )
+            .await?
+        {
+            None => {
+                // We can just default these here for the time being.
+                // This is similar to the behavior of get_invocation_status.
+                (ServiceId::new("", ""), InvocationStatus::default())
+            }
+            Some(t) => t,
+        };
 
-            Ok((
-                FullInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
-                status,
-            ))
-        }
-        .boxed()
+        Ok((
+            FullInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
+            status,
+        ))
     }
 
-    fn peek_inbox<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-    ) -> BoxFuture<Result<Option<InboxEntry>, StorageError>> {
+    async fn peek_inbox(&mut self, service_id: &ServiceId) -> StorageResult<Option<InboxEntry>> {
         self.assert_partition_key(service_id);
-        async { self.inner.peek_inbox(service_id).await }.boxed()
+        self.inner.peek_inbox(service_id).await
     }
 
     fn get_inbox_entry(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> BoxFuture<Result<Option<InboxEntry>, StorageError>> {
+    ) -> impl Future<Output = StorageResult<Option<InboxEntry>>> + Send {
         let maybe_fid = maybe_fid.into();
         self.assert_partition_key(&maybe_fid);
-        async { self.inner.get_inbox_entry(maybe_fid).await }.boxed()
+        self.inner.get_inbox_entry(maybe_fid)
     }
 
     // Returns true if the entry is a completable journal entry and is completed,
     // or if the entry is a non-completable journal entry. In the latter case,
     // the entry must be a Custom entry with requires_ack flag.
-    fn is_entry_resumable<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    async fn is_entry_resumable(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<bool, StorageError>> {
+    ) -> StorageResult<bool> {
         self.assert_partition_key(service_id);
-        async move {
-            Ok(self
-                .inner
-                .get_journal_entry(service_id, entry_index)
-                .await?
-                .map(|journal_entry| match journal_entry {
-                    JournalEntry::Entry(entry) => entry.header().is_completed().unwrap_or(true),
-                    JournalEntry::Completion(_) => false,
-                })
-                .unwrap_or(false))
-        }
-        .boxed()
+        Ok(self
+            .inner
+            .get_journal_entry(service_id, entry_index)
+            .await?
+            .map(|journal_entry| match journal_entry {
+                JournalEntry::Entry(entry) => entry.header().is_completed().unwrap_or(true),
+                JournalEntry::Completion(_) => false,
+            })
+            .unwrap_or(false))
     }
 
-    fn load_state<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-        key: &'a Bytes,
-    ) -> BoxFuture<Result<Option<Bytes>, StorageError>> {
-        super::state_machine::StateStorage::load_state(self, service_id, key)
+    async fn load_state(
+        &mut self,
+        service_id: &ServiceId,
+        key: &Bytes,
+    ) -> StorageResult<Option<Bytes>> {
+        super::state_machine::StateStorage::load_state(self, service_id, key).await
     }
 
-    fn load_completion_result<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    async fn load_completion_result(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<CompletionResult>, StorageError>> {
+    ) -> StorageResult<Option<CompletionResult>> {
         super::state_machine::StateStorage::load_completion_result(self, service_id, entry_index)
+            .await
     }
 
     fn get_journal(
         &mut self,
         service_id: &ServiceId,
         length: EntryIndex,
-    ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry), StorageError>> + Send {
+    ) -> impl Stream<Item = StorageResult<(EntryIndex, JournalEntry)>> + Send {
         self.inner.get_journal(service_id, length)
     }
 }
@@ -354,24 +344,21 @@ where
         .boxed()
     }
 
-    fn load_completion_result<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    async fn load_completion_result(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<CompletionResult>, StorageError>> {
+    ) -> StorageResult<Option<CompletionResult>> {
         self.assert_partition_key(service_id);
-        async move {
-            let result = self
-                .inner
-                .get_journal_entry(service_id, entry_index)
-                .await?;
+        let result = self
+            .inner
+            .get_journal_entry(service_id, entry_index)
+            .await?;
 
-            Ok(result.and_then(|journal_entry| match journal_entry {
-                JournalEntry::Entry(_) => None,
-                JournalEntry::Completion(completion_result) => Some(completion_result),
-            }))
-        }
-        .boxed()
+        Ok(result.and_then(|journal_entry| match journal_entry {
+            JournalEntry::Entry(_) => None,
+            JournalEntry::Completion(completion_result) => Some(completion_result),
+        }))
     }
 
     fn load_journal_entry<'a>(
@@ -498,13 +485,13 @@ where
         .boxed()
     }
 
-    fn load_state<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-        key: &'a Bytes,
-    ) -> BoxFuture<Result<Option<Bytes>, StorageError>> {
+    async fn load_state(
+        &mut self,
+        service_id: &ServiceId,
+        key: &Bytes,
+    ) -> StorageResult<Option<Bytes>> {
         self.assert_partition_key(service_id);
-        async move { self.inner.get_user_state(service_id, key).await }.boxed()
+        self.inner.get_user_state(service_id, key).await
     }
 
     fn clear_state<'a>(

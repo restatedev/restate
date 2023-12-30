@@ -20,13 +20,13 @@ use crate::partition::TimerValue;
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::BoxFuture;
 use futures::{Stream, StreamExt};
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, NotificationTarget};
 use restate_storage_api::timer_table::Timer;
+use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
 };
@@ -47,64 +47,56 @@ use restate_types::journal::*;
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use std::fmt::{Debug, Formatter};
+use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::pin::pin;
 use tracing::{debug, instrument, trace};
 
 pub trait StateReader {
-    // TODO: Replace with async trait or proper future
-    fn get_invocation_status<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-    ) -> BoxFuture<'a, Result<InvocationStatus, restate_storage_api::StorageError>>;
+    fn get_invocation_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = StorageResult<InvocationStatus>> + Send;
 
-    // TODO: Replace with async trait or proper future
-    fn resolve_invocation_status_from_invocation_id<'a>(
-        &'a mut self,
-        invocation_id: &'a InvocationId,
-    ) -> BoxFuture<
-        'a,
-        Result<(FullInvocationId, InvocationStatus), restate_storage_api::StorageError>,
-    >;
+    fn resolve_invocation_status_from_invocation_id(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> impl Future<Output = StorageResult<(FullInvocationId, InvocationStatus)>> + Send;
 
-    // TODO: Replace with async trait or proper future
-    fn peek_inbox<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-    ) -> BoxFuture<'a, Result<Option<InboxEntry>, restate_storage_api::StorageError>>;
+    fn peek_inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = StorageResult<Option<InboxEntry>>> + Send;
 
     fn get_inbox_entry(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> BoxFuture<Result<Option<InboxEntry>, restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<Option<InboxEntry>>> + Send;
 
-    // TODO: Replace with async trait or proper future
-    fn is_entry_resumable<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn is_entry_resumable(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<bool, restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<bool>> + Send;
 
-    // TODO: Replace with async trait or proper future
-    fn load_state<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-        key: &'a Bytes,
-    ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>>;
+    fn load_state(
+        &mut self,
+        service_id: &ServiceId,
+        key: &Bytes,
+    ) -> impl Future<Output = StorageResult<Option<Bytes>>> + Send;
 
-    // TODO: Replace with async trait or proper future
-    fn load_completion_result<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn load_completion_result(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<CompletionResult>, restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<Option<CompletionResult>>> + Send;
 
     fn get_journal(
         &mut self,
         service_id: &ServiceId,
         length: EntryIndex,
-    ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry), restate_storage_api::StorageError>> + Send;
+    ) -> impl Stream<Item = StorageResult<(EntryIndex, JournalEntry)>> + Send;
 }
 
 pub(crate) struct CommandInterpreter<Codec> {

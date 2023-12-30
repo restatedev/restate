@@ -3,15 +3,14 @@ use super::*;
 use crate::partition::state_machine::command_interpreter::StateReader;
 use crate::partition::state_machine::effects::Effect;
 use bytestring::ByteString;
-use futures::future::ok;
-use futures::{stream, FutureExt};
+use futures::stream;
 use googletest::matcher::Matcher;
 use googletest::{all, any, assert_that, pat, unordered_elements_are};
 use restate_invoker_api::EffectKind;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::status_table::{JournalMetadata, StatusTimestamps};
-use restate_storage_api::StorageError;
+use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
 use restate_test_util::{assert_eq, let_assert, test};
 use restate_types::errors::UserErrorCode;
@@ -126,20 +125,17 @@ impl StateReaderMock {
 }
 
 impl StateReader for StateReaderMock {
-    fn get_invocation_status<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-    ) -> BoxFuture<'a, Result<InvocationStatus, restate_storage_api::StorageError>> {
-        ok(self.invocations.get(service_id).cloned().unwrap()).boxed()
+    async fn get_invocation_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> StorageResult<InvocationStatus> {
+        Ok(self.invocations.get(service_id).cloned().unwrap())
     }
 
-    fn resolve_invocation_status_from_invocation_id<'a>(
-        &'a mut self,
-        invocation_id: &'a InvocationId,
-    ) -> BoxFuture<
-        'a,
-        Result<(FullInvocationId, InvocationStatus), restate_storage_api::StorageError>,
-    > {
+    async fn resolve_invocation_status_from_invocation_id(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> StorageResult<(FullInvocationId, InvocationStatus)> {
         let (service_id, status) = self
             .invocations
             .iter()
@@ -150,29 +146,25 @@ impl StateReader for StateReaderMock {
             .map(|(service_id, status)| (service_id.clone(), status.clone()))
             .unwrap_or((ServiceId::new("", ""), InvocationStatus::default()));
 
-        ok((
+        Ok((
             FullInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
             status,
         ))
-        .boxed()
     }
 
-    fn peek_inbox<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-    ) -> BoxFuture<'a, Result<Option<InboxEntry>, restate_storage_api::StorageError>> {
+    async fn peek_inbox(&mut self, service_id: &ServiceId) -> StorageResult<Option<InboxEntry>> {
         let result = self
             .inboxes
             .get(service_id)
             .and_then(|inbox| inbox.first().cloned());
 
-        ok(result).boxed()
+        Ok(result)
     }
 
     fn get_inbox_entry(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> BoxFuture<Result<Option<InboxEntry>, StorageError>> {
+    ) -> impl Future<Output = StorageResult<Option<InboxEntry>>> + Send {
         let invocation_id = InvocationId::from(maybe_fid.into());
 
         let result = self
@@ -184,30 +176,30 @@ impl StateReader for StateReaderMock {
                     == invocation_id.invocation_uuid()
             });
 
-        ok(result.cloned()).boxed()
+        futures::future::ready(Ok(result.cloned()))
     }
 
-    fn is_entry_resumable<'a>(
-        &'a mut self,
-        _service_id: &'a ServiceId,
+    async fn is_entry_resumable(
+        &mut self,
+        _service_id: &ServiceId,
         _entry_index: EntryIndex,
-    ) -> BoxFuture<Result<bool, restate_storage_api::StorageError>> {
+    ) -> StorageResult<bool> {
         todo!()
     }
 
-    fn load_state<'a>(
-        &'a mut self,
-        _service_id: &'a ServiceId,
-        _key: &'a Bytes,
-    ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>> {
+    async fn load_state(
+        &mut self,
+        _service_id: &ServiceId,
+        _key: &Bytes,
+    ) -> StorageResult<Option<Bytes>> {
         todo!()
     }
 
-    fn load_completion_result<'a>(
-        &'a mut self,
-        _service_id: &'a ServiceId,
+    async fn load_completion_result(
+        &mut self,
+        _service_id: &ServiceId,
         _entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<CompletionResult>, StorageError>> {
+    ) -> StorageResult<Option<CompletionResult>> {
         todo!()
     }
 

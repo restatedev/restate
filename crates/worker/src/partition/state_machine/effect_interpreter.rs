@@ -66,12 +66,11 @@ pub trait StateStorage {
         completion_result: CompletionResult,
     ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
-    // TODO: Replace with async trait or proper future
-    fn load_completion_result<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    fn load_completion_result(
+        &mut self,
+        service_id: &ServiceId,
         entry_index: EntryIndex,
-    ) -> BoxFuture<Result<Option<CompletionResult>, restate_storage_api::StorageError>>;
+    ) -> impl Future<Output = StorageResult<Option<CompletionResult>>> + Send;
 
     // TODO: Replace with async trait or proper future
     fn load_journal_entry<'a>(
@@ -128,12 +127,11 @@ pub trait StateStorage {
         value: Bytes,
     ) -> BoxFuture<Result<(), restate_storage_api::StorageError>>;
 
-    // TODO: Replace with async trait or proper future
-    fn load_state<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-        key: &'a Bytes,
-    ) -> BoxFuture<Result<Option<Bytes>, restate_storage_api::StorageError>>;
+    fn load_state(
+        &mut self,
+        service_id: &ServiceId,
+        key: &Bytes,
+    ) -> impl Future<Output = StorageResult<Option<Bytes>>> + Send;
 
     fn clear_state<'a>(
         &'a mut self,
