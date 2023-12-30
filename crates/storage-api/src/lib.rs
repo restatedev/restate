@@ -10,6 +10,7 @@
 
 use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
+use std::future::Future;
 
 /// Storage error
 #[derive(Debug, thiserror::Error)]
@@ -29,14 +30,9 @@ pub enum StorageError {
 // where async interfaces will be a thing in Rust.
 //
 pub type GetFuture<'a, T> = BoxFuture<'a, Result<T>>;
-pub type PutFuture = futures_util::future::Ready<()>;
 pub type GetStream<'a, T> = BoxStream<'a, Result<T>>;
 
 pub type Result<T> = std::result::Result<T, StorageError>;
-
-pub fn ready() -> PutFuture {
-    futures_util::future::ready(())
-}
 
 pub mod deduplication_table;
 pub mod fsm_table;
@@ -66,7 +62,5 @@ pub trait Transaction:
     + timer_table::TimerTable
     + Send
 {
-    fn commit<'a>(self) -> GetFuture<'a, ()>
-    where
-        Self: 'a;
+    fn commit(self) -> impl Future<Output = Result<()>> + Send;
 }

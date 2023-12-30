@@ -31,6 +31,7 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
+use std::future::Future;
 use std::ops::RangeInclusive;
 
 pub mod invoker;
@@ -100,10 +101,7 @@ where
         }
     }
 
-    pub(super) fn commit<'a>(self) -> BoxFuture<'a, Result<(), StorageError>>
-    where
-        Self: 'a,
-    {
+    pub(super) fn commit(self) -> impl Future<Output = Result<(), StorageError>> + Send {
         self.inner.commit()
     }
 
@@ -661,7 +659,8 @@ where
                 // TODO: Extend TimerReader to return errors: See https://github.com/restatedev/restate/issues/274
                 .expect("timer deserialization should not fail");
 
-            transaction.commit();
+            // we didn't do any writes so committing should not fail
+            let _ = transaction.commit().await;
 
             stream::iter(timer_stream)
         }

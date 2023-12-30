@@ -32,7 +32,7 @@ use crate::TableKind::{
 use bytes::BytesMut;
 use codederror::CodedError;
 use futures::{ready, FutureExt, Stream};
-use futures_util::future::{ok, ready};
+use futures_util::future::ready;
 use futures_util::{stream, StreamExt};
 use restate_storage_api::{GetFuture, GetStream, Storage, StorageError, Transaction};
 use rocksdb::BlockBasedOptions;
@@ -638,14 +638,12 @@ impl<'a> RocksDBTransaction<'a> {
 }
 
 impl<'a> Transaction for RocksDBTransaction<'a> {
-    fn commit<'b>(self) -> GetFuture<'b, ()>
-    where
-        Self: 'b,
-    {
+    async fn commit(self) -> Result<()> {
         if self.write_batch.is_none() {
-            return ok(()).boxed();
+            return Ok(());
         }
+
         let write_batch = self.write_batch.unwrap();
-        self.storage.commit_write_batch(write_batch).boxed()
+        self.storage.commit_write_batch(write_batch).await
     }
 }
