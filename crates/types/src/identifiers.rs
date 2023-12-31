@@ -17,7 +17,6 @@ use bytes::Bytes;
 use bytestring::ByteString;
 
 use std::fmt;
-use std::fmt::{Display, Formatter};
 use std::mem::size_of;
 use std::str::FromStr;
 use uuid::Uuid;
@@ -459,8 +458,8 @@ impl schemars::JsonSchema for LambdaARN {
     }
 }
 
-impl Display for LambdaARN {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl fmt::Display for LambdaARN {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let LambdaARN {
             partition,
             region,
