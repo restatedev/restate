@@ -125,3 +125,30 @@ pub fn restate_configuration() -> Configuration {
     Configuration::load_with_default(default_config, None)
         .expect("configuration loading should not fail")
 }
+
+pub struct BenchmarkSettings {
+    pub num_requests: u32,
+    pub num_parallel_requests: usize,
+    pub sample_size: usize,
+}
+
+pub fn parse_benchmark_settings() -> BenchmarkSettings {
+    let num_requests = std::env::var("BENCHMARK_REQUESTS")
+        .ok()
+        .and_then(|requests| requests.parse().ok())
+        .unwrap_or(4000);
+    let num_parallel_requests = std::env::var("BENCHMARK_PARALLEL_REQUESTS")
+        .ok()
+        .and_then(|parallel_requests| parallel_requests.parse().ok())
+        .unwrap_or(1000);
+    let sample_size = std::env::var("BENCHMARK_SAMPLE_SIZE")
+        .ok()
+        .and_then(|parallel_requests| parallel_requests.parse().ok())
+        .unwrap_or(20);
+
+    BenchmarkSettings {
+        num_requests,
+        num_parallel_requests,
+        sample_size,
+    }
+}

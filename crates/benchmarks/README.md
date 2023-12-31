@@ -63,3 +63,11 @@ The profiler will generate a flamegraph under `target/criterion/<name_of_benchma
 
 The benchmarks spawn Restate with a default configuration.
 You can [overwrite this configuration by specifying environment variables](https://docs.restate.dev/restate/configuration) of the form `RESTATE_WORKER__PARTITIONS=1337`.
+
+## Changing the benchmark parameters
+
+The parallel benchmark can be configured via environment variables:
+
+* `BENCHMARK_REQUESTS`: Number of requests to send to the Restate runtime (default: 4000)
+* `BENCHMARK_PARALLEL_REQUESTS`: Number of parallel requests (default: 1000)
+* `BENCHMARK_SAMPLE_SIZE`: Number of samples to take (default: 20)

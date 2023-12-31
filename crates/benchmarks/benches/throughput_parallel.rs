@@ -19,12 +19,19 @@ use pprof::criterion::{Output, PProfProfiler};
 use rand::distributions::{Alphanumeric, DistString};
 use restate_benchmarks::counter::counter_client::CounterClient;
 use restate_benchmarks::counter::CounterAddRequest;
+use restate_benchmarks::{parse_benchmark_settings, BenchmarkSettings};
 use tokio::runtime::Builder;
 use tonic::transport::Channel;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
     let config = restate_benchmarks::restate_configuration();
     let (_rt, signal, app_handle) = restate_benchmarks::spawn_restate(config);
+
+    let BenchmarkSettings {
+        num_requests,
+        num_parallel_requests,
+        sample_size,
+    } = parse_benchmark_settings();
 
     let current_thread_rt = Builder::new_current_thread()
         .enable_all()
@@ -42,11 +49,9 @@ fn throughput_benchmark(criterion: &mut Criterion) {
             .expect("should be able to connect to Restate gRPC ingress")
     });
 
-    let num_requests = 4000;
-    let num_parallel_requests = 1000;
     let mut group = criterion.benchmark_group("throughput");
     group
-        .sample_size(20)
+        .sample_size(sample_size)
         .throughput(Throughput::Elements(
             u64::try_from(num_requests).expect("usize to u64 conversion should work"),
         ))
@@ -71,7 +76,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
 
 async fn send_parallel_counter_requests(
     counter_client: CounterClient<Channel>,
-    num_requests: usize,
+    num_requests: u32,
     num_parallel_requests: usize,
 ) {
     let mut pending_requests = FuturesUnordered::new();
@@ -79,7 +84,7 @@ async fn send_parallel_counter_requests(
 
     while completed_requests < num_requests {
         if pending_requests.len() < num_parallel_requests
-            && completed_requests + pending_requests.len() < num_requests
+            && completed_requests as usize + pending_requests.len() < num_requests as usize
         {
             let mut client = counter_client.clone();
             let counter_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
