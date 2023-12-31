@@ -24,9 +24,7 @@ pub mod storage {
                 Awakeable, BackgroundCall, ClearState, CompleteAwakeable, Custom, GetState, Invoke,
                 OutputStream, PollInputStream, SetState, Sleep,
             };
-            use crate::storage::v1::invocation_status::{
-                invoked, suspended, Free, Invoked, Suspended, Virtual,
-            };
+            use crate::storage::v1::invocation_status::{Free, Invoked, Suspended, Virtual};
             use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
             use crate::storage::v1::journal_entry::{
                 completion_result, CompletionResult, Entry, Kind,
@@ -43,8 +41,8 @@ pub mod storage {
                 maybe_full_invocation_id, outbox_message, response_result, source, span_relation,
                 timer, BackgroundCallResolutionResult, EnrichedEntryHeader, FullInvocationId,
                 InboxEntry, InvocationResolutionResult, InvocationStatus, JournalEntry,
-                JournalMeta, MaybeFullInvocationId, OutboxMessage, ResponseResult, SequencedTimer,
-                ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
+                JournalMeta, MaybeFullInvocationId, OutboxMessage, ResponseResult,
+                ServiceInvocation, ServiceInvocationResponseSink, SocketAddr, Source, SpanContext,
                 SpanRelation, Timer,
             };
             use anyhow::anyhow;
@@ -52,12 +50,11 @@ pub mod storage {
             use bytestring::ByteString;
             use opentelemetry_api::trace::TraceState;
             use restate_storage_api::StorageError;
-            use restate_types::identifiers::ServiceId;
+            use restate_types::identifiers::{IngressDispatcherId, ServiceId};
             use restate_types::invocation::{InvocationTermination, TerminationFlavor};
             use restate_types::journal::enriched::AwakeableEnrichmentResult;
             use restate_types::time::MillisSinceEpoch;
-            use std::collections::{HashSet, VecDeque};
-            use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+            use std::collections::HashSet;
             use std::str::FromStr;
 
             /// Error type for conversion related problems (e.g. Rust <-> Protobuf)
@@ -851,9 +848,12 @@ pub mod storage {
                             )
                         }
                         ResponseSink::Ingress(ingress) => {
-                            let ingress_dispatcher_id = try_string_into_ingress_dispatcher_id(
-                                ingress.ingress_dispatcher_id,
-                            )?;
+                            let ingress_dispatcher_id =
+                                IngressDispatcherId(std::net::SocketAddr::try_from(
+                                    ingress
+                                        .socket_addr
+                                        .ok_or(ConversionError::missing_field("socket_addr"))?,
+                                )?);
 
                             Some(
                                 restate_types::invocation::ServiceInvocationResponseSink::Ingress(
@@ -900,7 +900,7 @@ pub mod storage {
                         }),
                         Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id)) => {
                             ResponseSink::Ingress(Ingress {
-                                ingress_dispatcher_id: ingress_dispatcher_id.to_string(),
+                                socket_addr: Some(SocketAddr::from(ingress_dispatcher_id.0)),
                             })
                         },
                         Some(
@@ -921,11 +921,47 @@ pub mod storage {
                 }
             }
 
-            fn try_string_into_ingress_dispatcher_id(
-                value: String,
-            ) -> Result<restate_types::identifiers::IngressDispatcherId, ConversionError>
-            {
-                Ok(value.parse().map_err(ConversionError::invalid_data)?)
+            impl TryFrom<SocketAddr> for std::net::SocketAddr {
+                type Error = ConversionError;
+
+                fn try_from(value: SocketAddr) -> Result<Self, Self::Error> {
+                    let port = u16::try_from(value.port).map_err(ConversionError::invalid_data)?;
+                    let ip = try_bytes_to_ip_addr(value.ip)?;
+
+                    Ok(std::net::SocketAddr::new(ip, port))
+                }
+            }
+
+            impl From<std::net::SocketAddr> for SocketAddr {
+                fn from(value: std::net::SocketAddr) -> Self {
+                    SocketAddr {
+                        port: u32::from(value.port()),
+                        ip: ip_addr_to_bytes(value.ip()),
+                    }
+                }
+            }
+
+            fn try_bytes_to_ip_addr(bytes: Bytes) -> Result<std::net::IpAddr, ConversionError> {
+                if bytes.len() == 4 {
+                    let mut octets = [0; 4];
+                    octets.copy_from_slice(bytes.as_ref());
+                    Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::from(octets)))
+                } else if bytes.len() == 16 {
+                    let mut octets = [0; 16];
+                    octets.copy_from_slice(bytes.as_ref());
+                    Ok(std::net::IpAddr::V6(std::net::Ipv6Addr::from(octets)))
+                } else {
+                    Err(ConversionError::invalid_data(anyhow!(
+                        "valid ip address has 4 or 16 bytes"
+                    )))
+                }
+            }
+
+            fn ip_addr_to_bytes(ip_addr: std::net::IpAddr) -> Bytes {
+                match ip_addr {
+                    std::net::IpAddr::V4(ip) => Bytes::copy_from_slice(&ip.octets()),
+                    std::net::IpAddr::V6(ip) => Bytes::copy_from_slice(&ip.octets()),
+                }
             }
 
             impl TryFrom<JournalEntry> for restate_storage_api::journal_table::JournalEntry {
@@ -1370,9 +1406,13 @@ pub mod storage {
                                             ConversionError::missing_field("full_invocation_id"),
                                         )?,
                                     )?,
-                                ingress_dispatcher_id: try_string_into_ingress_dispatcher_id(
-                                    ingress_response.ingress_dispatcher_id,
-                                )?,
+                                ingress_dispatcher_id: IngressDispatcherId(
+                                    std::net::SocketAddr::try_from(
+                                        ingress_response
+                                            .socket_addr
+                                            .ok_or(ConversionError::missing_field("socket_addr"))?,
+                                    )?,
+                                ),
                                 response: restate_types::invocation::ResponseResult::try_from(
                                     ingress_response
                                         .response_result
@@ -1444,7 +1484,7 @@ pub mod storage {
                                 full_invocation_id: Some(FullInvocationId::from(
                                     full_invocation_id,
                                 )),
-                                ingress_dispatcher_id: ingress_dispatcher_id.to_string(),
+                                socket_addr: Some(SocketAddr::from(ingress_dispatcher_id.0)),
                                 response_result: Some(ResponseResult::from(response)),
                             })
                         }

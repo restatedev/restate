@@ -93,6 +93,11 @@ message InvocationStatus {
     }
 }
 
+message SocketAddr {
+    uint32 port = 1;
+    bytes ip = 2;
+}
+
 message ServiceInvocationResponseSink {
 
     message PartitionProcessor {
@@ -107,7 +112,7 @@ message ServiceInvocationResponseSink {
     }
 
     message Ingress {
-        string ingress_dispatcher_id = 1;
+        SocketAddr socket_addr = 1;
     }
 
     message None {
@@ -308,7 +313,7 @@ message OutboxMessage {
 
     message OutboxIngressResponse {
         FullInvocationId full_invocation_id = 1;
-        string ingress_dispatcher_id = 2;
+        SocketAddr socket_addr = 2;
         ResponseResult response_result = 3;
     }
 
