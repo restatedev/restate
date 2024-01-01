@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::PartitionStateMachine;
-use crate::{RocksDBTransaction, TableScan, TableScanIterationDecision};
+use crate::{RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use futures::Stream;
 use restate_storage_api::fsm_table::FsmTable;

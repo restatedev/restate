@@ -21,7 +21,7 @@ use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
-use restate_storage_api::{StorageError, Transaction as OtherTransaction};
+use restate_storage_api::StorageError;
 use restate_timer::TimerReader;
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
@@ -488,16 +488,16 @@ where
 
 impl<Storage> OutboxReader for PartitionStorage<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + Sync + 'a,
+    for<'a> Storage: restate_storage_api::Storage + OutboxTable + Send + 'a,
 {
     async fn get_next_message(
-        &self,
+        &mut self,
         next_sequence_number: MessageIndex,
     ) -> Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError> {
-        let mut transaction = self.storage.transaction();
         let partition_id = self.partition_id;
 
-        let result = if let Some((message_index, outbox_message)) = transaction
+        let result = if let Some((message_index, outbox_message)) = self
+            .storage
             .get_next_outbox_message(partition_id, next_sequence_number)
             .await?
         {
@@ -505,9 +505,6 @@ where
         } else {
             None
         };
-
-        // we have to close the transaction here
-        transaction.commit().await?;
 
         Ok(result)
     }

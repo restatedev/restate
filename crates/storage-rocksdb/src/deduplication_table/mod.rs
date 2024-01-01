@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Deduplication;
-use crate::{RocksDBTransaction, TableScan, TableScanIterationDecision};
+use crate::{RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision};
 use futures::Stream;
 use restate_storage_api::deduplication_table::{DeduplicationTable, SequenceNumberSource};
 use restate_storage_api::{Result, StorageError};

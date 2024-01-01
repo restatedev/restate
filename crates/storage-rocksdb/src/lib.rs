@@ -180,10 +180,33 @@ impl BuildError {
     }
 }
 
-#[derive(Clone, Debug)]
+pub trait StorageAccess {
+    fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V);
+    fn delete_key<K: TableKey>(&mut self, key: &K);
+
+    fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
+    where
+        K: TableKey,
+        F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>;
+}
+
+#[derive(Debug)]
 pub struct RocksDBStorage {
     db: Arc<DB>,
     writer_handle: WriterHandle,
+    key_buffer: BytesMut,
+    value_buffer: BytesMut,
+}
+
+impl Clone for RocksDBStorage {
+    fn clone(&self) -> Self {
+        RocksDBStorage {
+            db: self.db.clone(),
+            writer_handle: self.writer_handle.clone(),
+            key_buffer: BytesMut::default(),
+            value_buffer: BytesMut::default(),
+        }
+    }
 }
 
 fn db_options(opts: &Options) -> rocksdb::Options {
@@ -336,9 +359,25 @@ impl RocksDBStorage {
             Self {
                 db: rdb,
                 writer_handle,
+                key_buffer: BytesMut::default(),
+                value_buffer: BytesMut::default(),
             },
             writer,
         ))
+    }
+
+    #[inline]
+    fn key_buffer(&mut self, min_size: usize) -> &mut BytesMut {
+        self.key_buffer.clear();
+        self.key_buffer.reserve(min_size);
+        &mut self.key_buffer
+    }
+
+    #[inline]
+    fn value_buffer(&mut self, min_size: usize) -> &mut BytesMut {
+        self.value_buffer.clear();
+        self.value_buffer.reserve(min_size);
+        &mut self.value_buffer
     }
 
     #[inline]
@@ -397,25 +436,15 @@ impl RocksDBStorage {
 
     #[allow(clippy::needless_lifetimes)]
     pub fn transaction(&self) -> RocksDBTransaction {
+        let db = self.db.clone();
+
         RocksDBTransaction {
             txn: self.db.transaction(),
-            storage: self,
+            db,
             key_buffer: Default::default(),
             value_buffer: Default::default(),
+            writer_handle: &self.writer_handle,
         }
-    }
-
-    #[inline]
-    async fn commit_transaction<'a>(
-        &self,
-        txn: rocksdb::Transaction<'a, DB>,
-    ) -> std::result::Result<(), StorageError> {
-        // We cannot directly commit the txn because it might fail because of unrelated concurrent
-        // writes to RocksDB. However, it is safe to write the WriteBatch for a given partition,
-        // because there can only be a single writer (the leading PartitionProcessor).
-        let write_batch = txn.get_writebatch();
-
-        self.writer_handle.write(write_batch).await
     }
 
     pub fn for_each_key_value<K, F, R>(
@@ -470,11 +499,48 @@ impl Storage for RocksDBStorage {
     }
 }
 
+impl StorageAccess for RocksDBStorage {
+    fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V) {
+        {
+            let buffer = self.key_buffer(key.serialized_length());
+            key.serialize_to(buffer);
+        }
+        {
+            let buffer = self.value_buffer(value.serialized_length());
+            value.encode(buffer);
+        }
+        let table = self.table_handle(K::table());
+        self.db
+            .put_cf(&table, &self.key_buffer, &self.value_buffer)
+            .unwrap();
+    }
+
+    fn delete_key<K: TableKey>(&mut self, key: &K) {
+        {
+            let buffer = self.key_buffer(key.serialized_length());
+            key.serialize_to(buffer);
+        }
+        let table = self.table_handle(K::table());
+        self.db.delete_cf(&table, &self.key_buffer).unwrap();
+    }
+
+    #[inline]
+    fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
+    where
+        K: TableKey,
+        F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
+    {
+        let iterator = self.iterator_from(scan);
+        f(iterator.item())
+    }
+}
+
 pub struct RocksDBTransaction<'a> {
     txn: rocksdb::Transaction<'a, DB>,
-    storage: &'a RocksDBStorage,
+    db: Arc<DB>,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
+    writer_handle: &'a WriterHandle,
 }
 
 pub(crate) struct BackgroundScanStream<T> {
@@ -514,8 +580,14 @@ impl<T: Send + 'static> Stream for BackgroundScanStream<T> {
 }
 
 impl<'a> RocksDBTransaction<'a> {
+    fn table_handle(&self, table_kind: TableKind) -> &ColumnFamily {
+        self.db.cf_handle(cf_name(table_kind)).expect(
+            "This should not happen, this is a Restate bug. Please contact the restate developers.",
+        )
+    }
+
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
-        let table = self.storage.table_handle(table);
+        let table = self.table_handle(table);
         self.txn
             .get_pinned_cf(&table, key)
             .map_err(|error| StorageError::Generic(error.into()))
@@ -547,7 +619,7 @@ impl<'a> RocksDBTransaction<'a> {
         table: TableKind,
         prefix: K,
     ) -> DBIteratorTransaction {
-        let table = self.storage.table_handle(table);
+        let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
         opts.set_iterate_range(PrefixRange(prefix));
 
@@ -559,7 +631,7 @@ impl<'a> RocksDBTransaction<'a> {
         table: TableKind,
         range: impl rocksdb::IterateBounds,
     ) -> DBIteratorTransaction {
-        let table = self.storage.table_handle(table);
+        let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
         opts.set_iterate_range(range);
         self.txn.raw_iterator_cf_opt(&table, opts)
@@ -582,17 +654,6 @@ impl<'a> RocksDBTransaction<'a> {
             }
             Err(err) => Err(err),
         }
-    }
-
-    #[inline]
-    pub async fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
-    where
-        K: TableKey + Send + 'static,
-        F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R> + Send + 'static,
-        R: Send + 'static,
-    {
-        let iterator = self.iterator_from(scan);
-        f(iterator.item())
     }
 
     #[inline]
@@ -646,7 +707,20 @@ impl<'a> RocksDBTransaction<'a> {
         self.value_buffer.reserve(min_size);
         &mut self.value_buffer
     }
+}
 
+impl<'a> Transaction for RocksDBTransaction<'a> {
+    async fn commit(self) -> Result<()> {
+        // We cannot directly commit the txn because it might fail because of unrelated concurrent
+        // writes to RocksDB. However, it is safe to write the WriteBatch for a given partition,
+        // because there can only be a single writer (the leading PartitionProcessor).
+        let write_batch = self.txn.get_writebatch();
+
+        self.writer_handle.write(write_batch).await
+    }
+}
+
+impl<'a> StorageAccess for RocksDBTransaction<'a> {
     fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V) {
         {
             let buffer = self.key_buffer(key.serialized_length());
@@ -656,7 +730,7 @@ impl<'a> RocksDBTransaction<'a> {
             let buffer = self.value_buffer(value.serialized_length());
             value.encode(buffer);
         }
-        let table = self.storage.table_handle(K::table());
+        let table = self.table_handle(K::table());
         self.txn
             .put_cf(&table, &self.key_buffer, &self.value_buffer)
             .unwrap();
@@ -667,13 +741,17 @@ impl<'a> RocksDBTransaction<'a> {
             let buffer = self.key_buffer(key.serialized_length());
             key.serialize_to(buffer);
         }
-        let table = self.storage.table_handle(K::table());
+        let table = self.table_handle(K::table());
         self.txn.delete_cf(&table, &self.key_buffer).unwrap();
     }
-}
 
-impl<'a> Transaction for RocksDBTransaction<'a> {
-    async fn commit(self) -> Result<()> {
-        self.storage.commit_transaction(self.txn).await
+    #[inline]
+    fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
+    where
+        K: TableKey,
+        F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
+    {
+        let iterator = self.iterator_from(scan);
+        f(iterator.item())
     }
 }

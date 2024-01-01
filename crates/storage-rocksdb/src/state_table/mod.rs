@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableKind::State;
-use crate::{RocksDBStorage, RocksDBTransaction};
+use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;

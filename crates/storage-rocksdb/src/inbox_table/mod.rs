@@ -10,8 +10,8 @@
 
 use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
-use crate::RocksDBTransaction;
 use crate::TableKind::Inbox;
+use crate::{RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -82,7 +82,6 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             }
             None => Ok(None),
         })
-        .await
     }
 
     fn inbox(&mut self, service_id: &ServiceId) -> impl Stream<Item = Result<InboxEntry>> + Send {

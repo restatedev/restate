@@ -11,7 +11,7 @@
 use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Outbox;
-use crate::{RocksDBTransaction, TableScan};
+use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess, TableScan};
 
 use prost::Message;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
@@ -26,19 +26,65 @@ define_table_key!(
     OutboxKey(partition_id: PartitionId, message_index: u64)
 );
 
-impl<'a> OutboxTable for RocksDBTransaction<'a> {
+fn add_message<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    message_index: u64,
+    outbox_message: OutboxMessage,
+) {
+    let key = OutboxKey::default()
+        .partition_id(partition_id)
+        .message_index(message_index);
+
+    let value = ProtoValue(storage::v1::OutboxMessage::from(outbox_message));
+    storage.put_kv(key, value);
+}
+
+fn get_next_outbox_message<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    next_sequence_number: u64,
+) -> Result<Option<(u64, OutboxMessage)>> {
+    let start = OutboxKey::default()
+        .partition_id(partition_id)
+        .message_index(next_sequence_number);
+
+    let end = OutboxKey::default()
+        .partition_id(partition_id)
+        .message_index(u64::MAX);
+
+    storage.get_first_blocking(TableScan::KeyRangeInclusive(start, end), |kv| {
+        if let Some((k, v)) = kv {
+            let t = decode_key_value(k, v)?;
+            Ok(Some(t))
+        } else {
+            Ok(None)
+        }
+    })
+}
+
+fn truncate_outbox<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    seq_to_truncate: Range<u64>,
+) {
+    let mut key = OutboxKey::default().partition_id(partition_id);
+    let k = &mut key;
+
+    for seq in seq_to_truncate {
+        k.message_index = Some(seq);
+        storage.delete_key(k);
+    }
+}
+
+impl OutboxTable for RocksDBStorage {
     async fn add_message(
         &mut self,
         partition_id: PartitionId,
         message_index: u64,
         outbox_message: OutboxMessage,
     ) {
-        let key = OutboxKey::default()
-            .partition_id(partition_id)
-            .message_index(message_index);
-
-        let value = ProtoValue(storage::v1::OutboxMessage::from(outbox_message));
-        self.put_kv(key, value);
+        add_message(self, partition_id, message_index, outbox_message)
     }
 
     async fn get_next_outbox_message(
@@ -46,33 +92,34 @@ impl<'a> OutboxTable for RocksDBTransaction<'a> {
         partition_id: PartitionId,
         next_sequence_number: u64,
     ) -> Result<Option<(u64, OutboxMessage)>> {
-        let start = OutboxKey::default()
-            .partition_id(partition_id)
-            .message_index(next_sequence_number);
-
-        let end = OutboxKey::default()
-            .partition_id(partition_id)
-            .message_index(u64::MAX);
-
-        self.get_first_blocking(TableScan::KeyRangeInclusive(start, end), |kv| {
-            if let Some((k, v)) = kv {
-                let t = decode_key_value(k, v)?;
-                Ok(Some(t))
-            } else {
-                Ok(None)
-            }
-        })
-        .await
+        get_next_outbox_message(self, partition_id, next_sequence_number)
     }
 
     async fn truncate_outbox(&mut self, partition_id: PartitionId, seq_to_truncate: Range<u64>) {
-        let mut key = OutboxKey::default().partition_id(partition_id);
-        let k = &mut key;
+        truncate_outbox(self, partition_id, seq_to_truncate)
+    }
+}
 
-        for seq in seq_to_truncate {
-            k.message_index = Some(seq);
-            self.delete_key(k);
-        }
+impl<'a> OutboxTable for RocksDBTransaction<'a> {
+    async fn add_message(
+        &mut self,
+        partition_id: PartitionId,
+        message_index: u64,
+        outbox_message: OutboxMessage,
+    ) {
+        add_message(self, partition_id, message_index, outbox_message)
+    }
+
+    async fn get_next_outbox_message(
+        &mut self,
+        partition_id: PartitionId,
+        next_sequence_number: u64,
+    ) -> Result<Option<(u64, OutboxMessage)>> {
+        get_next_outbox_message(self, partition_id, next_sequence_number)
+    }
+
+    async fn truncate_outbox(&mut self, partition_id: PartitionId, seq_to_truncate: Range<u64>) {
+        truncate_outbox(self, partition_id, seq_to_truncate)
     }
 }
 

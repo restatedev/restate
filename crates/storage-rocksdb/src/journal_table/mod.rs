@@ -14,7 +14,7 @@ use crate::keys::TableKey;
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan::PartitionKeyRange;
 use crate::TableKind::Journal;
-use crate::{RocksDBStorage, RocksDBTransaction};
+use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;

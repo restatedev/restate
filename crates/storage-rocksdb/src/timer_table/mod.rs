@@ -10,9 +10,9 @@
 
 use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
-use crate::RocksDBTransaction;
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
+use crate::{RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use prost::Message;

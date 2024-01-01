@@ -145,7 +145,7 @@ pub(super) enum OutboxReaderError {
 
 pub(super) trait OutboxReader {
     fn get_next_message(
-        &self,
+        &mut self,
         next_sequence_number: MessageIndex,
     ) -> impl Future<Output = Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>> + Send;
 }
@@ -315,7 +315,7 @@ mod state_machine {
     }
 
     async fn get_next_message<OutboxReader: shuffle::OutboxReader>(
-        outbox_reader: OutboxReader,
+        mut outbox_reader: OutboxReader,
         sequence_number: MessageIndex,
     ) -> (
         Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>,
