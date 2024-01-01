@@ -15,10 +15,11 @@ use crate::{RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
+use std::future;
 use std::future::Future;
 
 use futures::Stream;
-use futures_util::StreamExt;
+use futures_util::stream;
 use prost::Message;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::{Result, StorageError};
@@ -90,20 +91,25 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
-        self.for_each_key_value_in_place(TableScan::KeyPrefix(key), |k, v| {
-            let inbox_entry = decode_inbox_key_value(k, v);
-            TableScanIterationDecision::Emit(inbox_entry)
-        })
+        stream::iter(
+            self.for_each_key_value_in_place(TableScan::KeyPrefix(key), |k, v| {
+                let inbox_entry = decode_inbox_key_value(k, v);
+                TableScanIterationDecision::Emit(inbox_entry)
+            }),
+        )
     }
 
     fn all_inboxes(
         &mut self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<InboxEntry>> + Send {
-        self.for_each_key_value_in_place(TableScan::PartitionKeyRange::<InboxKey>(range), |k, v| {
-            let inbox_entry = decode_inbox_key_value(k, v);
-            TableScanIterationDecision::Emit(inbox_entry)
-        })
+        stream::iter(self.for_each_key_value_in_place(
+            TableScan::PartitionKeyRange::<InboxKey>(range),
+            |k, v| {
+                let inbox_entry = decode_inbox_key_value(k, v);
+                TableScanIterationDecision::Emit(inbox_entry)
+            },
+        ))
     }
 
     fn get_inbox_entry(
@@ -124,7 +130,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             ),
         };
 
-        let mut result =
+        let mut inbox_entries =
             self.for_each_key_value_in_place(TableScan::KeyPrefix(inbox_key), move |key, value| {
                 let inbox_entry = decode_inbox_key_value(key, value);
 
@@ -140,7 +146,13 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
                 }
             });
 
-        async move { result.next().await.transpose() }
+        let result = if inbox_entries.is_empty() {
+            Ok(None)
+        } else {
+            inbox_entries.swap_remove(0).map(Some)
+        };
+
+        future::ready(result)
     }
 }
 

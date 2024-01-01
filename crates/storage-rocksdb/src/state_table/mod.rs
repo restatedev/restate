@@ -16,9 +16,11 @@ use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
+use futures_util::stream;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
+use std::future;
 use std::future::Future;
 use std::ops::RangeInclusive;
 
@@ -51,16 +53,57 @@ fn user_state_key_from_slice(key: &[u8]) -> Result<Bytes> {
     Ok(key)
 }
 
-impl<'a> StateTable for RocksDBTransaction<'a> {
+fn put_user_state<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+    state_key: impl AsRef<[u8]>,
+    state_value: impl AsRef<[u8]>,
+) {
+    let key = write_state_entry_key(service_id, state_key);
+    storage.put_kv(key, state_value.as_ref());
+}
+
+fn delete_user_state<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+    state_key: impl AsRef<[u8]>,
+) {
+    let key = write_state_entry_key(service_id, state_key);
+    storage.delete_key(&key);
+}
+
+fn get_user_state<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+    state_key: impl AsRef<[u8]>,
+) -> Result<Option<Bytes>> {
+    let key = write_state_entry_key(service_id, state_key);
+    storage.get_blocking(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
+}
+
+fn get_all_user_states<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+) -> Vec<Result<(Bytes, Bytes)>> {
+    let key = StateKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone());
+
+    storage.for_each_key_value_in_place(TableScan::KeyPrefix(key), |k, v| {
+        TableScanIterationDecision::Emit(decode_user_state_key_value(k, v))
+    })
+}
+
+impl StateTable for RocksDBStorage {
     fn put_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
         state_value: impl AsRef<[u8]>,
     ) -> impl Future<Output = ()> + Send {
-        let key = write_state_entry_key(service_id, state_key);
-        self.put_kv(key, state_value.as_ref());
-        futures::future::ready(())
+        put_user_state(self, service_id, state_key, state_value);
+        future::ready(())
     }
 
     fn delete_user_state(
@@ -68,9 +111,8 @@ impl<'a> StateTable for RocksDBTransaction<'a> {
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> impl Future<Output = ()> + Send {
-        let key = write_state_entry_key(service_id, state_key);
-        self.delete_key(&key);
-        futures::future::ready(())
+        delete_user_state(self, service_id, state_key);
+        future::ready(())
     }
 
     fn get_user_state(
@@ -78,22 +120,50 @@ impl<'a> StateTable for RocksDBTransaction<'a> {
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> impl Future<Output = Result<Option<Bytes>>> + Send {
-        let key = write_state_entry_key(service_id, state_key);
-        self.get_blocking(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
+        future::ready(get_user_state(self, service_id, state_key))
     }
 
     fn get_all_user_states(
         &mut self,
         service_id: &ServiceId,
     ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
-        let key = StateKey::default()
-            .partition_key(service_id.partition_key())
-            .service_name(service_id.service_name.clone())
-            .service_key(service_id.key.clone());
+        stream::iter(get_all_user_states(self, service_id))
+    }
+}
 
-        self.for_each_key_value_in_place(TableScan::KeyPrefix(key), |k, v| {
-            TableScanIterationDecision::Emit(decode_user_state_key_value(k, v))
-        })
+impl<'a> StateTable for RocksDBTransaction<'a> {
+    fn put_user_state(
+        &mut self,
+        service_id: &ServiceId,
+        state_key: impl AsRef<[u8]>,
+        state_value: impl AsRef<[u8]>,
+    ) -> impl Future<Output = ()> + Send {
+        put_user_state(self, service_id, state_key, state_value);
+        future::ready(())
+    }
+
+    fn delete_user_state(
+        &mut self,
+        service_id: &ServiceId,
+        state_key: impl AsRef<[u8]>,
+    ) -> impl Future<Output = ()> + Send {
+        delete_user_state(self, service_id, state_key);
+        future::ready(())
+    }
+
+    fn get_user_state(
+        &mut self,
+        service_id: &ServiceId,
+        state_key: impl AsRef<[u8]>,
+    ) -> impl Future<Output = Result<Option<Bytes>>> + Send {
+        future::ready(get_user_state(self, service_id, state_key))
+    }
+
+    fn get_all_user_states(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
+        stream::iter(get_all_user_states(self, service_id))
     }
 }
 

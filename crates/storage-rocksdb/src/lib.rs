@@ -32,7 +32,6 @@ use crate::TableKind::{
 use bytes::BytesMut;
 use codederror::CodedError;
 use futures::{ready, FutureExt, Stream};
-use futures_util::stream;
 use restate_storage_api::{Storage, StorageError, Transaction};
 use rocksdb::BlockBasedOptions;
 use rocksdb::Cache;
@@ -188,6 +187,16 @@ pub trait StorageAccess {
     where
         K: TableKey,
         F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>;
+
+    fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
+    where
+        K: TableKey,
+        F: FnOnce(&[u8], Option<&[u8]>) -> Result<R>;
+
+    fn for_each_key_value_in_place<K, F, R>(&self, scan: TableScan<K>, op: F) -> Vec<Result<R>>
+    where
+        K: TableKey,
+        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>;
 }
 
 #[derive(Debug)]
@@ -388,6 +397,13 @@ impl RocksDBStorage {
         )
     }
 
+    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
+        let table = self.table_handle(table);
+        self.db
+            .get_pinned_cf(&table, key)
+            .map_err(|error| StorageError::Generic(error.into()))
+    }
+
     pub fn prefix_iterator<K: Into<Vec<u8>>>(&self, table: TableKind, prefix: K) -> DBIterator {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
@@ -524,6 +540,24 @@ impl StorageAccess for RocksDBStorage {
         self.db.delete_cf(&table, &self.key_buffer).unwrap();
     }
 
+    fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
+    where
+        K: TableKey,
+        F: FnOnce(&[u8], Option<&[u8]>) -> Result<R>,
+    {
+        let mut buf = self.key_buffer(key.serialized_length());
+        key.serialize_to(&mut buf);
+        let buf = buf.split();
+
+        match self.get(K::table(), &buf) {
+            Ok(value) => {
+                let slice = value.as_ref().map(|v| v.as_ref());
+                f(&buf, slice)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     #[inline]
     fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
     where
@@ -532,6 +566,39 @@ impl StorageAccess for RocksDBStorage {
     {
         let iterator = self.iterator_from(scan);
         f(iterator.item())
+    }
+
+    #[inline]
+    fn for_each_key_value_in_place<K, F, R>(&self, scan: TableScan<K>, mut op: F) -> Vec<Result<R>>
+    where
+        K: TableKey,
+        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>,
+    {
+        let mut res = Vec::new();
+
+        let mut iterator = self.iterator_from(scan);
+
+        while let Some((k, v)) = iterator.item() {
+            match op(k, v) {
+                TableScanIterationDecision::Emit(result) => {
+                    res.push(result);
+                    iterator.next();
+                }
+                TableScanIterationDecision::BreakWith(result) => {
+                    res.push(result);
+                    break;
+                }
+                TableScanIterationDecision::Continue => {
+                    iterator.next();
+                    continue;
+                }
+                TableScanIterationDecision::Break => {
+                    break;
+                }
+            };
+        }
+
+        res
     }
 }
 
@@ -637,63 +704,6 @@ impl<'a> RocksDBTransaction<'a> {
         self.txn.raw_iterator_cf_opt(&table, opts)
     }
 
-    pub async fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
-    where
-        K: TableKey + Send + 'static,
-        F: FnOnce(&[u8], Option<&[u8]>) -> Result<R> + Send + 'static,
-        R: Send + 'static,
-    {
-        let mut buf = self.key_buffer(key.serialized_length());
-        key.serialize_to(&mut buf);
-        let buf = buf.split();
-
-        match self.get(K::table(), &buf) {
-            Ok(value) => {
-                let slice = value.as_ref().map(|v| v.as_ref());
-                f(&buf, slice)
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    #[inline]
-    pub fn for_each_key_value_in_place<K, F, R>(
-        &self,
-        scan: TableScan<K>,
-        mut op: F,
-    ) -> impl Stream<Item = Result<R>> + Send
-    where
-        K: TableKey + Send + 'static,
-        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R> + Send + 'static,
-        R: Send + 'static,
-    {
-        let mut res = Vec::new();
-
-        let mut iterator = self.iterator_from(scan);
-
-        while let Some((k, v)) = iterator.item() {
-            match op(k, v) {
-                TableScanIterationDecision::Emit(result) => {
-                    res.push(result);
-                    iterator.next();
-                }
-                TableScanIterationDecision::BreakWith(result) => {
-                    res.push(result);
-                    break;
-                }
-                TableScanIterationDecision::Continue => {
-                    iterator.next();
-                    continue;
-                }
-                TableScanIterationDecision::Break => {
-                    break;
-                }
-            };
-        }
-
-        stream::iter(res)
-    }
-
     #[inline]
     fn key_buffer(&mut self, min_size: usize) -> &mut BytesMut {
         self.key_buffer.clear();
@@ -745,6 +755,24 @@ impl<'a> StorageAccess for RocksDBTransaction<'a> {
         self.txn.delete_cf(&table, &self.key_buffer).unwrap();
     }
 
+    fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
+    where
+        K: TableKey,
+        F: FnOnce(&[u8], Option<&[u8]>) -> Result<R>,
+    {
+        let mut buf = self.key_buffer(key.serialized_length());
+        key.serialize_to(&mut buf);
+        let buf = buf.split();
+
+        match self.get(K::table(), &buf) {
+            Ok(value) => {
+                let slice = value.as_ref().map(|v| v.as_ref());
+                f(&buf, slice)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     #[inline]
     fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
     where
@@ -753,5 +781,38 @@ impl<'a> StorageAccess for RocksDBTransaction<'a> {
     {
         let iterator = self.iterator_from(scan);
         f(iterator.item())
+    }
+
+    #[inline]
+    fn for_each_key_value_in_place<K, F, R>(&self, scan: TableScan<K>, mut op: F) -> Vec<Result<R>>
+    where
+        K: TableKey,
+        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>,
+    {
+        let mut res = Vec::new();
+
+        let mut iterator = self.iterator_from(scan);
+
+        while let Some((k, v)) = iterator.item() {
+            match op(k, v) {
+                TableScanIterationDecision::Emit(result) => {
+                    res.push(result);
+                    iterator.next();
+                }
+                TableScanIterationDecision::BreakWith(result) => {
+                    res.push(result);
+                    break;
+                }
+                TableScanIterationDecision::Continue => {
+                    iterator.next();
+                    continue;
+                }
+                TableScanIterationDecision::Break => {
+                    break;
+                }
+            };
+        }
+
+        res
     }
 }

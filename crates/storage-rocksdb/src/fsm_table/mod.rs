@@ -13,6 +13,7 @@ use crate::TableKind::PartitionStateMachine;
 use crate::{RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use futures::Stream;
+use futures_util::stream;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::Result;
 use restate_types::identifiers::PartitionId;
@@ -30,7 +31,6 @@ impl<'a> FsmTable for RocksDBTransaction<'a> {
             .partition_id(partition_id)
             .state_id(state_id);
         self.get_blocking(key, |_k, v| Ok(v.map(Bytes::copy_from_slice)))
-            .await
     }
 
     fn put(
@@ -57,13 +57,13 @@ impl<'a> FsmTable for RocksDBTransaction<'a> {
         &mut self,
         partition_id: PartitionId,
     ) -> impl Stream<Item = Result<(u64, Bytes)>> + Send {
-        self.for_each_key_value_in_place(
+        stream::iter(self.for_each_key_value_in_place(
             TableScan::Partition::<PartitionStateMachineKey>(partition_id),
             move |k, v| {
                 let res = decode_key_value(k, v);
                 TableScanIterationDecision::Emit(res)
             },
-        )
+        ))
     }
 }
 

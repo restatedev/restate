@@ -19,6 +19,7 @@ use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
+use futures_util::stream;
 use prost::Message;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::{Result, StorageError};
@@ -85,7 +86,6 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
                 .map_err(StorageError::from)
                 .map(Some)
         })
-        .await
     }
 
     fn get_journal(
@@ -99,25 +99,27 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
             .service_key(service_id.key.clone());
 
         let mut n = 0;
-        self.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, v| {
-            let key = JournalKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
-                journal_key
-                    .journal_index
-                    .expect("The journal index must be part of the journal key.")
-            });
-            let entry = storage::v1::JournalEntry::decode(v)
-                .map_err(|error| StorageError::Generic(error.into()))
-                .and_then(|entry| JournalEntry::try_from(entry).map_err(Into::into));
+        stream::iter(
+            self.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, v| {
+                let key = JournalKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
+                    journal_key
+                        .journal_index
+                        .expect("The journal index must be part of the journal key.")
+                });
+                let entry = storage::v1::JournalEntry::decode(v)
+                    .map_err(|error| StorageError::Generic(error.into()))
+                    .and_then(|entry| JournalEntry::try_from(entry).map_err(Into::into));
 
-            let result = key.and_then(|key| entry.map(|entry| (key, entry)));
+                let result = key.and_then(|key| entry.map(|entry| (key, entry)));
 
-            n += 1;
-            if n < journal_length {
-                TableScanIterationDecision::Emit(result)
-            } else {
-                TableScanIterationDecision::BreakWith(result)
-            }
-        })
+                n += 1;
+                if n < journal_length {
+                    TableScanIterationDecision::Emit(result)
+                } else {
+                    TableScanIterationDecision::BreakWith(result)
+                }
+            }),
+        )
     }
 
     async fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) {

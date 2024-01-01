@@ -87,21 +87,18 @@ where
 
 impl<Storage> restate_invoker_api::StateReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + std::marker::Sync + 'a,
+    for<'a> Storage: restate_storage_api::Storage + StateTable + Send + 'a,
 {
     type StateIter = IntoIter<(Bytes, Bytes)>;
     type Error = InvokerStorageReaderError;
 
-    async fn read_state(
-        &self,
-        service_id: &ServiceId,
+    async fn read_state<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
     ) -> Result<EagerState<Self::StateIter>, Self::Error> {
-        let mut transaction = self.0.transaction();
-
-        let user_states = transaction
+        let user_states = self
+            .0
             .get_all_user_states(service_id)
-            // TODO: Update invoker to maintain transaction while reading the state stream: See https://github.com/restatedev/restate/issues/275
-            // collecting the stream because we cannot keep the transaction open
             .try_collect::<Vec<_>>()
             .await?;
 

@@ -12,6 +12,7 @@ use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Deduplication;
 use crate::{RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision};
 use futures::Stream;
+use futures_util::stream;
 use restate_storage_api::deduplication_table::{DeduplicationTable, SequenceNumberSource};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
@@ -41,7 +42,6 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
 
             Ok(maybe_sequence_number)
         })
-        .await
     }
 
     async fn put_sequence_number(
@@ -60,7 +60,7 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
         &mut self,
         partition_id: PartitionId,
     ) -> impl Stream<Item = Result<(SequenceNumberSource, u64)>> + Send {
-        self.for_each_key_value_in_place(
+        stream::iter(self.for_each_key_value_in_place(
             TableScan::Partition::<DeduplicationKey>(partition_id),
             move |k, v| {
                 let key =
@@ -77,6 +77,6 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
                 };
                 TableScanIterationDecision::Emit(res)
             },
-        )
+        ))
     }
 }

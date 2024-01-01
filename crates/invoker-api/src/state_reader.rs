@@ -70,9 +70,9 @@ pub trait StateReader {
     type StateIter: Iterator<Item = (Bytes, Bytes)>;
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn read_state(
-        &self,
-        service_id: &ServiceId,
+    fn read_state<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
     ) -> impl Future<Output = Result<EagerState<Self::StateIter>, Self::Error>> + Send;
 }
 
@@ -91,9 +91,9 @@ pub mod mocks {
         type StateIter = std::iter::Empty<(Bytes, Bytes)>;
         type Error = Infallible;
 
-        async fn read_state(
-            &self,
-            _service_id: &ServiceId,
+        async fn read_state<'a>(
+            &'a mut self,
+            _service_id: &'a ServiceId,
         ) -> Result<EagerState<Self::StateIter>, Self::Error> {
             Ok(EagerState::new_complete(empty()))
         }

@@ -15,6 +15,7 @@ use crate::TableScanIterationDecision::Emit;
 use crate::{RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
+use futures_util::stream;
 use prost::Message;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::{Result, StorageError};
@@ -110,14 +111,14 @@ impl<'a> TimerTable for RocksDBTransaction<'a> {
     ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send {
         let scan = exclusive_start_key_range(partition_id, exclusive_start);
         let mut produced = 0;
-        self.for_each_key_value_in_place(scan, move |k, v| {
+        stream::iter(self.for_each_key_value_in_place(scan, move |k, v| {
             if produced >= limit {
                 return TableScanIterationDecision::Break;
             }
             produced += 1;
             let res = decode_seq_timer_key_value(k, v);
             Emit(res)
-        })
+        }))
     }
 }
 

@@ -19,6 +19,7 @@ use crate::{RocksDBTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
+use futures_util::{future, stream};
 use prost::Message;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::{Result, StorageError};
@@ -27,7 +28,6 @@ use restate_types::identifiers::{FullInvocationId, InvocationUuid, WithPartition
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use std::future::Future;
 use std::ops::RangeInclusive;
-use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 define_table_key!(
@@ -92,7 +92,6 @@ impl<'a> StatusTable for RocksDBTransaction<'a> {
                 .map_err(StorageError::from)
                 .map(Some)
         })
-        .await
     }
 
     fn get_invocation_status_from(
@@ -102,7 +101,7 @@ impl<'a> StatusTable for RocksDBTransaction<'a> {
     ) -> impl Future<Output = Result<Option<(ServiceId, InvocationStatus)>>> + Send {
         let key = StatusKey::default().partition_key(partition_key);
 
-        let mut stream =
+        let mut invocation_statuses =
             self.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, v| {
                 let invocation_status = match decode_status(v) {
                     Ok(invocation_status)
@@ -123,7 +122,13 @@ impl<'a> StatusTable for RocksDBTransaction<'a> {
                 )
             });
 
-        async move { stream.next().await.transpose() }
+        let result = if invocation_statuses.is_empty() {
+            Ok(None)
+        } else {
+            invocation_statuses.swap_remove(0).map(Some)
+        };
+
+        future::ready(result)
     }
 
     async fn delete_invocation_status(&mut self, service_id: &ServiceId) {
@@ -136,7 +141,7 @@ impl<'a> StatusTable for RocksDBTransaction<'a> {
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<FullInvocationId>> + Send {
-        self.for_each_key_value_in_place(
+        stream::iter(self.for_each_key_value_in_place(
             PartitionKeyRange::<StatusKey>(partition_key_range),
             |k, v| {
                 let result = decode_status_key_value(k, v).transpose();
@@ -146,7 +151,7 @@ impl<'a> StatusTable for RocksDBTransaction<'a> {
                     TableScanIterationDecision::Continue
                 }
             },
-        )
+        ))
     }
 }
 
