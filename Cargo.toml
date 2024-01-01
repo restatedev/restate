@@ -69,6 +69,7 @@ ahash = "0.8.5"
 anyhow = "1.0.68"
 arc-swap = "1.6"
 assert2 = "0.3.11"
+async-channel = "2.1.1"
 async-trait = "0.1.73"
 base64 = "0.21"
 bincode = { version = "2.0.0-rc", default-features = false, features = [ "std", "serde", ] }

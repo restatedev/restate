@@ -19,14 +19,13 @@ use crate::{RocksDBTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
-use futures_util::{future, stream};
+use futures_util::stream;
 use prost::Message;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::identifiers::{PartitionKey, ServiceId};
-use std::future::Future;
 use std::ops::RangeInclusive;
 use uuid::Uuid;
 
@@ -56,102 +55,162 @@ fn status_key_from_bytes(mut bytes: Bytes) -> crate::Result<ServiceId> {
     ))
 }
 
-impl<'a> StatusTable for RocksDBTransaction<'a> {
-    async fn put_invocation_status(&mut self, service_id: &ServiceId, status: InvocationStatus) {
-        let key = StatusKey::default()
-            .partition_key(service_id.partition_key())
-            .service_name(service_id.service_name.clone())
-            .service_key(service_id.key.clone());
-        if status == InvocationStatus::Free {
-            self.delete_key(&key);
-            return;
-        }
-
+fn put_invocation_status<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+    status: InvocationStatus,
+) {
+    let key = StatusKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone());
+    if status == InvocationStatus::Free {
+        storage.delete_key(&key);
+    } else {
         let value = ProtoValue(storage::v1::InvocationStatus::from(status));
+        storage.put_kv(key, value);
+    }
+}
 
-        self.put_kv(key, value);
+fn get_invocation_status<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+) -> Result<Option<InvocationStatus>> {
+    let key = StatusKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone());
+
+    storage.get_blocking(key, move |_, v| {
+        if v.is_none() {
+            return Ok(None);
+        }
+        let v = v.unwrap();
+        let proto = storage::v1::InvocationStatus::decode(v)
+            .map_err(|err| StorageError::Generic(err.into()))?;
+        InvocationStatus::try_from(proto)
+            .map_err(StorageError::from)
+            .map(Some)
+    })
+}
+
+fn get_invocation_status_from<S: StorageAccess>(
+    storage: &mut S,
+    partition_key: PartitionKey,
+    invocation_uuid: InvocationUuid,
+) -> Result<Option<(ServiceId, InvocationStatus)>> {
+    let key = StatusKey::default().partition_key(partition_key);
+
+    let mut invocation_statuses =
+        storage.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, v| {
+            let invocation_status = match decode_status(v) {
+                Ok(invocation_status)
+                    if invocation_status.invocation_uuid() == Some(invocation_uuid) =>
+                {
+                    invocation_status
+                }
+                Ok(_) => {
+                    return TableScanIterationDecision::Continue;
+                }
+                Err(err) => {
+                    return TableScanIterationDecision::BreakWith(Err(err));
+                }
+            };
+            TableScanIterationDecision::BreakWith(
+                status_key_from_bytes(Bytes::copy_from_slice(k)).map(|id| (id, invocation_status)),
+            )
+        });
+
+    if invocation_statuses.is_empty() {
+        Ok(None)
+    } else {
+        invocation_statuses.swap_remove(0).map(Some)
+    }
+}
+
+fn delete_invocation_status<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) {
+    let key = write_status_key(service_id);
+    storage.delete_key(&key);
+}
+
+fn invoked_invocations<S: StorageAccess>(
+    storage: &mut S,
+    partition_key_range: RangeInclusive<PartitionKey>,
+) -> Vec<Result<FullInvocationId>> {
+    storage.for_each_key_value_in_place(
+        PartitionKeyRange::<StatusKey>(partition_key_range),
+        |k, v| {
+            let result = decode_status_key_value(k, v).transpose();
+            if let Some(res) = result {
+                TableScanIterationDecision::Emit(res)
+            } else {
+                TableScanIterationDecision::Continue
+            }
+        },
+    )
+}
+
+impl StatusTable for RocksDBStorage {
+    async fn put_invocation_status(&mut self, service_id: &ServiceId, status: InvocationStatus) {
+        put_invocation_status(self, service_id, status)
     }
 
     async fn get_invocation_status(
         &mut self,
         service_id: &ServiceId,
     ) -> Result<Option<InvocationStatus>> {
-        let key = StatusKey::default()
-            .partition_key(service_id.partition_key())
-            .service_name(service_id.service_name.clone())
-            .service_key(service_id.key.clone());
-
-        self.get_blocking(key, move |_, v| {
-            if v.is_none() {
-                return Ok(None);
-            }
-            let v = v.unwrap();
-            let proto = storage::v1::InvocationStatus::decode(v)
-                .map_err(|err| StorageError::Generic(err.into()))?;
-            InvocationStatus::try_from(proto)
-                .map_err(StorageError::from)
-                .map(Some)
-        })
+        get_invocation_status(self, service_id)
     }
 
-    fn get_invocation_status_from(
+    async fn get_invocation_status_from(
         &mut self,
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,
-    ) -> impl Future<Output = Result<Option<(ServiceId, InvocationStatus)>>> + Send {
-        let key = StatusKey::default().partition_key(partition_key);
-
-        let mut invocation_statuses =
-            self.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, v| {
-                let invocation_status = match decode_status(v) {
-                    Ok(invocation_status)
-                        if invocation_status.invocation_uuid() == Some(invocation_uuid) =>
-                    {
-                        invocation_status
-                    }
-                    Ok(_) => {
-                        return TableScanIterationDecision::Continue;
-                    }
-                    Err(err) => {
-                        return TableScanIterationDecision::BreakWith(Err(err));
-                    }
-                };
-                TableScanIterationDecision::BreakWith(
-                    status_key_from_bytes(Bytes::copy_from_slice(k))
-                        .map(|id| (id, invocation_status)),
-                )
-            });
-
-        let result = if invocation_statuses.is_empty() {
-            Ok(None)
-        } else {
-            invocation_statuses.swap_remove(0).map(Some)
-        };
-
-        future::ready(result)
+    ) -> Result<Option<(ServiceId, InvocationStatus)>> {
+        get_invocation_status_from(self, partition_key, invocation_uuid)
     }
 
     async fn delete_invocation_status(&mut self, service_id: &ServiceId) {
-        let key = write_status_key(service_id);
-
-        self.delete_key(&key);
+        delete_invocation_status(self, service_id)
     }
 
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<FullInvocationId>> + Send {
-        stream::iter(self.for_each_key_value_in_place(
-            PartitionKeyRange::<StatusKey>(partition_key_range),
-            |k, v| {
-                let result = decode_status_key_value(k, v).transpose();
-                if let Some(res) = result {
-                    TableScanIterationDecision::Emit(res)
-                } else {
-                    TableScanIterationDecision::Continue
-                }
-            },
-        ))
+        stream::iter(invoked_invocations(self, partition_key_range))
+    }
+}
+
+impl<'a> StatusTable for RocksDBTransaction<'a> {
+    async fn put_invocation_status(&mut self, service_id: &ServiceId, status: InvocationStatus) {
+        put_invocation_status(self, service_id, status)
+    }
+
+    async fn get_invocation_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> Result<Option<InvocationStatus>> {
+        get_invocation_status(self, service_id)
+    }
+
+    async fn get_invocation_status_from(
+        &mut self,
+        partition_key: PartitionKey,
+        invocation_uuid: InvocationUuid,
+    ) -> Result<Option<(ServiceId, InvocationStatus)>> {
+        get_invocation_status_from(self, partition_key, invocation_uuid)
+    }
+
+    async fn delete_invocation_status(&mut self, service_id: &ServiceId) {
+        delete_invocation_status(self, service_id)
+    }
+
+    fn invoked_invocations(
+        &mut self,
+        partition_key_range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<FullInvocationId>> + Send {
+        stream::iter(invoked_invocations(self, partition_key_range))
     }
 }
 

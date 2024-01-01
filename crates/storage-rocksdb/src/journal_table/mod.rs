@@ -46,22 +46,100 @@ fn write_journal_entry_key(service_id: &ServiceId, journal_index: u32) -> Journa
         .journal_index(journal_index)
 }
 
-impl<'a> JournalTable for RocksDBTransaction<'a> {
+fn put_journal_entry<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+    journal_index: u32,
+    journal_entry: JournalEntry,
+) {
+    let key = JournalKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone())
+        .journal_index(journal_index);
+
+    let value = ProtoValue(storage::v1::JournalEntry::from(journal_entry));
+
+    storage.put_kv(key, value);
+}
+
+fn get_journal_entry<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+    journal_index: u32,
+) -> Result<Option<JournalEntry>> {
+    let key = JournalKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone())
+        .journal_index(journal_index);
+
+    storage.get_blocking(key, move |_k, v| {
+        if v.is_none() {
+            return Ok(None);
+        }
+        let proto = storage::v1::JournalEntry::decode(v.unwrap())
+            .map_err(|err| StorageError::Generic(err.into()))?;
+
+        JournalEntry::try_from(proto)
+            .map_err(StorageError::from)
+            .map(Some)
+    })
+}
+
+fn get_journal<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+    journal_length: EntryIndex,
+) -> Vec<Result<(EntryIndex, JournalEntry)>> {
+    let key = JournalKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone());
+
+    let mut n = 0;
+    storage.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, v| {
+        let key = JournalKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
+            journal_key
+                .journal_index
+                .expect("The journal index must be part of the journal key.")
+        });
+        let entry = storage::v1::JournalEntry::decode(v)
+            .map_err(|error| StorageError::Generic(error.into()))
+            .and_then(|entry| JournalEntry::try_from(entry).map_err(Into::into));
+
+        let result = key.and_then(|key| entry.map(|entry| (key, entry)));
+
+        n += 1;
+        if n < journal_length {
+            TableScanIterationDecision::Emit(result)
+        } else {
+            TableScanIterationDecision::BreakWith(result)
+        }
+    })
+}
+
+fn delete_journal<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+    journal_length: EntryIndex,
+) {
+    let mut key = write_journal_entry_key(service_id, 0);
+    let k = &mut key;
+    for journal_index in 0..journal_length {
+        k.journal_index = Some(journal_index);
+        storage.delete_key(k);
+    }
+}
+
+impl JournalTable for RocksDBStorage {
     async fn put_journal_entry(
         &mut self,
         service_id: &ServiceId,
         journal_index: u32,
         journal_entry: JournalEntry,
     ) {
-        let key = JournalKey::default()
-            .partition_key(service_id.partition_key())
-            .service_name(service_id.service_name.clone())
-            .service_key(service_id.key.clone())
-            .journal_index(journal_index);
-
-        let value = ProtoValue(storage::v1::JournalEntry::from(journal_entry));
-
-        self.put_kv(key, value);
+        put_journal_entry(self, service_id, journal_index, journal_entry)
     }
 
     async fn get_journal_entry(
@@ -69,23 +147,7 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
         service_id: &ServiceId,
         journal_index: u32,
     ) -> Result<Option<JournalEntry>> {
-        let key = JournalKey::default()
-            .partition_key(service_id.partition_key())
-            .service_name(service_id.service_name.clone())
-            .service_key(service_id.key.clone())
-            .journal_index(journal_index);
-
-        self.get_blocking(key, move |_k, v| {
-            if v.is_none() {
-                return Ok(None);
-            }
-            let proto = storage::v1::JournalEntry::decode(v.unwrap())
-                .map_err(|err| StorageError::Generic(err.into()))?;
-
-            JournalEntry::try_from(proto)
-                .map_err(StorageError::from)
-                .map(Some)
-        })
+        get_journal_entry(self, service_id, journal_index)
     }
 
     fn get_journal(
@@ -93,42 +155,42 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
         service_id: &ServiceId,
         journal_length: EntryIndex,
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
-        let key = JournalKey::default()
-            .partition_key(service_id.partition_key())
-            .service_name(service_id.service_name.clone())
-            .service_key(service_id.key.clone());
-
-        let mut n = 0;
-        stream::iter(
-            self.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, v| {
-                let key = JournalKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
-                    journal_key
-                        .journal_index
-                        .expect("The journal index must be part of the journal key.")
-                });
-                let entry = storage::v1::JournalEntry::decode(v)
-                    .map_err(|error| StorageError::Generic(error.into()))
-                    .and_then(|entry| JournalEntry::try_from(entry).map_err(Into::into));
-
-                let result = key.and_then(|key| entry.map(|entry| (key, entry)));
-
-                n += 1;
-                if n < journal_length {
-                    TableScanIterationDecision::Emit(result)
-                } else {
-                    TableScanIterationDecision::BreakWith(result)
-                }
-            }),
-        )
+        stream::iter(get_journal(self, service_id, journal_length))
     }
 
     async fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) {
-        let mut key = write_journal_entry_key(service_id, 0);
-        let k = &mut key;
-        for journal_index in 0..journal_length {
-            k.journal_index = Some(journal_index);
-            self.delete_key(k);
-        }
+        delete_journal(self, service_id, journal_length)
+    }
+}
+
+impl<'a> JournalTable for RocksDBTransaction<'a> {
+    async fn put_journal_entry(
+        &mut self,
+        service_id: &ServiceId,
+        journal_index: u32,
+        journal_entry: JournalEntry,
+    ) {
+        put_journal_entry(self, service_id, journal_index, journal_entry)
+    }
+
+    async fn get_journal_entry(
+        &mut self,
+        service_id: &ServiceId,
+        journal_index: u32,
+    ) -> Result<Option<JournalEntry>> {
+        get_journal_entry(self, service_id, journal_index)
+    }
+
+    fn get_journal(
+        &mut self,
+        service_id: &ServiceId,
+        journal_length: EntryIndex,
+    ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
+        stream::iter(get_journal(self, service_id, journal_length))
+    }
+
+    async fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) {
+        delete_journal(self, service_id, journal_length)
     }
 }
 

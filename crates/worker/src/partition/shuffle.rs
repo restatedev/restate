@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::shuffle::state_machine::StateMachine;
+use async_channel::{TryRecvError, TrySendError};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PartitionId, PeerId};
 use restate_types::invocation::{
@@ -152,7 +153,52 @@ pub(super) trait OutboxReader {
 
 pub(super) type NetworkSender<T> = mpsc::Sender<T>;
 
-pub(super) type HintSender = mpsc::Sender<NewOutboxMessage>;
+/// The hint sender allows to send hints to the shuffle service. If more hints are sent than the
+/// channel can store, then the oldest hints will be dropped.
+#[derive(Debug, Clone)]
+pub(crate) struct HintSender {
+    tx: async_channel::Sender<NewOutboxMessage>,
+
+    // receiver to pop the oldest messages from the hint channel
+    rx: async_channel::Receiver<NewOutboxMessage>,
+}
+
+impl HintSender {
+    fn new(
+        tx: async_channel::Sender<NewOutboxMessage>,
+        rx: async_channel::Receiver<NewOutboxMessage>,
+    ) -> Self {
+        Self { tx, rx }
+    }
+
+    pub(crate) fn send(&self, mut outbox_message: NewOutboxMessage) {
+        loop {
+            let result = self.tx.try_send(outbox_message);
+
+            outbox_message = match result {
+                Ok(_) => break,
+                Err(err) => match err {
+                    TrySendError::Full(outbox_message) => outbox_message,
+                    TrySendError::Closed(_) => {
+                        unreachable!("channel should never be closed since we own tx and rx")
+                    }
+                },
+            };
+
+            // pop an element from the hint channel to make space for the new message
+            if let Err(err) = self.rx.try_recv() {
+                match err {
+                    TryRecvError::Empty => {
+                        // try again to send since the channel should have capacity now
+                    }
+                    TryRecvError::Closed => {
+                        unreachable!("channel should never be closed since we own tx and rx")
+                    }
+                }
+            }
+        }
+    }
+}
 
 pub(super) struct Shuffle<OR> {
     peer_id: PeerId,
@@ -168,11 +214,11 @@ pub(super) struct Shuffle<OR> {
     // used to tell partition processor about outbox truncations
     truncation_tx: mpsc::Sender<OutboxTruncation>,
 
-    hint_rx: mpsc::Receiver<NewOutboxMessage>,
+    hint_rx: async_channel::Receiver<NewOutboxMessage>,
 
     // used to create the senders into the shuffle
     network_in_tx: mpsc::Sender<ShuffleInput>,
-    hint_tx: mpsc::Sender<NewOutboxMessage>,
+    hint_tx: async_channel::Sender<NewOutboxMessage>,
 }
 
 impl<OR> Shuffle<OR>
@@ -188,7 +234,7 @@ where
         channel_size: usize,
     ) -> Self {
         let (network_in_tx, network_in_rx) = mpsc::channel(channel_size);
-        let (hint_tx, hint_rx) = mpsc::channel(channel_size);
+        let (hint_tx, hint_rx) = async_channel::bounded(channel_size);
 
         Self {
             peer_id,
@@ -212,7 +258,7 @@ where
     }
 
     pub(super) fn create_hint_sender(&self) -> HintSender {
-        self.hint_tx.clone()
+        HintSender::new(self.hint_tx.clone(), self.hint_rx.clone())
     }
 
     pub(super) async fn run(self, shutdown_watch: drain::Watch) -> anyhow::Result<()> {
@@ -276,6 +322,7 @@ mod state_machine {
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::identifiers::{PartitionId, PeerId};
     use restate_types::message::{AckKind, MessageIndex};
+    use std::cmp::Ordering;
     use std::future::Future;
     use std::pin::Pin;
     use std::time::Duration;
@@ -308,7 +355,7 @@ mod state_machine {
         outbox_reader: Option<OutboxReader>,
         read_future: ReadFuture<OutboxReader>,
         send_operation: SendOp,
-        hint_rx: &'a mut mpsc::Receiver<NewOutboxMessage>,
+        hint_rx: &'a mut async_channel::Receiver<NewOutboxMessage>,
         retry_timeout: Duration,
         #[pin]
         state: State<SendFuture>,
@@ -337,7 +384,7 @@ mod state_machine {
             partition_id: PartitionId,
             outbox_reader: OutboxReader,
             send_operation: SendOp,
-            hint_rx: &'a mut mpsc::Receiver<NewOutboxMessage>,
+            hint_rx: &'a mut async_channel::Receiver<NewOutboxMessage>,
             retry_timeout: Duration,
         ) -> Self {
             let current_sequence_number = 0;
@@ -361,25 +408,42 @@ mod state_machine {
             loop {
                 match this.state.as_mut().project() {
                     StateProj::Idle => {
-                        let NewOutboxMessage {
-                            seq_number,
-                            message,
-                        } = this
-                            .hint_rx
-                            .recv()
-                            .await
-                            .expect("shuffle is owning the hint sender");
-
-                        if seq_number >= *this.current_sequence_number {
-                            *this.current_sequence_number = seq_number;
-
-                            let send_future = (this.send_operation)(ShuffleOutput::new(
-                                *this.shuffle_id,
-                                *this.partition_id,
+                        loop {
+                            let NewOutboxMessage {
                                 seq_number,
-                                message.into(),
-                            ));
-                            this.state.set(State::Sending(send_future));
+                                message,
+                            } = this
+                                .hint_rx
+                                .recv()
+                                .await
+                                .expect("shuffle is owning the hint sender");
+
+                            match seq_number.cmp(this.current_sequence_number) {
+                                Ordering::Equal => {
+                                    let send_future = (this.send_operation)(ShuffleOutput::new(
+                                        *this.shuffle_id,
+                                        *this.partition_id,
+                                        seq_number,
+                                        message.into(),
+                                    ));
+                                    this.state.set(State::Sending(send_future));
+                                    break;
+                                }
+                                Ordering::Greater => {
+                                    // we might have missed some hints, so try again reading the next outbox message
+                                    this.read_future.set(get_next_message(
+                                        this.outbox_reader
+                                            .take()
+                                            .expect("outbox reader should be available"),
+                                        *this.current_sequence_number,
+                                    ));
+                                    this.state.set(State::ReadingOutbox);
+                                    break;
+                                }
+                                Ordering::Less => {
+                                    // this is a hint for a message that we have already sent, so we can ignore it
+                                }
+                            }
                         }
                     }
                     StateProj::ReadingOutbox => {

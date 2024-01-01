@@ -12,6 +12,7 @@ use super::{FollowerState, LeaderState, LeadershipState, TimerService};
 
 use crate::partition::services::non_deterministic;
 use crate::partition::services::non_deterministic::ServiceInvoker;
+use crate::partition::shuffle::HintSender;
 use crate::partition::state_machine::{Action, ActionCollector};
 use crate::partition::{
     shuffle, StateMachineAckCommand, StateMachineAckResponse, StateMachineCommand, TimerValue,
@@ -67,7 +68,7 @@ where
                         message,
                         (follower_state.partition_id, leader_state.leader_epoch),
                         &mut follower_state.invoker_tx,
-                        &mut leader_state.shuffle_hint_tx,
+                        &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
                         &leader_state.non_deterministic_service_invoker,
                         &follower_state.ack_tx,
@@ -92,7 +93,7 @@ where
         action: Action,
         partition_leader_epoch: PartitionLeaderEpoch,
         invoker_tx: &mut I,
-        shuffle_hint_tx: &mut mpsc::Sender<shuffle::NewOutboxMessage>,
+        shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService<'a>>,
         non_deterministic_service_invoker: &ServiceInvoker<'a>,
         ack_tx: &restate_network::PartitionProcessorSender<StateMachineAckResponse>,
@@ -114,11 +115,7 @@ where
             Action::NewOutboxMessage {
                 seq_number,
                 message,
-            } => {
-                // it is ok if this message is not sent since it is only a hint
-                let _ =
-                    shuffle_hint_tx.try_send(shuffle::NewOutboxMessage::new(seq_number, message));
-            }
+            } => shuffle_hint_tx.send(shuffle::NewOutboxMessage::new(seq_number, message)),
             Action::RegisterTimer { timer_value } => timer_service.as_mut().add_timer(timer_value),
             Action::AckStoredEntry {
                 full_invocation_id,

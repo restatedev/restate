@@ -47,6 +47,7 @@ restate-worker-api = { workspace = true }
 
 anyhow = { workspace = true }
 assert2 = { workspace = true }
+async-channel = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }

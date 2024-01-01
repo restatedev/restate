@@ -45,9 +45,9 @@ pub trait JournalReader {
     type JournalStream: Stream<Item = PlainRawEntry>;
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn read_journal(
-        &self,
-        fid: &FullInvocationId,
+    fn read_journal<'a>(
+        &'a mut self,
+        fid: &'a FullInvocationId,
     ) -> impl Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>> + Send;
 }
 
@@ -64,9 +64,9 @@ pub mod mocks {
         type JournalStream = futures::stream::Empty<PlainRawEntry>;
         type Error = Infallible;
 
-        async fn read_journal(
-            &self,
-            _sid: &FullInvocationId,
+        async fn read_journal<'a>(
+            &'a mut self,
+            _sid: &'a FullInvocationId,
         ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
             Ok((
                 JournalMetadata::new(

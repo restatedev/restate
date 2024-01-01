@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::shuffle::Shuffle;
+use crate::partition::shuffle::{HintSender, Shuffle};
 use crate::partition::{
     shuffle, storage, StateMachineAckCommand, StateMachineAckResponse, TimerValue,
 };
@@ -55,7 +55,7 @@ type TimerService<'a> = restate_timer::TimerService<'a, TimerValue, TokioClock, 
 pub(crate) struct LeaderState<'a> {
     leader_epoch: LeaderEpoch,
     shutdown_signal: drain::Signal,
-    shuffle_hint_tx: mpsc::Sender<shuffle::NewOutboxMessage>,
+    shuffle_hint_tx: HintSender,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
     actions_buffer: Vec<Action>,
     timer_service: Pin<Box<TimerService<'a>>>,

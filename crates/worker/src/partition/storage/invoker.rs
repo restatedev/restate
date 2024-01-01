@@ -14,7 +14,6 @@ use restate_invoker_api::{EagerState, JournalMetadata};
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
-use restate_storage_api::Transaction;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::ServiceId;
 use restate_types::journal::raw::PlainRawEntry;
@@ -39,18 +38,16 @@ impl<Storage> InvokerStorageReader<Storage> {
 
 impl<Storage> restate_invoker_api::JournalReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + Sync + 'a,
+    for<'a> Storage: restate_storage_api::Storage + JournalTable + StatusTable + Send + 'a,
 {
     type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
     type Error = InvokerStorageReaderError;
 
-    async fn read_journal(
-        &self,
-        fid: &FullInvocationId,
+    async fn read_journal<'a>(
+        &'a mut self,
+        fid: &'a FullInvocationId,
     ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
-        let mut transaction = self.0.transaction();
-
-        let invocation_status = transaction.get_invocation_status(&fid.service_id).await?;
+        let invocation_status = self.0.get_invocation_status(&fid.service_id).await?;
 
         if let Some(InvocationStatus::Invoked(invoked_status)) = invocation_status {
             let journal_metadata = JournalMetadata::new(
@@ -59,7 +56,8 @@ where
                 invoked_status.method,
                 invoked_status.deployment_id,
             );
-            let journal_stream = transaction
+            let journal_stream = self
+                .0
                 .get_journal(&fid.service_id, journal_metadata.length)
                 .map(|entry| {
                     entry
@@ -75,8 +73,6 @@ where
                 // collecting the stream because we cannot keep the transaction open
                 .try_collect::<Vec<_>>()
                 .await?;
-
-            transaction.commit().await?;
 
             Ok((journal_metadata, stream::iter(journal_stream)))
         } else {
