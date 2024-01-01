@@ -128,7 +128,7 @@ where
         // The max number of effects should be 2 atm (e.g. RegisterTimer and AppendJournalEntry)
         let mut effects = Effects::with_capacity(2);
 
-        let partition_storage =
+        let mut partition_storage =
             PartitionStorage::new(partition_id, partition_key_range.clone(), rocksdb_storage);
 
         let (mut actuator_stream, mut leadership_state) = LeadershipState::follower(
@@ -143,7 +143,7 @@ where
         );
 
         let mut state_machine =
-            Self::create_state_machine::<RawEntryCodec, _>(&partition_storage).await?;
+            Self::create_state_machine::<RawEntryCodec>(&mut partition_storage).await?;
 
         let actuator_output_handler = ActionEffectHandler::new(proposal_tx);
 
@@ -230,17 +230,14 @@ where
         Ok(())
     }
 
-    async fn create_state_machine<Codec, Storage>(
-        partition_storage: &PartitionStorage<Storage>,
+    async fn create_state_machine<Codec>(
+        partition_storage: &mut PartitionStorage<RocksDBStorage>,
     ) -> Result<DeduplicatingStateMachine<Codec>, restate_storage_api::StorageError>
     where
         Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
-        Storage: restate_storage_api::Storage,
     {
-        let mut transaction = partition_storage.create_transaction();
-        let inbox_seq_number = transaction.load_inbox_seq_number().await?;
-        let outbox_seq_number = transaction.load_outbox_seq_number().await?;
-        transaction.commit().await?;
+        let inbox_seq_number = partition_storage.load_inbox_seq_number().await?;
+        let outbox_seq_number = partition_storage.load_outbox_seq_number().await?;
 
         let state_machine = DeduplicatingStateMachine::new(inbox_seq_number, outbox_seq_number);
 

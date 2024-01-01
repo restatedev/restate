@@ -15,6 +15,7 @@ use bytes::{Buf, Bytes};
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
 use restate_storage_api::deduplication_table::SequenceNumberSource;
+use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
@@ -64,6 +65,47 @@ where
             self.partition_id,
             self.partition_key_range.clone(),
             self.storage.transaction(),
+        )
+    }
+}
+
+async fn load_seq_number<F: FsmTable + Send>(
+    storage: &mut F,
+    partition_id: PartitionId,
+    state_id: u64,
+) -> Result<MessageIndex, StorageError> {
+    let seq_number = storage.get(partition_id, state_id).await?;
+
+    if let Some(mut seq_number) = seq_number {
+        let mut buffer = [0; 8];
+        seq_number.copy_to_slice(&mut buffer);
+        Ok(MessageIndex::from_be_bytes(buffer))
+    } else {
+        Ok(0)
+    }
+}
+
+impl<Storage> PartitionStorage<Storage>
+where
+    Storage: restate_storage_api::Storage + FsmTable + Send,
+{
+    pub fn load_inbox_seq_number(
+        &mut self,
+    ) -> impl Future<Output = Result<MessageIndex, StorageError>> + Send + '_ {
+        load_seq_number(
+            &mut self.storage,
+            self.partition_id,
+            fsm_variable::INBOX_SEQ_NUMBER,
+        )
+    }
+
+    pub fn load_outbox_seq_number(
+        &mut self,
+    ) -> impl Future<Output = Result<MessageIndex, StorageError>> + Send + '_ {
+        load_seq_number(
+            &mut self.storage,
+            self.partition_id,
+            fsm_variable::OUTBOX_SEQ_NUMBER,
         )
     }
 }
@@ -122,14 +164,6 @@ where
             .next_timers_greater_than(partition_id, exclusive_start, limit)
     }
 
-    pub(super) async fn load_outbox_seq_number(&mut self) -> Result<MessageIndex, StorageError> {
-        self.load_seq_number(fsm_variable::OUTBOX_SEQ_NUMBER).await
-    }
-
-    pub(super) async fn load_inbox_seq_number(&mut self) -> Result<MessageIndex, StorageError> {
-        self.load_seq_number(fsm_variable::INBOX_SEQ_NUMBER).await
-    }
-
     async fn store_seq_number(
         &mut self,
         seq_number: MessageIndex,
@@ -139,18 +173,6 @@ where
         self.inner.put(self.partition_id, state_id, &bytes).await;
 
         Ok(())
-    }
-
-    async fn load_seq_number(&mut self, state_id: u64) -> Result<MessageIndex, StorageError> {
-        let seq_number = self.inner.get(self.partition_id, state_id).await?;
-
-        if let Some(mut seq_number) = seq_number {
-            let mut buffer = [0; 8];
-            seq_number.copy_to_slice(&mut buffer);
-            Ok(MessageIndex::from_be_bytes(buffer))
-        } else {
-            Ok(0)
-        }
     }
 
     pub(super) async fn load_dedup_seq_number(

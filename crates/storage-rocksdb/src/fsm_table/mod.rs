@@ -10,13 +10,16 @@
 
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::PartitionStateMachine;
-use crate::{RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision};
+use crate::{
+    RocksDBStorage, RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+};
 use bytes::Bytes;
 use futures::Stream;
 use futures_util::stream;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::Result;
 use restate_types::identifiers::PartitionId;
+use std::future;
 use std::future::Future;
 use std::io::Cursor;
 
@@ -25,12 +28,52 @@ define_table_key!(
     PartitionStateMachineKey(partition_id: PartitionId, state_id: u64)
 );
 
-impl<'a> FsmTable for RocksDBTransaction<'a> {
+fn get<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    state_id: u64,
+) -> Result<Option<Bytes>> {
+    let key = PartitionStateMachineKey::default()
+        .partition_id(partition_id)
+        .state_id(state_id);
+    storage.get_blocking(key, |_k, v| Ok(v.map(Bytes::copy_from_slice)))
+}
+
+fn put<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    state_id: u64,
+    state_value: impl AsRef<[u8]>,
+) {
+    let key = PartitionStateMachineKey::default()
+        .partition_id(partition_id)
+        .state_id(state_id);
+    storage.put_kv(key, state_value.as_ref());
+}
+
+fn clear<S: StorageAccess>(storage: &mut S, partition_id: PartitionId, state_id: u64) {
+    let key = PartitionStateMachineKey::default()
+        .partition_id(partition_id)
+        .state_id(state_id);
+    storage.delete_key(&key);
+}
+
+fn get_all_states<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+) -> Vec<Result<(u64, Bytes)>> {
+    storage.for_each_key_value_in_place(
+        TableScan::Partition::<PartitionStateMachineKey>(partition_id),
+        move |k, v| {
+            let res = decode_key_value(k, v);
+            TableScanIterationDecision::Emit(res)
+        },
+    )
+}
+
+impl FsmTable for RocksDBStorage {
     async fn get(&mut self, partition_id: PartitionId, state_id: u64) -> Result<Option<Bytes>> {
-        let key = PartitionStateMachineKey::default()
-            .partition_id(partition_id)
-            .state_id(state_id);
-        self.get_blocking(key, |_k, v| Ok(v.map(Bytes::copy_from_slice)))
+        get(self, partition_id, state_id)
     }
 
     fn put(
@@ -39,31 +82,46 @@ impl<'a> FsmTable for RocksDBTransaction<'a> {
         state_id: u64,
         state_value: impl AsRef<[u8]>,
     ) -> impl Future<Output = ()> + Send {
-        let key = PartitionStateMachineKey::default()
-            .partition_id(partition_id)
-            .state_id(state_id);
-        self.put_kv(key, state_value.as_ref());
-        futures::future::ready(())
+        put(self, partition_id, state_id, state_value);
+        future::ready(())
     }
 
     async fn clear(&mut self, partition_id: PartitionId, state_id: u64) {
-        let key = PartitionStateMachineKey::default()
-            .partition_id(partition_id)
-            .state_id(state_id);
-        self.delete_key(&key);
+        clear(self, partition_id, state_id)
     }
 
     fn get_all_states(
         &mut self,
         partition_id: PartitionId,
     ) -> impl Stream<Item = Result<(u64, Bytes)>> + Send {
-        stream::iter(self.for_each_key_value_in_place(
-            TableScan::Partition::<PartitionStateMachineKey>(partition_id),
-            move |k, v| {
-                let res = decode_key_value(k, v);
-                TableScanIterationDecision::Emit(res)
-            },
-        ))
+        stream::iter(get_all_states(self, partition_id))
+    }
+}
+
+impl<'a> FsmTable for RocksDBTransaction<'a> {
+    async fn get(&mut self, partition_id: PartitionId, state_id: u64) -> Result<Option<Bytes>> {
+        get(self, partition_id, state_id)
+    }
+
+    fn put(
+        &mut self,
+        partition_id: PartitionId,
+        state_id: u64,
+        state_value: impl AsRef<[u8]>,
+    ) -> impl Future<Output = ()> + Send {
+        put(self, partition_id, state_id, state_value);
+        future::ready(())
+    }
+
+    async fn clear(&mut self, partition_id: PartitionId, state_id: u64) {
+        clear(self, partition_id, state_id)
+    }
+
+    fn get_all_states(
+        &mut self,
+        partition_id: PartitionId,
+    ) -> impl Stream<Item = Result<(u64, Bytes)>> + Send {
+        stream::iter(get_all_states(self, partition_id))
     }
 }
 
