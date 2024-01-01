@@ -179,7 +179,7 @@ where
     > {
         if let LeadershipState::Follower(mut follower_state) = self {
             let (mut service_invoker, service_invoker_output_rx) =
-                non_deterministic::ServiceInvoker::new(partition_storage, schemas);
+                non_deterministic::ServiceInvoker::new(partition_storage.clone(), schemas);
 
             let invoker_rx = Self::resume_invoked_invocations(
                 &mut follower_state.invoker_tx,

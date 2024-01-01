@@ -103,7 +103,7 @@ pub(crate) type EffectsSender = mpsc::UnboundedSender<Effects>;
 pub(crate) type EffectsReceiver = mpsc::UnboundedReceiver<Effects>;
 
 pub(crate) struct ServiceInvoker<'a> {
-    storage: &'a PartitionStorage<RocksDBStorage>,
+    storage: PartitionStorage<RocksDBStorage>,
     effects_tx: EffectsSender,
     schemas: &'a Schemas,
 }
@@ -119,7 +119,7 @@ impl<'a> ServiceInvoker<'a> {
     }
 
     pub(crate) fn new(
-        storage: &'a PartitionStorage<RocksDBStorage>,
+        storage: PartitionStorage<RocksDBStorage>,
         schemas: &'a Schemas,
     ) -> (Self, EffectsReceiver) {
         let (effects_tx, effects_rx) = mpsc::unbounded_channel();
@@ -147,7 +147,7 @@ impl<'a> ServiceInvoker<'a> {
         let invocation_context = InvocationContext {
             full_invocation_id: &full_invocation_id,
             span_context: &span_context,
-            state_reader: self.storage,
+            state_reader: &self.storage,
             schemas: self.schemas,
             response_sink: response_sink.as_ref(),
             effects_buffer: &mut out_effects,
