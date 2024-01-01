@@ -113,6 +113,7 @@ sync_wrapper = "0.1.2"
 tempfile = "3.6.0"
 thiserror = "1.0"
 tokio = { version = "1.29", default-features = false, features = [ "rt-multi-thread", "signal", "macros", ] }
+tokio-util = { version = "0.7.10" }
 tokio-stream = "0.1.14"
 tonic = { version = "0.10.2", default-features = false }
 tonic-build = "0.10.2"

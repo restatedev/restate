@@ -177,7 +177,7 @@ pub(super) struct Shuffle<OR> {
 
 impl<OR> Shuffle<OR>
 where
-    OR: OutboxReader,
+    OR: OutboxReader + Send + Sync + 'static,
 {
     pub(super) fn new(
         peer_id: PeerId,
@@ -235,7 +235,7 @@ where
         let state_machine = StateMachine::new(
             peer_id,
             partition_id,
-            |next_seq_number| outbox_reader.get_next_message(next_seq_number),
+            outbox_reader,
             |msg| network_tx.send(msg),
             &mut hint_rx,
             Duration::from_secs(60),
@@ -268,72 +268,91 @@ where
 }
 
 mod state_machine {
-    use crate::partition::shuffle::{NewOutboxMessage, ShuffleInput, ShuffleOutput};
+    use crate::partition::shuffle;
+    use crate::partition::shuffle::{
+        NewOutboxMessage, OutboxReaderError, ShuffleInput, ShuffleOutput,
+    };
     use pin_project::pin_project;
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::identifiers::{PartitionId, PeerId};
     use restate_types::message::{AckKind, MessageIndex};
     use std::future::Future;
-    use std::marker::PhantomData;
     use std::pin::Pin;
     use std::time::Duration;
     use tokio::sync::mpsc;
     use tokio::time::Sleep;
+    use tokio_util::sync::ReusableBoxFuture;
     use tracing::{debug, trace};
 
+    type ReadFuture<OutboxReader> = ReusableBoxFuture<
+        'static,
+        (
+            Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>,
+            OutboxReader,
+        ),
+    >;
+
     #[pin_project(project = StateProj)]
-    enum State<ReadFuture, SendFuture> {
+    enum State<SendFuture> {
         Idle,
-        ReadingOutbox(#[pin] ReadFuture),
+        ReadingOutbox,
         Sending(#[pin] SendFuture),
         WaitingForAck(#[pin] Sleep),
     }
 
     #[pin_project]
-    pub(super) struct StateMachine<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError> {
+    pub(super) struct StateMachine<'a, OutboxReader, SendOp, SendFuture> {
         shuffle_id: PeerId,
         partition_id: PartitionId,
         current_sequence_number: MessageIndex,
-        read_operation: ReadOp,
+        outbox_reader: Option<OutboxReader>,
+        read_future: ReadFuture<OutboxReader>,
         send_operation: SendOp,
         hint_rx: &'a mut mpsc::Receiver<NewOutboxMessage>,
         retry_timeout: Duration,
         #[pin]
-        state: State<ReadFuture, SendFuture>,
-
-        _read_error: PhantomData<ReadError>,
+        state: State<SendFuture>,
     }
 
-    impl<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError>
-        StateMachine<'a, ReadOp, SendOp, ReadFuture, SendFuture, ReadError>
+    async fn get_next_message<OutboxReader: shuffle::OutboxReader>(
+        outbox_reader: OutboxReader,
+        sequence_number: MessageIndex,
+    ) -> (
+        Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>,
+        OutboxReader,
+    ) {
+        let result = outbox_reader.get_next_message(sequence_number).await;
+
+        (result, outbox_reader)
+    }
+
+    impl<'a, OutboxReader, SendOp, SendFuture> StateMachine<'a, OutboxReader, SendOp, SendFuture>
     where
         SendFuture: Future<Output = Result<(), mpsc::error::SendError<ShuffleOutput>>>,
         SendOp: Fn(ShuffleOutput) -> SendFuture,
-        ReadError: std::error::Error + Send + Sync + 'static,
-        ReadFuture: Future<Output = Result<Option<(MessageIndex, OutboxMessage)>, ReadError>>,
-        ReadOp: Fn(MessageIndex) -> ReadFuture,
+        OutboxReader: shuffle::OutboxReader + Send + Sync + 'static,
     {
         pub(super) fn new(
             shuffle_id: PeerId,
             partition_id: PartitionId,
-            read_operation: ReadOp,
+            outbox_reader: OutboxReader,
             send_operation: SendOp,
             hint_rx: &'a mut mpsc::Receiver<NewOutboxMessage>,
             retry_timeout: Duration,
         ) -> Self {
             let current_sequence_number = 0;
-            let reading_future = read_operation(current_sequence_number);
+            let reading_future = get_next_message(outbox_reader, current_sequence_number);
 
             Self {
                 shuffle_id,
                 partition_id,
                 current_sequence_number,
-                read_operation,
+                outbox_reader: None,
+                read_future: ReusableBoxFuture::new(reading_future),
                 send_operation,
                 hint_rx,
                 retry_timeout,
-                state: State::ReadingOutbox(reading_future),
-                _read_error: Default::default(),
+                state: State::ReadingOutbox,
             }
         }
 
@@ -361,26 +380,35 @@ mod state_machine {
                                 message.into(),
                             ));
                             this.state.set(State::Sending(send_future));
-                        } else {
-                            let reading_future =
-                                (this.read_operation)(*this.current_sequence_number);
-                            this.state.set(State::ReadingOutbox(reading_future));
                         }
                     }
-                    StateProj::ReadingOutbox(reading_future) => {
-                        let reading_result = reading_future.await?;
+                    StateProj::ReadingOutbox => {
+                        let (reading_result, outbox_reader) = this.read_future.get_pin().await;
+                        *this.outbox_reader = Some(outbox_reader);
 
-                        if let Some((seq_number, message)) = reading_result {
-                            *this.current_sequence_number = seq_number;
+                        if let Some((seq_number, message)) = reading_result? {
+                            if seq_number >= *this.current_sequence_number {
+                                *this.current_sequence_number = seq_number;
 
-                            let send_future = (this.send_operation)(ShuffleOutput::new(
-                                *this.shuffle_id,
-                                *this.partition_id,
-                                seq_number,
-                                message.into(),
-                            ));
+                                let send_future = (this.send_operation)(ShuffleOutput::new(
+                                    *this.shuffle_id,
+                                    *this.partition_id,
+                                    seq_number,
+                                    message.into(),
+                                ));
 
-                            this.state.set(State::Sending(send_future));
+                                this.state.set(State::Sending(send_future));
+                            } else {
+                                // we have read a message with a sequence number that we have already sent, this can happen
+                                // in case of a retry with a concurrent ack
+                                this.read_future.set(get_next_message(
+                                    this.outbox_reader
+                                        .take()
+                                        .expect("outbox reader should be available"),
+                                    *this.current_sequence_number,
+                                ));
+                                this.state.set(State::ReadingOutbox);
+                            }
                         } else {
                             this.state.set(State::Idle);
                         }
@@ -400,9 +428,13 @@ mod state_machine {
                             *this.current_sequence_number
                         );
                         // try to send the message again
-                        let read_future = (this.read_operation)(*this.current_sequence_number);
-
-                        this.state.set(State::ReadingOutbox(read_future));
+                        this.read_future.set(get_next_message(
+                            this.outbox_reader
+                                .take()
+                                .expect("outbox reader should be available"),
+                            *this.current_sequence_number,
+                        ));
+                        this.state.set(State::ReadingOutbox);
                     }
                 }
             }
@@ -416,7 +448,7 @@ mod state_machine {
                 AckKind::Acknowledge(seq_number) => {
                     if seq_number >= self.current_sequence_number {
                         trace!("Received acknowledgement for sequence number {seq_number}.");
-                        self.read_next_message(seq_number + 1);
+                        self.try_read_next_message(seq_number + 1);
                         Some(seq_number)
                     } else {
                         None
@@ -425,7 +457,7 @@ mod state_machine {
                 AckKind::Duplicate { seq_number, .. } => {
                     if seq_number >= self.current_sequence_number {
                         trace!("Message with sequence number {seq_number} is a duplicate.");
-                        self.read_next_message(seq_number + 1);
+                        self.try_read_next_message(seq_number + 1);
                         Some(seq_number)
                     } else {
                         None
@@ -434,12 +466,18 @@ mod state_machine {
             }
         }
 
-        fn read_next_message(self: Pin<&mut Self>, next_sequence_number: MessageIndex) {
+        fn try_read_next_message(self: Pin<&mut Self>, next_sequence_number: MessageIndex) {
             let mut this = self.project();
-            let read_future = (this.read_operation)(next_sequence_number);
-
             *this.current_sequence_number = next_sequence_number;
-            this.state.set(State::ReadingOutbox(read_future));
+
+            if let Some(outbox_reader) = this.outbox_reader.take() {
+                // not in State::ReadingOutbox, so we need to read the next outbox message
+                this.state.set(State::ReadingOutbox);
+                this.read_future.set(get_next_message(
+                    outbox_reader,
+                    *this.current_sequence_number,
+                ));
+            }
         }
     }
 }
