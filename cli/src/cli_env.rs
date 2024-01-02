@@ -37,6 +37,7 @@ pub const CLI_CONFIG_HOME_ENV: &str = "RESTATE_CLI_CONFIG_HOME";
 // This is CONFIG and not CONFIG_FILE to be consistent with RESTATE_CONFIG (server)
 pub const CLI_CONFIG_FILE_ENV: &str = "RESTATE_CLI_CONFIG";
 
+pub const RESTATE_AUTH_TOKEN_ENV: &str = "RESTATE_AUTH_TOKEN";
 pub const INGRESS_URL_ENV: &str = "RESTATE_INGRESS_URL";
 pub const META_URL_ENV: &str = "RESTATE_META_URL";
 pub const DATAFUSION_HTTP_URL_ENV: &str = "RESTATE_DATAFUSION_HTTP_URL";
@@ -52,6 +53,7 @@ pub struct CliEnv {
     pub ingress_base_url: Url,
     pub meta_base_url: Url,
     pub datafusion_http_base_url: Url,
+    pub bearer_token: Option<String>,
     pub request_timeout: Duration,
     /// Should we use colors and emojis or not?
     pub colorful: bool,
@@ -95,6 +97,8 @@ impl CliEnv {
             .get(CLI_CONFIG_FILE_ENV)
             .map(PathBuf::from)
             .unwrap_or_else(|| config_home.join(CONFIG_FILENAME));
+
+        let bearer_token = os_env.get(RESTATE_AUTH_TOKEN_ENV);
 
         let ingress_base_url = os_env
             .get(INGRESS_URL_ENV)
@@ -166,6 +170,7 @@ impl CliEnv {
             ingress_base_url,
             meta_base_url,
             datafusion_http_base_url,
+            bearer_token,
             request_timeout: REQUEST_TIMEOUT_DEFAULT,
             colorful,
             auto_confirm: global_opts.yes,
@@ -335,5 +340,17 @@ mod tests {
         let os_env = OsEnv::default();
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
         assert_eq!(cli_env.request_timeout, REQUEST_TIMEOUT_DEFAULT);
+    }
+
+    #[test]
+    fn test_bearer_token_applied() {
+        let mut os_env = OsEnv::default();
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert_eq!(cli_env.bearer_token, None);
+
+        os_env.clear();
+        os_env.insert(RESTATE_AUTH_TOKEN_ENV, "token".to_string());
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert_eq!(cli_env.bearer_token, Some("token".to_string()));
     }
 }

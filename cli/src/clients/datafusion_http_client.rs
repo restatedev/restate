@@ -42,6 +42,7 @@ pub enum Error {
 pub struct DataFusionHttpClient {
     pub(crate) inner: reqwest::Client,
     pub(crate) base_url: Url,
+    pub(crate) bearer_token: Option<String>,
     pub(crate) request_timeout: Duration,
 }
 
@@ -60,15 +61,22 @@ impl DataFusionHttpClient {
         Ok(Self {
             inner: raw_client,
             base_url: env.datafusion_http_base_url.clone(),
+            bearer_token: env.bearer_token.clone(),
             request_timeout: env.request_timeout.clone(),
         })
     }
 
     /// Prepare a request builder for a DataFusion request.
     fn prepare(&self, path: Url) -> reqwest::RequestBuilder {
-        self.inner
+        let request_builder = self
+            .inner
             .request(reqwest::Method::POST, path)
-            .timeout(self.request_timeout)
+            .timeout(self.request_timeout);
+
+        match self.bearer_token.as_deref() {
+            Some(token) => request_builder.bearer_auth(token),
+            None => request_builder,
+        }
     }
 
     pub async fn run_query(&self, query: String) -> Result<SqlResponse, Error> {

@@ -102,6 +102,7 @@ impl<T> From<reqwest::Response> for Envelope<T> {
 pub struct MetasClient {
     pub(crate) inner: reqwest::Client,
     pub(crate) base_url: Url,
+    pub(crate) bearer_token: Option<String>,
     pub(crate) request_timeout: Duration,
 }
 
@@ -120,15 +121,22 @@ impl MetasClient {
         Ok(Self {
             inner: raw_client,
             base_url: env.meta_base_url.clone(),
+            bearer_token: env.bearer_token.clone(),
             request_timeout: env.request_timeout.clone(),
         })
     }
 
     /// Prepare a request builder for the given method and path.
     fn prepare(&self, method: reqwest::Method, path: Url) -> reqwest::RequestBuilder {
-        self.inner
+        let request_builder = self
+            .inner
             .request(method, path)
-            .timeout(self.request_timeout)
+            .timeout(self.request_timeout);
+
+        match self.bearer_token.as_deref() {
+            Some(token) => request_builder.bearer_auth(token),
+            None => request_builder,
+        }
     }
 
     /// Prepare a request builder that encodes the body as JSON.
