@@ -10,15 +10,18 @@
 
 //! A wrapper client for meta HTTP service.
 
-use super::errors::ApiError;
-use crate::build_info;
-use crate::cli_env::CliEnv;
+use std::time::Duration;
 
 use http::StatusCode;
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
+
+use crate::build_info;
+use crate::cli_env::CliEnv;
+
+use super::errors::ApiError;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -42,7 +45,7 @@ impl<T> Envelope<T>
 where
     T: DeserializeOwned,
 {
-    pub fn status_code(&self) -> reqwest::StatusCode {
+    pub fn status_code(&self) -> StatusCode {
         self.inner.status()
     }
 
@@ -98,7 +101,8 @@ impl<T> From<reqwest::Response> for Envelope<T> {
 #[derive(Clone)]
 pub struct MetasClient {
     pub(crate) inner: reqwest::Client,
-    pub(crate) base_url: reqwest::Url,
+    pub(crate) base_url: Url,
+    pub(crate) request_timeout: Duration,
 }
 
 impl MetasClient {
@@ -116,14 +120,15 @@ impl MetasClient {
         Ok(Self {
             inner: raw_client,
             base_url: env.meta_base_url.clone(),
+            request_timeout: env.request_timeout.clone(),
         })
     }
 
     /// Prepare a request builder for the given method and path.
     fn prepare(&self, method: reqwest::Method, path: Url) -> reqwest::RequestBuilder {
-        // TODO: Inject the secret token when available.
-        //.bearer_auth(&self.secret_token);
-        self.inner.request(method, path)
+        self.inner
+            .request(method, path)
+            .timeout(self.request_timeout)
     }
 
     /// Prepare a request builder that encodes the body as JSON.

@@ -13,6 +13,7 @@
 use super::errors::ApiError;
 use crate::build_info;
 use crate::cli_env::CliEnv;
+use std::time::Duration;
 
 use arrow::array::AsArray;
 use arrow::datatypes::{ArrowPrimitiveType, Int64Type, SchemaRef};
@@ -23,6 +24,7 @@ use bytes::Buf;
 use serde::Serialize;
 use thiserror::Error;
 use tracing::{debug, info};
+use url::Url;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -39,7 +41,8 @@ pub enum Error {
 #[derive(Clone)]
 pub struct DataFusionHttpClient {
     pub(crate) inner: reqwest::Client,
-    pub(crate) base_url: reqwest::Url,
+    pub(crate) base_url: Url,
+    pub(crate) request_timeout: Duration,
 }
 
 impl DataFusionHttpClient {
@@ -57,17 +60,23 @@ impl DataFusionHttpClient {
         Ok(Self {
             inner: raw_client,
             base_url: env.datafusion_http_base_url.clone(),
+            request_timeout: env.request_timeout.clone(),
         })
+    }
+
+    /// Prepare a request builder for a DataFusion request.
+    fn prepare(&self, path: Url) -> reqwest::RequestBuilder {
+        self.inner
+            .request(reqwest::Method::POST, path)
+            .timeout(self.request_timeout)
     }
 
     pub async fn run_query(&self, query: String) -> Result<SqlResponse, Error> {
         let url = self.base_url.join("/api/query")?;
 
         debug!("Sending request sql query '{}'", query);
-        // TODO: Add authentication
         let resp = self
-            .inner
-            .request(reqwest::Method::POST, url)
+            .prepare(url)
             .json(&SqlQueryRequest { query })
             .send()
             .await?;

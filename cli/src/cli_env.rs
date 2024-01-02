@@ -12,9 +12,9 @@
 
 #[cfg(test)]
 use std::collections::HashMap;
-
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 use dotenvy::dotenv;
@@ -29,6 +29,8 @@ pub const RESTATE_HOST_SCHEME_ENV: &str = "RESTATE_HOST_SCHEME";
 // The default is localhost unless the CLI configuration states a different default.
 pub const RESTATE_HOST_DEFAULT: &str = "localhost";
 pub const RESTATE_HOST_SCHEME_DEFAULT: &str = "http";
+// Default request timeout.
+pub const REQUEST_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
 
 /// Environment variable to override the default config dir path
 pub const CLI_CONFIG_HOME_ENV: &str = "RESTATE_CLI_CONFIG_HOME";
@@ -44,12 +46,13 @@ pub struct CliConfig {}
 
 #[derive(Clone)]
 pub struct CliEnv {
-    pub loaded_env_file: Option<std::path::PathBuf>,
+    pub loaded_env_file: Option<PathBuf>,
     pub config_home: PathBuf,
     pub config_file: PathBuf,
     pub ingress_base_url: Url,
     pub meta_base_url: Url,
     pub datafusion_http_base_url: Url,
+    pub request_timeout: Duration,
     /// Should we use colors and emojis or not?
     pub colorful: bool,
     /// Auto answer yes to prompts that asks for confirmation
@@ -163,6 +166,7 @@ impl CliEnv {
             ingress_base_url,
             meta_base_url,
             datafusion_http_base_url,
+            request_timeout: REQUEST_TIMEOUT_DEFAULT,
             colorful,
             auto_confirm: global_opts.yes,
             ui_config: global_opts.ui_config.clone(),
@@ -204,9 +208,7 @@ impl<'a> OsEnv<'a> {
     // Retrieves a environment variable from the os or from a table if in testing mode
     #[cfg(test)]
     pub fn get<K: AsRef<str>>(&self, key: K) -> Option<String> {
-        self.env
-            .get(key.as_ref())
-            .map(std::string::ToString::to_string)
+        self.env.get(key.as_ref()).map(ToString::to_string)
     }
 
     #[cfg(not(test))]
@@ -229,6 +231,7 @@ impl<'a> OsEnv<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_config_home_order() -> Result<()> {
         let mut os_env = OsEnv::default();
@@ -325,5 +328,12 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_default_timeout_applied() {
+        let os_env = OsEnv::default();
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert_eq!(cli_env.request_timeout, REQUEST_TIMEOUT_DEFAULT);
     }
 }
