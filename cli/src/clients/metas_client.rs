@@ -10,10 +10,9 @@
 
 //! A wrapper client for meta HTTP service.
 
-use std::time::Duration;
-
 use http::StatusCode;
 use serde::{de::DeserializeOwned, Serialize};
+use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
@@ -106,6 +105,8 @@ pub struct MetasClient {
     pub(crate) request_timeout: Duration,
 }
 
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl MetasClient {
     pub fn new(env: &CliEnv) -> reqwest::Result<Self> {
         let raw_client = reqwest::Client::builder()
@@ -116,13 +117,14 @@ impl MetasClient {
                 std::env::consts::OS,
                 std::env::consts::ARCH,
             ))
+            .connect_timeout(env.connect_timeout)
             .build()?;
 
         Ok(Self {
             inner: raw_client,
             base_url: env.meta_base_url.clone(),
             bearer_token: env.bearer_token.clone(),
-            request_timeout: env.request_timeout.clone(),
+            request_timeout: env.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
         })
     }
 
