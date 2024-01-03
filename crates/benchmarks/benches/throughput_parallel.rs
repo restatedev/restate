@@ -52,9 +52,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("throughput");
     group
         .sample_size(sample_size)
-        .throughput(Throughput::Elements(
-            u64::try_from(num_requests).expect("usize to u64 conversion should work"),
-        ))
+        .throughput(Throughput::Elements(u64::from(num_requests)))
         .bench_function("parallel", |bencher| {
             bencher.to_async(&current_thread_rt).iter(|| {
                 send_parallel_counter_requests(
