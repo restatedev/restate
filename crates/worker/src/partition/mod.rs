@@ -189,7 +189,7 @@ where
                                 (actuator_stream, leadership_state) = leadership_state.become_leader(
                                     leader_epoch,
                                     partition_key_range.clone(),
-                                    &partition_storage,
+                                    &mut partition_storage,
                                     &schemas,
 
                                 )

@@ -16,9 +16,9 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use restate_storage_api::deduplication_table::SequenceNumberSource;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::inbox_table::InboxEntry;
-use restate_storage_api::journal_table::JournalEntry;
+use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::status_table::InvocationStatus;
+use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Result as StorageResult;
 use restate_storage_api::StorageError;
@@ -43,10 +43,7 @@ pub(crate) struct PartitionStorage<Storage> {
     storage: Storage,
 }
 
-impl<Storage> PartitionStorage<Storage>
-where
-    Storage: restate_storage_api::Storage,
-{
+impl<Storage> PartitionStorage<Storage> {
     pub(super) fn new(
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
@@ -59,6 +56,15 @@ where
         }
     }
 
+    pub fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) {
+        assert_partition_key(&self.partition_key_range, partition_key);
+    }
+}
+
+impl<Storage> PartitionStorage<Storage>
+where
+    Storage: restate_storage_api::Storage,
+{
     pub(super) fn create_transaction(&self) -> Transaction<Storage::TransactionType<'_>> {
         Transaction::new(
             self.partition_id,
@@ -86,7 +92,7 @@ async fn load_seq_number<F: FsmTable + Send>(
 
 impl<Storage> PartitionStorage<Storage>
 where
-    Storage: restate_storage_api::Storage + FsmTable + Send,
+    Storage: restate_storage_api::Storage + FsmTable + StatusTable + JournalTable + Send,
 {
     pub fn load_inbox_seq_number(
         &mut self,
@@ -107,6 +113,59 @@ where
             fsm_variable::OUTBOX_SEQ_NUMBER,
         )
     }
+
+    pub fn scan_invoked_invocations(
+        &mut self,
+    ) -> impl Stream<Item = Result<FullInvocationId, StorageError>> + Send + '_ {
+        self.storage
+            .invoked_invocations(self.partition_key_range.clone())
+    }
+
+    pub fn get_invocation_status<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+    ) -> impl Future<Output = Result<InvocationStatus, StorageError>> + Send + '_ {
+        self.assert_partition_key(service_id);
+
+        async {
+            Ok(self
+                .storage
+                .get_invocation_status(service_id)
+                .await?
+                .unwrap_or_default())
+        }
+    }
+
+    pub fn load_journal_entry<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        entry_index: EntryIndex,
+    ) -> impl Future<Output = Result<Option<EnrichedRawEntry>, StorageError>> + Send + '_ {
+        self.assert_partition_key(service_id);
+        async move {
+            let result = self
+                .storage
+                .get_journal_entry(service_id, entry_index)
+                .await?;
+
+            Ok(result.and_then(|journal_entry| match journal_entry {
+                JournalEntry::Entry(entry) => Some(entry),
+                JournalEntry::Completion(_) => None,
+            }))
+        }
+    }
+}
+
+#[inline]
+fn assert_partition_key(
+    partition_key_range: &RangeInclusive<PartitionKey>,
+    partition_key: &impl WithPartitionKey,
+) {
+    let partition_key = partition_key.partition_key();
+    assert!(partition_key_range.contains(&partition_key),
+            "Partition key '{}' is not part of PartitionStorage's partition '{:?}'. This indicates a bug.",
+            partition_key,
+            partition_key_range);
 }
 
 pub struct Transaction<TransactionType> {
@@ -118,11 +177,7 @@ pub struct Transaction<TransactionType> {
 impl<TransactionType> Transaction<TransactionType> {
     #[inline]
     fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) {
-        let partition_key = partition_key.partition_key();
-        assert!(self.partition_key_range.contains(&partition_key),
-                "Partition key '{}' is not part of PartitionStorage's partition '{:?}'. This indicates a bug.",
-                partition_key,
-                self.partition_key_range);
+        assert_partition_key(&self.partition_key_range, partition_key);
     }
 }
 
@@ -144,13 +199,6 @@ where
 
     pub(super) fn commit(self) -> impl Future<Output = Result<(), StorageError>> + Send {
         self.inner.commit()
-    }
-
-    pub(super) fn scan_invoked_invocations(
-        &mut self,
-    ) -> impl Stream<Item = Result<FullInvocationId, StorageError>> + Send + '_ {
-        self.inner
-            .invoked_invocations(self.partition_key_range.clone())
     }
 
     async fn store_seq_number(
@@ -493,7 +541,7 @@ where
     TransactionType: restate_storage_api::Transaction,
 {
     async fn commit(self) -> Result<(), CommitError> {
-        self.inner.commit().await.map_err(CommitError::with_source)
+        self.commit().await.map_err(CommitError::with_source)
     }
 }
 

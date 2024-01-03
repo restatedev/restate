@@ -13,7 +13,7 @@ use crate::partition::{
     shuffle, storage, StateMachineAckCommand, StateMachineAckResponse, TimerValue,
 };
 use assert2::let_assert;
-use futures::{future, Stream, StreamExt};
+use futures::{future, StreamExt};
 use restate_invoker_api::InvokeInputJournal;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
@@ -28,26 +28,16 @@ use tokio::task::JoinError;
 mod action_collector;
 
 use crate::partition::services::non_deterministic;
-use crate::partition::state_machine::{Action, StateReader, StateStorage};
+use crate::partition::state_machine::Action;
 use crate::util::IdentitySender;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareActionCollector};
 use restate_errors::NotRunningError;
 use restate_schema_impl::Schemas;
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{FullInvocationId, PartitionKey};
+use restate_types::identifiers::PartitionKey;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
 use restate_types::journal::EntryType;
-
-pub(crate) trait InvocationReader {
-    type InvokedInvocationStream<'a>: Stream<
-        Item = Result<FullInvocationId, restate_storage_api::StorageError>,
-    >
-    where
-        Self: 'a;
-
-    fn scan_invoked_invocations(&mut self) -> Self::InvokedInvocationStream<'_>;
-}
 
 type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
 type TimerService = restate_timer::TimerService<TimerValue, TokioClock, PartitionStorage>;
@@ -133,7 +123,7 @@ where
         self,
         leader_epoch: LeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
-        partition_storage: &'a PartitionStorage,
+        partition_storage: &mut PartitionStorage,
         schemas: &'a Schemas,
     ) -> Result<
         (
@@ -168,7 +158,7 @@ where
         self,
         leader_epoch: LeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
-        partition_storage: &'a PartitionStorage,
+        partition_storage: &mut PartitionStorage,
         schemas: &'a Schemas,
     ) -> Result<
         (
@@ -247,7 +237,7 @@ where
         built_in_service_invoker: &mut non_deterministic::ServiceInvoker<'_>,
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
-        partition_storage: &PartitionStorage,
+        partition_storage: &mut PartitionStorage,
         channel_size: usize,
     ) -> Result<mpsc::Receiver<restate_invoker_api::Effect>, Error> {
         let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
@@ -257,12 +247,10 @@ where
             .await
             .map_err(Error::Invoker)?;
 
-        let mut transaction = partition_storage.create_transaction();
-
         let mut built_in_invoked_services = Vec::new();
 
         {
-            let invoked_invocations = transaction.scan_invoked_invocations();
+            let invoked_invocations = partition_storage.scan_invoked_invocations();
             tokio::pin!(invoked_invocations);
 
             while let Some(full_invocation_id) = invoked_invocations.next().await {
@@ -286,7 +274,7 @@ where
         }
 
         for full_invocation_id in built_in_invoked_services {
-            let input_entry = transaction
+            let input_entry = partition_storage
                 .load_journal_entry(&full_invocation_id.service_id, 0)
                 .await?
                 .expect("first journal entry must be present; if not, this indicates a bug.");
@@ -298,7 +286,7 @@ where
                 EntryType::Custom
             );
 
-            let status = transaction
+            let status = partition_storage
                 .get_invocation_status(&full_invocation_id.service_id)
                 .await?;
 
@@ -317,8 +305,6 @@ where
                 )
                 .await;
         }
-
-        transaction.commit().await?;
 
         Ok(invoker_rx)
     }
