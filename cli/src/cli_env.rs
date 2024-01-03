@@ -12,9 +12,9 @@
 
 #[cfg(test)]
 use std::collections::HashMap;
-
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 use dotenvy::dotenv;
@@ -35,6 +35,7 @@ pub const CLI_CONFIG_HOME_ENV: &str = "RESTATE_CLI_CONFIG_HOME";
 // This is CONFIG and not CONFIG_FILE to be consistent with RESTATE_CONFIG (server)
 pub const CLI_CONFIG_FILE_ENV: &str = "RESTATE_CLI_CONFIG";
 
+pub const RESTATE_AUTH_TOKEN_ENV: &str = "RESTATE_AUTH_TOKEN";
 pub const INGRESS_URL_ENV: &str = "RESTATE_INGRESS_URL";
 pub const META_URL_ENV: &str = "RESTATE_META_URL";
 pub const DATAFUSION_HTTP_URL_ENV: &str = "RESTATE_DATAFUSION_HTTP_URL";
@@ -44,16 +45,21 @@ pub struct CliConfig {}
 
 #[derive(Clone)]
 pub struct CliEnv {
-    pub loaded_env_file: Option<std::path::PathBuf>,
+    pub loaded_env_file: Option<PathBuf>,
     pub config_home: PathBuf,
     pub config_file: PathBuf,
     pub ingress_base_url: Url,
     pub meta_base_url: Url,
     pub datafusion_http_base_url: Url,
+    pub bearer_token: Option<String>,
     /// Should we use colors and emojis or not?
     pub colorful: bool,
     /// Auto answer yes to prompts that asks for confirmation
     pub auto_confirm: bool,
+    /// Timeout for the connect phase of the request.
+    pub connect_timeout: Duration,
+    /// Overall request timeout.
+    pub request_timeout: Option<Duration>,
     /// UI Configuration
     pub ui_config: UiConfig,
 }
@@ -92,6 +98,8 @@ impl CliEnv {
             .get(CLI_CONFIG_FILE_ENV)
             .map(PathBuf::from)
             .unwrap_or_else(|| config_home.join(CONFIG_FILENAME));
+
+        let bearer_token = os_env.get(RESTATE_AUTH_TOKEN_ENV);
 
         let ingress_base_url = os_env
             .get(INGRESS_URL_ENV)
@@ -163,6 +171,9 @@ impl CliEnv {
             ingress_base_url,
             meta_base_url,
             datafusion_http_base_url,
+            bearer_token,
+            connect_timeout: Duration::from_millis(global_opts.connect_timeout),
+            request_timeout: global_opts.request_timeout.map(Duration::from_millis),
             colorful,
             auto_confirm: global_opts.yes,
             ui_config: global_opts.ui_config.clone(),
@@ -204,9 +215,7 @@ impl<'a> OsEnv<'a> {
     // Retrieves a environment variable from the os or from a table if in testing mode
     #[cfg(test)]
     pub fn get<K: AsRef<str>>(&self, key: K) -> Option<String> {
-        self.env
-            .get(key.as_ref())
-            .map(std::string::ToString::to_string)
+        self.env.get(key.as_ref()).map(ToString::to_string)
     }
 
     #[cfg(not(test))]
@@ -229,6 +238,7 @@ impl<'a> OsEnv<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_config_home_order() -> Result<()> {
         let mut os_env = OsEnv::default();
@@ -325,5 +335,29 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_default_timeout_applied() {
+        let opts = &GlobalOpts {
+            connect_timeout: 1000,
+            request_timeout: Some(5000),
+            ..GlobalOpts::default()
+        };
+        let cli_env = CliEnv::load_from_env(&OsEnv::default(), opts).unwrap();
+        assert_eq!(cli_env.connect_timeout, Duration::from_millis(1000));
+        assert_eq!(cli_env.request_timeout, Some(Duration::from_millis(5000)));
+    }
+
+    #[test]
+    fn test_bearer_token_applied() {
+        let mut os_env = OsEnv::default();
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert_eq!(cli_env.bearer_token, None);
+
+        os_env.clear();
+        os_env.insert(RESTATE_AUTH_TOKEN_ENV, "token".to_string());
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert_eq!(cli_env.bearer_token, Some("token".to_string()));
     }
 }

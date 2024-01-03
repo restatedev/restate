@@ -46,11 +46,21 @@ pub enum TableStyle {
     Borders,
 }
 
+const DEFAULT_CONNECT_TIMEOUT: u64 = 5_000;
+
 #[derive(Args, Collect, Clone, Default)]
 pub struct GlobalOpts {
     /// Auto answer "yes" to confirmation prompts
     #[arg(long, short, global = true)]
     pub yes: bool,
+
+    /// Connection timeout for service interactions, in milliseconds.
+    #[arg(long, default_value_t = DEFAULT_CONNECT_TIMEOUT, global = true)]
+    pub connect_timeout: u64,
+
+    /// Overall request timeout for service interactions, in milliseconds.
+    #[arg(long, global = true)]
+    pub request_timeout: Option<u64>,
 
     #[clap(flatten)]
     pub ui_config: UiConfig,

@@ -32,6 +32,11 @@ pub async fn run(State(env): State<CliEnv>) {
     table.add_row(vec!["Ingress base URL", env.ingress_base_url.as_ref()]);
 
     table.add_row(vec!["Meta URL", env.meta_base_url.as_ref()]);
+
+    if env.bearer_token.is_some() {
+        table.add_row(vec!["Authentication Token", "(set)"]);
+    }
+
     c_println!("{}", table);
 
     c_println!();
