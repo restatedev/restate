@@ -19,7 +19,7 @@ use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::status_table::InvocationStatus;
-use restate_storage_api::timer_table::{Timer, TimerKey};
+use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Result as StorageResult;
 use restate_storage_api::StorageError;
 use restate_timer::TimerReader;
@@ -151,16 +151,6 @@ where
     ) -> impl Stream<Item = Result<FullInvocationId, StorageError>> + Send + '_ {
         self.inner
             .invoked_invocations(self.partition_key_range.clone())
-    }
-
-    pub(super) fn next_timers_greater_than<'a>(
-        &'a mut self,
-        partition_id: PartitionId,
-        exclusive_start: Option<&'a TimerKey>,
-        limit: usize,
-    ) -> impl Stream<Item = Result<(TimerKey, Timer), StorageError>> + Send + '_ {
-        self.inner
-            .next_timers_greater_than(partition_id, exclusive_start, limit)
     }
 
     async fn store_seq_number(
@@ -533,16 +523,14 @@ where
 
 impl<Storage> TimerReader<TimerValue> for PartitionStorage<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + Send + Sync + 'a,
+    for<'a> Storage: restate_storage_api::Storage + TimerTable + Send + Sync + 'a,
 {
     async fn get_timers(
         &mut self,
         num_timers: usize,
         previous_timer_key: Option<TimerKeyWrapper>,
     ) -> Vec<TimerValue> {
-        let mut transaction = self.create_transaction();
-
-        let next_timers = transaction
+        self.storage
             .next_timers_greater_than(
                 self.partition_id,
                 previous_timer_key.map(|t| t.into_inner()).as_ref(),
@@ -554,11 +542,6 @@ where
             .try_collect::<Vec<_>>()
             .await
             // TODO: Extend TimerReader to return errors: See https://github.com/restatedev/restate/issues/274
-            .expect("timer deserialization should not fail");
-
-        // we didn't do any writes so committing should not fail
-        let _ = transaction.commit().await;
-
-        next_timers
+            .expect("timer deserialization should not fail")
     }
 }

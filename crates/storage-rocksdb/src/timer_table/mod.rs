@@ -12,7 +12,7 @@ use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
-use crate::{RocksDBTransaction, StorageAccess};
+use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
@@ -89,18 +89,48 @@ fn exclusive_start_key_range(
     }
 }
 
-impl<'a> TimerTable for RocksDBTransaction<'a> {
-    async fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) {
-        let key = write_timer_key(partition_id, key);
-        let value = ProtoValue(storage::v1::Timer::from(timer));
+fn add_timer<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    key: &TimerKey,
+    timer: Timer,
+) {
+    let key = write_timer_key(partition_id, key);
+    let value = ProtoValue(storage::v1::Timer::from(timer));
 
-        self.put_kv(key, value);
+    storage.put_kv(key, value);
+}
+
+fn delete_timer<S: StorageAccess>(storage: &mut S, partition_id: PartitionId, key: &TimerKey) {
+    let key = write_timer_key(partition_id, key);
+    storage.delete_key(&key);
+}
+
+fn next_timers_greater_than<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    exclusive_start: Option<&TimerKey>,
+    limit: usize,
+) -> Vec<Result<(TimerKey, Timer)>> {
+    let scan = exclusive_start_key_range(partition_id, exclusive_start);
+    let mut produced = 0;
+    storage.for_each_key_value_in_place(scan, move |k, v| {
+        if produced >= limit {
+            return TableScanIterationDecision::Break;
+        }
+        produced += 1;
+        let res = decode_seq_timer_key_value(k, v);
+        Emit(res)
+    })
+}
+
+impl TimerTable for RocksDBStorage {
+    async fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) {
+        add_timer(self, partition_id, key, timer)
     }
 
     async fn delete_timer(&mut self, partition_id: PartitionId, key: &TimerKey) {
-        let key = write_timer_key(partition_id, key);
-
-        self.delete_key(&key);
+        delete_timer(self, partition_id, key)
     }
 
     fn next_timers_greater_than(
@@ -109,16 +139,36 @@ impl<'a> TimerTable for RocksDBTransaction<'a> {
         exclusive_start: Option<&TimerKey>,
         limit: usize,
     ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send {
-        let scan = exclusive_start_key_range(partition_id, exclusive_start);
-        let mut produced = 0;
-        stream::iter(self.for_each_key_value_in_place(scan, move |k, v| {
-            if produced >= limit {
-                return TableScanIterationDecision::Break;
-            }
-            produced += 1;
-            let res = decode_seq_timer_key_value(k, v);
-            Emit(res)
-        }))
+        stream::iter(next_timers_greater_than(
+            self,
+            partition_id,
+            exclusive_start,
+            limit,
+        ))
+    }
+}
+
+impl<'a> TimerTable for RocksDBTransaction<'a> {
+    async fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) {
+        add_timer(self, partition_id, key, timer)
+    }
+
+    async fn delete_timer(&mut self, partition_id: PartitionId, key: &TimerKey) {
+        delete_timer(self, partition_id, key)
+    }
+
+    fn next_timers_greater_than(
+        &mut self,
+        partition_id: PartitionId,
+        exclusive_start: Option<&TimerKey>,
+        limit: usize,
+    ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send {
+        stream::iter(next_timers_greater_than(
+            self,
+            partition_id,
+            exclusive_start,
+            limit,
+        ))
     }
 }
 
