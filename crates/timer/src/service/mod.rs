@@ -17,7 +17,7 @@ use std::future;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll, Waker};
-use tokio_stream::Stream;
+use tokio_util::sync::ReusableBoxFuture;
 use tracing::trace;
 
 pub mod clock;
@@ -29,9 +29,9 @@ type DoublePriorityQueue<T> =
     priority_queue::DoublePriorityQueue<T, <T as crate::Timer>::TimerKey, ahash::RandomState>;
 
 #[pin_project(project = StateProj)]
-enum State<TimerKey, TimerStream, SleepFuture> {
+enum State<TimerKey, SleepFuture> {
     Idle(Waker),
-    LoadTimers(#[pin] TimerStream),
+    LoadTimers,
     ProcessTimers {
         timer_batch: Option<TimerBatch<TimerKey>>,
         #[pin]
@@ -39,7 +39,7 @@ enum State<TimerKey, TimerStream, SleepFuture> {
     },
 }
 
-impl<TimerKey, TimerStream, SleepFuture> State<TimerKey, TimerStream, SleepFuture> {
+impl<TimerKey, SleepFuture> State<TimerKey, SleepFuture> {
     fn process_timers(timer_batch: Option<TimerBatch<TimerKey>>) -> Self {
         State::ProcessTimers {
             timer_batch,
@@ -80,18 +80,20 @@ where
 }
 
 #[pin_project]
-pub struct TimerService<'a, Timer, Clock, TimerReader>
+pub struct TimerService<Timer, Clock, TimerReader>
 where
     Timer: crate::Timer,
     Clock: clock::Clock,
-    TimerReader: crate::TimerReader<Timer> + 'a,
+    TimerReader: crate::TimerReader<Timer>,
 {
     clock: Clock,
 
-    timer_reader: &'a TimerReader,
+    timer_reader: Option<TimerReader>,
+
+    read_future: ReusableBoxFuture<'static, (TimerReader, Vec<Timer>)>,
 
     #[pin]
-    state: State<Timer::TimerKey, TimerReader::TimerStream<'a>, Clock::SleepFuture>,
+    state: State<Timer::TimerKey, Clock::SleepFuture>,
 
     max_fired_timer: Option<Timer::TimerKey>,
 
@@ -100,16 +102,31 @@ where
     num_timers_in_memory_limit: Option<usize>,
 }
 
-impl<'a, Timer, Clock, TimerReader> TimerService<'a, Timer, Clock, TimerReader>
+async fn get_timers<Timer, TimerReader>(
+    mut timer_reader: TimerReader,
+    num_timers: usize,
+    previous_timer_key: Option<Timer::TimerKey>,
+) -> (TimerReader, Vec<Timer>)
 where
-    Timer: crate::Timer + Debug,
-    Clock: clock::Clock,
+    Timer: crate::Timer,
     TimerReader: crate::TimerReader<Timer>,
+{
+    let result = timer_reader
+        .get_timers(num_timers, previous_timer_key)
+        .await;
+    (timer_reader, result)
+}
+
+impl<Timer, Clock, TimerReader> TimerService<Timer, Clock, TimerReader>
+where
+    Timer: crate::Timer + Debug + 'static,
+    Clock: clock::Clock,
+    TimerReader: crate::TimerReader<Timer> + Send + 'static,
 {
     pub fn new(
         clock: Clock,
         num_timers_in_memory_limit: Option<usize>,
-        timer_reader: &'a TimerReader,
+        timer_reader: TimerReader,
     ) -> Self {
         debug_assert!(
             num_timers_in_memory_limit.unwrap_or(usize::MAX) >= 1,
@@ -117,11 +134,14 @@ where
         );
         Self {
             clock,
-            timer_reader,
+            timer_reader: None,
+            read_future: ReusableBoxFuture::new(get_timers(
+                timer_reader,
+                num_timers_in_memory_limit.unwrap_or(usize::MAX),
+                None,
+            )),
             num_timers_in_memory_limit,
-            state: State::LoadTimers(
-                timer_reader.scan_timers(num_timers_in_memory_limit.unwrap_or(usize::MAX), None),
-            ),
+            state: State::LoadTimers,
             max_fired_timer: None,
             timer_queue: DoublePriorityQueue::default(),
         }
@@ -151,7 +171,7 @@ where
 
                 state.set(State::process_timers(Some(timer_batch)));
             }
-            StateProj::LoadTimers(_) => {
+            StateProj::LoadTimers => {
                 trace!("Add timer {timer:?} to in memory queue while loading timers from storage.");
 
                 let timer_key = timer.timer_key();
@@ -227,19 +247,17 @@ where
         let timer_queue = this.timer_queue;
         let max_fired_timer = this.max_fired_timer;
         let mut state = this.state;
-        let timer_reader = this.timer_reader;
 
         loop {
             match state.as_mut().project() {
                 StateProj::Idle(_) => {
                     return Poll::Pending;
                 }
-                StateProj::LoadTimers(timer_stream) => {
-                    let next_timer = ready!(timer_stream.poll_next(cx));
+                StateProj::LoadTimers => {
+                    let (timer_reader, next_timers) = ready!(this.read_future.poll(cx));
+                    *this.timer_reader = Some(timer_reader);
 
-                    let mut finished_loading_timers = false;
-
-                    if let Some(next_timer) = next_timer {
+                    for next_timer in next_timers {
                         let timer_key = next_timer.timer_key();
 
                         // We can only stop loading timers if we know that all subsequent timers have
@@ -255,7 +273,7 @@ where
                                 < &timer_key
                         {
                             trace!("Finished loading timers from storage because the in memory limit has been reached.");
-                            finished_loading_timers = true;
+                            break;
                         } else {
                             trace!("Load timer {next_timer:?} into in memory queue.");
                             timer_queue.push(next_timer, timer_key);
@@ -265,31 +283,24 @@ where
                         this.num_timers_in_memory_limit.map(|limit| {
                             Self::trim_timer_queue(timer_queue, limit, max_fired_timer.as_ref())
                         });
-                    } else {
-                        finished_loading_timers = true;
                     }
 
-                    if finished_loading_timers {
-                        // get rid of larger timers that exceed in memory threshold
-                        this.num_timers_in_memory_limit.map(|limit| {
-                            Self::trim_timer_queue(timer_queue, limit, max_fired_timer.as_ref())
-                        });
+                    // get rid of larger timers that exceed in memory threshold
+                    this.num_timers_in_memory_limit.map(|limit| {
+                        Self::trim_timer_queue(timer_queue, limit, max_fired_timer.as_ref())
+                    });
 
-                        if let Some((_, timer_key)) = timer_queue.peek_max() {
-                            trace!("Start processing timers.");
-                            let timer_batch = TimerBatch::new(Self::max_timer_key(
-                                timer_key,
-                                max_fired_timer.as_ref(),
-                            ));
+                    if let Some((_, timer_key)) = timer_queue.peek_max() {
+                        trace!("Start processing timers.");
+                        let timer_batch = TimerBatch::new(Self::max_timer_key(
+                            timer_key,
+                            max_fired_timer.as_ref(),
+                        ));
 
-                            state.set(State::ProcessTimers {
-                                process_timers_state: ProcessTimersState::ReadNextTimer,
-                                timer_batch: Some(timer_batch),
-                            });
-                        } else {
-                            trace!("Go into idle state because there are no timers to await.");
-                            state.set(State::Idle(cx.waker().clone()));
-                        }
+                        state.set(State::process_timers(Some(timer_batch)));
+                    } else {
+                        trace!("Go into idle state because there are no timers to await.");
+                        state.set(State::Idle(cx.waker().clone()));
                     }
                 }
                 StateProj::ProcessTimers {
@@ -319,10 +330,14 @@ where
                             );
 
                             trace!("Finished processing of current timer batch '{:?}'. Trying loading new timers from storage.", end_of_batch);
-                            state.set(State::LoadTimers(timer_reader.scan_timers(
+                            this.read_future.set(get_timers(
+                                this.timer_reader
+                                    .take()
+                                    .expect("timer_reader must be present"),
                                 this.num_timers_in_memory_limit.unwrap_or(usize::MAX),
                                 end_of_batch,
-                            )))
+                            ));
+                            state.set(State::LoadTimers);
                         }
                     }
                     ProcessTimersStateProj::AwaitTimer { sleep, .. } => {

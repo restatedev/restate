@@ -11,7 +11,8 @@
 use crate::service::clock::tests::ManualClock;
 use crate::service::clock::TokioClock;
 use crate::{Timer, TimerKey, TimerReader, TimerService};
-use futures_util::stream;
+use futures_util::future::BoxFuture;
+use futures_util::FutureExt;
 use restate_test_util::{let_assert, test};
 use restate_types::time::MillisSinceEpoch;
 use std::cmp::Ordering;
@@ -54,13 +55,11 @@ impl<T> TimerReader<T> for MockTimerReader<T>
 where
     T: Timer + Send + Ord + Clone,
 {
-    type TimerStream<'a> = stream::Iter<std::vec::IntoIter<T>> where T: 'a;
-
-    fn scan_timers(
-        &self,
+    fn get_timers(
+        &mut self,
         num_timers: usize,
         previous_timer_key: Option<T::TimerKey>,
-    ) -> Self::TimerStream<'_> {
+    ) -> BoxFuture<'_, Vec<T>> {
         let result: Vec<_> = if let Some(previous_timer_key) = previous_timer_key {
             self.timers
                 .lock()
@@ -80,7 +79,7 @@ where
                 .collect()
         };
 
-        stream::iter(result)
+        futures::future::ready(result).boxed()
     }
 }
 
@@ -130,7 +129,7 @@ impl TimerKey for TimerValue {
 #[test(tokio::test)]
 async fn no_timer_is_dropped() {
     let timer_reader = MockTimerReader::new();
-    let service = TimerService::new(TokioClock, None, &timer_reader);
+    let service = TimerService::new(TokioClock, None, timer_reader);
     tokio::pin!(service);
 
     let timer_1 = TimerValue::new(0, 0.into());
@@ -150,7 +149,7 @@ async fn no_timer_is_dropped() {
 async fn timers_fire_in_wake_up_order() {
     let num_timers = 10;
     let timer_reader = MockTimerReader::new();
-    let service = TimerService::new(TokioClock, None, &timer_reader);
+    let service = TimerService::new(TokioClock, None, timer_reader);
     tokio::pin!(service);
 
     let now = u64::try_from(
@@ -184,7 +183,7 @@ async fn loading_timers_from_reader() {
         timer_reader.add_timer(TimerValue::new(i, i.into()))
     }
 
-    let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
+    let service = TimerService::new(clock.clone(), Some(1), timer_reader);
     tokio::pin!(service);
 
     // trigger all timers
@@ -208,7 +207,7 @@ async fn advancing_time_triggers_timer() {
         timer_reader.add_timer(TimerValue::new(i, i.into()));
     }
 
-    let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
+    let service = TimerService::new(clock.clone(), Some(1), timer_reader);
     tokio::pin!(service);
 
     // trigger half of the timers
@@ -250,7 +249,7 @@ async fn add_new_timers() {
         TimerValue::new(3, 10.into()),
     ]);
 
-    let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
+    let service = TimerService::new(clock.clone(), Some(1), timer_reader.clone());
     tokio::pin!(service);
 
     clock.advance_time_to(MillisSinceEpoch::new(5));
@@ -274,7 +273,7 @@ async fn earlier_timers_replace_older_ones() {
     let timer_reader = MockTimerReader::<TimerValue>::new();
     timer_reader.add_timer(TimerValue::new(1, 10.into()));
 
-    let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
+    let service = TimerService::new(clock.clone(), Some(1), timer_reader.clone());
     tokio::pin!(service);
 
     // give timer service chance to load timers
@@ -294,11 +293,11 @@ async fn earlier_timers_replace_older_ones() {
 
 async fn yield_to_timer_service<
     'a,
-    Timer: crate::Timer + Debug,
+    Timer: crate::Timer + Debug + 'static,
     Clock: crate::Clock,
-    TimerReader: crate::TimerReader<Timer>,
+    TimerReader: crate::TimerReader<Timer> + Send + 'static,
 >(
-    timer_service: &mut Pin<&mut TimerService<'a, Timer, Clock, TimerReader>>,
+    timer_service: &mut Pin<&mut TimerService<Timer, Clock, TimerReader>>,
 ) {
     assert!(tokio::time::timeout(
         Duration::from_millis(10),
@@ -315,7 +314,7 @@ async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
     timer_reader.add_timer(TimerValue::new(0, 2.into()));
     timer_reader.add_timer(TimerValue::new(2, 5.into()));
 
-    let service = TimerService::new(clock.clone(), Some(1), &timer_reader);
+    let service = TimerService::new(clock.clone(), Some(1), timer_reader.clone());
     tokio::pin!(service);
 
     // give timer service the chance to load the initial timers

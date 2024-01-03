@@ -12,8 +12,7 @@ use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use crate::partition::types::TimerKeyWrapper;
 use crate::partition::{CommitError, Committable, TimerValue};
 use bytes::{Buf, Bytes};
-use futures::stream::BoxStream;
-use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use restate_storage_api::deduplication_table::SequenceNumberSource;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::inbox_table::InboxEntry;
@@ -536,36 +535,30 @@ impl<Storage> TimerReader<TimerValue> for PartitionStorage<Storage>
 where
     for<'a> Storage: restate_storage_api::Storage + Send + Sync + 'a,
 {
-    type TimerStream<'a> = BoxStream<'a, TimerValue> where Self: 'a;
-
-    fn scan_timers(
-        &self,
+    async fn get_timers(
+        &mut self,
         num_timers: usize,
         previous_timer_key: Option<TimerKeyWrapper>,
-    ) -> Self::TimerStream<'_> {
+    ) -> Vec<TimerValue> {
         let mut transaction = self.create_transaction();
 
-        async move {
-            let timer_stream = transaction
-                .next_timers_greater_than(
-                    self.partition_id,
-                    previous_timer_key.map(|t| t.into_inner()).as_ref(),
-                    num_timers,
-                )
-                .map(|result| result.map(|(timer_key, timer)| TimerValue::new(timer_key, timer)))
-                // TODO: Update timer service to maintain transaction while reading the timer stream: See https://github.com/restatedev/restate/issues/273
-                // have to collect the stream because it depends on the local transaction
-                .try_collect::<Vec<_>>()
-                .await
-                // TODO: Extend TimerReader to return errors: See https://github.com/restatedev/restate/issues/274
-                .expect("timer deserialization should not fail");
+        let next_timers = transaction
+            .next_timers_greater_than(
+                self.partition_id,
+                previous_timer_key.map(|t| t.into_inner()).as_ref(),
+                num_timers,
+            )
+            .map(|result| result.map(|(timer_key, timer)| TimerValue::new(timer_key, timer)))
+            // TODO: Update timer service to maintain transaction while reading the timer stream: See https://github.com/restatedev/restate/issues/273
+            // have to collect the stream because it depends on the local transaction
+            .try_collect::<Vec<_>>()
+            .await
+            // TODO: Extend TimerReader to return errors: See https://github.com/restatedev/restate/issues/274
+            .expect("timer deserialization should not fail");
 
-            // we didn't do any writes so committing should not fail
-            let _ = transaction.commit().await;
+        // we didn't do any writes so committing should not fail
+        let _ = transaction.commit().await;
 
-            stream::iter(timer_stream)
-        }
-        .flatten_stream()
-        .boxed()
+        next_timers
     }
 }

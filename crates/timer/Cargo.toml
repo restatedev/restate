@@ -16,6 +16,7 @@ restate-types = { workspace = true }
 
 ahash = "0.8.3"
 derive_builder = { workspace = true }
+futures = { workspace = true }
 pin-project = { workspace = true }
 priority-queue = "1.3.1"
 schemars = { workspace = true, optional = true }
@@ -23,6 +24,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

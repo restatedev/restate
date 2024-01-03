@@ -5243,6 +5243,7 @@ version = "0.7.0"
 dependencies = [
  "ahash",
  "derive_builder",
+ "futures",
  "futures-util",
  "pin-project",
  "priority-queue",
@@ -5253,6 +5254,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

@@ -24,14 +24,14 @@ pub struct Options {
 }
 
 impl Options {
-    pub fn build<'a, Timer, TimerReader, Clock>(
+    pub fn build<Timer, TimerReader, Clock>(
         &self,
-        timer_reader: &'a TimerReader,
+        timer_reader: TimerReader,
         clock: Clock,
-    ) -> TimerService<'a, Timer, Clock, TimerReader>
+    ) -> TimerService<Timer, Clock, TimerReader>
     where
-        Timer: crate::Timer + Debug + Clone,
-        TimerReader: crate::TimerReader<Timer>,
+        Timer: crate::Timer + Debug + Clone + 'static,
+        TimerReader: crate::TimerReader<Timer> + Send + 'static,
         Clock: crate::Clock,
     {
         TimerService::new(clock, self.num_timers_in_memory_limit, timer_reader)

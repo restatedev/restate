@@ -12,8 +12,8 @@ extern crate core;
 
 use restate_types::time::MillisSinceEpoch;
 use std::fmt::Debug;
+use std::future::Future;
 use std::hash::Hash;
-use tokio_stream::Stream;
 
 mod options;
 mod service;
@@ -23,7 +23,7 @@ pub use service::clock::{Clock, TokioClock};
 pub use service::TimerService;
 
 pub trait Timer: Hash + Eq {
-    type TimerKey: TimerKey;
+    type TimerKey: TimerKey + Send;
 
     fn timer_key(&self) -> Self::TimerKey;
 }
@@ -38,18 +38,14 @@ pub trait TimerReader<T>
 where
     T: Timer,
 {
-    type TimerStream<'a>: Stream<Item = T> + Send
-    where
-        Self: 'a;
-
-    /// Scan the next `num_timers` starting with the next timer after `previous_timer_key`.
+    /// Gets the next `num_timers` starting with the next timer after `previous_timer_key`.
     ///
     /// # Contract
     /// The returned timers need to follow the order defined by [`TimerKey`]. This entails
     /// scan timers must never return a timer whose key is <= `previous_timer_key`
-    fn scan_timers(
-        &self,
+    fn get_timers(
+        &mut self,
         num_timers: usize,
         previous_timer_key: Option<T::TimerKey>,
-    ) -> Self::TimerStream<'_>;
+    ) -> impl Future<Output = Vec<T>> + Send;
 }

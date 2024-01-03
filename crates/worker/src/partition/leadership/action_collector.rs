@@ -94,7 +94,7 @@ where
         partition_leader_epoch: PartitionLeaderEpoch,
         invoker_tx: &mut I,
         shuffle_hint_tx: &HintSender,
-        mut timer_service: Pin<&mut TimerService<'a>>,
+        mut timer_service: Pin<&mut TimerService>,
         non_deterministic_service_invoker: &ServiceInvoker<'a>,
         ack_tx: &restate_network::PartitionProcessorSender<StateMachineAckResponse>,
         self_proposal_tx: &mut IdentitySender<StateMachineAckCommand>,

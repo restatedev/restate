@@ -50,7 +50,7 @@ pub(crate) trait InvocationReader {
 }
 
 type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
-type TimerService<'a> = restate_timer::TimerService<'a, TimerValue, TokioClock, PartitionStorage>;
+type TimerService = restate_timer::TimerService<TimerValue, TokioClock, PartitionStorage>;
 
 pub(crate) struct LeaderState<'a> {
     leader_epoch: LeaderEpoch,
@@ -58,7 +58,7 @@ pub(crate) struct LeaderState<'a> {
     shuffle_hint_tx: HintSender,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
     actions_buffer: Vec<Action>,
-    timer_service: Pin<Box<TimerService<'a>>>,
+    timer_service: Pin<Box<TimerService>>,
     non_deterministic_service_invoker: non_deterministic::ServiceInvoker<'a>,
 }
 
@@ -194,7 +194,7 @@ where
             let timer_service = Box::pin(
                 follower_state
                     .timer_service_options
-                    .build(partition_storage, TokioClock),
+                    .build(partition_storage.clone(), TokioClock),
             );
 
             let (shuffle_tx, shuffle_rx) = mpsc::channel(follower_state.channel_size);
