@@ -50,6 +50,12 @@ pub trait OutboxTable {
         next_sequence_number: u64,
     ) -> impl Future<Output = Result<Option<(u64, OutboxMessage)>>> + Send;
 
+    fn get_outbox_message(
+        &mut self,
+        partition_id: PartitionId,
+        sequence_number: u64,
+    ) -> impl Future<Output = Result<Option<OutboxMessage>>> + Send;
+
     fn truncate_outbox(
         &mut self,
         partition_id: PartitionId,

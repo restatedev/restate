@@ -149,6 +149,11 @@ pub(super) trait OutboxReader {
         &mut self,
         next_sequence_number: MessageIndex,
     ) -> impl Future<Output = Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>> + Send;
+
+    fn get_message(
+        &mut self,
+        next_sequence_number: MessageIndex,
+    ) -> impl Future<Output = Result<Option<OutboxMessage>, OutboxReaderError>> + Send;
 }
 
 pub(super) type NetworkSender<T> = mpsc::Sender<T>;
@@ -361,6 +366,20 @@ mod state_machine {
         state: State<SendFuture>,
     }
 
+    async fn get_message<OutboxReader: shuffle::OutboxReader>(
+        mut outbox_reader: OutboxReader,
+        sequence_number: MessageIndex,
+    ) -> (
+        Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>,
+        OutboxReader,
+    ) {
+        let result = outbox_reader.get_message(sequence_number).await;
+        (
+            result.map(|opt| opt.map(|m| (sequence_number, m))),
+            outbox_reader,
+        )
+    }
+
     async fn get_next_message<OutboxReader: shuffle::OutboxReader>(
         mut outbox_reader: OutboxReader,
         sequence_number: MessageIndex,
@@ -369,7 +388,6 @@ mod state_machine {
         OutboxReader,
     ) {
         let result = outbox_reader.get_next_message(sequence_number).await;
-
         (result, outbox_reader)
     }
 
@@ -388,6 +406,9 @@ mod state_machine {
             retry_timeout: Duration,
         ) -> Self {
             let current_sequence_number = 0;
+            // find the first message from where to start shuffling; everyday I'm shuffling
+            // afterwards we assume that the message sequence numbers are consecutive w/o gaps!
+            trace!("Starting shuffle. Finding first outbox message.");
             let reading_future = get_next_message(outbox_reader, current_sequence_number);
 
             Self {
@@ -430,7 +451,7 @@ mod state_machine {
                                     break;
                                 }
                                 Ordering::Greater => {
-                                    // we might have missed some hints, so try again reading the next outbox message
+                                    // we might have missed some hints, so try again reading the next available outbox message (scan)
                                     this.read_future.set(get_next_message(
                                         this.outbox_reader
                                             .take()
@@ -465,7 +486,7 @@ mod state_machine {
                             } else {
                                 // we have read a message with a sequence number that we have already sent, this can happen
                                 // in case of a retry with a concurrent ack
-                                this.read_future.set(get_next_message(
+                                this.read_future.set(get_message(
                                     this.outbox_reader
                                         .take()
                                         .expect("outbox reader should be available"),
@@ -492,12 +513,14 @@ mod state_machine {
                             *this.current_sequence_number
                         );
                         // try to send the message again
-                        this.read_future.set(get_next_message(
+                        this.read_future.set(get_message(
                             this.outbox_reader
                                 .take()
                                 .expect("outbox reader should be available"),
                             *this.current_sequence_number,
                         ));
+                        // the message might get truncated concurrently if an ack arrives while trying
+                        // to send the message again
                         this.state.set(State::ReadingOutbox);
                     }
                 }
@@ -537,10 +560,8 @@ mod state_machine {
             if let Some(outbox_reader) = this.outbox_reader.take() {
                 // not in State::ReadingOutbox, so we need to read the next outbox message
                 this.state.set(State::ReadingOutbox);
-                this.read_future.set(get_next_message(
-                    outbox_reader,
-                    *this.current_sequence_number,
-                ));
+                this.read_future
+                    .set(get_message(outbox_reader, *this.current_sequence_number));
             }
         }
     }

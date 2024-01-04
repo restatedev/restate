@@ -63,6 +63,25 @@ fn get_next_outbox_message<S: StorageAccess>(
     })
 }
 
+fn get_outbox_message<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    sequence_number: u64,
+) -> Result<Option<OutboxMessage>> {
+    let outbox_key = OutboxKey::default()
+        .partition_id(partition_id)
+        .message_index(sequence_number);
+
+    storage.get_blocking(outbox_key, |_, v| {
+        if let Some(v) = v {
+            let t = decode_value(v)?;
+            Ok(Some(t))
+        } else {
+            Ok(None)
+        }
+    })
+}
+
 fn truncate_outbox<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
@@ -95,6 +114,14 @@ impl OutboxTable for RocksDBStorage {
         get_next_outbox_message(self, partition_id, next_sequence_number)
     }
 
+    async fn get_outbox_message(
+        &mut self,
+        partition_id: PartitionId,
+        sequence_number: u64,
+    ) -> Result<Option<OutboxMessage>> {
+        get_outbox_message(self, partition_id, sequence_number)
+    }
+
     async fn truncate_outbox(&mut self, partition_id: PartitionId, seq_to_truncate: Range<u64>) {
         truncate_outbox(self, partition_id, seq_to_truncate)
     }
@@ -118,6 +145,14 @@ impl<'a> OutboxTable for RocksDBTransaction<'a> {
         get_next_outbox_message(self, partition_id, next_sequence_number)
     }
 
+    async fn get_outbox_message(
+        &mut self,
+        partition_id: PartitionId,
+        sequence_number: u64,
+    ) -> Result<Option<OutboxMessage>> {
+        get_outbox_message(self, partition_id, sequence_number)
+    }
+
     async fn truncate_outbox(&mut self, partition_id: PartitionId, seq_to_truncate: Range<u64>) {
         truncate_outbox(self, partition_id, seq_to_truncate)
     }
@@ -129,10 +164,17 @@ fn decode_key_value(k: &[u8], v: &[u8]) -> crate::Result<(u64, OutboxMessage)> {
     let sequence_number = *key.message_index_ok_or()?;
 
     // decode value
+    let outbox_message = decode_value(v)?;
+
+    Ok((sequence_number, outbox_message))
+}
+
+fn decode_value(v: &[u8]) -> crate::Result<OutboxMessage> {
+    // decode value
     let decoded = storage::v1::OutboxMessage::decode(v)
         .map_err(|error| StorageError::Generic(error.into()))?;
     let outbox_message =
         OutboxMessage::try_from(decoded).map_err(|e| StorageError::Conversion(e.into()))?;
 
-    Ok((sequence_number, outbox_message))
+    Ok(outbox_message)
 }

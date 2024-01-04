@@ -575,6 +575,18 @@ where
 
         Ok(result)
     }
+
+    async fn get_message(
+        &mut self,
+        sequence_number: MessageIndex,
+    ) -> Result<Option<OutboxMessage>, OutboxReaderError> {
+        let partition_id = self.partition_id;
+
+        self.storage
+            .get_outbox_message(partition_id, sequence_number)
+            .await
+            .map_err(OutboxReaderError::Storage)
+    }
 }
 
 impl<Storage> TimerReader<TimerValue> for PartitionStorage<Storage>
