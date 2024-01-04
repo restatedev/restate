@@ -167,8 +167,8 @@ mod tests {
         }
 
         pub async fn apply(&mut self, command: Command) -> Vec<Action> {
-            let transaction = self.rocksdb_storage.transaction();
             let partition_id = self.partition_id();
+            let transaction = self.rocksdb_storage.transaction();
             self.state_machine
                 .apply(
                     command,
@@ -188,8 +188,8 @@ mod tests {
                 .unwrap()
         }
 
-        pub fn storage(&self) -> &RocksDBStorage {
-            &self.rocksdb_storage
+        pub fn storage(&mut self) -> &mut RocksDBStorage {
+            &mut self.rocksdb_storage
         }
 
         async fn shutdown(self) -> Result<(), anyhow::Error> {
@@ -383,10 +383,11 @@ mod tests {
             }))
         );
 
+        let partition_id = state_machine.partition_id();
         let outbox_message = state_machine
             .storage()
             .transaction()
-            .get_next_outbox_message(state_machine.partition_id(), 0)
+            .get_next_outbox_message(partition_id, 0)
             .await?;
 
         assert_that!(

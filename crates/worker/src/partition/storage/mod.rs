@@ -66,7 +66,7 @@ impl<Storage> PartitionStorage<Storage>
 where
     Storage: restate_storage_api::Storage,
 {
-    pub(super) fn create_transaction(&self) -> Transaction<Storage::TransactionType<'_>> {
+    pub(super) fn create_transaction(&mut self) -> Transaction<Storage::TransactionType<'_>> {
         Transaction::new(
             self.partition_id,
             self.partition_key_range.clone(),

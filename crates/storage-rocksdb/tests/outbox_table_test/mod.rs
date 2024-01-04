@@ -47,7 +47,7 @@ pub(crate) async fn verify_outbox_is_empty_after_truncation<T: OutboxTable>(txn:
     assert_eq!(result, None);
 }
 
-pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn).await;

@@ -399,14 +399,14 @@ impl RocksDBStorage {
     }
 
     #[allow(clippy::needless_lifetimes)]
-    pub fn transaction(&self) -> RocksDBTransaction {
+    pub fn transaction(&mut self) -> RocksDBTransaction {
         let db = self.db.clone();
 
         RocksDBTransaction {
             txn: self.db.transaction(),
             db,
-            key_buffer: Default::default(),
-            value_buffer: Default::default(),
+            key_buffer: &mut self.key_buffer,
+            value_buffer: &mut self.value_buffer,
             writer_handle: &self.writer_handle,
         }
     }
@@ -415,8 +415,7 @@ impl RocksDBStorage {
 impl Storage for RocksDBStorage {
     type TransactionType<'a> = RocksDBTransaction<'a>;
 
-    #[allow(clippy::needless_lifetimes)]
-    fn transaction(&self) -> Self::TransactionType<'_> {
+    fn transaction(&mut self) -> Self::TransactionType<'_> {
         RocksDBStorage::transaction(self)
     }
 }
@@ -471,8 +470,8 @@ impl StorageAccess for RocksDBStorage {
 pub struct RocksDBTransaction<'a> {
     txn: rocksdb::Transaction<'a, DB>,
     db: Arc<DB>,
-    key_buffer: BytesMut,
-    value_buffer: BytesMut,
+    key_buffer: &'a mut BytesMut,
+    value_buffer: &'a mut BytesMut,
     writer_handle: &'a WriterHandle,
 }
 
@@ -549,14 +548,14 @@ impl<'a> StorageAccess for RocksDBTransaction<'a> {
     fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
         self.key_buffer.clear();
         self.key_buffer.reserve(min_size);
-        &mut self.key_buffer
+        self.key_buffer
     }
 
     #[inline]
     fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
         self.value_buffer.clear();
         self.value_buffer.reserve(min_size);
-        &mut self.value_buffer
+        self.value_buffer
     }
 
     #[inline]

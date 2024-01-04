@@ -112,7 +112,7 @@ async fn get_inbox_entries_after_delete<T: InboxTable>(table: &mut T) {
     }
 }
 
-pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
     populate_data(&mut txn).await;
 

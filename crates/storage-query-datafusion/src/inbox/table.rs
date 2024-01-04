@@ -49,7 +49,7 @@ impl RangeScanner for InboxScanner {
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
     ) -> SendableRecordBatchStream {
-        let db = self.0.clone();
+        let mut db = self.0.clone();
         let schema = projection.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
         let tx = stream_builder.tx();

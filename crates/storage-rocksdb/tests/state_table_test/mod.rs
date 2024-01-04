@@ -95,7 +95,7 @@ async fn verify_prefix_scan_after_delete<T: StateTable>(table: &mut T) {
     assert_stream_eq(result, expected).await;
 }
 
-pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn).await;

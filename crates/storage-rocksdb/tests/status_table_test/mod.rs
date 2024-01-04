@@ -163,7 +163,7 @@ async fn verify_last_partition_all_svc_with_status_invoked<T: StatusTable>(txn: 
     assert_stream_eq(stream, expected).await;
 }
 
-pub(crate) async fn run_tests(rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
     populate_data(&mut txn).await;
 

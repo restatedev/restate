@@ -39,7 +39,7 @@ pub trait Storage {
     where
         Self: 'a;
 
-    fn transaction(&self) -> Self::TransactionType<'_>;
+    fn transaction(&mut self) -> Self::TransactionType<'_>;
 }
 
 pub trait Transaction:
