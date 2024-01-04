@@ -134,10 +134,10 @@ impl<'a> ServiceInvoker<'a> {
         )
     }
 
-    pub(crate) async fn invoke<'b: 'a>(
-        &'a self,
+    pub(crate) async fn invoke(
+        &mut self,
         full_invocation_id: FullInvocationId,
-        method: &'b str,
+        method: &str,
         span_context: ServiceInvocationSpanContext,
         response_sink: Option<ServiceInvocationResponseSink>,
         argument: Bytes,
@@ -147,7 +147,7 @@ impl<'a> ServiceInvoker<'a> {
         let invocation_context = InvocationContext {
             full_invocation_id: &full_invocation_id,
             span_context: &span_context,
-            state_reader: &self.storage,
+            state_reader: &mut self.storage,
             schemas: self.schemas,
             response_sink: response_sink.as_ref(),
             effects_buffer: &mut out_effects,
@@ -239,7 +239,7 @@ impl StateAndJournalTransitions {
 struct InvocationContext<'a, S> {
     // Invocation metadata
     full_invocation_id: &'a FullInvocationId,
-    state_reader: S,
+    state_reader: &'a mut S,
     schemas: &'a Schemas,
     span_context: &'a ServiceInvocationSpanContext,
     response_sink: Option<&'a ServiceInvocationResponseSink>,
@@ -250,7 +250,7 @@ struct InvocationContext<'a, S> {
 
 impl<S: StateReader> InvocationContext<'_, S> {
     async fn load_journal_metadata(
-        &self,
+        &mut self,
         service_id: &ServiceId,
     ) -> Result<Option<(InvocationUuid, JournalMetadata)>, InvocationError> {
         self.state_reader
@@ -317,7 +317,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
     }
 
     async fn load_state_raw<Serde>(
-        &self,
+        &mut self,
         key: &StateKey<Serde>,
     ) -> Result<Option<Bytes>, InvocationError> {
         Ok(
@@ -337,7 +337,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
     }
 
     async fn load_state<Serde: StateSerde>(
-        &self,
+        &mut self,
         key: &StateKey<Serde>,
     ) -> Result<Option<Serde::MaterializedType>, InvocationError> {
         self.load_state_raw(key)
@@ -361,7 +361,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
     }
 
     async fn load_state_or_fail<Serde: StateSerde>(
-        &self,
+        &mut self,
         key: &StateKey<Serde>,
     ) -> Result<Serde::MaterializedType, InvocationError> {
         self.load_state(key).await.and_then(|optional_value| {
@@ -526,7 +526,7 @@ mod tests {
         ) -> Result<(FullInvocationId, Vec<Effect>), InvocationError>
         where
             F: for<'fut> FnOnce(
-                &'fut mut InvocationContext<'fut, &'fut MockStateReader>,
+                &'fut mut InvocationContext<'fut, MockStateReader>,
             ) -> LocalBoxFuture<'fut, Result<(), InvocationError>>,
         {
             let fid = FullInvocationId::with_service_id(
@@ -538,7 +538,7 @@ mod tests {
             let mut invocation_ctx = InvocationContext {
                 full_invocation_id: &fid,
                 span_context: &ServiceInvocationSpanContext::empty(),
-                state_reader: &self.state_reader,
+                state_reader: &mut self.state_reader,
                 schemas: &self.schemas,
                 response_sink: self.response_sink.as_ref(),
                 effects_buffer: &mut out_effects,

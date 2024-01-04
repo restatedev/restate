@@ -70,7 +70,7 @@ where
                         &mut follower_state.invoker_tx,
                         &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
-                        &leader_state.non_deterministic_service_invoker,
+                        &mut leader_state.non_deterministic_service_invoker,
                         &follower_state.ack_tx,
                         &mut follower_state.self_proposal_tx,
                     )
@@ -95,7 +95,7 @@ where
         invoker_tx: &mut I,
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
-        non_deterministic_service_invoker: &ServiceInvoker<'a>,
+        non_deterministic_service_invoker: &mut ServiceInvoker<'a>,
         ack_tx: &restate_network::PartitionProcessorSender<StateMachineAckResponse>,
         self_proposal_tx: &mut IdentitySender<StateMachineAckCommand>,
     ) -> Result<(), LeaderAwareActionCollectorError> {

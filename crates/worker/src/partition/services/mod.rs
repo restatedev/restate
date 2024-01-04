@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::StateStorage;
 use crate::partition::storage::PartitionStorage;
 use bytes::Bytes;
 use restate_storage_api::status_table::JournalMetadata;
@@ -28,66 +27,55 @@ pub(crate) mod non_deterministic;
 
 trait StateReader {
     fn read_state(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         key: &str,
     ) -> impl Future<Output = Result<Option<Bytes>, anyhow::Error>> + Send;
 
     fn read_virtual_journal_metadata(
-        &self,
+        &mut self,
         service_id: &ServiceId,
     ) -> impl Future<Output = Result<Option<(InvocationUuid, JournalMetadata)>, anyhow::Error>> + Send;
 
     fn read_virtual_journal_entry(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> impl Future<Output = Result<Option<EnrichedRawEntry>, anyhow::Error>> + Send;
 }
 
-impl StateReader for &PartitionStorage<RocksDBStorage> {
+impl StateReader for PartitionStorage<RocksDBStorage> {
     async fn read_state(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         key: &str,
     ) -> Result<Option<Bytes>, anyhow::Error> {
         Ok(self
-            .create_transaction()
             // TODO modify the load_state interface to get rid of the Bytes for the key
             .load_state(service_id, &Bytes::copy_from_slice(key.as_bytes()))
             .await?)
     }
 
     async fn read_virtual_journal_metadata(
-        &self,
+        &mut self,
         service_id: &ServiceId,
     ) -> Result<Option<(InvocationUuid, JournalMetadata)>, anyhow::Error> {
-        Ok(
-            match crate::partition::state_machine::StateReader::get_invocation_status(
-                &mut self.create_transaction(),
-                service_id,
-            )
-            .await?
-            {
-                restate_storage_api::status_table::InvocationStatus::Virtual {
-                    journal_metadata,
-                    invocation_uuid,
-                    ..
-                } => Some((invocation_uuid, journal_metadata)),
-                _ => None,
-            },
-        )
+        Ok(match self.get_invocation_status(service_id).await? {
+            restate_storage_api::status_table::InvocationStatus::Virtual {
+                journal_metadata,
+                invocation_uuid,
+                ..
+            } => Some((invocation_uuid, journal_metadata)),
+            _ => None,
+        })
     }
 
     async fn read_virtual_journal_entry(
-        &self,
+        &mut self,
         service_id: &ServiceId,
         entry_index: EntryIndex,
     ) -> Result<Option<EnrichedRawEntry>, anyhow::Error> {
-        Ok(self
-            .create_transaction()
-            .load_journal_entry(service_id, entry_index)
-            .await?)
+        Ok(self.load_journal_entry(service_id, entry_index).await?)
     }
 }
 
@@ -304,9 +292,9 @@ mod tests {
         }
     }
 
-    impl StateReader for &MockStateReader {
+    impl StateReader for MockStateReader {
         async fn read_state(
-            &self,
+            &mut self,
             _service_id: &ServiceId,
             key: &str,
         ) -> Result<Option<Bytes>, Error> {
@@ -314,14 +302,14 @@ mod tests {
         }
 
         async fn read_virtual_journal_metadata(
-            &self,
+            &mut self,
             _: &ServiceId,
         ) -> Result<Option<(InvocationUuid, JournalMetadata)>, Error> {
             Ok(self.1.as_ref().map(|(id, m, _)| (*id, m.clone())))
         }
 
         async fn read_virtual_journal_entry(
-            &self,
+            &mut self,
             _: &ServiceId,
             entry_index: EntryIndex,
         ) -> Result<Option<EnrichedRawEntry>, Error> {

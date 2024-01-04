@@ -102,7 +102,7 @@ const INACTIVITY_TRACKER: StateKey<Bincode<InactivityTracker>> =
 impl<'a, State: StateReader> InvocationContext<'a, State> {
     // Please note: this method doesn't take in account the current state transitions
     async fn load_journal(
-        &self,
+        &mut self,
         service_id: &ServiceId,
     ) -> Result<Option<(InvocationUuid, JournalMetadata, Vec<EnrichedRawEntry>)>, InvocationError>
     {

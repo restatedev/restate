@@ -18,6 +18,7 @@ use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::state_table::StateTable;
 use restate_storage_api::status_table::{InvocationStatus, StatusTable};
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Result as StorageResult;
@@ -92,7 +93,8 @@ async fn load_seq_number<F: FsmTable + Send>(
 
 impl<Storage> PartitionStorage<Storage>
 where
-    Storage: restate_storage_api::Storage + FsmTable + StatusTable + JournalTable + Send,
+    Storage:
+        restate_storage_api::Storage + FsmTable + StatusTable + JournalTable + StateTable + Send,
 {
     pub fn load_inbox_seq_number(
         &mut self,
@@ -153,6 +155,15 @@ where
                 JournalEntry::Completion(_) => None,
             }))
         }
+    }
+
+    pub async fn load_state(
+        &mut self,
+        service_id: &ServiceId,
+        key: &Bytes,
+    ) -> StorageResult<Option<Bytes>> {
+        self.assert_partition_key(service_id);
+        self.storage.get_user_state(service_id, key).await
     }
 }
 
