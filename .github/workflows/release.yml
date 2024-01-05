@@ -70,15 +70,15 @@ jobs:
         with:
           name: restate.x86_64-apple-darwin.tar.gz
 
-      - name: Download x86_64-unknown-linux-gnu binaries
+      - name: Download x86_64-unknown-linux-musl binaries
         uses: actions/download-artifact@v3
         with:
-          name: restate.x86_64-unknown-linux-gnu.tar.gz
+          name: restate.x86_64-unknown-linux-musl.tar.gz
 
-      - name: Download aarch64-unknown-linux-gnu binaries
+      - name: Download aarch64-unknown-linux-musl binaries
         uses: actions/download-artifact@v3
         with:
-          name: restate.aarch64-unknown-linux-gnu.tar.gz
+          name: restate.aarch64-unknown-linux-musl.tar.gz
 
       - name: Create release
         uses: softprops/action-gh-release@v1
@@ -88,6 +88,6 @@ jobs:
           files: |
             restate.aarch64-apple-darwin.tar.gz
             restate.x86_64-apple-darwin.tar.gz
-            restate.x86_64-unknown-linux-gnu.tar.gz
-            restate.aarch64-unknown-linux-gnu.tar.gz
+            restate.x86_64-unknown-linux-musl.tar.gz
+            restate.aarch64-unknown-linux-musl.tar.gz
 
