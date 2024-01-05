@@ -10,22 +10,22 @@
 
 use crate::Result;
 use futures_util::Stream;
-use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::PartitionId;
+use restate_types::identifiers::{InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use std::future::Future;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimerKey {
-    pub full_invocation_id: FullInvocationId,
+    pub invocation_uuid: InvocationUuid,
     pub journal_index: u32,
     pub timestamp: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Timer {
-    CompleteSleepEntry,
-    Invoke(ServiceInvocation),
+    CompleteSleepEntry(ServiceId),
+    Invoke(ServiceId, ServiceInvocation),
 }
 
 pub trait TimerTable {
