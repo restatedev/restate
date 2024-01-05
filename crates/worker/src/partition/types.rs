@@ -10,15 +10,14 @@
 
 use prost::Message;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::timer_table::Timer;
-use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
+use restate_storage_api::timer_table::{Timer, TimerKey};
+use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::{EntryIndex, InvocationId, WithPartitionKey};
 use restate_types::invocation::{
     InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, Source, SpanRelation,
 };
 use restate_types::time::MillisSinceEpoch;
-use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -27,22 +26,31 @@ pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
 
 #[derive(Debug, Clone)]
 pub struct TimerValue {
-    pub invocation_uuid: InvocationUuid,
-    pub wake_up_time: MillisSinceEpoch,
-    pub entry_index: EntryIndex,
-    pub value: Timer,
+    timer_key: TimerKeyWrapper,
+    value: Timer,
 }
 
 impl TimerValue {
+    pub fn new(timer_key: TimerKey, value: Timer) -> Self {
+        Self {
+            timer_key: TimerKeyWrapper(timer_key),
+            value,
+        }
+    }
+
     pub(crate) fn new_sleep(
         full_invocation_id: FullInvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Self {
-        Self {
+        let timer_key = TimerKeyWrapper(TimerKey {
             invocation_uuid: full_invocation_id.invocation_uuid,
-            wake_up_time,
-            entry_index,
+            timestamp: wake_up_time.as_u64(),
+            journal_index: entry_index,
+        });
+
+        Self {
+            timer_key,
             value: Timer::CompleteSleepEntry(full_invocation_id.service_id),
         }
     }
@@ -53,95 +61,100 @@ impl TimerValue {
         entry_index: EntryIndex,
         service_invocation: ServiceInvocation,
     ) -> Self {
-        Self {
+        let timer_key = TimerKeyWrapper(TimerKey {
             invocation_uuid: full_invocation_id.invocation_uuid,
-            wake_up_time,
-            entry_index,
+            timestamp: wake_up_time.as_u64(),
+            journal_index: entry_index,
+        });
+
+        Self {
+            timer_key,
             value: Timer::Invoke(full_invocation_id.service_id, service_invocation),
         }
     }
 
-    pub(crate) fn display_key(&self) -> TimerKeyDisplay {
-        return TimerKeyDisplay {
-            service_id: self.value.service_id(),
-            invocation_uuid: &self.invocation_uuid,
-            entry_index: self.entry_index,
-        };
+    pub fn into_inner(self) -> (TimerKey, Timer) {
+        (self.timer_key.0, self.value)
+    }
+
+    pub fn key(&self) -> &TimerKey {
+        &self.timer_key.0
+    }
+
+    pub fn value(&self) -> &Timer {
+        &self.value
+    }
+
+    pub fn invocation_id(&self) -> InvocationId {
+        InvocationId::new(
+            self.value.service_id().partition_key(),
+            self.timer_key.0.invocation_uuid,
+        )
+    }
+
+    pub fn wake_up_time(&self) -> MillisSinceEpoch {
+        MillisSinceEpoch::from(self.timer_key.0.timestamp)
     }
 }
 
 impl Hash for TimerValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Hash::hash(&self.invocation_uuid, state);
-        Hash::hash(&self.wake_up_time, state);
-        Hash::hash(&self.entry_index, state);
+        Hash::hash(&self.timer_key, state);
         // We don't hash the value field.
     }
 }
 
 impl PartialEq for TimerValue {
     fn eq(&self, other: &Self) -> bool {
-        self.invocation_uuid == other.invocation_uuid
-            && self.wake_up_time == other.wake_up_time
-            && self.entry_index == other.entry_index
+        self.timer_key == other.timer_key
     }
 }
 
 impl Eq for TimerValue {}
 
-impl PartialOrd for TimerValue {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
+/// New type wrapper to implement [`restate_timer::TimerKey`] for [`TimerKey`].
+///
+/// # Important
+/// We use the [`TimerKey`] to read the timers in an absolute order. The timer service
+/// relies on this order in order to process each timer exactly once. That is the
+/// reason why the in-memory and in-rocksdb ordering of the TimerKey needs to be exactly
+/// the same.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TimerKeyWrapper(TimerKey);
 
-// We use the TimerKey to read the timers in an absolute order. The timer service
-// relies on this order in order to process each timer exactly once. That is the
-// reason why the ordering of the TimerValue and how the TimerKey is laid out in
-// RocksDB need to be exactly the same.
-//
-// TODO: https://github.com/restatedev/restate/issues/394
-impl Ord for TimerValue {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.wake_up_time
-            .cmp(&other.wake_up_time)
-            .then_with(|| self.invocation_uuid.cmp(&other.invocation_uuid))
-            .then_with(|| self.entry_index.cmp(&other.entry_index))
+impl TimerKeyWrapper {
+    pub fn into_inner(self) -> TimerKey {
+        self.0
     }
 }
 
 impl restate_timer::Timer for TimerValue {
-    type TimerKey = TimerValue;
+    type TimerKey = TimerKeyWrapper;
 
     fn timer_key(&self) -> Self::TimerKey {
-        self.clone()
+        self.timer_key.clone()
     }
 }
 
-impl restate_timer::TimerKey for TimerValue {
+impl restate_timer::TimerKey for TimerKeyWrapper {
     fn wake_up_time(&self) -> MillisSinceEpoch {
-        self.wake_up_time
+        MillisSinceEpoch::from(self.0.timestamp)
+    }
+}
+
+impl fmt::Display for TimerKeyWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", TimerKeyDisplay(&self.0))
     }
 }
 
 // Helper to display timer key
 #[derive(Debug)]
-pub(crate) struct TimerKeyDisplay<'a> {
-    pub(crate) service_id: &'a ServiceId,
-    pub(crate) invocation_uuid: &'a InvocationUuid,
-    pub(crate) entry_index: EntryIndex,
-}
+pub(crate) struct TimerKeyDisplay<'a>(pub &'a TimerKey);
 
 impl<'a> fmt::Display for TimerKeyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}[{:?}][{}]({})",
-            self.service_id.service_name,
-            self.service_id.key,
-            self.invocation_uuid,
-            self.entry_index
-        )
+        write!(f, "[{}]({})", self.0.invocation_uuid, self.0.journal_index)
     }
 }
 

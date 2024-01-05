@@ -124,6 +124,9 @@ impl<'a> TimerTable for RocksDBTransaction<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::timer_table::TimerKey;
+    use rand::Rng;
+    use restate_types::identifiers::InvocationUuid;
     use uuid::Uuid;
 
     #[test]
@@ -215,5 +218,34 @@ mod tests {
 
     fn less_than_or_equal(a: impl AsRef<[u8]>, b: impl AsRef<[u8]>) -> bool {
         a.as_ref() <= b.as_ref()
+    }
+
+    #[test]
+    fn timer_key_order_is_the_same_as_binary_order() {
+        let mut timer_keys: Vec<_> = (0..100).map(|idx| (idx, random_timer_key())).collect();
+        let mut binary_timer_keys: Vec<_> = timer_keys
+            .iter()
+            .map(|(idx, key)| (*idx, write_timer_key(1, key).serialize()))
+            .collect();
+
+        timer_keys.sort_by(|(_, key), (_, other_key)| key.cmp(other_key));
+        binary_timer_keys.sort_by(|(_, key), (_, other_key)| key.cmp(other_key));
+
+        let timer_keys_sort_order: Vec<_> = timer_keys.iter().map(|(idx, _)| *idx).collect();
+        let binary_timer_keys_sort_order: Vec<_> =
+            binary_timer_keys.iter().map(|(idx, _)| *idx).collect();
+
+        assert_eq!(
+            timer_keys_sort_order, binary_timer_keys_sort_order,
+            "In-memory and binary order need to be equal. Failing timers: {timer_keys:?}"
+        );
+    }
+
+    pub fn random_timer_key() -> TimerKey {
+        TimerKey {
+            invocation_uuid: InvocationUuid::now_v7(),
+            journal_index: rand::thread_rng().gen_range(0..2 ^ 16),
+            timestamp: rand::thread_rng().gen_range(0..2 ^ 16),
+        }
     }
 }

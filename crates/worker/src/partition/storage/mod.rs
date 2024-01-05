@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
+use crate::partition::types::TimerKeyWrapper;
 use crate::partition::{CommitError, Committable, TimerValue};
 use bytes::{Buf, Bytes};
 use futures::stream::BoxStream;
@@ -23,14 +24,13 @@ use restate_storage_api::Result as StorageResult;
 use restate_storage_api::{StorageError, Transaction as OtherTransaction};
 use restate_timer::TimerReader;
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, InvocationId, InvocationUuid, PartitionId, PartitionKey,
-    ServiceId, WithPartitionKey,
+    EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
+    WithPartitionKey,
 };
 use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::message::MessageIndex;
-use restate_types::time::MillisSinceEpoch;
 use std::future::Future;
 use std::ops::RangeInclusive;
 
@@ -459,40 +459,15 @@ where
         Ok(())
     }
 
-    async fn store_timer(
-        &mut self,
-        invocation_uuid: InvocationUuid,
-        wake_up_time: MillisSinceEpoch,
-        entry_index: EntryIndex,
-        timer: Timer,
-    ) -> StorageResult<()> {
-        self.assert_partition_key(timer.service_id());
-        let timer_key = TimerKey {
-            invocation_uuid,
-            timestamp: wake_up_time.as_u64(),
-            journal_index: entry_index,
-        };
-
+    async fn store_timer(&mut self, timer_key: TimerKey, timer: Timer) -> StorageResult<()> {
         self.inner
             .add_timer(self.partition_id, &timer_key, timer)
             .await;
         Ok(())
     }
 
-    async fn delete_timer(
-        &mut self,
-        full_invocation_id: FullInvocationId,
-        wake_up_time: MillisSinceEpoch,
-        entry_index: EntryIndex,
-    ) -> StorageResult<()> {
-        self.assert_partition_key(&full_invocation_id.service_id);
-        let timer_key = TimerKey {
-            invocation_uuid: full_invocation_id.invocation_uuid,
-            timestamp: wake_up_time.as_u64(),
-            journal_index: entry_index,
-        };
-
-        self.inner.delete_timer(self.partition_id, &timer_key).await;
+    async fn delete_timer(&mut self, timer_key: &TimerKey) -> StorageResult<()> {
+        self.inner.delete_timer(self.partition_id, timer_key).await;
         Ok(())
     }
 }
@@ -547,27 +522,18 @@ where
     fn scan_timers(
         &self,
         num_timers: usize,
-        previous_timer_key: Option<TimerValue>,
+        previous_timer_key: Option<TimerKeyWrapper>,
     ) -> Self::TimerStream<'_> {
         let mut transaction = self.create_transaction();
 
         async move {
-            let exclusive_start = previous_timer_key.map(|timer_value| TimerKey {
-                invocation_uuid: timer_value.invocation_uuid,
-                journal_index: timer_value.entry_index,
-                timestamp: timer_value.wake_up_time.as_u64(),
-            });
-
             let timer_stream = transaction
-                .next_timers_greater_than(self.partition_id, exclusive_start.as_ref(), num_timers)
-                .map(|result| {
-                    result.map(|(timer_key, timer)| TimerValue {
-                        invocation_uuid: timer_key.invocation_uuid,
-                        wake_up_time: MillisSinceEpoch::new(timer_key.timestamp),
-                        entry_index: timer_key.journal_index,
-                        value: timer,
-                    })
-                })
+                .next_timers_greater_than(
+                    self.partition_id,
+                    previous_timer_key.map(|t| t.into_inner()).as_ref(),
+                    num_timers,
+                )
+                .map(|result| result.map(|(timer_key, timer)| TimerValue::new(timer_key, timer)))
                 // TODO: Update timer service to maintain transaction while reading the timer stream: See https://github.com/restatedev/restate/issues/273
                 // have to collect the stream because it depends on the local transaction
                 .try_collect::<Vec<_>>()
