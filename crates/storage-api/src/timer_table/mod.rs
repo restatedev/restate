@@ -30,10 +30,10 @@ pub enum Timer {
 }
 
 impl Timer {
-    pub fn service_id(&self) -> ServiceId {
+    pub fn service_id(&self) -> &ServiceId {
         match self {
-            CompleteSleepEntry(service_id) => service_id.clone(),
-            Timer::Invoke(service_id, _) => service_id.clone(),
+            CompleteSleepEntry(service_id) => service_id,
+            Timer::Invoke(service_id, _) => service_id,
         }
     }
 }
