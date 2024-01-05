@@ -728,7 +728,7 @@ where
         effects.delete_timer(wake_up_time, full_invocation_id.clone(), entry_index);
 
         match value {
-            Timer::CompleteSleepEntry => {
+            Timer::CompleteSleepEntry(_) => {
                 Self::handle_completion(
                     MaybeFullInvocationId::Full(full_invocation_id),
                     Completion {
@@ -740,7 +740,7 @@ where
                 )
                 .await
             }
-            Timer::Invoke(service_invocation) => {
+            Timer::Invoke(_, service_invocation) => {
                 self.send_message(
                     OutboxMessage::ServiceInvocation(service_invocation),
                     effects,
