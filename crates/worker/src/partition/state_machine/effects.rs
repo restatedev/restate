@@ -431,7 +431,7 @@ impl Effect {
                 span_context,
                 ..
             } => match &timer_value.value {
-                Timer::CompleteSleepEntry => {
+                Timer::CompleteSleepEntry(_) => {
                     info_span_if_leader!(
                         is_leader,
                         span_context.is_sampled(),
@@ -453,7 +453,7 @@ impl Effect {
                         "Effect: Register Sleep timer"
                     )
                 }
-                Timer::Invoke(service_invocation) => {
+                Timer::Invoke(_, service_invocation) => {
                     // no span necessary; there will already be a background_invoke span
                     debug_if_leader!(
                         is_leader,

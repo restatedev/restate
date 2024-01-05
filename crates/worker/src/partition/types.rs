@@ -39,11 +39,12 @@ impl TimerValue {
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Self {
+        let sid = Clone::clone(&full_invocation_id.service_id);
         Self {
             full_invocation_id,
             wake_up_time,
             entry_index,
-            value: Timer::CompleteSleepEntry,
+            value: Timer::CompleteSleepEntry(sid),
         }
     }
 
@@ -53,11 +54,12 @@ impl TimerValue {
         entry_index: EntryIndex,
         service_invocation: ServiceInvocation,
     ) -> Self {
+        let sid = Clone::clone(&full_invocation_id.service_id);
         Self {
             full_invocation_id,
             wake_up_time,
             entry_index,
-            value: Timer::Invoke(service_invocation),
+            value: Timer::Invoke(sid.clone(), service_invocation),
         }
     }
 
