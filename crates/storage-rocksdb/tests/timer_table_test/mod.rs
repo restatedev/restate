@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{FullInvocationId, ServiceId};
+use restate_types::identifiers::ServiceId;
 use restate_types::invocation::ServiceInvocation;
 use std::pin::pin;
 
@@ -21,28 +21,22 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
         1337,
         &TimerKey {
-            full_invocation_id: FullInvocationId {
-                service_id: ServiceId::new("svc-1", "key-1"),
-                invocation_uuid: Default::default(),
-            },
+            invocation_uuid: Default::default(),
             journal_index: 0,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry,
+        Timer::CompleteSleepEntry(ServiceId::new("svc-1", "key-1")),
     )
     .await;
 
     txn.add_timer(
         1337,
         &TimerKey {
-            full_invocation_id: FullInvocationId {
-                service_id: ServiceId::new("svc-1", "key-1"),
-                invocation_uuid: Default::default(),
-            },
+            invocation_uuid: Default::default(),
             journal_index: 1,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry,
+        Timer::CompleteSleepEntry(ServiceId::new("svc-1", "key-1")),
     )
     .await;
 
@@ -53,14 +47,11 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
         1337,
         &TimerKey {
-            full_invocation_id: FullInvocationId {
-                service_id: ServiceId::new("svc-1", "key-1"),
-                invocation_uuid: Default::default(),
-            },
+            invocation_uuid: Default::default(),
             journal_index: 2,
             timestamp: 1,
         },
-        Timer::Invoke(service_invocation),
+        Timer::Invoke(ServiceId::new("svc-1", "key-1"), service_invocation),
     )
     .await;
 
@@ -70,28 +61,22 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
         1336,
         &TimerKey {
-            full_invocation_id: FullInvocationId {
-                service_id: ServiceId::new("", ""),
-                invocation_uuid: Default::default(),
-            },
+            invocation_uuid: Default::default(),
             journal_index: 0,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry,
+        Timer::CompleteSleepEntry(ServiceId::new("", "")),
     )
     .await;
 
     txn.add_timer(
         1338,
         &TimerKey {
-            full_invocation_id: FullInvocationId {
-                service_id: ServiceId::new("", ""),
-                invocation_uuid: Default::default(),
-            },
+            invocation_uuid: Default::default(),
             journal_index: 0,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry,
+        Timer::CompleteSleepEntry(ServiceId::new("", "")),
     )
     .await;
 }
@@ -100,7 +85,7 @@ async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T
     let mut stream = pin!(txn.next_timers_greater_than(1337, None, usize::MAX));
 
     let mut count = 0;
-    while (stream.next().await).is_some() {
+    while stream.next().await.is_some() {
         count += 1;
     }
 
@@ -109,10 +94,7 @@ async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T
 
 async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
     let timer_key = &TimerKey {
-        full_invocation_id: FullInvocationId {
-            service_id: ServiceId::new("svc-1", "key-1"),
-            invocation_uuid: Default::default(),
-        },
+        invocation_uuid: Default::default(),
         journal_index: 0,
         timestamp: 0,
     };
@@ -137,10 +119,7 @@ async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
     txn.delete_timer(
         1337,
         &TimerKey {
-            full_invocation_id: FullInvocationId {
-                service_id: ServiceId::new("svc-1", "key-1"),
-                invocation_uuid: Default::default(),
-            },
+            invocation_uuid: Default::default(),
             journal_index: 0,
             timestamp: 0,
         },
@@ -150,10 +129,7 @@ async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
 
 async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
     let timer_key = &TimerKey {
-        full_invocation_id: FullInvocationId {
-            service_id: ServiceId::new("", ""),
-            invocation_uuid: Default::default(),
-        },
+        invocation_uuid: Default::default(),
         journal_index: 0,
         timestamp: 0,
     };
