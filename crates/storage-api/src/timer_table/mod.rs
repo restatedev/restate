@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::timer_table::Timer::CompleteSleepEntry;
 use crate::Result;
 use futures_util::Stream;
 use restate_types::identifiers::PartitionId;
@@ -26,6 +27,15 @@ pub struct TimerKey {
 pub enum Timer {
     CompleteSleepEntry(ServiceId),
     Invoke(ServiceId, ServiceInvocation),
+}
+
+impl Timer {
+    pub fn service_id(&self) -> ServiceId {
+        match self {
+            CompleteSleepEntry(service_id) => service_id.clone(),
+            Timer::Invoke(service_id, _) => service_id.clone(),
+        }
+    }
 }
 
 pub trait TimerTable {
