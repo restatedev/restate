@@ -13,15 +13,20 @@ use futures_util::StreamExt;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use std::pin::pin;
+use uuid::Uuid;
 
 async fn populate_data<T: TimerTable>(txn: &mut T) {
+    let invocation_uuid = InvocationUuid::from(
+        Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid"),
+    );
+
     txn.add_timer(
         1337,
         &TimerKey {
-            invocation_uuid: Default::default(),
+            invocation_uuid,
             journal_index: 0,
             timestamp: 0,
         },
@@ -32,7 +37,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
         1337,
         &TimerKey {
-            invocation_uuid: Default::default(),
+            invocation_uuid,
             journal_index: 1,
             timestamp: 0,
         },

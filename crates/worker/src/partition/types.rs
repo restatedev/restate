@@ -59,7 +59,7 @@ impl TimerValue {
             full_invocation_id,
             wake_up_time,
             entry_index,
-            value: Timer::Invoke(sid.clone(), service_invocation),
+            value: Timer::Invoke(sid, service_invocation),
         }
     }
 
@@ -104,17 +104,10 @@ impl Ord for TimerValue {
         self.wake_up_time
             .cmp(&other.wake_up_time)
             .then_with(|| {
-                let service_id = &self.full_invocation_id.service_id;
                 let invocation_id = &self.full_invocation_id.invocation_uuid;
-
-                let other_service_id = &other.full_invocation_id.service_id;
                 let other_invocation_id = &other.full_invocation_id.invocation_uuid;
 
-                service_id
-                    .service_name
-                    .cmp(&other_service_id.service_name)
-                    .then_with(|| service_id.key.cmp(&other_service_id.key))
-                    .then_with(|| invocation_id.cmp(other_invocation_id))
+                invocation_id.cmp(other_invocation_id)
             })
             .then_with(|| self.entry_index.cmp(&other.entry_index))
     }

@@ -173,6 +173,20 @@ mod tests {
             timestamp: 300,
         };
         assert_in_range(a, b);
+
+        let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
+        let a = TimerKey {
+            invocation_uuid: uuid.into(),
+            journal_index: 0,
+            timestamp: 300,
+        };
+        let uuid2 = Uuid::try_parse("118756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
+        let b = TimerKey {
+            invocation_uuid: uuid2.into(),
+            journal_index: 0,
+            timestamp: 300,
+        };
+        assert_in_range(a, b);
     }
 
     #[test]
