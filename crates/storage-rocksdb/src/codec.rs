@@ -15,6 +15,9 @@ use prost::encoding::encoded_len_varint;
 use prost::Message;
 use restate_storage_api::deduplication_table::SequenceNumberSource;
 use restate_storage_api::StorageError;
+use restate_types::identifiers::InvocationUuid;
+
+const INVOCATION_UUID_SERIALIZED_LENGTH: usize = 16;
 
 pub trait Codec: Sized {
     fn encode<B: BufMut>(&self, target: &mut B);
@@ -143,6 +146,27 @@ impl<M: Message + Default> Codec for ProtoValue<M> {
     }
 }
 
+impl Codec for InvocationUuid {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        let slice = self.as_bytes();
+        debug_assert_eq!(slice.len(), self.serialized_length());
+        target.put_slice(slice);
+    }
+
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        // note: this is a zero-copy when the source is bytes::Bytes.
+        if source.remaining() < INVOCATION_UUID_SERIALIZED_LENGTH {
+            return Err(StorageError::DataIntegrityError);
+        }
+        let bytes = source.copy_to_bytes(INVOCATION_UUID_SERIALIZED_LENGTH);
+        InvocationUuid::from_slice(&bytes).map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    fn serialized_length(&self) -> usize {
+        INVOCATION_UUID_SERIALIZED_LENGTH
+    }
+}
+
 #[inline]
 fn write_delimited<B: BufMut>(source: impl AsRef<[u8]>, target: &mut B) {
     let source = source.as_ref();
@@ -232,5 +256,20 @@ mod tests {
     fn write_delim_keeps_lexicographical_sorting() {
         assert!(concat("a", "b") < concat("a", "c"));
         assert!(concat("a", "") < concat("d", ""));
+    }
+
+    #[test]
+    fn invocation_uuid_roundtrip() {
+        let uuid = InvocationUuid::now_v7();
+
+        let mut buf = BytesMut::new();
+        uuid.encode(&mut buf);
+
+        let mut got_bytes = buf.freeze();
+
+        assert_eq!(got_bytes.len(), uuid.serialized_length());
+        let got = InvocationUuid::decode(&mut got_bytes).expect("deserialization should work");
+
+        assert_eq!(uuid, got);
     }
 }
