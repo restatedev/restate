@@ -717,7 +717,7 @@ where
     async fn on_timer<State: StateReader>(
         &mut self,
         TimerValue {
-            full_invocation_id,
+            invocation_uuid,
             entry_index,
             wake_up_time,
             value,
@@ -725,6 +725,8 @@ where
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        let full_invocation_id =
+            FullInvocationId::with_service_id(value.service_id().clone(), invocation_uuid);
         effects.delete_timer(wake_up_time, full_invocation_id.clone(), entry_index);
 
         match value {

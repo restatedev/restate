@@ -427,14 +427,16 @@ impl Effect {
                 span_context,
                 ..
             } => match &timer_value.value {
-                Timer::CompleteSleepEntry(_) => {
+                Timer::CompleteSleepEntry(service_id) => {
+                    let invocation_id =
+                        InvocationId::new(service_id.partition_key(), timer_value.invocation_uuid);
                     info_span_if_leader!(
                         is_leader,
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "sleep",
-                        rpc.service = %timer_value.full_invocation_id.service_id.service_name,
-                        restate.invocation.id = %timer_value.full_invocation_id,
+                        rpc.service = %service_id.service_name,
+                        restate.invocation.id = %invocation_id,
                         restate.timer.key = %timer_value.display_key(),
                         restate.timer.wake_up_time = %timer_value.wake_up_time,
                         // without converting to i64 this field will encode as a string
@@ -465,12 +467,20 @@ impl Effect {
                 full_invocation_id,
                 entry_index,
                 wake_up_time,
-            } => debug_if_leader!(
-                is_leader,
-                restate.timer.key = %TimerKeyDisplay(full_invocation_id, entry_index),
-                restate.timer.wake_up_time = %wake_up_time,
-                "Effect: Delete timer"
-            ),
+            } => {
+                let timer_key_display = TimerKeyDisplay {
+                    service_id: &full_invocation_id.service_id,
+                    invocation_uuid: &full_invocation_id.invocation_uuid,
+                    entry_index: *entry_index,
+                };
+
+                debug_if_leader!(
+                    is_leader,
+                    restate.timer.key = %timer_key_display,
+                    restate.timer.wake_up_time = %wake_up_time,
+                    "Effect: Delete timer"
+                )
+            }
             Effect::StoreDeploymentId { deployment_id, .. } => debug_if_leader!(
                 is_leader,
                 restate.deployment.id = %deployment_id,

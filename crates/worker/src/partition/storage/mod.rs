@@ -23,8 +23,8 @@ use restate_storage_api::Result as StorageResult;
 use restate_storage_api::{StorageError, Transaction as OtherTransaction};
 use restate_timer::TimerReader;
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
-    WithPartitionKey,
+    EntryIndex, FullInvocationId, InvocationId, InvocationUuid, PartitionId, PartitionKey,
+    ServiceId, WithPartitionKey,
 };
 use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -461,14 +461,14 @@ where
 
     async fn store_timer(
         &mut self,
-        full_invocation_id: FullInvocationId,
+        invocation_uuid: InvocationUuid,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         timer: Timer,
     ) -> StorageResult<()> {
-        self.assert_partition_key(&full_invocation_id.service_id);
+        self.assert_partition_key(timer.service_id());
         let timer_key = TimerKey {
-            invocation_uuid: full_invocation_id.invocation_uuid,
+            invocation_uuid,
             timestamp: wake_up_time.as_u64(),
             journal_index: entry_index,
         };
@@ -553,7 +553,7 @@ where
 
         async move {
             let exclusive_start = previous_timer_key.map(|timer_value| TimerKey {
-                invocation_uuid: timer_value.full_invocation_id.invocation_uuid,
+                invocation_uuid: timer_value.invocation_uuid,
                 journal_index: timer_value.entry_index,
                 timestamp: timer_value.wake_up_time.as_u64(),
             });
@@ -562,10 +562,7 @@ where
                 .next_timers_greater_than(self.partition_id, exclusive_start.as_ref(), num_timers)
                 .map(|result| {
                     result.map(|(timer_key, timer)| TimerValue {
-                        full_invocation_id: FullInvocationId::with_service_id(
-                            timer.service_id(),
-                            timer_key.invocation_uuid,
-                        ),
+                        invocation_uuid: timer_key.invocation_uuid,
                         wake_up_time: MillisSinceEpoch::new(timer_key.timestamp),
                         entry_index: timer_key.journal_index,
                         value: timer,

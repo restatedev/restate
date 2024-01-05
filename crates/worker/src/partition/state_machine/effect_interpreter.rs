@@ -23,7 +23,7 @@ use restate_storage_api::status_table::{
 };
 use restate_storage_api::timer_table::Timer;
 use restate_storage_api::Result as StorageResult;
-use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
+use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
@@ -140,7 +140,7 @@ pub trait StateStorage {
     // Timer
     fn store_timer(
         &mut self,
-        full_invocation_id: FullInvocationId,
+        invocation_uuid: InvocationUuid,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         timer: Timer,
@@ -298,7 +298,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             Effect::RegisterTimer { timer_value, .. } => {
                 state_storage
                     .store_timer(
-                        timer_value.full_invocation_id.clone(),
+                        timer_value.invocation_uuid,
                         timer_value.wake_up_time,
                         timer_value.entry_index,
                         timer_value.value.clone(),

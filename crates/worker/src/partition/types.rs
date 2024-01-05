@@ -11,8 +11,8 @@
 use prost::Message;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::Timer;
-use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{EntryIndex, InvocationId};
+use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{
     InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, Source, SpanRelation,
@@ -27,7 +27,7 @@ pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
 
 #[derive(Debug, Clone)]
 pub struct TimerValue {
-    pub full_invocation_id: FullInvocationId,
+    pub invocation_uuid: InvocationUuid,
     pub wake_up_time: MillisSinceEpoch,
     pub entry_index: EntryIndex,
     pub value: Timer,
@@ -39,12 +39,11 @@ impl TimerValue {
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Self {
-        let sid = Clone::clone(&full_invocation_id.service_id);
         Self {
-            full_invocation_id,
+            invocation_uuid: full_invocation_id.invocation_uuid,
             wake_up_time,
             entry_index,
-            value: Timer::CompleteSleepEntry(sid),
+            value: Timer::CompleteSleepEntry(full_invocation_id.service_id),
         }
     }
 
@@ -54,23 +53,26 @@ impl TimerValue {
         entry_index: EntryIndex,
         service_invocation: ServiceInvocation,
     ) -> Self {
-        let sid = Clone::clone(&full_invocation_id.service_id);
         Self {
-            full_invocation_id,
+            invocation_uuid: full_invocation_id.invocation_uuid,
             wake_up_time,
             entry_index,
-            value: Timer::Invoke(sid.clone(), service_invocation),
+            value: Timer::Invoke(full_invocation_id.service_id, service_invocation),
         }
     }
 
     pub(crate) fn display_key(&self) -> TimerKeyDisplay {
-        return TimerKeyDisplay(&self.full_invocation_id, &self.entry_index);
+        return TimerKeyDisplay {
+            service_id: self.value.service_id(),
+            invocation_uuid: &self.invocation_uuid,
+            entry_index: self.entry_index,
+        };
     }
 }
 
 impl Hash for TimerValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Hash::hash(&self.full_invocation_id, state);
+        Hash::hash(&self.invocation_uuid, state);
         Hash::hash(&self.wake_up_time, state);
         Hash::hash(&self.entry_index, state);
         // We don't hash the value field.
@@ -79,7 +81,7 @@ impl Hash for TimerValue {
 
 impl PartialEq for TimerValue {
     fn eq(&self, other: &Self) -> bool {
-        self.full_invocation_id == other.full_invocation_id
+        self.invocation_uuid == other.invocation_uuid
             && self.wake_up_time == other.wake_up_time
             && self.entry_index == other.entry_index
     }
@@ -103,19 +105,7 @@ impl Ord for TimerValue {
     fn cmp(&self, other: &Self) -> Ordering {
         self.wake_up_time
             .cmp(&other.wake_up_time)
-            .then_with(|| {
-                let service_id = &self.full_invocation_id.service_id;
-                let invocation_id = &self.full_invocation_id.invocation_uuid;
-
-                let other_service_id = &other.full_invocation_id.service_id;
-                let other_invocation_id = &other.full_invocation_id.invocation_uuid;
-
-                service_id
-                    .service_name
-                    .cmp(&other_service_id.service_name)
-                    .then_with(|| service_id.key.cmp(&other_service_id.key))
-                    .then_with(|| invocation_id.cmp(other_invocation_id))
-            })
+            .then_with(|| self.invocation_uuid.cmp(&other.invocation_uuid))
             .then_with(|| self.entry_index.cmp(&other.entry_index))
     }
 }
@@ -136,14 +126,21 @@ impl restate_timer::TimerKey for TimerValue {
 
 // Helper to display timer key
 #[derive(Debug)]
-pub(crate) struct TimerKeyDisplay<'a>(pub(crate) &'a FullInvocationId, pub(crate) &'a EntryIndex);
+pub(crate) struct TimerKeyDisplay<'a> {
+    pub(crate) service_id: &'a ServiceId,
+    pub(crate) invocation_uuid: &'a InvocationUuid,
+    pub(crate) entry_index: EntryIndex,
+}
 
 impl<'a> fmt::Display for TimerKeyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{}[{:?}][{}]({})",
-            self.0.service_id.service_name, self.0.service_id.key, self.0.invocation_uuid, self.1
+            self.service_id.service_name,
+            self.service_id.key,
+            self.invocation_uuid,
+            self.entry_index
         )
     }
 }
