@@ -468,7 +468,7 @@ where
     ) -> StorageResult<()> {
         self.assert_partition_key(&full_invocation_id.service_id);
         let timer_key = TimerKey {
-            full_invocation_id,
+            invocation_uuid: full_invocation_id.invocation_uuid,
             timestamp: wake_up_time.as_u64(),
             journal_index: entry_index,
         };
@@ -487,7 +487,7 @@ where
     ) -> StorageResult<()> {
         self.assert_partition_key(&full_invocation_id.service_id);
         let timer_key = TimerKey {
-            full_invocation_id,
+            invocation_uuid: full_invocation_id.invocation_uuid,
             timestamp: wake_up_time.as_u64(),
             journal_index: entry_index,
         };
@@ -553,7 +553,7 @@ where
 
         async move {
             let exclusive_start = previous_timer_key.map(|timer_value| TimerKey {
-                full_invocation_id: timer_value.full_invocation_id,
+                invocation_uuid: timer_value.full_invocation_id.invocation_uuid,
                 journal_index: timer_value.entry_index,
                 timestamp: timer_value.wake_up_time.as_u64(),
             });
@@ -562,7 +562,10 @@ where
                 .next_timers_greater_than(self.partition_id, exclusive_start.as_ref(), num_timers)
                 .map(|result| {
                     result.map(|(timer_key, timer)| TimerValue {
-                        full_invocation_id: timer_key.full_invocation_id,
+                        full_invocation_id: FullInvocationId::with_service_id(
+                            timer.service_id(),
+                            timer_key.invocation_uuid,
+                        ),
                         wake_up_time: MillisSinceEpoch::new(timer_key.timestamp),
                         entry_index: timer_key.journal_index,
                         value: timer,
