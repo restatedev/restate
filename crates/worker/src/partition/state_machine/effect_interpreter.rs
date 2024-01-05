@@ -21,15 +21,14 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{
     InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
-use restate_storage_api::timer_table::Timer;
+use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
-use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationUuid, ServiceId};
+use restate_types::identifiers::{EntryIndex, FullInvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::message::MessageIndex;
-use restate_types::time::MillisSinceEpoch;
 use std::marker::PhantomData;
 use tracing::{debug, warn};
 
@@ -140,17 +139,13 @@ pub trait StateStorage {
     // Timer
     fn store_timer(
         &mut self,
-        invocation_uuid: InvocationUuid,
-        wake_up_time: MillisSinceEpoch,
-        entry_index: EntryIndex,
+        timer_key: TimerKey,
         timer: Timer,
     ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn delete_timer(
         &mut self,
-        full_invocation_id: FullInvocationId,
-        wake_up_time: MillisSinceEpoch,
-        entry_index: EntryIndex,
+        timer_key: &TimerKey,
     ) -> impl Future<Output = StorageResult<()>> + Send;
 }
 
@@ -297,24 +292,13 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             }
             Effect::RegisterTimer { timer_value, .. } => {
                 state_storage
-                    .store_timer(
-                        timer_value.invocation_uuid,
-                        timer_value.wake_up_time,
-                        timer_value.entry_index,
-                        timer_value.value.clone(),
-                    )
+                    .store_timer(timer_value.key().clone(), timer_value.value().clone())
                     .await?;
 
                 collector.collect(Action::RegisterTimer { timer_value });
             }
-            Effect::DeleteTimer {
-                full_invocation_id,
-                wake_up_time,
-                entry_index,
-            } => {
-                state_storage
-                    .delete_timer(full_invocation_id, wake_up_time, entry_index)
-                    .await?;
+            Effect::DeleteTimer(timer_key) => {
+                state_storage.delete_timer(&timer_key).await?;
             }
             Effect::StoreDeploymentId {
                 service_id,

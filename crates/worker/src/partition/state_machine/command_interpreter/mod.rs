@@ -716,23 +716,23 @@ where
 
     async fn on_timer<State: StateReader>(
         &mut self,
-        TimerValue {
-            invocation_uuid,
-            entry_index,
-            wake_up_time,
-            value,
-        }: TimerValue,
+        timer_value: TimerValue,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let full_invocation_id =
-            FullInvocationId::with_service_id(value.service_id().clone(), invocation_uuid);
-        effects.delete_timer(wake_up_time, full_invocation_id.clone(), entry_index);
+        let (key, value) = timer_value.into_inner();
+        let invocation_uuid = key.invocation_uuid;
+        let entry_index = key.journal_index;
+
+        effects.delete_timer(key);
 
         match value {
-            Timer::CompleteSleepEntry(_) => {
+            Timer::CompleteSleepEntry(service_id) => {
                 Self::handle_completion(
-                    MaybeFullInvocationId::Full(full_invocation_id),
+                    MaybeFullInvocationId::Full(FullInvocationId::with_service_id(
+                        service_id,
+                        invocation_uuid,
+                    )),
                     Completion {
                         entry_index,
                         result: CompletionResult::Empty,
@@ -742,12 +742,18 @@ where
                 )
                 .await
             }
-            Timer::Invoke(_, service_invocation) => {
+            Timer::Invoke(service_id, service_invocation) => {
                 self.send_message(
                     OutboxMessage::ServiceInvocation(service_invocation),
                     effects,
                 );
-                Ok((Some(full_invocation_id), SpanRelation::None))
+                Ok((
+                    Some(FullInvocationId::with_service_id(
+                        service_id,
+                        invocation_uuid,
+                    )),
+                    SpanRelation::None,
+                ))
             }
         }
     }

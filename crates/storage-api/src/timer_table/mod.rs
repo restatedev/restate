@@ -14,13 +14,29 @@ use futures_util::Stream;
 use restate_types::identifiers::PartitionId;
 use restate_types::identifiers::{InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
+use std::cmp::Ordering;
 use std::future::Future;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct TimerKey {
+    pub timestamp: u64,
     pub invocation_uuid: InvocationUuid,
     pub journal_index: u32,
-    pub timestamp: u64,
+}
+
+impl PartialOrd for TimerKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TimerKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.timestamp
+            .cmp(&other.timestamp)
+            .then_with(|| self.invocation_uuid.cmp(&other.invocation_uuid))
+            .then_with(|| self.journal_index.cmp(&other.journal_index))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
