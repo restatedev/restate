@@ -42,7 +42,8 @@ pub fn invocation_status_note(invocation: &Invocation) -> String {
             }
         }
         InvocationState::Suspended => {
-            if let Some(suspend_duration) = invocation.duration_in_state {
+            if let Some(modified_at) = invocation.state_modified_at {
+                let suspend_duration = chrono::Local::now().signed_duration_since(modified_at);
                 // its keyed and in suspension
                 if suspend_duration.num_seconds() > 5 && invocation.key.is_some() {
                     let dur = duration_to_human_precise(suspend_duration, Tense::Present);
@@ -71,7 +72,8 @@ pub fn invocation_status_note(invocation: &Invocation) -> String {
             };
 
             msg.push_str(" (");
-            if let Some(invoking_since) = invocation.duration_in_state {
+            if let Some(modified_at) = invocation.state_modified_at {
+                let invoking_since = chrono::Local::now().signed_duration_since(modified_at);
                 let dur = duration_to_human_precise(invoking_since, Tense::Present);
                 msg.push_str(&format!("{}.", dur));
             };
@@ -106,7 +108,7 @@ pub fn invocation_qualified_name(invocation: &Invocation) -> String {
     format!("{}{}{}", svc, style("::").dim(), invocation.method)
 }
 
-// [2023-12-14 15:38:52.500 +00:00] rIEqK14GCdkAYxo-wzTfrK2e6tJssIrtQ CheckoutProcess::checkout
+// ❯ [2023-12-14 15:38:52.500 +00:00] rIEqK14GCdkAYxo-wzTfrK2e6tJssIrtQ CheckoutProcess::checkout
 fn invocation_header(invocation: &Invocation) -> String {
     // Unkeyed -> [2023-12-14 15:38:52.500 +00:00] rIEqK14GCdkAYxo-wzTfrK2e6tJssIrtQ CheckoutProcess::checkout
     // Keyed   -> [2023-12-13 12:04:54.902 +00:00] g4Ej8NLd-aYAYxjEM31dhOLXpCi5azJNA [TicketDb @ my-user-200]::trySomethingNew
@@ -114,7 +116,7 @@ fn invocation_header(invocation: &Invocation) -> String {
     let created_at = date_style.apply_to(format!("[{}]", invocation.created_at));
 
     format!(
-        "{} {} {}",
+        "❯ {} {} {}",
         created_at,
         style(&invocation.id).bold(),
         invocation_qualified_name(invocation),
@@ -150,7 +152,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
                 .unwrap_or_else(|| style("<UNKNOWN>".to_owned()).red()),
             style(invoked_by_id).italic(),
         );
-        table.add_kv_row("Invoked By:", invoked_by_msg);
+        table.add_kv_row("Invoked by:", invoked_by_msg);
     }
 
     // Deployment: "bG9jYWxob3N0OjkwODAv" [required]
@@ -175,6 +177,11 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
             },
         );
         table.add_kv_row("Deployment:", deployment_msg);
+    }
+
+    // Trace Id: "12343345345"
+    if let Some(trace_id) = &invocation.trace_id {
+        table.add_kv_row("Trace ID:", trace_id);
     }
 
     // Error: [Internal] other client error: error trying to connect: tcp connect error: Connection refused (os error 61)

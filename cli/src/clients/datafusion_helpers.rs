@@ -252,6 +252,7 @@ pub struct Invocation {
     pub invoked_by_id: Option<String>,
     pub invoked_by_service: Option<String>,
     pub status: InvocationState,
+    pub trace_id: Option<String>,
 
     // If it **requires** this deployment.
     pub pinned_deployment_id: Option<String>,
@@ -262,8 +263,8 @@ pub struct Invocation {
 
     // if running, how long has it been running?
     pub current_attempt_duration: Option<Duration>,
-    // E.g. If suspended, how long has it been suspended?
-    pub duration_in_state: Option<Duration>,
+    // E.g. If suspended, since when?
+    pub state_modified_at: Option<DateTime<Local>>,
 
     // If backing-off
     pub num_retries: Option<u64>,
@@ -735,7 +736,8 @@ pub async fn find_active_invocations(
             ss.invoked_by_service,
             svc.instance_type,
             svc.deployment_id as svc_latest_deployment,
-            dp.id as known_deployment_id
+            dp.id as known_deployment_id,
+            ss.trace_id
         FROM sys_status ss
         LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
         LEFT JOIN sys_service svc ON svc.name = ss.service
@@ -763,9 +765,7 @@ pub async fn find_active_invocations(
                 .expect("Unexpected status");
             let created_at = value_as_dt_opt(&batch, 5, i).expect("Missing created_at");
 
-            let modified_at = value_as_dt_opt(&batch, 6, i);
-            let duration_in_state =
-                modified_at.map(|modified_at| Local::now().signed_duration_since(modified_at));
+            let state_modified_at = value_as_dt_opt(&batch, 6, i);
 
             let pinned_deployment_id = value_as_string_opt(&batch, 7, i);
 
@@ -783,6 +783,7 @@ pub async fn find_active_invocations(
             let deployment_id_at_latest_svc_revision = value_as_string(&batch, 16, i);
 
             let existing_pinned_deployment_id = value_as_string_opt(&batch, 17, i);
+            let trace_id = value_as_string_opt(&batch, 18, i);
 
             let key = if instance_type == InstanceType::Keyed {
                 service_key
@@ -799,7 +800,7 @@ pub async fn find_active_invocations(
                 created_at,
                 invoked_by_id,
                 invoked_by_service,
-                duration_in_state,
+                state_modified_at,
                 num_retries,
                 next_retry_at,
                 pinned_deployment_id,
@@ -807,7 +808,7 @@ pub async fn find_active_invocations(
                 deployment_id_at_latest_svc_revision,
                 last_failure_message,
                 last_attempt_deployment_id,
-
+                trace_id,
                 ..Default::default()
             };
 
@@ -847,7 +848,8 @@ pub async fn find_inbox_invocations(
                 ss.invoked_by_id,
                 ss.invoked_by_service,
                 ss.service_key,
-                svc.instance_type
+                svc.instance_type,
+                ss.trace_id
              FROM sys_inbox ss
              LEFT JOIN sys_service svc ON svc.name = ss.service
              {}
@@ -879,6 +881,7 @@ pub async fn find_inbox_invocations(
                     key,
                     invoked_by_id: value_as_string_opt(&batch, 4, i),
                     invoked_by_service: value_as_string_opt(&batch, 5, i),
+                    trace_id: value_as_string_opt(&batch, 8, i),
                     ..Default::default()
                 };
                 inbox.push(invocation);
