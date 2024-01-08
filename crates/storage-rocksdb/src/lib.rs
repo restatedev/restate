@@ -31,7 +31,6 @@ use crate::TableKind::{
 };
 use bytes::BytesMut;
 use codederror::CodedError;
-use futures::{ready, FutureExt, Stream};
 use restate_storage_api::{Storage, StorageError, Transaction};
 use rocksdb::BlockBasedOptions;
 use rocksdb::Cache;
@@ -43,19 +42,17 @@ use rocksdb::Error;
 use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::SingleThreaded;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
-use tokio::sync::mpsc::Receiver;
-use tokio::task::JoinHandle;
 
 pub use writer::JoinHandle as RocksDBWriterJoinHandle;
 pub use writer::Writer as RocksDBWriter;
 
 type DB = rocksdb::OptimisticTransactionDB<SingleThreaded>;
-pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
+type TransactionDB<'a> = rocksdb::Transaction<'a, DB>;
 
+pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
 pub type DBIteratorTransaction<'b> = DBRawIteratorWithThreadMode<'b, rocksdb::Transaction<'b, DB>>;
+
 type WriteBatch = rocksdb::WriteBatchWithTransaction<true>;
 
 const STATE_TABLE_NAME: &str = "state";
@@ -177,26 +174,6 @@ impl BuildError {
             BuildError::Other(err)
         }
     }
-}
-
-pub trait StorageAccess {
-    fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V);
-    fn delete_key<K: TableKey>(&mut self, key: &K);
-
-    fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
-    where
-        K: TableKey,
-        F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>;
-
-    fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
-    where
-        K: TableKey,
-        F: FnOnce(&[u8], Option<&[u8]>) -> Result<R>;
-
-    fn for_each_key_value_in_place<K, F, R>(&self, scan: TableScan<K>, op: F) -> Vec<Result<R>>
-    where
-        K: TableKey,
-        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>;
 }
 
 #[derive(Debug)]
@@ -375,36 +352,13 @@ impl RocksDBStorage {
         ))
     }
 
-    #[inline]
-    fn key_buffer(&mut self, min_size: usize) -> &mut BytesMut {
-        self.key_buffer.clear();
-        self.key_buffer.reserve(min_size);
-        &mut self.key_buffer
-    }
-
-    #[inline]
-    fn value_buffer(&mut self, min_size: usize) -> &mut BytesMut {
-        self.value_buffer.clear();
-        self.value_buffer.reserve(min_size);
-        &mut self.value_buffer
-    }
-
-    #[inline]
-    fn table_handle(&self, table: TableKind) -> &ColumnFamily {
-        let name = cf_name(table);
-        self.db.cf_handle(name).expect(
+    fn table_handle(&self, table_kind: TableKind) -> &ColumnFamily {
+        self.db.cf_handle(cf_name(table_kind)).expect(
             "This should not happen, this is a Restate bug. Please contact the restate developers.",
         )
     }
 
-    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
-        let table = self.table_handle(table);
-        self.db
-            .get_pinned_cf(&table, key)
-            .map_err(|error| StorageError::Generic(error.into()))
-    }
-
-    pub fn prefix_iterator<K: Into<Vec<u8>>>(&self, table: TableKind, prefix: K) -> DBIterator {
+    fn prefix_iterator<K: Into<Vec<u8>>>(&self, table: TableKind, prefix: K) -> DBIterator {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
 
@@ -413,23 +367,17 @@ impl RocksDBStorage {
         self.db.raw_iterator_cf_opt(&table, opts)
     }
 
-    pub fn range_iterator(
-        &self,
-        table: TableKind,
-        range: impl rocksdb::IterateBounds,
-    ) -> DBIterator {
+    fn range_iterator(&self, table: TableKind, range: impl rocksdb::IterateBounds) -> DBIterator {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
         opts.set_iterate_range(range);
         self.db.raw_iterator_cf_opt(&table, opts)
     }
 
-    pub fn full_iterator(&self, table: TableKind) -> DBIterator {
-        let table = self.table_handle(table);
-        self.db.raw_iterator_cf_opt(table, ReadOptions::default())
-    }
-
-    fn iterator_from<K: TableKey>(&self, scan: TableScan<K>) -> DBIterator {
+    fn iterator_from<K: TableKey>(
+        &self,
+        scan: TableScan<K>,
+    ) -> DBRawIteratorWithThreadMode<'_, DB> {
         let scan: PhysicalScan = scan.into();
         match scan {
             PhysicalScan::Prefix(table, prefix) => {
@@ -462,48 +410,6 @@ impl RocksDBStorage {
             writer_handle: &self.writer_handle,
         }
     }
-
-    pub fn for_each_key_value<K, F, R>(
-        &self,
-        scan: TableScan<K>,
-        mut op: F,
-    ) -> impl Stream<Item = Result<R>> + Send
-    where
-        K: TableKey + Send + 'static,
-        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R> + Send + 'static,
-        R: Send + 'static,
-    {
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<R>>(256);
-        let clone = self.clone();
-
-        let background_task = move || {
-            let mut iterator = clone.iterator_from(scan);
-            while let Some((k, v)) = iterator.item() {
-                match op(k, v) {
-                    TableScanIterationDecision::Emit(result) => {
-                        if tx.blocking_send(result).is_err() {
-                            return;
-                        }
-                        iterator.next();
-                    }
-                    TableScanIterationDecision::BreakWith(result) => {
-                        let _ = tx.blocking_send(result);
-                        break;
-                    }
-                    TableScanIterationDecision::Continue => {
-                        iterator.next();
-                        continue;
-                    }
-                    TableScanIterationDecision::Break => {
-                        break;
-                    }
-                };
-            }
-        };
-
-        let join_handle = tokio::task::spawn_blocking(background_task);
-        BackgroundScanStream::new(rx, join_handle)
-    }
 }
 
 impl Storage for RocksDBStorage {
@@ -516,89 +422,49 @@ impl Storage for RocksDBStorage {
 }
 
 impl StorageAccess for RocksDBStorage {
-    fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V) {
-        {
-            let buffer = self.key_buffer(key.serialized_length());
-            key.serialize_to(buffer);
-        }
-        {
-            let buffer = self.value_buffer(value.serialized_length());
-            value.encode(buffer);
-        }
-        let table = self.table_handle(K::table());
+    type DBAccess<'a>
+    = DB where
+        Self: 'a,;
+
+    fn iterator_from<K: TableKey>(
+        &self,
+        scan: TableScan<K>,
+    ) -> DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>> {
+        self.iterator_from(scan)
+    }
+
+    #[inline]
+    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
+        self.key_buffer.clear();
+        self.key_buffer.reserve(min_size);
+        &mut self.key_buffer
+    }
+
+    #[inline]
+    fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
+        self.value_buffer.clear();
+        self.value_buffer.reserve(min_size);
+        &mut self.value_buffer
+    }
+
+    #[inline]
+    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
+        let table = self.table_handle(table);
         self.db
-            .put_cf(&table, &self.key_buffer, &self.value_buffer)
-            .unwrap();
-    }
-
-    fn delete_key<K: TableKey>(&mut self, key: &K) {
-        {
-            let buffer = self.key_buffer(key.serialized_length());
-            key.serialize_to(buffer);
-        }
-        let table = self.table_handle(K::table());
-        self.db.delete_cf(&table, &self.key_buffer).unwrap();
-    }
-
-    fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
-    where
-        K: TableKey,
-        F: FnOnce(&[u8], Option<&[u8]>) -> Result<R>,
-    {
-        let mut buf = self.key_buffer(key.serialized_length());
-        key.serialize_to(&mut buf);
-        let buf = buf.split();
-
-        match self.get(K::table(), &buf) {
-            Ok(value) => {
-                let slice = value.as_ref().map(|v| v.as_ref());
-                f(&buf, slice)
-            }
-            Err(err) => Err(err),
-        }
+            .get_pinned_cf(&table, key)
+            .map_err(|error| StorageError::Generic(error.into()))
     }
 
     #[inline]
-    fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
-    where
-        K: TableKey,
-        F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
-    {
-        let iterator = self.iterator_from(scan);
-        f(iterator.item())
+    fn put_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+        let table = self.table_handle(table);
+        self.db.put_cf(table, key, value).unwrap();
     }
 
     #[inline]
-    fn for_each_key_value_in_place<K, F, R>(&self, scan: TableScan<K>, mut op: F) -> Vec<Result<R>>
-    where
-        K: TableKey,
-        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>,
-    {
-        let mut res = Vec::new();
-
-        let mut iterator = self.iterator_from(scan);
-
-        while let Some((k, v)) = iterator.item() {
-            match op(k, v) {
-                TableScanIterationDecision::Emit(result) => {
-                    res.push(result);
-                    iterator.next();
-                }
-                TableScanIterationDecision::BreakWith(result) => {
-                    res.push(result);
-                    break;
-                }
-                TableScanIterationDecision::Continue => {
-                    iterator.next();
-                    continue;
-                }
-                TableScanIterationDecision::Break => {
-                    break;
-                }
-            };
-        }
-
-        res
+    fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) {
+        let table = self.table_handle(table);
+        self.db.delete_cf(table, key).unwrap();
     }
 }
 
@@ -610,77 +476,7 @@ pub struct RocksDBTransaction<'a> {
     writer_handle: &'a WriterHandle,
 }
 
-pub(crate) struct BackgroundScanStream<T> {
-    rx: Option<Receiver<Result<T>>>,
-    join_handle: Option<JoinHandle<()>>,
-}
-
-impl<T: Send + 'static> BackgroundScanStream<T> {
-    fn new(rx: Receiver<Result<T>>, join_handle: JoinHandle<()>) -> Self {
-        Self {
-            rx: Some(rx),
-            join_handle: Some(join_handle),
-        }
-    }
-}
-
-impl<T: Send + 'static> Stream for BackgroundScanStream<T> {
-    type Item = Result<T>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if let Some(ref mut res) = self.rx {
-            let maybe_value = ready!(res.poll_recv(cx));
-            if maybe_value.is_some() {
-                return Poll::Ready(maybe_value);
-            }
-            self.rx = None
-        }
-        if let Some(ref mut res) = self.join_handle {
-            let maybe_join_result = ready!(res.poll_unpin(cx));
-            self.join_handle = None;
-            if let Err(err) = maybe_join_result {
-                return Poll::Ready(Some(Err(StorageError::Generic(err.into()))));
-            }
-        }
-        Poll::Ready(None)
-    }
-}
-
 impl<'a> RocksDBTransaction<'a> {
-    fn table_handle(&self, table_kind: TableKind) -> &ColumnFamily {
-        self.db.cf_handle(cf_name(table_kind)).expect(
-            "This should not happen, this is a Restate bug. Please contact the restate developers.",
-        )
-    }
-
-    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
-        let table = self.table_handle(table);
-        self.txn
-            .get_pinned_cf(&table, key)
-            .map_err(|error| StorageError::Generic(error.into()))
-    }
-
-    fn iterator_from<K: TableKey>(&self, scan: TableScan<K>) -> DBIteratorTransaction {
-        let scan: PhysicalScan = scan.into();
-        match scan {
-            PhysicalScan::Prefix(table, prefix) => {
-                let mut it = self.prefix_iterator(table, prefix.clone());
-                it.seek(prefix);
-                it
-            }
-            PhysicalScan::RangeExclusive(table, start, end) => {
-                let mut it = self.range_iterator(table, start.clone()..end);
-                it.seek(start);
-                it
-            }
-            PhysicalScan::RangeOpen(table, start) => {
-                let mut it = self.range_iterator(table, start.clone()..);
-                it.seek(start);
-                it
-            }
-        }
-    }
-
     pub fn prefix_iterator<K: Into<Vec<u8>>>(
         &self,
         table: TableKind,
@@ -704,18 +500,10 @@ impl<'a> RocksDBTransaction<'a> {
         self.txn.raw_iterator_cf_opt(&table, opts)
     }
 
-    #[inline]
-    fn key_buffer(&mut self, min_size: usize) -> &mut BytesMut {
-        self.key_buffer.clear();
-        self.key_buffer.reserve(min_size);
-        &mut self.key_buffer
-    }
-
-    #[inline]
-    fn value_buffer(&mut self, min_size: usize) -> &mut BytesMut {
-        self.value_buffer.clear();
-        self.value_buffer.reserve(min_size);
-        &mut self.value_buffer
+    fn table_handle(&self, table_kind: TableKind) -> &ColumnFamily {
+        self.db.cf_handle(cf_name(table_kind)).expect(
+            "This should not happen, this is a Restate bug. Please contact the restate developers.",
+        )
     }
 }
 
@@ -731,46 +519,107 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
 }
 
 impl<'a> StorageAccess for RocksDBTransaction<'a> {
-    fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V) {
-        {
-            let buffer = self.key_buffer(key.serialized_length());
-            key.serialize_to(buffer);
-        }
-        {
-            let buffer = self.value_buffer(value.serialized_length());
-            value.encode(buffer);
-        }
-        let table = self.table_handle(K::table());
-        self.txn
-            .put_cf(&table, &self.key_buffer, &self.value_buffer)
-            .unwrap();
-    }
+    type DBAccess<'b> = TransactionDB<'b> where Self: 'b;
 
-    fn delete_key<K: TableKey>(&mut self, key: &K) {
-        {
-            let buffer = self.key_buffer(key.serialized_length());
-            key.serialize_to(buffer);
-        }
-        let table = self.table_handle(K::table());
-        self.txn.delete_cf(&table, &self.key_buffer).unwrap();
-    }
-
-    fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
-    where
-        K: TableKey,
-        F: FnOnce(&[u8], Option<&[u8]>) -> Result<R>,
-    {
-        let mut buf = self.key_buffer(key.serialized_length());
-        key.serialize_to(&mut buf);
-        let buf = buf.split();
-
-        match self.get(K::table(), &buf) {
-            Ok(value) => {
-                let slice = value.as_ref().map(|v| v.as_ref());
-                f(&buf, slice)
+    fn iterator_from<K: TableKey>(
+        &self,
+        scan: TableScan<K>,
+    ) -> DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>> {
+        let scan: PhysicalScan = scan.into();
+        match scan {
+            PhysicalScan::Prefix(table, prefix) => {
+                let mut it = self.prefix_iterator(table, prefix.clone());
+                it.seek(prefix);
+                it
             }
-            Err(err) => Err(err),
+            PhysicalScan::RangeExclusive(table, start, end) => {
+                let mut it = self.range_iterator(table, start.clone()..end);
+                it.seek(start);
+                it
+            }
+            PhysicalScan::RangeOpen(table, start) => {
+                let mut it = self.range_iterator(table, start.clone()..);
+                it.seek(start);
+                it
+            }
         }
+    }
+
+    #[inline]
+    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
+        self.key_buffer.clear();
+        self.key_buffer.reserve(min_size);
+        &mut self.key_buffer
+    }
+
+    #[inline]
+    fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
+        self.value_buffer.clear();
+        self.value_buffer.reserve(min_size);
+        &mut self.value_buffer
+    }
+
+    #[inline]
+    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
+        let table = self.table_handle(table);
+        self.txn
+            .get_pinned_cf(&table, key)
+            .map_err(|error| StorageError::Generic(error.into()))
+    }
+
+    #[inline]
+    fn put_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+        let table = self.table_handle(table);
+        self.txn.put_cf(table, key, value).unwrap();
+    }
+
+    #[inline]
+    fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) {
+        let table = self.table_handle(table);
+        self.txn.delete_cf(table, key).unwrap();
+    }
+}
+
+trait StorageAccess {
+    type DBAccess<'a>: rocksdb::DBAccess
+    where
+        Self: 'a;
+
+    fn iterator_from<K: TableKey>(
+        &self,
+        scan: TableScan<K>,
+    ) -> DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>;
+
+    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
+
+    fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
+
+    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>>;
+
+    fn put_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>);
+
+    fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>);
+
+    #[inline]
+    fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V) {
+        let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(key_buffer);
+        let key_buffer = key_buffer.split();
+
+        let value_buffer = self.cleared_value_buffer_mut(value.serialized_length());
+        value.encode(value_buffer);
+        let value_buffer = value_buffer.split();
+
+        self.put_cf(K::table(), key_buffer, value_buffer);
+    }
+
+    #[inline]
+    fn delete_key<K: TableKey>(&mut self, key: &K) {
+        let buffer = self.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(buffer);
+        let buffer = buffer.split();
+
+        self.delete_cf(K::table(), buffer);
     }
 
     #[inline]
@@ -781,6 +630,25 @@ impl<'a> StorageAccess for RocksDBTransaction<'a> {
     {
         let iterator = self.iterator_from(scan);
         f(iterator.item())
+    }
+
+    #[inline]
+    fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
+    where
+        K: TableKey,
+        F: FnOnce(&[u8], Option<&[u8]>) -> Result<R>,
+    {
+        let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(&mut buf);
+        let buf = buf.split();
+
+        match self.get(K::table(), &buf) {
+            Ok(value) => {
+                let slice = value.as_ref().map(|v| v.as_ref());
+                f(&buf, slice)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     #[inline]
