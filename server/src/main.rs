@@ -107,6 +107,14 @@ fn main() {
             .init("Restate binary", std::process::id())
             .expect("failed to instrument logging and tracing!");
 
+        // Log panics as tracing errors if possible
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            tracing_panic::panic_hook(panic_info);
+            // run original hook if any.
+            prev_hook(panic_info);
+        }));
+
         info!("Starting Restate Server {}", build_info::build_info());
         info!(
             "Loading configuration file from {}",

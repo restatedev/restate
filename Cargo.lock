@@ -4964,6 +4964,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-panic",
  "vergen",
 ]
 
@@ -6513,6 +6514,16 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log 0.1.4",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "tracing-panic"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaf80030ce049691c9922d75be63cadf345110a245cd4581833c66f87c02ad25"
+dependencies = [
+ "tracing",
  "tracing-subscriber",
 ]
 
