@@ -16,13 +16,14 @@ use crate::identifiers::{
 };
 use bytes::Bytes;
 use bytestring::ByteString;
-use opentelemetry_api::trace::{
-    SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
-};
+use opentelemetry_api::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceState};
 use opentelemetry_api::Context;
 use std::fmt;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+// Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
+pub use opentelemetry_api::trace::TraceId;
 
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]

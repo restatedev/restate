@@ -69,6 +69,11 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     }
     table.add_kv_row("Method:", &inv.method);
     add_invocation_to_kv_table(&mut table, &inv);
+    table.add_kv_row_if(
+        || inv.state_modified_at.is_some(),
+        "Modified at:",
+        format!("{}", &inv.state_modified_at.unwrap()),
+    );
 
     c_title!("📜", "Invocation Information");
     c_println!("{}", table);

@@ -12,7 +12,7 @@ use super::schema::InboxBuilder;
 use crate::table_util::format_using;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::{ServiceInvocation, Source};
+use restate_types::invocation::{ServiceInvocation, Source, TraceId};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -65,7 +65,9 @@ pub(crate) fn append_inbox_row(
     }
     if row.is_trace_id_defined() {
         let tid = span_context.trace_id();
-        row.trace_id(format_using(output, &tid));
+        if tid != TraceId::INVALID {
+            row.trace_id(format_using(output, &tid));
+        }
     }
 
     if row.is_created_at_defined() {
