@@ -11,7 +11,6 @@
 use crate::service::clock::tests::ManualClock;
 use crate::service::clock::TokioClock;
 use crate::{Timer, TimerKey, TimerReader, TimerService};
-use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use restate_test_util::{let_assert, test};
 use restate_types::time::MillisSinceEpoch;
@@ -21,6 +20,7 @@ use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+use tokio::sync::oneshot;
 
 #[derive(Debug, Clone)]
 struct MockTimerReader<T>
@@ -41,7 +41,10 @@ where
     }
 
     fn add_timer(&self, timer: T) {
-        self.timers.lock().unwrap().insert(timer.timer_key(), timer);
+        self.timers
+            .lock()
+            .unwrap()
+            .insert(timer.timer_key().clone(), timer);
     }
 
     fn add_timers(&self, timers: impl IntoIterator<Item = T>) {
@@ -49,18 +52,22 @@ where
             self.add_timer(timer);
         }
     }
+
+    fn remove_timer(&self, key: T::TimerKey) {
+        self.timers.lock().unwrap().remove(&key);
+    }
 }
 
 impl<T> TimerReader<T> for MockTimerReader<T>
 where
     T: Timer + Send + Ord + Clone,
 {
-    fn get_timers(
+    async fn get_timers(
         &mut self,
         num_timers: usize,
         previous_timer_key: Option<T::TimerKey>,
-    ) -> BoxFuture<'_, Vec<T>> {
-        let result: Vec<_> = if let Some(previous_timer_key) = previous_timer_key {
+    ) -> Vec<T> {
+        if let Some(previous_timer_key) = previous_timer_key {
             self.timers
                 .lock()
                 .unwrap()
@@ -77,9 +84,33 @@ where
                 .take(num_timers)
                 .map(|(_, value)| value.clone())
                 .collect()
-        };
+        }
+    }
+}
 
-        futures::future::ready(result).boxed()
+struct AsyncMockTimerReader {
+    rx: Option<oneshot::Receiver<Vec<TimerValue>>>,
+}
+
+impl AsyncMockTimerReader {
+    fn new() -> (oneshot::Sender<Vec<TimerValue>>, Self) {
+        let (tx, rx) = oneshot::channel();
+
+        (tx, Self { rx: Some(rx) })
+    }
+}
+
+impl TimerReader<TimerValue> for AsyncMockTimerReader {
+    async fn get_timers(
+        &mut self,
+        _num_timers: usize,
+        _previous_timer_key: Option<TimerValue>,
+    ) -> Vec<TimerValue> {
+        self.rx
+            .take()
+            .expect("AsyncMockTimerReader can only used once")
+            .await
+            .expect("rx should not fail")
     }
 }
 
@@ -115,8 +146,8 @@ impl TimerValue {
 impl Timer for TimerValue {
     type TimerKey = TimerValue;
 
-    fn timer_key(&self) -> Self {
-        *self
+    fn timer_key(&self) -> &Self {
+        self
     }
 }
 
@@ -334,4 +365,107 @@ async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
         let_assert!(TimerValue { value, .. } = service.as_mut().next_timer().await);
         assert_eq!(value, i);
     }
+}
+
+#[test(tokio::test)]
+async fn delete_loaded_timer() {
+    let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
+    let timer_reader = MockTimerReader::<TimerValue>::new();
+    timer_reader.add_timer(TimerValue::new(0, MillisSinceEpoch::from(0)));
+    let timer = TimerValue::new(1, MillisSinceEpoch::from(1));
+    timer_reader.add_timer(timer);
+    timer_reader.add_timer(TimerValue::new(2, MillisSinceEpoch::from(2)));
+
+    let service = TimerService::new(clock.clone(), None, timer_reader.clone());
+    tokio::pin!(service);
+
+    assert_eq!(
+        service.as_mut().next_timer().await,
+        TimerValue::new(0, MillisSinceEpoch::from(0))
+    );
+
+    clock.advance_time_to(MillisSinceEpoch::from(3));
+
+    timer_reader.remove_timer(timer);
+    service.as_mut().remove_timer(timer);
+
+    assert_eq!(
+        service.as_mut().next_timer().await,
+        TimerValue::new(2, MillisSinceEpoch::from(2))
+    );
+}
+
+#[test(tokio::test)]
+async fn delete_last_loaded_timer() {
+    let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
+    let timer_reader = MockTimerReader::<TimerValue>::new();
+    timer_reader.add_timer(TimerValue::new(0, MillisSinceEpoch::from(0)));
+    let timer = TimerValue::new(1, MillisSinceEpoch::from(1));
+    timer_reader.add_timer(timer);
+
+    let service = TimerService::new(clock.clone(), None, timer_reader.clone());
+    tokio::pin!(service);
+
+    assert_eq!(
+        service.as_mut().next_timer().await,
+        TimerValue::new(0, MillisSinceEpoch::from(0))
+    );
+
+    clock.advance_time_to(MillisSinceEpoch::from(2));
+
+    timer_reader.remove_timer(timer);
+    service.as_mut().remove_timer(timer);
+
+    assert!(service.as_mut().next_timer().now_or_never().is_none());
+}
+
+#[test(tokio::test)]
+async fn delete_only_loaded_timer() {
+    let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
+    let timer_reader = MockTimerReader::<TimerValue>::new();
+    let timer = TimerValue::new(1, MillisSinceEpoch::from(1));
+    timer_reader.add_timer(timer);
+
+    let service = TimerService::new(clock.clone(), None, timer_reader.clone());
+    tokio::pin!(service);
+
+    assert!(service.as_mut().next_timer().now_or_never().is_none());
+
+    clock.advance_time_to(MillisSinceEpoch::from(2));
+
+    timer_reader.remove_timer(timer);
+    service.as_mut().remove_timer(timer);
+
+    assert!(service.as_mut().next_timer().now_or_never().is_none());
+}
+
+#[test(tokio::test)]
+async fn delete_loading_timer() {
+    let mut clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
+    let (tx, timer_reader) = AsyncMockTimerReader::new();
+
+    let service = TimerService::new(clock.clone(), None, timer_reader);
+    tokio::pin!(service);
+    assert!(service.as_mut().next_timer().now_or_never().is_none());
+
+    let timer = TimerValue::new(1, MillisSinceEpoch::from(1));
+    let timers = vec![
+        TimerValue::new(0, MillisSinceEpoch::from(0)),
+        timer,
+        TimerValue::new(2, MillisSinceEpoch::from(2)),
+    ];
+    tx.send(timers).expect("should not fail");
+
+    clock.advance_time_to(MillisSinceEpoch::from(3));
+
+    service.as_mut().remove_timer(timer);
+
+    assert_eq!(
+        service.as_mut().next_timer().await,
+        TimerValue::new(0, MillisSinceEpoch::from(0))
+    );
+    assert_eq!(
+        service.as_mut().next_timer().await,
+        TimerValue::new(2, MillisSinceEpoch::from(2))
+    );
 }

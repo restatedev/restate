@@ -11,6 +11,7 @@
 extern crate core;
 
 use restate_types::time::MillisSinceEpoch;
+use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::future::Future;
 use std::hash::Hash;
@@ -22,15 +23,15 @@ pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use service::clock::{Clock, TokioClock};
 pub use service::TimerService;
 
-pub trait Timer: Hash + Eq {
+pub trait Timer: Hash + Eq + Borrow<Self::TimerKey> {
     type TimerKey: TimerKey + Send;
 
-    fn timer_key(&self) -> Self::TimerKey;
+    fn timer_key(&self) -> &Self::TimerKey;
 }
 
 /// Timer key establishes an absolute order on [`Timer`]. Naturally, this should be key under
 /// which the timer value is stored and can be retrieved.
-pub trait TimerKey: Ord + Clone + Debug {
+pub trait TimerKey: Ord + Clone + Hash + Debug {
     fn wake_up_time(&self) -> MillisSinceEpoch;
 }
 

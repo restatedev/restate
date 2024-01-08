@@ -303,6 +303,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             }
             Effect::DeleteTimer(timer_key) => {
                 state_storage.delete_timer(&timer_key).await?;
+                collector.collect(Action::DeleteTimer { timer_key });
             }
             Effect::StoreDeploymentId {
                 service_id,

@@ -12,6 +12,7 @@
 
 use crate::TimerKey;
 use pin_project::pin_project;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::future;
 use std::future::Future;
@@ -31,7 +32,9 @@ type DoublePriorityQueue<T> =
 #[pin_project(project = StateProj)]
 enum State<TimerKey, SleepFuture> {
     Idle(Waker),
-    LoadTimers,
+    LoadTimers {
+        removed_timers: Option<HashSet<TimerKey>>,
+    },
     ProcessTimers {
         timer_batch: Option<TimerBatch<TimerKey>>,
         #[pin]
@@ -95,6 +98,8 @@ where
     #[pin]
     state: State<Timer::TimerKey, Clock::SleepFuture>,
 
+    removed_timers: Option<HashSet<Timer::TimerKey>>,
+
     max_fired_timer: Option<Timer::TimerKey>,
 
     timer_queue: DoublePriorityQueue<Timer>,
@@ -108,7 +113,7 @@ async fn get_timers<Timer, TimerReader>(
     previous_timer_key: Option<Timer::TimerKey>,
 ) -> (TimerReader, Vec<Timer>)
 where
-    Timer: crate::Timer,
+    Timer: crate::Timer + Debug,
     TimerReader: crate::TimerReader<Timer>,
 {
     let result = timer_reader
@@ -141,7 +146,10 @@ where
                 None,
             )),
             num_timers_in_memory_limit,
-            state: State::LoadTimers,
+            state: State::LoadTimers {
+                removed_timers: Some(HashSet::default()),
+            },
+            removed_timers: None,
             max_fired_timer: None,
             timer_queue: DoublePriorityQueue::default(),
         }
@@ -162,7 +170,7 @@ where
 
                 trace!("Start processing timers because new timer {timer:?} was added.");
 
-                let timer_key = timer.timer_key();
+                let timer_key = timer.timer_key().clone();
                 let timer_batch =
                     TimerBatch::new(Self::max_timer_key(&timer_key, max_fired_timer.as_ref()));
 
@@ -171,10 +179,15 @@ where
 
                 state.set(State::process_timers(Some(timer_batch)));
             }
-            StateProj::LoadTimers => {
+            StateProj::LoadTimers { removed_timers } => {
                 trace!("Add timer {timer:?} to in memory queue while loading timers from storage.");
 
-                let timer_key = timer.timer_key();
+                let timer_key = timer.timer_key().clone();
+                // remove removed timer in case we removed it before
+                removed_timers
+                    .as_mut()
+                    .expect("removed_timers hash set must be present")
+                    .remove(&timer_key);
                 timer_queue.push(timer, timer_key);
 
                 this.num_timers_in_memory_limit
@@ -190,14 +203,19 @@ where
                 timer_batch,
                 mut process_timers_state,
             } => {
-                let timer_batch = timer_batch.as_mut().expect("Expect valid timer batch.");
                 let timer_key = timer.timer_key();
 
                 // if memory limit is configured, then check whether timer is in batch, otherwise
                 // add timer to batch (since all timers are kept in memory)
-                if this.num_timers_in_memory_limit.is_none() || timer_batch.contains(&timer_key) {
+                if this.num_timers_in_memory_limit.is_none()
+                    || timer_batch
+                        .as_ref()
+                        .map(|batch| batch.contains(timer_key))
+                        .unwrap_or_default()
+                {
                     trace!("Add timer {timer:?} to in memory queue.");
                     let new_timer_key = timer_key.clone();
+                    let timer_key = timer_key.clone();
                     timer_queue.push(timer, timer_key);
 
                     // the new timer is guaranteed to be smaller than the current end
@@ -209,15 +227,7 @@ where
                         .unwrap_or(true);
 
                     if new_batch_end {
-                        let (_, timer_key) = timer_queue
-                            .peek_max()
-                            .expect("Timer queue should contain at least one element.");
-
-                        *timer_batch = TimerBatch::new(Self::max_timer_key(
-                            timer_key,
-                            max_fired_timer.as_ref(),
-                        ));
-                        trace!("Updated current timer batch to {timer_batch:?}.");
+                        Self::adjust_timer_batch_end(timer_queue, max_fired_timer, timer_batch);
                     }
 
                     match process_timers_state.as_mut().project() {
@@ -242,6 +252,84 @@ where
         }
     }
 
+    pub fn remove_timer(self: Pin<&mut Self>, key: Timer::TimerKey) {
+        let this = self.project();
+        let timer_queue = this.timer_queue;
+        let max_fired_timer = this.max_fired_timer;
+
+        match this.state.project() {
+            StateProj::Idle(_) => {
+                debug_assert!(
+                    timer_queue.is_empty(),
+                    "Timer queue should be empty if timer logic is idling."
+                );
+            }
+            StateProj::LoadTimers { removed_timers, .. } => {
+                trace!("Remove timer '{key:?}' from timer queue and remember for filtering out newly loaded timers while loading.");
+                timer_queue.remove(&key);
+                removed_timers
+                    .as_mut()
+                    .expect("removed_timers hash set must be present")
+                    .insert(key);
+            }
+            StateProj::ProcessTimers {
+                mut process_timers_state,
+                timer_batch,
+            } => {
+                let removed_timer = timer_queue.remove(&key);
+
+                if let Some((timer, _)) = removed_timer {
+                    trace!("Removed timer '{timer:?}' while processing timer batch.");
+                }
+
+                if timer_batch
+                    .as_ref()
+                    .map(|batch| batch.end == key)
+                    .unwrap_or_default()
+                {
+                    Self::adjust_timer_batch_end(timer_queue, max_fired_timer, timer_batch);
+                }
+
+                match process_timers_state.as_mut().project() {
+                    ProcessTimersStateProj::ReadNextTimer => {
+                        // nothing to do
+                    }
+                    ProcessTimersStateProj::AwaitTimer { timer_key, .. } => {
+                        if key == *timer_key {
+                            process_timers_state.set(ProcessTimersState::ReadNextTimer);
+
+                            trace!("Skip awaiting removed timer '{key:?}'. Read next timer.");
+                        }
+                    }
+                    ProcessTimersStateProj::TriggerTimer => {
+                        // nothing to do
+                    }
+                }
+            }
+        }
+    }
+
+    fn adjust_timer_batch_end(
+        timer_queue: &mut DoublePriorityQueue<Timer>,
+        max_fired_timer: &mut Option<Timer::TimerKey>,
+        timer_batch: &mut Option<TimerBatch<Timer::TimerKey>>,
+    ) {
+        let max_timer_in_queue = timer_queue.peek_max().map(|(_, key)| key);
+
+        if let Some(max_timer_in_queue) = max_timer_in_queue {
+            *timer_batch = Some(TimerBatch::new(Self::max_timer_key(
+                max_timer_in_queue,
+                max_fired_timer.as_ref(),
+            )));
+        } else {
+            *timer_batch = max_fired_timer
+                .as_ref()
+                .map(|max_fired_timer| TimerBatch::new(max_fired_timer.clone()));
+        }
+
+        trace!("Updated current timer batch to {timer_batch:?}.");
+    }
+
     pub(crate) fn poll_next_timer(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Timer> {
         let this = self.project();
         let timer_queue = this.timer_queue;
@@ -253,42 +341,53 @@ where
                 StateProj::Idle(_) => {
                     return Poll::Pending;
                 }
-                StateProj::LoadTimers => {
+                StateProj::LoadTimers { removed_timers } => {
                     let (timer_reader, next_timers) = ready!(this.read_future.poll(cx));
                     *this.timer_reader = Some(timer_reader);
 
-                    for next_timer in next_timers {
-                        let timer_key = next_timer.timer_key();
+                    {
+                        let removed_timers = removed_timers
+                            .as_ref()
+                            .expect("removed_timers hash set must be present");
 
-                        // We can only stop loading timers if we know that all subsequent timers have
-                        // a strictly larger timer key (later wake up time or larger key)
-                        if this
-                            .num_timers_in_memory_limit
-                            .map(|limit| timer_queue.len() >= limit)
-                            .unwrap_or(false)
-                            && timer_queue
-                                .peek_max()
-                                .expect("Timer queue expected to contain an element.")
-                                .1
-                                < &timer_key
+                        for next_timer in next_timers
+                            .into_iter()
+                            .filter(|timer| !removed_timers.contains(timer.timer_key()))
                         {
-                            trace!("Finished loading timers from storage because the in memory limit has been reached.");
-                            break;
-                        } else {
-                            trace!("Load timer {next_timer:?} into in memory queue.");
-                            timer_queue.push(next_timer, timer_key);
-                        }
+                            let timer_key = next_timer.timer_key();
 
-                        // get rid of larger timers that exceed in memory threshold
-                        this.num_timers_in_memory_limit.map(|limit| {
-                            Self::trim_timer_queue(timer_queue, limit, max_fired_timer.as_ref())
-                        });
+                            // We can only stop loading timers if we know that all subsequent timers have
+                            // a strictly larger timer key (later wake up time or larger key)
+                            if this
+                                .num_timers_in_memory_limit
+                                .map(|limit| timer_queue.len() >= limit)
+                                .unwrap_or(false)
+                                && timer_queue
+                                    .peek_max()
+                                    .expect("Timer queue expected to contain an element.")
+                                    .1
+                                    < timer_key
+                            {
+                                trace!("Finished loading timers from storage because the in memory limit has been reached.");
+                                break;
+                            } else {
+                                trace!("Load timer {next_timer:?} into in memory queue.");
+                                let timer_key = timer_key.clone();
+                                timer_queue.push(next_timer, timer_key);
+                            }
+                        }
                     }
 
                     // get rid of larger timers that exceed in memory threshold
                     this.num_timers_in_memory_limit.map(|limit| {
                         Self::trim_timer_queue(timer_queue, limit, max_fired_timer.as_ref())
                     });
+
+                    *this.removed_timers = removed_timers.take();
+                    this.removed_timers
+                        .as_mut()
+                        .expect("removed_timers must be present")
+                        .clear();
 
                     if let Some((_, timer_key)) = timer_queue.peek_max() {
                         trace!("Start processing timers.");
@@ -330,6 +429,9 @@ where
                             );
 
                             trace!("Finished processing of current timer batch '{:?}'. Trying loading new timers from storage.", end_of_batch);
+
+                            let removed_timers = this.removed_timers.take();
+
                             this.read_future.set(get_timers(
                                 this.timer_reader
                                     .take()
@@ -337,7 +439,7 @@ where
                                 this.num_timers_in_memory_limit.unwrap_or(usize::MAX),
                                 end_of_batch,
                             ));
-                            state.set(State::LoadTimers);
+                            state.set(State::LoadTimers { removed_timers });
                         }
                     }
                     ProcessTimersStateProj::AwaitTimer { sleep, .. } => {

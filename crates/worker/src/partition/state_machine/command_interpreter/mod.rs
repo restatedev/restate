@@ -21,11 +21,12 @@ use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{Stream, StreamExt};
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, NotificationTarget};
-use restate_storage_api::timer_table::Timer;
+use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
@@ -649,7 +650,7 @@ where
             let (journal_index, journal_entry) = journal_entry?;
 
             if let JournalEntry::Entry(journal_entry) = journal_entry {
-                let (header, _) = journal_entry.into_inner();
+                let (header, entry) = journal_entry.into_inner();
                 match header {
                     // cancel uncompleted invocations
                     EnrichedEntryHeader::Invoke {
@@ -671,35 +672,38 @@ where
                     }
                     EnrichedEntryHeader::Awakeable { is_completed }
                     | EnrichedEntryHeader::GetState { is_completed }
-                    | EnrichedEntryHeader::Sleep { is_completed }
                     | EnrichedEntryHeader::PollInputStream { is_completed }
                         if !is_completed =>
                     {
-                        match &invocation_status {
-                            InvocationStatusProjection::Invoked => {
-                                Self::handle_completion_for_invoked(
-                                    full_invocation_id.clone(),
-                                    Completion::new(journal_index, canceled_result.clone()),
-                                    effects,
-                                )
-                            }
-                            InvocationStatusProjection::Suspended(waiting_for_completed_entry) => {
-                                resume_invocation |= Self::handle_completion_for_suspended(
-                                    full_invocation_id.clone(),
-                                    Completion::new(journal_index, canceled_result.clone()),
-                                    waiting_for_completed_entry,
-                                    effects,
-                                );
-                            }
-                            InvocationStatusProjection::Virtual(notification_target) => {
-                                Self::handle_completion_for_virtual(
-                                    full_invocation_id.clone(),
-                                    Completion::new(journal_index, canceled_result.clone()),
-                                    notification_target.clone(),
-                                    effects,
-                                )
-                            }
-                        }
+                        resume_invocation |= Self::cancel_journal_entry_with(
+                            full_invocation_id.clone(),
+                            &invocation_status,
+                            effects,
+                            journal_index,
+                            canceled_result.clone(),
+                        );
+                    }
+                    EnrichedEntryHeader::Sleep { is_completed } if !is_completed => {
+                        resume_invocation |= Self::cancel_journal_entry_with(
+                            full_invocation_id.clone(),
+                            &invocation_status,
+                            effects,
+                            journal_index,
+                            canceled_result.clone(),
+                        );
+
+                        let_assert!(
+                            Entry::Sleep(SleepEntry { wake_up_time, .. }) =
+                                ProtobufRawEntryCodec::deserialize(EntryType::Sleep, entry)?
+                        );
+
+                        let timer_key = TimerKey {
+                            invocation_uuid: full_invocation_id.invocation_uuid,
+                            journal_index,
+                            timestamp: wake_up_time,
+                        };
+
+                        effects.delete_timer(timer_key);
                     }
                     header => {
                         assert!(
@@ -712,6 +716,42 @@ where
         }
 
         Ok(resume_invocation)
+    }
+
+    fn cancel_journal_entry_with(
+        full_invocation_id: FullInvocationId,
+        invocation_status: &InvocationStatusProjection,
+        effects: &mut Effects,
+        journal_index: EntryIndex,
+        canceled_result: CompletionResult,
+    ) -> bool {
+        match invocation_status {
+            InvocationStatusProjection::Invoked => {
+                Self::handle_completion_for_invoked(
+                    full_invocation_id,
+                    Completion::new(journal_index, canceled_result),
+                    effects,
+                );
+                false
+            }
+            InvocationStatusProjection::Suspended(waiting_for_completed_entry) => {
+                Self::handle_completion_for_suspended(
+                    full_invocation_id,
+                    Completion::new(journal_index, canceled_result),
+                    waiting_for_completed_entry,
+                    effects,
+                )
+            }
+            InvocationStatusProjection::Virtual(notification_target) => {
+                Self::handle_completion_for_virtual(
+                    full_invocation_id,
+                    Completion::new(journal_index, canceled_result),
+                    notification_target.clone(),
+                    effects,
+                );
+                false
+            }
+        }
     }
 
     async fn on_timer<State: StateReader>(

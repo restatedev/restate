@@ -6,9 +6,11 @@ use bytestring::ByteString;
 use futures::stream;
 use googletest::matcher::Matcher;
 use googletest::{all, any, assert_that, pat, unordered_elements_are};
+use prost::Message;
 use restate_invoker_api::EffectKind;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_service_protocol::pb::protocol::SleepEntryMessage;
 use restate_storage_api::status_table::{JournalMetadata, StatusTimestamps};
 use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
@@ -596,6 +598,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
             forward_canceled_completion_matcher(4),
             forward_canceled_completion_matcher(5),
             forward_canceled_completion_matcher(6),
+            delete_timer(5),
         ]
     );
 
@@ -640,6 +643,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
             store_canceled_completion_matcher(4),
             store_canceled_completion_matcher(5),
             store_canceled_completion_matcher(6),
+            delete_timer(5),
             pat!(Effect::ResumeService {
                 service_id: eq(fid.service_id),
             }),
@@ -706,6 +710,7 @@ async fn cancel_virtual_invocation() -> Result<(), Error> {
             notify_virtual_journal_canceled_completion_matcher(4),
             notify_virtual_journal_canceled_completion_matcher(5),
             notify_virtual_journal_canceled_completion_matcher(6),
+            delete_timer(5),
         ]
     );
 
@@ -737,7 +742,12 @@ fn create_termination_journal(
             EnrichedEntryHeader::Sleep {
                 is_completed: false,
             },
-            Bytes::default(),
+            SleepEntryMessage {
+                wake_up_time: 1337,
+                result: None,
+            }
+            .encode_to_vec()
+            .into(),
         )),
         JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Awakeable {
@@ -768,6 +778,13 @@ fn forward_canceled_completion_matcher(entry_index: EntryIndex) -> impl Matcher<
     pat!(Effect::ForwardCompletion {
         completion: canceled_completion_matcher(entry_index),
     })
+}
+
+fn delete_timer(entry_index: EntryIndex) -> impl Matcher<ActualT = Effect> {
+    pat!(Effect::DeleteTimer(pat!(TimerKey {
+        journal_index: eq(entry_index),
+        timestamp: eq(1337),
+    })))
 }
 
 fn notify_virtual_journal_canceled_completion_matcher(

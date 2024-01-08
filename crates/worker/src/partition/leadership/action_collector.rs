@@ -117,6 +117,9 @@ where
                 message,
             } => shuffle_hint_tx.send(shuffle::NewOutboxMessage::new(seq_number, message)),
             Action::RegisterTimer { timer_value } => timer_service.as_mut().add_timer(timer_value),
+            Action::DeleteTimer { timer_key } => {
+                timer_service.as_mut().remove_timer(timer_key.into())
+            }
             Action::AckStoredEntry {
                 full_invocation_id,
                 entry_index,

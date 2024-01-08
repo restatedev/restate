@@ -18,6 +18,7 @@ use restate_types::invocation::{
     ServiceInvocationResponseSink, Source, SpanRelation,
 };
 use restate_types::time::MillisSinceEpoch;
+use std::borrow::Borrow;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -112,6 +113,12 @@ impl PartialEq for TimerValue {
 
 impl Eq for TimerValue {}
 
+impl Borrow<TimerKeyWrapper> for TimerValue {
+    fn borrow(&self) -> &TimerKeyWrapper {
+        &self.timer_key
+    }
+}
+
 /// New type wrapper to implement [`restate_timer::TimerKey`] for [`TimerKey`].
 ///
 /// # Important
@@ -131,14 +138,20 @@ impl TimerKeyWrapper {
 impl restate_timer::Timer for TimerValue {
     type TimerKey = TimerKeyWrapper;
 
-    fn timer_key(&self) -> Self::TimerKey {
-        self.timer_key.clone()
+    fn timer_key(&self) -> &Self::TimerKey {
+        &self.timer_key
     }
 }
 
 impl restate_timer::TimerKey for TimerKeyWrapper {
     fn wake_up_time(&self) -> MillisSinceEpoch {
         MillisSinceEpoch::from(self.0.timestamp)
+    }
+}
+
+impl From<TimerKey> for TimerKeyWrapper {
+    fn from(timer_key: TimerKey) -> Self {
+        TimerKeyWrapper(timer_key)
     }
 }
 
