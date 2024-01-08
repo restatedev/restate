@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::runtime::{Builder, Runtime};
@@ -38,7 +40,11 @@ impl Options {
     #[allow(dead_code)]
     pub fn build(self) -> Result<Runtime, std::io::Error> {
         let mut builder = Builder::new_multi_thread();
-        builder.enable_all().thread_name("restate");
+        builder.enable_all().thread_name_fn(|| {
+            static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+            let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+            format!("rs:worker-{}", id)
+        });
 
         if let Some(worker_threads) = self.worker_threads {
             builder.worker_threads(worker_threads);
