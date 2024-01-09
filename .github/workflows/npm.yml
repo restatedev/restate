@@ -111,7 +111,7 @@ jobs:
             sed -i "s/\"version\": \".*\",/\"version\": \"${node_version}\",/" package.json
             for os in linux darwin
             do
-              for arch in x86 arm64
+              for arch in x64 arm64
               do
                 sed -i "s|\"@restatedev/${bin}-${os}-${arch}\": \".*\"|\"@restatedev/${bin}-${os}-${arch}\": \"${node_version}\"|" package.json
               done
