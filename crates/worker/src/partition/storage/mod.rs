@@ -263,21 +263,18 @@ where
         invocation_id: &InvocationId,
     ) -> StorageResult<(FullInvocationId, InvocationStatus)> {
         self.assert_partition_key(invocation_id);
-        let (service_id, status) = match self
+        let (service_id, status) = self
             .inner
             .get_invocation_status_from(
                 invocation_id.partition_key(),
                 invocation_id.invocation_uuid(),
             )
             .await?
-        {
-            None => {
+            .unwrap_or_else(|| {
                 // We can just default these here for the time being.
                 // This is similar to the behavior of get_invocation_status.
                 (ServiceId::new("", ""), InvocationStatus::default())
-            }
-            Some(t) => t,
-        };
+            });
 
         Ok((
             FullInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
