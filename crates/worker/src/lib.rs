@@ -109,6 +109,7 @@ pub struct Options {
     ingress_grpc: IngressOptions,
     kafka: KafkaIngressOptions,
     invoker: InvokerOptions,
+    partition_processor: partition::Options,
 
     /// # Partitions
     ///
@@ -130,6 +131,7 @@ impl Default for Options {
             ingress_grpc: Default::default(),
             kafka: Default::default(),
             invoker: Default::default(),
+            partition_processor: Default::default(),
             partitions: 1024,
         }
     }
@@ -244,6 +246,7 @@ impl Worker {
             storage_query_datafusion,
             storage_query_postgres,
             storage_rocksdb,
+            partition_processor: partition_processor_options,
             ..
         } = opts;
 
@@ -327,6 +330,7 @@ impl Worker {
                     network.create_partition_processor_sender(),
                     rocksdb_storage.clone(),
                     schemas.clone(),
+                    partition_processor_options.clone(),
                 )
             })
             .unzip();
@@ -370,6 +374,7 @@ impl Worker {
         ack_sender: PartitionProcessorSender<partition::StateMachineAckResponse>,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
+        partition_processor_options: partition::Options,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(channel_size);
         let processor = PartitionProcessor::new(
@@ -385,6 +390,7 @@ impl Worker {
             ack_sender,
             rocksdb_storage,
             schemas,
+            partition_processor_options,
         );
 
         ((peer_id, command_tx), processor)

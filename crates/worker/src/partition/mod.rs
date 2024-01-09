@@ -25,17 +25,20 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, instrument};
 
 mod action_effect_handler;
 mod leadership;
+mod options;
 mod services;
 pub mod shuffle;
 mod state_machine;
 pub mod storage;
 mod types;
 
+pub use options::Options;
 pub use state_machine::{
     AckCommand as StateMachineAckCommand, AckResponse as StateMachineAckResponse,
     AckTarget as StateMachineAckTarget, Command as StateMachineCommand,
@@ -67,6 +70,8 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
 
     schemas: Schemas,
 
+    options: Options,
+
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
@@ -91,6 +96,7 @@ where
         ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
+        options: Options,
     ) -> Self {
         Self {
             peer_id,
@@ -106,6 +112,7 @@ where
             _entry_codec: Default::default(),
             rocksdb_storage,
             schemas,
+            options,
         }
     }
 
@@ -124,6 +131,7 @@ where
             ack_tx,
             rocksdb_storage,
             schemas,
+            options,
             ..
         } = self;
 
@@ -176,7 +184,8 @@ where
                                     transaction,
                                     message_collector,
                                     is_leader,
-                                    &mut command_rx)
+                                    &mut command_rx,
+                                    options.max_batch_duration.map(Into::into))
                                 .await?;
 
                                 next_command = command;
@@ -248,6 +257,7 @@ where
         Ok(state_machine)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn apply_command<
         TransactionType: restate_storage_api::Transaction + Send,
         Collector: ActionCollector,
@@ -259,6 +269,7 @@ where
         message_collector: Collector,
         is_leader: bool,
         command_rx: &mut mpsc::Receiver<restate_consensus::Command<AckCommand>>,
+        max_batch_duration: Option<Duration>,
     ) -> Result<
         (
             InterpretationResult<Transaction<TransactionType>, Collector>,
@@ -266,19 +277,29 @@ where
         ),
         state_machine::Error,
     > {
+        let max_batch_duration_start =
+            max_batch_duration.map(|duration| (duration, Instant::now()));
+
         // Apply state machine
         let mut application_result = state_machine
             .apply(command, effects, transaction, message_collector, is_leader)
             .await?;
 
-        while let Ok(command) = command_rx.try_recv() {
-            if let restate_consensus::Command::Apply(command) = command {
-                let (transaction, message_collector) = application_result.into_inner();
-                application_result = state_machine
-                    .apply(command, effects, transaction, message_collector, is_leader)
-                    .await?;
+        while max_batch_duration_start
+            .map(|(max_duration, start)| start.elapsed() < max_duration)
+            .unwrap_or(true)
+        {
+            if let Ok(command) = command_rx.try_recv() {
+                if let restate_consensus::Command::Apply(command) = command {
+                    let (transaction, message_collector) = application_result.into_inner();
+                    application_result = state_machine
+                        .apply(command, effects, transaction, message_collector, is_leader)
+                        .await?;
+                } else {
+                    return Ok((application_result, Some(command)));
+                }
             } else {
-                return Ok((application_result, Some(command)));
+                break;
             }
         }
 
