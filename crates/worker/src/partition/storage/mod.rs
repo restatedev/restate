@@ -93,8 +93,7 @@ async fn load_seq_number<F: FsmTable + Send>(
 
 impl<Storage> PartitionStorage<Storage>
 where
-    Storage:
-        restate_storage_api::Storage + FsmTable + StatusTable + JournalTable + StateTable + Send,
+    Storage: FsmTable + StatusTable + JournalTable + StateTable + Send,
 {
     pub fn load_inbox_seq_number(
         &mut self,
@@ -558,7 +557,7 @@ where
 
 impl<Storage> OutboxReader for PartitionStorage<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + OutboxTable + Send + 'a,
+    for<'a> Storage: OutboxTable + Send + 'a,
 {
     async fn get_next_message(
         &mut self,
@@ -582,7 +581,7 @@ where
 
 impl<Storage> TimerReader<TimerValue> for PartitionStorage<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + TimerTable + Send + Sync + 'a,
+    for<'a> Storage: TimerTable + Send + Sync + 'a,
 {
     async fn get_timers(
         &mut self,

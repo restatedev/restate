@@ -38,7 +38,7 @@ impl<Storage> InvokerStorageReader<Storage> {
 
 impl<Storage> restate_invoker_api::JournalReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + JournalTable + StatusTable + Send + 'a,
+    for<'a> Storage: JournalTable + StatusTable + Send + 'a,
 {
     type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
     type Error = InvokerStorageReaderError;
@@ -83,7 +83,7 @@ where
 
 impl<Storage> restate_invoker_api::StateReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: restate_storage_api::Storage + StateTable + Send + 'a,
+    for<'a> Storage: StateTable + Send + 'a,
 {
     type StateIter = IntoIter<(Bytes, Bytes)>;
     type Error = InvokerStorageReaderError;
