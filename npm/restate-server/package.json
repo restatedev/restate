@@ -29,9 +29,9 @@
     "typescript": "^4.9.4"
   },
   "optionalDependencies": {
-    "@restatedev/restate-server-linux-x86_64": "0.5.1",
+    "@restatedev/restate-server-linux-x64": "0.5.1",
     "@restatedev/restate-server-linux-arm64": "0.5.1",
-    "@restatedev/restate-server-darwin-x86_64": "0.5.1",
+    "@restatedev/restate-server-darwin-x64": "0.5.1",
     "@restatedev/restate-server-darwin-arm64": "0.5.1"
   }
 }
