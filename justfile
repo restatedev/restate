@@ -101,7 +101,7 @@ build-tools *flags: (_target-installed target)
 cross-build *flags:
     #!/usr/bin/env bash
     if [[ {{ target }} =~ "linux" ]]; then
-      docker run --rm -v `pwd`:/restate:Z -w /restate {{ dev_tools_image }} just _resolved_target={{ target }} features={{ features }} build {{ flags }}
+      docker run --rm -it -v `pwd`:/restate:Z -w /restate {{ dev_tools_image }} just _resolved_target={{ target }} features={{ features }} build {{ flags }}
     elif [[ {{ target }} =~ "darwin" ]]; then
       if [[ {{ os() }} != "macos" ]]; then
         echo "Cannot built macos target on non-macos host";
