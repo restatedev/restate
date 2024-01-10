@@ -14,13 +14,20 @@ use futures_util::Stream;
 use restate_types::identifiers::PartitionId;
 use std::future::Future;
 
-pub trait FsmTable {
+pub trait ReadOnlyFsmTable {
     fn get(
         &mut self,
         partition_id: PartitionId,
         state_id: u64,
     ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
 
+    fn get_all_states(
+        &mut self,
+        partition_id: PartitionId,
+    ) -> impl Stream<Item = Result<(u64, Bytes)>> + Send;
+}
+
+pub trait FsmTable: ReadOnlyFsmTable {
     fn put(
         &mut self,
         partition_id: PartitionId,
@@ -33,9 +40,4 @@ pub trait FsmTable {
         partition_id: PartitionId,
         state_id: u64,
     ) -> impl Future<Output = ()> + Send;
-
-    fn get_all_states(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> impl Stream<Item = Result<(u64, Bytes)>> + Send;
 }

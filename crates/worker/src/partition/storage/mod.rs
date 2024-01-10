@@ -14,12 +14,12 @@ use crate::partition::{CommitError, Committable, TimerValue};
 use bytes::{Buf, Bytes};
 use futures::{Stream, StreamExt, TryStreamExt};
 use restate_storage_api::deduplication_table::SequenceNumberSource;
-use restate_storage_api::fsm_table::FsmTable;
+use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::inbox_table::InboxEntry;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable};
+use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::state_table::StateTable;
-use restate_storage_api::status_table::{InvocationStatus, StatusTable};
+use restate_storage_api::state_table::ReadOnlyStateTable;
+use restate_storage_api::status_table::{InvocationStatus, ReadOnlyStatusTable};
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Result as StorageResult;
 use restate_storage_api::StorageError;
@@ -75,7 +75,7 @@ where
     }
 }
 
-async fn load_seq_number<F: FsmTable + Send>(
+async fn load_seq_number<F: ReadOnlyFsmTable + Send>(
     storage: &mut F,
     partition_id: PartitionId,
     state_id: u64,
@@ -93,7 +93,8 @@ async fn load_seq_number<F: FsmTable + Send>(
 
 impl<Storage> PartitionStorage<Storage>
 where
-    Storage: FsmTable + StatusTable + JournalTable + StateTable + Send,
+    Storage:
+        ReadOnlyFsmTable + ReadOnlyStatusTable + ReadOnlyJournalTable + ReadOnlyStateTable + Send,
 {
     pub fn load_inbox_seq_number(
         &mut self,

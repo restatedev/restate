@@ -14,7 +14,20 @@ use futures_util::Stream;
 use restate_types::identifiers::ServiceId;
 use std::future::Future;
 
-pub trait StateTable {
+pub trait ReadOnlyStateTable {
+    fn get_user_state(
+        &mut self,
+        service_id: &ServiceId,
+        state_key: impl AsRef<[u8]>,
+    ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
+
+    fn get_all_user_states(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send;
+}
+
+pub trait StateTable: ReadOnlyStateTable {
     fn put_user_state(
         &mut self,
         service_id: &ServiceId,
@@ -27,15 +40,4 @@ pub trait StateTable {
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> impl Future<Output = ()> + Send;
-
-    fn get_user_state(
-        &mut self,
-        service_id: &ServiceId,
-        state_key: impl AsRef<[u8]>,
-    ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
-
-    fn get_all_user_states(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send;
 }

@@ -21,7 +21,7 @@ use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 use prost::Message;
-use restate_storage_api::status_table::{InvocationStatus, StatusTable};
+use restate_storage_api::status_table::{InvocationStatus, ReadOnlyStatusTable, StatusTable};
 use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, WithPartitionKey};
@@ -150,11 +150,7 @@ fn invoked_invocations<S: StorageAccess>(
     )
 }
 
-impl StatusTable for RocksDBStorage {
-    async fn put_invocation_status(&mut self, service_id: &ServiceId, status: InvocationStatus) {
-        put_invocation_status(self, service_id, status)
-    }
-
+impl ReadOnlyStatusTable for RocksDBStorage {
     async fn get_invocation_status(
         &mut self,
         service_id: &ServiceId,
@@ -170,8 +166,28 @@ impl StatusTable for RocksDBStorage {
         get_invocation_status_from(self, partition_key, invocation_uuid)
     }
 
-    async fn delete_invocation_status(&mut self, service_id: &ServiceId) {
-        delete_invocation_status(self, service_id)
+    fn invoked_invocations(
+        &mut self,
+        partition_key_range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<FullInvocationId>> + Send {
+        stream::iter(invoked_invocations(self, partition_key_range))
+    }
+}
+
+impl<'a> ReadOnlyStatusTable for RocksDBTransaction<'a> {
+    async fn get_invocation_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> Result<Option<InvocationStatus>> {
+        get_invocation_status(self, service_id)
+    }
+
+    async fn get_invocation_status_from(
+        &mut self,
+        partition_key: PartitionKey,
+        invocation_uuid: InvocationUuid,
+    ) -> Result<Option<(ServiceId, InvocationStatus)>> {
+        get_invocation_status_from(self, partition_key, invocation_uuid)
     }
 
     fn invoked_invocations(
@@ -187,30 +203,8 @@ impl<'a> StatusTable for RocksDBTransaction<'a> {
         put_invocation_status(self, service_id, status)
     }
 
-    async fn get_invocation_status(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> Result<Option<InvocationStatus>> {
-        get_invocation_status(self, service_id)
-    }
-
-    async fn get_invocation_status_from(
-        &mut self,
-        partition_key: PartitionKey,
-        invocation_uuid: InvocationUuid,
-    ) -> Result<Option<(ServiceId, InvocationStatus)>> {
-        get_invocation_status_from(self, partition_key, invocation_uuid)
-    }
-
     async fn delete_invocation_status(&mut self, service_id: &ServiceId) {
         delete_invocation_status(self, service_id)
-    }
-
-    fn invoked_invocations(
-        &mut self,
-        partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<FullInvocationId>> + Send {
-        stream::iter(invoked_invocations(self, partition_key_range))
     }
 }
 

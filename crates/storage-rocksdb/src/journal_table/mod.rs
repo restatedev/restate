@@ -21,7 +21,7 @@ use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 use prost::Message;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable};
+use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
 use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{EntryIndex, PartitionKey, ServiceId, WithPartitionKey};
@@ -132,16 +132,7 @@ fn delete_journal<S: StorageAccess>(
     }
 }
 
-impl JournalTable for RocksDBStorage {
-    async fn put_journal_entry(
-        &mut self,
-        service_id: &ServiceId,
-        journal_index: u32,
-        journal_entry: JournalEntry,
-    ) {
-        put_journal_entry(self, service_id, journal_index, journal_entry)
-    }
-
+impl ReadOnlyJournalTable for RocksDBStorage {
     async fn get_journal_entry(
         &mut self,
         service_id: &ServiceId,
@@ -157,9 +148,23 @@ impl JournalTable for RocksDBStorage {
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
         stream::iter(get_journal(self, service_id, journal_length))
     }
+}
 
-    async fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) {
-        delete_journal(self, service_id, journal_length)
+impl<'a> ReadOnlyJournalTable for RocksDBTransaction<'a> {
+    async fn get_journal_entry(
+        &mut self,
+        service_id: &ServiceId,
+        journal_index: u32,
+    ) -> Result<Option<JournalEntry>> {
+        get_journal_entry(self, service_id, journal_index)
+    }
+
+    fn get_journal(
+        &mut self,
+        service_id: &ServiceId,
+        journal_length: EntryIndex,
+    ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
+        stream::iter(get_journal(self, service_id, journal_length))
     }
 }
 
@@ -171,22 +176,6 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
         journal_entry: JournalEntry,
     ) {
         put_journal_entry(self, service_id, journal_index, journal_entry)
-    }
-
-    async fn get_journal_entry(
-        &mut self,
-        service_id: &ServiceId,
-        journal_index: u32,
-    ) -> Result<Option<JournalEntry>> {
-        get_journal_entry(self, service_id, journal_index)
-    }
-
-    fn get_journal(
-        &mut self,
-        service_id: &ServiceId,
-        journal_length: EntryIndex,
-    ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
-        stream::iter(get_journal(self, service_id, journal_length))
     }
 
     async fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) {

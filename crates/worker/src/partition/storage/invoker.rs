@@ -11,9 +11,9 @@
 use bytes::Bytes;
 use futures::{stream, StreamExt, TryStreamExt};
 use restate_invoker_api::{EagerState, JournalMetadata};
-use restate_storage_api::journal_table::{JournalEntry, JournalTable};
-use restate_storage_api::state_table::StateTable;
-use restate_storage_api::status_table::{InvocationStatus, StatusTable};
+use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
+use restate_storage_api::state_table::ReadOnlyStateTable;
+use restate_storage_api::status_table::{InvocationStatus, ReadOnlyStatusTable};
 use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::ServiceId;
 use restate_types::journal::raw::PlainRawEntry;
@@ -38,7 +38,7 @@ impl<Storage> InvokerStorageReader<Storage> {
 
 impl<Storage> restate_invoker_api::JournalReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: JournalTable + StatusTable + Send + 'a,
+    for<'a> Storage: ReadOnlyJournalTable + ReadOnlyStatusTable + Send + 'a,
 {
     type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
     type Error = InvokerStorageReaderError;
@@ -83,7 +83,7 @@ where
 
 impl<Storage> restate_invoker_api::StateReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: StateTable + Send + 'a,
+    for<'a> Storage: ReadOnlyStateTable + Send + 'a,
 {
     type StateIter = IntoIter<(Bytes, Bytes)>;
     type Error = InvokerStorageReaderError;

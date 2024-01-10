@@ -16,7 +16,7 @@ use crate::{
 use bytes::Bytes;
 use futures::Stream;
 use futures_util::stream;
-use restate_storage_api::fsm_table::FsmTable;
+use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_storage_api::Result;
 use restate_types::identifiers::PartitionId;
 use std::future;
@@ -71,23 +71,22 @@ fn get_all_states<S: StorageAccess>(
     )
 }
 
-impl FsmTable for RocksDBStorage {
+impl ReadOnlyFsmTable for RocksDBStorage {
     async fn get(&mut self, partition_id: PartitionId, state_id: u64) -> Result<Option<Bytes>> {
         get(self, partition_id, state_id)
     }
 
-    fn put(
+    fn get_all_states(
         &mut self,
         partition_id: PartitionId,
-        state_id: u64,
-        state_value: impl AsRef<[u8]>,
-    ) -> impl Future<Output = ()> + Send {
-        put(self, partition_id, state_id, state_value);
-        future::ready(())
+    ) -> impl Stream<Item = Result<(u64, Bytes)>> + Send {
+        stream::iter(get_all_states(self, partition_id))
     }
+}
 
-    async fn clear(&mut self, partition_id: PartitionId, state_id: u64) {
-        clear(self, partition_id, state_id)
+impl<'a> ReadOnlyFsmTable for RocksDBTransaction<'a> {
+    async fn get(&mut self, partition_id: PartitionId, state_id: u64) -> Result<Option<Bytes>> {
+        get(self, partition_id, state_id)
     }
 
     fn get_all_states(
@@ -99,10 +98,6 @@ impl FsmTable for RocksDBStorage {
 }
 
 impl<'a> FsmTable for RocksDBTransaction<'a> {
-    async fn get(&mut self, partition_id: PartitionId, state_id: u64) -> Result<Option<Bytes>> {
-        get(self, partition_id, state_id)
-    }
-
     fn put(
         &mut self,
         partition_id: PartitionId,
@@ -115,13 +110,6 @@ impl<'a> FsmTable for RocksDBTransaction<'a> {
 
     async fn clear(&mut self, partition_id: PartitionId, state_id: u64) {
         clear(self, partition_id, state_id)
-    }
-
-    fn get_all_states(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> impl Stream<Item = Result<(u64, Bytes)>> + Send {
-        stream::iter(get_all_states(self, partition_id))
     }
 }
 

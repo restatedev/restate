@@ -22,14 +22,7 @@ pub enum JournalEntry {
     Completion(CompletionResult),
 }
 
-pub trait JournalTable {
-    fn put_journal_entry(
-        &mut self,
-        service_id: &ServiceId,
-        journal_index: u32,
-        journal_entry: JournalEntry,
-    ) -> impl Future<Output = ()> + Send;
-
+pub trait ReadOnlyJournalTable {
     fn get_journal_entry(
         &mut self,
         service_id: &ServiceId,
@@ -41,6 +34,15 @@ pub trait JournalTable {
         service_id: &ServiceId,
         journal_length: EntryIndex,
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send;
+}
+
+pub trait JournalTable: ReadOnlyJournalTable {
+    fn put_journal_entry(
+        &mut self,
+        service_id: &ServiceId,
+        journal_index: u32,
+        journal_entry: JournalEntry,
+    ) -> impl Future<Output = ()> + Send;
 
     fn delete_journal(
         &mut self,

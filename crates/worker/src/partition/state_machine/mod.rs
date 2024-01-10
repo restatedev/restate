@@ -90,10 +90,10 @@ mod tests {
     use restate_invoker_api::InvokeInputJournal;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::inbox_table::InboxTable;
-    use restate_storage_api::journal_table::{JournalEntry, JournalTable};
+    use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
     use restate_storage_api::outbox_table::OutboxTable;
     use restate_storage_api::status_table::{
-        InvocationMetadata, JournalMetadata, NotificationTarget,
+        InvocationMetadata, JournalMetadata, NotificationTarget, ReadOnlyStatusTable,
     };
     use restate_storage_api::status_table::{InvocationStatus, StatusTable};
     use restate_storage_api::Transaction;
@@ -401,7 +401,7 @@ mod tests {
         use super::*;
 
         use googletest::{all, assert_that, elements_are, pat};
-        use restate_storage_api::status_table::StatusTimestamps;
+        use restate_storage_api::status_table::{ReadOnlyStatusTable, StatusTimestamps};
         use restate_test_util::test;
         use restate_types::identifiers::InvocationId;
         use restate_types::invocation::{

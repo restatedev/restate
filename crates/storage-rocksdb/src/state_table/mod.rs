@@ -17,7 +17,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
-use restate_storage_api::state_table::StateTable;
+use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use std::future;
@@ -95,26 +95,24 @@ fn get_all_user_states<S: StorageAccess>(
     })
 }
 
-impl StateTable for RocksDBStorage {
-    fn put_user_state(
+impl ReadOnlyStateTable for RocksDBStorage {
+    fn get_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
-        state_value: impl AsRef<[u8]>,
-    ) -> impl Future<Output = ()> + Send {
-        put_user_state(self, service_id, state_key, state_value);
-        future::ready(())
+    ) -> impl Future<Output = Result<Option<Bytes>>> + Send {
+        future::ready(get_user_state(self, service_id, state_key))
     }
 
-    fn delete_user_state(
+    fn get_all_user_states(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]>,
-    ) -> impl Future<Output = ()> + Send {
-        delete_user_state(self, service_id, state_key);
-        future::ready(())
+    ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
+        stream::iter(get_all_user_states(self, service_id))
     }
+}
 
+impl<'a> ReadOnlyStateTable for RocksDBTransaction<'a> {
     fn get_user_state(
         &mut self,
         service_id: &ServiceId,
@@ -149,21 +147,6 @@ impl<'a> StateTable for RocksDBTransaction<'a> {
     ) -> impl Future<Output = ()> + Send {
         delete_user_state(self, service_id, state_key);
         future::ready(())
-    }
-
-    fn get_user_state(
-        &mut self,
-        service_id: &ServiceId,
-        state_key: impl AsRef<[u8]>,
-    ) -> impl Future<Output = Result<Option<Bytes>>> + Send {
-        future::ready(get_user_state(self, service_id, state_key))
-    }
-
-    fn get_all_user_states(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
-        stream::iter(get_all_user_states(self, service_id))
     }
 }
 

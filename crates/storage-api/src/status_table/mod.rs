@@ -211,13 +211,20 @@ impl InvocationMetadata {
     }
 }
 
-pub trait StatusTable {
+pub trait StatusTable: ReadOnlyStatusTable {
     fn put_invocation_status(
         &mut self,
         service_id: &ServiceId,
         status: InvocationStatus,
     ) -> impl Future<Output = ()> + Send;
 
+    fn delete_invocation_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = ()> + Send;
+}
+
+pub trait ReadOnlyStatusTable {
     fn get_invocation_status(
         &mut self,
         service_id: &ServiceId,
@@ -228,11 +235,6 @@ pub trait StatusTable {
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,
     ) -> impl Future<Output = Result<Option<(ServiceId, InvocationStatus)>>> + Send;
-
-    fn delete_invocation_status(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Future<Output = ()> + Send;
 
     fn invoked_invocations(
         &mut self,
