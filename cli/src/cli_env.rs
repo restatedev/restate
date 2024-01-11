@@ -36,9 +36,9 @@ pub const CLI_CONFIG_HOME_ENV: &str = "RESTATE_CLI_CONFIG_HOME";
 pub const CLI_CONFIG_FILE_ENV: &str = "RESTATE_CLI_CONFIG";
 
 pub const RESTATE_AUTH_TOKEN_ENV: &str = "RESTATE_AUTH_TOKEN";
+// TODO: Deprecated, will be removed once this is provided by the admin server
 pub const INGRESS_URL_ENV: &str = "RESTATE_INGRESS_URL";
-pub const META_URL_ENV: &str = "RESTATE_META_URL";
-pub const DATAFUSION_HTTP_URL_ENV: &str = "RESTATE_DATAFUSION_HTTP_URL";
+pub const ADMIN_URL_ENV: &str = "RESTATE_ADMIN_URL";
 
 #[derive(Clone, Default)]
 pub struct CliConfig {}
@@ -49,8 +49,7 @@ pub struct CliEnv {
     pub config_home: PathBuf,
     pub config_file: PathBuf,
     pub ingress_base_url: Url,
-    pub meta_base_url: Url,
-    pub datafusion_http_base_url: Url,
+    pub admin_base_url: Url,
     pub bearer_token: Option<String>,
     /// Should we use colors and emojis or not?
     pub colorful: bool,
@@ -109,20 +108,12 @@ impl CliEnv {
                 Url::parse(&format!("{}://{}:8080/", restate_host_scheme, restate_host))
             })?;
 
-        let meta_base_url = os_env
-            .get(META_URL_ENV)
+        let admin_base_url = os_env
+            .get(ADMIN_URL_ENV)
             .as_deref()
             .map(Url::parse)
             .unwrap_or_else(|| {
                 Url::parse(&format!("{}://{}:9070/", restate_host_scheme, restate_host))
-            })?;
-
-        let datafusion_http_base_url = os_env
-            .get(DATAFUSION_HTTP_URL_ENV)
-            .as_deref()
-            .map(Url::parse)
-            .unwrap_or_else(|| {
-                Url::parse(&format!("{}://{}:9072/", restate_host_scheme, restate_host))
             })?;
 
         // color setup
@@ -169,8 +160,7 @@ impl CliEnv {
             config_home,
             config_file,
             ingress_base_url,
-            meta_base_url,
-            datafusion_http_base_url,
+            admin_base_url,
             bearer_token,
             connect_timeout: Duration::from_millis(global_opts.connect_timeout),
             request_timeout: global_opts.request_timeout.map(Duration::from_millis),
@@ -282,13 +272,8 @@ mod tests {
             "http://localhost:8080/".to_string()
         );
         assert_eq!(
-            cli_env.meta_base_url.to_string(),
+            cli_env.admin_base_url.to_string(),
             "http://localhost:9070/".to_string()
-        );
-
-        assert_eq!(
-            cli_env.datafusion_http_base_url.to_string(),
-            "http://localhost:9072/".to_string()
         );
 
         // Defaults are templated over RESTATE_HOST
@@ -302,19 +287,14 @@ mod tests {
             "http://example.com:8080/".to_string()
         );
         assert_eq!(
-            cli_env.meta_base_url.to_string(),
+            cli_env.admin_base_url.to_string(),
             "http://example.com:9070/".to_string()
-        );
-
-        assert_eq!(
-            cli_env.datafusion_http_base_url.to_string(),
-            "http://example.com:9072/".to_string()
         );
 
         // RESTATE_INGRESS_URL/RESTATE_META_URL override the base URLs!
         os_env.clear();
         os_env.insert(INGRESS_URL_ENV, "https://api.restate.dev:4567".to_string());
-        os_env.insert(META_URL_ENV, "https://admin.restate.dev:4567".to_string());
+        os_env.insert(ADMIN_URL_ENV, "https://admin.restate.dev:4567".to_string());
         os_env.insert(RESTATE_HOST_SCHEME_ENV, "https".to_string());
 
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
@@ -324,14 +304,8 @@ mod tests {
             "https://api.restate.dev:4567/".to_string()
         );
         assert_eq!(
-            cli_env.meta_base_url.to_string(),
+            cli_env.admin_base_url.to_string(),
             "https://admin.restate.dev:4567/".to_string()
-        );
-        // datafusion still inherits the default from host
-        assert_eq!(
-            cli_env.datafusion_http_base_url.to_string(),
-            // note "https"
-            "https://localhost:9072/".to_string()
         );
 
         Ok(())

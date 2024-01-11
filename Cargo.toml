@@ -28,6 +28,7 @@ description = "Restate makes distributed applications easy!"
 [workspace.dependencies]
 # Own crates
 codederror = { path = "crates/codederror" }
+restate-admin = { path = "crates/admin" }
 restate-base64-util = { path = "crates/base64-util" }
 restate-benchmarks = { path = "crates/benchmarks" }
 restate-consensus = { path = "crates/consensus" }
@@ -55,7 +56,6 @@ restate-service-protocol = { path = "crates/service-protocol" }
 restate-storage-api = { path = "crates/storage-api" }
 restate-storage-proto = { path = "crates/storage-proto" }
 restate-storage-query-datafusion = { path = "crates/storage-query-datafusion" }
-restate-storage-query-http = { path = "crates/storage-query-http" }
 restate-storage-query-postgres = { path = "crates/storage-query-postgres" }
 restate-storage-rocksdb = { path = "crates/storage-rocksdb" }
 restate-test-util = { path = "crates/test-util" }

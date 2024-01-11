@@ -8,10 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use super::error::*;
-use super::state::*;
+use crate::state::AdminServiceState;
 
 use restate_meta_rest_model::services::*;
 use restate_pb::grpc::reflection::FileDescriptorResponse;
@@ -33,8 +31,8 @@ use prost::Message;
     operation_id = "list_services",
     tags = "service"
 )]
-pub async fn list_services<S: ServiceMetadataResolver, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn list_services<W>(
+    State(state): State<AdminServiceState<W>>,
 ) -> Result<Json<ListServicesResponse>, MetaApiError> {
     Ok(ListServicesResponse {
         services: state.schemas().list_services(),
@@ -54,8 +52,8 @@ pub async fn list_services<S: ServiceMetadataResolver, W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service<S: ServiceMetadataResolver, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn get_service<W>(
+    State(state): State<AdminServiceState<W>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ServiceMetadata>, MetaApiError> {
     state
@@ -77,8 +75,8 @@ pub async fn get_service<S: ServiceMetadataResolver, W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn modify_service<S: ServiceMetadataResolver, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn modify_service<W>(
+    State(state): State<AdminServiceState<W>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceRequest { public }): Json<
         ModifyServiceRequest,
@@ -113,8 +111,8 @@ pub async fn modify_service<S: ServiceMetadataResolver, W>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn list_service_descriptors<S: ServiceMetadataResolver, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn list_service_descriptors<W>(
+    State(state): State<AdminServiceState<W>>,
     Path(service_name): Path<String>,
 ) -> Result<Proto<FileDescriptorResponse>, MetaApiError> {
     state

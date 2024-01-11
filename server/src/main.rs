@@ -133,7 +133,10 @@ fn main() {
 
         let app = Application::new(
             config.node_ctrl,
-            config.meta, config.worker);
+            config.meta,
+            config.worker,
+            config.admin,
+        );
 
         if let Err(err) = app {
             handle_error(err);

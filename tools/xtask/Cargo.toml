@@ -8,6 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+restate-admin = { workspace = true, features = ["options_schema"] }
 restate-meta = { workspace = true }
 restate-schema-api = { workspace = true, features = ["subscription"] }
 restate-server = { workspace = true, features = ["options_schema"] }

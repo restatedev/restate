@@ -9,14 +9,21 @@
 // by the Apache License, Version 2.0.
 
 use codederror::CodedError;
-use restate_meta::Meta;
+use restate_admin::service::AdminService;
+use restate_meta::{FileMetaStorage, MetaService};
 use restate_node_ctrl::service::NodeCtrlService;
 use restate_worker::Worker;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum ApplicationError {
+    #[error("admin service failed: {0}")]
+    AdminService(
+        #[from]
+        #[code]
+        restate_admin::Error,
+    ),
     #[error("meta failed: {0}")]
-    Meta(
+    MetaService(
         #[from]
         #[code]
         restate_meta::Error,
@@ -42,6 +49,9 @@ pub enum ApplicationError {
     #[error("node ctrl service panicked: {0}")]
     #[code(unknown)]
     NodeCtrlPanic(tokio::task::JoinError),
+    #[error("admin panicked: {0}")]
+    #[code(unknown)]
+    AdminPanic(tokio::task::JoinError),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -54,7 +64,8 @@ pub struct BuildError {
 
 pub struct Application {
     node_ctrl: NodeCtrlService,
-    meta: Meta,
+    meta: MetaService<FileMetaStorage>,
+    admin: AdminService,
     worker: Worker,
 }
 
@@ -63,14 +74,19 @@ impl Application {
         node_ctrl: restate_node_ctrl::Options,
         meta: restate_meta::Options,
         worker: restate_worker::Options,
+        admin: restate_admin::Options,
     ) -> Result<Self, BuildError> {
         let meta = meta.build();
+        // create cluster admin server
+        let admin = admin.build(meta.schemas(), meta.meta_handle());
+        // create worker service
         let worker = worker.build(meta.schemas())?;
 
         let node_ctrl = node_ctrl.build();
 
         Ok(Self {
             node_ctrl,
+            admin,
             meta,
             worker,
         })
@@ -80,13 +96,19 @@ impl Application {
         let (shutdown_signal, shutdown_watch) = drain::channel();
         // start node ctrl service base
         let mut node_ctrl_handle = tokio::spawn(self.node_ctrl.run(shutdown_watch.clone()));
-
         // Init the meta. This will reload the schemas in memory.
         self.meta.init().await?;
-
         let worker_command_tx = self.worker.worker_command_tx();
-        let mut meta_handle =
-            tokio::spawn(self.meta.run(shutdown_watch.clone(), worker_command_tx));
+        let storage_query_context = self.worker.storage_query_context().clone();
+        let mut meta_handle = tokio::spawn(
+            self.meta
+                .run(shutdown_watch.clone(), worker_command_tx.clone()),
+        );
+        let mut admin_handle = tokio::spawn(self.admin.run(
+            shutdown_watch.clone(),
+            worker_command_tx,
+            Some(storage_query_context),
+        ));
         let mut worker_handle = tokio::spawn(self.worker.run(shutdown_watch));
 
         let shutdown = drain.signaled();
@@ -94,11 +116,15 @@ impl Application {
 
         tokio::select! {
             _ = shutdown => {
-                let _ = tokio::join!(shutdown_signal.drain(), meta_handle, worker_handle, node_ctrl_handle);
+                let _ = tokio::join!(shutdown_signal.drain(), admin_handle, meta_handle, worker_handle, node_ctrl_handle);
             },
             result = &mut meta_handle => {
                 result.map_err(ApplicationError::MetaPanic)??;
                 panic!("Unexpected termination of meta.");
+            },
+            result = &mut admin_handle => {
+                result.map_err(ApplicationError::AdminPanic)??;
+                panic!("Unexpected termination of admin.");
             },
             result = &mut worker_handle => {
                 result.map_err(ApplicationError::WorkerPanic)??;
