@@ -83,14 +83,20 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::collections::HashSet;
 
-    use crate::partition::services::non_deterministic::{Effect, Effects as NBISEffects};
-    use crate::partition::types::{InvokerEffect, InvokerEffectKind};
     use bytes::Bytes;
     use bytestring::ByteString;
     use googletest::matcher::Matcher;
     use googletest::{all, assert_that, pat, property};
+    use tempfile::tempdir;
+    use test_log::test;
+    use tracing::info;
+
+    use crate::partition::services::non_deterministic::{Effect, Effects as NBISEffects};
+    use crate::partition::types::{InvokerEffect, InvokerEffectKind};
+
     use restate_invoker_api::InvokeInputJournal;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::inbox_table::InboxTable;
@@ -103,7 +109,6 @@ mod tests {
     use restate_storage_api::Transaction;
     use restate_storage_rocksdb::RocksDBStorage;
     use restate_test_util::matchers::*;
-    use restate_test_util::test;
     use restate_types::errors::UserErrorCode;
     use restate_types::identifiers::{
         FullInvocationId, InvocationUuid, PartitionId, PartitionKey, ServiceId, WithPartitionKey,
@@ -115,8 +120,6 @@ mod tests {
     use restate_types::journal::enriched::EnrichedRawEntry;
     use restate_types::journal::{Completion, CompletionResult};
     use restate_types::journal::{Entry, EntryType};
-    use tempfile::tempdir;
-    use tracing::info;
 
     type VecActionCollector = Vec<Action>;
 
@@ -406,8 +409,9 @@ mod tests {
         use super::*;
 
         use googletest::{all, assert_that, elements_are, pat};
+        use test_log::test;
+
         use restate_storage_api::status_table::{ReadOnlyStatusTable, StatusTimestamps};
-        use restate_test_util::test;
         use restate_types::identifiers::InvocationId;
         use restate_types::invocation::{
             InvocationResponse, MaybeFullInvocationId, ResponseResult,

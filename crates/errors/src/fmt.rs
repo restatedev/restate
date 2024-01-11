@@ -122,8 +122,9 @@ impl fmt::Debug for RestateCode {
 mod tests {
     use super::*;
 
+    use test_log::test;
+
     use crate::RT0001;
-    use restate_test_util::test;
 
     #[derive(thiserror::Error, CodedError, Debug)]
     #[code(RT0001)]

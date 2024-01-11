@@ -920,22 +920,26 @@ where
 mod tests {
     use super::*;
 
-    use crate::invocation_task::InvocationTaskError;
-    use crate::options::ServiceClientOptions;
+    use std::future::{pending, ready};
+    use std::time::Duration;
+
     use bytes::Bytes;
-    use quota::InvokerConcurrencyQuota;
+    use tempfile::tempdir;
+    use test_log::test;
+    use tokio::sync::mpsc;
+
     use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
     use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
-    use restate_test_util::{check, let_assert, test};
+    use restate_test_util::{check, let_assert};
     use restate_types::identifiers::FullInvocationId;
     use restate_types::identifiers::InvocationUuid;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::retries::RetryPolicy;
-    use std::future::{pending, ready};
-    use std::time::Duration;
-    use tempfile::tempdir;
-    use tokio::sync::mpsc;
+
+    use crate::invocation_task::InvocationTaskError;
+    use crate::options::ServiceClientOptions;
+    use crate::quota::InvokerConcurrencyQuota;
 
     // -- Mocks
 

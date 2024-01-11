@@ -117,17 +117,19 @@ impl<'a, State: StateReader + Send + Sync> IngressBuiltInService for InvocationC
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::FutureExt;
 
-    use crate::partition::services::non_deterministic::tests::TestInvocationContext;
+    use futures::FutureExt;
     use googletest::assert_that;
     use googletest::{all, pat};
     use prost::Message;
     use prost_reflect::DynamicMessage;
+    use test_log::test;
+
     use restate_schema_api::deployment::DeploymentMetadata;
     use restate_test_util::matchers::*;
-    use restate_test_util::test;
     use restate_types::invocation::ServiceInvocation;
+
+    use crate::partition::services::non_deterministic::tests::TestInvocationContext;
 
     fn mock_schemas() -> Schemas {
         let schemas = Schemas::default();

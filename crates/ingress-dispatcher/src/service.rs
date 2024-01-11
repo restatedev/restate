@@ -363,7 +363,9 @@ mod tests {
     use super::*;
 
     use googletest::{assert_that, pat};
-    use restate_test_util::{let_assert, matchers::*, test};
+    use test_log::test;
+
+    use restate_test_util::{let_assert, matchers::*};
     use restate_types::identifiers::IngressDispatcherId;
     use restate_types::identifiers::ServiceId;
     use restate_types::invocation::SpanRelation;

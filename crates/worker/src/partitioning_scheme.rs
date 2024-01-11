@@ -119,9 +119,10 @@ impl Iterator for Partitioner {
 
 #[cfg(test)]
 mod tests {
+    use test_log::test;
+
     use crate::partitioning_scheme::{FixedConsecutivePartitions, Partitioner};
     use restate_network::PartitionTable;
-    use restate_test_util::test;
     use restate_types::identifiers::{PartitionKey, PeerId};
 
     #[test]

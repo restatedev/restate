@@ -223,14 +223,16 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::FutureExt;
 
-    use crate::partition::services::non_deterministic::tests::TestInvocationContext;
+    use futures::FutureExt;
     use googletest::{all, pat};
     use googletest::{assert_that, elements_are};
+    use test_log::test;
+
     use restate_test_util::matchers::*;
-    use restate_test_util::test;
     use restate_types::invocation::ServiceInvocation;
+
+    use crate::partition::services::non_deterministic::tests::TestInvocationContext;
 
     #[test(tokio::test)]
     async fn idempotent_invoke_test() {
