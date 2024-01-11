@@ -31,7 +31,10 @@ drain = { workspace = true }
 futures = { workspace = true }
 h2 = { version = "0.3.20" }
 humantime = { workspace = true }
-hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
+hyper = { version = "1.1.0", features = [] }
+http = "1.0.0"
+http-body = "1.0.0"
+http-body-util = "0.1.0"
 itertools = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
@@ -40,6 +43,7 @@ serde = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 

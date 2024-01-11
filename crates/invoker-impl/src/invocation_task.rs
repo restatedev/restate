@@ -13,10 +13,9 @@ use super::{InvokerError, Notification};
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{future, stream, FutureExt, Stream, StreamExt};
-use hyper::body::Sender;
 use hyper::http::response::Parts as ResponseParts;
 use hyper::http::HeaderValue;
-use hyper::{http, Body, HeaderMap, Response};
+use hyper::{http, HeaderMap, Response};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
@@ -51,6 +50,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -86,6 +86,8 @@ pub(crate) enum InvocationTaskError {
     Client(ServiceClientError),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
     UnexpectedJoinError(#[from] JoinError),
+    #[error("unexpected closed request stream")]
+    UnexpectedClosedRequestStream,
     #[error("got bad SuspensionMessage without journal indexes")]
     EmptySuspensionMessage,
     #[error(
@@ -188,10 +190,12 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
     }
 }
 
+pub(crate) type InvokerBodyStream = http_body_util::StreamBody<ReceiverStream<Bytes>>;
+
 /// Represents an open invocation stream
 pub(super) struct InvocationTask<JR, SR, EE, DMR> {
     // Shared client
-    client: ServiceClient,
+    client: ServiceClient<InvokerBodyStream>,
 
     // Connection params
     partition: PartitionLeaderEpoch,
@@ -256,7 +260,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        client: ServiceClient,
+        client: ServiceClient<InvokerBodyStream>,
         partition: PartitionLeaderEpoch,
         fid: FullInvocationId,
         protocol_version: u16,
@@ -477,7 +481,7 @@ where
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
     async fn replay_loop<JournalStream>(
         &mut self,
-        http_stream_tx: &mut Sender,
+        http_stream_tx: &mut mpsc::Sender<Bytes>,
         http_stream_rx: &mut ResponseStreamState,
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
@@ -516,7 +520,7 @@ where
     async fn bidi_stream_loop(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        mut http_stream_tx: Sender,
+        mut http_stream_tx: mpsc::Sender<Bytes>,
         http_stream_rx: &mut ResponseStreamState,
     ) -> TerminalLoopState<()> {
         loop {
@@ -590,7 +594,7 @@ where
 
     async fn write_start<I: Iterator<Item = (Bytes, Bytes)>>(
         &mut self,
-        http_stream_tx: &mut Sender,
+        http_stream_tx: &mut mpsc::Sender<Bytes>,
         journal_size: u32,
         state_entries: EagerState<I>,
     ) -> Result<(), InvocationTaskError> {
@@ -612,20 +616,14 @@ where
 
     async fn write(
         &mut self,
-        http_stream_tx: &mut Sender,
+        http_stream_tx: &mut mpsc::Sender<Bytes>,
         msg: ProtocolMessage,
     ) -> Result<(), InvocationTaskError> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
-        if let Err(hyper_err) = http_stream_tx.send_data(buf).await {
-            // is_closed() is try only if the request channel (Sender) has been closed.
-            // This can happen if the deployment is suspending.
-            if !hyper_err.is_closed() {
-                return Err(InvocationTaskError::Client(ServiceClientError::Http(
-                    hyper_err.into(),
-                )));
-            }
+        if let Err(_) = http_stream_tx.send(buf).await {
+            return Err(InvocationTaskError::UnexpectedClosedRequestStream);
         };
         Ok(())
     }
@@ -711,8 +709,10 @@ where
         &mut self,
         path: PathAndQuery,
         deployment_metadata: DeploymentMetadata,
-    ) -> (Sender, Request<Body>) {
-        let (http_stream_tx, req_body) = Body::channel();
+    ) -> (mpsc::Sender<Bytes>, Request<InvokerBodyStream>) {
+        // Just an arbitrary buffering size
+        let (http_stream_tx, http_stream_rx) = mpsc::channel(10);
+        let req_body = InvokerBodyStream::new(ReceiverStream::new(http_stream_rx));
 
         let mut headers = HeaderMap::from_iter([
             (http::header::CONTENT_TYPE, APPLICATION_RESTATE),
@@ -752,12 +752,12 @@ where
 }
 
 enum ResponseStreamState {
-    WaitingHeaders(AbortOnDrop<Result<Response<Body>, ServiceClientError>>),
-    ReadingBody(Body),
+    WaitingHeaders(AbortOnDrop<Result<Response<hyper::body::Incoming>, ServiceClientError>>),
+    ReadingBody(hyper::body::Incoming),
 }
 
 impl ResponseStreamState {
-    fn initialize(client: &ServiceClient, req: Request<Body>) -> Self {
+    fn initialize(client: &ServiceClient<InvokerBodyStream>, req: Request<InvokerBodyStream>) -> Self {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.

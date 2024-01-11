@@ -11,11 +11,13 @@
 use super::proxy::{Proxy, ProxyConnector};
 
 use futures::future::Either;
-use hyper::client::HttpConnector;
+use hyper::body::Body;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
-use hyper::{Body, HeaderMap, Method, Request, Response, Uri, Version};
-use hyper_rustls::HttpsConnector;
+use hyper::{http, HeaderMap, Method, Request, Response, Uri, Version};
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
 use serde_with::serde_as;
 use std::fmt::Debug;
 use std::future;
@@ -56,8 +58,12 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn build(self) -> HttpClient {
-        let mut builder = hyper::Client::builder();
+    pub fn build<B>(self) -> HttpClient<B> where
+        B: Body + Send + Unpin + 'static,
+        <B as Body>::Data: Send,
+        <B as Body>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let mut builder = Client::builder(TokioExecutor::new());
         builder.http2_only(true);
 
         if let Some(keep_alive_options) = self.keep_alive_options {
@@ -66,15 +72,17 @@ impl Options {
                 .http2_keep_alive_interval(Some(keep_alive_options.interval.into()));
         }
 
+        //  builder.build::<_, hyper::Body>(ProxyConnector::new(
+        //                 self.proxy_uri,
+        //                 hyper_rustls::HttpsConnectorBuilder::new()
+        //                     .with_native_roots()
+        //                     .https_or_http()
+        //                     .enable_http2()
+        //                     .build(),
+        //             )),
+
         HttpClient::new(
-            builder.build::<_, hyper::Body>(ProxyConnector::new(
-                self.proxy_uri,
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http2()
-                    .build(),
-            )),
+            builder.build::<_, B>(ProxyConnector::new(self.proxy_uri, HttpConnector::new())),
         )
     }
 }
@@ -132,25 +140,30 @@ impl Http2KeepAliveOptions {
     }
 }
 
-type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
+type Connector = ProxyConnector<HttpConnector>;
 
 #[derive(Clone, Debug)]
-pub struct HttpClient {
-    client: hyper::Client<Connector, Body>,
+pub struct HttpClient<B> {
+    client: Client<Connector, B>,
 }
 
-impl HttpClient {
-    pub fn new(client: hyper::Client<Connector, Body>) -> Self {
+impl<B> HttpClient<B>
+where
+    B: Body + Send + Unpin + 'static,
+    <B as Body>::Data: Send,
+    <B as Body>::Error: std::error::Error + Send + Sync + 'static,
+{
+    pub fn new(client: Client<Connector, B>) -> Self {
         Self { client }
     }
 
     fn build_request(
         uri: Uri,
         version: Version,
-        body: Body,
+        body: B,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
-    ) -> Result<Request<Body>, hyper::http::Error> {
+    ) -> Result<Request<B>, hyper::http::Error> {
         let mut uri_parts = uri.into_parts();
         uri_parts.path_and_query = match uri_parts.path_and_query {
             None => Some(path),
@@ -190,10 +203,11 @@ impl HttpClient {
         &self,
         uri: Uri,
         version: Version,
-        body: Body,
+        body: B,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
-    ) -> impl Future<Output = Result<Response<Body>, HttpError>> + Send + 'static {
+    ) -> impl Future<Output = Result<Response<hyper::body::Incoming>, HttpError>> + Send + 'static
+    {
         let request = match Self::build_request(uri, version, body, path, headers) {
             Ok(request) => request,
             Err(err) => return Either::Right(future::ready(Err(err.into()))),
@@ -210,5 +224,7 @@ pub enum HttpError {
     #[error(transparent)]
     Hyper(#[from] hyper::Error),
     #[error(transparent)]
-    Http(#[from] hyper::http::Error),
+    Http(#[from] http::Error),
+    #[error(transparent)]
+    LegacyClientError(#[from] hyper_util::client::legacy::Error),
 }
