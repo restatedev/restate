@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use hyper::body::Body;
 use super::lambda::AssumeRoleCacheMode;
 pub use super::lambda::{
     Options as LambdaClientOptions, OptionsBuilder as LambdaClientOptionsBuilder,
@@ -38,7 +39,11 @@ pub struct Options {
 }
 
 impl Options {
-    pub fn build(self, assume_role_cache_mode: AssumeRoleCacheMode) -> ServiceClient {
+    pub fn build<B>(self, assume_role_cache_mode: AssumeRoleCacheMode) -> ServiceClient<B> where
+        B: Body + Send + Unpin + 'static,
+        <B as Body>::Data: Send,
+        <B as Body>::Error: std::error::Error + Send + Sync + 'static,
+    {
         ServiceClient::new(self.http.build(), self.lambda.build(assume_role_cache_mode))
     }
 }

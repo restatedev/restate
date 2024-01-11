@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use hyper::http::uri::{InvalidUri, Parts, Scheme};
-use hyper::service::Service;
 use hyper::Uri;
 use std::fmt;
 use std::fmt::{Display, Formatter};
@@ -100,9 +99,9 @@ impl<C> ProxyConnector<C> {
     }
 }
 
-impl<C> Service<Uri> for ProxyConnector<C>
+impl<C> tower::Service<Uri> for ProxyConnector<C>
 where
-    C: Service<Uri>,
+    C: tower::Service<Uri>,
 {
     type Response = C::Response;
     type Error = C::Error;

@@ -44,8 +44,10 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime};
 use std::{cmp, panic};
+use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::instrument;
 use tracing::{debug, trace};
 
@@ -86,7 +88,7 @@ trait InvocationTaskRunner {
 
 #[derive(Debug)]
 struct DefaultInvocationTaskRunner<JR, SR, EE, DMR> {
-    client: ServiceClient,
+    client: ServiceClient<invocation_task::InvokerBodyStream>,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
@@ -164,7 +166,7 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
         disable_eager_state: bool,
         message_size_warning: usize,
         message_size_limit: Option<usize>,
-        client: ServiceClient,
+        client: ServiceClient<http_body_util::StreamBody<ReceiverStream<Bytes>>>,
         tmp_dir: PathBuf,
         concurrency_limit: Option<usize>,
         journal_reader: JR,

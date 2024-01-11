@@ -14,9 +14,10 @@ use crate::lambda::LambdaClient;
 use bytestring::ByteString;
 use core::fmt;
 use futures::future::Either;
+use http_body_util::Full;
+use hyper::body::{Body, Bytes};
 use hyper::header::HeaderValue;
 use hyper::http::uri::PathAndQuery;
-use hyper::Body;
 use hyper::{HeaderMap, Response, Uri};
 use restate_types::identifiers::LambdaARN;
 use std::fmt::Formatter;
@@ -34,24 +35,35 @@ mod options;
 mod proxy;
 
 #[derive(Debug, Clone)]
-pub struct ServiceClient {
+pub struct ServiceClient<B> {
     // TODO a single client uses the pooling provided by hyper, but this is not enough.
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
-    http: HttpClient,
+    http: HttpClient<B>,
     lambda: LambdaClient,
 }
 
-impl ServiceClient {
-    pub(crate) fn new(http: HttpClient, lambda: LambdaClient) -> Self {
+impl<B> ServiceClient<B> {
+    pub(crate) fn new(http: HttpClient<B>, lambda: LambdaClient) -> Self {
         Self { http, lambda }
     }
 }
 
-impl ServiceClient {
+impl<B> ServiceClient<B>
+where
+    B: Body + Send + Unpin + 'static,
+    <B as Body>::Data: Send,
+    <B as Body>::Error: std::error::Error + Send + Sync + 'static,
+{
     pub fn call(
         &self,
-        req: Request<Body>,
-    ) -> impl Future<Output = Result<Response<Body>, ServiceClientError>> + Send + 'static {
+        req: Request<B>,
+    ) -> impl Future<
+        Output = Result<
+            Response<http_body_util::Either<hyper::body::Incoming, Full<Bytes>>>,
+            ServiceClientError,
+        >,
+    > + Send
+           + 'static {
         let (parts, body) = req.into_parts();
 
         match parts.address {
@@ -59,13 +71,13 @@ impl ServiceClient {
                 let fut = self
                     .http
                     .request(uri, version, body, parts.path, parts.headers);
-                Either::Left(async move { Ok(fut.await?) })
+                Either::Left(async move { Ok(fut.await?.map(http_body_util::Either::Left)) })
             }
             Endpoint::Lambda(arn, assume_role_arn) => {
                 let fut = self
                     .lambda
                     .invoke(arn, assume_role_arn, body, parts.path, parts.headers);
-                Either::Right(async move { Ok(fut.await?) })
+                Either::Right(async move { Ok(fut.await?.map(http_body_util::Either::Right)) })
             }
         }
     }

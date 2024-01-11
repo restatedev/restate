@@ -25,13 +25,13 @@ use base64::Engine;
 use bytestring::ByteString;
 use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
-use hyper::body::Bytes;
-use hyper::client::HttpConnector;
+use http_body_util::{BodyExt, Collected, Full};
+use hyper::body::{Body, Bytes};
 use hyper::http::request::Parts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
-use hyper::{body, Body, HeaderMap, Method, Response};
-use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
+use hyper::{HeaderMap, Method, Response};
+use hyper_rustls_0_25::{ConfigBuilderExt, HttpsConnector, HttpsConnectorBuilder};
 use once_cell::sync::Lazy;
 use restate_types::identifiers::LambdaARN;
 use serde::ser::Error as _;
@@ -117,13 +117,13 @@ struct LambdaClientInner {
 }
 
 /// Copied from `aws_smithy_runtime::client::http::HTTPS_NATIVE_ROOTS` but with SO_NODELAY set
-static HTTPS_NATIVE_ROOTS: Lazy<HttpsConnector<HttpConnector>> = Lazy::new(|| {
-    let mut http = HttpConnector::new();
+static HTTPS_NATIVE_ROOTS: Lazy<HttpsConnector<hyper_0_14::client::HttpConnector>> = Lazy::new(|| {
+    let mut http = hyper_0_14::client::HttpConnector::new();
     // HttpConnector won't enforce scheme, but HttpsConnector will
     http.enforce_http(false);
     // Set SO_NODELAY, which we have found significantly improves Lambda invocation latency
     http.set_nodelay(true);
-    hyper_rustls::HttpsConnectorBuilder::new()
+    HttpsConnectorBuilder::new()
         .with_tls_config(
             rustls::ClientConfig::builder()
                 .with_cipher_suites(&[
@@ -192,28 +192,34 @@ impl LambdaClient {
         Self { inner }
     }
 
-    pub fn invoke(
+    pub fn invoke<B>(
         &self,
         arn: LambdaARN,
         assume_role_arn: Option<ByteString>,
-        body: Body,
+        body: B,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
-    ) -> impl Future<Output = Result<Response<Body>, LambdaError>> + Send + 'static {
+    ) -> impl Future<Output = Result<Response<Full<Bytes>>, LambdaError>> + Send + 'static
+    where
+        B: Body + Send + 'static,
+        <B as Body>::Data: Send,
+        <B as Body>::Error: std::error::Error + Send + Sync + 'static,
+    {
         let function_name = arn.to_string();
         let region = Region::new(arn.region().to_string());
         let inner = self.inner.clone();
-        let body = body::to_bytes(body);
 
         async move {
-            let (body, inner): (Result<Bytes, hyper::Error>, Arc<LambdaClientInner>) =
-                futures::future::join(body, inner).await;
+            let (body, inner): (
+                Result<Collected<<B as Body>::Data>, <B as Body>::Error>,
+                Arc<LambdaClientInner>,
+            ) = futures::future::join(body.collect(), inner).await;
 
             let payload = ApiGatewayProxyRequest {
                 path: Some(path.path().to_string()),
                 http_method: Method::POST,
                 headers,
-                body: body?,
+                body: body.map_err(|e| LambdaError::Body(e.into()))?.to_bytes(),
                 is_base64_encoded: true,
             };
 
@@ -306,7 +312,7 @@ impl LambdaClientInner {
 #[derive(Debug, thiserror::Error)]
 pub enum LambdaError {
     #[error("problem reading request body: {0}")]
-    Body(#[from] hyper::Error),
+    Body(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     #[error("lambda service returned error: {}", DisplayErrorContext(&.0))]
     SdkError(#[from] SdkError<InvokeError>),
     #[error("function returned an error during execution: {0}")]
@@ -359,22 +365,23 @@ pub struct ApiGatewayProxyResponse {
     pub is_base64_encoded: bool,
 }
 
-impl TryFrom<ApiGatewayProxyResponse> for Response<Body> {
+impl TryFrom<ApiGatewayProxyResponse> for Response<Full<Bytes>> {
     type Error = LambdaError;
 
     fn try_from(response: ApiGatewayProxyResponse) -> Result<Self, Self::Error> {
         let body = if let Some(body) = response.body {
             if response.is_base64_encoded {
-                Body::from(
+                Full::new(
+                    Bytes::from(
                     base64::engine::general_purpose::STANDARD
                         .decode(body)
-                        .map_err(LambdaError::Base64Error)?,
+                        .map_err(LambdaError::Base64Error)?),
                 )
             } else {
-                Body::from(body)
+                Full::new(     Bytes::from(body.into_bytes()))
             }
         } else {
-            Body::empty()
+            Full::default()
         };
 
         let builder = Response::builder().status(response.status_code);
