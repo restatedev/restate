@@ -47,6 +47,7 @@ use std::iter;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
+use http_body::Body;
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
@@ -806,9 +807,12 @@ impl ResponseStreamState {
                     ready!(self.poll_wait_headers(cx))?;
                 }
                 ResponseStreamState::ReadingBody(b) => {
-                    let next_element = ready!(b.poll_next_unpin(cx));
+                    // TODO Perhaps we need pin_project here?
+                    let mut pinned = std::pin::pin!(b);
+                    let next_element = ready!(pinned.as_mut().poll_frame(cx));
                     return Poll::Ready(match next_element.transpose() {
-                        Ok(opt) => Ok(opt),
+                        Ok(Some(f)) if f.is_data() => Ok(Some(f.into_data().unwrap())),
+                        Ok(_) => Ok(None),
                         Err(err) => {
                             if h2_reason(&err) == h2::Reason::NO_ERROR {
                                 Ok(None)
