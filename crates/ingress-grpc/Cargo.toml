@@ -33,14 +33,16 @@ pin-project = { workspace = true }
 restate-futures-util = { workspace = true }
 
 # Tower + Hyper + Tonic + Tokio
-http = { workspace = true }
-http-body = "0.4"
-hyper = { workspace = true, features = ["http1", "http2", "server", "tcp", "stream", "runtime"] }
+http = { version = "1.0.0" }
+http-body = "1.0.0"
+http-body-util = "0.1.0"
+hyper = { version = "1.1.0", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1.2", features = ["server", "server-auto", "tokio"] }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
 tonic-web = "0.10.2"
-tower = { workspace = true, features = ["util"] }
-tower-http = { version = "0.4", default-features = false, features = ["cors"] }
+tower = { version = "0.4.13", features = ["util"] }
+tower-http = { version = "0.5.0", default-features = false, features = ["cors"] }
 
 # Tracing
 opentelemetry = { workspace = true }
@@ -65,7 +67,7 @@ restate-schema-impl = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["mocks"] }
 
-hyper = { workspace = true, features = ["client"] }
+hyper = { version = "1.1.0", features = ["client"] }
 tonic = { workspace = true, features = ["default"] }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

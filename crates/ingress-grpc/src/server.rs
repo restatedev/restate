@@ -13,23 +13,27 @@ use super::*;
 
 use codederror::CodedError;
 use futures::FutureExt;
-use hyper::server::conn::AddrStream;
-use hyper::service::make_service_fn;
-use hyper::service::service_fn;
+use pin_project::pin_project;
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use hyper_util::server::conn::auto;
 use restate_ingress_dispatcher::IngressRequestSender;
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
-use std::convert::Infallible;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Poll;
+use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
-use tower::Service;
-use tower::ServiceBuilder;
+use tonic::service::Interceptor;
+use tower::{ServiceBuilder, ServiceExt};
+use tower::{Layer, Service};
 use tower_http::cors::CorsLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 pub type StartSignal = oneshot::Receiver<SocketAddr>;
 
@@ -42,7 +46,7 @@ pub enum IngressServerError {
     Binding {
         address: SocketAddr,
         #[source]
-        source: hyper::Error,
+        source: std::io::Error,
     },
     #[error("error while running ingress grpc server: {0}")]
     #[code(unknown)]
@@ -107,15 +111,16 @@ where
             start_signal_tx,
         } = self;
 
-        let server_builder = hyper::Server::try_bind(&listening_addr).map_err(|err| {
+        // Bind to the port and listen for incoming TCP connections
+        let listener = TcpListener::bind(&listening_addr).await.map_err(|err| {
             IngressServerError::Binding {
                 address: listening_addr,
                 source: err,
             }
         })?;
+        let local_addr = listener.local_addr()?;
 
         let global_concurrency_limit_semaphore = Arc::new(Semaphore::new(concurrency_limit));
-
         let service_builder = ServiceBuilder::new()
             .layer(CorsLayer::very_permissive())
             .service(handler::Handler::new(
@@ -124,34 +129,115 @@ where
                 request_tx,
                 global_concurrency_limit_semaphore,
             ));
+        let adapter = TowerService03ServiceAsHyper1Service::new(service_builder);
 
-        let make_svc = make_service_fn(|socket: &AddrStream| {
-            // Extract remote address information and add to request extensions.
-            let connect_info = ConnectInfo::new(socket);
-            let mut inner_svc = service_builder.clone();
-            let outer_svc = service_fn(move |mut req: http::Request<hyper::Body>| {
-                req.extensions_mut().insert(connect_info);
-                inner_svc.call(req)
-            });
-
-            async { Ok::<_, Infallible>(outer_svc) }
-        });
-
-        let server = server_builder.serve(make_svc);
+        // let make_svc = make_service_fn(|socket: &AddrStream| {
+        //     // Extract remote address information and add to request extensions.
+        //     let connect_info = ConnectInfo::new(socket);
+        //     let mut inner_svc = service_builder.clone();
+        //     let outer_svc = service_fn(move |mut req: http::Request<hyper::Body>| {
+        //         req.extensions_mut().insert(connect_info);
+        //         inner_svc.call(req)
+        //     });
+        //
+        //     async { Ok::<_, Infallible>(outer_svc) }
+        // });
+        //
+        // let server = server_builder.serve(make_svc);
 
         info!(
-            net.host.addr = %server.local_addr().ip(),
-            net.host.port = %server.local_addr().port(),
+            net.host.addr = %local_addr.ip(),
+            net.host.port = %local_addr.port(),
             "Ingress gRPC/gRPC-web/Connect listening"
         );
 
         // future completion does not affect endpoint
-        let _ = start_signal_tx.send(server.local_addr());
+        let _ = start_signal_tx.send(local_addr);
 
-        server
-            .with_graceful_shutdown(drain.signaled().map(|_| ()))
-            .await
-            .map_err(IngressServerError::Running)
+        let shutdown = drain.signaled();
+        tokio::pin!(shutdown);
+
+        // Server loop
+        loop {
+            tokio::select! {
+                res = listener.accept() => {
+                    let (tcp, remote_addr) = res?;
+                    let io = TokioIo::new(tcp);
+
+                    // Spin up a new task to process this connection
+                    tokio::task::spawn(async move {
+                        let mut auto_http_builder = auto::Builder::new(TokioExecutor::new());
+                        auto_http_builder.http1().timer(TokioTimer::default());
+                        auto_http_builder.http2().timer(TokioTimer::default());
+
+                        if let Err(e) =
+                        auto_http_builder.serve_connection_with_upgrades(
+                            io,
+                            adapter.clone()
+                        ).await {
+                            // Catch-all error handler for this connection
+                            warn!("Error serving the connection to {}: {:#?}", remote_addr, e);
+                        }
+                    });
+                },
+                _ = &mut shutdown => {
+                    info!("Shut down of ingress requested. Shutting down now.");
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TowerService03ServiceAsHyper1Service<S>(S);
+
+impl<S> TowerService03ServiceAsHyper1Service<S> {
+    /// Create a new `TowerService03ServiceAsHyper1Service`.
+    pub fn new(inner: S) -> Self {
+        Self(inner)
+    }
+}
+
+impl<S, R> hyper::service::Service<R> for TowerService03ServiceAsHyper1Service<S>
+    where
+        S: tower::Service<R> + Clone,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = TowerService03ServiceAsHyper1ServiceFuture<S, R>;
+
+    #[inline]
+    fn call(&self, req: R) -> Self::Future {
+        TowerService03ServiceAsHyper1ServiceFuture {
+            // have to drive backpressure in the future
+            future: self.0.clone().oneshot(req),
+        }
+    }
+}
+
+pin_project! {
+    /// Response future for [`TowerService03ServiceAsHyper1Service`].
+    pub struct TowerService03ServiceAsHyper1ServiceFuture<S, R>
+    where
+        S: tower::Service<R>,
+    {
+        #[pin]
+        future: Oneshot<S, R>,
+    }
+}
+
+impl<S, R> Future for TowerService03ServiceAsHyper1ServiceFuture<S, R>
+    where
+        S: tower::Service<R>,
+{
+    type Output = Result<S::Response, S::Error>;
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        self.project().future.poll(cx)
     }
 }
 

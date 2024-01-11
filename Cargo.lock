@@ -681,8 +681,8 @@ dependencies = [
  "bytes",
  "fastrand",
  "hex",
- "http",
- "hyper",
+ "http 0.2.11",
+ "hyper 0.14.27",
  "ring 0.17.6",
  "time",
  "tokio",
@@ -712,8 +712,8 @@ dependencies = [
  "aws-smithy-types",
  "aws-types",
  "bytes",
- "http",
- "http-body",
+ "http 0.2.11",
+ "http-body 0.4.5",
  "pin-project-lite",
  "tracing",
 ]
@@ -733,7 +733,7 @@ dependencies = [
  "aws-smithy-types",
  "aws-types",
  "fastrand",
- "http",
+ "http 0.2.11",
  "percent-encoding",
  "tracing",
  "uuid",
@@ -756,7 +756,7 @@ dependencies = [
  "aws-smithy-types",
  "aws-types",
  "bytes",
- "http",
+ "http 0.2.11",
  "regex",
  "tracing",
 ]
@@ -778,7 +778,7 @@ dependencies = [
  "aws-smithy-types",
  "aws-types",
  "bytes",
- "http",
+ "http 0.2.11",
  "regex",
  "tracing",
 ]
@@ -800,7 +800,7 @@ dependencies = [
  "aws-smithy-types",
  "aws-types",
  "bytes",
- "http",
+ "http 0.2.11",
  "regex",
  "tracing",
 ]
@@ -823,7 +823,7 @@ dependencies = [
  "aws-smithy-types",
  "aws-smithy-xml",
  "aws-types",
- "http",
+ "http 0.2.11",
  "regex",
  "tracing",
 ]
@@ -842,7 +842,7 @@ dependencies = [
  "form_urlencoded",
  "hex",
  "hmac",
- "http",
+ "http 0.2.11",
  "once_cell",
  "percent-encoding",
  "regex",
@@ -873,8 +873,8 @@ dependencies = [
  "bytes",
  "bytes-utils",
  "futures-core",
- "http",
- "http-body",
+ "http 0.2.11",
+ "http-body 0.4.5",
  "once_cell",
  "percent-encoding",
  "pin-project-lite",
@@ -913,9 +913,9 @@ dependencies = [
  "aws-smithy-types",
  "bytes",
  "fastrand",
- "http",
- "http-body",
- "hyper",
+ "http 0.2.11",
+ "http-body 0.4.5",
+ "hyper 0.14.27",
  "hyper-rustls",
  "once_cell",
  "pin-project-lite",
@@ -934,7 +934,7 @@ dependencies = [
  "aws-smithy-async",
  "aws-smithy-types",
  "bytes",
- "http",
+ "http 0.2.11",
  "pin-project-lite",
  "tokio",
  "tracing",
@@ -951,8 +951,8 @@ dependencies = [
  "bytes",
  "bytes-utils",
  "futures-core",
- "http",
- "http-body",
+ "http 0.2.11",
+ "http-body 0.4.5",
  "itoa",
  "num-integer",
  "pin-project-lite",
@@ -983,7 +983,7 @@ dependencies = [
  "aws-smithy-async",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
- "http",
+ "http 0.2.11",
  "rustc_version",
  "tracing",
 ]
@@ -999,9 +999,9 @@ dependencies = [
  "bitflags 1.3.2",
  "bytes",
  "futures-util",
- "http",
- "http-body",
- "hyper",
+ "http 0.2.11",
+ "http-body 0.4.5",
+ "hyper 0.14.27",
  "itoa",
  "matchit",
  "memchr",
@@ -1029,8 +1029,8 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures-util",
- "http",
- "http-body",
+ "http 0.2.11",
+ "http-body 0.4.5",
  "mime",
  "rustversion",
  "tower-layer",
@@ -2577,7 +2577,26 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "futures-util",
- "http",
+ "http 0.2.11",
+ "indexmap 2.1.0",
+ "slab",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "h2"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "991910e35c615d8cab86b5ab04be67e6ad24d2bf5f4f11fdbbed26da999bbeab"
+dependencies = [
+ "bytes",
+ "fnv",
+ "futures-core",
+ "futures-sink",
+ "futures-util",
+ "http 1.0.0",
  "indexmap 2.1.0",
  "slab",
  "tokio",
@@ -2679,13 +2698,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "http"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b32afd38673a8016f7c9ae69e5af41a58f81b1d31689040f2f1959594ce194ea"
+dependencies = [
+ "bytes",
+ "fnv",
+ "itoa",
+]
+
+[[package]]
 name = "http-body"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5f38f16d184e36f2408a55281cd658ecbd3ca05cce6d6510a176eca393e26d1"
 dependencies = [
  "bytes",
- "http",
+ "http 0.2.11",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "http-body"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cac85db508abc24a2e48553ba12a996e87244a0395ce011e62b37158745d643"
+dependencies = [
+ "bytes",
+ "http 1.0.0",
+]
+
+[[package]]
+name = "http-body-util"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41cb79eb393015dadd30fc252023adb0b2400a0caee0fa2a077e6e21a551e840"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http 1.0.0",
+ "http-body 1.0.0",
  "pin-project-lite",
 ]
 
@@ -2701,7 +2754,7 @@ version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f560b665ad9f1572cfcaf034f7fb84338a7ce945216d64a90fd81f046a3caee"
 dependencies = [
- "http",
+ "http 0.2.11",
  "serde",
 ]
 
@@ -2733,9 +2786,9 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
- "h2",
- "http",
- "http-body",
+ "h2 0.3.22",
+ "http 0.2.11",
+ "http-body 0.4.5",
  "httparse",
  "httpdate",
  "itoa",
@@ -2748,14 +2801,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb5aa53871fc917b1a9ed87b683a5d86db645e23acb32c2e0785a353e522fb75"
+dependencies = [
+ "bytes",
+ "futures-channel",
+ "futures-util",
+ "h2 0.4.1",
+ "http 1.0.0",
+ "http-body 1.0.0",
+ "httparse",
+ "httpdate",
+ "itoa",
+ "pin-project-lite",
+ "tokio",
+ "want",
+]
+
+[[package]]
 name = "hyper-rustls"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec3efd23720e2049821a693cbc7e65ea87c72f1c58ff2f9522ff332b1491e590"
 dependencies = [
  "futures-util",
- "http",
- "hyper",
+ "http 0.2.11",
+ "hyper 0.14.27",
  "log",
  "rustls",
  "rustls-native-certs",
@@ -2769,10 +2842,28 @@ version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbb958482e8c7be4bc3cf272a766a2b0bf1a6755e7a6ae777f017a31d11b13b1"
 dependencies = [
- "hyper",
+ "hyper 0.14.27",
  "pin-project-lite",
  "tokio",
  "tokio-io-timeout",
+]
+
+[[package]]
+name = "hyper-util"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdea9aac0dbe5a9240d68cfd9501e2db94222c6dc06843e06640b9e07f0fdc67"
+dependencies = [
+ "bytes",
+ "futures-channel",
+ "futures-util",
+ "http 1.0.0",
+ "http-body 1.0.0",
+ "hyper 1.1.0",
+ "pin-project-lite",
+ "socket2 0.5.5",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3550,9 +3641,9 @@ dependencies = [
  "futures",
  "futures-core",
  "futures-util",
- "http",
- "http-body",
- "hyper",
+ "http 0.2.11",
+ "http-body 0.4.5",
+ "hyper 0.14.27",
  "hyper-rustls",
  "hyper-timeout",
  "jsonwebtoken",
@@ -3567,7 +3658,7 @@ dependencies = [
  "snafu",
  "tokio",
  "tower",
- "tower-http",
+ "tower-http 0.4.4",
  "tracing",
  "url",
 ]
@@ -3593,7 +3684,7 @@ dependencies = [
  "anyhow",
  "axum",
  "bytes",
- "http",
+ "http 0.2.11",
  "okapi",
  "okapi-operation-macro",
  "paste",
@@ -3669,7 +3760,7 @@ checksum = "c7594ec0e11d8e33faf03530a4c49af7064ebba81c1480e01be67d90b356508b"
 dependencies = [
  "async-trait",
  "bytes",
- "http",
+ "http 0.2.11",
  "opentelemetry_api",
 ]
 
@@ -3681,7 +3772,7 @@ checksum = "7e5e5a5c4135864099f3faafbe939eb4d7f9b80ebf68a8448da961b32a7c1275"
 dependencies = [
  "async-trait",
  "futures-core",
- "http",
+ "http 0.2.11",
  "opentelemetry-proto",
  "opentelemetry-semantic-conventions",
  "opentelemetry_api",
@@ -4513,10 +4604,10 @@ dependencies = [
  "encoding_rs",
  "futures-core",
  "futures-util",
- "h2",
- "http",
- "http-body",
- "hyper",
+ "h2 0.3.22",
+ "http 0.2.11",
+ "http-body 0.4.5",
+ "hyper 0.14.27",
  "hyper-rustls",
  "ipnet",
  "js-sys",
@@ -4558,7 +4649,7 @@ dependencies = [
  "drain",
  "futures",
  "futures-util",
- "hyper",
+ "hyper 0.14.27",
  "pprof",
  "prost 0.12.3",
  "prost-build",
@@ -4592,7 +4683,7 @@ dependencies = [
  "dirs",
  "dotenvy",
  "futures",
- "http",
+ "http 0.2.11",
  "indicatif",
  "indoc",
  "is-terminal",
@@ -4703,9 +4794,11 @@ dependencies = [
  "derive_builder",
  "drain",
  "futures",
- "http",
- "http-body",
- "hyper",
+ "http 1.0.0",
+ "http-body 1.0.0",
+ "http-body-util",
+ "hyper 1.1.0",
+ "hyper-util",
  "once_cell",
  "opentelemetry",
  "opentelemetry-http",
@@ -4728,7 +4821,7 @@ dependencies = [
  "tonic 0.10.2",
  "tonic-web",
  "tower",
- "tower-http",
+ "tower-http 0.5.0",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -4791,9 +4884,9 @@ dependencies = [
  "drain",
  "futures",
  "googletest",
- "h2",
+ "h2 0.3.22",
  "humantime",
- "hyper",
+ "hyper 0.14.27",
  "itertools 0.11.0",
  "opentelemetry",
  "opentelemetry-http",
@@ -4832,7 +4925,7 @@ dependencies = [
  "derive_builder",
  "drain",
  "futures",
- "hyper",
+ "hyper 0.14.27",
  "okapi-operation",
  "prost 0.12.3",
  "prost-reflect",
@@ -4866,7 +4959,7 @@ dependencies = [
 name = "restate-meta-rest-model"
 version = "0.7.0"
 dependencies = [
- "http",
+ "http 0.2.11",
  "humantime",
  "restate-schema-api",
  "restate-serde-util",
@@ -4932,7 +5025,7 @@ dependencies = [
  "base64 0.21.5",
  "bytes",
  "bytestring",
- "http",
+ "http 0.2.11",
  "prost 0.12.3",
  "prost-reflect",
  "restate-base64-util",
@@ -4953,7 +5046,7 @@ dependencies = [
  "arc-swap",
  "bytes",
  "codederror",
- "http",
+ "http 0.2.11",
  "itertools 0.11.0",
  "once_cell",
  "prost 0.12.3",
@@ -4979,7 +5072,7 @@ version = "0.7.0"
 dependencies = [
  "base64 0.21.5",
  "bytes",
- "http",
+ "http 0.2.11",
  "prost 0.12.3",
  "schemars",
  "serde",
@@ -5033,7 +5126,7 @@ dependencies = [
  "futures",
  "http-serde",
  "humantime",
- "hyper",
+ "hyper 0.14.27",
  "hyper-rustls",
  "once_cell",
  "restate-schema-api",
@@ -5054,7 +5147,7 @@ dependencies = [
  "bytes",
  "bytes-utils",
  "codederror",
- "hyper",
+ "hyper 0.14.27",
  "paste",
  "prost 0.12.3",
  "prost-build",
@@ -5145,7 +5238,7 @@ dependencies = [
  "derive_builder",
  "drain",
  "futures",
- "hyper",
+ "hyper 0.14.27",
  "okapi-operation",
  "restate-errors",
  "restate-schema-api",
@@ -5296,7 +5389,7 @@ dependencies = [
  "base64 0.21.5",
  "bytes",
  "bytestring",
- "http",
+ "http 0.2.11",
  "humantime",
  "opentelemetry_api",
  "rand",
@@ -6370,10 +6463,10 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "h2",
- "http",
- "http-body",
- "hyper",
+ "h2 0.3.22",
+ "http 0.2.11",
+ "http-body 0.4.5",
+ "hyper 0.14.27",
  "hyper-timeout",
  "percent-encoding",
  "pin-project",
@@ -6397,10 +6490,10 @@ dependencies = [
  "axum",
  "base64 0.21.5",
  "bytes",
- "h2",
- "http",
- "http-body",
- "hyper",
+ "h2 0.3.22",
+ "http 0.2.11",
+ "http-body 0.4.5",
+ "hyper 0.14.27",
  "hyper-timeout",
  "percent-encoding",
  "pin-project",
@@ -6434,13 +6527,13 @@ checksum = "0fddb2a37b247e6adcb9f239f4e5cefdcc5ed526141a416b943929f13aea2cce"
 dependencies = [
  "base64 0.21.5",
  "bytes",
- "http",
- "http-body",
- "hyper",
+ "http 0.2.11",
+ "http-body 0.4.5",
+ "hyper 0.14.27",
  "pin-project",
  "tokio-stream",
  "tonic 0.10.2",
- "tower-http",
+ "tower-http 0.4.4",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -6476,8 +6569,8 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "http",
- "http-body",
+ "http 0.2.11",
+ "http-body 0.4.5",
  "http-range-header",
  "iri-string",
  "pin-project-lite",
@@ -6485,6 +6578,22 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "tower-http"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09e12e6351354851911bdf8c2b8f2ab15050c567d70a8b9a37ae7b8301a4080d"
+dependencies = [
+ "bitflags 2.4.1",
+ "bytes",
+ "http 1.0.0",
+ "http-body 1.0.0",
+ "http-body-util",
+ "pin-project-lite",
+ "tower-layer",
+ "tower-service",
 ]
 
 [[package]]

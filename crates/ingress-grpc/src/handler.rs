@@ -16,8 +16,6 @@ use crate::reflection::ServerReflectionService;
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
 use http::{Request, Response, StatusCode};
-use http_body::Body;
-use hyper::Body as HyperBody;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
 use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest, IngressRequestSender};

@@ -14,15 +14,13 @@ mod protocol;
 mod reflection;
 mod server;
 
-use std::net::{IpAddr, SocketAddr};
-
-use hyper::server::conn::AddrStream;
 pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
 use opentelemetry::Context;
 use restate_types::identifiers::FullInvocationId;
+use std::net::{IpAddr, SocketAddr};
 use tonic::metadata::MetadataMap;
 use tonic::Status;
 
@@ -89,10 +87,8 @@ pub(crate) struct ConnectInfo {
 }
 
 impl ConnectInfo {
-    fn new(socket: &AddrStream) -> Self {
-        Self {
-            remote: socket.remote_addr(),
-        }
+    fn new(remote: SocketAddr) -> Self {
+        Self { remote }
     }
     fn address(&self) -> IpAddr {
         self.remote.ip()
