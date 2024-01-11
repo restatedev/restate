@@ -41,6 +41,7 @@ use util::IdentitySender;
 
 mod ingress_integration;
 mod invoker_integration;
+mod metric_definitions;
 mod network_integration;
 mod partition;
 mod partitioning_scheme;
@@ -163,6 +164,7 @@ impl Options {
     }
 
     pub fn build(self, schemas: Schemas) -> Result<Worker, BuildError> {
+        metric_definitions::describe_metrics();
         Worker::new(self, schemas)
     }
 }

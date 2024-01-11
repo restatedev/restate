@@ -16,6 +16,7 @@ mod tracer;
 use crate::pretty::PrettyFields;
 use crate::processor::ResourceModifyingSpanProcessor;
 use crate::tracer::SpanModifyingTracer;
+use metrics_tracing_context::MetricsLayer;
 use opentelemetry::sdk::trace::BatchSpanProcessor;
 use opentelemetry::trace::{TraceError, TracerProvider};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
@@ -287,7 +288,11 @@ impl Options {
         let layers = tracing_subscriber::registry();
 
         // Logging layer
-        let layers = layers.with(self.log.build_layer()?);
+        let layers = layers
+            .with(self.log.build_layer()?)
+            // Enables auto extraction of selected span labels in emitted metrics.
+            // allowed labels are defined in restate_node_ctrl::metrics::ALLOWED_LABELS.
+            .with(MetricsLayer::new());
 
         // Console subscriber layer
         #[cfg(feature = "console-subscriber")]

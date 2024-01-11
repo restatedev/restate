@@ -10,6 +10,7 @@
 
 use codederror::CodedError;
 use restate_meta::Meta;
+use restate_node_ctrl::service::NodeCtrlService;
 use restate_worker::Worker;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -32,6 +33,15 @@ pub enum ApplicationError {
     #[error("worker panicked: {0}")]
     #[code(unknown)]
     WorkerPanic(tokio::task::JoinError),
+    #[error("node ctrl service failed: {0}")]
+    NodeCtrlService(
+        #[from]
+        #[code]
+        restate_node_ctrl::Error,
+    ),
+    #[error("node ctrl service panicked: {0}")]
+    #[code(unknown)]
+    NodeCtrlPanic(tokio::task::JoinError),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -43,23 +53,33 @@ pub struct BuildError {
 }
 
 pub struct Application {
+    node_ctrl: NodeCtrlService,
     meta: Meta,
     worker: Worker,
 }
 
 impl Application {
     pub fn new(
+        node_ctrl: restate_node_ctrl::Options,
         meta: restate_meta::Options,
         worker: restate_worker::Options,
     ) -> Result<Self, BuildError> {
         let meta = meta.build();
         let worker = worker.build(meta.schemas())?;
 
-        Ok(Self { meta, worker })
+        let node_ctrl = node_ctrl.build();
+
+        Ok(Self {
+            node_ctrl,
+            meta,
+            worker,
+        })
     }
 
     pub async fn run(mut self, drain: drain::Watch) -> Result<(), ApplicationError> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
+        // start node ctrl service base
+        let mut node_ctrl_handle = tokio::spawn(self.node_ctrl.run(shutdown_watch.clone()));
 
         // Init the meta. This will reload the schemas in memory.
         self.meta.init().await?;
@@ -74,7 +94,7 @@ impl Application {
 
         tokio::select! {
             _ = shutdown => {
-                let _ = tokio::join!(shutdown_signal.drain(), meta_handle, worker_handle);
+                let _ = tokio::join!(shutdown_signal.drain(), meta_handle, worker_handle, node_ctrl_handle);
             },
             result = &mut meta_handle => {
                 result.map_err(ApplicationError::MetaPanic)??;
@@ -84,6 +104,10 @@ impl Application {
                 result.map_err(ApplicationError::WorkerPanic)??;
                 panic!("Unexpected termination of worker.");
             }
+            result = &mut node_ctrl_handle => {
+                result.map_err(ApplicationError::NodeCtrlPanic)??;
+                panic!("Unexpected termination of node ctrl service.");
+            },
         }
 
         Ok(())

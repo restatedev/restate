@@ -23,5 +23,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 restate-test-util = { workspace = true }
 
+test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
-

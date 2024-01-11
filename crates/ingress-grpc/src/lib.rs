@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod handler;
+mod metric_definitions;
 mod options;
 mod protocol;
 mod reflection;

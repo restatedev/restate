@@ -40,7 +40,7 @@ tokio = { workspace = true }
 tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
 tonic-web = "0.10.2"
 tower = { workspace = true, features = ["util"] }
-tower-http = { version = "0.4", default-features = false, features = ["cors"] }
+tower-http = { workspace = true, features = ["cors"] }
 
 # Tracing
 opentelemetry = { workspace = true }
@@ -54,6 +54,7 @@ arc-swap = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }
+metrics = { workspace = true }
 once_cell = { workspace = true }
 schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
@@ -66,6 +67,7 @@ restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["mocks"] }
 
 hyper = { workspace = true, features = ["client"] }
+test-log = { workspace = true }
 tonic = { workspace = true, features = ["default"] }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

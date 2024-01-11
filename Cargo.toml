@@ -42,6 +42,8 @@ restate-invoker-impl = { path = "crates/invoker-impl" }
 restate-meta = { path = "crates/meta" }
 restate-meta-rest-model = { path = "crates/meta-rest-model" }
 restate-network = { path = "crates/network" }
+restate-node-ctrl = { path = "crates/node-ctrl" }
+restate-node-ctrl-proto = { path = "crates/node-ctrl-proto" }
 restate-pb = { path = "crates/pb" }
 restate-queue = { path = "crates/queue" }
 restate-schema-api = { path = "crates/schema-api" }
@@ -71,13 +73,14 @@ arc-swap = "1.6"
 assert2 = "0.3.11"
 async-channel = "2.1.1"
 async-trait = "0.1.73"
+axum = "0.6.18"
 base64 = "0.21"
 bincode = { version = "2.0.0-rc", default-features = false, features = [ "std", "serde", ] }
 bytes = { version = "1.3", features = ["serde"] }
 bytes-utils = "0.1.3"
 bytestring = { version = "1.2", features = ["serde"] }
-criterion = "0.5"
 chrono = { version = "0.4.31", default-features = false, features = ["clock"] }
+criterion = "0.5"
 datafusion = { version = "31.0.0" }
 datafusion-expr = { version = "31.0.0" }
 derive_builder = "0.12.0"
@@ -91,6 +94,7 @@ humantime = "2.1.0"
 hyper = { version = "0.14.24", default-features = false }
 hyper-rustls = { version = "0.24.1", features = ["http2"] }
 itertools = "0.11.0"
+metrics = { version = "0.22" }
 once_cell = "1.18"
 opentelemetry = { version = "0.20.0" }
 opentelemetry-http = { version = "0.9.0" }
@@ -112,6 +116,7 @@ serde_with = "2.2"
 serde_yaml = "0.9"
 sync_wrapper = "0.1.2"
 tempfile = "3.6.0"
+test-log = { version = "0.2.11", default-features = false, features = ["trace"] }
 thiserror = "1.0"
 tokio = { version = "1.29", default-features = false, features = [ "rt-multi-thread", "signal", "macros", ] }
 tokio-util = { version = "0.7.10" }
@@ -119,9 +124,10 @@ tokio-stream = "0.1.14"
 tonic = { version = "0.10.2", default-features = false }
 tonic-build = "0.10.2"
 tower = "0.4"
+tower-http = { version = "0.4", default-features = false }
 tracing = "0.1"
 tracing-opentelemetry = { version = "0.21.0" }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.3.0", features = ["v7", "serde"] }
 
 

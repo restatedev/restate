@@ -1,0 +1,22 @@
+[package]
+name = "restate-node-ctrl-proto"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+anyhow = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+thiserror = { workspace = true, optional = true }
+tonic = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

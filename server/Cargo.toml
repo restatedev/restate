@@ -20,6 +20,7 @@ options_schema = [
     "dep:schemars",
     "restate-tracing-instrumentation/options_schema",
     "restate-meta/options_schema",
+    "restate-node-ctrl/options_schema",
     "restate-worker/options_schema",
 ]
 
@@ -27,6 +28,7 @@ options_schema = [
 restate-errors = { workspace = true, features = ["include_doc"] }
 restate-fs-util = { workspace = true }
 restate-meta = { workspace = true }
+restate-node-ctrl = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }

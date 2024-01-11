@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_TIMER_DUE_HANDLED};
 use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::leadership::{ActionEffect, LeadershipState, TaskResult};
 use crate::partition::state_machine::{
@@ -16,6 +17,7 @@ use crate::partition::state_machine::{
 use crate::partition::storage::{PartitionStorage, Transaction};
 use crate::util::IdentitySender;
 use futures::StreamExt;
+use metrics::counter;
 use restate_schema_impl::Schemas;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
@@ -209,12 +211,14 @@ where
                     }
                 },
                 actuator_output = actuator_stream.next() => {
+                    counter!(PARTITION_ACTUATOR_HANDLED).increment(1);
                     let actuator_output = actuator_output.ok_or(anyhow::anyhow!("actuator stream is closed"))?;
                     actuator_output_handler.handle(actuator_output).await;
                 },
                 task_result = leadership_state.run_tasks() => {
                     match task_result {
                         TaskResult::Timer(timer) => {
+                            counter!(PARTITION_TIMER_DUE_HANDLED).increment(1);
                             actuator_output_handler.handle(ActionEffect::Timer(timer)).await;
                         },
                         TaskResult::TerminatedTask(result) => {

@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package dev.restate.node_ctrl;
+
+enum NodeStatus {
+  NodeStatus_UNKNOWN = 0;
+  ALIVE = 1;
+  // The node is not fully running yet.
+  STARTING_UP = 2;
+  // The node is performing a graceful shutdown.
+  SHUTTING_DOWN = 3;
+}
+
+service NodeCtrl {
+  // Get identity information from this node.
+  rpc GetIdent(google.protobuf.Empty) returns (IdentResponse);
+}
+
+message IdentResponse {
+  NodeStatus status = 1;
+}
+
+

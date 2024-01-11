@@ -32,4 +32,5 @@ restate-test-util = { workspace = true }
 
 futures-util = { workspace = true }
 tracing-subscriber = { workspace = true }
+test-log = { workspace = true }
 

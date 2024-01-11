@@ -29,6 +29,7 @@ tokio = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
+metrics-tracing-context = { version = "0.15.0" }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -131,7 +131,9 @@ fn main() {
             config.worker.storage_path().into()
         ).await.expect("Error when trying to wipe the configured storage path");
 
-        let app = Application::new(config.meta, config.worker);
+        let app = Application::new(
+            config.node_ctrl,
+            config.meta, config.worker);
 
         if let Err(err) = app {
             handle_error(err);
