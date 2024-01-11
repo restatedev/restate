@@ -68,7 +68,7 @@ pub fn spawn_restate(
 
     let (signal, drain) = drain::channel();
     let app_handle = rt.block_on(async move {
-        let app = Application::new(config.node_ctrl, config.meta, config.worker)
+        let app = Application::new(config.node_ctrl, config.meta, config.worker, config.admin)
             .expect("Application must build");
         tokio::task::spawn(app.run(drain))
     });

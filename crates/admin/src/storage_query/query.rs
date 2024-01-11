@@ -32,8 +32,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
 
-use crate::error::StorageApiError;
-use crate::state::EndpointState;
+use crate::state::QueryServiceState;
+
+use super::error::StorageApiError;
 
 #[serde_as]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -55,11 +56,11 @@ pub struct QueryRequest {
     responses(ignore_return_type = true, from_type = "StorageApiError")
 )]
 pub async fn query(
-    State(state): State<Arc<EndpointState>>,
+    State(state): State<Arc<QueryServiceState>>,
     #[request_body(required = true)] Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, StorageApiError> {
     let stream = state
-        .query_context()
+        .query_context
         .execute(payload.query.as_str())
         .await
         .map_err(StorageApiError::DataFusionError)?;

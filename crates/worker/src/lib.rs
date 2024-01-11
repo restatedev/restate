@@ -28,7 +28,7 @@ use restate_invoker_impl::{
 use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
 use restate_schema_impl::Schemas;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_query_http::service::HTTPQueryService;
+use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{IngressDispatcherId, PartitionKey, PeerId};
@@ -77,11 +77,6 @@ pub use restate_storage_query_datafusion::{
     OptionsBuilderError as StorageQueryDatafusionOptionsBuilderError,
 };
 
-pub use restate_storage_query_http::{
-    Options as StorageQueryHttpOptions, OptionsBuilder as StorageQueryHttpOptionsBuilder,
-    OptionsBuilderError as StorageQueryHttpOptionsBuilderError,
-};
-
 pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
@@ -109,7 +104,6 @@ pub struct Options {
     channel_size: usize,
     timers: TimerOptions,
     storage_query_datafusion: StorageQueryDatafusionOptions,
-    storage_query_http: StorageQueryHttpOptions,
     storage_query_postgres: StorageQueryPostgresOptions,
     storage_rocksdb: RocksdbOptions,
     ingress_grpc: IngressOptions,
@@ -131,7 +125,6 @@ impl Default for Options {
             channel_size: 64,
             timers: Default::default(),
             storage_query_datafusion: Default::default(),
-            storage_query_http: Default::default(),
             storage_query_postgres: Default::default(),
             storage_rocksdb: Default::default(),
             ingress_grpc: Default::default(),
@@ -186,9 +179,6 @@ pub enum Error {
     #[error("network failed: {0}")]
     #[code(unknown)]
     Network(#[from] restate_network::RoutingError),
-    #[error("storage query http failed: {0}")]
-    #[code(unknown)]
-    StorageQueryHTTP(#[from] restate_storage_query_http::Error),
     #[error("storage query postgres failed: {0}")]
     #[code(unknown)]
     StorageQueryPostgres(#[from] restate_storage_query_postgres::Error),
@@ -229,8 +219,8 @@ pub struct Worker {
     consensus: Consensus<PartitionProcessorCommand>,
     processors: Vec<PartitionProcessor>,
     network: network_integration::Network,
+    storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
-    storage_query_http: HTTPQueryService,
     #[allow(clippy::type_complexity)]
     invoker: InvokerService<
         InvokerStorageReader<RocksDBStorage>,
@@ -252,7 +242,6 @@ impl Worker {
             kafka,
             timers,
             storage_query_datafusion,
-            storage_query_http,
             storage_query_postgres,
             storage_rocksdb,
             ..
@@ -313,13 +302,12 @@ impl Worker {
             schemas.clone(),
         );
 
-        let query_context = storage_query_datafusion.build(
+        let storage_query_context = storage_query_datafusion.build(
             rocksdb_storage.clone(),
             invoker.status_reader(),
             schemas.clone(),
         )?;
-        let storage_query_http = storage_query_http.build(query_context.clone());
-        let storage_query_postgres = storage_query_postgres.build(query_context);
+        let storage_query_postgres = storage_query_postgres.build(storage_query_context.clone());
 
         let partitioner = partition_table.partitioner();
 
@@ -356,8 +344,8 @@ impl Worker {
             consensus,
             processors,
             network,
+            storage_query_context,
             storage_query_postgres,
-            storage_query_http,
             invoker,
             external_client_ingress_runner: ExternalClientIngressRunner::new(
                 ingress_dispatcher_service,
@@ -406,6 +394,10 @@ impl Worker {
         self.services.worker_command_tx()
     }
 
+    pub fn storage_query_context(&self) -> &QueryContext {
+        &self.storage_query_context
+    }
+
     pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
@@ -417,8 +409,6 @@ impl Worker {
         let mut network_handle = tokio::spawn(self.network.run(shutdown_watch.clone()));
         let mut storage_query_postgres_handle =
             tokio::spawn(self.storage_query_postgres.run(shutdown_watch.clone()));
-        let mut storage_query_http_handle =
-            tokio::spawn(self.storage_query_http.run(shutdown_watch.clone()));
         let mut consensus_handle = tokio::spawn(self.consensus.run());
         let mut processors_handles: FuturesUnordered<_> = self
             .processors
@@ -460,10 +450,6 @@ impl Worker {
             network_result = &mut network_handle => {
                 network_result.map_err(|err| Error::component_panic("network", err))??;
                 panic!("Unexpected termination of network.");
-            },
-            storage_query_http_result = &mut storage_query_http_handle => {
-                storage_query_http_result.map_err(|err| Error::component_panic("http storage query", err))??;
-                panic!("Unexpected termination of http storage query.");
             },
             storage_query_postgres_result = &mut storage_query_postgres_handle => {
                 storage_query_postgres_result.map_err(|err| Error::component_panic("postgres storage query", err))??;

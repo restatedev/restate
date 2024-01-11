@@ -1,5 +1,5 @@
 [package]
-name = "restate-meta"
+name = "restate-admin"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -9,43 +9,44 @@ publish = false
 
 [features]
 default = []
-options_schema = ["restate-service-client/options_schema"]
+options_schema = ["restate-service-client/options_schema", "restate-meta/options_schema"]
 
 [dependencies]
-# Async
-drain = { workspace = true }
-futures = { workspace = true }
-restate-futures-util = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-
-# Serde
-bincode = { workspace = true }
-restate-serde-util = { workspace = true, features = ["schema"] }
-schemars = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-serde_with = { workspace = true }
-
-# Service discovery and metadata
-prost = { workspace = true }
-prost-reflect = { workspace = true }
+restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
+restate-futures-util = { workspace = true }
+restate-meta = { workspace = true }
 restate-meta-rest-model = { workspace = true, features = ["schema"] }
 restate-pb = { workspace = true }
 restate-schema-api = { workspace = true, features = ["service", "deployment", "serde", "serde_schema"] }
 restate-schema-impl = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
+restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["serde", "serde_schema"] }
 restate-worker-api = { workspace = true }
 
-# Others
+axum = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
+datafusion = { workspace = true }
 derive_builder = { workspace = true }
+drain = { workspace = true }
+futures = { workspace = true }
 http = { workspace = true }
-restate-errors = { workspace = true, features = ["include_doc"] }
+hyper = { workspace = true, features = ["full"] }
+okapi-operation = { version = "0.2.2", features = ["axum-integration"] }
+prost = { workspace = true }
+restate-serde-util = { workspace = true, features = ["schema"] }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
@@ -58,3 +59,4 @@ tempfile = { workspace = true }
 test-log = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+

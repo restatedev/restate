@@ -9,10 +9,16 @@
 // by the Apache License, Version 2.0.
 
 mod error;
-mod options;
 mod query;
-pub mod service;
-mod state;
 
-pub use crate::options::{Options, OptionsBuilder, OptionsBuilderError};
-pub use service::Error;
+use axum::{routing::post, Router};
+use std::sync::Arc;
+
+use crate::state::QueryServiceState;
+
+pub fn create_router(state: Arc<QueryServiceState>) -> Router<()> {
+    // Setup the router
+    axum::Router::new()
+        .route("/query", post(query::query))
+        .with_state(state)
+}

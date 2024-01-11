@@ -8,14 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
-use crate::service::ApplyMode;
-use crate::service::Force;
+use crate::state::AdminServiceState;
 
 use super::error::*;
-use super::state::*;
 
+use restate_meta::{ApplyMode, Force};
 use restate_meta_rest_model::deployments::*;
 use restate_schema_api::deployment::DeploymentMetadataResolver;
 use restate_service_client::Endpoint;
@@ -49,8 +46,8 @@ use serde::Deserialize;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_deployment<S, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn create_deployment<W>(
+    State(state): State<AdminServiceState<W>>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
     let (discover_endpoint, force, dry_run) = match payload {
@@ -127,8 +124,8 @@ pub async fn create_deployment<S, W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_deployment<S: DeploymentMetadataResolver, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn get_deployment<W>(
+    State(state): State<AdminServiceState<W>>,
     Path(deployment_id): Path<String>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
     let (endpoint_meta, services) = state
@@ -156,8 +153,8 @@ pub async fn get_deployment<S: DeploymentMetadataResolver, W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_deployment_descriptors<S: DeploymentMetadataResolver, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn get_deployment_descriptors<W>(
+    State(state): State<AdminServiceState<W>>,
     Path(deployment_id): Path<String>,
 ) -> Result<ProtoBytes, MetaApiError> {
     Ok(ProtoBytes(
@@ -175,8 +172,8 @@ pub async fn get_deployment_descriptors<S: DeploymentMetadataResolver, W>(
     operation_id = "list_deployments",
     tags = "deployment"
 )]
-pub async fn list_deployments<S: DeploymentMetadataResolver, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn list_deployments<W>(
+    State(state): State<AdminServiceState<W>>,
 ) -> Json<ListDeploymentsResponse> {
     ListDeploymentsResponse {
         deployments: state
@@ -237,8 +234,8 @@ pub struct DeleteDeploymentParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_deployment<S, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn delete_deployment<W>(
+    State(state): State<AdminServiceState<W>>,
     Path(deployment_id): Path<String>,
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
 ) -> Result<StatusCode, MetaApiError> {

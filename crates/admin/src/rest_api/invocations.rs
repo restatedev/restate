@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::state::AdminServiceState;
+
 use super::error::*;
-use super::state::*;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -17,7 +18,6 @@ use okapi_operation::*;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTermination;
 use serde::Deserialize;
-use std::sync::Arc;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub enum TerminationMode {
@@ -65,8 +65,8 @@ pub struct DeleteInvocationParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_invocation<S, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn delete_invocation<W>(
+    State(state): State<AdminServiceState<W>>,
     Path(invocation_id): Path<String>,
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
 ) -> Result<StatusCode, MetaApiError>

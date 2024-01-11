@@ -71,15 +71,19 @@ impl restate_schema_api::subscription::SubscriptionValidator for Mock {
 }
 
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
+    let admin_options = restate_admin::Options::default();
     let meta_options = restate_meta::Options::default();
-    let rest_address = meta_options.rest_address();
-    let openapi_address = format!("http://localhost:{}/openapi", rest_address.port());
-    let mut meta_service = meta_options.build();
-    meta_service.init().await.unwrap();
+    let mut meta = meta_options.build();
+    let openapi_address = format!(
+        "http://localhost:{}/openapi",
+        admin_options.bind_address.port()
+    );
+    let admin_service = admin_options.build(meta.schemas(), meta.meta_handle());
+    meta.init().await.unwrap();
 
     // We start the Meta component, then download the openapi schema generated
     let (shutdown_signal, shutdown_watch) = drain::channel();
-    let join_handle = tokio::spawn(meta_service.run(shutdown_watch, Mock));
+    let join_handle = tokio::spawn(admin_service.run(shutdown_watch, Mock, None));
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)
         .retry_operation(|| async {

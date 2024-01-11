@@ -61,7 +61,7 @@ impl DataFusionHttpClient {
 
         Ok(Self {
             inner: raw_client,
-            base_url: env.datafusion_http_base_url.clone(),
+            base_url: env.admin_base_url.clone(),
             bearer_token: env.bearer_token.clone(),
             request_timeout: env.request_timeout,
         })
@@ -83,7 +83,7 @@ impl DataFusionHttpClient {
     }
 
     pub async fn run_query(&self, query: String) -> Result<SqlResponse, Error> {
-        let url = self.base_url.join("/api/query")?;
+        let url = self.base_url.join("/query")?;
 
         debug!("Sending request sql query '{}'", query);
         let resp = self

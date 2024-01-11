@@ -7,19 +7,26 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+//
 
-use crate::service::MetaHandle;
+use restate_meta::MetaHandle;
+use restate_schema_impl::Schemas;
+use restate_storage_query_datafusion::context::QueryContext;
 
-/// Handlers share this state
-#[derive(Clone)]
-pub struct RestEndpointState<S, W> {
+#[derive(Clone, derive_builder::Builder)]
+pub struct AdminServiceState<W> {
     meta_handle: MetaHandle,
-    schemas: S,
+    schemas: Schemas,
     worker_handle: W,
 }
 
-impl<S, W> RestEndpointState<S, W> {
-    pub fn new(meta_handle: MetaHandle, schemas: S, worker_handle: W) -> Self {
+#[derive(Clone)]
+pub struct QueryServiceState {
+    pub query_context: QueryContext,
+}
+
+impl<W> AdminServiceState<W> {
+    pub fn new(meta_handle: MetaHandle, schemas: Schemas, worker_handle: W) -> Self {
         Self {
             meta_handle,
             schemas,
@@ -31,7 +38,7 @@ impl<S, W> RestEndpointState<S, W> {
         &self.meta_handle
     }
 
-    pub fn schemas(&self) -> &S {
+    pub fn schemas(&self) -> &Schemas {
         &self.schemas
     }
 

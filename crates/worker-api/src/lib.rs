@@ -31,7 +31,7 @@ pub trait SubscriptionController: SubscriptionValidator {
     ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
-pub trait Handle {
+pub trait Handle: Clone {
     type SubscriptionControllerHandle: SubscriptionController + Send + Sync;
 
     /// Send a command to terminate an invocation. This command is best-effort.

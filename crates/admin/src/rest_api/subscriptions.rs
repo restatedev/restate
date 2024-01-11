@@ -8,10 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use super::error::*;
-use super::state::*;
+use crate::state::AdminServiceState;
 
 use restate_meta_rest_model::subscriptions::*;
 use restate_schema_api::subscription::SubscriptionResolver;
@@ -38,13 +36,10 @@ use okapi_operation::*;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_subscription<S, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn create_subscription<W>(
+    State(state): State<AdminServiceState<W>>,
     #[request_body(required = true)] Json(payload): Json<CreateSubscriptionRequest>,
-) -> Result<impl axum::response::IntoResponse, MetaApiError>
-where
-    S: SubscriptionResolver,
-{
+) -> Result<impl axum::response::IntoResponse, MetaApiError> {
     let subscription = state
         .meta_handle()
         .create_subscription(payload.id, payload.source, payload.sink, payload.options)
@@ -72,13 +67,10 @@ where
         schema = "std::string::String"
     ))
 )]
-pub async fn get_subscription<S, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn get_subscription<W>(
+    State(state): State<AdminServiceState<W>>,
     Path(subscription_id): Path<String>,
-) -> Result<Json<SubscriptionResponse>, MetaApiError>
-where
-    S: SubscriptionResolver,
-{
+) -> Result<Json<SubscriptionResponse>, MetaApiError> {
     let subscription = state
         .schemas()
         .get_subscription(&subscription_id)
@@ -112,13 +104,10 @@ where
         )
     )
 )]
-pub async fn list_subscriptions<S, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn list_subscriptions<W>(
+    State(state): State<AdminServiceState<W>>,
     Query(ListSubscriptionsParams { sink, source }): Query<ListSubscriptionsParams>,
-) -> Json<ListSubscriptionsResponse>
-where
-    S: SubscriptionResolver,
-{
+) -> Json<ListSubscriptionsResponse> {
     let filters = match (sink, source) {
         (Some(sink_filter), Some(source_filter)) => vec![
             ListSubscriptionFilter::ExactMatchSink(sink_filter),
@@ -163,8 +152,8 @@ where
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_subscription<S, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn delete_subscription<W>(
+    State(state): State<AdminServiceState<W>>,
     Path(subscription_id): Path<String>,
 ) -> Result<StatusCode, MetaApiError> {
     state

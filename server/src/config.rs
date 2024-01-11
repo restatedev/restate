@@ -19,6 +19,7 @@ pub use crate::rt::{
     Options as TokioOptions, OptionsBuilder as TokioOptionsBuilder,
     OptionsBuilderError as TokioOptionsBuilderError,
 };
+pub use restate_admin::Options as AdminOptions;
 pub use restate_meta::{
     Options as MetaOptions, OptionsBuilder as MetaOptionsBuilder,
     OptionsBuilderError as MetaOptionsBuilderError,
@@ -67,6 +68,7 @@ pub struct Configuration {
     pub meta: restate_meta::Options,
     pub worker: WorkerOptions,
     pub node_ctrl: NodeCtrlOptions,
+    pub admin: AdminOptions,
     pub tokio_runtime: crate::rt::Options,
 }
 
@@ -77,6 +79,7 @@ impl Default for Configuration {
             observability: Default::default(),
             node_ctrl: Default::default(),
             meta: Default::default(),
+            admin: Default::default(),
             worker: Default::default(),
             tokio_runtime: Default::default(),
         }

@@ -8,49 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::storage::{MetaStorage, MetaStorageError};
+use super::error::Error;
+use super::storage::MetaStorage;
 
-use hyper::Uri;
+use std::collections::HashMap;
+use std::future::Future;
+
+use http::Uri;
+use tokio::sync::mpsc;
+use tracing::{debug, info};
+
 use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use restate_schema_api::deployment::{DeliveryOptions, DeploymentMetadata};
 use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
-use restate_schema_impl::{Schemas, SchemasUpdateCommand, SchemasUpdateError};
-use restate_service_protocol::discovery::{
-    DiscoverEndpoint, ServiceDiscovery, ServiceDiscoveryError,
-};
+use restate_schema_impl::{Schemas, SchemasUpdateCommand};
+use restate_service_protocol::discovery::{DiscoverEndpoint, ServiceDiscovery};
 use restate_types::identifiers::DeploymentId;
 use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
-use std::collections::HashMap;
 
 use restate_service_client::{Endpoint, ServiceClient};
-use std::future::Future;
-use tokio::sync::mpsc;
-use tracing::{debug, error, info};
-
-#[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum MetaError {
-    #[error(transparent)]
-    Discovery(
-        #[from]
-        #[code]
-        ServiceDiscoveryError,
-    ),
-    #[error(transparent)]
-    #[code(unknown)]
-    Storage(#[from] MetaStorageError),
-    #[error(transparent)]
-    #[code(unknown)]
-    SchemaRegistry(#[from] SchemasUpdateError),
-    #[error("meta closed")]
-    #[code(unknown)]
-    MetaClosed,
-    #[error("request aborted because the client went away")]
-    #[code(unknown)]
-    RequestAborted,
-}
 
 #[derive(Clone)]
 pub struct MetaHandle(UnboundedCommandSender<MetaHandleRequest, MetaHandleResponse>);
@@ -106,32 +85,32 @@ enum MetaHandleRequest {
     },
 }
 
-pub(crate) struct DiscoverDeploymentResponse {
-    pub(crate) deployment: DeploymentId,
-    pub(crate) services: Vec<ServiceMetadata>,
+pub struct DiscoverDeploymentResponse {
+    pub deployment: DeploymentId,
+    pub services: Vec<ServiceMetadata>,
 }
 
 enum MetaHandleResponse {
-    DiscoverDeployment(Result<DiscoverDeploymentResponse, MetaError>),
-    ModifyService(Result<(), MetaError>),
-    RemoveDeployment(Result<(), MetaError>),
-    CreateSubscription(Result<Subscription, MetaError>),
-    DeleteSubscription(Result<(), MetaError>),
+    DiscoverDeployment(Result<DiscoverDeploymentResponse, Error>),
+    ModifyService(Result<(), Error>),
+    RemoveDeployment(Result<(), Error>),
+    CreateSubscription(Result<Subscription, Error>),
+    DeleteSubscription(Result<(), Error>),
 }
 
 impl MetaHandle {
-    pub(crate) async fn register_deployment(
+    pub async fn register_deployment(
         &self,
         deployment_endpoint: DiscoverEndpoint,
         force: Force,
         apply_changes: ApplyMode,
-    ) -> Result<DiscoverDeploymentResponse, MetaError> {
+    ) -> Result<DiscoverDeploymentResponse, Error> {
         let (cmd, response_tx) = Command::prepare(MetaHandleRequest::DiscoverDeployment {
             deployment_endpoint,
             force,
             apply_changes,
         });
-        self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
+        self.0.send(cmd).map_err(|_e| Error::MetaClosed)?;
         response_tx
             .await
             .map(|res| match res {
@@ -139,19 +118,15 @@ impl MetaHandle {
                 #[allow(unreachable_patterns)]
                 _ => panic!("Unexpected response message, this is a bug"),
             })
-            .map_err(|_e| MetaError::MetaClosed)?
+            .map_err(|_e| Error::MetaClosed)?
     }
 
-    pub(crate) async fn modify_service(
-        &self,
-        service_name: String,
-        public: bool,
-    ) -> Result<(), MetaError> {
+    pub async fn modify_service(&self, service_name: String, public: bool) -> Result<(), Error> {
         let (cmd, response_tx) = Command::prepare(MetaHandleRequest::ModifyService {
             service_name,
             public,
         });
-        self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
+        self.0.send(cmd).map_err(|_e| Error::MetaClosed)?;
         response_tx
             .await
             .map(|res| match res {
@@ -159,16 +134,13 @@ impl MetaHandle {
                 #[allow(unreachable_patterns)]
                 _ => panic!("Unexpected response message, this is a bug"),
             })
-            .map_err(|_e| MetaError::MetaClosed)?
+            .map_err(|_e| Error::MetaClosed)?
     }
 
-    pub(crate) async fn remove_deployment(
-        &self,
-        deployment_id: DeploymentId,
-    ) -> Result<(), MetaError> {
+    pub async fn remove_deployment(&self, deployment_id: DeploymentId) -> Result<(), Error> {
         let (cmd, response_tx) =
             Command::prepare(MetaHandleRequest::RemoveDeployment { deployment_id });
-        self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
+        self.0.send(cmd).map_err(|_e| Error::MetaClosed)?;
         response_tx
             .await
             .map(|res| match res {
@@ -176,23 +148,23 @@ impl MetaHandle {
                 #[allow(unreachable_patterns)]
                 _ => panic!("Unexpected response message, this is a bug"),
             })
-            .map_err(|_e| MetaError::MetaClosed)?
+            .map_err(|_e| Error::MetaClosed)?
     }
 
-    pub(crate) async fn create_subscription(
+    pub async fn create_subscription(
         &self,
         id: Option<String>,
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
-    ) -> Result<Subscription, MetaError> {
+    ) -> Result<Subscription, Error> {
         let (cmd, response_tx) = Command::prepare(MetaHandleRequest::CreateSubscription {
             id,
             source,
             sink,
             metadata,
         });
-        self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
+        self.0.send(cmd).map_err(|_e| Error::MetaClosed)?;
         response_tx
             .await
             .map(|res| match res {
@@ -200,16 +172,13 @@ impl MetaHandle {
                 #[allow(unreachable_patterns)]
                 _ => panic!("Unexpected response message, this is a bug"),
             })
-            .map_err(|_e| MetaError::MetaClosed)?
+            .map_err(|_e| Error::MetaClosed)?
     }
 
-    pub(crate) async fn delete_subscription(
-        &self,
-        subscription_id: String,
-    ) -> Result<(), MetaError> {
+    pub async fn delete_subscription(&self, subscription_id: String) -> Result<(), Error> {
         let (cmd, response_tx) =
             Command::prepare(MetaHandleRequest::DeleteSubscription { subscription_id });
-        self.0.send(cmd).map_err(|_e| MetaError::MetaClosed)?;
+        self.0.send(cmd).map_err(|_e| Error::MetaClosed)?;
         response_tx
             .await
             .map(|res| match res {
@@ -217,7 +186,7 @@ impl MetaHandle {
                 #[allow(unreachable_patterns)]
                 _ => panic!("Unexpected response message, this is a bug"),
             })
-            .map_err(|_e| MetaError::MetaClosed)?
+            .map_err(|_e| Error::MetaClosed)?
     }
 }
 
@@ -258,19 +227,23 @@ where
         }
     }
 
+    pub fn schemas(&self) -> Schemas {
+        self.schemas.clone()
+    }
+
     pub fn meta_handle(&self) -> MetaHandle {
         self.handle.clone()
     }
 
-    pub async fn init(&mut self) -> Result<(), MetaError> {
+    pub async fn init(&mut self) -> Result<(), Error> {
         self.reload_schemas().await
     }
 
     pub async fn run(
         mut self,
-        worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
         drain: drain::Watch,
-    ) -> Result<(), MetaError> {
+        worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
+    ) -> Result<(), Error> {
         debug_assert!(
             self.reloaded,
             "The Meta service was not init-ed before running it"
@@ -334,7 +307,7 @@ where
         }
     }
 
-    async fn reload_schemas(&mut self) -> Result<(), MetaError> {
+    async fn reload_schemas(&mut self) -> Result<(), Error> {
         let update_commands = self.storage.reload().await?;
         self.schemas.apply_updates(update_commands)?;
         self.reloaded = true;
@@ -360,12 +333,12 @@ where
         force: Force,
         apply_changes: ApplyMode,
         abort_signal: impl Future<Output = ()>,
-    ) -> Result<DiscoverDeploymentResponse, MetaError> {
+    ) -> Result<DiscoverDeploymentResponse, Error> {
         debug!(restate.deployment.address = %endpoint.address(), "Discovering deployment");
 
         let discovered_metadata = tokio::select! {
             res = self.service_discovery.discover(&endpoint) => res,
-            _ = abort_signal => return Err(MetaError::RequestAborted),
+            _ = abort_signal => return Err(Error::RequestAborted),
         }?;
 
         let deployment_metadata = match endpoint.into_inner() {
@@ -402,11 +375,7 @@ where
         Ok(discovery_response)
     }
 
-    async fn modify_service(
-        &mut self,
-        service_name: String,
-        public: bool,
-    ) -> Result<(), MetaError> {
+    async fn modify_service(&mut self, service_name: String, public: bool) -> Result<(), Error> {
         debug!(rpc.service = service_name, "Modify service");
 
         // Compute the diff and propagate updates
@@ -416,7 +385,7 @@ where
         Ok(())
     }
 
-    async fn remove_deployment(&mut self, deployment_id: DeploymentId) -> Result<(), MetaError> {
+    async fn remove_deployment(&mut self, deployment_id: DeploymentId) -> Result<(), Error> {
         debug!(restate.deployment.id = %deployment_id, "Remove deployment");
 
         // Compute the diff and propagate updates
@@ -433,7 +402,7 @@ where
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
         worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
-    ) -> Result<Subscription, MetaError> {
+    ) -> Result<Subscription, Error> {
         info!(restate.subscription.source = %source, restate.subscription.sink = %sink, "Create subscription");
 
         // Compute the diff and propagate updates
@@ -457,7 +426,7 @@ where
         &mut self,
         sub_id: String,
         worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
-    ) -> Result<(), MetaError> {
+    ) -> Result<(), Error> {
         info!(restate.subscription.id = %sub_id, "Delete subscription");
 
         // Compute the diff and propagate updates
@@ -474,7 +443,7 @@ where
     async fn store_and_apply_updates(
         &mut self,
         commands: Vec<SchemasUpdateCommand>,
-    ) -> Result<(), MetaError> {
+    ) -> Result<(), Error> {
         // Store update commands to disk
         self.storage.store(commands.clone()).await?;
 

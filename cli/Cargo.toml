@@ -1,6 +1,6 @@
 [package]
 name = "restate-cli"
-version = "0.0.1-dev"
+version = {workspace = true }
 authors = { workspace = true }
 description = { workspace = true }
 edition = { workspace = true }

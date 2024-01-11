@@ -4658,6 +4658,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-admin"
+version = "0.7.0"
+dependencies = [
+ "axum",
+ "bincode",
+ "bytes",
+ "bytestring",
+ "codederror",
+ "datafusion",
+ "derive_builder",
+ "drain",
+ "futures",
+ "http",
+ "hyper",
+ "okapi-operation",
+ "prost 0.12.3",
+ "restate-errors",
+ "restate-fs-util",
+ "restate-futures-util",
+ "restate-meta",
+ "restate-meta-rest-model",
+ "restate-pb",
+ "restate-schema-api",
+ "restate-schema-impl",
+ "restate-serde-util",
+ "restate-service-client",
+ "restate-service-protocol",
+ "restate-storage-query-datafusion",
+ "restate-test-util",
+ "restate-types",
+ "restate-worker-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "tempfile",
+ "test-log",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "restate-base64-util"
 version = "0.7.0"
 dependencies = [
@@ -4689,7 +4735,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cli"
-version = "0.0.1-dev"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "arrow 49.0.0",
@@ -4948,15 +4994,13 @@ dependencies = [
 name = "restate-meta"
 version = "0.7.0"
 dependencies = [
- "axum",
  "bincode",
  "bytestring",
  "codederror",
  "derive_builder",
  "drain",
  "futures",
- "hyper",
- "okapi-operation",
+ "http",
  "prost 0.12.3",
  "prost-reflect",
  "restate-errors",
@@ -4980,7 +5024,6 @@ dependencies = [
  "test-log",
  "thiserror",
  "tokio",
- "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -5170,6 +5213,7 @@ dependencies = [
  "futures-util",
  "humantime",
  "pin-project",
+ "restate-admin",
  "restate-errors",
  "restate-fs-util",
  "restate-meta",
@@ -5303,33 +5347,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "restate-storage-query-http"
-version = "0.7.0"
-dependencies = [
- "axum",
- "base64 0.21.6",
- "bytes",
- "codederror",
- "datafusion",
- "derive_builder",
- "drain",
- "futures",
- "hyper",
- "okapi-operation",
- "restate-errors",
- "restate-schema-api",
- "restate-storage-query-datafusion",
- "restate-worker-api",
- "schemars",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror",
- "tower",
- "tracing",
 ]
 
 [[package]]
@@ -5525,7 +5542,6 @@ dependencies = [
  "restate-service-protocol",
  "restate-storage-api",
  "restate-storage-query-datafusion",
- "restate-storage-query-http",
  "restate-storage-query-postgres",
  "restate-storage-rocksdb",
  "restate-test-util",
@@ -7299,6 +7315,7 @@ dependencies = [
  "anyhow",
  "drain",
  "reqwest",
+ "restate-admin",
  "restate-meta",
  "restate-schema-api",
  "restate-server",

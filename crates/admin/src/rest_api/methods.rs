@@ -8,10 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use super::error::*;
-use super::state::*;
+use crate::state::AdminServiceState;
 
 use restate_meta_rest_model::methods::*;
 use restate_schema_api::service::ServiceMetadataResolver;
@@ -32,8 +30,8 @@ use okapi_operation::*;
         schema = "std::string::String"
     ))
 )]
-pub async fn list_service_methods<S: ServiceMetadataResolver, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn list_service_methods<W>(
+    State(state): State<AdminServiceState<W>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ListServiceMethodsResponse>, MetaApiError> {
     match state
@@ -67,8 +65,8 @@ pub async fn list_service_methods<S: ServiceMetadataResolver, W>(
         )
     )
 )]
-pub async fn get_service_method<S: ServiceMetadataResolver, W>(
-    State(state): State<Arc<RestEndpointState<S, W>>>,
+pub async fn get_service_method<W>(
+    State(state): State<AdminServiceState<W>>,
     Path((service_name, method_name)): Path<(String, String)>,
 ) -> Result<Json<MethodMetadata>, MetaApiError> {
     match state

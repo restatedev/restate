@@ -8,20 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_query_datafusion::context::QueryContext;
+mod error;
+mod options;
+mod rest_api;
+pub mod service;
+mod state;
+mod storage_query;
 
-/// Handlers share this state
-#[derive(Clone)]
-pub struct EndpointState {
-    query_context: QueryContext,
-}
-
-impl EndpointState {
-    pub fn new(query_context: QueryContext) -> Self {
-        Self { query_context }
-    }
-
-    pub fn query_context(&self) -> &QueryContext {
-        &self.query_context
-    }
-}
+pub use crate::options::{Options, OptionsBuilder, OptionsBuilderError};
+pub use error::Error;
