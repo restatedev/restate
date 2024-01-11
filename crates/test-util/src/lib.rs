@@ -11,7 +11,7 @@
 //! Useful test utilities for Restate crates. Import them with:
 //!
 //! ```rust
-//! use restate_test_util::{assert, test, assert_eq, assert_ne};
+//! use restate_test_util::{assert, assert_eq, assert_ne};
 //! ```
 //!
 //! Note: You cannot import them with a glob import, as the compiler won't be able to distinguish our imports and the stdlib imports.
@@ -30,6 +30,5 @@ macro_rules! assert_no_recv {
 // A couple of useful re-exports
 pub use assert2::{assert, check, let_assert};
 pub use pretty_assertions::{assert_eq, assert_ne};
-pub use test_log::test;
 
 pub mod matchers;

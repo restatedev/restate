@@ -656,9 +656,11 @@ fn is_map_with(field_descriptor: &FieldDescriptor, key_kind: Kind, value_kind: K
 mod tests {
     use super::*;
 
+    use test_log::test;
+
     use restate_schema_api::deployment::DeploymentMetadataResolver;
     use restate_schema_api::service::ServiceMetadataResolver;
-    use restate_test_util::{assert, assert_eq, let_assert, test};
+    use restate_test_util::{assert, assert_eq, let_assert};
 
     load_mock_descriptor!(DESCRIPTOR, "generic");
     const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
@@ -746,7 +748,9 @@ mod tests {
     mod change_instance_type {
         use super::*;
 
-        use restate_test_util::{assert, test};
+        use test_log::test;
+
+        use restate_test_util::assert;
 
         load_mock_descriptor!(
             CHANGE_INSTANCE_TYPE_DESCRIPTOR_V1,
@@ -955,7 +959,9 @@ mod tests {
     mod remove_method {
         use super::*;
 
-        use restate_test_util::{check, let_assert, test};
+        use test_log::test;
+
+        use restate_test_util::{check, let_assert};
 
         load_mock_descriptor!(REMOVE_METHOD_DESCRIPTOR_V1, "remove_method/v1");
         load_mock_descriptor!(REMOVE_METHOD_DESCRIPTOR_V2, "remove_method/v2");
@@ -998,7 +1004,9 @@ mod tests {
     mod bad_key_wrong_type {
         use super::*;
 
-        use restate_test_util::{assert_eq, let_assert, test};
+        use test_log::test;
+
+        use restate_test_util::{assert_eq, let_assert};
 
         load_mock_descriptor!(BAD_KEY_WRONG_TYPE_DESCRIPTOR, "bad_key_wrong_type");
 

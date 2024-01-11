@@ -8,18 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Debug;
+use std::future;
+
+use test_log::test;
+use tokio::sync::mpsc;
+
+use restate_types::identifiers::WithPartitionKey;
+use restate_types::identifiers::{PartitionKey, PeerId};
+use restate_types::message::PeerTarget;
+
 use crate::{
     ConsensusOrIngressTarget, ConsensusOrShuffleTarget, Network, NetworkHandle, PartitionTable,
     PartitionTableError, ShuffleOrIngressTarget, TargetConsensusOrIngress,
     TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress,
 };
-use restate_test_util::test;
-use restate_types::identifiers::WithPartitionKey;
-use restate_types::identifiers::{PartitionKey, PeerId};
-use restate_types::message::PeerTarget;
-use std::fmt::Debug;
-use std::future;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Default, Clone)]
 struct MockPartitionTable;

@@ -334,8 +334,10 @@ mod tests {
     use super::*;
 
     use http::StatusCode;
-    use restate_test_util::{assert_eq, test};
     use serde_json::json;
+    use test_log::test;
+
+    use restate_test_util::assert_eq;
 
     #[test]
     fn resolve_content_type() {

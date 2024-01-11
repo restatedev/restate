@@ -318,12 +318,15 @@ impl InvocationStateMachine {
 mod tests {
     use super::*;
 
+    use std::time::Duration;
+
     use googletest::matchers::{eq, some};
     use googletest::prelude::err;
     use googletest::{assert_that, pat};
-    use restate_test_util::{check, test};
-    use std::time::Duration;
+    use test_log::test;
     use tokio::sync::mpsc::error::TryRecvError;
+
+    use restate_test_util::check;
 
     #[test]
     fn handle_error_when_waiting_for_retry() {

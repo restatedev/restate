@@ -5423,7 +5423,6 @@ dependencies = [
  "pretty_assertions",
  "prost 0.12.3",
  "prost-types",
- "test-log",
 ]
 
 [[package]]

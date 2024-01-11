@@ -159,21 +159,25 @@ where
 mod tests {
     use super::*;
 
-    use crate::mocks::*;
+    use std::net::SocketAddr;
+
     use bytes::Bytes;
     use drain::Signal;
     use http::header::CONTENT_TYPE;
     use http::StatusCode;
     use hyper::Body;
     use prost::Message;
-    use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest};
-    use restate_test_util::{assert_eq, test};
     use serde_json::json;
-    use std::net::SocketAddr;
+    use test_log::test;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
     use tonic::metadata::{AsciiMetadataValue, MetadataKey};
     use tonic::Request;
+
+    use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest};
+    use restate_test_util::assert_eq;
+
+    use crate::mocks::*;
 
     #[test(tokio::test)]
     async fn test_http_connect_call() {

@@ -144,11 +144,12 @@ impl MetaStorage for FileMetaStorage {
 mod tests {
     use super::*;
 
+    use tempfile::tempdir;
+    use test_log::test;
+
     use restate_pb::mocks;
     use restate_schema_api::deployment::DeploymentMetadata;
     use restate_schema_impl::Schemas;
-    use restate_test_util::test;
-    use tempfile::tempdir;
 
     #[test(tokio::test)]
     async fn reload_in_order() {

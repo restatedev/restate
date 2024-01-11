@@ -211,8 +211,10 @@ mod tests {
     use http::{Method, Request, StatusCode};
     use hyper::body::HttpBody;
     use prost::Message;
-    use restate_test_util::{assert, assert_eq, test};
     use serde_json::json;
+    use test_log::test;
+
+    use restate_test_util::{assert, assert_eq};
 
     fn greeter_service_fn(ingress_req: HandlerRequest) -> Ready<HandlerResult> {
         let person = restate_pb::mocks::greeter::GreetingRequest::decode(ingress_req.1)

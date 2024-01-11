@@ -12,7 +12,7 @@ use crate::service::clock::tests::ManualClock;
 use crate::service::clock::TokioClock;
 use crate::{Timer, TimerKey, TimerReader, TimerService};
 use futures_util::FutureExt;
-use restate_test_util::{let_assert, test};
+use restate_test_util::let_assert;
 use restate_types::time::MillisSinceEpoch;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -20,6 +20,7 @@ use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+use test_log::test;
 use tokio::sync::oneshot;
 
 #[derive(Debug, Clone)]

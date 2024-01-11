@@ -1,12 +1,14 @@
 use super::*;
 
-use crate::partition::state_machine::command_interpreter::StateReader;
-use crate::partition::state_machine::effects::Effect;
+use std::collections::HashMap;
+
 use bytestring::ByteString;
 use futures::stream;
 use googletest::matcher::Matcher;
 use googletest::{all, any, assert_that, pat, unordered_elements_are};
 use prost::Message;
+use test_log::test;
+
 use restate_invoker_api::EffectKind;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -14,12 +16,14 @@ use restate_service_protocol::pb::protocol::SleepEntryMessage;
 use restate_storage_api::status_table::{JournalMetadata, StatusTimestamps};
 use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
-use restate_test_util::{assert_eq, let_assert, test};
+use restate_test_util::{assert_eq, let_assert};
 use restate_types::errors::UserErrorCode;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::EntryResult;
 use restate_types::journal::{CompleteAwakeableEntry, Entry};
-use std::collections::HashMap;
+
+use crate::partition::state_machine::command_interpreter::StateReader;
+use crate::partition::state_machine::effects::Effect;
 
 #[derive(Default)]
 struct StateReaderMock {

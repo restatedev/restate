@@ -166,9 +166,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{Command, Consensus};
-    use restate_test_util::test;
+    use test_log::test;
     use tokio::sync::mpsc;
+
+    use crate::{Command, Consensus};
 
     #[test(tokio::test)]
     async fn unbounded_log() {

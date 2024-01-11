@@ -1160,23 +1160,26 @@ fn check_state_key(key: Bytes) -> Result<StateKey<Raw>, InvocationError> {
 mod tests {
     use super::*;
 
-    use crate::partition::services::non_deterministic::tests::TestInvocationContext;
     use futures::future::LocalBoxFuture;
     use futures::FutureExt;
     use googletest::matcher::{Matcher, MatcherResult};
     use googletest::{all, assert_that, elements_are, pat, property};
     use prost::Message;
+    use test_log::test;
+
     use restate_pb::mocks::greeter::{GreetingRequest, GreetingResponse};
     use restate_pb::mocks::GREETER_SERVICE_NAME;
     use restate_pb::restate::internal::{get_result_response, start_response, CleanupRequest};
     use restate_pb::REMOTE_CONTEXT_SERVICE_NAME;
     use restate_schema_api::deployment::DeploymentMetadata;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
+    use restate_test_util::assert_eq;
     use restate_test_util::matchers::*;
-    use restate_test_util::{assert_eq, test};
     use restate_types::errors::InvocationErrorCode;
     use restate_types::invocation::{InvocationResponse, MaybeFullInvocationId};
     use restate_types::journal::{Entry, EntryResult, EntryType};
+
+    use crate::partition::services::non_deterministic::tests::TestInvocationContext;
 
     const USER_STATE: StateKey<Raw> = StateKey::new_raw("my-state");
 
