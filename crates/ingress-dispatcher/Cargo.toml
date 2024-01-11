@@ -32,5 +32,6 @@ restate-test-util = { workspace = true, features = ["prost"] }
 restate-types = { workspace = true, features = ["mocks"] }
 
 googletest = { workspace = true }
+test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 

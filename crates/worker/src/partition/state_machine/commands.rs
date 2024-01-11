@@ -210,3 +210,17 @@ pub enum Command {
     Response(InvocationResponse),
     BuiltInInvoker(NBISEffects),
 }
+
+impl Command {
+    pub fn type_human(&self) -> &'static str {
+        match self {
+            Command::TerminateInvocation(_) => "InvocationTermination",
+            Command::Invoker(_) => "InvokerEffect",
+            Command::Timer(_) => "TimerValue",
+            Command::OutboxTruncation(_) => "OutboxTruncation",
+            Command::Invocation(_) => "ServiceInvocation",
+            Command::Response(_) => "InvocationResponse",
+            Command::BuiltInInvoker(_) => "NBISEffects",
+        }
+    }
+}

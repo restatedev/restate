@@ -146,6 +146,7 @@ impl Options {
             json,
         } = self;
 
+        crate::metric_definitions::describe_metrics();
         let (hyper_ingress_server, _) =
             HyperServerIngress::new(bind_address, concurrency_limit, json, schemas, request_tx);
 

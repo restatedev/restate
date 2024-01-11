@@ -12,12 +12,14 @@ use super::options::JsonOptions;
 use super::protocol::{BoxBody, Protocol};
 use super::*;
 
+use crate::metric_definitions::{INGRESS_REQUEST_CREATED, INGRESS_REQUEST_DURATION};
 use crate::reflection::ServerReflectionService;
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
 use http::{Request, Response, StatusCode};
 use http_body::Body;
 use hyper::Body as HyperBody;
+use metrics::{counter, histogram};
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
 use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest, IngressRequestSender};
@@ -31,7 +33,7 @@ use restate_types::errors::InvocationError;
 use restate_types::invocation::SpanRelation;
 use std::sync::Arc;
 use std::task::Poll;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tonic::metadata::MetadataKey;
 use tonic_web::{GrpcWebLayer, GrpcWebService};
@@ -200,6 +202,8 @@ where
 
         let client_connect_info = req.extensions().get::<ConnectInfo>().cloned();
 
+        let start_time = Instant::now();
+
         let ingress_request_handler = move |handler_request: HandlerRequest| {
             let (req_headers, req_payload) = handler_request;
 
@@ -232,6 +236,7 @@ where
             let ingress_span_context = ingress_span.context().span().span_context().clone();
 
             async move {
+                counter!(INGRESS_REQUEST_CREATED).increment(1);
                 let service_name = req_headers.service_name;
                 let method_name = req_headers.method_name;
 
@@ -292,6 +297,7 @@ where
                         err => Status::internal(err.to_string())
                     })?;
 
+
                 let fid = FullInvocationId::generate(service_name, key);
                 let span_relation = SpanRelation::Parent(ingress_span_context);
 
@@ -328,6 +334,9 @@ where
                     );
                 }
 
+                // Note that we only record (mostly) successful requests here. We might want to
+                // change this in the _near_ future.
+                histogram!(INGRESS_REQUEST_DURATION).record(start_time.elapsed());
                 match response.into() {
                     Ok(response_payload) => {
                         trace!(rpc.response = ?response_payload, "Complete external gRPC request successfully");

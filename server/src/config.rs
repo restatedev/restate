@@ -23,6 +23,7 @@ pub use restate_meta::{
     Options as MetaOptions, OptionsBuilder as MetaOptionsBuilder,
     OptionsBuilderError as MetaOptionsBuilderError,
 };
+pub use restate_node_ctrl::Options as NodeCtrlOptions;
 pub use restate_tracing_instrumentation::{
     LogOptions, LogOptionsBuilder, LogOptionsBuilderError, Options as ObservabilityOptions,
     OptionsBuilder as ObservabilityOptionsBuilder,
@@ -65,6 +66,7 @@ pub struct Configuration {
     pub observability: restate_tracing_instrumentation::Options,
     pub meta: restate_meta::Options,
     pub worker: WorkerOptions,
+    pub node_ctrl: NodeCtrlOptions,
     pub tokio_runtime: crate::rt::Options,
 }
 
@@ -73,6 +75,7 @@ impl Default for Configuration {
         Self {
             shutdown_grace_period: Duration::from_secs(60).into(),
             observability: Default::default(),
+            node_ctrl: Default::default(),
             meta: Default::default(),
             worker: Default::default(),
             tokio_runtime: Default::default(),

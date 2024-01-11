@@ -1,5 +1,5 @@
 [package]
-name = "restate-storage-query-http"
+name = "restate-node-ctrl"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -9,28 +9,32 @@ publish = false
 
 [features]
 default = []
-options_schema = []
+options_schema = ["dep:schemars"]
 
 [dependencies]
 restate-errors = { workspace = true }
-restate-schema-api = { workspace = true, features = [ "service", "deployment", "serde", "serde_schema", ] }
-restate-storage-query-datafusion = { workspace = true }
-restate-worker-api = { workspace = true }
+restate-node-ctrl-proto = { workspace = true }
 
 axum = { workspace = true }
-base64 = { workspace = true }
-bytes = { workspace = true }
+async-trait = { workspace = true }
 codederror = { workspace = true }
-datafusion = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
+http = { workspace = true }
+humantime = { workspace = true }
 hyper = { workspace = true, features = ["full"] }
-okapi-operation = { version = "0.2.1", features = ["axum-integration"] }
-schemars = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { version = "0.13", default-features = false, features = ["async-runtime"] }
+metrics-tracing-context = { version = "0.15.0" }
+metrics-util = { version = "0.16.0" }
+schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
+tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
+tonic-reflection = { version = "0.10.2" }
 tower = { workspace = true, features = ["load-shed", "limit"] }
+tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }

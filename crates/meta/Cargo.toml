@@ -19,7 +19,7 @@ restate-futures-util = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
 # Rest API
-axum = "0.6.18"
+axum = { workspace = true }
 hyper = { workspace = true, features = ["full"] }
 okapi-operation = { version = "0.2.2", features = ["axum-integration"] }
 tower = { workspace = true, features = ["load-shed", "limit"] }
@@ -60,5 +60,6 @@ restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true }
 
 tempfile = { workspace = true }
+test-log = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

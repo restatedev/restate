@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::metric_definitions;
+
 use super::Service;
 
 use futures::Stream;
@@ -132,6 +134,7 @@ impl Options {
         EE: EntryEnricher,
         DMR: DeploymentMetadataResolver,
     {
+        metric_definitions::describe_metrics();
         let client = self.service_client.build(AssumeRoleCacheMode::Unbounded);
 
         Service::new(

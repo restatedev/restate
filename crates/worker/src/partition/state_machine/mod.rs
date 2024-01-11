@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::metric_definitions::PARTITION_APPLY_COMMAND;
 use crate::partition::storage::Transaction;
 use command_interpreter::CommandInterpreter;
+use metrics::counter;
 use restate_types::message::MessageIndex;
 
 mod actions;
@@ -61,7 +63,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         is_leader: bool,
     ) -> Result<InterpretationResult<Transaction<TransactionType>, Collector>, Error> {
         // Handle the command, returns the span_relation to use to log effects
+        let command_type = command.type_human();
         let (fid, span_relation) = self.0.on_apply(command, effects, &mut transaction).await?;
+        counter!(PARTITION_APPLY_COMMAND, "command" => command_type).increment(1);
 
         // Log the effects
         effects.log(is_leader, fid, span_relation);

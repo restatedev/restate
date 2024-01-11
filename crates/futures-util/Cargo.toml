@@ -16,5 +16,6 @@ tokio = { workspace = true, features = ["sync"] }
 [dev-dependencies]
 restate-test-util = { workspace = true }
 
+test-log = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
