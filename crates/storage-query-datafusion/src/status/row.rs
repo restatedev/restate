@@ -15,7 +15,7 @@ use restate_storage_api::status_table::{
 };
 use restate_storage_rocksdb::status_table::OwnedStatusRow;
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::Source;
+use restate_types::invocation::{Source, TraceId};
 
 #[inline]
 pub(crate) fn append_status_row(
@@ -117,7 +117,9 @@ fn fill_journal_metadata(
 ) {
     if row.is_trace_id_defined() {
         let tid = journal_metadata.span_context.trace_id();
-        row.trace_id(format_using(output, &tid));
+        if tid != TraceId::INVALID {
+            row.trace_id(format_using(output, &tid));
+        }
     }
 
     row.journal_size(journal_metadata.length);
