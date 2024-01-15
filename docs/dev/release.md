@@ -30,6 +30,7 @@ When performing a full release of all the artifacts, this order should be follow
 1. Execute a manual run of the [e2e tests](https://github.com/restatedev/e2e/actions/workflows/e2e.yaml) to check everything works fine.
 1. [Examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
 1. [Documentation](https://github.com/restatedev/documentation#releasing-the-documentation) and [Tour](https://github.com/restatedev/tour-of-restate-typescript#releasing)
+1. [CKD](https://github.com/restatedev/cdk) (might require a release if the server's API changed)
 
 ## Post release
 
