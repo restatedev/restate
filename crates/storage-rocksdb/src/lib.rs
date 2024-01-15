@@ -47,7 +47,7 @@ use std::sync::Arc;
 pub use writer::JoinHandle as RocksDBWriterJoinHandle;
 pub use writer::Writer as RocksDBWriter;
 
-type DB = rocksdb::OptimisticTransactionDB<SingleThreaded>;
+pub type DB = rocksdb::OptimisticTransactionDB<SingleThreaded>;
 type TransactionDB<'a> = rocksdb::Transaction<'a, DB>;
 
 pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
@@ -132,6 +132,9 @@ pub struct Options {
     ///
     /// The memory size used for rocksdb caches.
     pub cache_size: usize,
+
+    /// Disable rocksdb statistics collection
+    pub disable_statistics: bool,
 }
 
 impl Default for Options {
@@ -142,6 +145,7 @@ impl Default for Options {
             write_buffer_size: 0,
             max_total_wal_size: 2 * (1 << 30), // 2 GiB
             cache_size: 1 << 30,               // 1 GB
+            disable_statistics: false,
         }
     }
 }
@@ -176,12 +180,32 @@ impl BuildError {
     }
 }
 
-#[derive(Debug)]
 pub struct RocksDBStorage {
     db: Arc<DB>,
     writer_handle: WriterHandle,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
+    cache: Option<Cache>,
+    options: Arc<rocksdb::Options>,
+}
+
+impl std::fmt::Debug for RocksDBStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RocksDBStorage")
+            .field("db", &self.db)
+            .field("writer_handle", &self.writer_handle)
+            .field("key_buffer", &self.key_buffer)
+            .field("value_buffer", &self.value_buffer)
+            .field(
+                "cache",
+                if self.cache.is_some() {
+                    &"<set>"
+                } else {
+                    &"<unset>"
+                },
+            )
+            .finish()
+    }
 }
 
 impl Clone for RocksDBStorage {
@@ -191,6 +215,8 @@ impl Clone for RocksDBStorage {
             writer_handle: self.writer_handle.clone(),
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
+            cache: self.cache.clone(),
+            options: self.options.clone(),
         }
     }
 }
@@ -202,6 +228,12 @@ fn db_options(opts: &Options) -> rocksdb::Options {
     if opts.threads > 0 {
         db_options.increase_parallelism(opts.threads as i32);
         db_options.set_max_background_jobs(opts.threads as i32);
+    }
+
+    if !opts.disable_statistics {
+        db_options.enable_statistics();
+        // Reasonable default, but we might expose this as a config in the future.
+        db_options.set_statistics_level(rocksdb::statistics::StatsLevel::ExceptDetailedTimers);
     }
 
     db_options.set_atomic_flush(true);
@@ -297,6 +329,22 @@ fn cf_options(opts: &Options, cache: Option<Cache>) -> rocksdb::Options {
 }
 
 impl RocksDBStorage {
+    /// Returns the raw rocksdb handle, this should only be used for node-ctrl operations that
+    /// require direct access to rocksdb.
+    pub fn inner(&self) -> Arc<DB> {
+        self.db.clone()
+    }
+    /// The database options object that was used at creation time, this can be used to extract
+    /// running statistics after the database is opened.
+    pub fn options(&self) -> Arc<rocksdb::Options> {
+        self.options.clone()
+    }
+
+    /// Block cache wrapper handle, It's set if block cache is enabled.
+    pub fn cache(&self) -> Option<Cache> {
+        self.cache.clone()
+    }
+
     fn new(opts: Options) -> std::result::Result<(Self, Writer), BuildError> {
         let cache = if opts.cache_size > 0 {
             Some(Cache::new_lru_cache(opts.cache_size))
@@ -304,7 +352,7 @@ impl RocksDBStorage {
             None
         };
 
-        let tables = [
+        let tables = vec![
             //
             // keyed by partition key + user key
             //
@@ -328,11 +376,12 @@ impl RocksDBStorage {
             // keyed by partition_id + u64
             rocksdb::ColumnFamilyDescriptor::new(
                 cf_name(PartitionStateMachine),
-                cf_options(&opts, cache),
+                cf_options(&opts, cache.clone()),
             ),
         ];
 
         let db_options = db_options(&opts);
+
         let rdb = DB::open_cf_descriptors(&db_options, opts.path, tables)
             .map_err(BuildError::from_rocksdb_error)?;
         let rdb = Arc::new(rdb);
@@ -347,6 +396,8 @@ impl RocksDBStorage {
                 writer_handle,
                 key_buffer: BytesMut::default(),
                 value_buffer: BytesMut::default(),
+                cache,
+                options: Arc::new(db_options),
             },
             writer,
         ))
