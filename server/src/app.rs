@@ -82,7 +82,7 @@ impl Application {
         // create worker service
         let worker = worker.build(meta.schemas())?;
 
-        let node_ctrl = node_ctrl.build();
+        let node_ctrl = node_ctrl.build(Some(worker.rocksdb_storage().clone()));
 
         Ok(Self {
             node_ctrl,

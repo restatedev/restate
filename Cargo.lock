@@ -3101,8 +3101,8 @@ dependencies = [
 
 [[package]]
 name = "librocksdb-sys"
-version = "0.15.0+8.9.1"
-source = "git+https://github.com/rust-rocksdb/rust-rocksdb.git?rev=66f04df013b6e6bd42b5a8c353406e09a7c7da2a#66f04df013b6e6bd42b5a8c353406e09a7c7da2a"
+version = "0.16.0+8.10.0"
+source = "git+https://github.com/restatedev/rust-rocksdb.git?branch=next#7ad7f7f7df789b965d69b07fe2d6366ccbfe5ff1"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -5082,6 +5082,8 @@ dependencies = [
  "metrics-util",
  "restate-errors",
  "restate-node-ctrl-proto",
+ "restate-storage-rocksdb",
+ "rocksdb",
  "schemars",
  "serde",
  "serde_json",
@@ -5612,7 +5614,7 @@ dependencies = [
 [[package]]
 name = "rocksdb"
 version = "0.21.0"
-source = "git+https://github.com/rust-rocksdb/rust-rocksdb.git?rev=66f04df013b6e6bd42b5a8c353406e09a7c7da2a#66f04df013b6e6bd42b5a8c353406e09a7c7da2a"
+source = "git+https://github.com/restatedev/rust-rocksdb.git?branch=next#7ad7f7f7df789b965d69b07fe2d6366ccbfe5ff1"
 dependencies = [
  "libc",
  "librocksdb-sys",
