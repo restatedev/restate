@@ -10,6 +10,7 @@
 
 use std::net::SocketAddr;
 
+use restate_storage_rocksdb::RocksDBStorage;
 use serde_with::serde_as;
 
 use crate::service::NodeCtrlService;
@@ -34,6 +35,8 @@ pub struct Options {
 
     /// Disable prometheus metric recording and reporting. Default is `false`.
     pub disable_prometheus: bool,
+    /// Disable rocksdb metrics recording and reporting. Default is `false`.
+    pub disable_rocksdb_stats: bool,
 }
 
 impl Default for Options {
@@ -42,12 +45,13 @@ impl Default for Options {
             bind_address: "0.0.0.0:5122".parse().unwrap(),
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
+            disable_rocksdb_stats: false,
         }
     }
 }
 
 impl Options {
-    pub fn build(self) -> NodeCtrlService {
-        NodeCtrlService::new(self)
+    pub fn build(self, rocksdb_storage: Option<RocksDBStorage>) -> NodeCtrlService {
+        NodeCtrlService::new(self, rocksdb_storage)
     }
 }

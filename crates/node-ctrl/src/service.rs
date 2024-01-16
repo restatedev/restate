@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use axum::routing::get;
 use codederror::CodedError;
 use futures::FutureExt;
+use restate_storage_rocksdb::RocksDBStorage;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -43,16 +44,21 @@ pub enum Error {
 
 pub struct NodeCtrlService {
     opts: Options,
+    rocksdb_storage: Option<RocksDBStorage>,
 }
 
 impl NodeCtrlService {
-    pub fn new(opts: Options) -> Self {
-        Self { opts }
+    pub fn new(opts: Options, rocksdb_storage: Option<RocksDBStorage>) -> Self {
+        Self {
+            opts,
+            rocksdb_storage,
+        }
     }
 
     pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
         // Configure Metric Exporter
         let mut state_builder = HandlerStateBuilder::default();
+        state_builder.rocksdb_storage(self.rocksdb_storage);
 
         if !self.opts.disable_prometheus {
             state_builder.prometheus_handle(Some(
@@ -69,6 +75,7 @@ impl NodeCtrlService {
         // -- HTTP service (for prometheus et al.)
         let router = axum::Router::new()
             .route("/metrics", get(crate::handler::render_metrics))
+            .route("/rocksdb-stats", get(crate::handler::rocksdb_stats))
             .with_state(shared_state.clone())
             .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
             .fallback(handler_404);
