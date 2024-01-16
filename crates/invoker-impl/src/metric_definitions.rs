@@ -12,11 +12,11 @@
 /// the metrics' sink.
 use metrics::{describe_counter, describe_gauge, Unit};
 
-pub const INVOKER_ENQUEUE: &str = "invoker.enqueue.total";
-pub const INVOKER_INVOCATION_TASK_STARTED: &str = "invoker.invocation_task_started.total";
-pub const INVOKER_INVOCATION_TASK_FAILED: &str = "invoker.invocation_task_failed.total";
-pub const INVOKER_INVOCATION_TASK_SUSPENDED: &str = "invoker.invocation_task_suspended.total";
-pub const INVOKER_INFLIGHT_INVOCATIONS: &str = "invoker.inflight_invocations.total";
+pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
+pub const INVOKER_INVOCATION_TASK_STARTED: &str = "restate.invoker.invocation_task_started.total";
+pub const INVOKER_INVOCATION_TASK_FAILED: &str = "restate.invoker.invocation_task_failed.total";
+pub const INVOKER_INVOCATION_TASK_SUSPENDED: &str = "restate.invoker.invocation_task_suspended.total";
+pub const INVOKER_INFLIGHT_INVOCATIONS: &str = "restate.invoker.inflight_invocations.total";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
