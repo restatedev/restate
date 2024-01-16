@@ -74,7 +74,7 @@ pub enum TableScanIterationDecision<R> {
 }
 
 #[inline]
-fn cf_name(kind: TableKind) -> &'static str {
+const fn cf_name(kind: TableKind) -> &'static str {
     match kind {
         State => STATE_TABLE_NAME,
         Status => STATUS_TABLE_NAME,
@@ -97,6 +97,26 @@ pub enum TableKind {
     PartitionStateMachine,
     Timers,
     Journal,
+}
+
+impl TableKind {
+    pub const fn cf_name(&self) -> &'static str {
+        cf_name(*self)
+    }
+
+    pub fn all() -> core::slice::Iter<'static, TableKind> {
+        static VARIANTS: &[TableKind] = &[
+            State,
+            Status,
+            Inbox,
+            Outbox,
+            Deduplication,
+            PartitionStateMachine,
+            Timers,
+            Journal,
+        ];
+        VARIANTS.iter()
+    }
 }
 
 /// # Storage options
