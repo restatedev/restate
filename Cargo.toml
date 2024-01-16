@@ -106,8 +106,8 @@ prost-build = "0.12.1"
 prost-reflect = "0.12.0"
 prost-types = "0.12.1"
 rand = "0.8.5"
-# we need to use RocksDB >= 8.9.1 because it fixes https://github.com/facebook/rocksdb/pull/11680
-rocksdb = { git = "https://github.com/rust-rocksdb/rust-rocksdb.git", rev = "66f04df013b6e6bd42b5a8c353406e09a7c7da2a" }
+# we need to use RocksDB with fine-grained statistics access. We use this branch until proposed changes are merged upstream
+rocksdb = { git = "https://github.com/restatedev/rust-rocksdb.git", branch = "next"}
 rustls = "0.21.6"
 schemars = { version = "0.8", features = ["bytes"] }
 serde = { version = "1.0", features = ["derive"] }
