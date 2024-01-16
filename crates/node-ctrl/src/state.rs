@@ -9,8 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use metrics_exporter_prometheus::PrometheusHandle;
+use restate_storage_rocksdb::RocksDBStorage;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct HandlerState {
     pub prometheus_handle: Option<PrometheusHandle>,
+    pub rocksdb_storage: Option<RocksDBStorage>,
 }
