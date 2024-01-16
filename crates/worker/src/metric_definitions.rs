@@ -12,11 +12,11 @@
 /// the metrics' sink.
 use metrics::{describe_counter, Unit};
 
-pub const PARTITION_APPLY_COMMAND: &str = "partition.apply_command.total";
-pub const PARTITION_ACTUATOR_HANDLED: &str = "partition.actuator_handled.total";
-pub const PARTITION_TIMER_DUE_HANDLED: &str = "partition.timer_due_handled.total";
-pub const PARTITION_STORAGE_TX_CREATED: &str = "partition.storage_tx_created.total";
-pub const PARTITION_STORAGE_TX_COMMITTED: &str = "partition.storage_tx_committed.total";
+pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command.total";
+pub const PARTITION_ACTUATOR_HANDLED: &str = "restate.partition.actuator_handled.total";
+pub const PARTITION_TIMER_DUE_HANDLED: &str = "restate.partition.timer_due_handled.total";
+pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_created.total";
+pub const PARTITION_STORAGE_TX_COMMITTED: &str = "restate.partition.storage_tx_committed.total";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(

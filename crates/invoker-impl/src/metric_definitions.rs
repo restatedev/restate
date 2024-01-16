@@ -10,13 +10,14 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{describe_counter, describe_gauge, Unit};
+use metrics::{describe_counter, Unit};
 
-pub const INVOKER_ENQUEUE: &str = "invoker.enqueue.total";
-pub const INVOKER_INVOCATION_TASK_STARTED: &str = "invoker.invocation_task_started.total";
-pub const INVOKER_INVOCATION_TASK_FAILED: &str = "invoker.invocation_task_failed.total";
-pub const INVOKER_INVOCATION_TASK_SUSPENDED: &str = "invoker.invocation_task_suspended.total";
-pub const INVOKER_INFLIGHT_INVOCATIONS: &str = "invoker.inflight_invocations.total";
+pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
+pub const INVOKER_INVOCATION_TASK: &str = "restate.invoker.invocation_task.total";
+
+pub const TASK_OP_STARTED: &str = "started";
+pub const TASK_OP_SUSPENDED: &str = "suspended";
+pub const TASK_OP_FAILED: &str = "failed";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -26,26 +27,8 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_counter!(
-        INVOKER_INVOCATION_TASK_STARTED,
+        INVOKER_INVOCATION_TASK,
         Unit::Count,
-        "Number of active invocation tasks started"
-    );
-
-    describe_counter!(
-        INVOKER_INVOCATION_TASK_FAILED,
-        Unit::Count,
-        "Number of active invocation tasks failed"
-    );
-
-    describe_counter!(
-        INVOKER_INVOCATION_TASK_SUSPENDED,
-        Unit::Count,
-        "Number of active invocation tasks suspended"
-    );
-
-    describe_gauge!(
-        INVOKER_INFLIGHT_INVOCATIONS,
-        Unit::Count,
-        "Number of actively executing invocation tasks"
+        "Invocation task operation"
     );
 }

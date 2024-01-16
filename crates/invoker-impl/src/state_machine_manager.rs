@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metric_definitions::INVOKER_INFLIGHT_INVOCATIONS;
-
 use super::*;
 use std::ops::RangeInclusive;
 
@@ -62,13 +60,11 @@ impl InvocationStateMachineManager {
         partition: PartitionLeaderEpoch,
         full_invocation_id: &FullInvocationId,
     ) -> Option<(&mpsc::Sender<Effect>, InvocationStateMachine)> {
-        let ret = self.resolve_partition(partition).and_then(|p| {
+        self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
                 .remove(full_invocation_id)
                 .map(|ism| (&p.output_tx, ism))
-        });
-        gauge!(INVOKER_INFLIGHT_INVOCATIONS).decrement(1.0);
-        ret
+        })
     }
 
     #[inline]
@@ -109,7 +105,6 @@ impl InvocationStateMachineManager {
             .expect("Cannot register an invocation on an unknown partition")
             .invocation_state_machines
             .insert(fid, ism);
-        gauge!(INVOKER_INFLIGHT_INVOCATIONS).increment(1.0);
     }
 
     #[inline]
