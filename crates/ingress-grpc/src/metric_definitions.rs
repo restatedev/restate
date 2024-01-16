@@ -12,8 +12,8 @@
 /// the metrics' sink.
 use metrics::{describe_counter, describe_histogram, Unit};
 
-pub const INGRESS_REQUEST_CREATED: &str = "ingress.request_created.total";
-pub const INGRESS_REQUEST_DURATION: &str = "ingress.request_duration.seconds";
+pub const INGRESS_REQUEST_CREATED: &str = "restate.ingress.request_created.total";
+pub const INGRESS_REQUEST_DURATION: &str = "restate.ingress.request_duration.seconds";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(

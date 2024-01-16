@@ -23,7 +23,7 @@ use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
-use metrics::{counter, gauge};
+use metrics::counter;
 use restate_errors::warn_it;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
@@ -60,8 +60,7 @@ pub use options::{
 use restate_service_client::ServiceClient;
 
 use crate::metric_definitions::{
-    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK_FAILED, INVOKER_INVOCATION_TASK_STARTED,
-    INVOKER_INVOCATION_TASK_SUSPENDED,
+    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_FAILED, TASK_OP_STARTED, TASK_OP_SUSPENDED,
 };
 
 /// Internal error trait for the invoker errors
@@ -666,7 +665,7 @@ where
             .invocation_state_machine_manager
             .remove_invocation(partition, &full_invocation_id)
         {
-            counter!(INVOKER_INVOCATION_TASK_SUSPENDED).increment(1);
+            counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_SUSPENDED).increment(1);
             trace!("Suspending invocation");
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &full_invocation_id);
@@ -798,7 +797,11 @@ where
     ) {
         match ism.handle_task_error() {
             Some(next_retry_timer_duration) if error.is_transient() => {
-                counter!(INVOKER_INVOCATION_TASK_FAILED, "transient" => "true").increment(1);
+                counter!(INVOKER_INVOCATION_TASK,
+                    "status" => TASK_OP_FAILED,
+                    "transient" => "true"
+                )
+                .increment(1);
                 warn_it!(
                     error,
                     restate.invocation.id = %full_invocation_id,
@@ -821,7 +824,11 @@ where
                     .sleep_until(next_retry_at, (partition, full_invocation_id));
             }
             _ => {
-                counter!(INVOKER_INVOCATION_TASK_FAILED, "transient" => "false").increment(1);
+                counter!(INVOKER_INVOCATION_TASK,
+                    "status" => TASK_OP_FAILED,
+                    "transient" => "false"
+                )
+                .increment(1);
                 warn_it!(
                     error,
                     restate.invocation.id = %full_invocation_id,
@@ -867,7 +874,7 @@ where
             "Invocation task started state. Invocation state: {:?}",
             ism.invocation_state_debug()
         );
-        counter!(INVOKER_INVOCATION_TASK_STARTED).increment(1);
+        counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_STARTED).increment(1);
         self.invocation_state_machine_manager.register_invocation(
             partition,
             full_invocation_id,
