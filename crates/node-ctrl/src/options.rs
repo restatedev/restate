@@ -10,6 +10,7 @@
 
 use std::net::SocketAddr;
 
+use restate_storage_rocksdb::RocksDBStorage;
 use serde_with::serde_as;
 
 use crate::service::NodeCtrlService;
@@ -47,7 +48,7 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn build(self) -> NodeCtrlService {
-        NodeCtrlService::new(self)
+    pub fn build(self, rocksdb_storage: Option<RocksDBStorage>) -> NodeCtrlService {
+        NodeCtrlService::new(self, rocksdb_storage)
     }
 }

@@ -14,9 +14,10 @@ options_schema = ["dep:schemars"]
 [dependencies]
 restate-errors = { workspace = true }
 restate-node-ctrl-proto = { workspace = true }
+restate-storage-rocksdb = { workspace = true }
 
-axum = { workspace = true }
 async-trait = { workspace = true }
+axum = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }
@@ -28,6 +29,7 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { version = "0.13", default-features = false, features = ["async-runtime"] }
 metrics-tracing-context = { version = "0.15.0" }
 metrics-util = { version = "0.16.0" }
+rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
