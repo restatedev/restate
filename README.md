@@ -5,24 +5,26 @@
 
 # Restate - Building resilient applications made easy!
 
-[Restate](https://restate.dev) is a system for easily building resilient applications using distributed durable async/await.
-This repository contains the Restate server and CLI.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://restate.dev/poster_intro_dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://restate.dev/poster_intro_2.svg">
+    <img alt="Restate overview" src="https://restate.dev/poster_intro_2.svg" width="500">
+  </picture>
+</p>
 
-The basic primitives Restate offers to simplify application development are the following:
+Easily build workflows, event-driven applications, and distributed services in a fault-tolerant manner with durable async/await.
 
-* **reliable execution**: user code will always run to completion. Intermediate failures result in re-tries that use the durable execution mechanism to recover partial progress and not duplicate already executed steps.
-* **suspending user code**: long-running user code suspends when awaiting on a promise and resume when that promise is resolved.
-* **reliable communication**: user code communicates with exactly-once semantics. Restate reliably delivers messages and anchors both sender and receiver in the durable execution to ensure no losses or duplicates can happen.
-* **durable timers**: user code can sleep (and suspend) or schedule calls for later.
-* **isolation**: user code can be keyed, which makes Restate scheduled them to obey single-writer-per-key semantics.
-* **consistent state**: keyed user code can attach key/value state, which is eagerly pushed into handlers during invocation, and written back upon completion. This is particularly efficient for FaaS deployments (stateful serverless, yay!).
-* **observability & introspection**: Restate automatically generates Open Telemetry traces for the interactions between handlers and gives you a SQL shell to query the distributed state of the application.
+[Restate](https://restate.dev) is great at building:
 
-📖 Check out our [docs](https://docs.restate.dev) to get quickly started!
+* [Lambda Workflows as Code](https://restate.dev/blog/we-replaced-400-lines-of-stepfunctions-asl-with-40-lines-of-typescript-by-making-lambdas-suspendable/)
+* [Transactional RPC Handlers](https://github.com/restatedev/examples/tree/main/typescript/ecommerce-store)
+* [Event Processing with Kafka](https://restate.dev/blog/restate--kafka-event-driven-apps-where-event-driven-is-an-implementation-detail/)
 
-🗣️ Join our [discord channel](https://discord.gg/skW3AZ6uGd) to talk to the community.
+## Get started with Restate
 
-🏠 Visit our [GitHub org](https://github.com/restatedev) for more details.
+1. 🏎 [Check out our quickstart](https://docs.restate.dev/quickstart) to get up and running with Restate in 2 minutes!
+1. 💡 [The tour of Restate](https://docs.restate.dev/tour) walks you through all features of Restate.
 
 ## SDKs
 
@@ -31,48 +33,71 @@ Restate supports the following SDKs:
 * [Typescript](https://github.com/restatedev/sdk-typescript)
 * [Java and Kotlin](https://github.com/restatedev/sdk-java)
 
-## Building Restate
+## Install
+
+We offer pre-built binaries of the CLI and the server for MacOS and Linux.
+
+### Install the server
+
+Install via Homebrew:
+```bash
+brew install restatedev/tap/restate-server
+```
+
+Install via npm:
+```bash
+npm install --global @restatedev/restate-server
+```
+
+Run via docker:
+```bash
+docker run --rm -it --network=host docker.io/restatedev/restate:latest
+```
+
+### Install the CLI
+
+Install via Homebrew:
+```bash
+brew install restatedev/tap/restate
+```
+
+Install via npm:
+```bash
+npm install --global @restatedev/restate
+```
+
+You can also download the binaries from the [release page](https://github.com/restatedev/restate/releases).
+Visit our [download page](https://restate.dev/get-restate/) for more information.
+
+## Community
+
+* 🤗️ [Join our online community](https://discord.gg/skW3AZ6uGd) for help, sharing feedback and talking to the community.
+* 📖 [Check out our documentation](https://docs.restate.dev) to get quickly started!
+* 📣 [Follow us on Twitter](https://twitter.com/restatedev) for staying up to date.
+* 🙋 [Create a GitHub issue](https://github.com/restatedev/restate/issues) for requesting a new feature or reporting a problem.
+* 🏠 [Visit our GitHub org](https://github.com/restatedev) for exploring other repositories.
+
+## Core primitives
+
+The basic primitives Restate offers to simplify application development are the following:
+
+* **Reliable Execution**: user code will always run to completion. Intermediate failures result in re-tries that use the durable execution mechanism to recover partial progress and not duplicate already executed steps.
+* **Suspending User Code**: long-running user code suspends when awaiting on a promise and resume when that promise is resolved.
+* **Reliable Communication**: user code communicates with exactly-once semantics. Restate reliably delivers messages and anchors both sender and receiver in the durable execution to ensure no losses or duplicates can happen.
+* **Durable Timers**: user code can sleep (and suspend) or schedule calls for later.
+* **Isolation**: user code can be keyed, which makes Restate scheduled them to obey single-writer-per-key semantics.
+* **Consistent State**: keyed user code can attach key/value state, which is eagerly pushed into handlers during invocation, and written back upon completion. This is particularly efficient for FaaS deployments (stateful serverless, yay!).
+* **Observability & Introspection**: Restate automatically generates Open Telemetry traces for the interactions between handlers and gives you a SQL shell to query the distributed state of the application.
+
+## Contributing
+
+We’re excited if you join the Restate community and start contributing!
+Whether it is feature requests, bug reports, ideas & feedback or PRs, we appreciate any and all contributions.
+We know that your time is precious and, therefore, deeply value any effort to contribute!
+
+Check out our [development guidelines](/docs/dev/development-guidelines.md) and [tips for local development](/docs/dev/local-development.md) to get started.
+
+### Building Restate locally
 
 In order to build Restate locally [follow the build instructions](https://github.com/restatedev/restate/blob/main/docs/dev/local-development.md#building-restate).
-
-## Running Restate
-
-You can start the runtime via:
-
-```shell
-just run --bin restate-server --release
-```
-
-or the latest release via docker:
-
-```shell
-docker run --name restate --rm --network=host docker.io/restatedev/restate
-```
-
-In order to change the log level, configure the [`RUST_LOG` env variable](https://rust-lang-nursery.github.io/rust-cookbook/development_tools/debugging/config_log.html#enable-log-levels-per-module) respectively.
-For example, to enable debug mode for Restate crates:
-
-```shell
-RUST_LOG=info,restate=debug just run --bin restate-server --release
-```
-
-### Registering Restate services
-
-After the runtime is running on `localhost:9070`, you can register a service running on `localhost:9080` via `curl`:
-
-```shell
-curl -X POST localhost:9070/deployments -H 'content-type: application/json' -d '{"uri": "http://localhost:9080"}'
-```
-
-For more information check [how to register services](https://docs.restate.dev/services/registration).
-
-### Invoking a Restate service
-
-After registering a service you can invoke a service via via HTTP/JSON:
-
-```shell
-curl -X POST localhost:8080/counter.Counter/GetAndAdd -H 'content-type: application/json' -d '{"counter_name": "foobar", "value": 10 }'
-```
-
-For more information check [how to invoke services](https://docs.restate.dev/services/invocation).
 
