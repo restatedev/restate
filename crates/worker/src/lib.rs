@@ -234,6 +234,7 @@ pub struct Worker {
     ingress_kafka: IngressKafkaService,
     services: Services<FixedConsecutivePartitions>,
     rocksdb_writer: RocksDBWriter,
+    rocksdb_storage: RocksDBStorage,
 }
 
 impl Worker {
@@ -359,6 +360,7 @@ impl Worker {
             ingress_kafka,
             services,
             rocksdb_writer,
+            rocksdb_storage,
         })
     }
 
@@ -402,6 +404,10 @@ impl Worker {
 
     pub fn storage_query_context(&self) -> &QueryContext {
         &self.storage_query_context
+    }
+
+    pub fn rocksdb_storage(&self) -> &RocksDBStorage {
+        &self.rocksdb_storage
     }
 
     pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
