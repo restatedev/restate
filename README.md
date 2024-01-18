@@ -44,9 +44,9 @@ Install via Homebrew:
 brew install restatedev/tap/restate-server
 ```
 
-Install via npm:
+Run via npx:
 ```bash
-npm install --global @restatedev/restate-server
+npx @restatedev/restate-server
 ```
 
 Run via docker:
@@ -66,8 +66,7 @@ Install via npm:
 npm install --global @restatedev/restate
 ```
 
-You can also download the binaries from the [release page](https://github.com/restatedev/restate/releases).
-Visit our [download page](https://restate.dev/get-restate/) for more information.
+You can also download the binaries from the [release page](https://github.com/restatedev/restate/releases) or visit our [download page](https://restate.dev/get-restate/).
 
 ## Community
 
