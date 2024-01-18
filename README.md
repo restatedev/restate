@@ -66,7 +66,7 @@ Install via npm:
 npm install --global @restatedev/restate
 ```
 
-You can also download the binaries from the [release page](https://github.com/restatedev/restate/releases) or visit our [download page](https://restate.dev/get-restate/).
+You can also download the binaries from the [release page](https://github.com/restatedev/restate/releases) or our [download page](https://restate.dev/get-restate/).
 
 ## Community
 
