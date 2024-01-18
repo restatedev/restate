@@ -20,6 +20,7 @@ Easily build workflows, event-driven applications, and distributed services in a
 * [Lambda Workflows as Code](https://restate.dev/blog/we-replaced-400-lines-of-stepfunctions-asl-with-40-lines-of-typescript-by-making-lambdas-suspendable/)
 * [Transactional RPC Handlers](https://github.com/restatedev/examples/tree/main/typescript/ecommerce-store)
 * [Event Processing with Kafka](https://restate.dev/blog/restate--kafka-event-driven-apps-where-event-driven-is-an-implementation-detail/)
+* [Much more](https://github.com/restatedev/examples)
 
 ## Get started with Restate
 
