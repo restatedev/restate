@@ -18,6 +18,7 @@ pub const INVOKER_INVOCATION_TASK: &str = "restate.invoker.invocation_task.total
 pub const TASK_OP_STARTED: &str = "started";
 pub const TASK_OP_SUSPENDED: &str = "suspended";
 pub const TASK_OP_FAILED: &str = "failed";
+pub const TASK_OP_COMPLETED: &str = "completed";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(

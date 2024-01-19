@@ -12,7 +12,10 @@ use super::options::JsonOptions;
 use super::protocol::{BoxBody, Protocol};
 use super::*;
 
-use crate::metric_definitions::{INGRESS_REQUEST_CREATED, INGRESS_REQUEST_DURATION};
+use crate::metric_definitions::{
+    INGRESS_REQUESTS, INGRESS_REQUEST_DURATION, REQUEST_ADMITTED, REQUEST_COMPLETED,
+    REQUEST_DENIED_THROTTLE,
+};
 use crate::reflection::ServerReflectionService;
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
@@ -117,6 +120,7 @@ where
 
     fn call(&mut self, req: Request<HyperBody>) -> Self::Future {
         // Don't depend on &mut self, as hyper::Service will replace this with an immutable borrow!
+        let start_time = Instant::now();
 
         // Discover the protocol
         let protocol = if let Some(p) = Protocol::pick_protocol(req.method(), req.headers()) {
@@ -134,6 +138,7 @@ where
             p
         } else {
             warn!("No available quota to process the request");
+            counter!(INGRESS_REQUESTS, "status" => REQUEST_DENIED_THROTTLE).increment(1);
             return ok(
                 protocol.encode_grpc_status(Status::resource_exhausted("Resource exhausted"))
             )
@@ -202,8 +207,6 @@ where
 
         let client_connect_info = req.extensions().get::<ConnectInfo>().cloned();
 
-        let start_time = Instant::now();
-
         let ingress_request_handler = move |handler_request: HandlerRequest| {
             let (req_headers, req_payload) = handler_request;
 
@@ -236,7 +239,7 @@ where
             let ingress_span_context = ingress_span.context().span().span_context().clone();
 
             async move {
-                counter!(INGRESS_REQUEST_CREATED).increment(1);
+                counter!(INGRESS_REQUESTS, "status" => REQUEST_ADMITTED).increment(1);
                 let service_name = req_headers.service_name;
                 let method_name = req_headers.method_name;
 
@@ -334,9 +337,6 @@ where
                     );
                 }
 
-                // Note that we only record (mostly) successful requests here. We might want to
-                // change this in the _near_ future.
-                histogram!(INGRESS_REQUEST_DURATION).record(start_time.elapsed());
                 match response.into() {
                     Ok(response_payload) => {
                         trace!(rpc.response = ?response_payload, "Complete external gRPC request successfully");
@@ -353,19 +353,30 @@ where
 
         // Let the protocol handle the request
         let result_fut = protocol.handle_request(
-            service_name,
-            method_name,
+            service_name.clone(),
+            method_name.clone(),
             self.schemas.clone(),
             self.json.clone(),
             req,
             ingress_request_handler,
         );
-        async {
+        async move {
             let result = result_fut.await;
-
             // We hold the semaphore permit up to the end of the request processing
             drop(permit);
+            // Note that we only record (mostly) successful requests here. We might want to
+            // change this in the _near_ future.
+            histogram!(INGRESS_REQUEST_DURATION,
+                "rpc.service" => service_name.clone(),
+                "rpc.method" => method_name.clone(),
+            )
+            .record(start_time.elapsed());
 
+            counter!(INGRESS_REQUESTS, "status" => REQUEST_COMPLETED,
+                "rpc.service" => service_name.clone(),
+                "rpc.method" => method_name.clone(),
+            )
+            .increment(1);
             result
         }
         .boxed()
