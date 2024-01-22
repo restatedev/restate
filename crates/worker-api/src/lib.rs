@@ -10,6 +10,7 @@
 
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_types::invocation::InvocationTermination;
+use restate_types::state_mut::ExternalStateMutation;
 use std::future::Future;
 
 #[derive(Debug, thiserror::Error)]
@@ -38,6 +39,12 @@ pub trait Handle: Clone {
     fn terminate_invocation(
         &self,
         invocation_termination: InvocationTermination,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// Send a command to mutate a state. This command is best-effort.
+    fn external_state_mutation(
+        &self,
+        mutation: ExternalStateMutation,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
     fn subscription_controller_handle(&self) -> Self::SubscriptionControllerHandle;

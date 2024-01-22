@@ -16,6 +16,7 @@ use restate_network::PartitionTableError;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation::InvocationTermination;
 use restate_types::message::PeerTarget;
+use restate_types::state_mut::ExternalStateMutation;
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -23,6 +24,7 @@ use tracing::debug;
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum WorkerCommand {
     TerminateInvocation(InvocationTermination),
+    ExternalStateMutation(ExternalStateMutation),
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +54,16 @@ impl restate_worker_api::Handle for WorkerCommandSender {
     ) -> Result<(), restate_worker_api::Error> {
         self.command_tx
             .send(WorkerCommand::TerminateInvocation(invocation_termination))
+            .await
+            .map_err(|_| restate_worker_api::Error::Unreachable)
+    }
+
+    async fn external_state_mutation(
+        &self,
+        mutation: ExternalStateMutation,
+    ) -> Result<(), restate_worker_api::Error> {
+        self.command_tx
+            .send(WorkerCommand::ExternalStateMutation(mutation))
             .await
             .map_err(|_| restate_worker_api::Error::Unreachable)
     }
@@ -123,6 +135,13 @@ where
                 },
                 Some(command) = command_rx.recv() => {
                     match command {
+                        WorkerCommand::ExternalStateMutation(mutation) => {
+                            let target_peer_id = partition_table
+                                .partition_key_to_target_peer(mutation.service_id.partition_key())
+                                .await?;
+                            let msg = StateMachineAckCommand::no_ack(StateMachineCommand::ExternalStateMutation(mutation));
+                            proposal_tx.send((target_peer_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
+                        },
                         WorkerCommand::TerminateInvocation(invocation_termination) => {
                             let target_peer_id = partition_table
                                 .partition_key_to_target_peer(invocation_termination.maybe_fid.partition_key())

@@ -197,6 +197,9 @@ where
                 self.try_built_in_invoker_effect(effects, state, nbis_effects)
                     .await
             }
+            Command::ExternalStateMutation(_mutation) => {
+                todo!("handle an external state mutation command")
+            }
         }
     }
 

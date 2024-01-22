@@ -5065,6 +5065,7 @@ dependencies = [
 name = "restate-meta-rest-model"
 version = "0.7.1"
 dependencies = [
+ "bytes",
  "http",
  "humantime",
  "restate-schema-api",

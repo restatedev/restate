@@ -8,13 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! This crate contains the core types used by various Restate components.
+use crate::identifiers::ServiceId;
+use bytes::Bytes;
+use std::collections::HashMap;
 
-pub mod errors;
-pub mod identifiers;
-pub mod invocation;
-pub mod journal;
-pub mod message;
-pub mod retries;
-pub mod state_mut;
-pub mod time;
+/// ExternalStateMutation
+///
+/// represents an external request to mutate a user's state.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ExternalStateMutation {
+    pub service_id: ServiceId,
+    pub version: Option<String>,
+    pub state: HashMap<Bytes, Bytes>,
+}
