@@ -62,6 +62,10 @@ pub fn create_router<W: restate_worker_api::Handle + Send + Sync + 'static>(
             get(openapi_handler!(services::list_service_descriptors)),
         )
         .route(
+            "/services/:service/state",
+            post(openapi_handler!(services::modify_service_state)),
+        )
+        .route(
             "/services/:service/methods",
             get(openapi_handler!(methods::list_service_methods)),
         )

@@ -19,10 +19,14 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use bytes::Bytes;
+use http::StatusCode;
 use okapi_operation::okapi::openapi3::MediaType;
 use okapi_operation::okapi::Map;
 use okapi_operation::*;
 use prost::Message;
+use restate_types::identifiers::ServiceId;
+use restate_types::state_mut::ExternalStateMutation;
 
 /// List services
 #[openapi(
@@ -92,6 +96,58 @@ pub async fn modify_service<W>(
         .resolve_latest_service_metadata(&service_name)
         .map(Into::into)
         .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
+}
+
+/// Modify a service state
+#[openapi(
+    summary = "Modify a service state",
+    description = "Modify service state",
+    operation_id = "modify_service_state",
+    tags = "service",
+    parameters(path(
+        name = "service",
+        description = "Fully qualified service name.",
+        schema = "std::string::String"
+    )),
+    responses(
+        ignore_return_type = true,
+        response(
+            status = "202",
+            description = "Accepted",
+            content = "okapi_operation::Empty",
+        ),
+        from_type = "MetaApiError",
+    )
+)]
+pub async fn modify_service_state<W>(
+    State(state): State<AdminServiceState<W>>,
+    Path(service_name): Path<String>,
+    #[request_body(required = true)] Json(ModifyServiceStateRequest {
+        version,
+        service_key,
+        new_state,
+    }): Json<ModifyServiceStateRequest>,
+) -> Result<StatusCode, MetaApiError>
+where
+    W: restate_worker_api::Handle + Send,
+{
+    let service_id = ServiceId::new(service_name, service_key);
+
+    let new_state = new_state
+        .into_iter()
+        .map(|(k, v)| (Bytes::from(k), v))
+        .collect();
+
+    state
+        .worker_handle()
+        .external_state_mutation(ExternalStateMutation {
+            service_id,
+            version,
+            state: new_state,
+        })
+        .await?;
+
+    Ok(StatusCode::ACCEPTED)
 }
 
 /// List service descriptors

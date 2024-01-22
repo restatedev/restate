@@ -8,7 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // Export schema types to be used by other crates without exposing the fact
 // that we are using proxying to restate-schema-api or restate-types
@@ -29,4 +31,24 @@ pub struct ModifyServiceRequest {
     /// If true, the service can be invoked through the ingress.
     /// If false, the service can be invoked only from another Restate service.
     pub public: bool,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ModifyServiceStateRequest {
+    /// # Version
+    ///
+    /// If set, the latest version of the state is compared with this value and the operation will fail
+    /// when the versions differ.
+    pub version: Option<String>,
+
+    /// # Service key
+    ///
+    /// To what service key to apply this change
+    pub service_key: String,
+
+    /// # New State
+    ///
+    /// The new state to replace the previous state with
+    pub new_state: HashMap<String, Bytes>,
 }
