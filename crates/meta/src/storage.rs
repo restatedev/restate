@@ -8,12 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use codederror::CodedError;
 use restate_schema_impl::SchemasUpdateCommand;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::io;
+use tracing::log::info;
 use tracing::trace;
+
+type StorageFormatVersion = u32;
+
+/// Storage format version used by the [`FileMetaStorage`] to store schema information. This value
+/// must be incremented whenever you introduce a breaking change to the schema information.
+const STORAGE_FORMAT_VERSION: StorageFormatVersion = 1;
+
+/// Name of the file which contains the storage format version.
+const STORAGE_FORMAT_VERSION_FILE_NAME: &str = ".meta_format_version";
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetaStorageError {
@@ -44,6 +55,19 @@ pub trait MetaStorage {
 
 // --- File based implementation of MetaStorage, using bincode
 
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum BuildError {
+    #[error("storage directory contains incompatible storage format version '{0}'; supported version is '{STORAGE_FORMAT_VERSION}'")]
+    #[code(restate_errors::META0010)]
+    IncompatibleStorageFormat(StorageFormatVersion),
+    #[error("generic io error: {0}")]
+    #[code(unknown)]
+    Io(#[from] io::Error),
+    #[error("serde error: {0}")]
+    #[code(unknown)]
+    Serde(#[from] serde_json::Error),
+}
+
 const RESTATE_EXTENSION: &str = "restate";
 
 #[derive(Debug)]
@@ -53,10 +77,77 @@ pub struct FileMetaStorage {
 }
 
 impl FileMetaStorage {
-    pub fn new(root_path: PathBuf) -> Self {
-        Self {
+    pub fn new(root_path: PathBuf) -> Result<Self, BuildError> {
+        if Self::is_empty_directory(root_path.as_path()) {
+            Self::write_storage_format_version_to_file(
+                root_path.as_path(),
+                STORAGE_FORMAT_VERSION,
+            )?;
+        } else {
+            Self::assert_compatible_storage_format_version(root_path.as_path())?;
+        }
+
+        Ok(Self {
             root_path,
             next_file_index: 0,
+        })
+    }
+
+    fn is_empty_directory(path: impl AsRef<Path>) -> bool {
+        let path = path.as_ref();
+
+        !path.exists()
+            || path
+                .read_dir()
+                .expect("meta storage directory must exist")
+                .count()
+                == 0
+    }
+
+    fn write_storage_format_version_to_file(
+        root_path: impl AsRef<Path>,
+        version: StorageFormatVersion,
+    ) -> Result<(), io::Error> {
+        let root_path = root_path.as_ref();
+
+        // make sure that the root directory exists
+        std::fs::create_dir_all(root_path)?;
+
+        let version_file_path = root_path.join(STORAGE_FORMAT_VERSION_FILE_NAME);
+        assert!(
+            !version_file_path.exists(),
+            "must never overwrite an existing version file"
+        );
+
+        let version_file = std::fs::File::create(version_file_path)?;
+
+        // use a human readable format
+        serde_json::to_writer(version_file, &version)?;
+
+        Ok(())
+    }
+
+    fn assert_compatible_storage_format_version(
+        root_path: impl AsRef<Path>,
+    ) -> Result<(), BuildError> {
+        let version_file =
+            std::fs::File::open(root_path.as_ref().join(STORAGE_FORMAT_VERSION_FILE_NAME));
+
+        let version = if let Ok(version_file) = version_file {
+            serde_json::from_reader(version_file)?
+        } else {
+            // File does not exist, this indicates that the data has been written with a Restate
+            // version <= 0.7 that does not write a version file. Write it now for future
+            // compatibility.
+            info!("Opened file meta storage w/o a version file present. This indicates that the data has been written with a Restate version <= 0.7.0. Assuming the format version to be 1.");
+            Self::write_storage_format_version_to_file(root_path, 1)?;
+            1
+        };
+
+        if version != STORAGE_FORMAT_VERSION {
+            Err(BuildError::IncompatibleStorageFormat(version))
+        } else {
+            Ok(())
         }
     }
 }
@@ -144,6 +235,8 @@ impl MetaStorage for FileMetaStorage {
 mod tests {
     use super::*;
 
+    use googletest::matchers::eq;
+    use googletest::{assert_that, pat};
     use tempfile::tempdir;
     use test_log::test;
 
@@ -155,7 +248,8 @@ mod tests {
     async fn reload_in_order() {
         let schemas = Schemas::default();
         let temp_dir = tempdir().unwrap();
-        let mut file_storage = FileMetaStorage::new(temp_dir.path().to_path_buf());
+        let mut file_storage =
+            FileMetaStorage::new(temp_dir.path().to_path_buf()).expect("file storage should build");
 
         // Generate some commands for a new deployment, with new services
         let commands_1 = schemas
@@ -196,7 +290,8 @@ mod tests {
             expected_commands.into_iter().map(Into::into).collect();
 
         // Now let's try to reload
-        let mut file_storage = FileMetaStorage::new(temp_dir.path().to_path_buf());
+        let mut file_storage =
+            FileMetaStorage::new(temp_dir.path().to_path_buf()).expect("file storage should build");
         let actual_commands = file_storage.reload().await.unwrap();
 
         assert_eq!(
@@ -249,4 +344,27 @@ mod tests {
     }
 
     impl Eq for SchemasUpdateCommandEquality {}
+
+    #[test]
+    fn incompatible_storage_format_version() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+
+        let incompatible_storage_format_version = STORAGE_FORMAT_VERSION + 1;
+        FileMetaStorage::write_storage_format_version_to_file(
+            tempdir.path(),
+            incompatible_storage_format_version,
+        )?;
+
+        let build_error = FileMetaStorage::new(tempdir.into_path())
+            .expect_err("should have failed with incompatible storage format version");
+
+        assert_that!(
+            build_error,
+            pat!(BuildError::IncompatibleStorageFormat(eq(
+                incompatible_storage_format_version
+            )))
+        );
+
+        Ok(())
+    }
 }

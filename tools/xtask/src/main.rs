@@ -79,7 +79,7 @@ impl restate_schema_api::subscription::SubscriptionValidator for Mock {
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let admin_options = restate_admin::Options::default();
     let meta_options = restate_meta::Options::default();
-    let mut meta = meta_options.build();
+    let mut meta = meta_options.build().expect("expect to build meta service");
     let openapi_address = format!(
         "http://localhost:{}/openapi",
         admin_options.bind_address.port()

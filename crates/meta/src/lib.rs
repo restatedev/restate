@@ -26,8 +26,17 @@ pub use storage::{FileMetaStorage, MetaStorage};
 
 use std::time::Duration;
 
+use codederror::CodedError;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+
+#[derive(Debug, thiserror::Error, CodedError)]
+#[error("failed building the meta service: {0}")]
+pub struct BuildError(
+    #[from]
+    #[code]
+    storage::BuildError,
+);
 
 /// # Meta options
 #[serde_as]
@@ -58,12 +67,12 @@ impl Options {
         &self.storage_path
     }
 
-    pub fn build(self) -> MetaService<FileMetaStorage> {
+    pub fn build(self) -> Result<MetaService<FileMetaStorage>, BuildError> {
         let schemas = Schemas::default();
         let client = self.service_client.build(AssumeRoleCacheMode::None);
-        MetaService::new(
+        Ok(MetaService::new(
             schemas.clone(),
-            FileMetaStorage::new(self.storage_path.into()),
+            FileMetaStorage::new(self.storage_path.into())?,
             // Total duration roughly 66 seconds
             RetryPolicy::exponential(
                 Duration::from_millis(100),
@@ -72,6 +81,6 @@ impl Options {
                 Some(Duration::from_secs(20)),
             ),
             client,
-        )
+        ))
     }
 }

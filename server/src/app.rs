@@ -55,11 +55,19 @@ pub enum ApplicationError {
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
-#[error("failed creating restate application: {cause}")]
-pub struct BuildError {
-    #[from]
-    #[code]
-    cause: restate_worker::BuildError,
+pub enum BuildError {
+    #[error("failed creating worker: {0}")]
+    Worker(
+        #[from]
+        #[code]
+        restate_worker::BuildError,
+    ),
+    #[error("failed creating meta: {0}")]
+    Meta(
+        #[from]
+        #[code]
+        restate_meta::BuildError,
+    ),
 }
 
 pub struct Application {
@@ -76,7 +84,7 @@ impl Application {
         worker: restate_worker::Options,
         admin: restate_admin::Options,
     ) -> Result<Self, BuildError> {
-        let meta = meta.build();
+        let meta = meta.build()?;
         // create cluster admin server
         let admin = admin.build(meta.schemas(), meta.meta_handle());
         // create worker service
