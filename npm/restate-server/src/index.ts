@@ -18,7 +18,12 @@ function getExePath() {
 
 function run() {
   const args = process.argv.slice(2);
-  const processResult = spawnSync(getExePath(), args, { stdio: "inherit" });
+  const env = {
+    RESTATE_META__STORAGE_PATH: ".restate/meta/",
+    RESTATE_WORKER__STORAGE_ROCKSDB__PATH: ".restate/db/",
+    ...process.env
+  }
+  const processResult = spawnSync(getExePath(), args, {stdio: "inherit", env});
   process.exit(processResult.status ?? 0);
 }
 
