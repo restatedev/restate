@@ -27,7 +27,7 @@ futures = { workspace = true }
 futures-util = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }
-rocksdb = { workspace = true }
+rocksdb = { workspace = true , features = [ "default", "jemalloc"] }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 sync_wrapper = { workspace = true }
