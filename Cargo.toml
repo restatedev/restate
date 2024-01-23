@@ -118,6 +118,7 @@ serde_yaml = "0.9"
 sync_wrapper = "0.1.2"
 tempfile = "3.6.0"
 test-log = { version = "0.2.11", default-features = false, features = ["trace"] }
+tikv-jemallocator = { version = "0.5" }
 thiserror = "1.0"
 tokio = { version = "1.29", default-features = false, features = [ "rt-multi-thread", "signal", "macros", ] }
 tokio-util = { version = "0.7.10" }
