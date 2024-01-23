@@ -141,6 +141,8 @@ pub struct Options {
     /// # Write Buffer size
     ///
     /// The size of a single memtable. Once memtable exceeds this size, it is marked immutable and a new one is created.
+    /// The default is set such that 3 column families per table will use a total of 50% of the global memory limit
+    /// (`MEMORY_LIMIT`), which defaults to 3GiB, leading to a value of 64MiB with 8 tables.
     pub write_buffer_size: usize,
 
     /// # Maximum total WAL size
@@ -151,6 +153,7 @@ pub struct Options {
     /// # Maximum cache size
     ///
     /// The memory size used for rocksdb caches.
+    /// The default is roughly 33% of the global memory limit (set with `MEMORY_LIMIT`), which defaults to 3GiB, leading to a value of 1GiB.
     pub cache_size: usize,
 
     /// Disable rocksdb statistics collection
@@ -164,7 +167,7 @@ impl Default for Options {
             threads: 10,
             write_buffer_size: 0,
             max_total_wal_size: 2 * (1 << 30), // 2 GiB
-            cache_size: 1 << 30,               // 1 GB
+            cache_size: 0,
             disable_statistics: false,
         }
     }
