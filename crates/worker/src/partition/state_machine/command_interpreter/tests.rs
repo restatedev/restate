@@ -13,6 +13,7 @@ use restate_invoker_api::EffectKind;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::pb::protocol::SleepEntryMessage;
+use restate_storage_api::inbox_table::SequenceNumberInboxEntry;
 use restate_storage_api::status_table::{JournalMetadata, StatusTimestamps};
 use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
@@ -28,7 +29,7 @@ use crate::partition::state_machine::effects::Effect;
 #[derive(Default)]
 struct StateReaderMock {
     invocations: HashMap<ServiceId, InvocationStatus>,
-    inboxes: HashMap<ServiceId, Vec<InboxEntry>>,
+    inboxes: HashMap<ServiceId, Vec<SequenceNumberInboxEntry>>,
     journals: HashMap<ServiceId, Vec<JournalEntry>>,
 }
 
@@ -117,9 +118,10 @@ impl StateReaderMock {
         self.journals.insert(service_id, journal);
     }
 
-    fn enqueue_into_inbox(&mut self, service_id: ServiceId, inbox_entry: InboxEntry) {
+    fn enqueue_into_inbox(&mut self, service_id: ServiceId, inbox_entry: SequenceNumberInboxEntry) {
         assert_eq!(
-            service_id, inbox_entry.service_invocation.fid.service_id,
+            service_id,
+            *inbox_entry.service_id(),
             "Service invocation must have the same service_id as the inbox entry"
         );
 
@@ -158,22 +160,30 @@ impl StateReader for StateReaderMock {
         ))
     }
 
-    fn get_inbox_entry(
+    fn get_inboxed_invocation(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = StorageResult<Option<InboxEntry>>> + Send {
+    ) -> impl Future<Output = StorageResult<Option<SequenceNumberInvocation>>> + Send {
         let invocation_id = InvocationId::from(maybe_fid.into());
 
         let result = self
             .inboxes
             .values()
             .flat_map(|v| v.iter())
-            .find(|inbox_entry| {
-                inbox_entry.service_invocation.fid.invocation_uuid
-                    == invocation_id.invocation_uuid()
+            .find_map(|inbox_entry| {
+                if let InboxEntry::Invocation(invocation) = &inbox_entry.inbox_entry {
+                    if invocation.fid.invocation_uuid == invocation_id.invocation_uuid() {
+                        return Some(SequenceNumberInvocation {
+                            inbox_sequence_number: inbox_entry.inbox_sequence_number,
+                            invocation: invocation.clone(),
+                        });
+                    }
+                }
+
+                None
             });
 
-        futures::future::ready(Ok(result.cloned()))
+        futures::future::ready(Ok(result))
     }
 
     async fn is_entry_resumable(
@@ -394,16 +404,16 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
     state_reader.register_invoked_status(fid, vec![]);
     state_reader.enqueue_into_inbox(
         inboxed_fid.service_id.clone(),
-        InboxEntry {
+        SequenceNumberInboxEntry {
             inbox_sequence_number: 0,
-            service_invocation: ServiceInvocation {
+            inbox_entry: InboxEntry::Invocation(ServiceInvocation {
                 fid: inboxed_fid.clone(),
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
                     caller: caller_fid.clone(),
                     entry_index: 0,
                 }),
                 ..ServiceInvocation::mock()
-            },
+            }),
         },
     );
 

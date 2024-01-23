@@ -17,7 +17,9 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use metrics::counter;
 use restate_storage_api::deduplication_table::SequenceNumberSource;
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_storage_api::inbox_table::InboxEntry;
+use restate_storage_api::inbox_table::{
+    InboxEntry, SequenceNumberInboxEntry, SequenceNumberInvocation,
+};
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::state_table::ReadOnlyStateTable;
@@ -30,7 +32,7 @@ use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
     WithPartitionKey,
 };
-use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
+use restate_types::invocation::MaybeFullInvocationId;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::message::MessageIndex;
@@ -288,13 +290,13 @@ where
         ))
     }
 
-    fn get_inbox_entry(
+    fn get_inboxed_invocation(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = StorageResult<Option<InboxEntry>>> + Send {
+    ) -> impl Future<Output = StorageResult<Option<SequenceNumberInvocation>>> + Send {
         let maybe_fid = maybe_fid.into();
         self.assert_partition_key(&maybe_fid);
-        self.inner.get_inbox_entry(maybe_fid)
+        self.inner.get_invocation(maybe_fid)
     }
 
     // Returns true if the entry is a completable journal entry and is completed,
@@ -435,15 +437,18 @@ where
     async fn enqueue_into_inbox(
         &mut self,
         seq_number: MessageIndex,
-        service_invocation: ServiceInvocation,
+        inbox_entry: InboxEntry,
     ) -> StorageResult<()> {
-        self.assert_partition_key(&service_invocation.fid.service_id);
+        self.assert_partition_key(inbox_entry.service_id());
 
         // TODO: Avoid cloning when moving this logic into the RocksDB storage impl
-        let service_id = service_invocation.fid.service_id.clone();
+        let service_id = inbox_entry.service_id().clone();
 
         self.inner
-            .put_invocation(&service_id, InboxEntry::new(seq_number, service_invocation))
+            .put_inbox_entry(
+                &service_id,
+                SequenceNumberInboxEntry::new(seq_number, inbox_entry),
+            )
             .await;
 
         Ok(())
@@ -482,14 +487,24 @@ where
         Ok(())
     }
 
-    async fn pop_inbox(&mut self, service_id: &ServiceId) -> StorageResult<Option<InboxEntry>> {
+    async fn pop_inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> StorageResult<Option<SequenceNumberInboxEntry>> {
         self.inner.pop_inbox(service_id).await
     }
 
     async fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: MessageIndex) {
         self.inner
-            .delete_invocation(service_id, sequence_number)
+            .delete_inbox_entry(service_id, sequence_number)
             .await;
+    }
+
+    fn get_all_user_states(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Stream<Item = StorageResult<(Bytes, Bytes)>> + Send {
+        self.inner.get_all_user_states(service_id)
     }
 
     async fn store_state(

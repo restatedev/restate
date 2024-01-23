@@ -14,6 +14,8 @@ use futures::Stream;
 use restate_storage_api::StorageError;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
+use restate_types::state_mut::ExternalStateMutation;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::pin::pin;
 use std::str::FromStr;
@@ -79,6 +81,14 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         None,
         SpanRelation::None,
     )
+}
+
+pub(crate) fn mock_state_mutation(service_id: ServiceId) -> ExternalStateMutation {
+    ExternalStateMutation {
+        service_id,
+        version: None,
+        state: HashMap::default(),
+    }
 }
 
 pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {

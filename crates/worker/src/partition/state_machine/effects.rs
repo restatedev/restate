@@ -12,6 +12,7 @@ use bytes::Bytes;
 
 use bytestring::ByteString;
 use opentelemetry_api::trace::SpanId;
+use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::status_table::{InvocationStatus, JournalMetadata, NotificationTarget};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::{Completion, CompletionResult};
@@ -35,6 +36,7 @@ use restate_types::invocation::{
 };
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::message::MessageIndex;
+use restate_types::state_mut::ExternalStateMutation;
 use restate_types::time::MillisSinceEpoch;
 
 #[derive(Debug)]
@@ -54,7 +56,7 @@ pub(crate) enum Effect {
     // In-/outbox
     EnqueueIntoInbox {
         seq_number: MessageIndex,
-        service_invocation: ServiceInvocation,
+        inbox_entry: InboxEntry,
     },
     EnqueueIntoOutbox {
         seq_number: MessageIndex,
@@ -156,6 +158,9 @@ pub(crate) enum Effect {
     // Invoker commands
     AbortInvocation(FullInvocationId),
     SendStoredEntryAckToInvoker(FullInvocationId, EntryIndex),
+
+    // State mutations
+    MutateState(ExternalStateMutation),
 }
 
 macro_rules! debug_if_leader {
@@ -594,6 +599,13 @@ impl Effect {
             Effect::SendStoredEntryAckToInvoker(_, _) => {
                 // We can ignore these
             }
+            Effect::MutateState(state_mutation) => {
+                debug_if_leader!(
+                    is_leader,
+                    "Effect: Mutate state for service id '{:?}'",
+                    &state_mutation.service_id
+                );
+            }
         }
     }
 }
@@ -655,14 +667,10 @@ impl Effects {
         })
     }
 
-    pub(crate) fn enqueue_into_inbox(
-        &mut self,
-        seq_number: MessageIndex,
-        service_invocation: ServiceInvocation,
-    ) {
+    pub(crate) fn enqueue_into_inbox(&mut self, seq_number: MessageIndex, inbox_entry: InboxEntry) {
         self.effects.push(Effect::EnqueueIntoInbox {
             seq_number,
-            service_invocation,
+            inbox_entry,
         })
     }
 
@@ -888,6 +896,10 @@ impl Effects {
             full_invocation_id,
             entry_index,
         ));
+    }
+
+    pub(crate) fn apply_state_mutation(&mut self, state_mutation: ExternalStateMutation) {
+        self.effects.push(Effect::MutateState(state_mutation));
     }
 
     /// We log only if the log level is TRACE, or if the log level is DEBUG and we're the leader,

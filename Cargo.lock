@@ -5438,6 +5438,7 @@ dependencies = [
  "restate-errors",
  "restate-storage-api",
  "restate-storage-proto",
+ "restate-test-util",
  "restate-types",
  "rocksdb",
  "schemars",

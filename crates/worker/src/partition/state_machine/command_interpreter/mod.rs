@@ -22,7 +22,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{Stream, StreamExt};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_api::inbox_table::InboxEntry;
+use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInvocation};
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{InvocationMetadata, InvocationStatus, NotificationTarget};
@@ -46,6 +46,7 @@ use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::Completion;
 use restate_types::journal::*;
 use restate_types::message::MessageIndex;
+use restate_types::state_mut::ExternalStateMutation;
 use restate_types::time::MillisSinceEpoch;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
@@ -65,10 +66,10 @@ pub trait StateReader {
         invocation_id: &InvocationId,
     ) -> impl Future<Output = StorageResult<(FullInvocationId, InvocationStatus)>> + Send;
 
-    fn get_inbox_entry(
+    fn get_inboxed_invocation(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = StorageResult<Option<InboxEntry>>> + Send;
+    ) -> impl Future<Output = StorageResult<Option<SequenceNumberInvocation>>> + Send;
 
     fn is_entry_resumable(
         &mut self,
@@ -157,8 +158,7 @@ where
                 } else if let InvocationStatus::Free = status {
                     effects.invoke_service(service_invocation);
                 } else {
-                    effects.enqueue_into_inbox(self.inbox_seq_number, service_invocation);
-                    self.inbox_seq_number += 1;
+                    self.enqueue_into_inbox(effects, InboxEntry::Invocation(service_invocation));
                 }
                 Ok((Some(fid), extract_span_relation(&status)))
             }
@@ -192,10 +192,36 @@ where
                 self.try_built_in_invoker_effect(effects, state, nbis_effects)
                     .await
             }
-            Command::ExternalStateMutation(_mutation) => {
-                todo!("handle an external state mutation command")
+            Command::ExternalStateMutation(mutation) => {
+                self.handle_external_state_mutation(mutation, state, effects)
+                    .await
             }
         }
+    }
+
+    fn enqueue_into_inbox(&mut self, effects: &mut Effects, inbox_entry: InboxEntry) {
+        effects.enqueue_into_inbox(self.inbox_seq_number, inbox_entry);
+        self.inbox_seq_number += 1;
+    }
+
+    async fn handle_external_state_mutation<State: StateReader>(
+        &mut self,
+        mutation: ExternalStateMutation,
+        state: &mut State,
+        effects: &mut Effects,
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        let invocation_status = state.get_invocation_status(&mutation.service_id).await?;
+
+        match invocation_status {
+            InvocationStatus::Invoked(_)
+            | InvocationStatus::Suspended { .. }
+            | InvocationStatus::Virtual { .. } => {
+                self.enqueue_into_inbox(effects, InboxEntry::StateMutation(mutation))
+            }
+            InvocationStatus::Free => effects.apply_state_mutation(mutation),
+        }
+
+        Ok((None, SpanRelation::None))
     }
 
     async fn try_built_in_invoker_effect<State: StateReader>(
@@ -439,7 +465,7 @@ where
         };
 
         // check if service invocation is in inbox
-        let inbox_entry = state.get_inbox_entry(maybe_fid).await?;
+        let inbox_entry = state.get_inboxed_invocation(maybe_fid).await?;
 
         Ok(if let Some(inbox_entry) = inbox_entry {
             self.terminate_inboxed_invocation(inbox_entry, error, effects)
@@ -533,12 +559,12 @@ where
 
     fn terminate_inboxed_invocation(
         &mut self,
-        inbox_entry: InboxEntry,
+        inbox_entry: SequenceNumberInvocation,
         error: InvocationError,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         // remove service invocation from inbox and send failure response
-        let service_invocation = inbox_entry.service_invocation;
+        let service_invocation = inbox_entry.invocation;
         let fid = service_invocation.fid;
         let span_context = service_invocation.span_context;
         let parent_span = span_context.as_parent();
