@@ -5531,6 +5531,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_with",
+ "sha2",
  "sync_wrapper",
  "thiserror",
  "tokio",
