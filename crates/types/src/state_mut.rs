@@ -14,6 +14,7 @@ use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+
 /// ExternalStateMutation
 ///
 /// represents an external request to mutate a user's state.
@@ -28,7 +29,6 @@ pub struct ExternalStateMutation {
 ///
 /// This type represents a user state version. This implementation hashes canonically the raw key-value
 /// and hands out an opaque string representation of that version, to be used for exact comparisons.
-///
 #[derive(Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct StateMutationVersion(String);
 

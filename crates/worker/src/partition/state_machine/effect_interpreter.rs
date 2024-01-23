@@ -31,7 +31,7 @@ use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::message::MessageIndex;
-use restate_types::state_mut::ExternalStateMutation;
+use restate_types::state_mut::{ExternalStateMutation, StateMutationVersion};
 use std::marker::PhantomData;
 use tracing::{debug, warn};
 
@@ -467,20 +467,22 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             state,
         } = state_mutation;
 
-        if let Some(expected_version) = version {
-            let actual_version = Self::calculate_state_version(state_storage, &service_id).await?;
-            if actual_version != expected_version {
-                debug!("Ignore state mutation for service id '{:?}' because the expected version '{}' is not matching the actual version '{}'", &service_id, expected_version, actual_version);
-                return Ok(());
-            }
-        }
-
         // overwrite all existing key value pairs with the provided ones; delete all entries that
         // are not contained in state
         let all_user_states: Vec<(Bytes, Bytes)> = state_storage
             .get_all_user_states(&service_id)
             .try_collect()
             .await?;
+
+        if let Some(expected_version) = version {
+            let expected = StateMutationVersion::from_raw(expected_version);
+            let actual = StateMutationVersion::from_user_state(&all_user_states);
+
+            if actual != expected {
+                debug!("Ignore state mutation for service id '{:?}' because the expected version '{}' is not matching the actual version '{}'", &service_id, expected, actual);
+                return Ok(());
+            }
+        }
 
         for (key, _) in &all_user_states {
             if !state.contains_key(key) {
@@ -494,14 +496,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         }
 
         Ok(())
-    }
-
-    async fn calculate_state_version<S: StateStorage>(
-        _state_storage: &mut S,
-        _service_id: &ServiceId,
-    ) -> StorageResult<String> {
-        // todo implement state version calculation: https://github.com/restatedev/restate/issues/1079
-        Ok(String::new())
     }
 
     async fn invoke_service<S: StateStorage, C: ActionCollector>(
