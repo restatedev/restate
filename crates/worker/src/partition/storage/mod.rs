@@ -288,11 +288,6 @@ where
         ))
     }
 
-    async fn peek_inbox(&mut self, service_id: &ServiceId) -> StorageResult<Option<InboxEntry>> {
-        self.assert_partition_key(service_id);
-        self.inner.peek_inbox(service_id).await
-    }
-
     fn get_inbox_entry(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
@@ -487,15 +482,8 @@ where
         Ok(())
     }
 
-    async fn truncate_inbox(
-        &mut self,
-        service_id: &ServiceId,
-        inbox_sequence_number: MessageIndex,
-    ) -> StorageResult<()> {
-        self.inner
-            .delete_invocation(service_id, inbox_sequence_number)
-            .await;
-        Ok(())
+    async fn pop_inbox(&mut self, service_id: &ServiceId) -> StorageResult<Option<InboxEntry>> {
+        self.inner.pop_inbox(service_id).await
     }
 
     async fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: MessageIndex) {

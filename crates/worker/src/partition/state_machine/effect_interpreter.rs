@@ -17,6 +17,7 @@ use crate::partition::state_machine::effects::Effect;
 use crate::partition::{CommitError, Committable};
 use bytes::Bytes;
 use restate_invoker_api::InvokeInputJournal;
+use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{
     InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
@@ -104,11 +105,10 @@ pub trait StateStorage {
         outbox_sequence_number: MessageIndex,
     ) -> impl Future<Output = StorageResult<()>> + Send;
 
-    fn truncate_inbox(
+    fn pop_inbox(
         &mut self,
         service_id: &ServiceId,
-        inbox_sequence_number: MessageIndex,
-    ) -> impl Future<Output = StorageResult<()>> + Send;
+    ) -> impl Future<Output = StorageResult<Option<InboxEntry>>> + Send;
 
     fn delete_inbox_entry(
         &mut self,
@@ -233,17 +233,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                             waiting_for_completed_entries,
                         },
                     )
-                    .await?;
-            }
-            Effect::DropJournalAndFreeService {
-                service_id,
-                journal_length,
-            } => {
-                state_storage
-                    .drop_journal(&service_id, journal_length)
-                    .await?;
-                state_storage
-                    .store_invocation_status(&service_id, InvocationStatus::Free)
                     .await?;
             }
             Effect::EnqueueIntoInbox {
@@ -403,18 +392,22 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             }),
             Effect::DropJournalAndPopInbox {
                 service_id,
-                inbox_sequence_number,
                 journal_length,
-                service_invocation,
             } => {
                 // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
                 state_storage
                     .drop_journal(&service_id, journal_length)
                     .await?;
-                state_storage
-                    .truncate_inbox(&service_id, inbox_sequence_number)
-                    .await?;
-                Self::invoke_service(state_storage, collector, service_invocation).await?;
+                let inbox_entry = state_storage.pop_inbox(&service_id).await?;
+
+                if let Some(inbox_entry) = inbox_entry {
+                    Self::invoke_service(state_storage, collector, inbox_entry.service_invocation)
+                        .await?;
+                } else {
+                    state_storage
+                        .store_invocation_status(&service_id, InvocationStatus::Free)
+                        .await?;
+                }
             }
             Effect::TraceInvocationResult { .. } | Effect::TraceBackgroundInvoke { .. } => {
                 // these effects are only needed for span creation

@@ -58,6 +58,11 @@ pub trait InboxTable {
         service_id: &ServiceId,
     ) -> impl Future<Output = Result<Option<InboxEntry>>> + Send;
 
+    fn pop_inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = Result<Option<InboxEntry>>> + Send;
+
     fn inbox(&mut self, service_id: &ServiceId) -> impl Stream<Item = Result<InboxEntry>> + Send;
 
     fn all_inboxes(

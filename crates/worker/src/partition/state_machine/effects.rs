@@ -50,10 +50,6 @@ pub(crate) enum Effect {
         metadata: InvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
-    DropJournalAndFreeService {
-        service_id: ServiceId,
-        journal_length: EntryIndex,
-    },
 
     // In-/outbox
     EnqueueIntoInbox {
@@ -67,9 +63,7 @@ pub(crate) enum Effect {
     TruncateOutbox(MessageIndex),
     DropJournalAndPopInbox {
         service_id: ServiceId,
-        inbox_sequence_number: MessageIndex,
         journal_length: EntryIndex,
-        service_invocation: ServiceInvocation,
     },
     DeleteInboxEntry {
         service_id: ServiceId,
@@ -238,11 +232,6 @@ impl Effect {
                     waiting_for_completed_entries
                 )
             }
-            Effect::DropJournalAndFreeService { journal_length, .. } => debug_if_leader!(
-                is_leader,
-                restate.journal.length = journal_length,
-                "Effect: Release service instance lock"
-            ),
             Effect::EnqueueIntoInbox { seq_number, .. } => debug_if_leader!(
                 is_leader,
                 restate.inbox.seq = seq_number,
@@ -347,28 +336,11 @@ impl Effect {
             Effect::TruncateOutbox(seq_number) => {
                 trace!(restate.outbox.seq = seq_number, "Effect: Truncate outbox")
             }
-            Effect::DropJournalAndPopInbox {
-                journal_length,
-                inbox_sequence_number,
-                service_invocation:
-                    ServiceInvocation {
-                        method_name,
-                        fid: id,
-                        ..
-                    },
-                ..
-            } => {
+            Effect::DropJournalAndPopInbox { journal_length, .. } => {
                 debug_if_leader!(
                     is_leader,
                     restate.journal.length = journal_length,
-                    restate.inbox.seq = inbox_sequence_number,
-                    "Effect: Drop journal and truncate inbox"
-                );
-                debug_if_leader!(
-                    is_leader,
-                    rpc.method = %method_name,
-                    restate.invocation.id = %id,
-                    "Effect: Invoke next enqueued invocation"
+                    "Effect: Drop journal and pop from inbox"
                 );
             }
             Effect::SetState {
@@ -683,17 +655,6 @@ impl Effects {
         })
     }
 
-    pub(crate) fn drop_journal_and_free_service(
-        &mut self,
-        service_id: ServiceId,
-        journal_length: EntryIndex,
-    ) {
-        self.effects.push(Effect::DropJournalAndFreeService {
-            service_id,
-            journal_length,
-        });
-    }
-
     pub(crate) fn enqueue_into_inbox(
         &mut self,
         seq_number: MessageIndex,
@@ -873,15 +834,11 @@ impl Effects {
     pub(crate) fn drop_journal_and_pop_inbox(
         &mut self,
         service_id: ServiceId,
-        inbox_sequence_number: MessageIndex,
         journal_length: EntryIndex,
-        service_invocation: ServiceInvocation,
     ) {
         self.effects.push(Effect::DropJournalAndPopInbox {
             service_id,
-            inbox_sequence_number,
             journal_length,
-            service_invocation,
         });
     }
 

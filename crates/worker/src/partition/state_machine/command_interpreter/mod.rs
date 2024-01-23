@@ -65,11 +65,6 @@ pub trait StateReader {
         invocation_id: &InvocationId,
     ) -> impl Future<Output = StorageResult<(FullInvocationId, InvocationStatus)>> + Send;
 
-    fn peek_inbox(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Future<Output = StorageResult<Option<InboxEntry>>> + Send;
-
     fn get_inbox_entry(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
@@ -287,7 +282,7 @@ where
                 service_id,
                 journal_length,
             } => {
-                effects.drop_journal_and_free_service(service_id, journal_length);
+                effects.drop_journal_and_pop_inbox(service_id, journal_length);
             }
             NBISEffect::SetState { key, value } => {
                 effects.set_state(
@@ -338,7 +333,6 @@ where
             NBISEffect::End(None) => {
                 self.end_invocation(
                     effects,
-                    state,
                     full_invocation_id.clone(),
                     invocation_metadata.clone(),
                 )
@@ -347,7 +341,6 @@ where
             NBISEffect::End(Some(e)) => {
                 self.fail_invocation(
                     effects,
-                    state,
                     full_invocation_id.clone(),
                     invocation_metadata.clone(),
                     e,
@@ -583,7 +576,6 @@ where
 
         self.fail_invocation(
             effects,
-            state,
             full_invocation_id.clone(),
             metadata,
             KILLED_INVOCATION_ERROR,
@@ -894,11 +886,11 @@ where
                 }
             }
             InvokerEffectKind::End => {
-                self.end_invocation(effects, state, full_invocation_id, invocation_metadata)
+                self.end_invocation(effects, full_invocation_id, invocation_metadata)
                     .await?;
             }
             InvokerEffectKind::Failed(e) => {
-                self.fail_invocation(effects, state, full_invocation_id, invocation_metadata, e)
+                self.fail_invocation(effects, full_invocation_id, invocation_metadata, e)
                     .await?;
             }
         }
@@ -906,10 +898,9 @@ where
         Ok((related_sid, span_relation))
     }
 
-    async fn end_invocation<State: StateReader>(
+    async fn end_invocation(
         &mut self,
         effects: &mut Effects,
-        state: &mut State,
         full_invocation_id: FullInvocationId,
         invocation_metadata: InvocationMetadata,
     ) -> Result<(), Error> {
@@ -924,17 +915,15 @@ where
 
         self.end_invocation_lifecycle(
             full_invocation_id,
-            state,
             invocation_metadata.journal_metadata.length,
             effects,
         )
         .await
     }
 
-    async fn fail_invocation<State: StateReader>(
+    async fn fail_invocation(
         &mut self,
         effects: &mut Effects,
-        state: &mut State,
         full_invocation_id: FullInvocationId,
         invocation_metadata: InvocationMetadata,
         error: InvocationError,
@@ -957,7 +946,6 @@ where
 
         self.end_invocation_lifecycle(
             full_invocation_id,
-            state,
             invocation_metadata.journal_metadata.length,
             effects,
         )
@@ -1397,27 +1385,13 @@ where
         );
     }
 
-    async fn end_invocation_lifecycle<State: StateReader>(
+    async fn end_invocation_lifecycle(
         &mut self,
         full_invocation_id: FullInvocationId,
-        state: &mut State,
         journal_length: EntryIndex,
         effects: &mut Effects,
     ) -> Result<(), Error> {
-        if let Some(InboxEntry {
-            inbox_sequence_number,
-            service_invocation,
-        }) = state.peek_inbox(&full_invocation_id.service_id).await?
-        {
-            effects.drop_journal_and_pop_inbox(
-                full_invocation_id.service_id,
-                inbox_sequence_number,
-                journal_length,
-                service_invocation,
-            );
-        } else {
-            effects.drop_journal_and_free_service(full_invocation_id.service_id, journal_length);
-        }
+        effects.drop_journal_and_pop_inbox(full_invocation_id.service_id, journal_length);
 
         Ok(())
     }

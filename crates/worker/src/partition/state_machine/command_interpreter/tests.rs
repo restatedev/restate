@@ -158,15 +158,6 @@ impl StateReader for StateReaderMock {
         ))
     }
 
-    async fn peek_inbox(&mut self, service_id: &ServiceId) -> StorageResult<Option<InboxEntry>> {
-        let result = self
-            .inboxes
-            .get(service_id)
-            .and_then(|inbox| inbox.first().cloned());
-
-        Ok(result)
-    }
-
     fn get_inbox_entry(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
@@ -489,7 +480,7 @@ async fn kill_call_tree() -> Result<(), Error> {
         effects,
         all!(
             contains(pat!(Effect::AbortInvocation(eq(fid.clone())))),
-            contains(pat!(Effect::DropJournalAndFreeService {
+            contains(pat!(Effect::DropJournalAndPopInbox {
                 service_id: eq(fid.service_id.clone()),
             })),
             contains(terminate_invocation_outbox_message_matcher(

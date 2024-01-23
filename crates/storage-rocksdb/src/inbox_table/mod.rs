@@ -85,6 +85,17 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         })
     }
 
+    async fn pop_inbox(&mut self, service_id: &ServiceId) -> Result<Option<InboxEntry>> {
+        let result = self.peek_inbox(service_id).await;
+
+        if let Ok(Some(inbox_entry)) = &result {
+            self.delete_invocation(service_id, inbox_entry.inbox_sequence_number)
+                .await
+        }
+
+        result
+    }
+
     fn inbox(&mut self, service_id: &ServiceId) -> impl Stream<Item = Result<InboxEntry>> + Send {
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
