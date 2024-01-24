@@ -10,16 +10,23 @@
 
 //! Restate uses many identifiers to uniquely identify its components and entities.
 
-use base64::display::Base64Display;
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
+use ulid::Ulid;
 
 use std::fmt;
 use std::mem::size_of;
+use std::mem::size_of_val;
 use std::str::FromStr;
-use uuid::Uuid;
+
+use crate::base62_util::base62_encode_fixed_width;
+use crate::base62_util::base62_length_for_type;
+use crate::errors::IdDecodeError;
+use crate::id_util::IdDecoder;
+use crate::id_util::IdEncoder;
+use crate::id_util::IdResourceType;
+use crate::id_util::ID_RESOURCE_SEPARATOR;
+use crate::time::MillisSinceEpoch;
 
 /// Identifying a member of a raft group
 pub type PeerId = u64;
@@ -69,61 +76,139 @@ pub trait WithPartitionKey {
     fn partition_key(&self) -> PartitionKey;
 }
 
+/// A family of resource identifiers that tracks the timestamp of its creation.
+pub trait TimestampAwareId {
+    /// The timestamp when this ID was created.
+    fn timestamp(&self) -> MillisSinceEpoch;
+}
+
 /// Discriminator for invocation instances
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, Ord, PartialOrd, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct InvocationUuid(Uuid);
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, Ord, PartialOrd)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+)]
+pub struct InvocationUuid(Ulid);
 
 impl InvocationUuid {
-    pub fn from_slice(b: &[u8]) -> Result<Self, uuid::Error> {
-        Ok(Self(Uuid::from_slice(b)?))
+    pub const SIZE_IN_BYTES: usize = size_of::<u128>();
+
+    pub fn new() -> Self {
+        Self(Ulid::new())
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
-        self.0.as_bytes()
+    pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
+        let ulid = Ulid::from_bytes(b.try_into().map_err(|_| IdDecodeError::Length)?);
+        debug_assert!(!ulid.is_nil());
+        Ok(Self(ulid))
     }
 
-    pub fn now_v7() -> Self {
-        Self(Uuid::now_v7())
+    pub fn from_bytes(b: [u8; Self::SIZE_IN_BYTES]) -> Self {
+        Self(Ulid::from_bytes(b))
+    }
+
+    pub fn to_bytes(&self) -> [u8; Self::SIZE_IN_BYTES] {
+        self.0.to_bytes()
+    }
+
+    #[cfg(feature = "test-utils")]
+    /// Craft an invocation id from raw parts. Should be used only in tests.
+    pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
+        Self(Ulid::from_parts(timestamp_ms, random))
+    }
+
+    #[cfg(feature = "test-utils")]
+    /// Craft an invocation id from raw parts. Should be used only in tests.
+    pub fn from_timestamp(timestamp_ms: u64) -> Self {
+        use std::time::{Duration, SystemTime};
+
+        Self(Ulid::from_datetime(
+            SystemTime::UNIX_EPOCH + Duration::from_millis(timestamp_ms),
+        ))
+    }
+
+    #[cfg(feature = "test-utils")]
+    /// Craft an invocation id from raw parts. Should be used only in tests.
+    pub fn as_raw_parts(&self) -> (u64, u128) {
+        (self.0.timestamp_ms(), self.0.random())
+    }
+
+    #[cfg(feature = "test-utils")]
+    /// Increment the random part of the id, useful for testing purposes
+    pub fn increment_random(mut self) -> Self {
+        // this is called from tests, it's the caller responsibility to check if
+        // we are not overflowing the random part;
+        self.0 = self.0.increment().expect("ulid overflow");
+        self
+    }
+
+    #[cfg(feature = "test-utils")]
+    /// Increment the random part of the id, useful for testing purposes
+    pub fn increment_timestamp(self) -> Self {
+        let (ts, random) = self.as_raw_parts();
+        Self::from_parts(ts + 1, random)
+    }
+}
+
+impl Default for InvocationUuid {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TimestampAwareId for InvocationUuid {
+    fn timestamp(&self) -> MillisSinceEpoch {
+        self.0.timestamp_ms().into()
     }
 }
 
 impl fmt::Display for InvocationUuid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.as_simple().fmt(f)
+        let raw: u128 = self.0.into();
+        let mut buf = String::with_capacity(base62_length_for_type::<u128>());
+        base62_encode_fixed_width(raw, &mut buf);
+        buf.fmt(f)
     }
 }
 
-impl AsRef<[u8]> for InvocationUuid {
-    #[inline]
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
+impl FromStr for InvocationUuid {
+    type Err = IdDecodeError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let mut decoder = IdDecoder::decode_well_known(
+            crate::id_util::IdSchemeVersion::default(),
+            IdResourceType::Invocation,
+            input,
+        )?;
+
+        // ulid (u128)
+        let raw_ulid: u128 = decoder.cursor.decode_next()?;
+        Ok(Self::from(raw_ulid))
     }
 }
 
-impl From<Uuid> for InvocationUuid {
-    fn from(value: Uuid) -> Self {
-        Self(value)
-    }
-}
-
-impl From<InvocationUuid> for Uuid {
+impl From<InvocationUuid> for Bytes {
     fn from(value: InvocationUuid) -> Self {
-        value.0
+        Bytes::copy_from_slice(&value.to_bytes())
+    }
+}
+
+impl From<u128> for InvocationUuid {
+    fn from(value: u128) -> Self {
+        Self(Ulid::from(value))
     }
 }
 
 impl From<InvocationUuid> for opentelemetry_api::trace::TraceId {
     fn from(value: InvocationUuid) -> Self {
-        let uuid: Uuid = value.into();
-        Self::from_bytes(uuid.into_bytes())
+        Self::from_bytes(value.to_bytes())
     }
 }
 
 impl From<InvocationUuid> for opentelemetry_api::trace::SpanId {
     fn from(value: InvocationUuid) -> Self {
-        let uuid: Uuid = value.into();
-        let last8: [u8; 8] = std::convert::TryInto::try_into(&uuid.as_bytes()[8..16]).unwrap();
+        let raw_be_bytes = value.to_bytes();
+        let last8: [u8; 8] = std::convert::TryInto::try_into(&raw_be_bytes[8..16]).unwrap();
         Self::from_bytes(last8)
     }
 }
@@ -175,67 +260,76 @@ impl WithPartitionKey for ServiceId {
 /// including enough routing information for the network component
 /// to route requests to the correct partition processors.
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(
     feature = "serde",
-    serde(try_from = "EncodedInvocationId", into = "EncodedInvocationId")
+    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
 )]
 pub struct InvocationId {
     /// Partition key of the called service
     partition_key: PartitionKey,
     /// Uniquely identifies this invocation instance
-    invocation_uuid: InvocationUuid,
+    inner: InvocationUuid,
 }
 
-pub type EncodedInvocationId = [u8; size_of::<PartitionKey>() + size_of::<uuid::Bytes>()];
+pub type EncodedInvocationId = [u8; size_of::<PartitionKey>() + InvocationUuid::SIZE_IN_BYTES];
 
 impl InvocationId {
     pub fn new(partition_key: PartitionKey, invocation_uuid: impl Into<InvocationUuid>) -> Self {
         Self {
             partition_key,
-            invocation_uuid: invocation_uuid.into(),
+            inner: invocation_uuid.into(),
         }
     }
 
-    pub fn from_slice(b: &[u8]) -> Result<Self, InvocationIdParseError> {
-        let mut encoded_id = EncodedInvocationId::default();
-        if b.len() != size_of::<EncodedInvocationId>() {
-            return Err(InvocationIdParseError::BadSliceLength);
-        }
-
-        encoded_id.copy_from_slice(b);
-        encoded_id.try_into()
+    pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
+        Self::try_from(b)
     }
 
     pub fn invocation_uuid(&self) -> InvocationUuid {
-        self.invocation_uuid
+        self.inner
     }
 
-    pub fn as_bytes(&self) -> EncodedInvocationId {
-        encode_invocation_id(&self.partition_key, &self.invocation_uuid)
+    pub fn to_bytes(&self) -> EncodedInvocationId {
+        encode_invocation_id(&self.partition_key, &self.inner)
     }
 }
 
-impl TryFrom<EncodedInvocationId> for InvocationId {
-    type Error = InvocationIdParseError;
+impl TimestampAwareId for InvocationId {
+    fn timestamp(&self) -> MillisSinceEpoch {
+        self.inner.timestamp()
+    }
+}
 
-    fn try_from(encoded_id: EncodedInvocationId) -> Result<Self, InvocationIdParseError> {
-        let mut partition_key_buf = [0; size_of::<PartitionKey>()];
-        partition_key_buf.copy_from_slice(&encoded_id[..size_of::<PartitionKey>()]);
-        let partition_key = PartitionKey::from_be_bytes(partition_key_buf);
+impl TryFrom<&[u8]> for InvocationId {
+    type Error = IdDecodeError;
 
-        let uuid = Uuid::from_slice(&encoded_id[size_of::<PartitionKey>()..])?;
+    fn try_from(encoded_id: &[u8]) -> Result<Self, Self::Error> {
+        if encoded_id.len() < size_of::<EncodedInvocationId>() {
+            return Err(IdDecodeError::Length);
+        }
+        let buf: [u8; size_of::<EncodedInvocationId>()] =
+            encoded_id.try_into().map_err(|_| IdDecodeError::Length)?;
+        Ok(buf.into())
+    }
+}
 
-        Ok(Self {
+impl From<EncodedInvocationId> for InvocationId {
+    fn from(encoded_id: EncodedInvocationId) -> Self {
+        // This optimizes nicely by the compiler. We unwrap because array length is guaranteed to
+        // fit both components according to EncodedInvocatioId type definition.
+        let partition_key_bytes = encoded_id[..size_of::<PartitionKey>()].try_into().unwrap();
+        let partition_key = PartitionKey::from_be_bytes(partition_key_bytes);
+
+        let offset = size_of::<PartitionKey>();
+        let inner_id_bytes = encoded_id[offset..offset + InvocationUuid::SIZE_IN_BYTES]
+            .try_into()
+            .unwrap();
+        let inner = InvocationUuid::from_bytes(inner_id_bytes);
+
+        Self {
             partition_key,
-            invocation_uuid: InvocationUuid(uuid),
-        })
-    }
-}
-
-impl From<InvocationId> for EncodedInvocationId {
-    fn from(value: InvocationId) -> Self {
-        value.as_bytes()
+            inner,
+        }
     }
 }
 
@@ -247,56 +341,30 @@ impl WithPartitionKey for InvocationId {
 
 impl fmt::Display for InvocationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        display_invocation_id(&self.partition_key, &self.invocation_uuid, f)
+        display_invocation_id(&self.partition_key, &self.inner, f)
     }
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum InvocationIdParseError {
-    #[error("cannot parse the invocation id, bad slice length")]
-    BadSliceLength,
-    #[error("cannot parse the invocation id uuid: {0}")]
-    Uuid(#[from] uuid::Error),
-    #[error("cannot parse the invocation id encoded as base64: bad length")]
-    BadBase64Length,
-    #[error("cannot parse the invocation id encoded as base64: {0}")]
-    Base64(#[from] base64::DecodeError),
-}
-
 impl FromStr for InvocationId {
-    type Err = InvocationIdParseError;
+    type Err = IdDecodeError;
 
-    fn from_str(str: &str) -> Result<Self, Self::Err> {
-        const PARTITION_KEY_ENCODED_LENGTH: usize =
-            match base64::encoded_len(size_of::<PartitionKey>(), false) {
-                Some(length) => length,
-                None => panic!("partition key must fit in usize bytes"),
-            };
-        const UUID_ENCODED_LENGTH: usize =
-            match base64::encoded_len(size_of::<uuid::Bytes>(), false) {
-                Some(length) => length,
-                None => panic!("uuid must fit in usize bytes"),
-            };
-
-        // check input length is appropriate
-        if str.len() != PARTITION_KEY_ENCODED_LENGTH + UUID_ENCODED_LENGTH {
-            return Err(InvocationIdParseError::BadBase64Length);
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let mut decoder = IdDecoder::decode(input)?;
+        // Ensure we are decoding an invocation id
+        if decoder.resource_type != IdResourceType::Invocation {
+            return Err(IdDecodeError::TypeMismatch);
         }
 
-        let mut encoded_id = EncodedInvocationId::default();
+        // partition key (u64)
+        let partition_key: PartitionKey = decoder.cursor.decode_next()?;
 
-        // base64 library can overestimate the number of bytes needed by up to 2 due to rounding
-        // so we have to use the unchecked version of this
-        restate_base64_util::URL_SAFE.decode_slice_unchecked(
-            &str.as_bytes()[0..PARTITION_KEY_ENCODED_LENGTH],
-            &mut encoded_id[..size_of::<PartitionKey>()],
-        )?;
-        restate_base64_util::URL_SAFE.decode_slice_unchecked(
-            &str.as_bytes()[PARTITION_KEY_ENCODED_LENGTH..],
-            &mut encoded_id[size_of::<PartitionKey>()..],
-        )?;
-
-        encoded_id.try_into()
+        // ulid (u128)
+        let raw_ulid: u128 = decoder.cursor.decode_next()?;
+        let inner = InvocationUuid::from(raw_ulid);
+        Ok(Self {
+            partition_key,
+            inner,
+        })
     }
 }
 
@@ -323,7 +391,7 @@ impl FullInvocationId {
     }
 
     pub fn generate(service_name: impl Into<ByteString>, key: impl Into<Bytes>) -> Self {
-        Self::with_service_id(ServiceId::new(service_name, key), InvocationUuid::now_v7())
+        Self::with_service_id(ServiceId::new(service_name, key), InvocationUuid::new())
     }
 
     pub fn with_service_id(
@@ -337,7 +405,11 @@ impl FullInvocationId {
     }
 
     pub fn to_invocation_id_bytes(&self) -> EncodedInvocationId {
-        encode_invocation_id(&self.service_id.partition_key, &self.invocation_uuid)
+        InvocationId {
+            partition_key: self.service_id.partition_key,
+            inner: self.invocation_uuid,
+        }
+        .to_bytes()
     }
 }
 
@@ -363,7 +435,7 @@ impl From<&FullInvocationId> for InvocationId {
     fn from(value: &FullInvocationId) -> Self {
         Self {
             partition_key: value.partition_key(),
-            invocation_uuid: value.invocation_uuid,
+            inner: value.invocation_uuid,
         }
     }
 }
@@ -398,9 +470,9 @@ fn encode_invocation_id(
     partition_key: &PartitionKey,
     invocation_uuid: &InvocationUuid,
 ) -> EncodedInvocationId {
-    let mut buf = [0_u8; size_of::<PartitionKey>() + size_of::<uuid::Bytes>()];
+    let mut buf = EncodedInvocationId::default();
     buf[..size_of::<PartitionKey>()].copy_from_slice(&partition_key.to_be_bytes());
-    buf[size_of::<PartitionKey>()..].copy_from_slice(invocation_uuid.0.as_bytes());
+    buf[size_of::<PartitionKey>()..].copy_from_slice(&invocation_uuid.to_bytes());
     buf
 }
 
@@ -410,17 +482,31 @@ fn display_invocation_id(
     invocation_uuid: &InvocationUuid,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
-    // encode the two ids separately so that it is possible to do a string prefix search for a
-    // partition key using the first 11 characters. this has the cost of an additional character
-    write!(
-        f,
-        "{}{}",
-        Base64Display::new(&partition_key.to_be_bytes(), &BASE64_URL_SAFE_NO_PAD),
-        Base64Display::new(
-            invocation_uuid.0.as_bytes().as_slice(),
-            &BASE64_URL_SAFE_NO_PAD
-        ),
-    )
+    // encode the id such that it is possible to do a string prefix search for a
+    // partition key using the first 17 characters.
+
+    // how many chars?
+    // token and prefix = 4c inv_
+    // version = 1c
+    // partition_key = 64bit = 11c
+    // ulid = 128 bit = 22c
+    // Total characters = 38c
+
+    // TODO: Encapsulate in IdEncoder
+    let mut buf = String::with_capacity(
+        IdResourceType::Invocation.as_str().len()
+            + size_of_val(&ID_RESOURCE_SEPARATOR)
+            + 1 // version char
+            + size_of_val(partition_key)
+            + InvocationUuid::SIZE_IN_BYTES,
+    );
+
+    let mut encoder = IdEncoder::with_buf(&mut buf, IdResourceType::Invocation);
+    encoder.encode_fixed_width(*partition_key);
+    let ulid_raw: u128 = invocation_uuid.0.into();
+    encoder.encode_fixed_width(ulid_raw);
+
+    fmt::Display::fmt(&buf, f)
 }
 
 #[derive(Debug, Clone)]
@@ -557,7 +643,7 @@ mod mocks {
         pub fn mock_random() -> Self {
             Self::new(
                 rand::thread_rng().sample::<PartitionKey, _>(rand::distributions::Standard),
-                Uuid::now_v7(),
+                InvocationUuid::new(),
             )
         }
     }
@@ -569,7 +655,7 @@ mod mocks {
                 Bytes::copy_from_slice(
                     &rand::thread_rng().sample::<[u8; 32], _>(rand::distributions::Standard),
                 ),
-                Uuid::now_v7(),
+                InvocationUuid::new(),
             )
         }
     }
@@ -581,42 +667,49 @@ mod tests {
 
     #[test]
     fn roundtrip_invocation_id() {
-        let expected = InvocationId::new(92, InvocationUuid::now_v7());
+        let expected = InvocationId::new(92, InvocationUuid::new());
         assert_eq!(
             expected,
-            InvocationId::from_slice(&expected.as_bytes()).unwrap()
+            InvocationId::from_slice(&expected.to_bytes()).unwrap()
         )
     }
 
     #[test]
     fn roundtrip_invocation_id_str() {
-        let expected = InvocationId::new(92, InvocationUuid::now_v7());
-        let parsed = InvocationId::from_str(&expected.to_string()).unwrap();
-
-        assert_eq!(expected, parsed)
+        // torture test (poor's man property check test)
+        for _ in 0..100000 {
+            let expected = InvocationId::mock_random();
+            let serialized = expected.to_string();
+            assert_eq!(38, serialized.len(), "{} => {:?}", serialized, expected);
+            let parsed = InvocationId::from_str(&serialized).unwrap();
+            assert_eq!(expected, parsed, "serialized: {}", serialized);
+        }
     }
 
     #[test]
     fn bad_invocation_id_str() {
         let bad_strs = [
-            ("", InvocationIdParseError::BadBase64Length),
+            ("", IdDecodeError::Length),
             (
                 "mxvgUOrwIb8cYrGPHkAAKSKY3O!6IEy_g",
-                InvocationIdParseError::Base64(base64::DecodeError::InvalidByte(15, 33)),
+                IdDecodeError::UnrecognizedType("mxvgUOrwIb8cYrGPHkAAKSKY3O!6IEy".to_string()),
             ),
-            ("mxvgUOrwIb8", InvocationIdParseError::BadBase64Length),
+            ("mxvgUOrwIb8", IdDecodeError::Format),
             (
-                "mxvgUOrwIb8cYrGPHkAAKSKY3Oo6IEy_",
-                InvocationIdParseError::BadBase64Length,
+                "inv_ub23411ba", // wrong version
+                IdDecodeError::Version,
             ),
-            (
-                "mxvgUOrwIb8cYrGPHkAAKSKY3Oo6IEiYV",
-                InvocationIdParseError::Base64(base64::DecodeError::InvalidLastSymbol(21, 86)),
-            ),
+            ("inv_1b234d1ba", IdDecodeError::Length),
         ];
 
         for (bad, error) in bad_strs {
-            assert_eq!(error, InvocationId::from_str(bad).unwrap_err())
+            assert_eq!(
+                error,
+                InvocationId::from_str(bad).unwrap_err(),
+                "invocation id: '{}' fails with {}",
+                bad,
+                error
+            )
         }
     }
 

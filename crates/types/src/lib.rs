@@ -10,6 +10,9 @@
 
 //! This crate contains the core types used by various Restate components.
 
+mod base62_util;
+mod id_util;
+
 pub mod errors;
 pub mod identifiers;
 pub mod invocation;

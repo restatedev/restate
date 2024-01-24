@@ -1053,6 +1053,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base62"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f879ef8fc74665ed7f0e6127cb106315888fc2744f68e14b74f83edbb2a08992"
+
+[[package]]
 name = "base64"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5521,14 +5527,17 @@ name = "restate-types"
 version = "0.7.1"
 dependencies = [
  "anyhow",
+ "base62",
  "base64 0.21.7",
  "bytes",
  "bytestring",
  "http",
  "humantime",
+ "num-traits",
  "opentelemetry_api",
  "rand",
  "restate-base64-util",
+ "restate-test-util",
  "schemars",
  "serde",
  "serde_with",
@@ -5539,6 +5548,7 @@ dependencies = [
  "tonic 0.10.2",
  "tracing",
  "tracing-opentelemetry",
+ "ulid",
  "uuid",
  "xxhash-rust",
 ]
@@ -6904,6 +6914,15 @@ name = "typenum"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
+
+[[package]]
+name = "ulid"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e37c4b6cbcc59a8dcd09a6429fbc7890286bcbb79215cea7b38a3c4c0921d93"
+dependencies = [
+ "rand",
+]
 
 [[package]]
 name = "uncased"

@@ -107,6 +107,23 @@ impl From<UserErrorCode> for u32 {
     }
 }
 
+/// Error parsing/decoding a resource ID.
+#[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
+pub enum IdDecodeError {
+    #[error("bad length")]
+    Length,
+    #[error("base62 decode error")]
+    Codec,
+    #[error("bad format")]
+    Format,
+    #[error("unrecognized codec version")]
+    Version,
+    #[error("id doesn't match the expected type")]
+    TypeMismatch,
+    #[error("unrecognized resource type: {0}")]
+    UnrecognizedType(String),
+}
+
 /// Error codes used by Restate to carry Restate specific error codes.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u16)]

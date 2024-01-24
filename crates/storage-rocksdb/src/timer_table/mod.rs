@@ -178,13 +178,14 @@ mod tests {
     use crate::timer_table::TimerKey;
     use rand::Rng;
     use restate_types::identifiers::InvocationUuid;
-    use uuid::Uuid;
+
+    const FIXTURE_INVOCATION: InvocationUuid =
+        InvocationUuid::from_parts(1706027034946, 12345678900001);
 
     #[test]
     fn round_trip() {
-        let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
         let key = TimerKey {
-            invocation_uuid: uuid.into(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 1448,
             timestamp: 87654321,
         };
@@ -197,15 +198,13 @@ mod tests {
 
     #[test]
     fn test_lexicographical_sorting_by_timestamp() {
-        let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
-
         let a = TimerKey {
-            invocation_uuid: uuid.into(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 0,
             timestamp: 300,
         };
         let b = TimerKey {
-            invocation_uuid: uuid.into(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 0,
             timestamp: 301,
         };
@@ -214,15 +213,22 @@ mod tests {
 
     #[test]
     fn test_lexicographical_sorting_by_invocation() {
-        let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
+        // Higher random part should be sorted correctly in bytes
         let a = TimerKey {
-            invocation_uuid: uuid.into(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 0,
             timestamp: 300,
         };
-        let uuid2 = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2d").expect("invalid uuid");
         let b = TimerKey {
-            invocation_uuid: uuid2.into(),
+            invocation_uuid: FIXTURE_INVOCATION.increment_random(),
+            journal_index: 0,
+            timestamp: 300,
+        };
+        assert_in_range(a.clone(), b);
+
+        // Also ensure that higher timestamp is sorted correctly
+        let b = TimerKey {
+            invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
             journal_index: 0,
             timestamp: 300,
         };
@@ -231,20 +237,20 @@ mod tests {
 
     #[test]
     fn test_lexicographical_sorting_by_journal_index() {
-        let uuid = Uuid::try_parse("018756fa-3f7f-7854-a76b-42c59a3d7f2c").expect("invalid uuid");
         let a = TimerKey {
-            invocation_uuid: uuid.into(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 0,
             timestamp: 300,
         };
         let b = TimerKey {
-            invocation_uuid: uuid.into(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 1,
             timestamp: 300,
         };
         assert_in_range(a, b);
     }
 
+    #[track_caller]
     fn assert_in_range(key_a: TimerKey, key_b: TimerKey) {
         let key_a_bytes = write_timer_key(1, &key_a).serialize();
         let key_b_bytes = write_timer_key(1, &key_b).serialize();
@@ -294,7 +300,7 @@ mod tests {
 
     pub fn random_timer_key() -> TimerKey {
         TimerKey {
-            invocation_uuid: InvocationUuid::now_v7(),
+            invocation_uuid: InvocationUuid::new(),
             journal_index: rand::thread_rng().gen_range(0..2 ^ 16),
             timestamp: rand::thread_rng().gen_range(0..2 ^ 16),
         }

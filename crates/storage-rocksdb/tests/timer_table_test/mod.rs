@@ -13,15 +13,18 @@ use futures_util::StreamExt;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use std::pin::pin;
+
+const FIXTURE_INVOCATION: InvocationUuid =
+    InvocationUuid::from_parts(1706027034946, 12345678900001);
 
 async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
         1337,
         &TimerKey {
-            invocation_uuid: Default::default(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 0,
             timestamp: 0,
         },
@@ -32,7 +35,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
         1337,
         &TimerKey {
-            invocation_uuid: Default::default(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 1,
             timestamp: 0,
         },
@@ -47,7 +50,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
         1337,
         &TimerKey {
-            invocation_uuid: Default::default(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 2,
             timestamp: 1,
         },
@@ -61,7 +64,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
         1336,
         &TimerKey {
-            invocation_uuid: Default::default(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 0,
             timestamp: 0,
         },
@@ -72,7 +75,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     txn.add_timer(
         1338,
         &TimerKey {
-            invocation_uuid: Default::default(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 0,
             timestamp: 0,
         },
@@ -94,11 +97,11 @@ async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T
 
 async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
     let timer_key = &TimerKey {
-        invocation_uuid: Default::default(),
+        invocation_uuid: FIXTURE_INVOCATION,
         journal_index: 0,
         timestamp: 0,
     };
-    let mut stream = pin!(txn.next_timers_greater_than(1337, Some(timer_key), usize::MAX,));
+    let mut stream = pin!(txn.next_timers_greater_than(1337, Some(timer_key), usize::MAX));
 
     if let Some(Ok((key, _))) = stream.next().await {
         // make sure that we skip the first timer that has a journal_index of 0
@@ -119,7 +122,7 @@ async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
     txn.delete_timer(
         1337,
         &TimerKey {
-            invocation_uuid: Default::default(),
+            invocation_uuid: FIXTURE_INVOCATION,
             journal_index: 0,
             timestamp: 0,
         },
@@ -129,7 +132,7 @@ async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
 
 async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
     let timer_key = &TimerKey {
-        invocation_uuid: Default::default(),
+        invocation_uuid: FIXTURE_INVOCATION,
         journal_index: 0,
         timestamp: 0,
     };
