@@ -33,7 +33,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
-uuid = { workspace = true }
 
 [dev-dependencies]
 restate-ingress-dispatcher = { workspace = true, features = ["mocks"] }

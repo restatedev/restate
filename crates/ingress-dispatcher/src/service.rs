@@ -294,7 +294,7 @@ impl DispatcherLoopHandler {
                             idempotency_id: idempotency_key,
                             service_name: fid.service_id.service_name.into(),
                             service_key: fid.service_id.key,
-                            invocation_uuid: Bytes::copy_from_slice(fid.invocation_uuid.as_bytes()),
+                            invocation_uuid: fid.invocation_uuid.into(),
                             method: method_name.into(),
                             argument,
                             retention_period_sec: retention_period.unwrap_or_default().as_secs()

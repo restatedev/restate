@@ -235,7 +235,7 @@ pub mod storage {
 
                     Invoked {
                         response_sink: Some(ServiceInvocationResponseSink::from(response_sink)),
-                        invocation_uuid: invocation_uuid_to_bytes(&invocation_uuid),
+                        invocation_uuid: invocation_uuid.into(),
                         method_name: method.into_bytes(),
                         deployment_id: Some(match deployment_id {
                             None => invocation_status::invoked::DeploymentId::None(()),
@@ -327,7 +327,7 @@ pub mod storage {
                         HashSet<restate_types::identifiers::EntryIndex>,
                     ),
                 ) -> Self {
-                    let invocation_uuid = invocation_uuid_to_bytes(&metadata.invocation_uuid);
+                    let invocation_uuid: Bytes = metadata.invocation_uuid.into();
                     let response_sink = ServiceInvocationResponseSink::from(metadata.response_sink);
                     let journal_meta = JournalMeta::from(metadata.journal_metadata);
                     let waiting_for_completed_entries =
@@ -426,7 +426,7 @@ pub mod storage {
                         restate_storage_api::status_table::StatusTimestamps,
                     ),
                 ) -> Self {
-                    let invocation_uuid = invocation_uuid_to_bytes(&invocation_uuid);
+                    let invocation_uuid: Bytes = invocation_uuid.into();
                     let journal_meta = JournalMeta::from(journal_metadata);
 
                     Virtual {
@@ -726,12 +726,11 @@ pub mod storage {
 
             impl From<restate_types::identifiers::FullInvocationId> for FullInvocationId {
                 fn from(value: restate_types::identifiers::FullInvocationId) -> Self {
-                    let invocation_uuid = invocation_uuid_to_bytes(&value.invocation_uuid);
                     let service_key = value.service_id.key;
                     let service_name = value.service_id.service_name.into_bytes();
 
                     FullInvocationId {
-                        invocation_uuid,
+                        invocation_uuid: value.invocation_uuid.into(),
                         service_key,
                         service_name,
                     }
@@ -774,7 +773,7 @@ pub mod storage {
                             invocation_id,
                         ) => MaybeFullInvocationId {
                             kind: Some(maybe_full_invocation_id::Kind::InvocationId(
-                                Bytes::copy_from_slice(&invocation_id.as_bytes()),
+                                Bytes::copy_from_slice(&invocation_id.to_bytes()),
                             )),
                         },
                     }
@@ -786,12 +785,6 @@ pub mod storage {
             ) -> Result<restate_types::identifiers::InvocationUuid, ConversionError> {
                 restate_types::identifiers::InvocationUuid::from_slice(bytes.as_ref())
                     .map_err(ConversionError::invalid_data)
-            }
-
-            fn invocation_uuid_to_bytes(
-                invocation_id: &restate_types::identifiers::InvocationUuid,
-            ) -> Bytes {
-                Bytes::copy_from_slice(invocation_id.as_bytes())
             }
 
             impl TryFrom<SpanContext> for restate_types::invocation::ServiceInvocationSpanContext {
@@ -1334,7 +1327,7 @@ pub mod storage {
                         } => enriched_entry_header::Kind::Awakeable(Awakeable { is_completed }),
                         restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable { enrichment_result, .. } => {
                             enriched_entry_header::Kind::CompleteAwakeable(CompleteAwakeable {
-                                invocation_id: Bytes::copy_from_slice(&enrichment_result.invocation_id.as_bytes()),
+                                invocation_id: Bytes::copy_from_slice(&enrichment_result.invocation_id.to_bytes()),
                                 entry_index: enrichment_result.entry_index
                             })
                         }
@@ -1403,7 +1396,7 @@ pub mod storage {
                                 span_context,
                             } => invocation_resolution_result::Result::Success(
                                 invocation_resolution_result::Success {
-                                    invocation_uuid: invocation_uuid_to_bytes(&invocation_uuid),
+                                    invocation_uuid: invocation_uuid.into(),
                                     service_key,
                                     service_name: service_name.into_bytes(),
                                     span_context: Some(SpanContext::from(span_context)),
@@ -1449,7 +1442,7 @@ pub mod storage {
             {
                 fn from(value: restate_types::journal::enriched::InvokeEnrichmentResult) -> Self {
                     BackgroundCallResolutionResult {
-                        invocation_uuid: invocation_uuid_to_bytes(&value.invocation_uuid),
+                        invocation_uuid: value.invocation_uuid.into(),
                         service_key: value.service_key,
                         service_name: value.service_name.into_bytes(),
                         span_context: Some(SpanContext::from(value.span_context)),

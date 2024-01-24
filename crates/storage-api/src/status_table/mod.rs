@@ -249,7 +249,7 @@ mod mocks {
     impl InvocationMetadata {
         pub fn mock() -> Self {
             InvocationMetadata {
-                invocation_uuid: InvocationUuid::now_v7(),
+                invocation_uuid: InvocationUuid::new(),
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 deployment_id: None,
                 method: ByteString::from("mock"),

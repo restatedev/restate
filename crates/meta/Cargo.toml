@@ -47,7 +47,6 @@ http = { workspace = true }
 restate-errors = { workspace = true, features = ["include_doc"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-uuid = { workspace = true }
 
 [dev-dependencies]
 restate-pb = { workspace = true, features = ["mocks"] }
