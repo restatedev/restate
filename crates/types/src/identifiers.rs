@@ -684,6 +684,11 @@ mod tests {
     }
 
     #[test]
+    fn invocation_codec_capacity() {
+        assert_eq!(38, IdEncoder::<InvocationId>::estimate_buf_capacity())
+    }
+
+    #[test]
     fn roundtrip_invocation_id_str() {
         // torture test (poor's man property check test)
         for _ in 0..100000 {
