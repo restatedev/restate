@@ -200,7 +200,7 @@ impl IngressRequest {
                         .to_owned()
                 }),
                 EventReceiverServiceInstanceType::Unkeyed => {
-                    Bytes::from(InvocationUuid::now_v7().to_string())
+                    Bytes::from(InvocationUuid::new().to_string())
                 }
                 EventReceiverServiceInstanceType::Singleton => Bytes::new(),
             },
@@ -231,9 +231,7 @@ impl IngressRequest {
                         target_service: target_fid.service_id.service_name.to_string(),
                         target_method: method.to_string(),
                         target_key: target_fid.service_id.key,
-                        target_invocation_uuid: Bytes::copy_from_slice(
-                            target_fid.invocation_uuid.as_bytes(),
-                        ),
+                        target_invocation_uuid: target_fid.invocation_uuid.into(),
                         input: argument,
                     }
                     .encode_to_vec()

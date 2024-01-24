@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{assert_stream_eq, uuid_str};
+use crate::assert_stream_eq;
 use restate_storage_api::status_table::{
     InvocationMetadata, InvocationStatus, JournalMetadata, StatusTable, StatusTimestamps,
 };
@@ -17,6 +17,9 @@ use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{ServiceInvocationSpanContext, Source};
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
+
+const FIXTURE_INVOCATION: InvocationUuid =
+    InvocationUuid::from_parts(1706027034946, 12345678900001);
 
 fn invoked_status(invocation_id: impl Into<InvocationUuid>) -> InvocationStatus {
     InvocationStatus::Invoked(InvocationMetadata::new(
@@ -48,37 +51,37 @@ fn suspended_status(invocation_id: impl Into<InvocationUuid>) -> InvocationStatu
 async fn populate_data<T: StatusTable>(txn: &mut T) {
     txn.put_invocation_status(
         &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-        invoked_status(uuid_str("018756fa-3f7f-7854-a76b-42c59a3d7f2d")),
+        invoked_status(FIXTURE_INVOCATION),
     )
     .await;
 
     txn.put_invocation_status(
         &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
-        invoked_status(uuid_str("008756fa-3f7f-7854-a76b-42c59a3d7f2d")),
+        invoked_status(FIXTURE_INVOCATION),
     )
     .await;
 
     txn.put_invocation_status(
         &ServiceId::with_partition_key(1338, "svc-1", "key-2"),
-        invoked_status(uuid_str("118756fa-3f7f-7854-a76b-42c59a3d7f2d")),
+        invoked_status(FIXTURE_INVOCATION),
     )
     .await;
 
     txn.put_invocation_status(
         &ServiceId::with_partition_key(1339, "svc-2", "key-0"),
-        invoked_status(uuid_str("118756fa-3f7f-7854-a76b-42c59a3d7f2d")),
+        invoked_status(FIXTURE_INVOCATION),
     )
     .await;
 
     txn.put_invocation_status(
         &ServiceId::with_partition_key(1339, "svc-2", "key-1"),
-        suspended_status(uuid_str("218756fa-3f7f-7854-a76b-42c59a3d7f2d")),
+        suspended_status(FIXTURE_INVOCATION),
     )
     .await;
 
     txn.put_invocation_status(
         &ServiceId::with_partition_key(u64::MAX, "svc-u64", "key-0"),
-        invoked_status(uuid_str("218756fa-3f7f-7854-a76b-42c59a3d7f2d")),
+        invoked_status(FIXTURE_INVOCATION),
     )
     .await;
 }
@@ -89,12 +92,7 @@ async fn verify_point_lookups<T: StatusTable>(txn: &mut T) {
         .await
         .expect("should not fail");
 
-    assert_eq!(
-        status,
-        Some(invoked_status(uuid_str(
-            "018756fa-3f7f-7854-a76b-42c59a3d7f2d"
-        )))
-    );
+    assert_eq!(status, Some(invoked_status(FIXTURE_INVOCATION)));
 }
 
 async fn verify_all_svc_with_status_invoked<T: StatusTable>(txn: &mut T) {
@@ -103,19 +101,19 @@ async fn verify_all_svc_with_status_invoked<T: StatusTable>(txn: &mut T) {
     let expected = vec![
         FullInvocationId::with_service_id(
             ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            uuid_str("018756fa-3f7f-7854-a76b-42c59a3d7f2d"),
+            FIXTURE_INVOCATION,
         ),
         FullInvocationId::with_service_id(
             ServiceId::with_partition_key(1337, "svc-1", "key-2"),
-            uuid_str("008756fa-3f7f-7854-a76b-42c59a3d7f2d"),
+            FIXTURE_INVOCATION,
         ),
         FullInvocationId::with_service_id(
             ServiceId::with_partition_key(1338, "svc-1", "key-2"),
-            uuid_str("118756fa-3f7f-7854-a76b-42c59a3d7f2d"),
+            FIXTURE_INVOCATION,
         ),
         FullInvocationId::with_service_id(
             ServiceId::with_partition_key(1339, "svc-2", "key-0"),
-            uuid_str("118756fa-3f7f-7854-a76b-42c59a3d7f2d"),
+            FIXTURE_INVOCATION,
         ),
     ];
 
@@ -124,10 +122,7 @@ async fn verify_all_svc_with_status_invoked<T: StatusTable>(txn: &mut T) {
 
 async fn verify_lookup_by_invocation_id<T: StatusTable>(txn: &mut T) {
     let result = txn
-        .get_invocation_status_from(
-            1337,
-            uuid_str("018756fa-3f7f-7854-a76b-42c59a3d7f2d").into(),
-        )
+        .get_invocation_status_from(1337, FIXTURE_INVOCATION)
         .await
         .expect("should not fail");
 
@@ -135,18 +130,12 @@ async fn verify_lookup_by_invocation_id<T: StatusTable>(txn: &mut T) {
 
     assert_eq!(ServiceId::with_partition_key(1337, "svc-1", "key-1"), id);
 
-    assert_eq!(
-        status,
-        invoked_status(uuid_str("018756fa-3f7f-7854-a76b-42c59a3d7f2d"))
-    );
+    assert_eq!(status, invoked_status(FIXTURE_INVOCATION));
 }
 
 async fn verify_lookup_by_invocation_id_not_found<T: StatusTable>(txn: &mut T) {
     let result = txn
-        .get_invocation_status_from(
-            1337,
-            uuid_str("00000000-3f7f-7854-a76b-42c59a3d7f2d").into(),
-        )
+        .get_invocation_status_from(1337, InvocationUuid::new())
         .await
         .expect("should not fail");
 
@@ -157,7 +146,7 @@ async fn verify_last_partition_all_svc_with_status_invoked<T: StatusTable>(txn: 
     let stream = txn.invoked_invocations(4000..=u64::MAX);
     let expected = vec![FullInvocationId::with_service_id(
         ServiceId::with_partition_key(u64::MAX, "svc-u64", "key-0"),
-        uuid_str("218756fa-3f7f-7854-a76b-42c59a3d7f2d"),
+        FIXTURE_INVOCATION,
     )];
 
     assert_stream_eq(stream, expected).await;

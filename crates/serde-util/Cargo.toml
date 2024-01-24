@@ -20,7 +20,6 @@ prost = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
-uuid = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

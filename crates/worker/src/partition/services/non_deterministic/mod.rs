@@ -529,10 +529,8 @@ mod tests {
                 &'fut mut InvocationContext<'fut, MockStateReader>,
             ) -> LocalBoxFuture<'fut, Result<(), InvocationError>>,
         {
-            let fid = FullInvocationId::with_service_id(
-                self.service_id.clone(),
-                InvocationUuid::now_v7(),
-            );
+            let fid =
+                FullInvocationId::with_service_id(self.service_id.clone(), InvocationUuid::new());
             let mut out_effects = vec![];
             let mut state_and_journal_transitions = StateAndJournalTransitions::default();
             let mut invocation_ctx = InvocationContext {

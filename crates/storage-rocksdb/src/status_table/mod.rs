@@ -27,7 +27,6 @@ use restate_storage_proto::storage;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use std::ops::RangeInclusive;
-use uuid::Uuid;
 
 define_table_key!(
     Status,
@@ -252,7 +251,7 @@ fn decode_status_key_value(k: &[u8], v: &[u8]) -> crate::Result<Option<FullInvoc
     )) = status.status
     {
         let service_id = status_key_from_bytes(Bytes::copy_from_slice(k))?;
-        let uuid = Uuid::from_slice(&invocation_uuid)
+        let uuid = InvocationUuid::from_slice(&invocation_uuid)
             .map_err(|error| StorageError::Generic(error.into()))?;
         Ok(Some(FullInvocationId::with_service_id(service_id, uuid)))
     } else {

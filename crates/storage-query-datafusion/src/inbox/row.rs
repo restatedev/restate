@@ -11,10 +11,8 @@
 use super::schema::InboxBuilder;
 use crate::table_util::format_using;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, TimestampAwareId, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, Source, TraceId};
-use std::time::Duration;
-use uuid::Uuid;
 
 #[inline]
 pub(crate) fn append_inbox_row(
@@ -74,11 +72,8 @@ pub(crate) fn append_inbox_row(
         }
 
         if row.is_created_at_defined() {
-            let (secs, nanos) = Uuid::from(fid.invocation_uuid)
-                .get_timestamp()
-                .expect("The UUID must be a v7 uuid")
-                .to_unix();
-            row.created_at(Duration::new(secs, nanos).as_millis() as i64);
+            let ts = fid.invocation_uuid.timestamp();
+            row.created_at(ts.as_u64() as i64);
         }
     } else {
         // todo think about how to present other inbox entries via datafusion: https://github.com/restatedev/restate/issues/1101

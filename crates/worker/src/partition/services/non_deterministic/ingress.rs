@@ -61,7 +61,7 @@ impl<'a, State> InvocationContext<'a, State> {
         Ok(FullInvocationId::new(
             service_name,
             key,
-            InvocationUuid::now_v7(),
+            InvocationUuid::new(),
         ))
     }
 }
