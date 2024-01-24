@@ -44,7 +44,7 @@ const BASE_TO_21: u128 = BASE_TO_20 * BASE as u128;
 // Used to calculate how many characters a certain value will occupy in a base62
 // encoding. This is needed so we can pad without extra allocations or unnecessary
 // memory movements.
-pub fn base62_count_chars(n: u128) -> usize {
+pub fn base62_min_length_for_val(n: u128) -> usize {
     const POWERS: [u128; 22] = [
         0,
         BASE as u128,
@@ -82,12 +82,12 @@ pub fn base62_encode_fixed_width<T>(i: T, buf: &mut String)
 where
     T: Into<u128> + PrimInt,
 {
-    let size_cap = base62_length_for_type::<T>();
+    let size_cap = base62_max_length_for_type::<T>();
     // convert to big-endian
     let i = i.to_be();
     // We estimate the size _after_ big-endian conversion since this is the
     // number we will be dividing up.
-    let effective_length = base62_count_chars(i.into());
+    let effective_length = base62_min_length_for_val(i.into());
     // prepend zeros to fill up the buffer
     for _ in 0..(size_cap - effective_length) {
         buf.push('0');
@@ -96,6 +96,6 @@ where
 }
 
 /// Calculate the max number of chars needed to encode this type as base62
-pub fn base62_length_for_type<T>() -> usize {
+pub const fn base62_max_length_for_type<T>() -> usize {
     (size_of::<T>() * BITS_PER_BYTE).div_ceil(BITS_PER_BASE62_CHAR)
 }

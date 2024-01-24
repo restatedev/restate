@@ -15,8 +15,9 @@ use std::str::FromStr;
 
 use num_traits::PrimInt;
 
-use crate::base62_util::{base62_encode_fixed_width, base62_length_for_type};
+use crate::base62_util::{base62_encode_fixed_width, base62_max_length_for_type};
 use crate::errors::IdDecodeError;
+use crate::identifiers::ResourceId;
 
 pub const ID_RESOURCE_SEPARATOR: char = '_';
 
@@ -99,7 +100,7 @@ impl<'a> IdStrCursor<'a> {
         T: PrimInt + TryFrom<u128>,
         <T as TryFrom<u128>>::Error: std::fmt::Debug,
     {
-        let size_to_read = base62_length_for_type::<T>();
+        let size_to_read = base62_max_length_for_type::<T>();
         let sliced_view = self
             .inner
             .get(self.offset..self.offset + size_to_read)
@@ -144,7 +145,7 @@ pub struct IdDecoder<'a> {
 
 impl<'a> IdDecoder<'a> {
     /// Decode an string that doesn't have the prefix, type, nor version fields.
-    pub fn decode_well_known(
+    pub fn new_ignore_prefix(
         version: IdSchemeVersion,
         resource_type: IdResourceType,
         input: &'a str,
@@ -157,7 +158,7 @@ impl<'a> IdDecoder<'a> {
     }
 
     /// Start decoding a well-formed ID string.
-    pub fn decode(input: &'a str) -> Result<Self, IdDecodeError> {
+    pub fn new(input: &'a str) -> Result<Self, IdDecodeError> {
         if input.is_empty() {
             return Err(IdDecodeError::Length);
         }
@@ -180,15 +181,16 @@ impl<'a> IdDecoder<'a> {
     }
 }
 
-pub struct IdEncoder<'a> {
-    buf: &'a mut String,
+pub struct IdEncoder<T: ?Sized> {
+    buf: String,
+    _marker: std::marker::PhantomData<T>,
 }
 
-impl<'a> IdEncoder<'a> {
-    /// Create a new encoder already filled with the provided buffer and resource type.
-    pub fn with_buf(buf: &'a mut String, resource_type: IdResourceType) -> Self {
+impl<T: ResourceId + ?Sized> Default for IdEncoder<T> {
+    fn default() -> Self {
+        let mut buf = String::with_capacity(Self::estimate_buf_capacity());
         // prefix token
-        buf.write_str(resource_type.as_str()).unwrap();
+        buf.write_str(T::RESOURCE_TYPE.as_str()).unwrap();
         // Separator
         buf.write_char(ID_RESOURCE_SEPARATOR).unwrap();
 
@@ -196,7 +198,17 @@ impl<'a> IdEncoder<'a> {
         buf.write_char(IdSchemeVersion::default().as_char())
             .unwrap();
 
-        Self { buf }
+        Self {
+            buf,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: ResourceId + ?Sized> IdEncoder<T> {
+    /// Create a new encoder already filled with the provided buffer and resource type.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Appends a value as a padded base62 encoded string to the underlying buffer
@@ -204,6 +216,15 @@ impl<'a> IdEncoder<'a> {
     where
         U: Into<u128> + PrimInt,
     {
-        base62_encode_fixed_width(i, self.buf);
+        base62_encode_fixed_width(i, &mut self.buf);
+    }
+
+    /// Estimates the capacity of string buffer needed to encode this ResourceId
+    pub const fn estimate_buf_capacity() -> usize {
+        T::RESOURCE_TYPE.as_str().len() + /* separator =*/1 + /* version =*/ 1 + T::STRING_CAPACITY_HINT
+    }
+
+    pub fn finalize(self) -> String {
+        self.buf
     }
 }
