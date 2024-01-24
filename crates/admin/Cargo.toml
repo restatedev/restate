@@ -48,7 +48,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
-uuid = { workspace = true }
 
 [dev-dependencies]
 restate-pb = { workspace = true, features = ["mocks"] }

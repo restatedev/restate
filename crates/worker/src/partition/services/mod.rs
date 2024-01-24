@@ -213,7 +213,7 @@ mod tests {
         ) -> &mut Self {
             let (_, meta, v) = self.1.get_or_insert_with(|| {
                 (
-                    InvocationUuid::now_v7(),
+                    InvocationUuid::new(),
                     JournalMetadata::new(0, ServiceInvocationSpanContext::empty()),
                     vec![],
                 )

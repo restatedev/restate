@@ -70,4 +70,3 @@ hyper = { workspace = true, features = ["client"] }
 test-log = { workspace = true }
 tonic = { workspace = true, features = ["default"] }
 tracing-subscriber = { workspace = true }
-uuid = { workspace = true }
