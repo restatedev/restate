@@ -12,14 +12,19 @@
 /// the metrics' sink.
 use metrics::{describe_counter, describe_histogram, Unit};
 
-pub const INGRESS_REQUEST_CREATED: &str = "restate.ingress.request_created.total";
+pub const INGRESS_REQUESTS: &str = "restate.ingress.requests.total";
+// values of label `status` in INGRESS_REQUEST
+pub const REQUEST_ADMITTED: &str = "admitted";
+pub const REQUEST_COMPLETED: &str = "completed";
+pub const REQUEST_DENIED_THROTTLE: &str = "throttled";
+
 pub const INGRESS_REQUEST_DURATION: &str = "restate.ingress.request_duration.seconds";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
-        INGRESS_REQUEST_CREATED,
+        INGRESS_REQUESTS,
         Unit::Count,
-        "Number of ingress requests created"
+        "Number of ingress requests in different states, see label state to classify"
     );
     describe_histogram!(
         INGRESS_REQUEST_DURATION,

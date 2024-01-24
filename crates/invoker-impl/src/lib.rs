@@ -60,7 +60,8 @@ pub use options::{
 use restate_service_client::ServiceClient;
 
 use crate::metric_definitions::{
-    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_FAILED, TASK_OP_STARTED, TASK_OP_SUSPENDED,
+    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
+    TASK_OP_SUSPENDED,
 };
 
 /// Internal error trait for the invoker errors
@@ -631,6 +632,7 @@ where
             .invocation_state_machine_manager
             .remove_invocation(partition, &full_invocation_id)
         {
+            counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_COMPLETED).increment(1);
             trace!("Invocation task closed correctly");
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &full_invocation_id);
