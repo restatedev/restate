@@ -500,7 +500,7 @@ mod tests {
             // Fill the InvocationStatus for notification_service_service_id
             let fid_virtual_invocation_creator = FullInvocationId::with_service_id(
                 notification_service_service_id.clone(),
-                InvocationUuid::now_v7(),
+                InvocationUuid::new(),
             );
             let mut t = state_machine.storage().transaction();
             t.put_invocation_status(
@@ -516,7 +516,7 @@ mod tests {
             // Virtual invocation identifiers
             let virtual_invocation_service_id =
                 ServiceId::new("Virtual", Bytes::copy_from_slice(b"123"));
-            let virtual_invocation_invocation_uuid = InvocationUuid::now_v7();
+            let virtual_invocation_invocation_uuid = InvocationUuid::new();
 
             let actions = state_machine
                 .apply(Command::BuiltInInvoker(NBISEffects::new(
@@ -572,7 +572,7 @@ mod tests {
             // Virtual invocation identifiers
             let virtual_invocation_service_id =
                 ServiceId::new("Virtual", Bytes::copy_from_slice(b"123"));
-            let virtual_invocation_invocation_uuid = InvocationUuid::now_v7();
+            let virtual_invocation_invocation_uuid = InvocationUuid::new();
 
             // Notification receiving service
             let notification_service_service_id =
@@ -583,7 +583,7 @@ mod tests {
             };
             let fid_virtual_invocation_creator = FullInvocationId::with_service_id(
                 notification_service_service_id.clone(),
-                InvocationUuid::now_v7(),
+                InvocationUuid::new(),
             );
 
             // Setup a valid journal for the virtual invocation and the virtual invocation creator

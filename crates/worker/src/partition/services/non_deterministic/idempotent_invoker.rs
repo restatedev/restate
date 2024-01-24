@@ -110,7 +110,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             Some(ServiceInvocationResponseSink::NewInvocation {
                 target: FullInvocationId::with_service_id(
                     self.full_invocation_id.service_id.clone(),
-                    InvocationUuid::now_v7(),
+                    InvocationUuid::new(),
                 ),
                 method: restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME.to_string(),
                 caller_context: Default::default(),
@@ -171,7 +171,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
         self.delay_invoke(
             FullInvocationId::with_service_id(
                 self.full_invocation_id.service_id.clone(),
-                InvocationUuid::now_v7(),
+                InvocationUuid::new(),
             ),
             restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME.to_string(),
             Bytes::new(),
@@ -261,12 +261,7 @@ mod tests {
                             .service_name
                             .to_string(),
                         service_key: expected_greeter_invocation_fid.service_id.key.clone(),
-                        invocation_uuid: Bytes::copy_from_slice(
-                            expected_greeter_invocation_fid
-                                .invocation_uuid
-                                .clone()
-                                .as_bytes(),
-                        ),
+                        invocation_uuid: expected_greeter_invocation_fid.invocation_uuid.into(),
                         method: "Greet".to_string(),
                         argument: expected_req.encode_to_vec().into(),
                         ..IdempotentInvokeRequest::default()
