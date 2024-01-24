@@ -12,6 +12,7 @@ use bytes::Bytes;
 
 use bytestring::ByteString;
 use opentelemetry_api::trace::SpanId;
+use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::status_table::{InvocationStatus, JournalMetadata, NotificationTarget};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::{Completion, CompletionResult};
@@ -35,6 +36,7 @@ use restate_types::invocation::{
 };
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::message::MessageIndex;
+use restate_types::state_mut::ExternalStateMutation;
 use restate_types::time::MillisSinceEpoch;
 
 #[derive(Debug)]
@@ -50,15 +52,11 @@ pub(crate) enum Effect {
         metadata: InvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
-    DropJournalAndFreeService {
-        service_id: ServiceId,
-        journal_length: EntryIndex,
-    },
 
     // In-/outbox
     EnqueueIntoInbox {
         seq_number: MessageIndex,
-        service_invocation: ServiceInvocation,
+        inbox_entry: InboxEntry,
     },
     EnqueueIntoOutbox {
         seq_number: MessageIndex,
@@ -67,9 +65,7 @@ pub(crate) enum Effect {
     TruncateOutbox(MessageIndex),
     DropJournalAndPopInbox {
         service_id: ServiceId,
-        inbox_sequence_number: MessageIndex,
         journal_length: EntryIndex,
-        service_invocation: ServiceInvocation,
     },
     DeleteInboxEntry {
         service_id: ServiceId,
@@ -162,6 +158,9 @@ pub(crate) enum Effect {
     // Invoker commands
     AbortInvocation(FullInvocationId),
     SendStoredEntryAckToInvoker(FullInvocationId, EntryIndex),
+
+    // State mutations
+    MutateState(ExternalStateMutation),
 }
 
 macro_rules! debug_if_leader {
@@ -238,11 +237,6 @@ impl Effect {
                     waiting_for_completed_entries
                 )
             }
-            Effect::DropJournalAndFreeService { journal_length, .. } => debug_if_leader!(
-                is_leader,
-                restate.journal.length = journal_length,
-                "Effect: Release service instance lock"
-            ),
             Effect::EnqueueIntoInbox { seq_number, .. } => debug_if_leader!(
                 is_leader,
                 restate.inbox.seq = seq_number,
@@ -347,28 +341,11 @@ impl Effect {
             Effect::TruncateOutbox(seq_number) => {
                 trace!(restate.outbox.seq = seq_number, "Effect: Truncate outbox")
             }
-            Effect::DropJournalAndPopInbox {
-                journal_length,
-                inbox_sequence_number,
-                service_invocation:
-                    ServiceInvocation {
-                        method_name,
-                        fid: id,
-                        ..
-                    },
-                ..
-            } => {
+            Effect::DropJournalAndPopInbox { journal_length, .. } => {
                 debug_if_leader!(
                     is_leader,
                     restate.journal.length = journal_length,
-                    restate.inbox.seq = inbox_sequence_number,
-                    "Effect: Drop journal and truncate inbox"
-                );
-                debug_if_leader!(
-                    is_leader,
-                    rpc.method = %method_name,
-                    restate.invocation.id = %id,
-                    "Effect: Invoke next enqueued invocation"
+                    "Effect: Drop journal and pop from inbox"
                 );
             }
             Effect::SetState {
@@ -622,6 +599,13 @@ impl Effect {
             Effect::SendStoredEntryAckToInvoker(_, _) => {
                 // We can ignore these
             }
+            Effect::MutateState(state_mutation) => {
+                debug_if_leader!(
+                    is_leader,
+                    "Effect: Mutate state for service id '{:?}'",
+                    &state_mutation.service_id
+                );
+            }
         }
     }
 }
@@ -683,25 +667,10 @@ impl Effects {
         })
     }
 
-    pub(crate) fn drop_journal_and_free_service(
-        &mut self,
-        service_id: ServiceId,
-        journal_length: EntryIndex,
-    ) {
-        self.effects.push(Effect::DropJournalAndFreeService {
-            service_id,
-            journal_length,
-        });
-    }
-
-    pub(crate) fn enqueue_into_inbox(
-        &mut self,
-        seq_number: MessageIndex,
-        service_invocation: ServiceInvocation,
-    ) {
+    pub(crate) fn enqueue_into_inbox(&mut self, seq_number: MessageIndex, inbox_entry: InboxEntry) {
         self.effects.push(Effect::EnqueueIntoInbox {
             seq_number,
-            service_invocation,
+            inbox_entry,
         })
     }
 
@@ -873,15 +842,11 @@ impl Effects {
     pub(crate) fn drop_journal_and_pop_inbox(
         &mut self,
         service_id: ServiceId,
-        inbox_sequence_number: MessageIndex,
         journal_length: EntryIndex,
-        service_invocation: ServiceInvocation,
     ) {
         self.effects.push(Effect::DropJournalAndPopInbox {
             service_id,
-            inbox_sequence_number,
             journal_length,
-            service_invocation,
         });
     }
 
@@ -931,6 +896,10 @@ impl Effects {
             full_invocation_id,
             entry_index,
         ));
+    }
+
+    pub(crate) fn apply_state_mutation(&mut self, state_mutation: ExternalStateMutation) {
+        self.effects.push(Effect::MutateState(state_mutation));
     }
 
     /// We log only if the log level is TRACE, or if the log level is DEBUG and we're the leader,

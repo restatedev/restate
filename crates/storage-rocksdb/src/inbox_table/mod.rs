@@ -21,11 +21,13 @@ use std::future::Future;
 use futures::Stream;
 use futures_util::stream;
 use prost::Message;
-use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
+use restate_storage_api::inbox_table::{
+    InboxEntry, InboxTable, SequenceNumberInboxEntry, SequenceNumberInvocation,
+};
 use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
+use restate_types::invocation::MaybeFullInvocationId;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
@@ -40,13 +42,13 @@ define_table_key!(
 );
 
 impl<'a> InboxTable for RocksDBTransaction<'a> {
-    async fn put_invocation(
+    async fn put_inbox_entry(
         &mut self,
         service_id: &ServiceId,
-        InboxEntry {
+        SequenceNumberInboxEntry {
             inbox_sequence_number,
-            service_invocation,
-        }: InboxEntry,
+            inbox_entry,
+        }: SequenceNumberInboxEntry,
     ) {
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
@@ -54,13 +56,10 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             .service_key(service_id.key.clone())
             .sequence_number(inbox_sequence_number);
 
-        self.put_kv(
-            key,
-            ProtoValue(storage::v1::InboxEntry::from(service_invocation)),
-        );
+        self.put_kv(key, ProtoValue(storage::v1::InboxEntry::from(inbox_entry)));
     }
 
-    async fn delete_invocation(&mut self, service_id: &ServiceId, sequence_number: u64) {
+    async fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: u64) {
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -70,7 +69,10 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         self.delete_key(&key);
     }
 
-    async fn peek_inbox(&mut self, service_id: &ServiceId) -> Result<Option<InboxEntry>> {
+    async fn peek_inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> Result<Option<SequenceNumberInboxEntry>> {
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -85,7 +87,24 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         })
     }
 
-    fn inbox(&mut self, service_id: &ServiceId) -> impl Stream<Item = Result<InboxEntry>> + Send {
+    async fn pop_inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> Result<Option<SequenceNumberInboxEntry>> {
+        let result = self.peek_inbox(service_id).await;
+
+        if let Ok(Some(inbox_entry)) = &result {
+            self.delete_inbox_entry(service_id, inbox_entry.inbox_sequence_number)
+                .await
+        }
+
+        result
+    }
+
+    fn inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -102,7 +121,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
     fn all_inboxes(
         &mut self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<InboxEntry>> + Send {
+    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
         stream::iter(self.for_each_key_value_in_place(
             TableScan::PartitionKeyRange::<InboxKey>(range),
             |k, v| {
@@ -112,10 +131,10 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         ))
     }
 
-    fn get_inbox_entry(
+    fn get_invocation(
         &mut self,
         maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = Result<Option<InboxEntry>>> + Send {
+    ) -> impl Future<Output = Result<Option<SequenceNumberInvocation>>> + Send {
         let (inbox_key, invocation_uuid) = match maybe_fid.into() {
             MaybeFullInvocationId::Partial(invocation_id) => (
                 InboxKey::default().partition_key(invocation_id.partition_key()),
@@ -136,11 +155,18 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
 
                 match inbox_entry {
                     Ok(inbox_entry) => {
-                        if inbox_entry.service_invocation.fid.invocation_uuid == invocation_uuid {
-                            TableScanIterationDecision::BreakWith(Ok(inbox_entry))
-                        } else {
-                            TableScanIterationDecision::Continue
+                        if let InboxEntry::Invocation(invocation) = inbox_entry.inbox_entry {
+                            if invocation.fid.invocation_uuid == invocation_uuid {
+                                return TableScanIterationDecision::BreakWith(Ok(
+                                    SequenceNumberInvocation {
+                                        inbox_sequence_number: inbox_entry.inbox_sequence_number,
+                                        invocation,
+                                    },
+                                ));
+                            }
                         }
+
+                        TableScanIterationDecision::Continue
                     }
                     Err(err) => TableScanIterationDecision::BreakWith(Err(err)),
                 }
@@ -156,15 +182,15 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
     }
 }
 
-fn decode_inbox_key_value(k: &[u8], v: &[u8]) -> Result<InboxEntry> {
+fn decode_inbox_key_value(k: &[u8], v: &[u8]) -> Result<SequenceNumberInboxEntry> {
     let key = InboxKey::deserialize_from(&mut Cursor::new(k))?;
     let sequence_number = *key.sequence_number_ok_or()?;
 
-    let inbox_entry = ServiceInvocation::try_from(
+    let inbox_entry = InboxEntry::try_from(
         storage::v1::InboxEntry::decode(v).map_err(|error| StorageError::Generic(error.into()))?,
     )?;
 
-    Ok(InboxEntry::new(sequence_number, inbox_entry))
+    Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))
 }
 
 #[cfg(test)]

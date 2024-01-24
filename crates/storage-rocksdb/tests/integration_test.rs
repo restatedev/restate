@@ -14,12 +14,12 @@ use futures::Stream;
 use restate_storage_api::StorageError;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
+use restate_types::state_mut::ExternalStateMutation;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::pin::pin;
-use std::str::FromStr;
 use tempfile::tempdir;
 use tokio_stream::StreamExt;
-use uuid::Uuid;
 
 mod inbox_table_test;
 mod journal_table_test;
@@ -66,19 +66,23 @@ async fn test_read_write() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn uuid_str(uuid: &str) -> Uuid {
-    Uuid::from_str(uuid).expect("")
-}
-
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
     ServiceInvocation::new(
-        FullInvocationId::with_service_id(service_id, InvocationUuid::now_v7()),
+        FullInvocationId::with_service_id(service_id, InvocationUuid::new()),
         ByteString::from_static("service"),
         Bytes::new(),
         Source::Ingress,
         None,
         SpanRelation::None,
     )
+}
+
+pub(crate) fn mock_state_mutation(service_id: ServiceId) -> ExternalStateMutation {
+    ExternalStateMutation {
+        service_id,
+        version: None,
+        state: HashMap::default(),
+    }
 }
 
 pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {

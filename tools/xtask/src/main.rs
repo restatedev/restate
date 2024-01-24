@@ -13,6 +13,8 @@ use reqwest::header::ACCEPT;
 use restate_schema_api::subscription::Subscription;
 use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;
+use restate_types::state_mut::ExternalStateMutation;
+use restate_worker_api::Error;
 use schemars::gen::SchemaSettings;
 use std::env;
 use std::time::Duration;
@@ -44,6 +46,10 @@ impl restate_worker_api::Handle for Mock {
         &self,
         _: InvocationTermination,
     ) -> Result<(), restate_worker_api::Error> {
+        Ok(())
+    }
+
+    async fn external_state_mutation(&self, _mutation: ExternalStateMutation) -> Result<(), Error> {
         Ok(())
     }
 

@@ -10,9 +10,8 @@
 
 use base64::Engine as _;
 use bytes::{BufMut, BytesMut};
-use restate_types::identifiers::{
-    EncodedInvocationId, EntryIndex, InvocationId, InvocationIdParseError,
-};
+use restate_types::errors::IdDecodeError;
+use restate_types::identifiers::{EncodedInvocationId, EntryIndex, InvocationId};
 use std::fmt::Display;
 use std::mem::size_of;
 
@@ -27,7 +26,7 @@ pub enum Error {
     #[error("cannot parse the awakeable id, bad length")]
     BadLength,
     #[error("cannot parse the invocation id within the awakeable id: {0}")]
-    Uuid(#[from] InvocationIdParseError),
+    BadInvocationId(#[from] IdDecodeError),
     #[error("cannot parse the awakeable identifier id encoded as base64: {0}")]
     Base64(#[from] base64::DecodeError),
 }
@@ -46,9 +45,8 @@ impl AwakeableIdentifier {
             return Err(Error::BadLength);
         }
 
-        let mut encoded_invocation_id = EncodedInvocationId::default();
-        encoded_invocation_id.copy_from_slice(&buffer[..size_of::<EncodedInvocationId>()]);
-        let invocation_id = encoded_invocation_id.try_into()?;
+        let invocation_id: InvocationId =
+            InvocationId::from_slice(&buffer[..size_of::<EncodedInvocationId>()])?;
 
         let mut encoded_entry_index: [u8; size_of::<EntryIndex>()] = Default::default();
         encoded_entry_index.copy_from_slice(&buffer[size_of::<EncodedInvocationId>()..]);
@@ -63,7 +61,7 @@ impl AwakeableIdentifier {
     pub fn encode(&self) -> String {
         let mut input_buf =
             BytesMut::with_capacity(size_of::<EncodedInvocationId>() + size_of::<EntryIndex>());
-        input_buf.put_slice(&self.invocation_id.as_bytes());
+        input_buf.put_slice(&self.invocation_id.to_bytes());
         input_buf.put_u32(self.entry_index);
         restate_base64_util::URL_SAFE.encode(input_buf.freeze())
     }
@@ -87,7 +85,7 @@ mod tests {
 
     #[test]
     fn test_encode_decode() {
-        let expected_invocation_id = InvocationId::new(92, InvocationUuid::now_v7());
+        let expected_invocation_id = InvocationId::new(92, InvocationUuid::new());
         let expected_entry_index = 2_u32;
 
         let input_str = AwakeableIdentifier {

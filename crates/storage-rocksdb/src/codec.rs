@@ -17,8 +17,6 @@ use restate_storage_api::deduplication_table::SequenceNumberSource;
 use restate_storage_api::StorageError;
 use restate_types::identifiers::InvocationUuid;
 
-const INVOCATION_UUID_SERIALIZED_LENGTH: usize = 16;
-
 pub trait Codec: Sized {
     fn encode<B: BufMut>(&self, target: &mut B);
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self>;
@@ -148,22 +146,22 @@ impl<M: Message + Default> Codec for ProtoValue<M> {
 
 impl Codec for InvocationUuid {
     fn encode<B: BufMut>(&self, target: &mut B) {
-        let slice = self.as_bytes();
+        let slice = self.to_bytes();
         debug_assert_eq!(slice.len(), self.serialized_length());
-        target.put_slice(slice);
+        target.put_slice(&slice);
     }
 
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         // note: this is a zero-copy when the source is bytes::Bytes.
-        if source.remaining() < INVOCATION_UUID_SERIALIZED_LENGTH {
+        if source.remaining() < InvocationUuid::SIZE_IN_BYTES {
             return Err(StorageError::DataIntegrityError);
         }
-        let bytes = source.copy_to_bytes(INVOCATION_UUID_SERIALIZED_LENGTH);
+        let bytes = source.copy_to_bytes(InvocationUuid::SIZE_IN_BYTES);
         InvocationUuid::from_slice(&bytes).map_err(|err| StorageError::Generic(err.into()))
     }
 
     fn serialized_length(&self) -> usize {
-        INVOCATION_UUID_SERIALIZED_LENGTH
+        InvocationUuid::SIZE_IN_BYTES
     }
 }
 
@@ -260,7 +258,7 @@ mod tests {
 
     #[test]
     fn invocation_uuid_roundtrip() {
-        let uuid = InvocationUuid::now_v7();
+        let uuid = InvocationUuid::new();
 
         let mut buf = BytesMut::new();
         uuid.encode(&mut buf);

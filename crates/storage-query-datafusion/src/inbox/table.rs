@@ -23,7 +23,7 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
 use futures::{Stream, StreamExt};
-use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
+use restate_storage_api::inbox_table::{InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::StorageError;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::PartitionKey;
@@ -66,7 +66,7 @@ impl RangeScanner for InboxScanner {
 async fn for_each_state(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
-    rows: impl Stream<Item = Result<InboxEntry, StorageError>>,
+    rows: impl Stream<Item = Result<SequenceNumberInboxEntry, StorageError>>,
 ) {
     let mut builder = InboxBuilder::new(schema.clone());
     let mut temp = String::new();

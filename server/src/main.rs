@@ -24,6 +24,13 @@ use tracing::{info, trace, warn};
 
 mod signal;
 
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 #[derive(Debug, clap::Parser)]
 #[command(author, version, about)]
 struct RestateArguments {

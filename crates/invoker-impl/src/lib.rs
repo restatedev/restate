@@ -1019,7 +1019,7 @@ mod tests {
     }
 
     fn mock_sid() -> FullInvocationId {
-        FullInvocationId::new("MyService", Bytes::default(), InvocationUuid::now_v7())
+        FullInvocationId::new("MyService", Bytes::default(), InvocationUuid::new())
     }
 
     #[test(tokio::test)]
@@ -1051,7 +1051,7 @@ mod tests {
         let invoker_join_handle = tokio::spawn(service.run(watch));
 
         let partition_leader_epoch = (0, 0);
-        let fid = FullInvocationId::new("TestService", Bytes::new(), InvocationUuid::now_v7());
+        let fid = FullInvocationId::new("TestService", Bytes::new(), InvocationUuid::new());
 
         let (output_tx, mut output_rx) = mpsc::channel(1);
 

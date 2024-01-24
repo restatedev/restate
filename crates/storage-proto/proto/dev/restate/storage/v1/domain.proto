@@ -8,6 +8,11 @@ package dev.restate.storage.domain.v1;
 // Common
 // ---------------------------------------------------------------------
 
+message ServiceId {
+    bytes service_name = 1;
+    bytes service_key = 2;
+}
+
 message FullInvocationId {
     bytes service_name = 1;
     bytes service_key = 2;
@@ -19,6 +24,11 @@ message MaybeFullInvocationId {
         FullInvocationId full_invocation_id = 1;
         bytes invocation_id = 2;
     }
+}
+
+message KvPair {
+    bytes key = 1;
+    bytes value = 2;
 }
 
 // ---------------------------------------------------------------------
@@ -160,8 +170,21 @@ message ServiceInvocation {
     Source source = 6;
 }
 
+message StateMutation {
+    ServiceId service_id = 1;
+    optional string version = 2;
+    repeated KvPair kv_pairs = 3;
+}
+
 message InboxEntry {
+    // Kept for backwards compatibility, should be removed once no more migrations are needed
     ServiceInvocation service_invocation = 2;
+
+    // All new InboxEntries should have an entry starting from Restate >= 0.7.1
+    oneof entry {
+        ServiceInvocation invocation = 3;
+        StateMutation state_mutation = 4;
+    }
 }
 
 message InvocationResolutionResult {

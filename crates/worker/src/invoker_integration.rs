@@ -70,7 +70,7 @@ where
             Err(e) => return Err(InvocationError::internal(e)),
         };
 
-        let invocation_id = InvocationUuid::now_v7();
+        let invocation_id = InvocationUuid::new();
 
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(

@@ -16,6 +16,7 @@ restate-types = { workspace = true, features = ["serde"] }
 restate-schema-api = { workspace = true, features = [ "service", "deployment", "serde", "subscription" ] }
 restate-serde-util = { workspace = true }
 
+bytes = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
 schemars = { workspace = true, optional = true }

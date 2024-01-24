@@ -171,7 +171,7 @@ where
             } => {
                 let journal_notification_request = Bytes::from(restate_pb::restate::internal::JournalCompletionNotificationRequest {
                     entry_index: completion.entry_index,
-                    invocation_uuid: Bytes::copy_from_slice(invocation_uuid.as_bytes()),
+                    invocation_uuid: invocation_uuid.into(),
                     result: Some(match completion.result {
                         CompletionResult::Empty =>
                             restate_pb::restate::internal::journal_completion_notification_request::Result::Empty(()),
@@ -193,7 +193,7 @@ where
                         StateMachineCommand::Invocation(ServiceInvocation::new(
                             FullInvocationId::with_service_id(
                                 target_service,
-                                InvocationUuid::now_v7(),
+                                InvocationUuid::new(),
                             ),
                             method_name,
                             journal_notification_request,
@@ -216,11 +216,11 @@ where
                         StateMachineCommand::Invocation(ServiceInvocation::new(
                             FullInvocationId::with_service_id(
                                 target_service,
-                                InvocationUuid::now_v7(),
+                                InvocationUuid::new(),
                             ),
                             method_name,
                             restate_pb::restate::internal::KillNotificationRequest {
-                                invocation_uuid: Bytes::copy_from_slice(invocation_uuid.as_bytes()),
+                                invocation_uuid: invocation_uuid.into(),
                             }
                             .encode_to_vec(),
                             Source::Internal,

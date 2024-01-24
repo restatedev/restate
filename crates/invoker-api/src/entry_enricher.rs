@@ -90,7 +90,7 @@ pub mod mocks {
                 PlainEntryHeader::CompleteAwakeable { .. } => {
                     EnrichedEntryHeader::CompleteAwakeable {
                         enrichment_result: AwakeableEnrichmentResult {
-                            invocation_id: InvocationId::new(0, InvocationUuid::now_v7()),
+                            invocation_id: InvocationId::new(0, InvocationUuid::new()),
                             entry_index: 1,
                         },
                     }

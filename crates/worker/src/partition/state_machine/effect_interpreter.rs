@@ -16,7 +16,9 @@ use crate::partition::state_machine::actions::Action;
 use crate::partition::state_machine::effects::Effect;
 use crate::partition::{CommitError, Committable};
 use bytes::Bytes;
+use futures::{Stream, TryStreamExt};
 use restate_invoker_api::InvokeInputJournal;
+use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::{
     InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
@@ -29,6 +31,7 @@ use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::message::MessageIndex;
+use restate_types::state_mut::{ExternalStateMutation, StateMutationVersion};
 use std::marker::PhantomData;
 use tracing::{debug, warn};
 
@@ -80,7 +83,7 @@ pub trait StateStorage {
     fn enqueue_into_inbox(
         &mut self,
         seq_number: MessageIndex,
-        service_invocation: ServiceInvocation,
+        inbox_entry: InboxEntry,
     ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn enqueue_into_outbox(
@@ -104,17 +107,21 @@ pub trait StateStorage {
         outbox_sequence_number: MessageIndex,
     ) -> impl Future<Output = StorageResult<()>> + Send;
 
-    fn truncate_inbox(
+    fn pop_inbox(
         &mut self,
         service_id: &ServiceId,
-        inbox_sequence_number: MessageIndex,
-    ) -> impl Future<Output = StorageResult<()>> + Send;
+    ) -> impl Future<Output = StorageResult<Option<SequenceNumberInboxEntry>>> + Send;
 
     fn delete_inbox_entry(
         &mut self,
         service_id: &ServiceId,
         sequence_number: MessageIndex,
     ) -> impl Future<Output = ()> + Send;
+
+    fn get_all_user_states(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Stream<Item = restate_storage_api::Result<(Bytes, Bytes)>> + Send;
 
     // State
     fn store_state(
@@ -235,23 +242,12 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     )
                     .await?;
             }
-            Effect::DropJournalAndFreeService {
-                service_id,
-                journal_length,
-            } => {
-                state_storage
-                    .drop_journal(&service_id, journal_length)
-                    .await?;
-                state_storage
-                    .store_invocation_status(&service_id, InvocationStatus::Free)
-                    .await?;
-            }
             Effect::EnqueueIntoInbox {
                 seq_number,
-                service_invocation,
+                inbox_entry,
             } => {
                 state_storage
-                    .enqueue_into_inbox(seq_number, service_invocation)
+                    .enqueue_into_inbox(seq_number, inbox_entry)
                     .await?;
                 // need to store the next inbox sequence number
                 state_storage.store_inbox_seq_number(seq_number + 1).await?;
@@ -403,18 +399,14 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             }),
             Effect::DropJournalAndPopInbox {
                 service_id,
-                inbox_sequence_number,
                 journal_length,
-                service_invocation,
             } => {
                 // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
                 state_storage
                     .drop_journal(&service_id, journal_length)
                     .await?;
-                state_storage
-                    .truncate_inbox(&service_id, inbox_sequence_number)
-                    .await?;
-                Self::invoke_service(state_storage, collector, service_invocation).await?;
+
+                Self::pop_from_inbox(state_storage, collector, &service_id).await?;
             }
             Effect::TraceInvocationResult { .. } | Effect::TraceBackgroundInvoke { .. } => {
                 // these effects are only needed for span creation
@@ -428,6 +420,79 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     entry_index,
                 });
             }
+            Effect::MutateState(state_mutation) => {
+                Self::mutate_state(state_storage, state_mutation).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn pop_from_inbox<S, C>(
+        state_storage: &mut S,
+        collector: &mut C,
+        service_id: &ServiceId,
+    ) -> Result<(), Error>
+    where
+        S: StateStorage,
+        C: ActionCollector,
+    {
+        // pop until we find the first invocation that we can invoke
+        while let Some(inbox_entry) = state_storage.pop_inbox(service_id).await? {
+            match inbox_entry.inbox_entry {
+                InboxEntry::Invocation(service_invocation) => {
+                    Self::invoke_service(state_storage, collector, service_invocation).await?;
+                    return Ok(());
+                }
+                InboxEntry::StateMutation(state_mutation) => {
+                    Self::mutate_state(state_storage, state_mutation).await?;
+                }
+            }
+        }
+
+        state_storage
+            .store_invocation_status(service_id, InvocationStatus::Free)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn mutate_state<S: StateStorage>(
+        state_storage: &mut S,
+        state_mutation: ExternalStateMutation,
+    ) -> StorageResult<()> {
+        let ExternalStateMutation {
+            service_id,
+            version,
+            state,
+        } = state_mutation;
+
+        // overwrite all existing key value pairs with the provided ones; delete all entries that
+        // are not contained in state
+        let all_user_states: Vec<(Bytes, Bytes)> = state_storage
+            .get_all_user_states(&service_id)
+            .try_collect()
+            .await?;
+
+        if let Some(expected_version) = version {
+            let expected = StateMutationVersion::from_raw(expected_version);
+            let actual = StateMutationVersion::from_user_state(&all_user_states);
+
+            if actual != expected {
+                debug!("Ignore state mutation for service id '{:?}' because the expected version '{}' is not matching the actual version '{}'", &service_id, expected, actual);
+                return Ok(());
+            }
+        }
+
+        for (key, _) in &all_user_states {
+            if !state.contains_key(key) {
+                state_storage.clear_state(&service_id, key).await?;
+            }
+        }
+
+        // overwrite existing key value pairs
+        for (key, value) in state {
+            state_storage.store_state(&service_id, key, value).await?
         }
 
         Ok(())

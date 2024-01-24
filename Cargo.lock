@@ -1053,6 +1053,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base62"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f879ef8fc74665ed7f0e6127cb106315888fc2744f68e14b74f83edbb2a08992"
+
+[[package]]
 name = "base64"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2595,9 +2601,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b553656127a00601c8ae5590fcfdc118e4083a7924b6cf4ffc1ea4b99dc429d7"
+checksum = "bb2c4422095b67ee78da96fbb51a4cc413b3b25883c7717ff7ca1ab31022c9c9"
 dependencies = [
  "bytes",
  "fnv",
@@ -5065,6 +5071,7 @@ dependencies = [
 name = "restate-meta-rest-model"
 version = "0.7.1"
 dependencies = [
+ "bytes",
  "http",
  "humantime",
  "restate-schema-api",
@@ -5252,6 +5259,7 @@ dependencies = [
  "restate-fs-util",
  "restate-meta",
  "restate-node-ctrl",
+ "restate-storage-rocksdb",
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-worker",
@@ -5260,6 +5268,7 @@ dependencies = [
  "serde_with",
  "serde_yaml",
  "thiserror",
+ "tikv-jemallocator",
  "tokio",
  "tracing",
  "tracing-panic",
@@ -5436,6 +5445,7 @@ dependencies = [
  "restate-errors",
  "restate-storage-api",
  "restate-storage-proto",
+ "restate-test-util",
  "restate-types",
  "rocksdb",
  "schemars",
@@ -5517,23 +5527,28 @@ name = "restate-types"
 version = "0.7.1"
 dependencies = [
  "anyhow",
+ "base62",
  "base64 0.21.7",
  "bytes",
  "bytestring",
  "http",
  "humantime",
+ "num-traits",
  "opentelemetry_api",
  "rand",
  "restate-base64-util",
+ "restate-test-util",
  "schemars",
  "serde",
  "serde_with",
+ "sha2",
  "sync_wrapper",
  "thiserror",
  "tokio",
  "tonic 0.10.2",
  "tracing",
  "tracing-opentelemetry",
+ "ulid",
  "uuid",
  "xxhash-rust",
 ]
@@ -6012,9 +6027,9 @@ checksum = "24188a676b6ae68c3b2cb3a01be17fbf7240ce009799bb56d5b1409051e78fde"
 
 [[package]]
 name = "shlex"
-version = "1.2.0"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7cee0529a6d40f580e7a5e6c495c8fbfe21b7b52795ed4bb5e62cdf92bc6380"
+checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signal-hook"
@@ -6423,6 +6438,26 @@ dependencies = [
  "byteorder",
  "integer-encoding",
  "ordered-float 2.10.1",
+]
+
+[[package]]
+name = "tikv-jemalloc-sys"
+version = "0.5.4+5.3.0-patched"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9402443cb8fd499b6f327e40565234ff34dbda27460c5b47db0db77443dd85d1"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "965fe0c26be5c56c94e38ba547249074803efd52adfb66de62107d95aab3eaca"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]
@@ -6879,6 +6914,15 @@ name = "typenum"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
+
+[[package]]
+name = "ulid"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e37c4b6cbcc59a8dcd09a6429fbc7890286bcbb79215cea7b38a3c4c0921d93"
+dependencies = [
+ "rand",
+]
 
 [[package]]
 name = "uncased"

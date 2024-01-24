@@ -600,7 +600,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         self.delay_invoke(
             FullInvocationId::with_service_id(
                 self.full_invocation_id.service_id.clone(),
-                InvocationUuid::now_v7(),
+                InvocationUuid::new(),
             ),
             "Cleanup".to_string(),
             CleanupRequest {
@@ -631,7 +631,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         self.delay_invoke(
             FullInvocationId::with_service_id(
                 self.full_invocation_id.service_id.clone(),
-                InvocationUuid::now_v7(),
+                InvocationUuid::new(),
             ),
             "InternalOnInactivityTimer".to_string(),
             InactivityTimeoutTimerRequest {
@@ -734,7 +734,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                         .into_inner()
                         .1,
                 );
-                let invocation_uuid = InvocationUuid::now_v7();
+                let invocation_uuid = InvocationUuid::new();
                 self.create_journal(
                     journal_service_id.clone(),
                     invocation_uuid,
@@ -775,7 +775,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
             .encode_to_buf_mut(
                 &mut stream_buffer,
                 ProtocolMessage::new_start_message(
-                    Bytes::copy_from_slice(&invocation_id.as_bytes()),
+                    Bytes::copy_from_slice(&invocation_id.to_bytes()),
                     invocation_id.to_string(),
                     length,
                     true, // TODO add eager state
@@ -1021,7 +1021,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         match self.load_state(&STATUS).await? {
             Some(InvocationStatus::Executing {
                 invocation_uuid, ..
-            }) if invocation_uuid.as_bytes() == request.invocation_uuid => {
+            }) if invocation_uuid.to_bytes().as_slice() == request.invocation_uuid => {
                 self.enqueue_protocol_message(ProtocolMessage::from(Completion::new(
                     request.entry_index,
                     match request.result.ok_or_else(|| {
@@ -1120,13 +1120,13 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
             ..
         }) = self.load_state(&STATUS).await?
         {
-            if invocation_uuid.as_bytes() == request.invocation_uuid {
+            if invocation_uuid.to_bytes().as_slice() == request.invocation_uuid {
                 self.kill_invocation(retention_period_sec, KILLED_INVOCATION_ERROR)
                     .await?;
             } else {
                 trace!(
                     "Ignoring kill because invocation uuid don't match: {:?} != {:?}",
-                    invocation_uuid.as_bytes(),
+                    invocation_uuid.to_bytes(),
                     request.invocation_uuid
                 )
             }
@@ -1921,7 +1921,7 @@ mod tests {
                         ctx.internal_on_completion(
                             JournalCompletionNotificationRequest {
                                 entry_index: 1,
-                                invocation_uuid: Bytes::copy_from_slice(invocation_uuid.as_bytes()),
+                                invocation_uuid: invocation_uuid.into(),
                                 result: Some(
                                     journal_completion_notification_request::Result::Success(
                                         response,
@@ -2658,7 +2658,7 @@ mod tests {
             .invoke(|ctx| {
                 ctx.internal_on_kill(
                     KillNotificationRequest {
-                        invocation_uuid: invocation_uuid.as_bytes().to_vec().into(),
+                        invocation_uuid: invocation_uuid.to_bytes().to_vec().into(),
                     },
                     Default::default(),
                 )

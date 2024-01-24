@@ -34,6 +34,7 @@ restate-node-ctrl = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
+restate-storage-rocksdb = { workspace = true }
 
 clap = { version = "4.1", features = ["derive", "env"] }
 codederror = { workspace = true }
@@ -51,6 +52,9 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.1" }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }
 
 [build-dependencies]
 vergen = { version = "8.0.0", default-features = false, features = [

@@ -13,6 +13,7 @@ use crate::partition::types::{InvokerEffect, TimerValue};
 use restate_types::identifiers::{IngressDispatcherId, PartitionId, PeerId};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use restate_types::message::{AckKind, MessageIndex};
+use restate_types::state_mut::ExternalStateMutation;
 
 /// Envelope for [`partition::Command`] that might require an explicit acknowledge.
 #[derive(Debug)]
@@ -202,6 +203,7 @@ pub struct IngressAckResponse {
 /// State machine input commands
 #[derive(Debug)]
 pub enum Command {
+    ExternalStateMutation(ExternalStateMutation),
     TerminateInvocation(InvocationTermination),
     Invoker(InvokerEffect),
     Timer(TimerValue),
@@ -221,6 +223,7 @@ impl Command {
             Command::Invocation(_) => "ServiceInvocation",
             Command::Response(_) => "InvocationResponse",
             Command::BuiltInInvoker(_) => "NBISEffects",
+            Command::ExternalStateMutation(_) => "ExternalStateMutation",
         }
     }
 }

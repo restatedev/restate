@@ -84,10 +84,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 mod tests {
     use super::*;
 
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use bytes::Bytes;
     use bytestring::ByteString;
+    use futures::{StreamExt, TryStreamExt};
     use googletest::matcher::Matcher;
     use googletest::{all, assert_that, pat, property};
     use tempfile::tempdir;
@@ -102,6 +103,7 @@ mod tests {
     use restate_storage_api::inbox_table::InboxTable;
     use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
     use restate_storage_api::outbox_table::OutboxTable;
+    use restate_storage_api::state_table::ReadOnlyStateTable;
     use restate_storage_api::status_table::{
         InvocationMetadata, JournalMetadata, NotificationTarget, ReadOnlyStatusTable,
     };
@@ -120,6 +122,7 @@ mod tests {
     use restate_types::journal::enriched::EnrichedRawEntry;
     use restate_types::journal::{Completion, CompletionResult};
     use restate_types::journal::{Entry, EntryType};
+    use restate_types::state_mut::ExternalStateMutation;
 
     type VecActionCollector = Vec<Action>;
 
@@ -345,7 +348,7 @@ mod tests {
         let result = state_machine
             .storage()
             .transaction()
-            .get_inbox_entry(inboxed_fid.clone())
+            .get_invocation(inboxed_fid.clone())
             .await?;
 
         // assert that inboxed invocation is in inbox
@@ -360,7 +363,7 @@ mod tests {
         let result = state_machine
             .storage()
             .transaction()
-            .get_inbox_entry(inboxed_fid.clone())
+            .get_invocation(inboxed_fid.clone())
             .await?;
 
         // assert that inboxed invocation has been removed
@@ -405,6 +408,68 @@ mod tests {
         state_machine.shutdown().await
     }
 
+    #[test(tokio::test)]
+    async fn mutate_state() -> anyhow::Result<()> {
+        let mut state_machine = MockStateMachine::default();
+        let fid = mock_start_invocation(&mut state_machine).await;
+
+        let first_state_mutation: HashMap<Bytes, Bytes> = [
+            (Bytes::from_static(b"foobar"), Bytes::from_static(b"foobar")),
+            (Bytes::from_static(b"bar"), Bytes::from_static(b"bar")),
+        ]
+        .into_iter()
+        .collect();
+
+        let second_state_mutation: HashMap<Bytes, Bytes> =
+            [(Bytes::from_static(b"bar"), Bytes::from_static(b"foo"))]
+                .into_iter()
+                .collect();
+
+        // state should be empty
+        assert_eq!(
+            state_machine
+                .rocksdb_storage
+                .get_all_user_states(&fid.service_id)
+                .count()
+                .await,
+            0
+        );
+
+        state_machine
+            .apply(Command::ExternalStateMutation(ExternalStateMutation {
+                service_id: fid.service_id.clone(),
+                version: None,
+                state: first_state_mutation,
+            }))
+            .await;
+        state_machine
+            .apply(Command::ExternalStateMutation(ExternalStateMutation {
+                service_id: fid.service_id.clone(),
+                version: None,
+                state: second_state_mutation.clone(),
+            }))
+            .await;
+
+        // terminating the ongoing invocation should trigger popping from the inbox until the
+        // next invocation is found
+        state_machine
+            .apply(Command::Invoker(InvokerEffect {
+                full_invocation_id: fid.clone(),
+                kind: InvokerEffectKind::End,
+            }))
+            .await;
+
+        let all_states: HashMap<_, _> = state_machine
+            .rocksdb_storage
+            .get_all_user_states(&fid.service_id)
+            .try_collect()
+            .await?;
+
+        assert_eq!(all_states, second_state_mutation);
+
+        Ok(())
+    }
+
     mod virtual_invocation {
         use super::*;
 
@@ -435,7 +500,7 @@ mod tests {
             // Fill the InvocationStatus for notification_service_service_id
             let fid_virtual_invocation_creator = FullInvocationId::with_service_id(
                 notification_service_service_id.clone(),
-                InvocationUuid::now_v7(),
+                InvocationUuid::new(),
             );
             let mut t = state_machine.storage().transaction();
             t.put_invocation_status(
@@ -451,7 +516,7 @@ mod tests {
             // Virtual invocation identifiers
             let virtual_invocation_service_id =
                 ServiceId::new("Virtual", Bytes::copy_from_slice(b"123"));
-            let virtual_invocation_invocation_uuid = InvocationUuid::now_v7();
+            let virtual_invocation_invocation_uuid = InvocationUuid::new();
 
             let actions = state_machine
                 .apply(Command::BuiltInInvoker(NBISEffects::new(
@@ -507,7 +572,7 @@ mod tests {
             // Virtual invocation identifiers
             let virtual_invocation_service_id =
                 ServiceId::new("Virtual", Bytes::copy_from_slice(b"123"));
-            let virtual_invocation_invocation_uuid = InvocationUuid::now_v7();
+            let virtual_invocation_invocation_uuid = InvocationUuid::new();
 
             // Notification receiving service
             let notification_service_service_id =
@@ -518,7 +583,7 @@ mod tests {
             };
             let fid_virtual_invocation_creator = FullInvocationId::with_service_id(
                 notification_service_service_id.clone(),
-                InvocationUuid::now_v7(),
+                InvocationUuid::new(),
             );
 
             // Setup a valid journal for the virtual invocation and the virtual invocation creator

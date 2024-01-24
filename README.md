@@ -20,6 +20,7 @@ Easily build workflows, event-driven applications, and distributed services in a
 * [Lambda Workflows as Code](https://restate.dev/blog/we-replaced-400-lines-of-stepfunctions-asl-with-40-lines-of-typescript-by-making-lambdas-suspendable/)
 * [Transactional RPC Handlers](https://github.com/restatedev/examples/tree/main/typescript/ecommerce-store)
 * [Event Processing with Kafka](https://restate.dev/blog/restate--kafka-event-driven-apps-where-event-driven-is-an-implementation-detail/)
+* [Much more](https://github.com/restatedev/examples)
 
 ## Get started with Restate
 
@@ -44,9 +45,9 @@ Install via Homebrew:
 brew install restatedev/tap/restate-server
 ```
 
-Install via npm:
+Run via npx:
 ```bash
-npm install --global @restatedev/restate-server
+npx @restatedev/restate-server
 ```
 
 Run via docker:
@@ -66,8 +67,12 @@ Install via npm:
 npm install --global @restatedev/restate
 ```
 
-You can also download the binaries from the [release page](https://github.com/restatedev/restate/releases).
-Visit our [download page](https://restate.dev/get-restate/) for more information.
+Run via npx:
+```bash
+npx @restatedev/restate
+```
+
+You can also download the binaries from the [release page](https://github.com/restatedev/restate/releases) or our [download page](https://restate.dev/get-restate/).
 
 ## Community
 
