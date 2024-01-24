@@ -16,16 +16,14 @@ use ulid::Ulid;
 
 use std::fmt;
 use std::mem::size_of;
-use std::mem::size_of_val;
 use std::str::FromStr;
 
 use crate::base62_util::base62_encode_fixed_width;
-use crate::base62_util::base62_length_for_type;
+use crate::base62_util::base62_max_length_for_type;
 use crate::errors::IdDecodeError;
 use crate::id_util::IdDecoder;
 use crate::id_util::IdEncoder;
 use crate::id_util::IdResourceType;
-use crate::id_util::ID_RESOURCE_SEPARATOR;
 use crate::time::MillisSinceEpoch;
 
 /// Identifying a member of a raft group
@@ -80,6 +78,29 @@ pub trait WithPartitionKey {
 pub trait TimestampAwareId {
     /// The timestamp when this ID was created.
     fn timestamp(&self) -> MillisSinceEpoch;
+}
+
+// A marker trait for serializable IDs that represent restate resources or entities.
+// Those could be user-facing or not.
+pub trait ResourceId {
+    const SIZE_IN_BYTES: usize;
+    const RESOURCE_TYPE: IdResourceType;
+    /// The number of characters/bytes needed to string-serialize this resource (without the
+    /// prefix or separator)
+    const STRING_CAPACITY_HINT: usize;
+
+    /// The resource type of this ID
+    fn resource_type(&self) -> IdResourceType {
+        Self::RESOURCE_TYPE
+    }
+
+    /// The max number of bytes needed to store the binary representation of this ID
+    fn size_in_bytes(&self) -> usize {
+        Self::SIZE_IN_BYTES
+    }
+
+    /// Adds the various fields of this resource ID into the pre-initialized encoder
+    fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>);
 }
 
 /// Discriminator for invocation instances
@@ -165,9 +186,9 @@ impl TimestampAwareId for InvocationUuid {
 impl fmt::Display for InvocationUuid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let raw: u128 = self.0.into();
-        let mut buf = String::with_capacity(base62_length_for_type::<u128>());
+        let mut buf = String::with_capacity(base62_max_length_for_type::<u128>());
         base62_encode_fixed_width(raw, &mut buf);
-        buf.fmt(f)
+        fmt::Display::fmt(&buf, f)
     }
 }
 
@@ -175,7 +196,7 @@ impl FromStr for InvocationUuid {
     type Err = IdDecodeError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let mut decoder = IdDecoder::decode_well_known(
+        let mut decoder = IdDecoder::new_ignore_prefix(
             crate::id_util::IdSchemeVersion::default(),
             IdResourceType::Invocation,
             input,
@@ -271,7 +292,7 @@ pub struct InvocationId {
     inner: InvocationUuid,
 }
 
-pub type EncodedInvocationId = [u8; size_of::<PartitionKey>() + InvocationUuid::SIZE_IN_BYTES];
+pub type EncodedInvocationId = [u8; InvocationId::SIZE_IN_BYTES];
 
 impl InvocationId {
     pub fn new(partition_key: PartitionKey, invocation_uuid: impl Into<InvocationUuid>) -> Self {
@@ -300,6 +321,19 @@ impl TimestampAwareId for InvocationId {
     }
 }
 
+impl ResourceId for InvocationId {
+    const SIZE_IN_BYTES: usize = size_of::<PartitionKey>() + InvocationUuid::SIZE_IN_BYTES;
+    const RESOURCE_TYPE: IdResourceType = IdResourceType::Invocation;
+    const STRING_CAPACITY_HINT: usize =
+        base62_max_length_for_type::<PartitionKey>() + base62_max_length_for_type::<u128>();
+
+    fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+        encoder.encode_fixed_width(self.partition_key);
+        let ulid_raw: u128 = self.inner.0.into();
+        encoder.encode_fixed_width(ulid_raw);
+    }
+}
+
 impl TryFrom<&[u8]> for InvocationId {
     type Error = IdDecodeError;
 
@@ -307,7 +341,7 @@ impl TryFrom<&[u8]> for InvocationId {
         if encoded_id.len() < size_of::<EncodedInvocationId>() {
             return Err(IdDecodeError::Length);
         }
-        let buf: [u8; size_of::<EncodedInvocationId>()] =
+        let buf: [u8; InvocationId::SIZE_IN_BYTES] =
             encoded_id.try_into().map_err(|_| IdDecodeError::Length)?;
         Ok(buf.into())
     }
@@ -341,7 +375,11 @@ impl WithPartitionKey for InvocationId {
 
 impl fmt::Display for InvocationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        display_invocation_id(&self.partition_key, &self.inner, f)
+        // encode the id such that it is possible to do a string prefix search for a
+        // partition key using the first 17 characters.
+        let mut encoder = IdEncoder::<InvocationId>::new();
+        self.push_contents_to_encoder(&mut encoder);
+        fmt::Display::fmt(&encoder.finalize(), f)
     }
 }
 
@@ -349,9 +387,9 @@ impl FromStr for InvocationId {
     type Err = IdDecodeError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let mut decoder = IdDecoder::decode(input)?;
-        // Ensure we are decoding an invocation id
-        if decoder.resource_type != IdResourceType::Invocation {
+        let mut decoder = IdDecoder::new(input)?;
+        // Ensure we are decoding the right type
+        if decoder.resource_type != Self::RESOURCE_TYPE {
             return Err(IdDecodeError::TypeMismatch);
         }
 
@@ -421,7 +459,11 @@ impl WithPartitionKey for FullInvocationId {
 
 impl fmt::Display for FullInvocationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        display_invocation_id(&self.service_id.partition_key, &self.invocation_uuid, f)
+        // Passthrough to InvocationId's Display
+        fmt::Display::fmt(
+            &InvocationId::new(self.service_id.partition_key, self.invocation_uuid),
+            f,
+        )
     }
 }
 
@@ -474,39 +516,6 @@ fn encode_invocation_id(
     buf[..size_of::<PartitionKey>()].copy_from_slice(&partition_key.to_be_bytes());
     buf[size_of::<PartitionKey>()..].copy_from_slice(&invocation_uuid.to_bytes());
     buf
-}
-
-#[inline]
-fn display_invocation_id(
-    partition_key: &PartitionKey,
-    invocation_uuid: &InvocationUuid,
-    f: &mut fmt::Formatter<'_>,
-) -> fmt::Result {
-    // encode the id such that it is possible to do a string prefix search for a
-    // partition key using the first 17 characters.
-
-    // how many chars?
-    // token and prefix = 4c inv_
-    // version = 1c
-    // partition_key = 64bit = 11c
-    // ulid = 128 bit = 22c
-    // Total characters = 38c
-
-    // TODO: Encapsulate in IdEncoder
-    let mut buf = String::with_capacity(
-        IdResourceType::Invocation.as_str().len()
-            + size_of_val(&ID_RESOURCE_SEPARATOR)
-            + 1 // version char
-            + size_of_val(partition_key)
-            + InvocationUuid::SIZE_IN_BYTES,
-    );
-
-    let mut encoder = IdEncoder::with_buf(&mut buf, IdResourceType::Invocation);
-    encoder.encode_fixed_width(*partition_key);
-    let ulid_raw: u128 = invocation_uuid.0.into();
-    encoder.encode_fixed_width(ulid_raw);
-
-    fmt::Display::fmt(&buf, f)
 }
 
 #[derive(Debug, Clone)]
