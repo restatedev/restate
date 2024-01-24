@@ -82,6 +82,23 @@ pub trait TimestampAwareId {
     fn timestamp(&self) -> MillisSinceEpoch;
 }
 
+// A marker trait for serializable IDs that represent restate resources or entities.
+// Those could be user-facing or not.
+pub trait ResourceId {
+    const SIZE_IN_BYTES: usize;
+    const RESOURCE_TYPE: IdResourceType;
+
+    /// The resource type of this ID
+    fn resource_type(&self) -> IdResourceType {
+        Self::RESOURCE_TYPE
+    }
+
+    /// The max number of bytes needed to store the binary representation of this ID
+    fn size_in_bytes(&self) -> usize {
+        Self::SIZE_IN_BYTES
+    }
+}
+
 /// Discriminator for invocation instances
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, Ord, PartialOrd)]
 #[cfg_attr(

@@ -17,6 +17,7 @@ use num_traits::PrimInt;
 
 use crate::base62_util::{base62_encode_fixed_width, base62_length_for_type};
 use crate::errors::IdDecodeError;
+use crate::identifiers::ResourceId;
 
 pub const ID_RESOURCE_SEPARATOR: char = '_';
 
@@ -205,5 +206,9 @@ impl<'a> IdEncoder<'a> {
         U: Into<u128> + PrimInt,
     {
         base62_encode_fixed_width(i, self.buf);
+    }
+
+    pub const fn prefix_capacity<T: ResourceId>() -> usize {
+        T::RESOURCE_TYPE.as_str().len() + /* separator =*/1 + /* version =*/ 1
     }
 }
