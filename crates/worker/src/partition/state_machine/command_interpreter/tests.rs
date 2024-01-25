@@ -257,7 +257,7 @@ async fn awakeable_with_success() {
     let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
         CompleteAwakeableEntry {
             id: AwakeableIdentifier::new(sid_callee.clone().into(), 1)
-                .encode()
+                .to_string()
                 .into(),
             result: EntryResult::Success(Bytes::default()),
         },
@@ -312,7 +312,7 @@ async fn awakeable_with_failure() {
     let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
         CompleteAwakeableEntry {
             id: AwakeableIdentifier::new(sid_callee.clone().into(), 1)
-                .encode()
+                .to_string()
                 .into(),
             result: EntryResult::Failure(UserErrorCode::FailedPrecondition, "Some failure".into()),
         },
