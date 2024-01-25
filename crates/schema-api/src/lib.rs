@@ -550,6 +550,8 @@ pub mod subscription {
     use std::collections::HashMap;
     use std::fmt;
 
+    use restate_types::identifiers::SubscriptionId;
+
     #[derive(Debug, Clone, Eq, PartialEq, Default)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
@@ -654,7 +656,7 @@ pub mod subscription {
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub struct Subscription {
-        id: String,
+        id: SubscriptionId,
         source: Source,
         sink: Sink,
         metadata: HashMap<String, String>,
@@ -662,7 +664,7 @@ pub mod subscription {
 
     impl Subscription {
         pub fn new(
-            id: String,
+            id: SubscriptionId,
             source: Source,
             sink: Sink,
             metadata: HashMap<String, String>,
@@ -675,8 +677,8 @@ pub mod subscription {
             }
         }
 
-        pub fn id(&self) -> &str {
-            &self.id
+        pub fn id(&self) -> SubscriptionId {
+            self.id
         }
 
         pub fn source(&self) -> &Source {
@@ -711,7 +713,7 @@ pub mod subscription {
     }
 
     pub trait SubscriptionResolver {
-        fn get_subscription(&self, id: &str) -> Option<Subscription>;
+        fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription>;
 
         fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription>;
     }
@@ -724,12 +726,16 @@ pub mod subscription {
 
     #[cfg(feature = "mocks")]
     pub mod mocks {
+        use std::str::FromStr;
+
         use super::*;
 
         impl Subscription {
             pub fn mock() -> Self {
+                let id = SubscriptionId::from_str("sub_15VqmTOnXH3Vv2pl5HOG7Ua")
+                    .expect("stable valid subscription id");
                 Subscription {
-                    id: "my-sub".to_string(),
+                    id,
                     source: Source::Kafka {
                         cluster: "my-cluster".to_string(),
                         topic: "my-topic".to_string(),
