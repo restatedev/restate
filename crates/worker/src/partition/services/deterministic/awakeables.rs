@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::str::FromStr;
+
 use crate::partition::services::deterministic::*;
 
 use prost_reflect::ReflectMessage;
@@ -18,7 +20,7 @@ use restate_types::invocation::ResponseResult;
 
 impl AwakeablesBuiltInService for &mut ServiceInvoker<'_> {
     async fn resolve(&mut self, req: ResolveAwakeableRequest) -> Result<(), InvocationError> {
-        let (invocation_id, entry_index) = AwakeableIdentifier::decode(req.id)
+        let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&req.id)
             .map_err(|e| InvocationError::new(UserErrorCode::InvalidArgument, e.to_string()))?
             .into_inner();
 
@@ -46,7 +48,7 @@ impl AwakeablesBuiltInService for &mut ServiceInvoker<'_> {
     }
 
     async fn reject(&mut self, req: RejectAwakeableRequest) -> Result<(), InvocationError> {
-        let (invocation_id, entry_index) = AwakeableIdentifier::decode(req.id)
+        let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&req.id)
             .map_err(|e| InvocationError::new(UserErrorCode::InvalidArgument, e.to_string()))?
             .into_inner();
 

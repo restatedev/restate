@@ -117,6 +117,8 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
 
 #[cfg(feature = "mocks")]
 mod mocks {
+    use std::str::FromStr;
+
     use super::*;
 
     use crate::awakeable_id::AwakeableIdentifier;
@@ -253,8 +255,9 @@ mod mocks {
                     Self::serialize_poll_input_stream_entry(entry),
                 ),
                 Entry::CompleteAwakeable(entry) => {
-                    let (invocation_id, entry_index) =
-                        AwakeableIdentifier::decode(&entry.id).unwrap().into_inner();
+                    let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&entry.id)
+                        .unwrap()
+                        .into_inner();
 
                     EnrichedRawEntry::new(
                         EnrichedEntryHeader::CompleteAwakeable {
