@@ -14,7 +14,7 @@ use super::Service;
 
 use futures::Stream;
 use restate_invoker_api::{EntryEnricher, JournalReader};
-use restate_schema_api::deployment::DeploymentMetadataResolver;
+use restate_schema_api::deployment::DeploymentResolver;
 use restate_service_client::AssumeRoleCacheMode;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::retries::RetryPolicy;
@@ -132,7 +132,7 @@ impl Options {
         JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
         EE: EntryEnricher,
-        DMR: DeploymentMetadataResolver,
+        DMR: DeploymentResolver,
     {
         metric_definitions::describe_metrics();
         let client = self.service_client.build(AssumeRoleCacheMode::Unbounded);

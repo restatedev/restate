@@ -18,6 +18,7 @@ use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
 use restate_meta::Error as MetaError;
 use restate_schema_impl::SchemasUpdateError;
+use restate_types::identifiers::DeploymentId;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -28,7 +29,7 @@ pub enum MetaApiError {
     #[error("The request field '{0}' is invalid. Reason: {1}")]
     InvalidField(&'static str, String),
     #[error("The requested deployment '{0}' does not exist")]
-    DeploymentNotFound(String),
+    DeploymentNotFound(DeploymentId),
     #[error("The requested service '{0}' does not exist")]
     ServiceNotFound(String),
     #[error("The requested method '{method_name}' on service '{service_name}' does not exist")]

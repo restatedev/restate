@@ -12,7 +12,7 @@ use crate::context::QueryContext;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
 use restate_invoker_api::StatusHandle;
-use restate_schema_api::deployment::DeploymentMetadataResolver;
+use restate_schema_api::deployment::DeploymentResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_storage_rocksdb::RocksDBStorage;
 use std::fmt::Debug;
@@ -47,7 +47,7 @@ impl Options {
         self,
         rocksdb: RocksDBStorage,
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
-        schemas: impl DeploymentMetadataResolver
+        schemas: impl DeploymentResolver
             + ServiceMetadataResolver
             + Send
             + Sync

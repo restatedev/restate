@@ -1171,7 +1171,7 @@ mod tests {
     use restate_pb::mocks::GREETER_SERVICE_NAME;
     use restate_pb::restate::internal::{get_result_response, start_response, CleanupRequest};
     use restate_pb::REMOTE_CONTEXT_SERVICE_NAME;
-    use restate_schema_api::deployment::DeploymentMetadata;
+    use restate_schema_api::deployment::Deployment;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_test_util::assert_eq;
     use restate_test_util::matchers::*;
@@ -2781,11 +2781,13 @@ mod tests {
     fn mock_schemas() -> Schemas {
         let schemas = Schemas::default();
 
+        let deployment = Deployment::mock_with_uri("http://localhost:8080");
         schemas
             .apply_updates(
                 schemas
                     .compute_new_deployment(
-                        DeploymentMetadata::mock_with_uri("http://localhost:8080"),
+                        Some(deployment.id),
+                        deployment.metadata,
                         vec![GREETER_SERVICE_NAME.to_owned()],
                         restate_pb::mocks::DESCRIPTOR_POOL.clone(),
                         false,

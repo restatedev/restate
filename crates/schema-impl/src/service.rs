@@ -79,7 +79,7 @@ pub(crate) fn map_to_service_metadata(
             instance_type: (&service_schemas.instance_type)
                 .try_into()
                 .expect("Checked in the line above whether this is a built-in service or not"),
-            deployment_id: latest_deployment.clone(),
+            deployment_id: *latest_deployment,
             revision: service_schemas.revision,
             public: *public,
         }),

@@ -14,6 +14,7 @@ use comfy_table::{Cell, Color, Table};
 
 use restate_meta_rest_model::deployments::{Deployment, ProtocolType, ServiceNameRevPair};
 use restate_meta_rest_model::services::ServiceMetadata;
+use restate_types::identifiers::DeploymentId;
 
 use super::console::StyledTable;
 
@@ -53,7 +54,7 @@ pub fn render_deployment_type(deployment: &Deployment) -> String {
 }
 
 pub fn calculate_deployment_status(
-    deployment_id: &str,
+    deployment_id: &DeploymentId,
     owned_services: &[ServiceNameRevPair],
     active_inv: i64,
     latest_services: &HashMap<String, ServiceMetadata>,
@@ -62,7 +63,7 @@ pub fn calculate_deployment_status(
 
     for svc in owned_services {
         if let Some(latest_svc) = latest_services.get(&svc.name) {
-            if latest_svc.deployment_id == deployment_id {
+            if &latest_svc.deployment_id == deployment_id {
                 status = DeploymentStatus::Active;
                 break;
             }

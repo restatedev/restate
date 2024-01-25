@@ -54,7 +54,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     );
     table.add_kv_row("Revision:", svc.revision);
     table.add_kv_row("Public:", svc.public);
-    table.add_kv_row("Deployment ID:", &svc.deployment_id);
+    table.add_kv_row("Deployment ID:", svc.deployment_id);
 
     let deployment = client
         .get_deployment(&svc.deployment_id)
