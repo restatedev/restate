@@ -46,6 +46,7 @@ use restate_types::journal::{
 use restate_types::journal::{Completion, CompletionResult};
 use serde::{Deserialize, Serialize};
 use std::iter;
+use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, instrument, trace, warn};
 
@@ -365,7 +366,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         .map_err(InvocationError::internal)?
                 );
 
-                let (invocation_id, entry_index) = AwakeableIdentifier::decode(id)
+                let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&id)
                     .map_err(InvocationError::internal)?
                     .into_inner();
 
@@ -2126,7 +2127,7 @@ mod tests {
 
         let (_, _, _, _, effects) = send_test(
             ProtobufRawEntryCodec::serialize(Entry::complete_awakeable(
-                awakeable_id.encode(),
+                awakeable_id.to_string(),
                 entry_result.clone(),
             ))
             .into(),
