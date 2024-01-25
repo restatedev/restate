@@ -221,7 +221,7 @@ where
                 },
                 actuator_output = actuator_stream.next() => {
                     counter!(PARTITION_ACTUATOR_HANDLED).increment(1);
-                    let actuator_output = actuator_output.ok_or(anyhow::anyhow!("actuator stream is closed"))?;
+                    let actuator_output = actuator_output.ok_or_else(|| anyhow::anyhow!("actuator stream is closed"))?;
                     actuator_output_handler.handle(actuator_output).await;
                 },
                 task_result = leadership_state.run_tasks() => {
