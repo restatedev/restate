@@ -354,6 +354,7 @@ where
 
         // Compute the diff with the current state of Schemas
         let schemas_update_commands = self.schemas.compute_new_deployment(
+            None, /* requested_deployment_id */
             deployment_metadata,
             discovered_metadata.services,
             discovered_metadata.descriptor_pool,
@@ -458,13 +459,14 @@ where
     ) -> DiscoverDeploymentResponse {
         for schema_update_command in commands {
             if let SchemasUpdateCommand::InsertDeployment {
-                metadata,
+                deployment_id,
+                metadata: _,
                 services,
                 descriptor_pool,
             } = schema_update_command
             {
                 return DiscoverDeploymentResponse {
-                    deployment: metadata.id(),
+                    deployment: *deployment_id,
                     services: services
                         .iter()
                         .map(|update_command| {
@@ -474,7 +476,7 @@ where
                                     "A service descriptor must be present in the descriptor pool",
                                 );
                             update_command
-                                .as_service_metadata(metadata.id(), &service_descriptor)
+                                .as_service_metadata(*deployment_id, &service_descriptor)
                                 .expect("Discovered services cannot be built-in services")
                         })
                         .collect(),

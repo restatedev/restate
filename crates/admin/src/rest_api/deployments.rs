@@ -14,7 +14,7 @@ use super::error::*;
 
 use restate_meta::{ApplyMode, Force};
 use restate_meta_rest_model::deployments::*;
-use restate_schema_api::deployment::DeploymentMetadataResolver;
+use restate_schema_api::deployment::DeploymentResolver;
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::InvalidLambdaARN;
@@ -126,16 +126,16 @@ pub async fn create_deployment<W>(
 )]
 pub async fn get_deployment<W>(
     State(state): State<AdminServiceState<W>>,
-    Path(deployment_id): Path<String>,
+    Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
-    let (endpoint_meta, services) = state
+    let (deployment, services) = state
         .schemas()
         .get_deployment_and_services(&deployment_id)
-        .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id.clone()))?;
+        .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
     Ok(DetailedDeploymentResponse {
-        id: deployment_id,
-        deployment: endpoint_meta.into(),
+        id: deployment.id,
+        deployment: deployment.metadata.into(),
         services,
     }
     .into())
@@ -155,13 +155,13 @@ pub async fn get_deployment<W>(
 )]
 pub async fn get_deployment_descriptors<W>(
     State(state): State<AdminServiceState<W>>,
-    Path(deployment_id): Path<String>,
+    Path(deployment_id): Path<DeploymentId>,
 ) -> Result<ProtoBytes, MetaApiError> {
     Ok(ProtoBytes(
         state
             .schemas()
             .get_deployment_descriptor_pool(&deployment_id)
-            .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id.clone()))?,
+            .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?,
     ))
 }
 
@@ -180,9 +180,9 @@ pub async fn list_deployments<W>(
             .schemas()
             .get_deployments()
             .into_iter()
-            .map(|(endpoint_meta, services)| DeploymentResponse {
-                id: endpoint_meta.id(),
-                deployment: endpoint_meta.into(),
+            .map(|(deployment, services)| DeploymentResponse {
+                id: deployment.id,
+                deployment: deployment.metadata.into(),
                 services: services
                     .into_iter()
                     .map(|(name, revision)| ServiceNameRevPair { name, revision })
@@ -236,7 +236,7 @@ pub struct DeleteDeploymentParams {
 )]
 pub async fn delete_deployment<W>(
     State(state): State<AdminServiceState<W>>,
-    Path(deployment_id): Path<String>,
+    Path(deployment_id): Path<DeploymentId>,
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
 ) -> Result<StatusCode, MetaApiError> {
     if let Some(true) = force {

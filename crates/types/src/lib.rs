@@ -13,6 +13,7 @@
 mod base62_util;
 mod id_util;
 
+pub mod deployment;
 pub mod errors;
 pub mod identifiers;
 pub mod invocation;

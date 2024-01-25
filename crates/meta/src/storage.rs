@@ -241,7 +241,7 @@ mod tests {
     use test_log::test;
 
     use restate_pb::mocks;
-    use restate_schema_api::deployment::DeploymentMetadata;
+    use restate_schema_api::deployment::Deployment;
     use restate_schema_impl::Schemas;
 
     #[test(tokio::test)]
@@ -252,9 +252,11 @@ mod tests {
             FileMetaStorage::new(temp_dir.path().to_path_buf()).expect("file storage should build");
 
         // Generate some commands for a new deployment, with new services
+        let deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
         let commands_1 = schemas
             .compute_new_deployment(
-                DeploymentMetadata::mock_with_uri("http://localhost:9080"),
+                Some(deployment_1.id),
+                deployment_1.metadata,
                 vec![mocks::GREETER_SERVICE_NAME.to_owned()],
                 mocks::DESCRIPTOR_POOL.clone(),
                 false,
@@ -266,9 +268,11 @@ mod tests {
         // Generate some commands for a new deployment, with a new and old service
         // We need to apply updates to generate a new command list
         schemas.apply_updates(commands_1.clone()).unwrap();
+        let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
         let commands_2 = schemas
             .compute_new_deployment(
-                DeploymentMetadata::mock_with_uri("http://localhost:9081"),
+                Some(deployment_2.id),
+                deployment_2.metadata,
                 vec![
                     mocks::GREETER_SERVICE_NAME.to_owned(),
                     mocks::ANOTHER_GREETER_SERVICE_NAME.to_owned(),
@@ -318,16 +322,16 @@ mod tests {
             match (&self.0, &other.0) {
                 (
                     SchemasUpdateCommand::InsertDeployment {
-                        metadata: self_metadata,
+                        deployment_id: self_deployment_id,
                         services: self_services,
                         ..
                     },
                     SchemasUpdateCommand::InsertDeployment {
-                        metadata: other_metadata,
+                        deployment_id: other_deployment_id,
                         services: other_services,
                         ..
                     },
-                ) => self_metadata.id() == other_metadata.id() && self_services == other_services,
+                ) => self_deployment_id == other_deployment_id && self_services == other_services,
                 (
                     SchemasUpdateCommand::RemoveService {
                         name: self_name,

@@ -12,15 +12,15 @@ use super::Schemas;
 use bytes::Bytes;
 
 use crate::schemas_impl::ServiceLocation;
-use restate_schema_api::deployment::{DeploymentMetadata, DeploymentMetadataResolver};
+use restate_schema_api::deployment::{Deployment, DeploymentResolver};
 use restate_schema_api::service::ServiceMetadata;
 use restate_types::identifiers::{DeploymentId, ServiceRevision};
 
-impl DeploymentMetadataResolver for Schemas {
+impl DeploymentResolver for Schemas {
     fn resolve_latest_deployment_for_service(
         &self,
         service_name: impl AsRef<str>,
-    ) -> Option<DeploymentMetadata> {
+    ) -> Option<Deployment> {
         let schemas = self.0.load();
         let service = schemas.services.get(service_name.as_ref())?;
         match &service.location {
@@ -30,16 +30,22 @@ impl DeploymentMetadataResolver for Schemas {
             } => schemas
                 .deployments
                 .get(latest_deployment)
-                .map(|schemas| schemas.metadata.clone()),
+                .map(|schemas| Deployment {
+                    id: *latest_deployment,
+                    metadata: schemas.metadata.clone(),
+                }),
         }
     }
 
-    fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<DeploymentMetadata> {
+    fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
         let schemas = self.0.load();
         schemas
             .deployments
             .get(deployment_id)
-            .map(|schemas| schemas.metadata.clone())
+            .map(|schemas| Deployment {
+                id: *deployment_id,
+                metadata: schemas.metadata.clone(),
+            })
     }
 
     fn get_deployment_descriptor_pool(&self, deployment_id: &DeploymentId) -> Option<Bytes> {
@@ -53,22 +59,30 @@ impl DeploymentMetadataResolver for Schemas {
     fn get_deployment_and_services(
         &self,
         deployment_id: &DeploymentId,
-    ) -> Option<(DeploymentMetadata, Vec<ServiceMetadata>)> {
+    ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
         let schemas = self.0.load();
-        schemas
-            .deployments
-            .get(deployment_id)
-            .map(|schemas| (schemas.metadata.clone(), schemas.services.clone()))
+        schemas.deployments.get(deployment_id).map(|schemas| {
+            (
+                Deployment {
+                    id: *deployment_id,
+                    metadata: schemas.metadata.clone(),
+                },
+                schemas.services.clone(),
+            )
+        })
     }
 
-    fn get_deployments(&self) -> Vec<(DeploymentMetadata, Vec<(String, ServiceRevision)>)> {
+    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
         let schemas = self.0.load();
         schemas
             .deployments
-            .values()
-            .map(|schemas| {
+            .iter()
+            .map(|(deployment_id, schemas)| {
                 (
-                    schemas.metadata.clone(),
+                    Deployment {
+                        id: *deployment_id,
+                        metadata: schemas.metadata.clone(),
+                    },
                     schemas
                         .services
                         .iter()

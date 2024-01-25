@@ -7,6 +7,7 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::fmt::Display;
 
 use super::metas_client::Envelope;
 use super::MetasClient;
@@ -20,9 +21,9 @@ pub trait MetaClientInterface {
     async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>>;
     async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>>;
     async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentsResponse>>;
-    async fn get_deployment(
+    async fn get_deployment<D: Display>(
         &self,
-        id: &str,
+        id: D,
     ) -> reqwest::Result<Envelope<DetailedDeploymentResponse>>;
     async fn remove_deployment(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>>;
 
@@ -59,9 +60,9 @@ impl MetaClientInterface for MetasClient {
         self.run(reqwest::Method::GET, url).await
     }
 
-    async fn get_deployment(
+    async fn get_deployment<D: Display>(
         &self,
-        id: &str,
+        id: D,
     ) -> reqwest::Result<Envelope<DetailedDeploymentResponse>> {
         let url = self
             .base_url

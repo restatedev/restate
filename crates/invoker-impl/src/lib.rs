@@ -30,7 +30,7 @@ use restate_invoker_api::{
     StateReader,
 };
 use restate_queue::SegmentQueue;
-use restate_schema_api::deployment::DeploymentMetadataResolver;
+use restate_schema_api::deployment::DeploymentResolver;
 use restate_timer_queue::TimerQueue;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, FullInvocationId, PartitionKey, WithPartitionKey};
@@ -112,7 +112,7 @@ where
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
-    DMR: DeploymentMetadataResolver + Clone + Send + 'static,
+    DMR: DeploymentResolver + Clone + Send + 'static,
 {
     fn start_invocation_task(
         &self,
@@ -218,7 +218,7 @@ where
     SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
-    EMR: DeploymentMetadataResolver + Clone + Send + 'static,
+    EMR: DeploymentResolver + Clone + Send + 'static,
 {
     pub fn handle(&self) -> ChannelServiceHandle {
         ChannelServiceHandle {
@@ -520,11 +520,8 @@ where
                 ism.invocation_state_debug()
             );
 
-            self.status_store.on_deployment_chosen(
-                &partition,
-                &full_invocation_id,
-                deployment_id.clone(),
-            );
+            self.status_store
+                .on_deployment_chosen(&partition, &full_invocation_id, deployment_id);
             // If we think this selected deployment has been freshly picked, otherwise
             // we assume that we have stored it previously.
             if has_changed {

@@ -253,6 +253,8 @@ pub(crate) struct DeploymentSchemas {
 
 impl Default for SchemasInner {
     fn default() -> Self {
+        const INGRESS_DEPLOYMENT_ID: DeploymentId = DeploymentId::from_parts(0, 0);
+
         let mut inner = Self {
             services: Default::default(),
             deployments: Default::default(),
@@ -282,10 +284,9 @@ impl Default for SchemasInner {
                 ),
             );
             if matches!(visibility, Visibility::Public) {
-                inner.proto_symbols.add_service(
-                    &"self_ingress".to_string(),
-                    &restate_pb::get_service(svc_name),
-                )
+                inner
+                    .proto_symbols
+                    .add_service(&INGRESS_DEPLOYMENT_ID, &restate_pb::get_service(svc_name))
             }
         };
         register_built_in(

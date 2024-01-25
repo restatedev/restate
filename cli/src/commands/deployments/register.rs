@@ -307,7 +307,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                     let maybe_old_deployment = resolve_deployment(
                         &client,
                         &mut deployment_cache,
-                        &existing_svc.deployment_id,
+                        &existing_svc.deployment_id.to_string(),
                     )
                     .await;
                     let old_deployment_message = maybe_old_deployment

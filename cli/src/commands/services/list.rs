@@ -25,6 +25,7 @@ use restate_meta_rest_model::services::MethodMetadata;
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::Table;
+use restate_types::identifiers::DeploymentId;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
@@ -59,11 +60,11 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
 
     let deployments = client.get_deployments().await?.into_body().await?;
 
-    let mut deployment_cache: HashMap<String, DeploymentResponse> = HashMap::new();
+    let mut deployment_cache: HashMap<DeploymentId, DeploymentResponse> = HashMap::new();
 
     // Caching endpoints
-    for endpoint in deployments.deployments {
-        deployment_cache.insert(endpoint.id.to_string(), endpoint);
+    for deployment in deployments.deployments {
+        deployment_cache.insert(deployment.id, deployment);
     }
 
     let mut table = Table::new_styled(&env.ui_config);
@@ -100,7 +101,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
             svc.revision.to_string(),
             flavor.to_string(),
             render_deployment_type(&deployment.deployment),
-            deployment.id.clone(),
+            deployment.id.to_string(),
         ];
         if list_opts.extra {
             row.push(render_deployment_url(&deployment.deployment));

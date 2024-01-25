@@ -18,7 +18,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_schema_api::deployment::{DeploymentMetadata, DeploymentMetadataResolver};
+use restate_schema_api::deployment::{Deployment, DeploymentResolver};
 use restate_types::identifiers::{PartitionKey, ServiceRevision};
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
@@ -27,7 +27,7 @@ use tokio::sync::mpsc::Sender;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
-    resolver: impl DeploymentMetadataResolver + Send + Sync + Debug + 'static,
+    resolver: impl DeploymentResolver + Send + Sync + Debug + 'static,
 ) -> datafusion::common::Result<()> {
     let deployment_table = GenericTableProvider::new(
         DeploymentBuilder::schema(),
@@ -44,7 +44,7 @@ struct DeploymentMetadataScanner<DMR>(DMR);
 
 /// TODO This trait makes little sense for sys_deployment,
 ///  but it's fine nevertheless as the caller always uses the full range
-impl<DMR: DeploymentMetadataResolver + Debug + Sync + Send + 'static> RangeScanner
+impl<DMR: DeploymentResolver + Debug + Sync + Send + 'static> RangeScanner
     for DeploymentMetadataScanner<DMR>
 {
     fn scan(
@@ -67,7 +67,7 @@ impl<DMR: DeploymentMetadataResolver + Debug + Sync + Send + 'static> RangeScann
 async fn for_each_state(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
-    rows: Vec<(DeploymentMetadata, Vec<(String, ServiceRevision)>)>,
+    rows: Vec<(Deployment, Vec<(String, ServiceRevision)>)>,
 ) {
     let mut builder = DeploymentBuilder::new(schema.clone());
     let mut temp = String::new();
