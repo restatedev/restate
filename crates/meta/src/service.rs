@@ -25,7 +25,7 @@ use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_service_protocol::discovery::{DiscoverEndpoint, ServiceDiscovery};
-use restate_types::identifiers::DeploymentId;
+use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::retries::RetryPolicy;
 use restate_worker_api::SubscriptionController;
 
@@ -75,13 +75,13 @@ enum MetaHandleRequest {
         deployment_id: DeploymentId,
     },
     CreateSubscription {
-        id: Option<String>,
+        id: Option<SubscriptionId>,
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
     },
     DeleteSubscription {
-        subscription_id: String,
+        subscription_id: SubscriptionId,
     },
 }
 
@@ -153,7 +153,7 @@ impl MetaHandle {
 
     pub async fn create_subscription(
         &self,
-        id: Option<String>,
+        id: Option<SubscriptionId>,
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
@@ -175,7 +175,7 @@ impl MetaHandle {
             .map_err(|_e| Error::MetaClosed)?
     }
 
-    pub async fn delete_subscription(&self, subscription_id: String) -> Result<(), Error> {
+    pub async fn delete_subscription(&self, subscription_id: SubscriptionId) -> Result<(), Error> {
         let (cmd, response_tx) =
             Command::prepare(MetaHandleRequest::DeleteSubscription { subscription_id });
         self.0.send(cmd).map_err(|_e| Error::MetaClosed)?;
@@ -398,7 +398,7 @@ where
 
     async fn create_subscription(
         &mut self,
-        id: Option<String>,
+        id: Option<SubscriptionId>,
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
@@ -425,17 +425,17 @@ where
 
     async fn delete_subscription(
         &mut self,
-        sub_id: String,
+        id: SubscriptionId,
         worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
     ) -> Result<(), Error> {
-        info!(restate.subscription.id = %sub_id, "Delete subscription");
+        info!(restate.subscription.id = %id, "Delete subscription");
 
         // Compute the diff and propagate updates
-        let update_command = self.schemas.compute_remove_subscription(sub_id.clone())?;
+        let update_command = self.schemas.compute_remove_subscription(id)?;
         self.store_and_apply_updates(vec![update_command]).await?;
         let _ = worker_handle
             .subscription_controller_handle()
-            .stop_subscription(sub_id)
+            .stop_subscription(id)
             .await;
 
         Ok(())

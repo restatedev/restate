@@ -41,9 +41,6 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 // Just an alias
 pub type EntryIndex = u32;
 
-// Temporary
-pub type SubscriptionId = String;
-
 /// Unique Id of a deployment.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
 #[cfg_attr(
@@ -68,15 +65,27 @@ impl Default for DeploymentId {
     }
 }
 
-// Passthrough json schema to the string
-#[cfg(feature = "serde_schema")]
-impl schemars::JsonSchema for DeploymentId {
-    fn schema_name() -> String {
-        <String as schemars::JsonSchema>::schema_name()
+/// Unique Id of a subscription.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+)]
+pub struct SubscriptionId(pub(crate) Ulid);
+
+impl SubscriptionId {
+    pub fn new() -> Self {
+        Self(Ulid::new())
     }
 
-    fn json_schema(g: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        <String as schemars::JsonSchema>::json_schema(g)
+    pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
+        Self(Ulid::from_parts(timestamp_ms, random))
+    }
+}
+
+impl Default for SubscriptionId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
