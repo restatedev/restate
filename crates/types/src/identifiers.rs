@@ -41,10 +41,44 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 // Just an alias
 pub type EntryIndex = u32;
 
+// Temporary
+pub type SubscriptionId = String;
+
 /// Unique Id of a deployment.
-///
-/// Currently this will contain the deployment url authority and path base64 encoded, or alternatively the ARN for Lambda, but this might change in future.
-pub type DeploymentId = String;
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+)]
+pub struct DeploymentId(pub(crate) Ulid);
+
+impl DeploymentId {
+    pub fn new() -> Self {
+        Self(Ulid::new())
+    }
+
+    pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
+        Self(Ulid::from_parts(timestamp_ms, random))
+    }
+}
+
+impl Default for DeploymentId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Passthrough json schema to the string
+#[cfg(feature = "serde_schema")]
+impl schemars::JsonSchema for DeploymentId {
+    fn schema_name() -> String {
+        <String as schemars::JsonSchema>::schema_name()
+    }
+
+    fn json_schema(g: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        <String as schemars::JsonSchema>::json_schema(g)
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -377,7 +411,7 @@ impl fmt::Display for InvocationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // encode the id such that it is possible to do a string prefix search for a
         // partition key using the first 17 characters.
-        let mut encoder = IdEncoder::<InvocationId>::new();
+        let mut encoder = IdEncoder::<Self>::new();
         self.push_contents_to_encoder(&mut encoder);
         fmt::Display::fmt(&encoder.finalize(), f)
     }

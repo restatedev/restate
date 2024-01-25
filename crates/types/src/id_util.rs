@@ -40,6 +40,7 @@ pub enum IdSchemeVersion {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum IdResourceType {
     Invocation,
+    Deployment,
 }
 
 impl IdSchemeVersion {
@@ -65,6 +66,7 @@ impl IdResourceType {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Invocation => "inv",
+            Self::Deployment => "dp",
         }
     }
 }
@@ -75,6 +77,7 @@ impl FromStr for IdResourceType {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "inv" => Ok(Self::Invocation),
+            "dp" => Ok(Self::Deployment),
             _ => Err(IdDecodeError::UnrecognizedType(value.to_string())),
         }
     }

@@ -18,7 +18,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_schema_api::deployment::{DeploymentMetadata, DeploymentMetadataResolver};
+use restate_schema_api::deployment::{Deployment, DeploymentMetadataResolver};
 use restate_types::identifiers::{PartitionKey, ServiceRevision};
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
@@ -67,7 +67,7 @@ impl<DMR: DeploymentMetadataResolver + Debug + Sync + Send + 'static> RangeScann
 async fn for_each_state(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
-    rows: Vec<(DeploymentMetadata, Vec<(String, ServiceRevision)>)>,
+    rows: Vec<(Deployment, Vec<(String, ServiceRevision)>)>,
 ) {
     let mut builder = DeploymentBuilder::new(schema.clone());
     let mut temp = String::new();

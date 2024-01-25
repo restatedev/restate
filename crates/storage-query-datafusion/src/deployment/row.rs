@@ -10,18 +10,18 @@
 
 use super::schema::DeploymentBuilder;
 use crate::table_util::format_using;
-use restate_schema_api::deployment::{DeploymentMetadata, DeploymentType};
+use restate_schema_api::deployment::{Deployment, DeploymentType};
 
 #[inline]
 pub(crate) fn append_deployment_row(
     builder: &mut DeploymentBuilder,
     output: &mut String,
-    deployment_metadata: DeploymentMetadata,
+    deployment: Deployment,
 ) {
     let mut row = builder.row();
-    row.id(format_using(output, &deployment_metadata.id()));
+    row.id(format_using(output, &deployment.id));
 
-    match deployment_metadata.ty {
+    match deployment.metadata.ty {
         DeploymentType::Http { .. } => {
             row.ty("http");
         }
@@ -30,6 +30,6 @@ pub(crate) fn append_deployment_row(
         }
     }
 
-    row.endpoint(format_using(output, &deployment_metadata.address_display()));
-    row.created_at(deployment_metadata.created_at.as_u64() as i64);
+    row.endpoint(format_using(output, &deployment.metadata.address_display()));
+    row.created_at(deployment.metadata.created_at.as_u64() as i64);
 }

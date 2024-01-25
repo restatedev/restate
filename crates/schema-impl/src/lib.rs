@@ -14,7 +14,7 @@ use prost_reflect::{DescriptorPool, ServiceDescriptor};
 use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
-use restate_types::identifiers::{DeploymentId, ServiceRevision};
+use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -94,6 +94,7 @@ impl InsertServiceUpdateCommand {
 pub enum SchemasUpdateCommand {
     /// Insert (or replace) deployment
     InsertDeployment {
+        deployment_id: DeploymentId,
         metadata: DeploymentMetadata,
         services: Vec<InsertServiceUpdateCommand>,
         #[serde(with = "descriptor_pool_serde")]
@@ -146,6 +147,14 @@ pub enum SchemasUpdateError {
     #[error("a deployment with the same id {0} already exists in the registry")]
     #[code(restate_errors::META0004)]
     OverrideDeployment(DeploymentId),
+    #[error(
+        "existing deployment id is different from requested (requested = {requested}, existing = {existing})"
+    )]
+    #[code(restate_errors::META0004)]
+    IncorrectDeploymentId {
+        requested: DeploymentId,
+        existing: DeploymentId,
+    },
     #[error("missing service {0} in descriptor")]
     #[code(restate_errors::META0005)]
     MissingServiceInDescriptor(String),
@@ -158,12 +167,12 @@ pub enum SchemasUpdateError {
     #[error("unknown deployment id {0}")]
     UnknownDeployment(DeploymentId),
     #[error("unknown subscription id {0}")]
-    UnknownSubscription(String),
+    UnknownSubscription(SubscriptionId),
     #[error("invalid subscription: {0}")]
     #[code(restate_errors::META0009)]
     InvalidSubscription(anyhow::Error),
     #[error("a subscription with the same id {0} already exists in the registry")]
-    OverrideSubscription(DeploymentId),
+    OverrideSubscription(SubscriptionId),
     #[error(transparent)]
     IncompatibleServiceChange(
         #[from]
@@ -186,18 +195,29 @@ impl Schemas {
     /// If `allow_override` is true, this method compares the deployment registered services with the given `services`,
     /// and generates remove commands for services no longer available at that deployment.
     ///
+    /// If `deployment_id` is set, it's assumed that:
+    ///   - This ID should be used if it's is a new deployment
+    ///   - or if conflicting/existing deployment exists, it must match.
+    /// Otherwise, a new deployment id is generated for this deployment, or the existing
+    /// deployment_id will be reused.
+    ///
     /// IMPORTANT: It is not safe to consecutively call this method several times and apply the updates all-together with a single [`Self::apply_updates`],
     /// as one change set might depend on the previously computed change set.
     pub fn compute_new_deployment(
         &self,
+        deployment_id: Option<DeploymentId>,
         deployment_metadata: DeploymentMetadata,
         services: Vec<String>,
         descriptor_pool: DescriptorPool,
         force: bool,
     ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
-        self.0
-            .load()
-            .compute_new_deployment(deployment_metadata, services, descriptor_pool, force)
+        self.0.load().compute_new_deployment(
+            deployment_id,
+            deployment_metadata,
+            services,
+            descriptor_pool,
+            force,
+        )
     }
 
     pub fn compute_modify_service(
@@ -251,11 +271,17 @@ impl Schemas {
         for cmd in updates {
             match cmd {
                 SchemasUpdateCommand::InsertDeployment {
+                    deployment_id,
                     metadata,
                     services,
                     descriptor_pool,
                 } => {
-                    schemas_inner.apply_insert_deployment(metadata, services, descriptor_pool)?;
+                    schemas_inner.apply_insert_deployment(
+                        deployment_id,
+                        metadata,
+                        services,
+                        descriptor_pool,
+                    )?;
                 }
                 SchemasUpdateCommand::RemoveDeployment { deployment_id } => {
                     schemas_inner.apply_remove_deployment(deployment_id)?;
@@ -297,6 +323,7 @@ mod tests {
             self.0.store(Arc::new(schemas_inner));
         }
 
+        #[track_caller]
         pub(crate) fn assert_service_revision(&self, svc_name: &str, revision: ServiceRevision) {
             assert_eq!(
                 self.resolve_latest_service_metadata(svc_name)
@@ -306,6 +333,7 @@ mod tests {
             );
         }
 
+        #[track_caller]
         pub(crate) fn assert_resolves_deployment(
             &self,
             svc_name: &str,
@@ -314,7 +342,7 @@ mod tests {
             assert_eq!(
                 self.resolve_latest_deployment_for_service(svc_name)
                     .unwrap()
-                    .id(),
+                    .id,
                 deployment_id
             );
         }

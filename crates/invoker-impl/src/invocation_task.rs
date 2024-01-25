@@ -358,41 +358,38 @@ where
             shortcircuit!(tokio::try_join!(read_journal_future, read_state_future));
 
         // Resolve the deployment metadata
-        let (deployment_metadata, deployment_changed) =
+        let (deployment, deployment_changed) =
             if let Some(deployment_id) = journal_metadata.deployment_id {
                 // We have a pinned deployment that we can't change even if newer
                 // deployments have been registered for the same service.
                 let deployment_metadata = shortcircuit!(self
                     .deployment_metadata_resolver
                     .get_deployment(&deployment_id)
-                    .ok_or_else(|| InvocationTaskError::UnknownDeployment(deployment_id.clone())));
+                    .ok_or_else(|| InvocationTaskError::UnknownDeployment(deployment_id)));
                 (deployment_metadata, /* has_changed= */ false)
             } else {
                 // We can choose the freshest deployment for the latest revision
                 // of the registered service.
-                let deployment_metadata = shortcircuit!(self
+                let deployment = shortcircuit!(self
                     .deployment_metadata_resolver
                     .resolve_latest_deployment_for_service(
                         &self.full_invocation_id.service_id.service_name
                     )
                     .ok_or(InvocationTaskError::NoDeploymentForService));
-                (deployment_metadata, /* has_changed= */ true)
+                (deployment, /* has_changed= */ true)
             };
 
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             full_invocation_id: self.full_invocation_id.clone(),
-            inner: InvocationTaskOutputInner::SelectedDeployment(
-                deployment_metadata.id(),
-                deployment_changed,
-            ),
+            inner: InvocationTaskOutputInner::SelectedDeployment(deployment.id, deployment_changed),
         });
 
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
         let protocol_type = if self.inactivity_timeout.is_zero() {
             ProtocolType::RequestResponse
         } else {
-            deployment_metadata.protocol_type()
+            deployment.metadata.ty.protocol_type()
         };
 
         // Close the invoker_rx in case it's request response, this avoids further buffering of messages in this channel.
@@ -422,7 +419,7 @@ where
             .attach_to_span(&invocation_task_span);
 
         info!(
-            deployment.address = %deployment_metadata.address_display(),
+            deployment.address = %deployment.metadata.address_display(),
             path = %path,
             "Executing invocation at deployment"
         );
@@ -432,7 +429,7 @@ where
         let service_invocation_span_context = journal_metadata.span_context;
 
         // Prepare the request and send start message
-        let (mut http_stream_tx, request) = self.prepare_request(path, deployment_metadata);
+        let (mut http_stream_tx, request) = self.prepare_request(path, deployment.metadata);
         shortcircuit!(
             self.write_start(&mut http_stream_tx, journal_size, state_iter)
                 .await

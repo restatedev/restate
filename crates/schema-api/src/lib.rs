@@ -55,6 +55,15 @@ pub mod deployment {
     #[cfg_attr(feature = "serde", serde_with::serde_as)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub struct Deployment {
+        pub id: DeploymentId,
+        pub metadata: DeploymentMetadata,
+    }
+
+    #[derive(Debug, Clone)]
+    #[cfg_attr(feature = "serde", serde_with::serde_as)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub struct DeploymentMetadata {
         pub ty: DeploymentType,
         pub delivery_options: DeliveryOptions,
@@ -80,6 +89,29 @@ pub mod deployment {
             #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
             assume_role_arn: Option<ByteString>,
         },
+    }
+
+    impl DeploymentType {
+        pub fn protocol_type(&self) -> ProtocolType {
+            match self {
+                DeploymentType::Http { protocol_type, .. } => *protocol_type,
+                DeploymentType::Lambda { .. } => ProtocolType::RequestResponse,
+            }
+        }
+
+        pub fn normalized_address(&self) -> String {
+            match self {
+                DeploymentType::Http { address, .. } => {
+                    // We use only authority and path, as those uniquely identify the deployment.
+                    format!(
+                        "{}{}",
+                        address.authority().expect("Must have authority"),
+                        address.path()
+                    )
+                }
+                DeploymentType::Lambda { arn, .. } => arn.to_string(),
+            }
+        }
     }
 
     impl DeploymentMetadata {
@@ -128,33 +160,6 @@ pub mod deployment {
             Wrapper(&self.ty)
         }
 
-        pub fn protocol_type(&self) -> ProtocolType {
-            match &self.ty {
-                DeploymentType::Http { protocol_type, .. } => *protocol_type,
-                DeploymentType::Lambda { .. } => ProtocolType::RequestResponse,
-            }
-        }
-
-        pub fn id(&self) -> DeploymentId {
-            use base64::Engine;
-
-            match &self.ty {
-                DeploymentType::Http { address, .. } => {
-                    // For the time being we generate this from the URI
-                    // We use only authority and path, as those uniquely identify the deployment.
-                    let authority_and_path = format!(
-                        "{}{}",
-                        address.authority().expect("Must have authority"),
-                        address.path()
-                    );
-                    restate_base64_util::URL_SAFE.encode(authority_and_path.as_bytes())
-                }
-                DeploymentType::Lambda { arn, .. } => {
-                    restate_base64_util::URL_SAFE.encode(arn.to_string().as_bytes())
-                }
-            }
-        }
-
         pub fn created_at(&self) -> MillisSinceEpoch {
             self.created_at
         }
@@ -164,18 +169,18 @@ pub mod deployment {
         fn resolve_latest_deployment_for_service(
             &self,
             service_name: impl AsRef<str>,
-        ) -> Option<DeploymentMetadata>;
+        ) -> Option<Deployment>;
 
-        fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<DeploymentMetadata>;
+        fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
 
         fn get_deployment_descriptor_pool(&self, deployment_id: &DeploymentId) -> Option<Bytes>;
 
         fn get_deployment_and_services(
             &self,
             deployment_id: &DeploymentId,
-        ) -> Option<(DeploymentMetadata, Vec<ServiceMetadata>)>;
+        ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
 
-        fn get_deployments(&self) -> Vec<(DeploymentMetadata, Vec<(String, ServiceRevision)>)>;
+        fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)>;
     }
 
     #[cfg(feature = "mocks")]
@@ -184,21 +189,28 @@ pub mod deployment {
 
         use std::collections::HashMap;
 
-        impl DeploymentMetadata {
-            pub fn mock() -> DeploymentMetadata {
-                DeploymentMetadata::new_http(
+        impl Deployment {
+            pub fn mock() -> Deployment {
+                let id = "dp_15VqmTOnXH3Vv2pl5HOG7UB"
+                    .parse()
+                    .expect("valid stable deployment id");
+                let metadata = DeploymentMetadata::new_http(
                     "http://localhost:9080".parse().unwrap(),
                     ProtocolType::BidiStream,
                     Default::default(),
-                )
+                );
+
+                Deployment { id, metadata }
             }
 
-            pub fn mock_with_uri(uri: &str) -> DeploymentMetadata {
-                DeploymentMetadata::new_http(
+            pub fn mock_with_uri(uri: &str) -> Deployment {
+                let id = DeploymentId::new();
+                let metadata = DeploymentMetadata::new_http(
                     uri.parse().unwrap(),
                     ProtocolType::BidiStream,
                     Default::default(),
-                )
+                );
+                Deployment { id, metadata }
             }
         }
 
@@ -210,12 +222,13 @@ pub mod deployment {
 
         impl MockDeploymentMetadataRegistry {
             pub fn mock_service(&mut self, name: &str) {
-                self.mock_service_with_metadata(name, DeploymentMetadata::mock());
+                self.mock_service_with_metadata(name, Deployment::mock());
             }
 
-            pub fn mock_service_with_metadata(&mut self, name: &str, meta: DeploymentMetadata) {
-                self.latest_deployment.insert(name.to_string(), meta.id());
-                self.deployments.insert(meta.id(), meta);
+            pub fn mock_service_with_metadata(&mut self, name: &str, deployment: Deployment) {
+                self.latest_deployment
+                    .insert(name.to_string(), deployment.id);
+                self.deployments.insert(deployment.id, deployment.metadata);
             }
         }
 
@@ -223,14 +236,20 @@ pub mod deployment {
             fn resolve_latest_deployment_for_service(
                 &self,
                 service_name: impl AsRef<str>,
-            ) -> Option<DeploymentMetadata> {
+            ) -> Option<Deployment> {
                 self.latest_deployment
                     .get(service_name.as_ref())
                     .and_then(|deployment_id| self.get_deployment(deployment_id))
             }
 
-            fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<DeploymentMetadata> {
-                self.deployments.get(deployment_id).cloned()
+            fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
+                self.deployments
+                    .get(deployment_id)
+                    .cloned()
+                    .map(|metadata| Deployment {
+                        id: *deployment_id,
+                        metadata,
+                    })
             }
 
             fn get_deployment_descriptor_pool(
@@ -243,17 +262,33 @@ pub mod deployment {
             fn get_deployment_and_services(
                 &self,
                 deployment_id: &DeploymentId,
-            ) -> Option<(DeploymentMetadata, Vec<ServiceMetadata>)> {
+            ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
                 self.deployments
                     .get(deployment_id)
                     .cloned()
-                    .map(|e| (e, vec![]))
+                    .map(|metadata| {
+                        (
+                            Deployment {
+                                id: *deployment_id,
+                                metadata,
+                            },
+                            vec![],
+                        )
+                    })
             }
 
-            fn get_deployments(&self) -> Vec<(DeploymentMetadata, Vec<(String, ServiceRevision)>)> {
+            fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
                 self.deployments
-                    .values()
-                    .map(|e| (e.clone(), vec![]))
+                    .iter()
+                    .map(|(id, metadata)| {
+                        (
+                            Deployment {
+                                id: *id,
+                                metadata: metadata.clone(),
+                            },
+                            vec![],
+                        )
+                    })
                     .collect()
             }
         }

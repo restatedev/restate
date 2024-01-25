@@ -101,6 +101,7 @@ mod tests {
         InstanceTypeMetadata, MethodSchemas, ServiceLocation, ServiceSchemas,
     };
     use prost_reflect::{MethodDescriptor, ServiceDescriptor};
+    use restate_types::identifiers::DeploymentId;
     use serde::Serialize;
     use serde_json::json;
 
@@ -120,6 +121,9 @@ mod tests {
 
     fn schemas_mock() -> Schemas {
         let schemas = Schemas::default();
+        let latest_deployment: DeploymentId = "dp_134xwosaM2PKrh2dZTMbotj"
+            .parse()
+            .expect("valid stable deployment id");
         schemas.add_mock_service(
             "greeter.Greeter",
             ServiceSchemas {
@@ -132,7 +136,7 @@ mod tests {
                 .collect(),
                 instance_type: InstanceTypeMetadata::Unkeyed,
                 location: ServiceLocation::Deployment {
-                    latest_deployment: "".to_string(),
+                    latest_deployment,
                     public: true,
                 },
             },

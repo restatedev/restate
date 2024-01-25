@@ -193,7 +193,7 @@ impl InvocationMetadata {
     pub fn new(
         invocation_uuid: InvocationUuid,
         journal_metadata: JournalMetadata,
-        deployment_id: Option<String>,
+        deployment_id: Option<DeploymentId>,
         method: ByteString,
         response_sink: Option<ServiceInvocationResponseSink>,
         timestamps: StatusTimestamps,

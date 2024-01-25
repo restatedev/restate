@@ -520,11 +520,8 @@ where
                 ism.invocation_state_debug()
             );
 
-            self.status_store.on_deployment_chosen(
-                &partition,
-                &full_invocation_id,
-                deployment_id.clone(),
-            );
+            self.status_store
+                .on_deployment_chosen(&partition, &full_invocation_id, deployment_id);
             // If we think this selected deployment has been freshly picked, otherwise
             // we assume that we have stored it previously.
             if has_changed {
