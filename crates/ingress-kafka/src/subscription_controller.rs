@@ -16,6 +16,7 @@ use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use rdkafka::error::KafkaError;
 use restate_ingress_dispatcher::IngressRequestSender;
 use restate_schema_api::subscription::{Source, Subscription};
+use restate_types::identifiers::SubscriptionId;
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -23,7 +24,7 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub enum Command {
     StartSubscription(Subscription),
-    StopSubscription(String),
+    StopSubscription(SubscriptionId),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -74,7 +75,7 @@ impl Service {
                 Some(cmd) = self.commands_rx.recv() => {
                     match cmd {
                         Command::StartSubscription(sub) => self.handle_start_subscription(sub, &mut task_orchestrator),
-                        Command::StopSubscription(sub_id) => self.handle_stop_subscription(&sub_id, &mut task_orchestrator)
+                        Command::StopSubscription(sub_id) => self.handle_stop_subscription(sub_id, &mut task_orchestrator)
                     }
                 }
                 _ = task_orchestrator.poll(), if !task_orchestrator.is_empty() => {},
@@ -117,7 +118,7 @@ impl Service {
         client_config.set("enable.auto.commit", "true");
         client_config.set("enable.auto.offset.store", "false");
 
-        let subscription_id = subscription.id().to_string();
+        let subscription_id = subscription.id();
 
         // Create the consumer task
         let consumer_task = consumer_task::ConsumerTask::new(
@@ -131,7 +132,7 @@ impl Service {
 
     fn handle_stop_subscription(
         &mut self,
-        subscription_id: &str,
+        subscription_id: SubscriptionId,
         task_orchestrator: &mut TaskOrchestrator,
     ) {
         task_orchestrator.stop(subscription_id);
@@ -141,6 +142,7 @@ impl Service {
 mod task_orchestrator {
     use crate::consumer_task;
     use restate_timer_queue::TimerQueue;
+    use restate_types::identifiers::SubscriptionId;
     use restate_types::retries::{RetryIter, RetryPolicy};
     use std::collections::HashMap;
     use std::time::SystemTime;
@@ -166,10 +168,10 @@ mod task_orchestrator {
 
     pub(super) struct TaskOrchestrator {
         retry_policy: RetryPolicy,
-        running_tasks_to_subscriptions: HashMap<task::Id, String>,
-        subscription_id_to_task_state: HashMap<String, TaskState>,
+        running_tasks_to_subscriptions: HashMap<task::Id, SubscriptionId>,
+        subscription_id_to_task_state: HashMap<SubscriptionId, TaskState>,
         tasks: JoinSet<Result<(), consumer_task::Error>>,
-        timer_queue: TimerQueue<String>,
+        timer_queue: TimerQueue<SubscriptionId>,
     }
 
     impl TaskOrchestrator {
@@ -242,7 +244,7 @@ mod task_orchestrator {
             }
         }
 
-        fn handle_timer_fired(&mut self, subscription_id: String) {
+        fn handle_timer_fired(&mut self, subscription_id: SubscriptionId) {
             match self.subscription_id_to_task_state.get(&subscription_id) {
                 Some(TaskState {
                     task_state_inner: TaskStateInner::Running { .. },
@@ -270,7 +272,7 @@ mod task_orchestrator {
 
         pub(super) fn start(
             &mut self,
-            subscription_id: String,
+            subscription_id: SubscriptionId,
             consumer_task_clone: consumer_task::ConsumerTask,
         ) {
             // Shutdown old task, if any
@@ -291,7 +293,7 @@ mod task_orchestrator {
             let task_id = self.tasks.spawn(consumer_task_clone.clone().run(rx)).id();
 
             self.running_tasks_to_subscriptions
-                .insert(task_id, subscription_id.clone());
+                .insert(task_id, subscription_id);
             self.subscription_id_to_task_state.insert(
                 subscription_id,
                 TaskState {
@@ -305,11 +307,11 @@ mod task_orchestrator {
             );
         }
 
-        pub(super) fn stop(&mut self, subscription_id: &str) {
+        pub(super) fn stop(&mut self, subscription_id: SubscriptionId) {
             if let Some(TaskState {
                 task_state_inner: TaskStateInner::Running { task_id, .. },
                 ..
-            }) = self.subscription_id_to_task_state.remove(subscription_id)
+            }) = self.subscription_id_to_task_state.remove(&subscription_id)
             {
                 self.running_tasks_to_subscriptions.remove(&task_id);
             }

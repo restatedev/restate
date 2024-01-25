@@ -3,15 +3,14 @@ use super::*;
 impl SchemasInner {
     pub(crate) fn compute_add_subscription<V: SubscriptionValidator>(
         &self,
-        id: Option<String>,
+        id: Option<SubscriptionId>,
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
         validator: V,
     ) -> Result<(Subscription, SchemasUpdateCommand), SchemasUpdateError> {
-        // TODO We could generate a more human readable uuid here by taking the source and sink,
-        // and adding an incremental number in case of collision.
-        let id = id.unwrap_or_else(|| uuid::Uuid::now_v7().as_simple().to_string());
+        // generate id if not provided
+        let id = id.unwrap_or_default();
 
         if self.subscriptions.contains_key(&id) {
             return Err(SchemasUpdateError::OverrideSubscription(id));
@@ -165,14 +164,14 @@ impl SchemasInner {
         &mut self,
         sub: Subscription,
     ) -> Result<(), SchemasUpdateError> {
-        self.subscriptions.insert(sub.id().to_string(), sub);
+        self.subscriptions.insert(sub.id(), sub);
 
         Ok(())
     }
 
     pub(crate) fn compute_remove_subscription(
         &self,
-        id: String,
+        id: SubscriptionId,
     ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
         if !self.subscriptions.contains_key(&id) {
             return Err(SchemasUpdateError::UnknownSubscription(id));
@@ -183,9 +182,9 @@ impl SchemasInner {
 
     pub(crate) fn apply_remove_subscription(
         &mut self,
-        sub_id: String,
+        id: SubscriptionId,
     ) -> Result<(), SchemasUpdateError> {
-        self.subscriptions.remove(&sub_id);
+        self.subscriptions.remove(&id);
 
         Ok(())
     }
