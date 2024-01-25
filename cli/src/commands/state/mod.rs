@@ -8,10 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod deployments;
-pub mod examples;
-pub mod invocations;
-pub mod services;
-pub mod sql;
-pub mod state;
-pub mod whoami;
+mod edit;
+mod get;
+mod util;
+
+use cling::prelude::*;
+
+#[derive(Run, Subcommand, Clone)]
+pub enum ServiceState {
+    Get(get::Get),
+    Edit(edit::Edit),
+}

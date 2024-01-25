@@ -22,6 +22,7 @@ restate-types = { workspace = true }
 anyhow = { workspace = true }
 arrow = { version = "49.0.0", default-features = false, features = ["ipc", "prettyprint"] }
 bytes = { workspace = true }
+base64 = { workspace = true}
 chrono = { workspace = true }
 chrono-humanize = { version = "0.2.3" }
 clap = { version = "4.1", features = ["derive", "env", "wrap_help", "color"] }
@@ -46,6 +47,7 @@ reqwest = { version = "0.11.22", default-features = false, features = ["json", "
 serde = { workspace = true }
 serde_json = { workspace = true }
 termcolor = { version = "1.4.0" }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tiny-gradient = { version = "0.1.0" }
 tokio = { workspace = true, features = ["fs"] }

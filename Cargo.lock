@@ -4776,6 +4776,7 @@ version = "0.7.1"
 dependencies = [
  "anyhow",
  "arrow 49.0.0",
+ "base64 0.21.7",
  "bytes",
  "chrono",
  "chrono-humanize",
@@ -4804,6 +4805,7 @@ dependencies = [
  "restate-types",
  "serde",
  "serde_json",
+ "tempfile",
  "termcolor",
  "thiserror",
  "tiny-gradient",
