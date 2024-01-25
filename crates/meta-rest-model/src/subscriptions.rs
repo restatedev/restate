@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use http::Uri;
+use restate_types::identifiers::SubscriptionId;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -23,9 +24,6 @@ pub use restate_schema_api::subscription::{ListSubscriptionFilter, Subscription}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateSubscriptionRequest {
     /// # Identifier
-    ///
-    /// Identifier of the subscription. If not specified, one will be auto-generated.
-    pub id: Option<String>,
     /// # Source
     ///
     /// Source uri. Accepted forms:
@@ -51,7 +49,7 @@ pub struct CreateSubscriptionRequest {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SubscriptionResponse {
-    pub id: String,
+    pub id: SubscriptionId,
     pub source: String,
     pub sink: String,
     pub options: HashMap<String, String>,
@@ -60,7 +58,7 @@ pub struct SubscriptionResponse {
 impl From<Subscription> for SubscriptionResponse {
     fn from(value: Subscription) -> Self {
         Self {
-            id: value.id().to_string(),
+            id: value.id(),
             source: value.source().to_string(),
             sink: value.sink().to_string(),
             options: value.metadata().clone(),

@@ -18,7 +18,7 @@ use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
 use restate_meta::Error as MetaError;
 use restate_schema_impl::SchemasUpdateError;
-use restate_types::identifiers::DeploymentId;
+use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -38,7 +38,7 @@ pub enum MetaApiError {
         method_name: String,
     },
     #[error("The requested subscription '{0}' does not exist")]
-    SubscriptionNotFound(String),
+    SubscriptionNotFound(SubscriptionId),
     #[error(transparent)]
     Meta(#[from] MetaError),
     #[error(transparent)]

@@ -42,7 +42,7 @@ impl Schemas {
 pub(crate) struct SchemasInner {
     pub(crate) services: HashMap<String, ServiceSchemas>,
     pub(crate) deployments: HashMap<DeploymentId, DeploymentSchemas>,
-    pub(crate) subscriptions: HashMap<String, Subscription>,
+    pub(crate) subscriptions: HashMap<SubscriptionId, Subscription>,
     pub(crate) proto_symbols: ProtoSymbols,
 }
 

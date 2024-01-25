@@ -12,6 +12,7 @@
 
 mod base62_util;
 mod id_util;
+mod macros;
 
 pub mod deployment;
 pub mod errors;
@@ -21,4 +22,5 @@ pub mod journal;
 pub mod message;
 pub mod retries;
 pub mod state_mut;
+pub mod subscription;
 pub mod time;

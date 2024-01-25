@@ -13,11 +13,12 @@ use super::Schemas;
 use restate_schema_api::subscription::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver,
 };
+use restate_types::identifiers::SubscriptionId;
 
 impl SubscriptionResolver for Schemas {
-    fn get_subscription(&self, id: &str) -> Option<Subscription> {
+    fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription> {
         let schemas = self.0.load();
-        schemas.subscriptions.get(id).cloned()
+        schemas.subscriptions.get(&id).cloned()
     }
 
     fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
