@@ -328,14 +328,14 @@ impl ProtoSymbols {
 // to avoid collision between file names of unrelated deployments
 // TODO with schema checks in place,
 //  should we move this or remove this normalization of the file name?
-fn normalize_file_name(deployment_id: &str, file_name: &str) -> String {
+fn normalize_file_name(deployment_id: &DeploymentId, file_name: &str) -> String {
     // Because file_name is a path (either relative or absolute),
     // prepending deployment_id/ should always be fine
     format!("{deployment_id}/{file_name}")
 }
 
 fn normalize_self_and_dependencies_file_names(
-    deployment_id: &str,
+    deployment_id: &DeploymentId,
     mut file_desc_proto: FileDescriptorProto,
 ) -> FileDescriptorProto {
     file_desc_proto.name = file_desc_proto

@@ -85,7 +85,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     );
 
     let mut table = Table::new_styled(&env.ui_config);
-    table.add_kv_row("ID:", &deployment.id);
+    table.add_kv_row("ID:", deployment.id);
 
     add_deployment_to_kv_table(&deployment.deployment, &mut table);
     table.add_kv_row("Status:", render_deployment_status(status));

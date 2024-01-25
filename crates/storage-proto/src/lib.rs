@@ -182,7 +182,9 @@ pub mod storage {
                     let deployment_id = value.deployment_id.and_then(|one_of_deployment_id| {
                         match one_of_deployment_id {
                             invocation_status::invoked::DeploymentId::None(_) => None,
-                            invocation_status::invoked::DeploymentId::Value(id) => Some(id),
+                            invocation_status::invoked::DeploymentId::Value(id) => {
+                                Some(id.parse().expect("valid deployment id"))
+                            }
                         }
                     });
 
@@ -239,9 +241,9 @@ pub mod storage {
                         method_name: method.into_bytes(),
                         deployment_id: Some(match deployment_id {
                             None => invocation_status::invoked::DeploymentId::None(()),
-                            Some(deployment_id) => {
-                                invocation_status::invoked::DeploymentId::Value(deployment_id)
-                            }
+                            Some(deployment_id) => invocation_status::invoked::DeploymentId::Value(
+                                deployment_id.to_string(),
+                            ),
                         }),
                         journal_meta: Some(JournalMeta::from(journal_metadata)),
                         creation_time: timestamps.creation_time().as_u64(),
@@ -301,7 +303,7 @@ pub mod storage {
                         restate_storage_api::status_table::InvocationMetadata::new(
                             invocation_uuid,
                             journal_metadata,
-                            deployment_id,
+                            deployment_id.map(|d| d.parse().expect("valid deployment id")),
                             method_name,
                             response_sink,
                             restate_storage_api::status_table::StatusTimestamps::new(
@@ -341,7 +343,9 @@ pub mod storage {
                         deployment_id: Some(match metadata.deployment_id {
                             None => invocation_status::suspended::DeploymentId::None(()),
                             Some(deployment_id) => {
-                                invocation_status::suspended::DeploymentId::Value(deployment_id)
+                                invocation_status::suspended::DeploymentId::Value(
+                                    deployment_id.to_string(),
+                                )
                             }
                         }),
                         creation_time: metadata.timestamps.creation_time().as_u64(),

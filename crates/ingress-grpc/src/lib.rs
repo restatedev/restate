@@ -116,6 +116,7 @@ mod mocks {
             .apply_updates(
                 schemas
                     .compute_new_deployment(
+                        None, /* deployment_id */
                         DeploymentMetadata::new_http(
                             "http://localhost:9080".parse().unwrap(),
                             ProtocolType::BidiStream,

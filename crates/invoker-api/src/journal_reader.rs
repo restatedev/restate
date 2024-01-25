@@ -30,7 +30,7 @@ impl JournalMetadata {
         length: EntryIndex,
         span_context: ServiceInvocationSpanContext,
         method: ByteString,
-        deployment_id: Option<String>,
+        deployment_id: Option<DeploymentId>,
     ) -> Self {
         Self {
             deployment_id,

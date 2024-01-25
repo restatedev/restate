@@ -125,7 +125,7 @@ mod tests {
     use prost_reflect::DynamicMessage;
     use test_log::test;
 
-    use restate_schema_api::deployment::DeploymentMetadata;
+    use restate_schema_api::deployment::Deployment;
     use restate_test_util::matchers::*;
     use restate_types::invocation::ServiceInvocation;
 
@@ -134,11 +134,13 @@ mod tests {
     fn mock_schemas() -> Schemas {
         let schemas = Schemas::default();
 
+        let deployment = Deployment::mock();
         schemas
             .apply_updates(
                 schemas
                     .compute_new_deployment(
-                        DeploymentMetadata::mock(),
+                        Some(deployment.id),
+                        deployment.metadata,
                         vec![restate_pb::mocks::GREETER_SERVICE_NAME.to_owned()],
                         restate_pb::mocks::DESCRIPTOR_POOL.clone(),
                         false,

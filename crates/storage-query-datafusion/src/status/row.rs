@@ -84,7 +84,7 @@ fn fill_invocation_metadata(
     // journal_metadata and stats are filled by other functions
     row.method(meta.method);
     if let Some(deployment_id) = meta.deployment_id {
-        row.pinned_deployment_id(deployment_id);
+        row.pinned_deployment_id(deployment_id.to_string());
     }
     match meta.source {
         Source::Service(caller) => {

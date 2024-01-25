@@ -29,6 +29,7 @@ use restate_meta_rest_model::services::ServiceMetadata;
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
+use restate_types::identifiers::DeploymentId;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
@@ -112,7 +113,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
             Cell::new(render_deployment_type(&deployment.deployment)),
             render_deployment_status(status),
             render_active_invocations(active_inv),
-            Cell::new(&deployment.id),
+            Cell::new(deployment.id),
             Cell::new(match &deployment.deployment {
                 Deployment::Http { created_at, .. } => created_at,
                 Deployment::Lambda { created_at, .. } => created_at,
@@ -135,7 +136,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
 }
 
 fn render_services(
-    deployment_id: &str,
+    deployment_id: &DeploymentId,
     services: &[ServiceNameRevPair],
     latest_services: &HashMap<String, ServiceMetadata>,
 ) -> Cell {
@@ -144,7 +145,7 @@ fn render_services(
     let mut out = String::new();
     for svc in services {
         if let Some(latest_svc) = latest_services.get(&svc.name) {
-            let style = if latest_svc.deployment_id == deployment_id {
+            let style = if &latest_svc.deployment_id == deployment_id {
                 // We are hosting the latest revision of this service.
                 Style::Success
             } else {
