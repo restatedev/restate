@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
+use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
 use restate_types::state_mut::ExternalStateMutation;
 use std::future::Future;
@@ -28,7 +29,7 @@ pub trait SubscriptionController: SubscriptionValidator {
     ) -> impl Future<Output = Result<(), Error>> + Send;
     fn stop_subscription(
         &self,
-        subscription_id: String,
+        id: SubscriptionId,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 

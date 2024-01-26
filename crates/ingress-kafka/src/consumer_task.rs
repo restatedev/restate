@@ -22,6 +22,7 @@ use restate_pb::restate::Event;
 use restate_schema_api::subscription::{
     EventReceiverServiceInstanceType, KafkaOrderingKeyFormat, Sink, Source, Subscription,
 };
+use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::SpanRelation;
 use restate_types::message::MessageIndex;
 use std::collections::HashMap;
@@ -182,7 +183,7 @@ impl MessageSender {
 
     fn generate_events_attributes(
         msg: &impl Message,
-        subscription_id: &str,
+        subscription_id: SubscriptionId,
     ) -> HashMap<String, String> {
         let mut attributes = HashMap::with_capacity(3);
         attributes.insert("kafka.offset".to_string(), msg.offset().to_string());

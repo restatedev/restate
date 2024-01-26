@@ -113,7 +113,7 @@ pub enum SchemasUpdateCommand {
         public: bool,
     },
     AddSubscription(Subscription),
-    RemoveSubscription(String),
+    RemoveSubscription(SubscriptionId),
 }
 
 mod descriptor_pool_serde {
@@ -240,7 +240,7 @@ impl Schemas {
     // Returns the [`Subscription`] id together with the update command
     pub fn compute_add_subscription<V: SubscriptionValidator>(
         &self,
-        id: Option<String>,
+        id: Option<SubscriptionId>,
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
@@ -253,7 +253,7 @@ impl Schemas {
 
     pub fn compute_remove_subscription(
         &self,
-        id: String,
+        id: SubscriptionId,
     ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
         self.0.load().compute_remove_subscription(id)
     }

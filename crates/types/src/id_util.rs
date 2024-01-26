@@ -18,6 +18,7 @@ use num_traits::PrimInt;
 use crate::base62_util::{base62_encode_fixed_width, base62_max_length_for_type};
 use crate::errors::IdDecodeError;
 use crate::identifiers::ResourceId;
+use crate::macros::prefixed_ids;
 
 pub const ID_RESOURCE_SEPARATOR: char = '_';
 
@@ -35,12 +36,15 @@ pub enum IdSchemeVersion {
     V1,
 }
 
-/// The set of resources that we can generate IDs for. Those resource IDs will
-/// follow the same encoding scheme according to the [default] version.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum IdResourceType {
-    Invocation,
-    Deployment,
+prefixed_ids! {
+    /// The set of resources that we can generate IDs for. Those resource IDs will
+    /// follow the same encoding scheme according to the [default] version.
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub enum IdResourceType {
+        Invocation("inv"),
+        Deployment("dp"),
+        Subscription("sub"),
+    }
 }
 
 impl IdSchemeVersion {
@@ -62,28 +66,6 @@ impl FromStr for IdSchemeVersion {
     }
 }
 
-impl IdResourceType {
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Invocation => "inv",
-            Self::Deployment => "dp",
-        }
-    }
-}
-
-impl FromStr for IdResourceType {
-    type Err = IdDecodeError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "inv" => Ok(Self::Invocation),
-            "dp" => Ok(Self::Deployment),
-            _ => Err(IdDecodeError::UnrecognizedType(value.to_string())),
-        }
-    }
-}
-
-/// A deserialization helper for resource ID tokens that walks the base62 encoded
 /// strings and extracts the next encoded token and tracks the buffer offset.
 pub struct IdStrCursor<'a> {
     inner: &'a str,
