@@ -44,6 +44,7 @@ prefixed_ids! {
         Invocation("inv"),
         Deployment("dp"),
         Subscription("sub"),
+        Awakeable("prom"),
     }
 }
 
@@ -112,6 +113,12 @@ impl<'a> IdStrCursor<'a> {
             .get(self.offset..self.offset + length)
             .ok_or(IdDecodeError::Length)?;
         self.offset += length;
+        Ok(out)
+    }
+
+    /// Reads remaining bytes as string slice without decoding
+    pub fn take_remaining(self) -> Result<&'a str, IdDecodeError> {
+        let out = self.inner.get(self.offset..).ok_or(IdDecodeError::Length)?;
         Ok(out)
     }
 
@@ -207,6 +214,14 @@ impl<T: ResourceId + ?Sized> IdEncoder<T> {
     /// Estimates the capacity of string buffer needed to encode this ResourceId
     pub const fn estimate_buf_capacity() -> usize {
         T::RESOURCE_TYPE.as_str().len() + /* separator =*/1 + /* version =*/ 1 + T::STRING_CAPACITY_HINT
+    }
+
+    /// Adds the given string to the end of the buffer
+    pub fn push_str<S>(&mut self, i: S)
+    where
+        S: AsRef<str>,
+    {
+        self.buf.push_str(i.as_ref());
     }
 
     pub fn finalize(self) -> String {

@@ -263,7 +263,7 @@ pub fn format_entry_type_details(entry_type: &JournalEntryType) -> String {
             )
         }
         JournalEntryType::Awakeable(awakeable_id) => {
-            format!("{}", style(awakeable_id.encode()).cyan())
+            format!("{}", style(awakeable_id.to_string()).cyan())
         }
         _ => String::new(),
     }

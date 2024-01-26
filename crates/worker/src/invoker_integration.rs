@@ -22,6 +22,7 @@ use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntry, Raw
 use restate_types::journal::{BackgroundInvokeEntry, CompleteAwakeableEntry, Entry, InvokeEntry};
 use restate_types::journal::{EntryType, InvokeRequest};
 use std::marker::PhantomData;
+use std::str::FromStr;
 
 #[derive(Debug, Clone)]
 pub(super) struct EntryEnricher<KeyExtractor, Codec> {
@@ -161,7 +162,7 @@ where
                         .map_err(InvocationError::internal)?;
                 let_assert!(Entry::CompleteAwakeable(CompleteAwakeableEntry { id, .. }) = entry);
 
-                let (invocation_id, entry_index) = AwakeableIdentifier::decode(id)
+                let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&id)
                     .map_err(|e| {
                         InvocationError::new(
                             UserErrorCode::InvalidArgument,
