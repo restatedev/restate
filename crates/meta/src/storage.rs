@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use tokio::io;
-use tracing::log::info;
 use tracing::trace;
 
 type StorageFormatVersion = u32;
@@ -57,9 +56,14 @@ pub trait MetaStorage {
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum BuildError {
-    #[error("storage directory contains incompatible storage format version '{0}'; supported version is '{STORAGE_FORMAT_VERSION}'")]
+    #[error("meta storage directory contains incompatible storage format version '{0}'; supported version is '{STORAGE_FORMAT_VERSION}'")]
     #[code(restate_errors::META0010)]
     IncompatibleStorageFormat(StorageFormatVersion),
+    #[error(
+        "meta storage directory does not contain version file '{STORAGE_FORMAT_VERSION_FILE_NAME}'"
+    )]
+    #[code(restate_errors::META0011)]
+    MissingVersionFile,
     #[error("generic io error: {0}")]
     #[code(unknown)]
     Io(#[from] io::Error),
@@ -136,12 +140,7 @@ impl FileMetaStorage {
         let version = if let Ok(version_file) = version_file {
             serde_json::from_reader(version_file)?
         } else {
-            // File does not exist, this indicates that the data has been written with a Restate
-            // version <= 0.7 that does not write a version file. Write it now for future
-            // compatibility.
-            info!("Opened file meta storage w/o a version file present. This indicates that the data has been written with a Restate version <= 0.7.0. Assuming the format version to be 1.");
-            Self::write_storage_format_version_to_file(root_path, 1)?;
-            1
+            return Err(BuildError::MissingVersionFile);
         };
 
         if version != STORAGE_FORMAT_VERSION {
