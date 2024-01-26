@@ -203,7 +203,6 @@ impl JournalEntryType {
             self,
             JournalEntryType::Sleep { .. }
                 | JournalEntryType::Invoke(_)
-                | JournalEntryType::BackgroundInvoke(_)
                 | JournalEntryType::Awakeable(_)
                 | JournalEntryType::GetState
         )
