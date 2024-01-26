@@ -11,6 +11,7 @@
 use anyhow::bail;
 use reqwest::header::ACCEPT;
 use restate_schema_api::subscription::Subscription;
+use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;
 use restate_types::state_mut::ExternalStateMutation;
@@ -63,7 +64,7 @@ impl restate_worker_api::SubscriptionController for Mock {
         Ok(())
     }
 
-    async fn stop_subscription(&self, _: String) -> Result<(), restate_worker_api::Error> {
+    async fn stop_subscription(&self, _: SubscriptionId) -> Result<(), restate_worker_api::Error> {
         Ok(())
     }
 }

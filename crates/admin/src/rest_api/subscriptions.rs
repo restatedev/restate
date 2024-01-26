@@ -19,6 +19,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{http, Json};
 use okapi_operation::*;
+use restate_types::identifiers::SubscriptionId;
 
 /// Create subscription.
 #[openapi(
@@ -42,7 +43,13 @@ pub async fn create_subscription<W>(
 ) -> Result<impl axum::response::IntoResponse, MetaApiError> {
     let subscription = state
         .meta_handle()
-        .create_subscription(payload.id, payload.source, payload.sink, payload.options)
+        .create_subscription(
+            // Do not allow users to create their own subscription ids.
+            None, /* subscription_id */
+            payload.source,
+            payload.sink,
+            payload.options,
+        )
         .await?;
 
     Ok((
@@ -69,12 +76,12 @@ pub async fn create_subscription<W>(
 )]
 pub async fn get_subscription<W>(
     State(state): State<AdminServiceState<W>>,
-    Path(subscription_id): Path<String>,
+    Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<Json<SubscriptionResponse>, MetaApiError> {
     let subscription = state
         .schemas()
-        .get_subscription(&subscription_id)
-        .ok_or_else(|| MetaApiError::SubscriptionNotFound(subscription_id.clone()))?;
+        .get_subscription(subscription_id)
+        .ok_or_else(|| MetaApiError::SubscriptionNotFound(subscription_id))?;
 
     Ok(SubscriptionResponse::from(subscription).into())
 }
@@ -154,7 +161,7 @@ pub async fn list_subscriptions<W>(
 )]
 pub async fn delete_subscription<W>(
     State(state): State<AdminServiceState<W>>,
-    Path(subscription_id): Path<String>,
+    Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<StatusCode, MetaApiError> {
     state
         .meta_handle()

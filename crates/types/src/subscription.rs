@@ -12,17 +12,16 @@ use std::fmt;
 use std::mem::size_of;
 use std::str::FromStr;
 
-use ulid::Ulid;
-
 use crate::base62_util::base62_max_length_for_type;
 use crate::errors::IdDecodeError;
 use crate::id_util::{IdDecoder, IdEncoder, IdResourceType};
-use crate::identifiers::{DeploymentId, ResourceId, TimestampAwareId};
+use crate::identifiers::{ResourceId, SubscriptionId, TimestampAwareId};
 use crate::time::MillisSinceEpoch;
+use ulid::Ulid;
 
-impl ResourceId for DeploymentId {
+impl ResourceId for SubscriptionId {
     const SIZE_IN_BYTES: usize = size_of::<u128>();
-    const RESOURCE_TYPE: IdResourceType = IdResourceType::Deployment;
+    const RESOURCE_TYPE: IdResourceType = IdResourceType::Subscription;
     const STRING_CAPACITY_HINT: usize = base62_max_length_for_type::<u128>();
     fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
         let ulid_raw: u128 = self.0.into();
@@ -30,13 +29,13 @@ impl ResourceId for DeploymentId {
     }
 }
 
-impl TimestampAwareId for DeploymentId {
+impl TimestampAwareId for SubscriptionId {
     fn timestamp(&self) -> MillisSinceEpoch {
         self.0.timestamp_ms().into()
     }
 }
 
-impl FromStr for DeploymentId {
+impl FromStr for SubscriptionId {
     type Err = IdDecodeError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
@@ -52,7 +51,7 @@ impl FromStr for DeploymentId {
     }
 }
 
-impl fmt::Display for DeploymentId {
+impl fmt::Display for SubscriptionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut encoder = IdEncoder::<Self>::new();
         self.push_contents_to_encoder(&mut encoder);
@@ -60,7 +59,7 @@ impl fmt::Display for DeploymentId {
     }
 }
 
-impl From<u128> for DeploymentId {
+impl From<u128> for SubscriptionId {
     fn from(value: u128) -> Self {
         Self(Ulid::from(value))
     }
@@ -68,7 +67,7 @@ impl From<u128> for DeploymentId {
 
 // Passthrough json schema to the string
 #[cfg(feature = "serde_schema")]
-impl schemars::JsonSchema for DeploymentId {
+impl schemars::JsonSchema for SubscriptionId {
     fn schema_name() -> String {
         <String as schemars::JsonSchema>::schema_name()
     }
@@ -83,23 +82,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deployment_id_format() {
-        let a = DeploymentId::new();
+    fn test_subscription_id_format() {
+        let a = SubscriptionId::new();
         assert!(a.timestamp().as_u64() > 0);
         let a_str = a.to_string();
-        assert!(a_str.starts_with("dp_"));
-        assert_eq!(DeploymentId::STRING_CAPACITY_HINT + 4, a_str.len());
-        assert_eq!(
-            a_str.len(),
-            IdEncoder::<DeploymentId>::estimate_buf_capacity()
-        );
-        assert_eq!(26, a_str.len());
+        assert!(a_str.starts_with("sub_"));
     }
 
     #[test]
-    fn test_deployment_roundtrip() {
-        let a = DeploymentId::new();
-        let b: DeploymentId = a.to_string().parse().unwrap();
+    fn test_subscription_roundtrip() {
+        let a = SubscriptionId::new();
+        let b: SubscriptionId = a.to_string().parse().unwrap();
         assert_eq!(a, b);
         assert_eq!(a.to_string(), b.to_string());
     }
