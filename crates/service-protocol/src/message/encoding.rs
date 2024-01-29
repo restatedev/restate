@@ -155,27 +155,15 @@ impl Decoder {
         loop {
             let remaining = self.buf.remaining();
 
-            if remaining >= self.message_size_warning {
-                warn!(
-                    "Message size warning: {} >= {}. \
-                    Generating very large messages can make the system unstable if configured with too little memory. \
-                    You can increase the threshold to avoid this warning by changing the worker.invoker.message_size_warning config option",
-                    Size::from_bytes(remaining),
-                    Size::from_bytes(self.message_size_warning)
-                );
-            }
-            if remaining >= self.message_size_limit {
-                return Err(EncodingError::MessageSizeLimit(
-                    remaining,
-                    self.message_size_limit,
-                ));
-            }
-
             if remaining < self.state.needs_bytes() {
                 return Ok(None);
             }
 
-            if let Some(res) = self.state.decode(&mut self.buf)? {
+            if let Some(res) = self.state.decode(
+                &mut self.buf,
+                self.message_size_warning,
+                self.message_size_limit,
+            )? {
                 return Ok(Some(res));
             }
         }
@@ -200,11 +188,36 @@ impl DecoderState {
     fn decode(
         &mut self,
         mut buf: impl Buf,
+        message_size_warning: usize,
+        message_size_limit: usize,
     ) -> Result<Option<(MessageHeader, ProtocolMessage)>, EncodingError> {
         let mut res = None;
 
         *self = match mem::take(self) {
-            DecoderState::WaitingHeader => DecoderState::WaitingPayload(buf.get_u64().try_into()?),
+            DecoderState::WaitingHeader => {
+                let header: MessageHeader = buf.get_u64().try_into()?;
+                let message_length =
+                    usize::try_from(header.frame_length()).expect("u32 must convert into usize");
+
+                if message_length >= message_size_warning {
+                    warn!(
+                    "Message size warning for '{:?}': {} >= {}. \
+                    Generating very large messages can make the system unstable if configured with too little memory. \
+                    You can increase the threshold to avoid this warning by changing the worker.invoker.message_size_warning config option",
+                    header.message_type(),
+                    Size::from_bytes(message_length),
+                    Size::from_bytes(message_size_warning),
+                );
+                }
+                if message_length >= message_size_limit {
+                    return Err(EncodingError::MessageSizeLimit(
+                        message_length,
+                        message_size_limit,
+                    ));
+                }
+
+                DecoderState::WaitingPayload(header)
+            }
             DecoderState::WaitingPayload(h) => {
                 let msg = decode_protocol_message(&h, buf.take(h.frame_length() as usize))
                     .map_err(|e| EncodingError::DecodeMessage(h.message_type(), e))?;
@@ -417,19 +430,20 @@ mod tests {
         let mut decoder = Decoder::new((u8::MAX / 2) as usize, Some(u8::MAX as usize));
 
         let encoder = Encoder::new(0);
-        let msg = encoder.encode(
+        let message = ProtocolMessage::from(
             ProtobufRawEntryCodec::serialize_as_unary_input_entry(
                 (0..=u8::MAX).collect::<Vec<_>>().into(),
             )
-            .erase_enrichment()
-            .into(),
+            .erase_enrichment(),
         );
+        let expected_msg_size = message.encoded_len();
+        let msg = encoder.encode(message);
 
         decoder.push(msg.clone());
         let_assert!(
             EncodingError::MessageSizeLimit(msg_size, limit) = decoder.consume_next().unwrap_err()
         );
-        assert_eq!(msg_size, msg.len());
+        assert_eq!(msg_size, expected_msg_size);
         assert_eq!(limit, u8::MAX as usize)
     }
 }

@@ -4791,7 +4791,7 @@ dependencies = [
 
 [[package]]
 name = "restate-bifrost"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "derive_more",
