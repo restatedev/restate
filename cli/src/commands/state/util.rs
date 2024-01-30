@@ -1,14 +1,14 @@
 use crate::cli_env::CliEnv;
-use crate::clients::MetaClientInterface;
+use crate::clients::{MetaClientInterface, MetasClient};
 use crate::ui::console::StyledTable;
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, bail, Context};
 use arrow::array::{BinaryArray, StringArray};
 use base64::alphabet::URL_SAFE;
 use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
 use comfy_table::{Cell, Table};
 use itertools::Itertools;
-use restate_meta_rest_model::services::ModifyServiceStateRequest;
+use restate_meta_rest_model::services::{InstanceType, ModifyServiceStateRequest};
 use restate_types::state_mut::StateMutationVersion;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -21,6 +21,14 @@ pub(crate) async fn get_current_state(
     service: &str,
     key: &str,
 ) -> anyhow::Result<HashMap<String, Bytes>> {
+    //
+    // 0. require that this is a keyed service
+    //
+    let client = MetasClient::new(env)?;
+    let service_meta = client.get_service(service).await?.into_body().await?;
+    if service_meta.instance_type != InstanceType::Keyed {
+        bail!("Only keyed services support state");
+    }
     //
     // 1. get the key-value pairs
     //
@@ -72,7 +80,7 @@ pub(crate) async fn update_state(
         service_key: service_key.to_string(),
     };
 
-    let client = crate::clients::MetasClient::new(env)?;
+    let client = MetasClient::new(env)?;
     client.patch_state(service, req).await.unwrap();
 
     Ok(())
