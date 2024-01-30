@@ -11,7 +11,6 @@
 use crate::cli_env::CliEnv;
 use crate::console::c_println;
 use crate::ui::console::{confirm_or_exit, StyledTable};
-use crate::ui::watcher::Watch;
 
 use crate::c_title;
 use crate::commands::state::util::{
@@ -31,7 +30,7 @@ pub struct Edit {
     binary: bool,
 
     /// Force means, ignore the current version
-    #[clap(long, alias = "f")]
+    #[clap(long, short)]
     force: bool,
 
     /// Service name
@@ -39,9 +38,6 @@ pub struct Edit {
 
     /// Service key
     key: String,
-
-    #[clap(flatten)]
-    watch: Watch,
 }
 
 pub async fn run_edit(State(env): State<CliEnv>, opts: &Edit) -> Result<()> {
@@ -52,7 +48,7 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     let current_state = get_current_state(env, &opts.service, &opts.key).await?;
     let current_version = compute_version(&current_state);
 
-    let tempdir = tempdir().context("unable to create a temporarily directory")?;
+    let tempdir = tempdir().context("unable to create a temporary directory")?;
     let edit_file = tempdir.path().join(".restate_edit");
     let current_state_json = as_json(current_state, opts.binary)?;
     write_json_file(&edit_file, current_state_json)?;
@@ -62,21 +58,25 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     //
     // confirm change
     //
-    c_title!("ℹ️ ", "About to write the following state ");
-    c_println!();
 
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec!["", ""]);
-    table.add_row(vec![Cell::new("service"), Cell::new(&opts.service)]);
-    table.add_row(vec![Cell::new("key"), Cell::new(&opts.key)]);
-    table.add_row(vec![Cell::new("force?"), Cell::new(opts.force)]);
-    table.add_row(vec![Cell::new("binary?"), Cell::new(opts.binary)]);
+    table.add_row(vec![Cell::new("Service"), Cell::new(&opts.service)]);
+    table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
+    table.add_row(vec![Cell::new("Force?"), Cell::new(opts.force)]);
+    table.add_row(vec![Cell::new("Binary?"), Cell::new(opts.binary)]);
 
+    c_title!("ℹ️ ", "State Update");
     c_println!("{table}");
     c_println!();
+
+    c_title!("ℹ️ ", "New State");
     c_println!("{}", pretty_print_json(env, &modified_state_json)?);
     c_println!();
 
+    c_println!("About to submit the new state mutation to the system for processing.");
+    c_println!("If there are currently active invocations, then this mutation will be enqueued to be processed after them.");
+    c_println!();
     confirm_or_exit(env, "Are you sure?")?;
 
     c_println!();

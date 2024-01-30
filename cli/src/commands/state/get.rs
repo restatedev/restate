@@ -22,18 +22,18 @@ use comfy_table::{Cell, Table};
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_get")]
 pub struct Get {
-    /// Don't try to convert the values to a UTF8 string
+    /// Don't try to convert the values to a UTF-8 string
     #[clap(long, alias = "bin")]
     binary: bool,
 
-    /// Don't try to convert the values to a UTF8 string
-    #[clap(long, alias = "s")]
-    silent: bool,
+    /// Only print the retrieved state as a JSON
+    #[clap(long, short)]
+    plain: bool,
 
-    /// Target service
+    /// Service name
     service: String,
 
-    /// Target service key
+    /// Service key
     key: String,
 
     #[clap(flatten)]
@@ -48,7 +48,7 @@ async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
     let current_state = get_current_state(env, &opts.service, &opts.key).await?;
     let current_state_json = as_json(current_state, opts.binary)?;
 
-    if opts.silent {
+    if opts.plain {
         c_println!("{current_state_json}");
         return Ok(());
     }
@@ -57,15 +57,15 @@ async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
 
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec!["", ""]);
-    table.add_row(vec![Cell::new("service"), Cell::new(&opts.service)]);
-    table.add_row(vec![Cell::new("key"), Cell::new(&opts.key)]);
+    table.add_row(vec![Cell::new("Service"), Cell::new(&opts.service)]);
+    table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
 
     c_println!("{table}");
     c_println!();
 
     let pretty_json = pretty_print_json_object(&current_state_json)?;
     let mut table = Table::new_styled(&env.ui_config);
-    table.set_styled_header(vec!["KEY", "VAL"]);
+    table.set_styled_header(vec!["KEY", "VALUE"]);
     for (k, v) in pretty_json {
         table.add_row(vec![Cell::new(k), Cell::new(v)]);
     }

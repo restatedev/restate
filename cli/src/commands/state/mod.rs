@@ -16,6 +16,8 @@ use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum ServiceState {
+    /// Get the persisted state stored for a service key
     Get(get::Get),
+    /// Edit the persisted state stored for a service key
     Edit(edit::Edit),
 }
