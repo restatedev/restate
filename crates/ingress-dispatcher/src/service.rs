@@ -332,6 +332,7 @@ impl DispatcherLoopHandler {
             }
             IngressRequestMode::FireAndForget(ack_sender) => {
                 let msg_index = self.get_and_increment_msg_index();
+                // why increment twice?
                 self.msg_index += 1;
                 self.waiting_for_acks.insert(msg_index, ack_sender);
                 (None, msg_index)
