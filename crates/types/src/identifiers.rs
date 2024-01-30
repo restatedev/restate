@@ -29,8 +29,25 @@ use crate::time::MillisSinceEpoch;
 /// Identifying a member of a raft group
 pub type PeerId = u64;
 
-/// Identifying the leader epoch of a raft group leader
-pub type LeaderEpoch = u64;
+/// Identifying the leader epoch of a partition processor
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Clone,
+    Copy,
+    Hash,
+    derive_more::From,
+    derive_more::Display,
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[display(fmt = "e{}", _0)]
+pub struct LeaderEpoch(u64);
+impl LeaderEpoch {
+    pub const INITIAL: Self = Self(1);
+}
 
 /// Identifying the partition
 pub type PartitionId = u64;
@@ -40,6 +57,21 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 
 // Just an alias
 pub type EntryIndex = u32;
+
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Clone,
+    Copy,
+    Hash,
+    derive_more::From,
+    derive_more::Display,
+)]
+#[display(fmt = "N{}", _0)]
+pub struct NodeId(u32);
 
 /// Unique Id of a deployment.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
@@ -89,23 +121,9 @@ impl Default for SubscriptionId {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, derive_more::Display, derive_more::FromStr)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IngressDispatcherId(pub std::net::SocketAddr);
-
-impl fmt::Display for IngressDispatcherId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl FromStr for IngressDispatcherId {
-    type Err = std::net::AddrParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(IngressDispatcherId(s.parse()?))
-    }
-}
 
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.

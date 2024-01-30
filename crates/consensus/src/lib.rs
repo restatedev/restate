@@ -160,12 +160,13 @@ where
 
         cmd_logs
             .into_iter()
-            .map(|cmd_log| cmd_log.append_cmd(Command::BecomeLeader(1)))
+            .map(|cmd_log| cmd_log.append_cmd(Command::BecomeLeader(LeaderEpoch::INITIAL)))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use restate_types::identifiers::LeaderEpoch;
     use test_log::test;
     use tokio::sync::mpsc;
 
@@ -193,7 +194,7 @@ mod tests {
 
         assert_eq!(
             state_machine_rx.recv().await.unwrap(),
-            Command::BecomeLeader(1)
+            Command::BecomeLeader(LeaderEpoch::INITIAL)
         );
 
         for i in 0..num_messages {
