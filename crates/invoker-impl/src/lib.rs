@@ -937,8 +937,8 @@ mod tests {
     use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
     use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
     use restate_test_util::{check, let_assert};
-    use restate_types::identifiers::FullInvocationId;
     use restate_types::identifiers::InvocationUuid;
+    use restate_types::identifiers::{FullInvocationId, LeaderEpoch};
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::retries::RetryPolicy;
@@ -949,7 +949,7 @@ mod tests {
 
     // -- Mocks
 
-    const MOCK_PARTITION: PartitionLeaderEpoch = (0, 0);
+    const MOCK_PARTITION: PartitionLeaderEpoch = (0, LeaderEpoch::INITIAL);
 
     impl<ITR> ServiceInner<ITR> {
         fn mock(
@@ -1047,7 +1047,7 @@ mod tests {
 
         let invoker_join_handle = tokio::spawn(service.run(watch));
 
-        let partition_leader_epoch = (0, 0);
+        let partition_leader_epoch = (0, LeaderEpoch::INITIAL);
         let fid = FullInvocationId::new("TestService", Bytes::new(), InvocationUuid::new());
 
         let (output_tx, mut output_rx) = mpsc::channel(1);
