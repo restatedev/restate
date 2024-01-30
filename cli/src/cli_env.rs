@@ -13,10 +13,10 @@
 #[cfg(test)]
 use std::collections::HashMap;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use dotenvy::dotenv;
 use url::Url;
 
@@ -39,6 +39,7 @@ pub const RESTATE_AUTH_TOKEN_ENV: &str = "RESTATE_AUTH_TOKEN";
 // TODO: Deprecated, will be removed once this is provided by the admin server
 pub const INGRESS_URL_ENV: &str = "RESTATE_INGRESS_URL";
 pub const ADMIN_URL_ENV: &str = "RESTATE_ADMIN_URL";
+pub const EDITOR_ENV: &str = "RESTATE_EDITOR";
 
 #[derive(Clone, Default)]
 pub struct CliConfig {}
@@ -61,6 +62,9 @@ pub struct CliEnv {
     pub request_timeout: Option<Duration>,
     /// UI Configuration
     pub ui_config: UiConfig,
+
+    /// Default text editor for state editing
+    pub editor: Option<String>,
 }
 
 impl CliEnv {
@@ -116,6 +120,11 @@ impl CliEnv {
                 Url::parse(&format!("{}://{}:9070/", restate_host_scheme, restate_host))
             })?;
 
+        let default_editor = os_env
+            .get(EDITOR_ENV)
+            .or_else(|| os_env.get("VISUAL"))
+            .or_else(|| os_env.get("EDITOR"));
+
         // color setup
         // NO_COLOR=1 with any value other than "0" means user doesn't want colors.
         // e.g.
@@ -167,7 +176,32 @@ impl CliEnv {
             colorful,
             auto_confirm: global_opts.yes,
             ui_config: global_opts.ui_config.clone(),
+            editor: default_editor,
         })
+    }
+
+    pub fn open_default_editor(&self, path: &Path) -> anyhow::Result<()> {
+        // if nothing else is defined, we use vim.
+        let editor = self.editor.as_deref().unwrap_or("vi").to_owned();
+
+        let mut child = std::process::Command::new(editor.clone())
+            .arg(path)
+            .spawn()?;
+
+        let status = child.wait()?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "editor {editor} exited with a non-successful exit code {:?}, \
+                if you would like to use a specific editor, please either use: \
+                (1) $VISUAL env variable \
+                (2) EDITOR env variable or \
+                (3) set the {EDITOR_ENV} env variable to a default editor.  ",
+                status.code()
+            ))
+        }
     }
 }
 

@@ -33,6 +33,12 @@ pub trait MetaClientInterface {
     ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>>;
 
     async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>>;
+
+    async fn patch_state(
+        &self,
+        service: &str,
+        req: ModifyServiceStateRequest,
+    ) -> reqwest::Result<Envelope<()>>;
 }
 
 impl MetaClientInterface for MetasClient {
@@ -71,14 +77,6 @@ impl MetaClientInterface for MetasClient {
         self.run(reqwest::Method::GET, url).await
     }
 
-    async fn discover_deployment(
-        &self,
-        body: RegisterDeploymentRequest,
-    ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>> {
-        let url = self.base_url.join("/deployments").expect("Bad url!");
-        self.run_with_body(reqwest::Method::POST, url, body).await
-    }
-
     async fn remove_deployment(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>> {
         let mut url = self
             .base_url
@@ -88,6 +86,14 @@ impl MetaClientInterface for MetasClient {
         url.set_query(Some(&format!("force={}", force)));
 
         self.run(reqwest::Method::DELETE, url).await
+    }
+
+    async fn discover_deployment(
+        &self,
+        body: RegisterDeploymentRequest,
+    ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>> {
+        let url = self.base_url.join("/deployments").expect("Bad url!");
+        self.run_with_body(reqwest::Method::POST, url, body).await
     }
 
     async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>> {
@@ -102,5 +108,18 @@ impl MetaClientInterface for MetasClient {
         )));
 
         self.run(reqwest::Method::DELETE, url).await
+    }
+
+    async fn patch_state(
+        &self,
+        service: &str,
+        req: ModifyServiceStateRequest,
+    ) -> reqwest::Result<Envelope<()>> {
+        let url = self
+            .base_url
+            .join(&format!("/services/{service}/state"))
+            .expect("Bad url!");
+
+        self.run_with_body(reqwest::Method::POST, url, req).await
     }
 }

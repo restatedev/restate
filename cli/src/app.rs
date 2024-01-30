@@ -86,6 +86,11 @@ pub enum Command {
     /// Download one of Restate's examples in this directory.
     #[clap(name = "example", alias = "examples")]
     Examples(examples::Examples),
+
+    /// Manage service state
+    #[clap(name = "state", alias = "kv")]
+    #[clap(subcommand)]
+    State(state::ServiceState),
 }
 
 fn init(
