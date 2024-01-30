@@ -117,6 +117,8 @@ pub struct Options {
     ///
     /// Note: This config entry **will be removed** in future Restate releases,
     /// as the partitions number will be dynamically configured depending on the load.
+    ///
+    /// Cannot be higher than `13835058055282163711` (You should almost never need as many partitions anyway)
     partitions: u64,
 }
 
