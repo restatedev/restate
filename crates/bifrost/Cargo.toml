@@ -1,0 +1,26 @@
+[package]
+name = "restate-bifrost"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-types = { workspace = true }
+
+anyhow = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+derive_more = { version = "0.99.17" }
+static_assertions = { version = "1.1.0" }
+
+
+[dev-dependencies]
+restate-test-util = { workspace = true }
+
+test-log = { workspace = true }
+tracing-subscriber = { workspace = true }
