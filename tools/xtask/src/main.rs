@@ -78,6 +78,7 @@ impl restate_schema_api::subscription::SubscriptionValidator for Mock {
 }
 
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
+    let bifrost_options = restate_bifrost::Options::default();
     let admin_options = restate_admin::Options::default();
     let meta_options = restate_meta::Options::default();
     let mut meta = meta_options.build().expect("expect to build meta service");
@@ -85,7 +86,9 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         "http://localhost:{}/openapi",
         admin_options.bind_address.port()
     );
-    let admin_service = admin_options.build(meta.schemas(), meta.meta_handle());
+    let bifrost_service = bifrost_options.build(1);
+    let admin_service =
+        admin_options.build(meta.schemas(), meta.meta_handle(), bifrost_service.handle());
     meta.init().await.unwrap();
 
     // We start the Meta component, then download the openapi schema generated
