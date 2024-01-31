@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#[derive(Debug, Clone)]
-pub struct Bifrost {}
+// TODO: Remove after fleshing the code out.
+#![allow(dead_code)]
 
-impl Bifrost {}
+use crate::metadata::LogletKind;
 
-static_assertions::assert_impl_all!(Bifrost: Send, Sync);
+/// A loglet represents a single log. Systems that support multiple logs
+pub trait Loglet {
+    fn kind() -> LogletKind;
+}

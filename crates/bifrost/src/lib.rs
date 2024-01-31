@@ -8,10 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod core;
+mod bifrost;
 mod error;
+mod loglet;
+mod metadata;
+mod options;
+mod service;
 mod types;
+mod watchdog;
 
-pub use core::Bifrost;
-pub use error::*;
+pub use bifrost::Bifrost;
+pub use error::Error;
+pub use options::Options;
+pub use service::BifrostService;
 pub use types::{LogId, Lsn};

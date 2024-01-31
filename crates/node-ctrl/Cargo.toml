@@ -12,6 +12,7 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+restate-bifrost = { workspace = true }
 restate-errors = { workspace = true }
 restate-node-ctrl-proto = { workspace = true }
 restate-storage-rocksdb = { workspace = true }

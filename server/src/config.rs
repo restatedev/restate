@@ -21,6 +21,7 @@ pub use crate::rt::{
     OptionsBuilderError as TokioOptionsBuilderError,
 };
 pub use restate_admin::Options as AdminOptions;
+pub use restate_bifrost::Options as BifrostOptions;
 pub use restate_meta::{
     Options as MetaOptions, OptionsBuilder as MetaOptionsBuilder,
     OptionsBuilderError as MetaOptionsBuilderError,
@@ -72,6 +73,7 @@ pub struct Configuration {
     pub node_ctrl: NodeCtrlOptions,
     pub admin: AdminOptions,
     pub tokio_runtime: crate::rt::Options,
+    pub bifrost: BifrostOptions,
 }
 
 impl Default for Configuration {
@@ -84,6 +86,7 @@ impl Default for Configuration {
             admin: Default::default(),
             worker: Default::default(),
             tokio_runtime: Default::default(),
+            bifrost: Default::default(),
         }
     }
 }

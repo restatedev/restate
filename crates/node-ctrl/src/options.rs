@@ -10,6 +10,7 @@
 
 use std::net::SocketAddr;
 
+use restate_bifrost::Bifrost;
 use restate_storage_rocksdb::RocksDBStorage;
 use serde_with::serde_as;
 
@@ -48,7 +49,11 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn build(self, rocksdb_storage: Option<RocksDBStorage>) -> NodeCtrlService {
-        NodeCtrlService::new(self, rocksdb_storage)
+    pub fn build(
+        self,
+        rocksdb_storage: Option<RocksDBStorage>,
+        bifrost: Bifrost,
+    ) -> NodeCtrlService {
+        NodeCtrlService::new(self, rocksdb_storage, bifrost)
     }
 }
