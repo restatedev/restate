@@ -8,7 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, derive_more::Display)]
+// TODO: Remove after fleshing the code out.
+#![allow(dead_code)]
+
+use bytes::Bytes;
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::Into,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct LogId(u64);
 
 /// Index of an entry in the log
@@ -20,7 +39,20 @@ impl LogId {
 }
 
 /// The log sequence number.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, derive_more::Display)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    derive_more::Display,
+    serde::Serialize,
+    derive_more::Into,
+    serde::Deserialize,
+)]
 pub struct Lsn(u64);
 
 /// Index of an entry in the log
@@ -36,6 +68,29 @@ impl Lsn {
     pub const OLDEST: Lsn = Lsn(1);
 }
 
+/// Log metadata version.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::Into,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[display(fmt = "v{}", _0)]
+pub struct Version(u64);
+
+impl Version {
+    pub const INVALID: Version = Version(0);
+}
+
 /// Details about why a log was sealed
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum SealReason {
@@ -43,4 +98,20 @@ pub enum SealReason {
     /// The reader/writer need to figure out where to read/write next.
     Resharding,
     Other(String),
+}
+
+/// A single entry in the log.
+#[derive(Debug, Clone)]
+pub struct Record {
+    header: Header,
+    payload: Payload,
+}
+
+#[derive(Debug, Clone)]
+pub struct Header {}
+
+/// Owned payload.
+#[derive(Debug, Clone)]
+pub struct Payload {
+    inner: Bytes,
 }
