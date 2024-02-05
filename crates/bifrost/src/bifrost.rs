@@ -11,14 +11,18 @@
 // TODO: Remove after fleshing the code out.
 #![allow(dead_code)]
 
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use enum_map::EnumMap;
+use once_cell::sync::OnceCell;
+
+use crate::loglet::{ProviderKind, LogletProvider, LogletWrapper, LogletBase };
 use crate::metadata::Logs;
 use crate::options::Options;
-use crate::types::Version;
-use crate::watchdog::WatchdogSender;
-use crate::{create_static_metadata, Error};
+use crate::watchdog::{WatchdogCommand, WatchdogSender};
+use crate::{Error, LogId, Lsn, MaybeRecord, ReadAttributes, Version, create_static_metadata, DataRecord, AppendAttributes, LogReadStream};
 
 /// Bifrost is Restate's durable interconnect system
 ///
@@ -33,6 +37,31 @@ pub struct Bifrost {
 impl Bifrost {
     pub(crate) fn new(inner: Arc<BifrostInner>) -> Self {
         Self { inner }
+    }
+
+    /// Appends a single record to a log. The log id must exist, otherwise the 
+    /// operation fails with [`Error::UnknownLogId`]
+    pub async fn append(
+        &mut self,
+        log_id: LogId,
+        record: DataRecord,
+        attributes: AppendAttributes,
+    ) -> Result<Lsn, Error> {
+        self.inner.append(log_id, record, attributes).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn read_single(
+        &self,
+        _log_id: LogId,
+        _from: Lsn,
+        _attributes: ReadAttributes,
+    ) -> Result<MaybeRecord, Error> {
+        todo!()
+    }
+
+    pub fn create_reader(&self, log_id: LogId, from: Lsn) -> LogReadStream {
+        LogReadStream::new(self.inner.clone(), log_id, from)
     }
 
     /// The version of the currently loaded metadata
@@ -56,6 +85,7 @@ pub struct BifrostInner {
     num_partitions: u64,
     watchdog: WatchdogSender,
     log_metadata: Mutex<Logs>,
+    providers: EnumMap<ProviderKind, OnceCell<Arc<dyn LogletProvider>>>,
     shutting_down: AtomicBool,
 }
 
@@ -66,6 +96,7 @@ impl BifrostInner {
             num_partitions,
             watchdog,
             log_metadata: Mutex::new(Logs::empty()),
+            providers: Default::default(),
             shutting_down: AtomicBool::new(false),
         }
     }
@@ -75,6 +106,19 @@ impl BifrostInner {
     /// allowed to complete.
     pub fn set_shutdown(&self) {
         self.shutting_down.store(true, Ordering::Relaxed);
+    }
+
+    /// Appends a single record to a log. The log id must exist, otherwise the 
+    /// operation fails with [`Error::UnknownLogId`]
+    pub async fn append(
+        &self,
+        log_id: LogId,
+        record: DataRecord,
+        attributes: AppendAttributes,
+    ) -> Result<Lsn, Error> {
+        self.fail_if_shutting_down()?;
+        let loglet = self.writeable_loglet(log_id).await?;
+        loglet.append(record, attributes).await
     }
 
     #[inline]
@@ -97,6 +141,214 @@ impl BifrostInner {
         if logs.version > guard.version {
             *guard = logs;
         }
+        Ok(())
+    }
+
+    /// Get the provider for a given kind. If the provider is not yet initialized, it will be
+    /// lazily initialized by the watchdog.
+    fn provider_for(&self, kind: ProviderKind) -> &dyn LogletProvider {
+        self.providers[kind]
+            .get_or_init(|| {
+                let provider = crate::loglet::create_provider(kind, &self.opts);
+                // tell watchdog about it.
+                let _ = self.watchdog
+                    .send(WatchdogCommand::StartProvider(provider.clone()));
+                provider
+            })
+            .deref()
+    }
+
+    /// Injects a provider for testing purposes. The call is responsible for starting the provider
+    /// and that it's monitored by watchdog if necessary.
+    /// This will only work if the provider was never accessed by bifrost before this call.
+    #[cfg(test)]
+    #[track_caller]
+    fn inject_provider(
+        &self,
+        kind: ProviderKind,
+        provider: Arc<dyn LogletProvider>,
+    ) {
+        assert!(self.providers[kind].try_insert(provider).is_ok());
+    }
+
+
+    async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper, Error> {
+        self.fail_if_shutting_down()?;
+
+        let tail_segment = 
+            // Locks the logs mutex.
+            self.log_metadata
+                .lock()
+                .unwrap()
+                .tail_segment(log_id)
+                .ok_or(Error::UnknownLogId(log_id))?;
+        // Logs lock released here.
+        let provider = self.provider_for(tail_segment.config.kind);
+        let loglet = provider.get_loglet(&tail_segment.config.params).await?;
+
+        Ok(LogletWrapper::new(tail_segment.base_lsn, loglet))
+
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    use crate::loglets::memory_loglet::MemoryLogletProvider;
+    use crate::{DataRecord, AppendAttributes};
+    use crate::loglet::ProviderKind;
+    use googletest::prelude::*;
+
+    use test_log::test;
+    use tracing::info;
+    use tracing_test::traced_test;
+
+    #[test(tokio::test)]
+    #[traced_test]
+    async fn test_append_smoke() -> Result<()> {
+        let num_partitions = 5;
+        let (shutdown_signal, shutdown_watch) = drain::channel();
+
+        let bifrost_opts = Options {
+            default_provider: ProviderKind::Memory,
+            ..Options::default()
+        };
+        // build with 5 logs.
+        let bifrost_svc = bifrost_opts.build(num_partitions);
+        let mut bifrost = bifrost_svc.handle();
+        let mut clean_bifrost_clone = bifrost.clone();
+
+        // start bifrost service in the background
+        let svc_handle = bifrost_svc.start(shutdown_watch).await?;
+
+        for i in 1..=5 {
+            // create appender on each append.
+            // Append a record to memory
+            let lsn = bifrost.append(
+                    LogId::from(0),
+                    DataRecord::default(),
+                    AppendAttributes::default(),
+                )
+                .await?;
+            info!(%lsn, "Appended record to log");
+            assert_eq!(Lsn(i), lsn);
+        }
+
+        // Append to a log that doesn't exist.
+        let invalid_log = LogId::from(num_partitions + 1);
+        let resp = bifrost
+            .append(invalid_log, DataRecord::default(), AppendAttributes::default())
+            .await;
+
+        assert_that!(resp, pat!(Err(pat!(Error::UnknownLogId(eq(invalid_log))))));
+
+
+        // use a cloned bifrost.
+        let mut cloned_bifrost = bifrost.clone();
+        for i in 1..=5 {
+            // Append a record to memory
+            let lsn = cloned_bifrost
+                .append(
+                    LogId::from(0),
+                    DataRecord::default(),
+                    AppendAttributes::default(),
+                )
+                .await?;
+            info!(%lsn, "Appended record to log");
+            assert_eq!(Lsn(i + 5), lsn);
+        }
+
+        // Ensure original clone writes to the same underlying loglet.
+        let lsn = clean_bifrost_clone
+            .append(
+                LogId::from(0),
+                DataRecord::default(),
+                AppendAttributes::default(),
+            )
+            .await?;
+        assert_eq!(Lsn(11), lsn);
+
+        // Writes to a another log doesn't impact existing
+        let lsn = bifrost
+            .append(
+                LogId::from(3),
+                DataRecord::default(),
+                AppendAttributes::default(),
+            )
+            .await?;
+        assert_eq!(Lsn(1), lsn);
+
+        let lsn = bifrost
+            .append(
+                LogId::from(0),
+                DataRecord::default(),
+                AppendAttributes::default(),
+            )
+            .await?;
+        assert_eq!(Lsn(12), lsn);
+
+        // Initiate shutdown
+        shutdown_signal.drain().await;
+
+        assert!(svc_handle.is_finished());
+
+        // appends cannot succeed after shutdown
+        let res = bifrost
+            .append(
+                LogId::from(0),
+                DataRecord::default(),
+                AppendAttributes::default(),
+            )
+            .await;
+        assert!(matches!(res, Err(Error::Shutdown)));
+        // Validate the watchdog has called the provider::start() function.
+        assert!(logs_contain("Starting in-memory loglet provider"));
+        assert!(logs_contain("Shutting down in-memory loglet provider"));
+        assert!(logs_contain("Bifrost watchdog shutdown complete"));
+        Ok(())
+    }
+
+    #[test(tokio::test(start_paused = true))]
+    #[traced_test]
+    async fn test_lazy_initialization() -> Result<()> {
+        let delay = Duration::from_secs(5);
+        let (shutdown_signal, shutdown_watch) = drain::channel();
+        let num_partitions = 5;
+        // This memory provider adds a delay to its loglet initialization, we want
+        // to ensure that appends do not fail while waiting for the loglet;
+        let memory_provider = MemoryLogletProvider::with_init_delay(delay);
+
+        let bifrost_opts = Options {
+            default_provider: ProviderKind::Memory,
+            ..Options::default()
+        };
+        let bifrost_svc = bifrost_opts.build(num_partitions);
+        let mut bifrost = bifrost_svc.handle();
+
+        // Inject out preconfigured memory provider
+        bifrost.inner().inject_provider(ProviderKind::Memory, memory_provider);
+
+        // start bifrost service in the background
+        let svc_handle = bifrost_svc.start(shutdown_watch).await?;
+
+        let start = tokio::time::Instant::now();
+        let lsn = bifrost
+            .append(
+                LogId::from(0),
+                DataRecord::default(),
+                AppendAttributes::default(),
+            )
+            .await?;
+        assert_eq!(Lsn(1), lsn);
+        // The append was properly delayed
+        assert_eq!(delay, start.elapsed());
+
+        // Initiate shutdown
+        shutdown_signal.drain().await;
+        assert!(svc_handle.is_finished());
         Ok(())
     }
 }

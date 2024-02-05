@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::types::SealReason;
 use crate::{LogId, Lsn};
 
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug)]
 pub enum Error {
     #[error("log '{0}' is sealed")]
     LogSealed(LogId, SealReason),
