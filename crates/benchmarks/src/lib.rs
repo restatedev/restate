@@ -71,7 +71,7 @@ pub fn spawn_restate(
     let (signal, drain) = drain::channel();
 
     let node_handle = rt.block_on(async move {
-        let node = Node::new(0, config.node).expect("Restate node must build");
+        let node = Node::new(0, None, Some(config.node)).expect("Restate node must build");
         tokio::task::spawn(node.run(drain))
     });
 

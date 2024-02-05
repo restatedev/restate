@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use enumset::{EnumSet, EnumSetType};
 use figment::providers::{Env, Format, Serialized, Yaml};
 use figment::Figment;
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,9 @@ pub struct Configuration {
     pub observability: restate_tracing_instrumentation::Options,
     pub tokio_runtime: crate::rt::Options,
 
+    #[cfg_attr(feature = "options_schema", schemars(with = "Vec<Role>"))]
+    pub roles: EnumSet<Role>,
+
     #[serde(flatten)]
     pub node: restate_node::Options,
 }
@@ -76,6 +80,7 @@ impl Default for Configuration {
             shutdown_grace_period: Duration::from_secs(60).into(),
             observability: Default::default(),
             tokio_runtime: Default::default(),
+            roles: Role::Admin | Role::Worker,
             node: Default::default(),
         }
     }
@@ -189,4 +194,16 @@ impl Configuration {
 
         Ok(figment)
     }
+}
+
+#[derive(Debug, Deserialize, EnumSetType, Serialize)]
+#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
+#[enumset(serialize_repr = "list")]
+pub enum Role {
+    #[serde(alias = "admin")]
+    Admin,
+    #[serde(alias = "worker")]
+    Worker,
+    // Controller,
+    // Loglet,
 }

@@ -24,6 +24,7 @@ use tracing::{info, trace, warn};
 mod signal;
 
 use restate_node::Node;
+use restate_server::config::Role;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 
@@ -138,8 +139,19 @@ fn main() {
             config.node.worker.storage_path().into()
         ).await.expect("Error when trying to wipe the configured storage path");
 
+        let admin_options = if config.roles.contains(Role::Admin) {
+            Some(config.node.clone())
+        } else {
+            None
+        };
 
-        let node = Node::new(config.node_id, config.node);
+        let worker_options = if config.roles.contains(Role::Worker) {
+            Some(config.node)
+        } else {
+            None
+        };
+
+        let node = Node::new(config.node_id, admin_options, worker_options);
 
         if let Err(err) = node {
             handle_error(err);
