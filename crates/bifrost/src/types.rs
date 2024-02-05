@@ -48,10 +48,11 @@ impl LogId {
     Hash,
     Ord,
     PartialOrd,
-    derive_more::Display,
     serde::Serialize,
-    derive_more::Into,
     serde::Deserialize,
+    derive_more::Into,
+    derive_more::Add,
+    derive_more::Display,
 )]
 pub struct Lsn(pub(crate) u64);
 

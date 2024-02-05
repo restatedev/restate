@@ -4815,6 +4815,7 @@ dependencies = [
 name = "restate-bifrost"
 version = "0.8.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "bytestring",
