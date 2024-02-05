@@ -19,6 +19,7 @@ use codederror::CodedError;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use partition::shuffle;
+use restate_bifrost::Bifrost;
 use restate_consensus::Consensus;
 use restate_ingress_dispatcher::Service as IngressDispatcherService;
 use restate_ingress_kafka::Service as IngressKafkaService;
@@ -119,7 +120,7 @@ pub struct Options {
     /// as the partitions number will be dynamically configured depending on the load.
     ///
     /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
-    partitions: u64,
+    pub partitions: u64,
 }
 
 impl Default for Options {
@@ -160,9 +161,9 @@ impl Options {
         &self.storage_rocksdb.path
     }
 
-    pub fn build(self, schemas: Schemas) -> Result<Worker, BuildError> {
+    pub fn build(self, schemas: Schemas, bifrost: Bifrost) -> Result<Worker, BuildError> {
         metric_definitions::describe_metrics();
-        Worker::new(self, schemas)
+        Worker::new(self, schemas, bifrost)
     }
 }
 
@@ -240,7 +241,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn new(opts: Options, schemas: Schemas) -> Result<Self, BuildError> {
+    pub fn new(opts: Options, schemas: Schemas, _bifrost: Bifrost) -> Result<Self, BuildError> {
         let Options {
             channel_size,
             ingress_grpc,

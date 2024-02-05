@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use axum::routing::get;
 use codederror::CodedError;
 use futures::FutureExt;
+use restate_bifrost::Bifrost;
 use restate_storage_rocksdb::RocksDBStorage;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -45,13 +46,15 @@ pub enum Error {
 pub struct NodeCtrlService {
     opts: Options,
     rocksdb_storage: Option<RocksDBStorage>,
+    bifrost: Bifrost,
 }
 
 impl NodeCtrlService {
-    pub fn new(opts: Options, rocksdb_storage: Option<RocksDBStorage>) -> Self {
+    pub fn new(opts: Options, rocksdb_storage: Option<RocksDBStorage>, bifrost: Bifrost) -> Self {
         Self {
             opts,
             rocksdb_storage,
+            bifrost,
         }
     }
 
@@ -59,6 +62,7 @@ impl NodeCtrlService {
         // Configure Metric Exporter
         let mut state_builder = HandlerStateBuilder::default();
         state_builder.rocksdb_storage(self.rocksdb_storage);
+        state_builder.bifrost(self.bifrost);
 
         if !self.opts.disable_prometheus {
             state_builder.prometheus_handle(Some(
