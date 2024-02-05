@@ -70,9 +70,10 @@ pub type EntryIndex = u32;
     derive_more::From,
     derive_more::Display,
 )]
+#[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
 #[display(fmt = "N{}", _0)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct NodeId(u32);
+pub struct NodeId(#[cfg_attr(feature = "serde_schema", schemars(default))] u32);
 
 /// Unique Id of a deployment.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]

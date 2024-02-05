@@ -34,14 +34,7 @@ pub use restate_tracing_instrumentation::{
     OptionsBuilderError as ObservabilityOptionsBuilderError, TracingOptions, TracingOptionsBuilder,
     TracingOptionsBuilderError,
 };
-pub use restate_worker::{
-    IngressOptions, IngressOptionsBuilder, IngressOptionsBuilderError, InvokerOptions,
-    InvokerOptionsBuilder, InvokerOptionsBuilderError, Options as WorkerOptions,
-    OptionsBuilder as WorkerOptionsBuilder, OptionsBuilderError as WorkerOptionsBuilderError,
-    RocksdbOptions, RocksdbOptionsBuilder, RocksdbOptionsBuilderError, StorageQueryPostgresOptions,
-    StorageQueryPostgresOptionsBuilder, StorageQueryPostgresOptionsBuilderError, TimerOptions,
-    TimerOptionsBuilder, TimerOptionsBuilderError,
-};
+use restate_types::identifiers::NodeId;
 
 /// # Restate configuration file
 ///
@@ -59,6 +52,8 @@ pub use restate_worker::{
 #[cfg_attr(feature = "options_schema", schemars(default))]
 #[builder(default)]
 pub struct Configuration {
+    pub node_id: NodeId,
+
     /// # Shutdown grace timeout
     ///
     /// This timeout is used when shutting down the various Restate components to drain all the internal queues.
@@ -68,25 +63,20 @@ pub struct Configuration {
     #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     pub shutdown_grace_period: humantime::Duration,
     pub observability: restate_tracing_instrumentation::Options,
-    pub meta: restate_meta::Options,
-    pub worker: WorkerOptions,
-    pub node_ctrl: NodeCtrlOptions,
-    pub admin: AdminOptions,
     pub tokio_runtime: crate::rt::Options,
-    pub bifrost: BifrostOptions,
+
+    #[serde(flatten)]
+    pub node: restate_node::Options,
 }
 
 impl Default for Configuration {
     fn default() -> Self {
         Self {
+            node_id: NodeId::from(0),
             shutdown_grace_period: Duration::from_secs(60).into(),
             observability: Default::default(),
-            node_ctrl: Default::default(),
-            meta: Default::default(),
-            admin: Default::default(),
-            worker: Default::default(),
             tokio_runtime: Default::default(),
-            bifrost: Default::default(),
+            node: Default::default(),
         }
     }
 }

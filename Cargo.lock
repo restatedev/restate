@@ -4813,6 +4813,7 @@ dependencies = [
  "prost 0.12.3",
  "prost-build",
  "rand",
+ "restate-node",
  "restate-server",
  "restate-types",
  "serde_json",
@@ -5186,6 +5187,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-node"
+version = "0.8.0"
+dependencies = [
+ "codederror",
+ "derive_builder",
+ "drain",
+ "futures",
+ "restate-admin",
+ "restate-bifrost",
+ "restate-meta",
+ "restate-node-ctrl",
+ "restate-types",
+ "restate-worker",
+ "schemars",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "restate-node-ctrl"
 version = "0.8.0"
 dependencies = [
@@ -5341,6 +5363,7 @@ dependencies = [
  "restate-errors",
  "restate-fs-util",
  "restate-meta",
+ "restate-node",
  "restate-node-ctrl",
  "restate-storage-rocksdb",
  "restate-tracing-instrumentation",

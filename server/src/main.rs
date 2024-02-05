@@ -12,7 +12,6 @@ use clap::Parser;
 use codederror::CodedError;
 use restate_errors::fmt::RestateCode;
 use restate_server::build_info;
-use restate_server::Application;
 use restate_server::Configuration;
 use restate_tracing_instrumentation::TracingGuard;
 use std::error::Error;
@@ -24,6 +23,7 @@ use tracing::{info, trace, warn};
 
 mod signal;
 
+use restate_node::Node;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 
@@ -134,32 +134,27 @@ fn main() {
 
         WipeMode::wipe(
             cli_args.wipe.as_ref(),
-            config.meta.storage_path().into(),
-            config.worker.storage_path().into()
+            config.node.meta.storage_path().into(),
+            config.node.worker.storage_path().into()
         ).await.expect("Error when trying to wipe the configured storage path");
 
-        let app = Application::new(
-            config.node_ctrl,
-            config.meta,
-            config.worker,
-            config.admin,
-            config.bifrost,
-        );
 
-        if let Err(err) = app {
+        let node = Node::new(config.node_id, config.node);
+
+        if let Err(err) = node {
             handle_error(err);
         }
-        let app = app.unwrap();
+        let node = node.unwrap();
 
         let (shutdown_signal, shutdown_watch) = drain::channel();
-        let application = app.run(shutdown_watch);
-        tokio::pin!(application);
+        let node = node.run(shutdown_watch);
+        tokio::pin!(node);
 
         tokio::select! {
             _ = signal::shutdown() => {
                 info!("Received shutdown signal.");
 
-                let shutdown_tasks = futures_util::future::join(shutdown_signal.drain(), application);
+                let shutdown_tasks = futures_util::future::join(shutdown_signal.drain(), node);
                 let shutdown_with_timeout = tokio::time::timeout(config.shutdown_grace_period.into(), shutdown_tasks);
 
                 // ignore the result because we are shutting down
@@ -171,7 +166,7 @@ fn main() {
                     info!("Restate has been gracefully shut down.");
                 }
             },
-            result = &mut application => {
+            result = &mut node => {
                 if let Err(err) = result {
                     handle_error(err);
                 } else {

@@ -15,10 +15,12 @@ use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
-use restate_server::config::{
-    ConfigurationBuilder, MetaOptionsBuilder, RocksdbOptionsBuilder, WorkerOptionsBuilder,
+use restate_node::Node;
+use restate_node::{
+    MetaOptionsBuilder, NodeOptionsBuilder, RocksdbOptionsBuilder, WorkerOptionsBuilder,
 };
-use restate_server::{Application, ApplicationError, Configuration};
+use restate_server::config::ConfigurationBuilder;
+use restate_server::Configuration;
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -60,26 +62,20 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
 
 pub fn spawn_restate(
     config: Configuration,
-) -> (Runtime, Signal, JoinHandle<Result<(), ApplicationError>>) {
+) -> (Runtime, Signal, JoinHandle<Result<(), restate_node::Error>>) {
     let rt = config
         .tokio_runtime
         .build()
         .expect("Tokio runtime must build");
 
     let (signal, drain) = drain::channel();
-    let app_handle = rt.block_on(async move {
-        let app = Application::new(
-            config.node_ctrl,
-            config.meta,
-            config.worker,
-            config.admin,
-            config.bifrost,
-        )
-        .expect("Application must build");
-        tokio::task::spawn(app.run(drain))
+
+    let node_handle = rt.block_on(async move {
+        let node = Node::new(0, config.node).expect("Restate node must build");
+        tokio::task::spawn(node.run(drain))
     });
 
-    (rt, signal, app_handle)
+    (rt, signal, node_handle)
 }
 
 pub fn flamegraph_options<'a>() -> Options<'a> {
@@ -123,14 +119,18 @@ pub fn restate_configuration() -> Configuration {
         .build()
         .expect("building worker options should work");
 
-    let default_config = ConfigurationBuilder::default()
+    let node_options = NodeOptionsBuilder::default()
         .worker(worker_options)
         .meta(meta_options)
         .build()
         .expect("building the configuration should work");
 
-    Configuration::load_with_default(default_config, None)
-        .expect("configuration loading should not fail")
+    let config = ConfigurationBuilder::default()
+        .node(node_options)
+        .build()
+        .expect("building the configuration should work");
+
+    Configuration::load_with_default(config, None).expect("configuration loading should not fail")
 }
 
 pub struct BenchmarkSettings {
