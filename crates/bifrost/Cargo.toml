@@ -7,20 +7,39 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+options_schema = ["dep:schemars"]
+
 [dependencies]
 restate-types = { workspace = true }
 
-anyhow = { workspace = true }
-futures = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true, features = ["serde"] }
+codederror = { workspace = true }
+derive_builder = { workspace = true }
+derive_more = { workspace = true }
+drain = { workspace = true }
+enum-map = { version = "2.7.3", features = ["serde"] }
+#futures = { workspace = true }
+once_cell = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+static_assertions = { workspace = true }
+strum_macros = { version = "0.26.1" }
+strum = { version = "0.26.1" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+#tokio-util = { workspace = true }
 tracing = { workspace = true }
-derive_more = { workspace = true }
-static_assertions = { workspace = true }
 
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
 
+googletest = { workspace = true }
 test-log = { workspace = true }
+tracing-test = { version = "0.2.4" }
 tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

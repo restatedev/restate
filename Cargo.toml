@@ -31,6 +31,7 @@ codederror = { path = "crates/codederror" }
 restate-admin = { path = "crates/admin" }
 restate-base64-util = { path = "crates/base64-util" }
 restate-benchmarks = { path = "crates/benchmarks" }
+restate-bifrost = { path = "crates/bifrost" }
 restate-consensus = { path = "crates/consensus" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }

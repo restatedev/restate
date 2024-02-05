@@ -20,7 +20,7 @@ use rocksdb::AsColumnFamilyRef;
 use tonic::{Request, Response, Status};
 
 use restate_node_ctrl_proto::proto::node_ctrl_server::NodeCtrl;
-use restate_node_ctrl_proto::proto::{IdentResponse, NodeStatus};
+use restate_node_ctrl_proto::proto::{BifrostVersion, IdentResponse, NodeStatus};
 
 use crate::prometheus_helpers::{
     format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
@@ -249,6 +249,16 @@ impl NodeCtrl for Handler {
         // STUB IMPLEMENTATION
         return Ok(Response::new(IdentResponse {
             status: NodeStatus::Alive.into(),
+        }));
+    }
+
+    async fn get_bifrost_version(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<BifrostVersion>, Status> {
+        let version = self.state.bifrost.metadata_version();
+        return Ok(Response::new(BifrostVersion {
+            version: version.into(),
         }));
     }
 }

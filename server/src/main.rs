@@ -143,6 +143,7 @@ fn main() {
             config.meta,
             config.worker,
             config.admin,
+            config.bifrost,
         );
 
         if let Err(err) = app {

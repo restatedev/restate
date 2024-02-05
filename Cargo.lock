@@ -1544,8 +1544,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c64043d6c7b7a4c58e39e7efccfdea7b93d885a795d0c054a69dbbf4dd52686"
 dependencies = [
  "crossterm 0.27.0",
- "strum",
- "strum_macros",
+ "strum 0.25.0",
+ "strum_macros 0.25.3",
  "unicode-width",
 ]
 
@@ -2079,8 +2079,8 @@ dependencies = [
  "arrow 46.0.0",
  "datafusion-common",
  "sqlparser",
- "strum",
- "strum_macros",
+ "strum 0.25.0",
+ "strum_macros 0.25.3",
 ]
 
 [[package]]
@@ -2337,6 +2337,27 @@ name = "endian-type"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c34f04666d835ff5d62e058c3995147c06f42fe86ff053337632bca83e42702d"
+
+[[package]]
+name = "enum-map"
+version = "2.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6866f3bfdf8207509a033af1a75a7b08abda06bbaaeae6669323fd5a097df2e9"
+dependencies = [
+ "enum-map-derive",
+ "serde",
+]
+
+[[package]]
+name = "enum-map-derive"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f282cfdfe92516eb26c2af8589c274c7c17681f5ecc03c18255fe741c6aa64eb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.48",
+]
 
 [[package]]
 name = "equivalent"
@@ -4731,6 +4752,7 @@ dependencies = [
  "hyper",
  "okapi-operation",
  "prost 0.12.3",
+ "restate-bifrost",
  "restate-errors",
  "restate-fs-util",
  "restate-futures-util",
@@ -4793,17 +4815,30 @@ dependencies = [
 name = "restate-bifrost"
 version = "0.8.0"
 dependencies = [
- "anyhow",
+ "async-trait",
+ "bytes",
+ "bytestring",
+ "codederror",
+ "derive_builder",
  "derive_more",
- "futures",
+ "drain",
+ "enum-map",
+ "googletest",
+ "once_cell",
  "restate-test-util",
  "restate-types",
+ "schemars",
+ "serde",
+ "serde_json",
  "static_assertions",
+ "strum 0.26.1",
+ "strum_macros 0.26.1",
  "test-log",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "tracing-test",
 ]
 
 [[package]]
@@ -5154,6 +5189,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-tracing-context",
  "metrics-util",
+ "restate-bifrost",
  "restate-errors",
  "restate-node-ctrl-proto",
  "restate-storage-rocksdb",
@@ -5288,6 +5324,7 @@ dependencies = [
  "humantime",
  "pin-project",
  "restate-admin",
+ "restate-bifrost",
  "restate-errors",
  "restate-fs-util",
  "restate-meta",
@@ -5607,6 +5644,7 @@ dependencies = [
  "pin-project",
  "prost 0.12.3",
  "prost-reflect",
+ "restate-bifrost",
  "restate-consensus",
  "restate-errors",
  "restate-ingress-dispatcher",
@@ -6271,14 +6309,33 @@ version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "290d54ea6f91c969195bdbcd7442c8c2a2ba87da8bf60a7ee86a235d4bc1e125"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.25.3",
 ]
+
+[[package]]
+name = "strum"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "723b93e8addf9aa965ebe2d11da6d7540fa2283fcea14b3371ff055f7ba13f5f"
 
 [[package]]
 name = "strum_macros"
 version = "0.25.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23dc1fa9ac9c169a78ba62f0b841814b7abae11bdd047b9c58f893439e309ea0"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 2.0.48",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a3417fc93d76740d974a01654a09777cb500428cc874ca9f45edfe0c4d4cd18"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -6925,6 +6982,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-test"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a2c0ff408fe918a94c428a3f2ad04e4afd5c95bbc08fcf868eff750c15728a4"
+dependencies = [
+ "lazy_static",
+ "tracing-core",
+ "tracing-subscriber",
+ "tracing-test-macro",
+]
+
+[[package]]
+name = "tracing-test-macro"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "258bc1c4f8e2e73a977812ab339d503e6feeb92700f6d07a6de4d321522d5c08"
+dependencies = [
+ "lazy_static",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7429,6 +7509,7 @@ dependencies = [
  "drain",
  "reqwest",
  "restate-admin",
+ "restate-bifrost",
  "restate-meta",
  "restate-schema-api",
  "restate-server",
