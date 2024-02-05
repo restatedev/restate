@@ -9,10 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use tracing::{debug, info};
+use enum_map::Enum;
+use tokio::task::JoinSet;
+use tracing::{debug, info, warn};
 
 use crate::bifrost::BifrostInner;
+use crate::loglet::{LogletProvider, ProviderKind};
 use crate::Error;
 
 pub type WatchdogSender = tokio::sync::mpsc::UnboundedSender<WatchdogCommand>;
@@ -26,18 +30,36 @@ type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;
 pub struct Watchdog {
     inner: Arc<BifrostInner>,
     inbound: WatchdogReceiver,
+    live_providers: Vec<Arc<dyn LogletProvider>>,
 }
 
 impl Watchdog {
     pub fn new(inner: Arc<BifrostInner>, inbound: WatchdogReceiver) -> Self {
-        Self { inner, inbound }
+        Self {
+            inner,
+            inbound,
+            live_providers: Vec::with_capacity(ProviderKind::LENGTH),
+        }
     }
 
     fn handle_command(&mut self, cmd: WatchdogCommand) {
         match cmd {
             WatchdogCommand::ScheduleMetadataSync => {
-                // TODO: Convert to a background task
-                //let _ = self.inner.sync_metadata().await;
+                // TODO: Convert to a managed background task
+                tokio::spawn({
+                    let bifrost = self.inner.clone();
+                    async move {
+                        let _ = bifrost.sync_metadata().await;
+                    }
+                });
+            }
+
+            WatchdogCommand::StartProvider(provider) => {
+                // TODO: Convert to a managed background task
+                self.live_providers.push(provider.clone());
+                tokio::spawn(async move {
+                    let _ = provider.start().await;
+                });
             }
         }
     }
@@ -51,21 +73,7 @@ impl Watchdog {
             tokio::select! {
             biased;
             _ = &mut shutdown => {
-                info!("Bifrost watchdog shutdown started");
-                // Stop accepting new commands
-                self.inner.set_shutdown();
-                self.inbound.close();
-                debug!("Draining bifrost tasks");
-
-                // Consume buffered commands
-                let mut i = 0;
-                while let Some(cmd) = self.inbound.recv().await {
-                    i += 1;
-                    self.handle_command(cmd)
-                }
-                debug!("Bifrost drained {i} commands due to an ongoing shutdown");
-                // Ask all tasks to shutdown
-                // TODO
+                self.shutdown().await;
                 break;
             }
             Some(cmd) = self.inbound.recv() => {
@@ -75,11 +83,57 @@ impl Watchdog {
         }
         Ok(())
     }
+
+    async fn shutdown(mut self) {
+        let shutdown_timeout = Duration::from_secs(5);
+        info!("Bifrost watchdog shutdown started");
+        // Stop accepting new commands
+        self.inner.set_shutdown();
+        self.inbound.close();
+        debug!("Draining bifrost tasks");
+
+        // Consume buffered commands
+        let mut i = 0;
+        while let Some(cmd) = self.inbound.recv().await {
+            i += 1;
+            self.handle_command(cmd)
+        }
+        debug!("Bifrost drained {i} commands due to an on-going shutdown");
+        // Ask all tasks to shutdown
+        // Stop all live providers.
+        info!("Shutting down live bifrost providers");
+        let mut providers = JoinSet::new();
+        for provider in self.live_providers {
+            providers.spawn(async move { provider.shutdown().await });
+        }
+
+        info!(
+            "Waiting {:?} for bifrost providers to shutdown cleanly...",
+            shutdown_timeout
+        );
+        if (tokio::time::timeout(shutdown_timeout, async {
+            while let Some(res) = providers.join_next().await {
+                if let Err(e) = res {
+                    warn!("Bifrost provider failed on shutdown: {:?}", e);
+                }
+            }
+        })
+        .await)
+            .is_err()
+        {
+            warn!(
+                "Timed out shutting down {} bifrost providers!",
+                providers.len()
+            );
+            providers.shutdown().await;
+        }
+    }
 }
 
-#[derive(Clone, Debug)]
 pub enum WatchdogCommand {
     /// Request to sync metadata if the client believes that it's outdated.
+    /// i.e. attempting to write to a sealed segment.
     #[allow(dead_code)]
     ScheduleMetadataSync,
+    StartProvider(Arc<dyn LogletProvider>),
 }
