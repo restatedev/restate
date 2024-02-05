@@ -10,6 +10,7 @@
 
 use codederror::CodedError;
 use restate_admin::service::AdminService;
+use restate_bifrost::BifrostService;
 use restate_meta::{FileMetaStorage, MetaService};
 use restate_node_ctrl::service::NodeCtrlService;
 use restate_worker::Worker;
@@ -34,6 +35,12 @@ pub enum ApplicationError {
         #[code]
         restate_worker::Error,
     ),
+    #[error("bifrost failed: {0}")]
+    #[code(unknown)]
+    BifrostService(#[from] restate_bifrost::Error),
+    #[error("bifrost panicked: {0}")]
+    #[code(unknown)]
+    BifrostPanic(tokio::task::JoinError),
     #[error("meta panicked: {0}")]
     #[code(unknown)]
     MetaPanic(tokio::task::JoinError),
@@ -75,6 +82,7 @@ pub struct Application {
     meta: MetaService<FileMetaStorage>,
     admin: AdminService,
     worker: Worker,
+    bifrost: BifrostService,
 }
 
 impl Application {
@@ -83,20 +91,24 @@ impl Application {
         meta: restate_meta::Options,
         worker: restate_worker::Options,
         admin: restate_admin::Options,
+        bifrost: restate_bifrost::Options,
     ) -> Result<Self, BuildError> {
+        // create bifrost service
+        let bifrost = bifrost.build(worker.partitions);
         let meta = meta.build()?;
         // create cluster admin server
-        let admin = admin.build(meta.schemas(), meta.meta_handle());
+        let admin = admin.build(meta.schemas(), meta.meta_handle(), bifrost.handle());
         // create worker service
-        let worker = worker.build(meta.schemas())?;
+        let worker = worker.build(meta.schemas(), bifrost.handle())?;
 
-        let node_ctrl = node_ctrl.build(Some(worker.rocksdb_storage().clone()));
+        let node_ctrl = node_ctrl.build(Some(worker.rocksdb_storage().clone()), bifrost.handle());
 
         Ok(Self {
             node_ctrl,
             admin,
             meta,
             worker,
+            bifrost,
         })
     }
 
@@ -117,6 +129,8 @@ impl Application {
             worker_command_tx,
             Some(storage_query_context),
         ));
+        // Ensures bifrost has initial metadata synced up before starting the worker.
+        let mut bifrost_handle = self.bifrost.start(shutdown_watch.clone()).await?;
         let mut worker_handle = tokio::spawn(self.worker.run(shutdown_watch));
 
         let shutdown = drain.signaled();
@@ -124,7 +138,14 @@ impl Application {
 
         tokio::select! {
             _ = shutdown => {
-                let _ = tokio::join!(shutdown_signal.drain(), admin_handle, meta_handle, worker_handle, node_ctrl_handle);
+                let _ = tokio::join!(
+                            shutdown_signal.drain(),
+                            admin_handle,
+                            meta_handle,
+                            worker_handle,
+                            node_ctrl_handle,
+                            bifrost_handle
+                        );
             },
             result = &mut meta_handle => {
                 result.map_err(ApplicationError::MetaPanic)??;
@@ -141,6 +162,10 @@ impl Application {
             result = &mut node_ctrl_handle => {
                 result.map_err(ApplicationError::NodeCtrlPanic)??;
                 panic!("Unexpected termination of node ctrl service.");
+            },
+            result = &mut bifrost_handle => {
+                result.map_err(ApplicationError::BifrostPanic)??;
+                panic!("Unexpected termination of bifrost service.");
             },
         }
 

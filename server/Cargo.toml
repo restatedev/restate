@@ -18,23 +18,25 @@ console = [
 ]
 options_schema = [
     "dep:schemars",
-    "restate-tracing-instrumentation/options_schema",
     "restate-admin/options_schema",
+    "restate-bifrost/options_schema",
     "restate-meta/options_schema",
     "restate-node-ctrl/options_schema",
+    "restate-tracing-instrumentation/options_schema",
     "restate-worker/options_schema",
 ]
 
 [dependencies]
 restate-admin = { workspace = true }
+restate-bifrost = { workspace = true }
 restate-errors = { workspace = true, features = ["include_doc"] }
 restate-fs-util = { workspace = true }
 restate-meta = { workspace = true }
 restate-node-ctrl = { workspace = true }
+restate-storage-rocksdb = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
-restate-storage-rocksdb = { workspace = true }
 
 clap = { version = "4.1", features = ["derive", "env"] }
 codederror = { workspace = true }
