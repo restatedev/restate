@@ -11,8 +11,10 @@
 mod bifrost;
 mod error;
 mod loglet;
+mod loglets;
 mod metadata;
 mod options;
+mod read_stream;
 mod service;
 mod types;
 mod watchdog;
@@ -22,6 +24,7 @@ use std::collections::HashMap;
 pub use bifrost::Bifrost;
 pub use error::Error;
 pub use options::Options;
+pub use read_stream::LogReadStream;
 pub use service::BifrostService;
 pub use types::*;
 
