@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletProvider};
 use crate::metadata::LogletParams;
-use crate::{AppendAttributes, DataRecord, Error, Options};
+use crate::{Error, LogRecord, Options, Payload};
 
 pub fn default_config() -> serde_json::Value {
     json!( {"path": "target/logs/"})
@@ -46,11 +46,29 @@ pub struct FileLoglet {
 #[async_trait]
 impl LogletBase for FileLoglet {
     type Offset = LogletOffset;
-    async fn append(
+    async fn append(&self, _payload: Payload) -> Result<LogletOffset, Error> {
+        todo!()
+    }
+
+    async fn find_tail(&self) -> Result<Option<LogletOffset>, Error> {
+        todo!()
+    }
+
+    async fn get_trim_point(&self) -> Result<Self::Offset, Error> {
+        todo!()
+    }
+
+    async fn read_next_single(
         &self,
-        _record: DataRecord,
-        _attributes: AppendAttributes,
-    ) -> Result<LogletOffset, Error> {
+        _after: Self::Offset,
+    ) -> Result<LogRecord<Self::Offset>, Error> {
+        todo!()
+    }
+
+    async fn read_next_single_opt(
+        &self,
+        _after: Self::Offset,
+    ) -> Result<Option<LogRecord<Self::Offset>>, Error> {
         todo!()
     }
 }
