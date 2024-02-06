@@ -23,8 +23,8 @@ use crate::metadata::Logs;
 use crate::options::Options;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
 use crate::{
-    create_static_metadata, AppendAttributes, DataRecord, Error, LogId, LogReadStream, Lsn,
-    MaybeRecord, ReadAttributes, Version,
+    create_static_metadata, Error, FindTailAttributes, LogId, LogReadStream, LogRecord, Lsn,
+    Payload, SequenceNumber, Version,
 };
 
 /// Bifrost is Restate's durable interconnect system
@@ -44,27 +44,41 @@ impl Bifrost {
 
     /// Appends a single record to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]
-    pub async fn append(
-        &mut self,
-        log_id: LogId,
-        record: DataRecord,
-        attributes: AppendAttributes,
-    ) -> Result<Lsn, Error> {
-        self.inner.append(log_id, record, attributes).await
+    pub async fn append(&mut self, log_id: LogId, payload: Payload) -> Result<Lsn, Error> {
+        self.inner.append(log_id, payload).await
     }
 
-    #[allow(dead_code)]
-    pub async fn read_single(
+    /// Read the next record after the LSN provided. The `start` indicates the LSN where we will
+    /// read after. This means that the record returned will have a LSN strictly greater than
+    /// `after`. If no records are committed yet after this LSN, this read operation will "wait"
+    /// for such records to appear.
+    pub async fn read_next_single(&self, log_id: LogId, after: Lsn) -> Result<LogRecord, Error> {
+        self.inner.read_next_single(log_id, after).await
+    }
+
+    /// Read the next record after the LSN provided. The `start` indicates the LSN where we will
+    /// read after. This means that the record returned will have a LSN strictly greater than
+    /// `after`. If no records are committed after the LSN, this read operation will return None.
+    pub async fn read_next_single_opt(
         &self,
-        _log_id: LogId,
-        _from: Lsn,
-        _attributes: ReadAttributes,
-    ) -> Result<MaybeRecord, Error> {
-        todo!()
+        log_id: LogId,
+        after: Lsn,
+    ) -> Result<Option<LogRecord>, Error> {
+        self.inner.read_next_single_opt(log_id, after).await
     }
 
     pub fn create_reader(&self, log_id: LogId, from: Lsn) -> LogReadStream {
         LogReadStream::new(self.inner.clone(), log_id, from)
+    }
+
+    /// Finds the current readable tail LSN of a log.  
+    /// Returns `None` if there are no readable records in the log (e.g. trimmed or empty)
+    pub async fn find_tail(
+        &self,
+        log_id: LogId,
+        attributes: FindTailAttributes,
+    ) -> Result<Option<Lsn>, Error> {
+        self.inner.find_tail(log_id, attributes).await
     }
 
     /// The version of the currently loaded metadata
@@ -113,15 +127,38 @@ impl BifrostInner {
 
     /// Appends a single record to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]
-    pub async fn append(
-        &self,
-        log_id: LogId,
-        record: DataRecord,
-        attributes: AppendAttributes,
-    ) -> Result<Lsn, Error> {
+    pub async fn append(&self, log_id: LogId, payload: Payload) -> Result<Lsn, Error> {
         self.fail_if_shutting_down()?;
         let loglet = self.writeable_loglet(log_id).await?;
-        loglet.append(record, attributes).await
+        loglet.append(payload).await
+    }
+
+    pub async fn read_next_single(&self, log_id: LogId, after: Lsn) -> Result<LogRecord, Error> {
+        self.fail_if_shutting_down()?;
+
+        let loglet = self.find_loglet_for_lsn(log_id, after.next()).await?;
+        loglet.read_next_single(after).await
+    }
+
+    pub async fn read_next_single_opt(
+        &self,
+        log_id: LogId,
+        after: Lsn,
+    ) -> Result<Option<LogRecord>, Error> {
+        self.fail_if_shutting_down()?;
+
+        let loglet = self.find_loglet_for_lsn(log_id, after.next()).await?;
+        loglet.read_next_single_opt(after).await
+    }
+
+    pub async fn find_tail(
+        &self,
+        log_id: LogId,
+        _attributes: FindTailAttributes,
+    ) -> Result<Option<Lsn>, Error> {
+        self.fail_if_shutting_down()?;
+        let loglet = self.writeable_loglet(log_id).await?;
+        loglet.find_tail().await
     }
 
     #[inline]
@@ -146,6 +183,8 @@ impl BifrostInner {
         }
         Ok(())
     }
+
+    // --- Helper functions --- //
 
     /// Get the provider for a given kind. If the provider is not yet initialized, it will be
     /// lazily initialized by the watchdog.
@@ -172,8 +211,6 @@ impl BifrostInner {
     }
 
     async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper, Error> {
-        self.fail_if_shutting_down()?;
-
         // Locks the logs mutex.
         let tail_segment = self
             .log_metadata
@@ -187,6 +224,22 @@ impl BifrostInner {
 
         Ok(LogletWrapper::new(tail_segment.base_lsn, loglet))
     }
+
+    async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<LogletWrapper, Error> {
+        // Locks the logs mutex.
+        let segment = self
+            .log_metadata
+            .lock()
+            .unwrap()
+            .find_segment_for_lsn(log_id, lsn)
+            .ok_or(Error::UnknownLogId(log_id))?;
+
+        // Logs lock released here.
+        let provider = self.provider_for(segment.config.kind);
+        let loglet = provider.get_loglet(&segment.config.params).await?;
+
+        Ok(LogletWrapper::new(segment.base_lsn, loglet))
+    }
 }
 
 #[cfg(test)]
@@ -197,7 +250,6 @@ mod tests {
 
     use crate::loglet::ProviderKind;
     use crate::loglets::memory_loglet::MemoryLogletProvider;
-    use crate::{AppendAttributes, DataRecord};
     use googletest::prelude::*;
 
     use tracing::info;
@@ -224,13 +276,7 @@ mod tests {
         let mut max_lsn = Lsn::INVALID;
         for i in 1..=5 {
             // Append a record to memory
-            let lsn = bifrost
-                .append(
-                    LogId::from(0),
-                    DataRecord::default(),
-                    AppendAttributes::default(),
-                )
-                .await?;
+            let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
             info!(%lsn, "Appended record to log");
             assert_eq!(Lsn(i), lsn);
             max_lsn = lsn;
@@ -238,13 +284,7 @@ mod tests {
 
         // Append to a log that doesn't exist.
         let invalid_log = LogId::from(num_partitions + 1);
-        let resp = bifrost
-            .append(
-                invalid_log,
-                DataRecord::default(),
-                AppendAttributes::default(),
-            )
-            .await;
+        let resp = bifrost.append(invalid_log, Payload::default()).await;
 
         assert_that!(resp, pat!(Err(pat!(Error::UnknownLogId(eq(invalid_log))))));
 
@@ -253,11 +293,7 @@ mod tests {
         for _ in 1..=5 {
             // Append a record to memory
             let lsn = cloned_bifrost
-                .append(
-                    LogId::from(0),
-                    DataRecord::default(),
-                    AppendAttributes::default(),
-                )
+                .append(LogId::from(0), Payload::default())
                 .await?;
             info!(%lsn, "Appended record to log");
             assert_eq!(max_lsn + Lsn(1), lsn);
@@ -266,33 +302,23 @@ mod tests {
 
         // Ensure original clone writes to the same underlying loglet.
         let lsn = clean_bifrost_clone
-            .append(
-                LogId::from(0),
-                DataRecord::default(),
-                AppendAttributes::default(),
-            )
+            .append(LogId::from(0), Payload::default())
             .await?;
         assert_eq!(max_lsn + Lsn(1), lsn);
         max_lsn = lsn;
 
         // Writes to a another log doesn't impact existing
-        let lsn = bifrost
-            .append(
-                LogId::from(3),
-                DataRecord::default(),
-                AppendAttributes::default(),
-            )
-            .await?;
+        let lsn = bifrost.append(LogId::from(3), Payload::default()).await?;
         assert_eq!(Lsn(1), lsn);
 
-        let lsn = bifrost
-            .append(
-                LogId::from(0),
-                DataRecord::default(),
-                AppendAttributes::default(),
-            )
-            .await?;
+        let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
         assert_eq!(max_lsn + Lsn(1), lsn);
+        max_lsn = lsn;
+
+        let tail = bifrost
+            .find_tail(LogId::from(0), FindTailAttributes::default())
+            .await?;
+        assert_eq!(max_lsn, tail.unwrap());
 
         // Initiate shutdown
         shutdown_signal.drain().await;
@@ -300,13 +326,7 @@ mod tests {
         assert!(svc_handle.is_finished());
 
         // appends cannot succeed after shutdown
-        let res = bifrost
-            .append(
-                LogId::from(0),
-                DataRecord::default(),
-                AppendAttributes::default(),
-            )
-            .await;
+        let res = bifrost.append(LogId::from(0), Payload::default()).await;
         assert!(matches!(res, Err(Error::Shutdown)));
         // Validate the watchdog has called the provider::start() function.
         assert!(logs_contain("Starting in-memory loglet provider"));
@@ -340,13 +360,7 @@ mod tests {
         let svc_handle = bifrost_svc.start(shutdown_watch).await?;
 
         let start = tokio::time::Instant::now();
-        let lsn = bifrost
-            .append(
-                LogId::from(0),
-                DataRecord::default(),
-                AppendAttributes::default(),
-            )
-            .await?;
+        let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
         assert_eq!(Lsn(1), lsn);
         // The append was properly delayed
         assert_eq!(delay, start.elapsed());
