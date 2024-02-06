@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use enum_map::Enum;
 
 use crate::metadata::LogletParams;
-use crate::{AppendAttributes, DataRecord, Error, Lsn, Options};
+use crate::{Error, LogRecord, Lsn, Options, Payload, SequenceNumber};
 
 /// An enum with the list of supported loglet providers.
 /// For each variant we must have a corresponding implementation of the
@@ -55,16 +55,35 @@ pub fn create_provider(kind: ProviderKind, options: &Options) -> Arc<dyn LogletP
 }
 
 // Inner loglet offset
-#[derive(Debug, Clone, derive_more::From, derive_more::Display)]
-pub struct LogletOffset(u64);
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    derive_more::From,
+    derive_more::Into,
+    derive_more::Display,
+)]
+pub struct LogletOffset(pub(crate) u64);
 
-impl LogletOffset {
-    /// Converts a loglet offset into the virtual address (LSN). The base_lsn is
-    /// the starting address of the segment.
-    pub fn into_lsn(self, base_lsn: Lsn) -> Lsn {
-        // This assumes that this will not overflow. That's not guaranteed to always be the
-        // case but it should be extremely rare that it'd be okay to just wrap in this case.
-        Lsn(base_lsn.0.wrapping_add(self.0))
+impl SequenceNumber for LogletOffset {
+    const MAX: Self = LogletOffset(u64::MAX);
+    const INVALID: Self = LogletOffset(0);
+    const OLDEST: Self = LogletOffset(1);
+
+    fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+
+    fn prev(self) -> Self {
+        if self == Self::INVALID {
+            Self::INVALID
+        } else {
+            Self(std::cmp::max(Self::OLDEST.0, self.0.saturating_sub(1)))
+        }
     }
 }
 
@@ -90,7 +109,7 @@ impl<T> Loglet for T where T: LogletBase<Offset = LogletOffset> {}
 /// Wraps loglets with the base LSN of the segment
 #[derive(Clone)]
 pub struct LogletWrapper {
-    base_lsn: Lsn,
+    pub(crate) base_lsn: Lsn,
     loglet: Arc<dyn Loglet>,
 }
 
@@ -110,24 +129,69 @@ impl LogletWrapper {
 ///   follows the order of append calls.
 #[async_trait]
 pub trait LogletBase: Send + Sync {
-    type Offset;
+    type Offset: SequenceNumber;
 
     /// Append a record to the loglet.
-    async fn append(
+    async fn append(&self, payload: Payload) -> Result<Self::Offset, Error>;
+
+    /// Find the tail of the loglet. If the loglet is empty or have been trimmed, the loglet should
+    /// return `None`.
+    async fn find_tail(&self) -> Result<Option<Self::Offset>, Error>;
+
+    /// The offset of the slot **before** the first readable record (if it exists), or the offset
+    /// before the next slot that will be written to.
+    async fn get_trim_point(&self) -> Result<Self::Offset, Error>;
+
+    /// Read or wait for the record at `from` offset, or the next available record if `from` isn't
+    /// defined for the loglet.
+    async fn read_next_single(&self, after: Self::Offset)
+        -> Result<LogRecord<Self::Offset>, Error>;
+
+    /// Read the next record if it's been committed, otherwise, return None without waiting.
+    async fn read_next_single_opt(
         &self,
-        record: DataRecord,
-        attributes: AppendAttributes,
-    ) -> Result<Self::Offset, Error>;
+        after: Self::Offset,
+    ) -> Result<Option<LogRecord<Self::Offset>>, Error>;
 }
 
 #[async_trait]
 impl LogletBase for LogletWrapper {
     type Offset = Lsn;
 
-    async fn append(&self, record: DataRecord, attributes: AppendAttributes) -> Result<Lsn, Error> {
-        let offset = self.loglet.append(record, attributes).await?;
+    async fn append(&self, payload: Payload) -> Result<Lsn, Error> {
+        let offset = self.loglet.append(payload).await?;
         // Return the LSN given the loglet offset.
-        Ok(offset.into_lsn(self.base_lsn))
+        Ok(self.base_lsn.offset_by(offset))
+    }
+
+    async fn find_tail(&self) -> Result<Option<Lsn>, Error> {
+        let offset = self.loglet.find_tail().await?;
+        Ok(offset.map(|o| self.base_lsn.offset_by(o)))
+    }
+
+    async fn get_trim_point(&self) -> Result<Self::Offset, Error> {
+        let offset = self.loglet.get_trim_point().await?;
+        Ok(self.base_lsn.offset_by(offset))
+    }
+
+    async fn read_next_single(&self, after: Lsn) -> Result<LogRecord<Lsn>, Error> {
+        // convert LSN to loglet offset
+        let offset = after.into_offset(self.base_lsn);
+        self.loglet
+            .read_next_single(offset)
+            .await
+            .map(|record| record.with_base_lsn(self.base_lsn))
+    }
+
+    async fn read_next_single_opt(
+        &self,
+        after: Self::Offset,
+    ) -> Result<Option<LogRecord<Self::Offset>>, Error> {
+        let offset = after.into_offset(self.base_lsn);
+        self.loglet
+            .read_next_single_opt(offset)
+            .await
+            .map(|maybe_record| maybe_record.map(|record| record.with_base_lsn(self.base_lsn)))
     }
 }
 
