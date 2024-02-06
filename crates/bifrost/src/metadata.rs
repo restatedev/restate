@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use crate::loglet::ProviderKind;
 use crate::types::Version;
-use crate::{LogId, Lsn};
+use crate::{LogId, Lsn, SequenceNumber};
 
 /// Log metadata is the map of logs known to the system with the corresponding chain.
 /// Metadata updates are versioned and atomic.
@@ -29,9 +29,6 @@ pub struct Logs {
 /// the chain is a list of segments in (from Lsn) order.
 #[derive(Debug, Clone)]
 pub struct Chain {
-    // NOTE: Hopefully at some point we will use the nightly Cursor API for
-    // effecient cursor seeks in the chain (or use nightly channel)
-    // Reference: https://github.com/rust-lang/rust/issues/107540
     pub(crate) chain: BTreeMap<Lsn, Arc<LogletConfig>>,
 }
 
@@ -40,6 +37,7 @@ pub struct Segment {
     pub(crate) base_lsn: Lsn,
     pub(crate) config: Arc<LogletConfig>,
 }
+
 /// A segment in the chain of loglet instances.
 #[derive(Debug, Clone)]
 pub struct LogletConfig {
@@ -81,6 +79,26 @@ impl Logs {
                 base_lsn: *base_lsn,
                 config: Arc::clone(config),
             })
+    }
+
+    pub fn find_segment_for_lsn(&self, log_id: LogId, _lsn: Lsn) -> Option<Segment> {
+        // [Temporary implementation] At the moment, we have the hard assumption
+        // that the chain contains a single segment so we always return this segment.
+        //
+        // NOTE: Hopefully at some point we will use the nightly Cursor API for
+        // effecient cursor seeks in the chain (or use nightly channel)
+        // Reference: https://github.com/rust-lang/rust/issues/107540
+        //
+        self.logs.get(&log_id).map(|chain| {
+            let config = chain
+                .chain
+                .get(&Lsn::OLDEST)
+                .expect("Chain should always have one segment");
+            Segment {
+                base_lsn: Lsn::OLDEST,
+                config: Arc::clone(config),
+            }
+        })
     }
 }
 
