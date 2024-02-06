@@ -13,12 +13,16 @@ use thiserror::Error;
 use crate::types::SealReason;
 use crate::{LogId, Lsn};
 
-#[derive(Error, Debug, Clone)]
-pub enum OperationError {
+#[derive(Error, Debug)]
+pub enum Error {
     #[error("log '{0}' is sealed")]
     LogSealed(LogId, SealReason),
     #[error("unknown log '{0}")]
     UnknownLogId(LogId),
     #[error("invalid log sequence number '{0}")]
     InvalidLsn(Lsn),
+    #[error("cannot fetch log metadata")]
+    MetadataSync,
+    #[error("operation failed due to an ongoing shutdown")]
+    Shutdown,
 }

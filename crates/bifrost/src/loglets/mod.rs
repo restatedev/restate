@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#[derive(Debug, Clone)]
-pub struct Bifrost {}
-
-impl Bifrost {}
-
-static_assertions::assert_impl_all!(Bifrost: Send, Sync);
+pub mod file_loglet;
+#[cfg(test)]
+pub mod memory_loglet;

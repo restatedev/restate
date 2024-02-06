@@ -8,7 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, derive_more::Display)]
+// TODO: Remove after fleshing the code out.
+#![allow(dead_code)]
+
+use bytes::Bytes;
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::Into,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct LogId(u64);
 
 /// Index of an entry in the log
@@ -20,8 +39,22 @@ impl LogId {
 }
 
 /// The log sequence number.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, derive_more::Display)]
-pub struct Lsn(u64);
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    serde::Serialize,
+    serde::Deserialize,
+    derive_more::Into,
+    derive_more::Add,
+    derive_more::Display,
+)]
+pub struct Lsn(pub(crate) u64);
 
 /// Index of an entry in the log
 impl Lsn {
@@ -34,6 +67,41 @@ impl Lsn {
     /// Guaranteed to be less than or equal to the oldest possible sequence
     /// number in a log. This is useful when seeking to the head of a log.
     pub const OLDEST: Lsn = Lsn(1);
+
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+
+    pub fn prev(self) -> Self {
+        if self == Self::INVALID {
+            Self::INVALID
+        } else {
+            Self(std::cmp::max(Self::OLDEST.0, self.0 - 1))
+        }
+    }
+}
+
+/// Log metadata version.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::Into,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[display(fmt = "v{}", _0)]
+pub struct Version(u64);
+
+impl Version {
+    pub const INVALID: Version = Version(0);
 }
 
 /// Details about why a log was sealed
@@ -44,3 +112,32 @@ pub enum SealReason {
     Resharding,
     Other(String),
 }
+
+/// A single entry in the log.
+#[derive(Debug, Clone, Default)]
+pub struct DataRecord {
+    header: Header,
+    payload: Payload,
+}
+
+#[derive(Debug, Clone)]
+pub enum MaybeRecord {
+    TrimGap { until: Lsn },
+    Data(Lsn, DataRecord),
+    Seal(SealReason),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Header {}
+
+/// Owned payload.
+#[derive(Debug, Clone, Default)]
+pub struct Payload {
+    inner: Bytes,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AppendAttributes {}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReadAttributes {}

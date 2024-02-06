@@ -12,6 +12,7 @@ default = []
 options_schema = ["restate-service-client/options_schema", "restate-meta/options_schema"]
 
 [dependencies]
+restate-bifrost = { workspace = true }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }

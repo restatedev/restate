@@ -16,6 +16,12 @@ enum NodeStatus {
 service NodeCtrl {
   // Get identity information from this node.
   rpc GetIdent(google.protobuf.Empty) returns (IdentResponse);
+  // Get the current known version of bifrost metadata on this node
+  rpc GetBifrostVersion(google.protobuf.Empty) returns (BifrostVersion);
+}
+
+message BifrostVersion {
+  uint64 version = 1;
 }
 
 message IdentResponse {
