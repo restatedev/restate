@@ -8,42 +8,57 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod admin;
+pub mod cluster_controller;
 mod options;
-mod worker;
+pub mod worker;
 
 use codederror::CodedError;
 use futures::future::OptionFuture;
 use restate_types::identifiers::NodeId;
+use std::convert::Infallible;
+use std::str::FromStr;
+use std::time::Duration;
+use tokio::task::JoinError;
+use tonic::codegen::http::uri::InvalidUri;
+use tonic::transport::{Channel, Uri};
 use tracing::{info, instrument};
 
-use crate::admin::AdminRole;
+use crate::cluster_controller::ClusterControllerRole;
 use crate::worker::WorkerRole;
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
+use restate_cluster_controller::proto::cluster_controller_client::ClusterControllerClient;
+use restate_cluster_controller::proto::AttachmentRequest;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
+use restate_types::retries::RetryPolicy;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
-    #[error("admin failed: {0}")]
-    Admin(
-        #[from]
-        #[code]
-        admin::Error,
-    ),
     #[error("worker failed: {0}")]
     Worker(
         #[from]
         #[code]
-        worker::Error,
+        worker::WorkerRoleError,
     ),
-    #[error("admin panicked: {0}")]
+    #[error("controller failed: {0}")]
+    Controller(
+        #[from]
+        #[code]
+        cluster_controller::ClusterControllerRoleError,
+    ),
+    #[error("failed to attach to cluster at '{0}': {1}")]
     #[code(unknown)]
-    AdminPanic(tokio::task::JoinError),
-    #[error("worker panicked: {0}")]
+    Attachment(Uri, tonic::Status),
+    #[error("component '{0}' panicked: {1}")]
     #[code(unknown)]
-    WorkerPanic(tokio::task::JoinError),
+    Panic(&'static str, JoinError),
+}
+
+impl Error {
+    fn panic(component: &'static str, err: JoinError) -> Self {
+        Error::Panic(component, err)
+    }
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -52,35 +67,47 @@ pub enum BuildError {
     Worker(
         #[from]
         #[code]
-        worker::BuildError,
+        worker::WorkerRoleBuildError,
     ),
-    #[error("building admin failed: {0}")]
-    Admin(
-        #[from]
-        #[code]
-        admin::BuildError,
-    ),
+    #[error("invalid controller endpoint: {0}")]
+    #[code(unknown)]
+    InvalidControllerEndpoint(#[from] InvalidUri),
 }
 
 pub struct Node {
     node_id: NodeId,
+    cluster_controller_endpoint: Uri,
 
-    admin_role: Option<AdminRole>,
-    worker_role: Option<WorkerRole>,
+    cluster_controller_role: Option<ClusterControllerRole>,
+    worker_role: WorkerRole,
 }
 
 impl Node {
     pub fn new(
         node_id: impl Into<NodeId>,
-        admin_role: Option<Options>,
-        worker_role: Option<Options>,
+        cluster_controller_location: ClusterControllerLocation,
+        options: Options,
     ) -> Result<Self, BuildError> {
-        let admin_role = admin_role.map(AdminRole::try_from).transpose()?;
-        let worker_role = worker_role.map(WorkerRole::try_from).transpose()?;
+        let (cluster_controller_role, cluster_controller_endpoint) =
+            match cluster_controller_location {
+                ClusterControllerLocation::Local => {
+                    let cluster_controller = ClusterControllerRole::try_from(options.clone())
+                        .expect("should be infallible");
+                    let cluster_controller_endpoint =
+                        cluster_controller.controller_endpoint().clone();
+                    (Some(cluster_controller), cluster_controller_endpoint)
+                }
+                ClusterControllerLocation::Remote(controller_endpoint) => {
+                    (None, controller_endpoint.parse()?)
+                }
+            };
+
+        let worker_role = WorkerRole::try_from(options)?;
 
         Ok(Node {
             node_id: node_id.into(),
-            admin_role,
+            cluster_controller_endpoint,
+            cluster_controller_role,
             worker_role,
         })
     }
@@ -88,34 +115,96 @@ impl Node {
     #[instrument(level = "debug", skip_all, fields(node.id = %self.node_id))]
     pub async fn run(self, shutdown_watch: drain::Watch) -> Result<(), Error> {
         let shutdown_signal = shutdown_watch.signaled();
+        tokio::pin!(shutdown_signal);
 
-        let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
+        let (component_shutdown_signal, component_shutdown_watch) = drain::channel();
 
-        let admin_handle: OptionFuture<_> = self
-            .admin_role
-            .map(|admin| admin.run(inner_shutdown_watch.clone()))
+        let mut cluster_controller_handle: OptionFuture<_> = self
+            .cluster_controller_role
+            .map(|cluster_controller| {
+                tokio::spawn(cluster_controller.run(component_shutdown_watch.clone()))
+            })
             .into();
-        let worker_handle: OptionFuture<_> = self
-            .worker_role
-            .map(|worker| worker.run(inner_shutdown_watch))
-            .into();
-        tokio::pin!(admin_handle, worker_handle);
 
         tokio::select! {
+            _ = &mut shutdown_signal => {
+                drop(component_shutdown_watch);
+                let _ = tokio::join!(component_shutdown_signal.drain(), &mut cluster_controller_handle);
+                return Ok(());
+            },
+            Some(cluster_controller_result) = &mut cluster_controller_handle => {
+                cluster_controller_result.map_err(|err| Error::panic("cluster controller role", err))??;
+                panic!("Unexpected termination of cluster controller role.");
+            },
+            attachment_result = Self::attach_node(self.node_id, self.cluster_controller_endpoint) => {
+                attachment_result?
+            }
+        }
+
+        let mut worker_handle = tokio::spawn(self.worker_role.run(component_shutdown_watch));
+
+        tokio::select! {
+            // todo: node should also run the node-ctrl endpoint and forward signal to components
             _ = shutdown_signal => {
-                info!("Shutting down node");
-                tokio::join!(inner_shutdown_signal.drain(), admin_handle, worker_handle);
+                info!("Shutting node down");
+                let _ = tokio::join!(component_shutdown_signal.drain(), worker_handle, cluster_controller_handle);
             },
-            Some(admin_result) = &mut admin_handle => {
-                admin_result?;
-                panic!("Unexpected termination of admin.");
+            worker_result = &mut worker_handle => {
+                worker_result.map_err(|err| Error::panic("worker role", err))??;
+                panic!("Unexpected termination of worker role.");
             },
-            Some(worker_result) = &mut worker_handle => {
-                worker_result?;
-                panic!("Unexpected termination of worker.");
+            Some(cluster_controller_result) = &mut cluster_controller_handle => {
+                cluster_controller_result.map_err(|err| Error::panic("cluster controller role", err))??;
+                panic!("Unexpected termination of cluster controller role.");
             },
         }
 
         Ok(())
+    }
+
+    async fn attach_node(node_id: NodeId, cluster_controller_endpoint: Uri) -> Result<(), Error> {
+        info!("Attach to cluster at '{cluster_controller_endpoint}'");
+        let channel = Channel::builder(cluster_controller_endpoint.clone())
+            .connect_timeout(Duration::from_secs(5))
+            .connect_lazy();
+        let cc_client = ClusterControllerClient::new(channel);
+
+        RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
+            .retry_operation(|| async {
+                cc_client
+                    .clone()
+                    .attach_node(AttachmentRequest {
+                        node_id: Some(node_id.into()),
+                    })
+                    .await
+            })
+            .await
+            .map_err(|err| Error::Attachment(cluster_controller_endpoint, err))?;
+
+        Ok(())
+    }
+}
+
+/// Specifying where the cluster controller runs. Options are:
+///
+/// * Local: Spawning the controller as part of this process
+/// * Remote: The controller runs on a remote host
+#[derive(Debug)]
+pub enum ClusterControllerLocation {
+    Local,
+    Remote(String),
+}
+
+impl FromStr for ClusterControllerLocation {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let result = if s.to_lowercase() == "local" {
+            ClusterControllerLocation::Local
+        } else {
+            ClusterControllerLocation::Remote(s.to_string())
+        };
+
+        Ok(result)
     }
 }

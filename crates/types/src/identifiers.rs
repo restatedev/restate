@@ -68,6 +68,7 @@ pub type EntryIndex = u32;
     Copy,
     Hash,
     derive_more::From,
+    derive_more::Into,
     derive_more::Display,
 )]
 #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]

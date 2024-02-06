@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package dev.restate.cluster_controller;
+
+service ClusterController {
+  // Attach node at cluster controller
+  rpc AttachNode(AttachmentRequest) returns (AttachmentResponse);
+}
+
+// todo: move into shared proto file
+message NodeId {
+  uint32 id = 1;
+}
+
+message AttachmentRequest {
+  NodeId node_id = 1;
+}
+
+message AttachmentResponse {
+}
+
+

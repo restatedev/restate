@@ -20,4 +20,5 @@ pub struct Options {
     pub node_ctrl: restate_node_ctrl::Options,
     pub admin: restate_admin::Options,
     pub bifrost: restate_bifrost::Options,
+    pub cluster_controller: restate_cluster_controller::Options,
 }

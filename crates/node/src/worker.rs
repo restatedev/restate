@@ -18,7 +18,7 @@ use restate_worker::Worker;
 use tracing::info;
 
 #[derive(Debug, thiserror::Error, CodedError)]
-pub enum Error {
+pub enum WorkerRoleError {
     #[error("admin service failed: {0}")]
     AdminService(
         #[from]
@@ -64,7 +64,7 @@ pub enum Error {
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
-pub enum BuildError {
+pub enum WorkerRoleBuildError {
     #[error("failed creating worker: {0}")]
     Worker(
         #[from]
@@ -88,7 +88,7 @@ pub struct WorkerRole {
 }
 
 impl WorkerRole {
-    pub async fn run(mut self, shutdown_watch: drain::Watch) -> Result<(), Error> {
+    pub async fn run(mut self, shutdown_watch: drain::Watch) -> Result<(), WorkerRoleError> {
         let shutdown_signal = shutdown_watch.signaled();
 
         let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
@@ -117,27 +117,27 @@ impl WorkerRole {
 
         tokio::select! {
             _ = shutdown_signal => {
-                info!("Stopping worker");
+                info!("Stopping worker role");
                 let _ = tokio::join!(inner_shutdown_signal.drain(), admin_handle, meta_handle, worker_handle, node_ctrl_handle, bifrost_handle);
             },
             result = &mut meta_handle => {
-                result.map_err(Error::MetaPanic)??;
+                result.map_err(WorkerRoleError::MetaPanic)??;
                 panic!("Unexpected termination of meta.");
             },
             result = &mut admin_handle => {
-                result.map_err(Error::AdminPanic)??;
+                result.map_err(WorkerRoleError::AdminPanic)??;
                 panic!("Unexpected termination of admin.");
             },
             result = &mut worker_handle => {
-                result.map_err(Error::WorkerPanic)??;
+                result.map_err(WorkerRoleError::WorkerPanic)??;
                 panic!("Unexpected termination of worker.");
             }
             result = &mut node_ctrl_handle => {
-                result.map_err(Error::NodeCtrlPanic)??;
+                result.map_err(WorkerRoleError::NodeCtrlPanic)??;
                 panic!("Unexpected termination of node ctrl service.");
             },
             result = &mut bifrost_handle => {
-                result.map_err(Error::BifrostPanic)??;
+                result.map_err(WorkerRoleError::BifrostPanic)??;
                 panic!("Unexpected termination of bifrost service.");
             },
         }
@@ -147,7 +147,7 @@ impl WorkerRole {
 }
 
 impl TryFrom<Options> for WorkerRole {
-    type Error = BuildError;
+    type Error = WorkerRoleBuildError;
 
     fn try_from(options: Options) -> Result<Self, Self::Error> {
         let bifrost = options.bifrost.build(options.worker.partitions);

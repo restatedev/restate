@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use enumset::{EnumSet, EnumSetType};
 use figment::providers::{Env, Format, Serialized, Yaml};
 use figment::Figment;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::serde_as;
 use std::ops::Div;
 use std::path::Path;
@@ -27,6 +26,7 @@ pub use restate_meta::{
     Options as MetaOptions, OptionsBuilder as MetaOptionsBuilder,
     OptionsBuilderError as MetaOptionsBuilderError,
 };
+use restate_node::ClusterControllerLocation;
 pub use restate_node_ctrl::Options as NodeCtrlOptions;
 use restate_storage_rocksdb::TableKind;
 pub use restate_tracing_instrumentation::{
@@ -66,11 +66,15 @@ pub struct Configuration {
     pub observability: restate_tracing_instrumentation::Options,
     pub tokio_runtime: crate::rt::Options,
 
-    #[cfg_attr(feature = "options_schema", schemars(with = "Vec<Role>"))]
-    pub roles: EnumSet<Role>,
-
     #[serde(flatten)]
     pub node: restate_node::Options,
+
+    /// Configures the cluster controller endpoint. Options are:
+    ///
+    /// * "Local": Cluster controller will be run locally
+    /// * [Address]: Specifying the remote address of the cluster controller
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
+    pub cluster_controller_endpoint: ClusterControllerEndpoint,
 }
 
 impl Default for Configuration {
@@ -80,7 +84,7 @@ impl Default for Configuration {
             shutdown_grace_period: Duration::from_secs(60).into(),
             observability: Default::default(),
             tokio_runtime: Default::default(),
-            roles: Role::Admin | Role::Worker,
+            cluster_controller_endpoint: ClusterControllerEndpoint::Local,
             node: Default::default(),
         }
     }
@@ -150,6 +154,8 @@ impl Configuration {
     ) -> Result<Self, Error> {
         let figment = Figment::from(Serialized::defaults(default_configuration));
 
+        println!("{:#?}", figment);
+
         // get memory options separately, and use them to set certain defaults
         let memory: MemoryOptions = Figment::from(Serialized::defaults(MemoryOptions::default()))
             .merge(Env::prefixed("MEMORY_").split("__"))
@@ -196,14 +202,48 @@ impl Configuration {
     }
 }
 
-#[derive(Debug, Deserialize, EnumSetType, Serialize)]
-#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[enumset(serialize_repr = "list")]
-pub enum Role {
-    #[serde(alias = "admin")]
-    Admin,
-    #[serde(alias = "worker")]
-    Worker,
-    // Controller,
-    // Loglet,
+#[derive(Debug, Clone)]
+pub enum ClusterControllerEndpoint {
+    Local,
+    Remote(String),
+}
+
+impl Serialize for ClusterControllerEndpoint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            ClusterControllerEndpoint::Local => serializer.serialize_str("local"),
+            ClusterControllerEndpoint::Remote(address) => serializer.serialize_str(address),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ClusterControllerEndpoint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+
+        let result = if value.to_lowercase() == "local" {
+            ClusterControllerEndpoint::Local
+        } else {
+            ClusterControllerEndpoint::Remote(value)
+        };
+
+        Ok(result)
+    }
+}
+
+impl From<ClusterControllerEndpoint> for ClusterControllerLocation {
+    fn from(value: ClusterControllerEndpoint) -> Self {
+        match value {
+            ClusterControllerEndpoint::Local => ClusterControllerLocation::Local,
+            ClusterControllerEndpoint::Remote(address) => {
+                ClusterControllerLocation::Remote(address)
+            }
+        }
+    }
 }

@@ -9,12 +9,13 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars", "restate-admin/options_schema", "restate-meta/options_schema", "restate-node-ctrl/options_schema", "restate-worker/options_schema"]
+options_schema = ["dep:schemars", "restate-admin/options_schema", "restate-meta/options_schema", "restate-node-ctrl/options_schema", "restate-worker/options_schema", "restate-cluster-controller/options_schema"]
 
 [dependencies]
 
 restate-admin = { workspace = true }
 restate-bifrost = { workspace = true }
+restate-cluster-controller = { workspace = true }
 restate-meta = { workspace = true }
 restate-node-ctrl = { workspace = true }
 restate-types = { workspace = true }
@@ -24,8 +25,10 @@ codederror = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
+http = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tonic = { workspace = true }
 tracing = { workspace = true }

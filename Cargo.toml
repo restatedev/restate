@@ -36,6 +36,7 @@ restate-consensus = { path = "crates/consensus" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
 restate-futures-util = { path = "crates/futures-util" }
+restate-cluster-controller = { path = "crates/cluster-controller" }
 restate-ingress-dispatcher = { path = "crates/ingress-dispatcher" }
 restate-ingress-grpc = { path = "crates/ingress-grpc" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
@@ -129,6 +130,7 @@ tokio = { version = "1.29", default-features = false, features = [ "rt-multi-thr
 tokio-util = { version = "0.7.10" }
 tokio-stream = "0.1.14"
 tonic = { version = "0.10.2", default-features = false }
+tonic-reflection = { version = "0.10.2" }
 tonic-build = "0.10.2"
 tower = "0.4"
 tower-http = { version = "0.4", default-features = false }
