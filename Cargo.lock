@@ -6534,7 +6534,7 @@ dependencies = [
 [[package]]
 name = "tikv-jemalloc-sys"
 version = "0.5.4+5.3.0-patched"
-source = "git+https://github.com/restatedev/jemallocator?branch=musl-targets#2277a229bdcf602c5642a21efd430b8ea58d7687"
+source = "git+https://github.com/restatedev/jemallocator?rev=f7adfca5aff272b43fd3ad896252b57fbbd9c72a#f7adfca5aff272b43fd3ad896252b57fbbd9c72a"
 dependencies = [
  "cc",
  "libc",
@@ -6543,7 +6543,7 @@ dependencies = [
 [[package]]
 name = "tikv-jemallocator"
 version = "0.5.4"
-source = "git+https://github.com/restatedev/jemallocator?branch=musl-targets#2277a229bdcf602c5642a21efd430b8ea58d7687"
+source = "git+https://github.com/restatedev/jemallocator?rev=f7adfca5aff272b43fd3ad896252b57fbbd9c72a#f7adfca5aff272b43fd3ad896252b57fbbd9c72a"
 dependencies = [
  "libc",
  "tikv-jemalloc-sys",
