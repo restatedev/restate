@@ -19,14 +19,19 @@ use bytestring::ByteString;
 use opentelemetry_api::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceState};
 use opentelemetry_api::Context;
 use std::fmt;
+use std::str::FromStr;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+#[cfg(feature = "serde")]
+use serde_with::{serde_as, FromInto};
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry_api::trace::TraceId;
 
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ServiceInvocation {
     pub fid: FullInvocationId,
     pub method_name: ByteString,
@@ -64,6 +69,7 @@ impl ServiceInvocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MaybeFullInvocationId {
     Partial(InvocationId),
     Full(FullInvocationId),
@@ -110,6 +116,7 @@ impl fmt::Display for MaybeFullInvocationId {
 
 /// Representing a response for a caller
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InvocationResponse {
     /// Depending on the source of the response, this can be either the full identifier, or the short one.
     pub id: MaybeFullInvocationId,
@@ -118,6 +125,7 @@ pub struct InvocationResponse {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ResponseResult {
     Success(Bytes),
     Failure(UserErrorCode, ByteString),
@@ -165,6 +173,7 @@ pub enum ServiceInvocationResponseSink {
 
 /// Source of an invocation
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Source {
     Ingress,
     Service(FullInvocationId),
@@ -175,8 +184,11 @@ pub enum Source {
 /// This struct contains the relevant span information for a [`ServiceInvocation`].
 /// It can be used to create related spans, such as child spans,
 /// using [`ServiceInvocationSpanContext::as_linked`] or [`ServiceInvocationSpanContext::as_parent`].
+#[cfg_attr(feature = "serde", cfg_eval::cfg_eval, serde_as)]
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ServiceInvocationSpanContext {
+    #[cfg_attr(feature = "serde", serde_as(as = "FromInto<SpanContextDef>"))]
     span_context: SpanContext,
     cause: Option<SpanRelationCause>,
 }
@@ -357,10 +369,15 @@ impl From<ServiceInvocationSpanContext> for SpanContext {
 }
 
 /// Span relation cause, used to propagate tracing contexts.
+#[cfg_attr(feature = "serde", cfg_eval::cfg_eval, serde_as)]
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SpanRelationCause {
-    Parent(SpanId),
-    Linked(TraceId, SpanId),
+    Parent(#[cfg_attr(feature = "serde", serde_as(as = "FromInto<SpanIdDef>"))] SpanId),
+    Linked(
+        #[cfg_attr(feature = "serde", serde_as(as = "FromInto<TraceIdDef>"))] TraceId,
+        #[cfg_attr(feature = "serde", serde_as(as = "FromInto<SpanIdDef>"))] SpanId,
+    ),
 }
 
 #[derive(Default)]
@@ -394,6 +411,7 @@ impl SpanRelation {
 
 /// Message to terminate an invocation.
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InvocationTermination {
     pub maybe_fid: MaybeFullInvocationId,
     pub flavor: TerminationFlavor,
@@ -417,11 +435,78 @@ impl InvocationTermination {
 
 /// Flavor of the termination. Can be kill (hard stop) or graceful cancel.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TerminationFlavor {
     /// hard termination, no clean up
     Kill,
     /// graceful termination allowing the invocation to clean up
     Cancel,
+}
+
+// A hack to allow spancontext to be serialized.
+// Details in https://github.com/open-telemetry/opentelemetry-rust/issues/576#issuecomment-1253396100
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+struct SpanContextDef {
+    trace_id: [u8; 16],
+    span_id: [u8; 8],
+    trace_flags: u8,
+    is_remote: bool,
+    trace_state: String,
+}
+
+// Provide a conversion to construct the remote type.
+impl From<SpanContextDef> for SpanContext {
+    fn from(def: SpanContextDef) -> Self {
+        SpanContext::new(
+            TraceId::from_bytes(def.trace_id),
+            SpanId::from_bytes(def.span_id),
+            TraceFlags::new(def.trace_flags),
+            def.is_remote,
+            TraceState::from_str(&def.trace_state).unwrap(),
+        )
+    }
+}
+
+impl From<SpanContext> for SpanContextDef {
+    fn from(ctx: SpanContext) -> Self {
+        Self {
+            trace_id: ctx.trace_id().to_bytes(),
+            span_id: ctx.span_id().to_bytes(),
+            trace_flags: ctx.trace_flags().to_u8(),
+            is_remote: ctx.is_remote(),
+            trace_state: ctx.trace_state().header(),
+        }
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+struct SpanIdDef([u8; 8]);
+
+impl From<SpanIdDef> for SpanId {
+    fn from(def: SpanIdDef) -> Self {
+        SpanId::from_bytes(def.0)
+    }
+}
+
+impl From<SpanId> for SpanIdDef {
+    fn from(def: SpanId) -> Self {
+        SpanIdDef(def.to_bytes())
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+struct TraceIdDef([u8; 16]);
+
+impl From<TraceIdDef> for TraceId {
+    fn from(def: TraceIdDef) -> Self {
+        TraceId::from_bytes(def.0)
+    }
+}
+
+impl From<TraceId> for TraceIdDef {
+    fn from(def: TraceId) -> Self {
+        TraceIdDef(def.to_bytes())
+    }
 }
 
 #[cfg(any(test, feature = "mocks"))]

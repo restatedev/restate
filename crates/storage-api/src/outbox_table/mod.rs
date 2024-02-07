@@ -18,6 +18,7 @@ use std::ops::Range;
 
 /// Types of outbox messages.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OutboxMessage {
     /// Service invocation to send to another partition processor
     ServiceInvocation(ServiceInvocation),

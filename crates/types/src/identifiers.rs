@@ -71,6 +71,7 @@ pub type EntryIndex = u32;
     derive_more::Display,
 )]
 #[display(fmt = "N{}", _0)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NodeId(u32);
 
 /// Unique Id of a deployment.

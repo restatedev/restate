@@ -19,6 +19,7 @@ use std::fmt::{Display, Formatter};
 ///
 /// represents an external request to mutate a user's state.
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExternalStateMutation {
     pub service_id: ServiceId,
     pub version: Option<String>,
