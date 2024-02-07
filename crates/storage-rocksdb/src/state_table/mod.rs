@@ -72,6 +72,23 @@ fn delete_user_state<S: StorageAccess>(
     storage.delete_key(&key);
 }
 
+fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) -> Result<()> {
+    let prefix_key = StateKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone());
+
+    let keys = storage.for_each_key_value_in_place(TableScan::KeyPrefix(prefix_key), |k, _| {
+        TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k)))
+    });
+
+    for k in keys {
+        storage.delete_cf(State, &k?);
+    }
+
+    Ok(())
+}
+
 fn get_user_state<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
@@ -147,6 +164,13 @@ impl<'a> StateTable for RocksDBTransaction<'a> {
     ) -> impl Future<Output = ()> + Send {
         delete_user_state(self, service_id, state_key);
         future::ready(())
+    }
+
+    fn delete_all_user_state(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = Result<()>> + Send {
+        future::ready(delete_all_user_state(self, service_id))
     }
 }
 

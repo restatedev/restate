@@ -12,11 +12,13 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use restate_storage_api::StorageError;
+use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::future::Future;
 use std::pin::pin;
 use tempfile::tempdir;
 use tokio_stream::StreamExt;
@@ -28,8 +30,7 @@ mod state_table_test;
 mod status_table_test;
 mod timer_table_test;
 
-#[tokio::test]
-async fn test_read_write() -> anyhow::Result<()> {
+fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
     //
     // create a rocksdb storage from options
     //
@@ -51,6 +52,16 @@ async fn test_read_write() -> anyhow::Result<()> {
     let (signal, watch) = drain::channel();
     let writer_join_handle = writer.run(watch);
 
+    (rocksdb, async {
+        signal.drain().await;
+        writer_join_handle.await.unwrap().unwrap();
+    })
+}
+
+#[tokio::test]
+async fn test_read_write() {
+    let (rocksdb, close) = storage_test_environment();
+
     //
     // run the tests
     //
@@ -61,9 +72,7 @@ async fn test_read_write() -> anyhow::Result<()> {
     status_table_test::run_tests(rocksdb.clone()).await;
     timer_table_test::run_tests(rocksdb).await;
 
-    signal.drain().await;
-    writer_join_handle.await??;
-    Ok(())
+    close.await;
 }
 
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
