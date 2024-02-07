@@ -1330,6 +1330,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "cfg_eval"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45565fc9416b9896014f5732ac776f810ee53a66730c17e4020c3ec064a8f88f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.48",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5052,6 +5063,7 @@ dependencies = [
  "futures",
  "restate-errors",
  "restate-types",
+ "serde",
  "thiserror",
  "tokio",
 ]
@@ -5413,6 +5425,7 @@ dependencies = [
  "bytestring",
  "futures-util",
  "restate-types",
+ "serde",
  "thiserror",
 ]
 
@@ -5602,6 +5615,7 @@ dependencies = [
  "base64 0.21.7",
  "bytes",
  "bytestring",
+ "cfg_eval",
  "derive_more",
  "http",
  "humantime",

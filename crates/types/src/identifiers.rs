@@ -44,7 +44,7 @@ pub type PeerId = u64;
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[display(fmt = "e{}", _0)]
-pub struct LeaderEpoch(u64);
+pub struct LeaderEpoch(u32);
 impl LeaderEpoch {
     pub const INITIAL: Self = Self(1);
 }
@@ -71,6 +71,7 @@ pub type EntryIndex = u32;
     derive_more::Display,
 )]
 #[display(fmt = "N{}", _0)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NodeId(u32);
 
 /// Unique Id of a deployment.
