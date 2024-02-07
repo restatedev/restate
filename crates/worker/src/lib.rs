@@ -32,8 +32,10 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
-use restate_types::identifiers::{IngressDispatcherId, PartitionKey, PeerId};
+use restate_types::identifiers::{PartitionKey, PeerId};
 use restate_types::message::PeerTarget;
+use restate_types::time::MillisSinceEpoch;
+use restate_types::GenerationalNodeId;
 use std::ops::RangeInclusive;
 use tokio::join;
 use tokio::sync::mpsc;
@@ -257,17 +259,12 @@ impl Worker {
         let num_partition_processors = opts.partitions;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
-        let external_client_ingress_dispatcher_id = IngressDispatcherId(
-            "127.0.0.1:0"
-                .parse()
-                .expect("Loopback address needs to be valid."),
-        );
+        // TODO: Get my node ID from controller (given a node name).
+        // This generation is temporary
+        let generation: u32 = MillisSinceEpoch::now().as_u64() as u32;
+        let my_node_id = GenerationalNodeId::new(1, generation);
 
-        let ingress_dispatcher_service = IngressDispatcherService::new(
-            // TODO replace with proper network address once we have a distributed runtime
-            external_client_ingress_dispatcher_id,
-            channel_size,
-        );
+        let ingress_dispatcher_service = IngressDispatcherService::new(my_node_id, channel_size);
 
         // ingress_grpc
         let external_client_ingress = ingress_grpc.build(

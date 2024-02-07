@@ -203,7 +203,7 @@ impl OutboxMessageExt for OutboxMessage {
             }),
             ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
                 OutboxMessage::IngressResponse {
-                    ingress_dispatcher_id,
+                    to_node_id: ingress_dispatcher_id,
                     full_invocation_id: callee.clone(),
                     response: result,
                 }

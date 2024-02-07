@@ -29,7 +29,7 @@ pub enum OutboxMessage {
 
     /// Service response to send to an ingress as a response to an external client request
     IngressResponse {
-        node_id: GenerationalNodeId,
+        to_node_id: GenerationalNodeId,
         full_invocation_id: FullInvocationId,
         response: ResponseResult,
     },

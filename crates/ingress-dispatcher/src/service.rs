@@ -370,9 +370,8 @@ mod tests {
     async fn test_closed_handler() {
         let (output_tx, _output_rx) = mpsc::channel(2);
 
-        let my_node_id = GenerationalNodeId::new();
-        let ingress_dispatcher =
-            Service::new(IngressDispatcherId("127.0.0.1:0".parse().unwrap()), 1);
+        let my_node_id = GenerationalNodeId::new(1, 1);
+        let ingress_dispatcher = Service::new(my_node_id, 1);
         let input_sender = ingress_dispatcher.create_ingress_dispatcher_input_sender();
         let command_sender = ingress_dispatcher.create_ingress_request_sender();
 
@@ -411,8 +410,8 @@ mod tests {
     async fn idempotent_invoke() {
         let (output_tx, mut output_rx) = mpsc::channel(2);
 
-        let ingress_dispatcher =
-            Service::new(IngressDispatcherId("127.0.0.1:0".parse().unwrap()), 1);
+        let my_node_id = GenerationalNodeId::new(1, 1);
+        let ingress_dispatcher = Service::new(my_node_id, 1);
         let handler_tx = ingress_dispatcher.create_ingress_request_sender();
         let network_tx = ingress_dispatcher.create_ingress_dispatcher_input_sender();
 

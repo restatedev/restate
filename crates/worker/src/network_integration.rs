@@ -37,9 +37,10 @@ mod ingress_integration {
     use crate::partition::shuffle;
     use restate_network::{ConsensusOrShuffleTarget, TargetConsensusOrShuffle, TargetShuffle};
     use restate_types::identifiers::WithPartitionKey;
-    use restate_types::identifiers::{IngressDispatcherId, PartitionKey, PeerId};
+    use restate_types::identifiers::{PartitionKey, PeerId};
     use restate_types::invocation::ServiceInvocation;
     use restate_types::message::{AckKind, MessageIndex};
+    use restate_types::GenerationalNodeId;
 
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
         for restate_ingress_dispatcher::IngressDispatcherOutput
@@ -48,12 +49,12 @@ mod ingress_integration {
             match self {
                 restate_ingress_dispatcher::IngressDispatcherOutput::Invocation {
                     service_invocation,
-                    ingress_dispatcher_id,
+                    from_node_id: ingress_dispatcher_id,
                     deduplication_source,
                     msg_index,
                 } => ConsensusOrShuffleTarget::Consensus(IngressToConsensus {
                     service_invocation,
-                    ingress_dispatcher_id,
+                    from_node_id: ingress_dispatcher_id,
                     deduplication_source,
                     msg_index,
                 }),
@@ -73,7 +74,7 @@ mod ingress_integration {
     #[derive(Debug)]
     pub(crate) struct IngressToConsensus {
         service_invocation: ServiceInvocation,
-        ingress_dispatcher_id: IngressDispatcherId,
+        from_node_id: GenerationalNodeId,
         deduplication_source: Option<String>,
         msg_index: MessageIndex,
     }
@@ -88,7 +89,7 @@ mod ingress_integration {
         fn from(ingress_to_consensus: IngressToConsensus) -> Self {
             let IngressToConsensus {
                 service_invocation,
-                ingress_dispatcher_id,
+                from_node_id,
                 deduplication_source,
                 msg_index,
             } = ingress_to_consensus;
@@ -98,12 +99,12 @@ mod ingress_integration {
             match deduplication_source {
                 None => partition::StateMachineAckCommand::ack(
                     cmd,
-                    partition::StateMachineAckTarget::ingress(ingress_dispatcher_id, msg_index),
+                    partition::StateMachineAckTarget::ingress(from_node_id, msg_index),
                 ),
                 Some(source_id) => partition::StateMachineAckCommand::dedup(
                     cmd,
                     partition::StateMachineDeduplicationSource::ingress(
-                        ingress_dispatcher_id,
+                        from_node_id,
                         source_id,
                         msg_index,
                     ),

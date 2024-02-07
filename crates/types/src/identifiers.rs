@@ -684,12 +684,6 @@ mod mocks {
     use rand::distributions::{Alphanumeric, DistString};
     use rand::Rng;
 
-    impl IngressDispatcherId {
-        pub fn mock() -> Self {
-            Self("127.0.0.1:8080".parse().unwrap())
-        }
-    }
-
     impl InvocationId {
         pub fn mock_random() -> Self {
             Self::new(

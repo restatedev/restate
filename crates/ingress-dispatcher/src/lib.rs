@@ -17,6 +17,7 @@ use restate_types::errors::InvocationError;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, PeerId};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext, SpanRelation};
 use restate_types::message::{AckKind, MessageIndex};
+use restate_types::GenerationalNodeId;
 use std::fmt::Display;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
