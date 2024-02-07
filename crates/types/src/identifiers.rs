@@ -106,10 +106,6 @@ impl Default for SubscriptionId {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, derive_more::Display, derive_more::FromStr)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct IngressDispatcherId(pub std::net::SocketAddr);
-
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.
 pub type PartitionKey = u64;

@@ -20,8 +20,8 @@ use restate_pb::restate::internal::{
     idempotent_invoke_response, IdempotentInvokeRequest, IdempotentInvokeResponse,
 };
 use restate_types::identifiers::FullInvocationId;
-use restate_types::identifiers::IngressDispatcherId;
 use restate_types::invocation::{ServiceInvocationResponseSink, Source};
+use restate_types::GenerationalNodeId;
 use std::collections::HashMap;
 use std::future::poll_fn;
 use tokio::select;
@@ -40,7 +40,7 @@ pub struct Error(#[from] PipeError);
 ///
 /// To interact with the loop use [IngressDispatcherInputSender] and [ResponseRequester].
 pub struct Service {
-    ingress_dispatcher_id: IngressDispatcherId,
+    my_node_id: GenerationalNodeId,
 
     // This channel can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
@@ -54,12 +54,12 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new(ingress_dispatcher_id: IngressDispatcherId, channel_size: usize) -> Service {
+    pub fn new(my_node_id: GenerationalNodeId, channel_size: usize) -> Service {
         let (input_tx, input_rx) = mpsc::channel(channel_size);
         let (server_tx, server_rx) = mpsc::unbounded_channel();
 
         Service {
-            ingress_dispatcher_id,
+            my_node_id,
             input_rx,
             server_rx,
             input_tx,
@@ -75,7 +75,7 @@ impl Service {
         debug!("Running the ResponseDispatcher");
 
         let Service {
-            ingress_dispatcher_id,
+            my_node_id,
             server_rx,
             input_rx,
             ..
@@ -94,7 +94,7 @@ impl Service {
 
         tokio::pin!(pipe);
 
-        let mut handler = DispatcherLoopHandler::new(ingress_dispatcher_id);
+        let mut handler = DispatcherLoopHandler::new(my_node_id);
 
         loop {
             select! {
@@ -175,7 +175,7 @@ impl MapResponseAction {
 }
 
 struct DispatcherLoopHandler {
-    ingress_dispatcher_id: IngressDispatcherId,
+    my_node_id: GenerationalNodeId,
     msg_index: MessageIndex,
 
     // This map can be unbounded, because we enforce concurrency limits in the ingress
@@ -186,9 +186,9 @@ struct DispatcherLoopHandler {
 }
 
 impl DispatcherLoopHandler {
-    fn new(ingress_dispatcher_id: IngressDispatcherId) -> Self {
+    fn new(my_node_id: GenerationalNodeId) -> Self {
         Self {
-            ingress_dispatcher_id,
+            my_node_id,
             msg_index: 0,
             waiting_responses: HashMap::new(),
             waiting_for_acks: HashMap::default(),
@@ -265,9 +265,7 @@ impl DispatcherLoopHandler {
         } = ingress_request;
 
         let response_sink = if matches!(request_mode, IngressRequestMode::RequestResponse(_)) {
-            Some(ServiceInvocationResponseSink::Ingress(
-                self.ingress_dispatcher_id,
-            ))
+            Some(ServiceInvocationResponseSink::Ingress(self.my_node_id))
         } else {
             None
         };
@@ -344,7 +342,7 @@ impl DispatcherLoopHandler {
 
         IngressDispatcherOutput::service_invocation(
             service_invocation,
-            self.ingress_dispatcher_id,
+            self.my_node_id,
             dedup_source,
             msg_index,
         )
@@ -365,7 +363,6 @@ mod tests {
     use test_log::test;
 
     use restate_test_util::{let_assert, matchers::*};
-    use restate_types::identifiers::IngressDispatcherId;
     use restate_types::identifiers::ServiceId;
     use restate_types::invocation::SpanRelation;
 
@@ -373,6 +370,7 @@ mod tests {
     async fn test_closed_handler() {
         let (output_tx, _output_rx) = mpsc::channel(2);
 
+        let my_node_id = GenerationalNodeId::new();
         let ingress_dispatcher =
             Service::new(IngressDispatcherId("127.0.0.1:0".parse().unwrap()), 1);
         let input_sender = ingress_dispatcher.create_ingress_dispatcher_input_sender();
