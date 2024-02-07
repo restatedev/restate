@@ -327,6 +327,13 @@ where
         super::state_machine::StateStorage::load_state(self, service_id, key).await
     }
 
+    async fn load_state_keys(&mut self, service_id: &ServiceId) -> StorageResult<Vec<Bytes>> {
+        super::state_machine::StateStorage::get_all_user_states(self, service_id)
+            .map(|res| res.map(|v| v.0))
+            .try_collect()
+            .await
+    }
+
     async fn load_completion_result(
         &mut self,
         service_id: &ServiceId,

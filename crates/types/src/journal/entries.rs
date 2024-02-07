@@ -27,6 +27,7 @@ pub enum Entry {
     GetState(GetStateEntry),
     SetState(SetStateEntry),
     ClearState(ClearStateEntry),
+    GetStateKeys(GetStateKeysEntry),
     ClearAllState,
 
     // Syscalls
@@ -65,6 +66,10 @@ impl Entry {
 
     pub fn clear_state(key: impl Into<Bytes>) -> Self {
         Entry::ClearState(ClearStateEntry { key: key.into() })
+    }
+
+    pub fn get_state_keys(value: Option<GetStateKeysResult>) -> Self {
+        Entry::GetStateKeys(GetStateKeysEntry { value })
     }
 
     pub fn clear_all_state() -> Self {
@@ -143,6 +148,7 @@ pub enum EntryType {
     GetState,
     SetState,
     ClearState,
+    GetStateKeys,
     ClearAllState,
     Sleep,
     Invoke,
@@ -183,6 +189,7 @@ mod private {
 
     pub trait Sealed {}
     impl Sealed for GetStateEntry {}
+    impl Sealed for GetStateKeysEntry {}
     impl Sealed for SleepEntry {}
     impl Sealed for InvokeEntry {}
     impl Sealed for AwakeableEntry {}
@@ -226,6 +233,23 @@ pub struct SetStateEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClearStateEntry {
     pub key: Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetStateKeysResult {
+    Result(Vec<Bytes>),
+    Failure(UserErrorCode, ByteString),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetStateKeysEntry {
+    pub value: Option<GetStateKeysResult>,
+}
+
+impl CompletableEntry for GetStateKeysEntry {
+    fn is_completed(&self) -> bool {
+        self.value.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
