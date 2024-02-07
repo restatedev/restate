@@ -67,8 +67,8 @@ impl Bifrost {
         self.inner.read_next_single_opt(log_id, after).await
     }
 
-    pub fn create_reader(&self, log_id: LogId, from: Lsn) -> LogReadStream {
-        LogReadStream::new(self.inner.clone(), log_id, from)
+    pub fn create_reader(&self, log_id: LogId, after: Lsn) -> LogReadStream {
+        LogReadStream::new(self.inner.clone(), log_id, after)
     }
 
     /// Finds the current readable tail LSN of a log.  
