@@ -5249,6 +5249,7 @@ dependencies = [
  "restate-cluster-controller",
  "restate-meta",
  "restate-node-ctrl",
+ "restate-storage-rocksdb",
  "restate-types",
  "restate-worker",
  "schemars",

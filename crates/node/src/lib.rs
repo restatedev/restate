@@ -30,6 +30,7 @@ pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 use restate_cluster_controller::proto::cluster_controller_client::ClusterControllerClient;
 use restate_cluster_controller::proto::AttachmentRequest;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
+use restate_node_ctrl::service::NodeCtrlService;
 use restate_types::retries::RetryPolicy;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
 
@@ -46,6 +47,12 @@ pub enum Error {
         #[from]
         #[code]
         cluster_controller::ClusterControllerRoleError,
+    ),
+    #[error("node ctrl service failed: {0}")]
+    NodeCtrlService(
+        #[from]
+        #[code]
+        restate_node_ctrl::Error,
     ),
     #[error("failed to attach to cluster at '{0}': {1}")]
     #[code(unknown)]
@@ -80,6 +87,7 @@ pub struct Node {
 
     cluster_controller_role: Option<ClusterControllerRole>,
     worker_role: WorkerRole,
+    node_ctrl: NodeCtrlService,
 }
 
 impl Node {
@@ -102,13 +110,19 @@ impl Node {
                 }
             };
 
-        let worker_role = WorkerRole::try_from(options)?;
+        let worker_role = WorkerRole::try_from(options.clone())?;
+
+        let node_ctrl = options.node_ctrl.build(
+            Some(worker_role.rocksdb_storage().clone()),
+            worker_role.bifrost_handle(),
+        );
 
         Ok(Node {
             node_id: node_id.into(),
             cluster_controller_endpoint,
             cluster_controller_role,
             worker_role,
+            node_ctrl,
         })
     }
 
@@ -119,6 +133,8 @@ impl Node {
 
         let (component_shutdown_signal, component_shutdown_watch) = drain::channel();
 
+        let mut node_ctrl_handle =
+            tokio::spawn(self.node_ctrl.run(component_shutdown_watch.clone()));
         let mut cluster_controller_handle: OptionFuture<_> = self
             .cluster_controller_role
             .map(|cluster_controller| {
@@ -129,12 +145,16 @@ impl Node {
         tokio::select! {
             _ = &mut shutdown_signal => {
                 drop(component_shutdown_watch);
-                let _ = tokio::join!(component_shutdown_signal.drain(), &mut cluster_controller_handle);
+                let _ = tokio::join!(component_shutdown_signal.drain(), cluster_controller_handle, node_ctrl_handle);
                 return Ok(());
             },
             Some(cluster_controller_result) = &mut cluster_controller_handle => {
                 cluster_controller_result.map_err(|err| Error::panic("cluster controller role", err))??;
                 panic!("Unexpected termination of cluster controller role.");
+            },
+            result = &mut node_ctrl_handle => {
+                result.map_err(|err| Error::panic("node-ctrl", err))??;
+                panic!("Unexpected termination of node ctrl service.");
             },
             attachment_result = Self::attach_node(self.node_id, self.cluster_controller_endpoint) => {
                 attachment_result?
@@ -144,10 +164,9 @@ impl Node {
         let mut worker_handle = tokio::spawn(self.worker_role.run(component_shutdown_watch));
 
         tokio::select! {
-            // todo: node should also run the node-ctrl endpoint and forward signal to components
             _ = shutdown_signal => {
                 info!("Shutting node down");
-                let _ = tokio::join!(component_shutdown_signal.drain(), worker_handle, cluster_controller_handle);
+                let _ = tokio::join!(component_shutdown_signal.drain(), worker_handle, cluster_controller_handle, node_ctrl_handle);
             },
             worker_result = &mut worker_handle => {
                 worker_result.map_err(|err| Error::panic("worker role", err))??;
@@ -156,6 +175,10 @@ impl Node {
             Some(cluster_controller_result) = &mut cluster_controller_handle => {
                 cluster_controller_result.map_err(|err| Error::panic("cluster controller role", err))??;
                 panic!("Unexpected termination of cluster controller role.");
+            },
+            result = &mut node_ctrl_handle => {
+                result.map_err(|err| Error::panic("node-ctrl", err))??;
+                panic!("Unexpected termination of node ctrl service.");
             },
         }
 
