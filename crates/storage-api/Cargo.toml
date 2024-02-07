@@ -9,6 +9,7 @@ publish = false
 
 [features]
 mocks = []
+serde = ["dep:serde"]
 
 [dependencies]
 restate-types = { workspace = true }
@@ -17,4 +18,5 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 futures-util = { workspace = true }
+serde = { workspace = true, optional = true }
 thiserror = { workspace = true }

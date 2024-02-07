@@ -18,6 +18,7 @@ use std::fmt::Display;
 /// representing all the error codes visible to the user code. Note, it does not include the Ok
 /// variant because only error cases are contained.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(u16)]
 pub enum UserErrorCode {
     /// The operation was cancelled.
@@ -126,6 +127,7 @@ pub enum IdDecodeError {
 
 /// Error codes used by Restate to carry Restate specific error codes.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(u16)]
 pub enum RestateErrorCode {
     // The invocation cannot be replayed due to the mismatch between the journal and the actual code.
@@ -152,6 +154,7 @@ impl From<RestateErrorCode> for u32 {
 
 /// Error codes representing the possible error variants that can arise during an invocation.
 #[derive(Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum InvocationErrorCode {
     User(UserErrorCode),
     Restate(RestateErrorCode),
@@ -226,6 +229,7 @@ impl From<RestateErrorCode> for InvocationErrorCode {
 
 /// This struct represents errors arisen when processing a service invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InvocationError {
     code: InvocationErrorCode,
     message: Cow<'static, str>,
