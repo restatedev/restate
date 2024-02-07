@@ -534,6 +534,12 @@ where
         Ok(())
     }
 
+    async fn clear_all_state(&mut self, service_id: &ServiceId) -> StorageResult<()> {
+        self.assert_partition_key(service_id);
+        self.inner.delete_all_user_state(service_id).await?;
+        Ok(())
+    }
+
     async fn store_timer(&mut self, timer_key: TimerKey, timer: Timer) -> StorageResult<()> {
         self.inner
             .add_timer(self.partition_id, &timer_key, timer)

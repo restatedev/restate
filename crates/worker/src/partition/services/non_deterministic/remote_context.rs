@@ -396,7 +396,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     "Unexpected PollInputStream entry received",
                 ))
             }
-            PlainEntryHeader::Sleep { .. } => {
+            PlainEntryHeader::Sleep { .. } | PlainEntryHeader::ClearAllState { .. } => {
                 return Err(InvocationError::new(
                     UserErrorCode::Unimplemented,
                     "Unsupported entry type",

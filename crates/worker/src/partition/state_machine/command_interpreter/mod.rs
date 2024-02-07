@@ -1086,6 +1086,13 @@ where
                     key,
                 );
             }
+            EnrichedEntryHeader::ClearAllState { .. } => {
+                effects.clear_all_state(
+                    full_invocation_id.service_id.clone(),
+                    InvocationId::from(&full_invocation_id),
+                    invocation_metadata.journal_metadata.span_context.clone(),
+                );
+            }
             EnrichedEntryHeader::Sleep { is_completed, .. } => {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
                 let_assert!(

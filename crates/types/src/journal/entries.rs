@@ -27,6 +27,7 @@ pub enum Entry {
     GetState(GetStateEntry),
     SetState(SetStateEntry),
     ClearState(ClearStateEntry),
+    ClearAllState,
 
     // Syscalls
     Sleep(SleepEntry),
@@ -64,6 +65,10 @@ impl Entry {
 
     pub fn clear_state(key: impl Into<Bytes>) -> Self {
         Entry::ClearState(ClearStateEntry { key: key.into() })
+    }
+
+    pub fn clear_all_state() -> Self {
+        Entry::ClearAllState
     }
 
     pub fn invoke(request: InvokeRequest, result: Option<EntryResult>) -> Self {
@@ -138,6 +143,7 @@ pub enum EntryType {
     GetState,
     SetState,
     ClearState,
+    ClearAllState,
     Sleep,
     Invoke,
     BackgroundInvoke,
