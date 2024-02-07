@@ -18,6 +18,7 @@ use std::cmp::Ordering;
 use std::future::Future;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TimerKey {
     pub timestamp: u64,
     pub invocation_uuid: InvocationUuid,
@@ -40,6 +41,7 @@ impl Ord for TimerKey {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Timer {
     CompleteSleepEntry(ServiceId),
     Invoke(ServiceId, ServiceInvocation),

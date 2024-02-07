@@ -20,6 +20,7 @@ pub type EnrichedRawEntry = RawEntry<InvokeEnrichmentResult, AwakeableEnrichment
 
 /// Result of the target service resolution
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InvokeEnrichmentResult {
     pub invocation_uuid: InvocationUuid,
     pub service_key: Bytes,
@@ -29,6 +30,7 @@ pub struct InvokeEnrichmentResult {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AwakeableEnrichmentResult {
     pub invocation_id: InvocationId,
     pub entry_index: EntryIndex,
