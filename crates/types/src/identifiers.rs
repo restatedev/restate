@@ -58,22 +58,6 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 // Just an alias
 pub type EntryIndex = u32;
 
-#[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    Ord,
-    PartialOrd,
-    Clone,
-    Copy,
-    Hash,
-    derive_more::From,
-    derive_more::Display,
-)]
-#[display(fmt = "N{}", _0)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct NodeId(u32);
-
 /// Unique Id of a deployment.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
 #[cfg_attr(

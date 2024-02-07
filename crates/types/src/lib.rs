@@ -13,8 +13,7 @@
 mod base62_util;
 mod id_util;
 mod macros;
-
-pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
+mod node_id;
 
 pub mod deployment;
 pub mod errors;
@@ -26,3 +25,6 @@ pub mod retries;
 pub mod state_mut;
 pub mod subscription;
 pub mod time;
+
+pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
+pub use node_id::*;
