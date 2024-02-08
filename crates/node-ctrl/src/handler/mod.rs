@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod cluster_controller;
+pub mod node_ctrl;
+
 use std::fmt::Write;
 use std::iter::once;
 
@@ -17,10 +20,6 @@ use metrics_exporter_prometheus::formatting;
 use restate_storage_rocksdb::{TableKind, DB};
 use rocksdb::statistics::{Histogram, Ticker};
 use rocksdb::AsColumnFamilyRef;
-use tonic::{Request, Response, Status};
-
-use restate_node_ctrl_proto::proto::node_ctrl_server::NodeCtrl;
-use restate_node_ctrl_proto::proto::{BifrostVersion, IdentResponse, NodeStatus};
 
 use crate::prometheus_helpers::{
     format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
@@ -229,38 +228,6 @@ pub async fn rocksdb_stats(State(state): State<HandlerState>) -> impl IntoRespon
 
     let options = db.options();
     options.get_statistics().unwrap_or_default()
-}
-
-// -- GRPC Service Handlers --
-pub struct Handler {
-    #[allow(dead_code)]
-    state: HandlerState,
-}
-
-impl Handler {
-    pub fn new(state: HandlerState) -> Self {
-        Self { state }
-    }
-}
-
-#[async_trait::async_trait]
-impl NodeCtrl for Handler {
-    async fn get_ident(&self, _request: Request<()>) -> Result<Response<IdentResponse>, Status> {
-        // STUB IMPLEMENTATION
-        return Ok(Response::new(IdentResponse {
-            status: NodeStatus::Alive.into(),
-        }));
-    }
-
-    async fn get_bifrost_version(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<BifrostVersion>, Status> {
-        let version = self.state.bifrost.metadata_version();
-        return Ok(Response::new(BifrostVersion {
-            version: version.into(),
-        }));
-    }
 }
 
 // -- Local Helpers

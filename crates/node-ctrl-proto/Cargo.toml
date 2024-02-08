@@ -11,6 +11,8 @@ publish = false
 default = []
 
 [dependencies]
+restate-types = { workspace = true }
+
 anyhow = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 prost = { workspace = true }

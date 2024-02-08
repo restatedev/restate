@@ -13,15 +13,19 @@ use std::net::SocketAddr;
 use axum::routing::get;
 use codederror::CodedError;
 use futures::FutureExt;
+use http::Uri;
 use restate_bifrost::Bifrost;
+use restate_cluster_controller::ClusterControllerHandle;
 use restate_storage_rocksdb::RocksDBStorage;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+use crate::handler::cluster_controller::ClusterControllerHandler;
+use crate::handler::node_ctrl::NodeCtrlHandler;
+use restate_node_ctrl_proto::cluster_controller::cluster_controller_server::ClusterControllerServer;
 use restate_node_ctrl_proto::proto::node_ctrl_server::NodeCtrlServer;
-use restate_node_ctrl_proto::proto::FILE_DESCRIPTOR_SET;
+use restate_node_ctrl_proto::{cluster_controller, proto};
 
-use crate::handler::Handler;
 use crate::multiplex::MultiplexService;
 use crate::state::HandlerStateBuilder;
 use crate::Options;
@@ -47,14 +51,21 @@ pub struct NodeCtrlService {
     opts: Options,
     rocksdb_storage: Option<RocksDBStorage>,
     bifrost: Bifrost,
+    cluster_controller: Option<ClusterControllerHandle>,
 }
 
 impl NodeCtrlService {
-    pub fn new(opts: Options, rocksdb_storage: Option<RocksDBStorage>, bifrost: Bifrost) -> Self {
+    pub fn new(
+        opts: Options,
+        rocksdb_storage: Option<RocksDBStorage>,
+        bifrost: Bifrost,
+        cluster_controller: Option<ClusterControllerHandle>,
+    ) -> Self {
         Self {
             opts,
             rocksdb_storage,
             bifrost,
+            cluster_controller,
         }
     }
 
@@ -85,16 +96,32 @@ impl NodeCtrlService {
             .fallback(handler_404);
 
         // -- GRPC Service Setup
-        let tonic_reflection_service = tonic_reflection::server::Builder::configure()
-            .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+        let reflection_service_builder = if self.cluster_controller.is_some() {
+            tonic_reflection::server::Builder::configure()
+                .register_encoded_file_descriptor_set(cluster_controller::FILE_DESCRIPTOR_SET)
+        } else {
+            tonic_reflection::server::Builder::configure()
+        };
+
+        let tonic_reflection_service = reflection_service_builder
+            .register_encoded_file_descriptor_set(proto::FILE_DESCRIPTOR_SET)
             .build()?;
 
         // Build the NodeCtrl grpc service
-        let grpc = tonic::transport::Server::builder()
-            .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
-            .add_service(NodeCtrlServer::new(Handler::new(shared_state)))
-            .add_service(tonic_reflection_service)
-            .into_service();
+        let grpc = if self.cluster_controller.is_some() {
+            tonic::transport::Server::builder()
+                .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
+                .add_service(NodeCtrlServer::new(NodeCtrlHandler::new(shared_state)))
+                .add_service(ClusterControllerServer::new(ClusterControllerHandler::new()))
+                .add_service(tonic_reflection_service)
+                .into_service()
+        } else {
+            tonic::transport::Server::builder()
+                .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
+                .add_service(NodeCtrlServer::new(NodeCtrlHandler::new(shared_state)))
+                .add_service(tonic_reflection_service)
+                .into_service()
+        };
 
         // Multiplex both grpc and http based on content-type
         let service = MultiplexService::new(router, grpc);
@@ -118,6 +145,15 @@ impl NodeCtrlService {
             .with_graceful_shutdown(drain.signaled().map(|_| ()))
             .await
             .map_err(Error::Running)
+    }
+
+    pub fn endpoint(&self) -> Uri {
+        Uri::builder()
+            .scheme("http")
+            .authority(self.opts.bind_address.to_string())
+            .path_and_query("/")
+            .build()
+            .expect("should be valid uri")
     }
 }
 

@@ -11,6 +11,7 @@
 use std::net::SocketAddr;
 
 use restate_bifrost::Bifrost;
+use restate_cluster_controller::ClusterControllerHandle;
 use restate_storage_rocksdb::RocksDBStorage;
 use serde_with::serde_as;
 
@@ -53,7 +54,8 @@ impl Options {
         self,
         rocksdb_storage: Option<RocksDBStorage>,
         bifrost: Bifrost,
+        cluster_controller: Option<ClusterControllerHandle>,
     ) -> NodeCtrlService {
-        NodeCtrlService::new(self, rocksdb_storage, bifrost)
+        NodeCtrlService::new(self, rocksdb_storage, bifrost, cluster_controller)
     }
 }

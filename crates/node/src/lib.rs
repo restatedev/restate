@@ -27,10 +27,10 @@ use crate::cluster_controller::ClusterControllerRole;
 use crate::worker::WorkerRole;
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
-use restate_cluster_controller::proto::cluster_controller_client::ClusterControllerClient;
-use restate_cluster_controller::proto::AttachmentRequest;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_node_ctrl::service::NodeCtrlService;
+use restate_node_ctrl_proto::cluster_controller::cluster_controller_client::ClusterControllerClient;
+use restate_node_ctrl_proto::cluster_controller::AttachmentRequest;
 use restate_types::retries::RetryPolicy;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
 
@@ -96,26 +96,32 @@ impl Node {
         cluster_controller_location: ClusterControllerLocation,
         options: Options,
     ) -> Result<Self, BuildError> {
-        let (cluster_controller_role, cluster_controller_endpoint) =
-            match cluster_controller_location {
-                ClusterControllerLocation::Local => {
-                    let cluster_controller = ClusterControllerRole::try_from(options.clone())
-                        .expect("should be infallible");
-                    let cluster_controller_endpoint =
-                        cluster_controller.controller_endpoint().clone();
-                    (Some(cluster_controller), cluster_controller_endpoint)
-                }
-                ClusterControllerLocation::Remote(controller_endpoint) => {
-                    (None, controller_endpoint.parse()?)
-                }
-            };
+        let cluster_controller_role = if let ClusterControllerLocation::Local =
+            cluster_controller_location
+        {
+            Some(ClusterControllerRole::try_from(options.clone()).expect("should be infallible"))
+        } else {
+            None
+        };
 
         let worker_role = WorkerRole::try_from(options.clone())?;
 
         let node_ctrl = options.node_ctrl.build(
             Some(worker_role.rocksdb_storage().clone()),
             worker_role.bifrost_handle(),
+            cluster_controller_role
+                .as_ref()
+                .map(|cluster_controller| cluster_controller.handle()),
         );
+
+        let cluster_controller_endpoint =
+            if let ClusterControllerLocation::Remote(cluster_controller_address) =
+                cluster_controller_location
+            {
+                cluster_controller_address.parse()?
+            } else {
+                node_ctrl.endpoint()
+            };
 
         Ok(Node {
             node_id: node_id.into(),
