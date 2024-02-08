@@ -21,6 +21,7 @@ pub mod identifiers;
 pub mod invocation;
 pub mod journal;
 pub mod message;
+pub mod nodes_config;
 pub mod retries;
 pub mod state_mut;
 pub mod subscription;
