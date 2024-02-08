@@ -11,11 +11,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use restate_types::logs::Payload;
 use serde_json::json;
 
 use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletProvider};
 use crate::metadata::LogletParams;
-use crate::{Error, LogRecord, Options, Payload};
+use crate::{Error, LogRecord, Options};
 
 pub fn default_config() -> serde_json::Value {
     json!( {"path": "target/logs/"})
