@@ -11,136 +11,34 @@
 // TODO: Remove after fleshing the code out.
 #![allow(dead_code)]
 
-use bytes::Bytes;
-
 use crate::loglet::LogletOffset;
+use restate_types::logs::{Lsn, Payload, SequenceNumber};
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Hash,
-    Ord,
-    PartialOrd,
-    derive_more::Display,
-    derive_more::From,
-    derive_more::Into,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-pub struct LogId(u64);
-
-/// Index of an entry in the log
-impl LogId {
-    // This is allows the usage of the first 62 bits for log ids while keeping a space for
-    // internal logs as needed. Partitions cannot be larger than 2^62.
-    pub const MAX_PARTITION_LOG: LogId = LogId((1 << 62) - 1);
-    pub const MIN: LogId = LogId(0);
-}
-
-/// The log sequence number.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Hash,
-    Ord,
-    PartialOrd,
-    serde::Serialize,
-    serde::Deserialize,
-    derive_more::Into,
-    derive_more::From,
-    derive_more::Add,
-    derive_more::Display,
-)]
-pub struct Lsn(pub(crate) u64);
-
-impl Lsn {
+pub(crate) trait LsnExt: SequenceNumber {
     /// Converts a loglet offset into the virtual address (LSN).
-    pub(crate) fn offset_by<S: SequenceNumber>(self, offset: S) -> Self {
+    fn offset_by<S: SequenceNumber>(self, offset: S) -> Self {
         // This assumes that this will not overflow. That's not guaranteed to always be the
         // case but it should be extremely rare that it'd be okay to just wrap in this case.
         //
         // We subtract from OLDEST because loglets start their offset from 1, not 0.
         // 1 is the oldest valid offset within a loglet, 0 is an invalid offset.
         debug_assert!(offset != S::INVALID);
-        Self(self.0.wrapping_add(offset.into()) - S::OLDEST.into())
+        let self_raw: u64 = self.into();
+        let offset_raw: u64 = offset.into();
+
+        Self::from(self_raw.wrapping_add(offset_raw) - S::OLDEST.into())
     }
 
     /// Convert an LSN back to a loglet offset given a base_lsn.
-    pub(crate) fn into_offset(self, base_lsn: Lsn) -> LogletOffset {
-        LogletOffset(self.0.saturating_sub(base_lsn.0) + LogletOffset::OLDEST.0)
+    fn into_offset(self, base_lsn: Lsn) -> LogletOffset {
+        let base_lsn_raw: u64 = base_lsn.into();
+        let self_raw: u64 = self.into();
+        let oldest_offset: u64 = LogletOffset::OLDEST.into();
+        LogletOffset(self_raw.saturating_sub(base_lsn_raw) + oldest_offset)
     }
 }
 
-impl SequenceNumber for Lsn {
-    /// The maximum possible sequence number, this is useful when creating a read stream
-    /// with an open ended tail.
-    const MAX: Self = Lsn(u64::MAX);
-    /// 0 is not a valid sequence number. This sequence number represents invalid position
-    /// in the log, or that the log has been that has been trimmed.
-    const INVALID: Self = Lsn(0);
-    /// Guaranteed to be less than or equal to the oldest possible sequence
-    /// number in a log. This is useful when seeking to the head of a log.
-    const OLDEST: Self = Lsn(1);
-
-    fn next(self) -> Self {
-        Self(self.0 + 1)
-    }
-
-    fn prev(self) -> Self {
-        if self == Self::INVALID {
-            Self::INVALID
-        } else {
-            Self(std::cmp::max(Self::OLDEST.0, self.0.saturating_sub(1)))
-        }
-    }
-}
-
-/// Log metadata version.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Hash,
-    Ord,
-    PartialOrd,
-    derive_more::Display,
-    derive_more::From,
-    derive_more::Into,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[display(fmt = "v{}", _0)]
-pub struct Version(u64);
-
-impl Version {
-    pub const INVALID: Version = Version(0);
-}
-
-pub trait SequenceNumber
-where
-    Self: Sized + Into<u64> + From<u64> + Eq + PartialEq + Ord + PartialOrd,
-{
-    /// The maximum possible sequence number, this is useful when creating a read stream
-    const MAX: Self;
-    /// Not a valid sequence number. This sequence number represents invalid position
-    /// in the log, or that the log has been that has been trimmed.
-    const INVALID: Self;
-
-    /// Guaranteed to be less than or equal to the oldest possible sequence
-    /// number in a log. This is useful when seeking to the head of a log.
-    const OLDEST: Self;
-
-    fn next(self) -> Self;
-    fn prev(self) -> Self;
-}
+impl LsnExt for Lsn {}
 
 /// Details about why a log was sealed
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -214,29 +112,6 @@ impl<S: SequenceNumber> Record<S> {
 #[derive(Debug, Clone)]
 pub struct TrimGap<S: SequenceNumber> {
     pub until: S,
-}
-
-/// Owned payload.
-#[derive(Debug, Clone, Default, derive_more::From, derive_more::Into)]
-pub struct Payload(Bytes);
-
-impl From<&str> for Payload {
-    fn from(value: &str) -> Self {
-        Payload(Bytes::copy_from_slice(value.as_bytes()))
-    }
-}
-
-impl From<String> for Payload {
-    fn from(value: String) -> Self {
-        Payload(Bytes::from(value))
-    }
-}
-
-impl Payload {
-    #[cfg(test)]
-    pub fn into_string(&self) -> String {
-        String::from_utf8(self.0.to_vec()).unwrap()
-    }
 }
 
 #[derive(Debug, Clone, Default)]

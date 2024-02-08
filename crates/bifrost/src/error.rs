@@ -10,8 +10,9 @@
 
 use thiserror::Error;
 
+use restate_types::logs::{LogId, Lsn};
+
 use crate::types::SealReason;
-use crate::{LogId, Lsn};
 
 #[derive(Error, Debug)]
 pub enum Error {
