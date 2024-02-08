@@ -25,6 +25,7 @@ pub use bifrost::Bifrost;
 pub use error::Error;
 pub use options::Options;
 pub use read_stream::LogReadStream;
+use restate_types::logs::{LogId, LogsVersion};
 pub use service::BifrostService;
 pub use types::*;
 
@@ -43,5 +44,5 @@ pub(crate) fn create_static_metadata(opts: &Options, num_partitions: u64) -> Log
         log_chain.insert(LogId::from(i), Chain::new(opts.default_provider, config));
     });
 
-    Logs::new(Version::from(1), log_chain)
+    Logs::new(LogsVersion::from(1), log_chain)
 }
