@@ -15,14 +15,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use restate_types::logs::{Payload, SequenceNumber};
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::info;
 
 use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletProvider};
 use crate::metadata::LogletParams;
-use crate::{Error, Payload};
-use crate::{LogRecord, SequenceNumber};
+use crate::Error;
+use crate::LogRecord;
 
 pub fn default_config() -> serde_json::Value {
     serde_json::Value::Null
@@ -297,17 +298,17 @@ mod tests {
         assert_eq!(offset, loglet.get_trim_point().await?.next());
         assert_eq!(LogletOffset::OLDEST, offset);
         assert!(record.is_data());
-        assert_eq!("record1", record.into_payload_unchecked().into_string());
+        assert_eq!(Payload::from("record1"), record.into_payload_unchecked());
 
         // read record 2 (reading next after OLDEST)
         let LogRecord { offset, record } = loglet.read_next_single(offset).await?;
         assert_eq!(LogletOffset(2), offset);
-        assert_eq!("record2", record.into_payload_unchecked().into_string());
+        assert_eq!(Payload::from("record2"), record.into_payload_unchecked());
 
         // read record 3
         let LogRecord { offset, record } = loglet.read_next_single(offset).await?;
         assert_eq!(LogletOffset(3), offset);
-        assert_eq!("record3", record.into_payload_unchecked().into_string());
+        assert_eq!(Payload::from("record3"), record.into_payload_unchecked());
 
         // read from the future returns None
         assert!(loglet
@@ -321,7 +322,7 @@ mod tests {
                 // read future record 4
                 let LogRecord { offset, record } = loglet.read_next_single(LogletOffset(3)).await?;
                 assert_eq!(LogletOffset(4), offset);
-                assert_eq!("record4", record.into_payload_unchecked().into_string());
+                assert_eq!(Payload::from("record4"), record.into_payload_unchecked());
                 Ok(())
             }
         });
@@ -333,7 +334,7 @@ mod tests {
                 // read future record 10
                 let LogRecord { offset, record } = loglet.read_next_single(LogletOffset(9)).await?;
                 assert_eq!(LogletOffset(10), offset);
-                assert_eq!("record10", record.into_payload_unchecked().into_string());
+                assert_eq!(Payload::from("record10"), record.into_payload_unchecked());
                 Ok(())
             }
         });
