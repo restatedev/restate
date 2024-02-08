@@ -22,9 +22,7 @@ use prost::Message;
 use restate_errors::NotRunningError;
 use restate_ingress_dispatcher::{IngressDispatcherInput, IngressDispatcherInputSender};
 use restate_invoker_api::ServiceHandle;
-use restate_types::identifiers::{
-    FullInvocationId, InvocationUuid, PartitionLeaderEpoch, WithPartitionKey,
-};
+use restate_types::identifiers::{FullInvocationId, PartitionLeaderEpoch, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::journal::CompletionResult;
 use restate_types::NodeId;
@@ -173,12 +171,12 @@ where
             Action::NotifyVirtualJournalCompletion {
                 target_service,
                 method_name,
-                invocation_uuid,
+                invocation_id,
                 completion,
             } => {
                 let journal_notification_request = Bytes::from(restate_pb::restate::internal::JournalCompletionNotificationRequest {
                     entry_index: completion.entry_index,
-                    invocation_uuid: invocation_uuid.into(),
+                    invocation_uuid: invocation_id.invocation_uuid().into(),
                     result: Some(match completion.result {
                         CompletionResult::Empty =>
                             restate_pb::restate::internal::journal_completion_notification_request::Result::Empty(()),
@@ -196,7 +194,7 @@ where
                 // We need this to agree on the invocation uuid, which is randomly generated
                 // We could get rid of it if invocation uuids are deterministically generated.
                 let service_invocation = ServiceInvocation::new(
-                    FullInvocationId::with_service_id(target_service, InvocationUuid::new()),
+                    FullInvocationId::generate(target_service),
                     method_name,
                     journal_notification_request,
                     Source::Internal,
@@ -214,15 +212,15 @@ where
             Action::NotifyVirtualJournalKill {
                 target_service,
                 method_name,
-                invocation_uuid,
+                invocation_id,
             } => {
                 // We need this to agree on the invocation uuid, which is randomly generated
                 // We could get rid of it if invocation uuids are deterministically generated.
                 let service_invocation = ServiceInvocation::new(
-                    FullInvocationId::with_service_id(target_service, InvocationUuid::new()),
+                    FullInvocationId::generate(target_service),
                     method_name,
                     restate_pb::restate::internal::KillNotificationRequest {
-                        invocation_uuid: invocation_uuid.into(),
+                        invocation_uuid: invocation_id.invocation_uuid().into(),
                     }
                     .encode_to_vec(),
                     Source::Internal,

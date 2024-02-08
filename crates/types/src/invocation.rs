@@ -170,6 +170,7 @@ impl From<&InvocationError> for ResponseResult {
 pub enum ServiceInvocationResponseSink {
     /// The invocation has been created by a partition processor and is expecting a response.
     PartitionProcessor {
+        // TODO this can be changed to simply InvocationId
         caller: FullInvocationId,
         entry_index: EntryIndex,
     },
@@ -188,6 +189,7 @@ pub enum ServiceInvocationResponseSink {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Source {
     Ingress,
+    // TODO This can be changed to simply InvocationId
     Service(FullInvocationId),
     /// Internal calls for the non-deterministic built-in services
     Internal,

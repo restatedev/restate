@@ -109,10 +109,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             request.argument,
             Source::Service(self.full_invocation_id.clone()),
             Some(ServiceInvocationResponseSink::NewInvocation {
-                target: FullInvocationId::with_service_id(
-                    self.full_invocation_id.service_id.clone(),
-                    InvocationUuid::new(),
-                ),
+                target: FullInvocationId::generate(self.full_invocation_id.service_id.clone()),
                 method: restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME.to_string(),
                 caller_context: Default::default(),
             }),
@@ -170,10 +167,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
 
         // Set response timer
         self.delay_invoke(
-            FullInvocationId::with_service_id(
-                self.full_invocation_id.service_id.clone(),
-                InvocationUuid::new(),
-            ),
+            FullInvocationId::generate(self.full_invocation_id.service_id.clone()),
             restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME.to_string(),
             Bytes::new(),
             Source::Service(self.full_invocation_id.clone()),
@@ -242,10 +236,10 @@ mod tests {
             Bytes::copy_from_slice(b"123456"),
         ));
 
-        let expected_greeter_invocation_fid = FullInvocationId::generate(
+        let expected_greeter_invocation_fid = FullInvocationId::generate(ServiceId::new(
             restate_pb::mocks::GREETER_SERVICE_NAME,
             Bytes::copy_from_slice(b"654321"),
-        );
+        ));
         let expected_req = restate_pb::mocks::greeter::GreetingRequest {
             person: "Francesco".to_string(),
         };

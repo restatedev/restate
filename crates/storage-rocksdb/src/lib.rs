@@ -12,13 +12,14 @@ pub mod codec;
 pub mod deduplication_table;
 pub mod fsm_table;
 pub mod inbox_table;
+pub mod invocation_status_table;
 pub mod journal_table;
 pub mod keys;
 pub mod outbox_table;
 mod owned_iter;
 pub mod scan;
+pub mod service_status_table;
 pub mod state_table;
-pub mod status_table;
 pub mod timer_table;
 mod writer;
 
@@ -27,7 +28,8 @@ use crate::keys::TableKey;
 use crate::scan::{PhysicalScan, TableScan};
 use crate::writer::{Writer, WriterHandle};
 use crate::TableKind::{
-    Deduplication, Inbox, Journal, Outbox, PartitionStateMachine, State, Status, Timers,
+    Deduplication, Inbox, InvocationStatus, Journal, Outbox, PartitionStateMachine, ServiceStatus,
+    State, Timers,
 };
 use bytes::BytesMut;
 use codederror::CodedError;
@@ -57,7 +59,8 @@ pub type DBIteratorTransaction<'b> = DBRawIteratorWithThreadMode<'b, rocksdb::Tr
 type WriteBatch = rocksdb::WriteBatchWithTransaction<true>;
 
 const STATE_TABLE_NAME: &str = "state";
-const STATUS_TABLE_NAME: &str = "status";
+const INVOCATION_STATUS_TABLE_NAME: &str = "invocation_status";
+const SERVICE_STATUS_TABLE_NAME: &str = "service_status";
 const INBOX_TABLE_NAME: &str = "inbox";
 const OUTBOX_TABLE_NAME: &str = "outbox";
 const DEDUP_TABLE_NAME: &str = "dedup";
@@ -88,7 +91,8 @@ pub enum TableScanIterationDecision<R> {
 const fn cf_name(kind: TableKind) -> &'static str {
     match kind {
         State => STATE_TABLE_NAME,
-        Status => STATUS_TABLE_NAME,
+        InvocationStatus => INVOCATION_STATUS_TABLE_NAME,
+        ServiceStatus => SERVICE_STATUS_TABLE_NAME,
         Inbox => INBOX_TABLE_NAME,
         Outbox => OUTBOX_TABLE_NAME,
         Deduplication => DEDUP_TABLE_NAME,
@@ -101,7 +105,8 @@ const fn cf_name(kind: TableKind) -> &'static str {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TableKind {
     State,
-    Status,
+    InvocationStatus,
+    ServiceStatus,
     Inbox,
     Outbox,
     Deduplication,
@@ -118,7 +123,8 @@ impl TableKind {
     pub fn all() -> core::slice::Iter<'static, TableKind> {
         static VARIANTS: &[TableKind] = &[
             State,
-            Status,
+            InvocationStatus,
+            ServiceStatus,
             Inbox,
             Outbox,
             Deduplication,
@@ -398,7 +404,14 @@ impl RocksDBStorage {
             //
             rocksdb::ColumnFamilyDescriptor::new(cf_name(Inbox), cf_options(&opts, cache.clone())),
             rocksdb::ColumnFamilyDescriptor::new(cf_name(State), cf_options(&opts, cache.clone())),
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(Status), cf_options(&opts, cache.clone())),
+            rocksdb::ColumnFamilyDescriptor::new(
+                cf_name(InvocationStatus),
+                cf_options(&opts, cache.clone()),
+            ),
+            rocksdb::ColumnFamilyDescriptor::new(
+                cf_name(ServiceStatus),
+                cf_options(&opts, cache.clone()),
+            ),
             rocksdb::ColumnFamilyDescriptor::new(
                 cf_name(Journal),
                 cf_options(&opts, cache.clone()),

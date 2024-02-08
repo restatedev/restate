@@ -18,11 +18,11 @@ use restate_pb::restate::internal::IdempotentInvokerInvoker;
 use restate_pb::restate::internal::RemoteContextInvoker;
 use restate_pb::restate::IngressInvoker;
 use restate_schema_impl::Schemas;
+use restate_storage_api::invocation_status_table::NotificationTarget;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::status_table::NotificationTarget;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::{InvocationError, UserErrorCode};
-use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationUuid};
+use restate_types::identifiers::{EntryIndex, FullInvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
@@ -145,7 +145,7 @@ impl<'a> ServiceInvoker<'a> {
 #[derive(Clone, Default)]
 struct StateAndJournalTransitions {
     state_entries: HashMap<String, Option<Bytes>>,
-    journal_entries: HashMap<(ServiceId, EntryIndex), EnrichedRawEntry>,
+    journal_entries: HashMap<(InvocationId, EntryIndex), EnrichedRawEntry>,
 }
 
 impl StateAndJournalTransitions {
@@ -165,10 +165,10 @@ impl StateAndJournalTransitions {
         let mut order: Vec<_> = self.journal_entries.keys().cloned().collect();
         order.sort();
         for key in order {
-            let ((service_id, entry_index), journal_entry) =
+            let ((invocation_id, entry_index), journal_entry) =
                 self.journal_entries.remove_entry(&key).unwrap();
             effects.push(BuiltinServiceEffect::StoreEntry {
-                service_id,
+                invocation_id,
                 entry_index,
                 journal_entry,
             });
@@ -191,26 +191,24 @@ struct InvocationContext<'a, S> {
 impl<S: StateReader> InvocationContext<'_, S> {
     async fn load_journal_metadata(
         &mut self,
-        service_id: &ServiceId,
-    ) -> Result<Option<(InvocationUuid, JournalMetadata)>, InvocationError> {
+        invocation_id: &InvocationId,
+    ) -> Result<Option<JournalMetadata>, InvocationError> {
         self.state_reader
-            .read_virtual_journal_metadata(service_id)
+            .read_virtual_journal_metadata(invocation_id)
             .await
             .map_err(InvocationError::internal)
     }
 
     fn create_journal(
         &mut self,
-        service_id: ServiceId,
-        invocation_uuid: InvocationUuid,
+        invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
         completion_notification_target: NotificationTarget,
         kill_notification_target: NotificationTarget,
     ) {
         self.effects_buffer
             .push(BuiltinServiceEffect::CreateJournal {
-                service_id,
-                invocation_uuid,
+                invocation_id,
                 span_context,
                 completion_notification_target,
                 kill_notification_target,
@@ -219,19 +217,19 @@ impl<S: StateReader> InvocationContext<'_, S> {
 
     async fn read_journal_entry(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         entry_index: EntryIndex,
     ) -> Result<Option<EnrichedRawEntry>, InvocationError> {
         Ok(
             if let Some(enriched_entry) = self
                 .state_and_journal_transitions
                 .journal_entries
-                .get(&(service_id.clone(), entry_index))
+                .get(&(invocation_id.clone(), entry_index))
             {
                 Some(enriched_entry.clone())
             } else {
                 self.state_reader
-                    .read_virtual_journal_entry(service_id, entry_index)
+                    .read_virtual_journal_entry(invocation_id, entry_index)
                     .await
                     .map_err(InvocationError::internal)?
             },
@@ -240,19 +238,19 @@ impl<S: StateReader> InvocationContext<'_, S> {
 
     fn store_journal_entry(
         &mut self,
-        service_id: ServiceId,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) {
         self.state_and_journal_transitions
             .journal_entries
-            .insert((service_id, entry_index), journal_entry);
+            .insert((invocation_id, entry_index), journal_entry);
     }
 
-    fn drop_journal(&mut self, service_id: ServiceId, journal_length: EntryIndex) {
+    fn drop_journal(&mut self, invocation_id: &InvocationId, journal_length: EntryIndex) {
         self.state_and_journal_transitions.journal_entries.clear();
         self.effects_buffer.push(BuiltinServiceEffect::DropJournal {
-            service_id,
+            invocation_id: invocation_id.clone(),
             journal_length,
         });
     }
@@ -391,7 +389,6 @@ mod tests {
 
     use crate::partition::services::tests::MockStateReader;
     use futures::future::LocalBoxFuture;
-    use restate_types::identifiers::InvocationUuid;
     use restate_types::GenerationalNodeId;
 
     impl MockStateReader {
@@ -404,13 +401,8 @@ mod tests {
                     BuiltinServiceEffect::ClearState(key) => {
                         self.0.remove(&key.to_string());
                     }
-                    BuiltinServiceEffect::CreateJournal {
-                        span_context,
-                        invocation_uuid,
-                        ..
-                    } => {
+                    BuiltinServiceEffect::CreateJournal { span_context, .. } => {
                         self.1 = Some((
-                            *invocation_uuid,
                             JournalMetadata::new(0, span_context.clone()),
                             Vec::default(),
                         ));
@@ -420,12 +412,12 @@ mod tests {
                         entry_index,
                         ..
                     } => {
-                        let (_, meta, v) = self.1.as_mut().unwrap();
+                        let (meta, v) = self.1.as_mut().unwrap();
                         meta.length += 1;
                         v.insert(*entry_index as usize, journal_entry.clone())
                     }
                     BuiltinServiceEffect::DropJournal { journal_length, .. } => {
-                        assert_eq!(self.1.as_ref().unwrap().1.length, *journal_length);
+                        assert_eq!(self.1.as_ref().unwrap().0.length, *journal_length);
                         self.1 = None
                     }
                     _ => {}
@@ -484,8 +476,7 @@ mod tests {
                 &'fut mut InvocationContext<'fut, MockStateReader>,
             ) -> LocalBoxFuture<'fut, Result<(), InvocationError>>,
         {
-            let fid =
-                FullInvocationId::with_service_id(self.service_id.clone(), InvocationUuid::new());
+            let fid = FullInvocationId::generate(self.service_id.clone());
             let mut out_effects = vec![];
             let mut state_and_journal_transitions = StateAndJournalTransitions::default();
             let mut invocation_ctx = InvocationContext {

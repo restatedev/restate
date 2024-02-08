@@ -19,10 +19,13 @@ use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::inbox_table::{
     InboxEntry, SequenceNumberInboxEntry, SequenceNumberInvocation,
 };
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, ReadOnlyInvocationStatusTable,
+};
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::service_status_table::{ReadOnlyServiceStatusTable, ServiceStatus};
 use restate_storage_api::state_table::ReadOnlyStateTable;
-use restate_storage_api::status_table::{InvocationStatus, ReadOnlyStatusTable};
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Result as StorageResult;
 use restate_storage_api::StorageError;
@@ -98,8 +101,12 @@ async fn load_seq_number<F: ReadOnlyFsmTable + Send>(
 
 impl<Storage> PartitionStorage<Storage>
 where
-    Storage:
-        ReadOnlyFsmTable + ReadOnlyStatusTable + ReadOnlyJournalTable + ReadOnlyStateTable + Send,
+    Storage: ReadOnlyFsmTable
+        + ReadOnlyInvocationStatusTable
+        + ReadOnlyServiceStatusTable
+        + ReadOnlyJournalTable
+        + ReadOnlyStateTable
+        + Send,
 {
     pub fn load_inbox_seq_number(
         &mut self,
@@ -130,29 +137,23 @@ where
 
     pub fn get_invocation_status<'a>(
         &'a mut self,
-        service_id: &'a ServiceId,
+        invocation_id: &'a InvocationId,
     ) -> impl Future<Output = Result<InvocationStatus, StorageError>> + Send + '_ {
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(invocation_id);
 
-        async {
-            Ok(self
-                .storage
-                .get_invocation_status(service_id)
-                .await?
-                .unwrap_or_default())
-        }
+        async { self.storage.get_invocation_status(invocation_id).await }
     }
 
     pub fn load_journal_entry<'a>(
         &'a mut self,
-        service_id: &'a ServiceId,
+        invocation_id: &'a InvocationId,
         entry_index: EntryIndex,
     ) -> impl Future<Output = Result<Option<EnrichedRawEntry>, StorageError>> + Send + '_ {
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(invocation_id);
         async move {
             let result = self
                 .storage
-                .get_journal_entry(service_id, entry_index)
+                .get_journal_entry(invocation_id, entry_index)
                 .await?;
 
             Ok(result.and_then(|journal_entry| match journal_entry {
@@ -254,40 +255,17 @@ impl<TransactionType> super::state_machine::StateReader for Transaction<Transact
 where
     TransactionType: restate_storage_api::Transaction + Send,
 {
-    async fn get_invocation_status(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> StorageResult<InvocationStatus> {
+    async fn get_service_status(&mut self, service_id: &ServiceId) -> StorageResult<ServiceStatus> {
         self.assert_partition_key(service_id);
-        Ok(self
-            .inner
-            .get_invocation_status(service_id)
-            .await?
-            .unwrap_or_default())
+        self.inner.get_service_status(service_id).await
     }
 
-    async fn resolve_invocation_status_from_invocation_id(
+    async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
-    ) -> StorageResult<(FullInvocationId, InvocationStatus)> {
+    ) -> StorageResult<InvocationStatus> {
         self.assert_partition_key(invocation_id);
-        let (service_id, status) = self
-            .inner
-            .get_invocation_status_from(
-                invocation_id.partition_key(),
-                invocation_id.invocation_uuid(),
-            )
-            .await?
-            .unwrap_or_else(|| {
-                // We can just default these here for the time being.
-                // This is similar to the behavior of get_invocation_status.
-                (ServiceId::new("", ""), InvocationStatus::default())
-            });
-
-        Ok((
-            FullInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
-            status,
-        ))
+        self.inner.get_invocation_status(invocation_id).await
     }
 
     fn get_inboxed_invocation(
@@ -304,13 +282,13 @@ where
     // the entry must be a Custom entry with requires_ack flag.
     async fn is_entry_resumable(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         entry_index: EntryIndex,
     ) -> StorageResult<bool> {
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(invocation_id);
         Ok(self
             .inner
-            .get_journal_entry(service_id, entry_index)
+            .get_journal_entry(invocation_id, entry_index)
             .await?
             .map(|journal_entry| match journal_entry {
                 JournalEntry::Entry(entry) => entry.header().is_completed().unwrap_or(true),
@@ -336,19 +314,19 @@ where
 
     async fn load_completion_result(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         entry_index: EntryIndex,
     ) -> StorageResult<Option<CompletionResult>> {
-        super::state_machine::StateStorage::load_completion_result(self, service_id, entry_index)
+        super::state_machine::StateStorage::load_completion_result(self, invocation_id, entry_index)
             .await
     }
 
     fn get_journal(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         length: EntryIndex,
     ) -> impl Stream<Item = StorageResult<(EntryIndex, JournalEntry)>> + Send {
-        self.inner.get_journal(service_id, length)
+        self.inner.get_journal(invocation_id, length)
     }
 }
 
@@ -356,35 +334,53 @@ impl<TransactionType> super::state_machine::StateStorage for Transaction<Transac
 where
     TransactionType: restate_storage_api::Transaction + Send,
 {
-    async fn store_invocation_status(
+    async fn store_service_status(
         &mut self,
         service_id: &ServiceId,
-        status: InvocationStatus,
+        status: ServiceStatus,
     ) -> StorageResult<()> {
         self.assert_partition_key(service_id);
-        self.inner.put_invocation_status(service_id, status).await;
+        self.inner.put_service_status(service_id, status).await;
+        Ok(())
+    }
+
+    async fn store_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+        status: InvocationStatus,
+    ) -> StorageResult<()> {
+        self.assert_partition_key(invocation_id);
+        self.inner
+            .put_invocation_status(invocation_id, status)
+            .await;
         Ok(())
     }
 
     async fn drop_journal(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> StorageResult<()> {
-        self.assert_partition_key(service_id);
-        self.inner.delete_journal(service_id, journal_length).await;
+        self.assert_partition_key(invocation_id);
+        self.inner
+            .delete_journal(invocation_id, journal_length)
+            .await;
         Ok(())
     }
 
     async fn store_journal_entry(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) -> StorageResult<()> {
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(invocation_id);
         self.inner
-            .put_journal_entry(service_id, entry_index, JournalEntry::Entry(journal_entry))
+            .put_journal_entry(
+                invocation_id,
+                entry_index,
+                JournalEntry::Entry(journal_entry),
+            )
             .await;
 
         Ok(())
@@ -392,14 +388,14 @@ where
 
     async fn store_completion_result(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         entry_index: EntryIndex,
         completion_result: CompletionResult,
     ) -> StorageResult<()> {
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(invocation_id);
         self.inner
             .put_journal_entry(
-                service_id,
+                invocation_id,
                 entry_index,
                 JournalEntry::Completion(completion_result),
             )
@@ -409,13 +405,13 @@ where
 
     async fn load_completion_result(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         entry_index: EntryIndex,
     ) -> StorageResult<Option<CompletionResult>> {
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(invocation_id);
         let result = self
             .inner
-            .get_journal_entry(service_id, entry_index)
+            .get_journal_entry(invocation_id, entry_index)
             .await?;
 
         Ok(result.and_then(|journal_entry| match journal_entry {
@@ -426,13 +422,13 @@ where
 
     async fn load_journal_entry(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         entry_index: EntryIndex,
     ) -> StorageResult<Option<EnrichedRawEntry>> {
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(invocation_id);
         let result = self
             .inner
-            .get_journal_entry(service_id, entry_index)
+            .get_journal_entry(invocation_id, entry_index)
             .await?;
 
         Ok(result.and_then(|journal_entry| match journal_entry {

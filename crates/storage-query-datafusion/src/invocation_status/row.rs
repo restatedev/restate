@@ -8,37 +8,35 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::status::schema::{StatusBuilder, StatusRowBuilder};
+use crate::invocation_status::schema::{InvocationStatusBuilder, InvocationStatusRowBuilder};
 use crate::table_util::format_using;
-use restate_storage_api::status_table::{
+use restate_storage_api::invocation_status_table::{
     InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
-use restate_storage_rocksdb::status_table::OwnedStatusRow;
+use restate_storage_rocksdb::invocation_status_table::OwnedInvocationStatusRow;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{Source, TraceId};
 
 #[inline]
-pub(crate) fn append_status_row(
-    builder: &mut StatusBuilder,
+pub(crate) fn append_invocation_status_row(
+    builder: &mut InvocationStatusBuilder,
     output: &mut String,
-    status_row: OwnedStatusRow,
+    status_row: OwnedInvocationStatusRow,
 ) {
     let mut row = builder.row();
 
     row.partition_key(status_row.partition_key);
-    row.service(&status_row.service);
-    row.service_key(
-        std::str::from_utf8(&status_row.service_key).expect("The key must be a string!"),
-    );
+    if let Some(service_id) = status_row.invocation_status.service_id() {
+        row.service(&service_id.service_name);
+        row.service_key(std::str::from_utf8(&service_id.key).expect("The key must be a string!"));
+    }
 
     // Invocation id
     if row.is_id_defined() {
-        if let Some(invocation_uuid) = status_row.invocation_status.invocation_uuid() {
-            row.id(format_using(
-                output,
-                &InvocationId::new(status_row.partition_key, invocation_uuid),
-            ));
-        }
+        row.id(format_using(
+            output,
+            &InvocationId::new(status_row.partition_key, status_row.invocation_uuid),
+        ));
     }
 
     // Journal metadata
@@ -77,7 +75,7 @@ pub(crate) fn append_status_row(
 
 #[inline]
 fn fill_invocation_metadata(
-    row: &mut StatusRowBuilder,
+    row: &mut InvocationStatusRowBuilder,
     output: &mut String,
     meta: InvocationMetadata,
 ) {
@@ -104,14 +102,14 @@ fn fill_invocation_metadata(
 }
 
 #[inline]
-fn fill_timestamps(row: &mut StatusRowBuilder, stat: &StatusTimestamps) {
+fn fill_timestamps(row: &mut InvocationStatusRowBuilder, stat: &StatusTimestamps) {
     row.created_at(stat.creation_time().as_u64() as i64);
     row.modified_at(stat.modification_time().as_u64() as i64);
 }
 
 #[inline]
 fn fill_journal_metadata(
-    row: &mut StatusRowBuilder,
+    row: &mut InvocationStatusRowBuilder,
     output: &mut String,
     journal_metadata: &JournalMetadata,
 ) {

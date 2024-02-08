@@ -16,15 +16,15 @@ use crate::scan::TableScan::PartitionKeyRange;
 use crate::TableKind::Journal;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
-use bytes::Bytes;
-use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 use prost::Message;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
 use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
-use restate_types::identifiers::{EntryIndex, PartitionKey, ServiceId, WithPartitionKey};
+use restate_types::identifiers::{
+    EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithPartitionKey,
+};
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
@@ -32,31 +32,25 @@ define_table_key!(
     Journal,
     JournalKey(
         partition_key: PartitionKey,
-        service_name: ByteString,
-        service_key: Bytes,
+        invocation_uuid: InvocationUuid,
         journal_index: u32
     )
 );
 
-fn write_journal_entry_key(service_id: &ServiceId, journal_index: u32) -> JournalKey {
+fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> JournalKey {
     JournalKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone())
+        .partition_key(invocation_id.partition_key())
+        .invocation_uuid(invocation_id.invocation_uuid())
         .journal_index(journal_index)
 }
 
 fn put_journal_entry<S: StorageAccess>(
     storage: &mut S,
-    service_id: &ServiceId,
+    invocation_id: &InvocationId,
     journal_index: u32,
     journal_entry: JournalEntry,
 ) {
-    let key = JournalKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone())
-        .journal_index(journal_index);
+    let key = write_journal_entry_key(invocation_id, journal_index);
 
     let value = ProtoValue(storage::v1::JournalEntry::from(journal_entry));
 
@@ -65,14 +59,10 @@ fn put_journal_entry<S: StorageAccess>(
 
 fn get_journal_entry<S: StorageAccess>(
     storage: &mut S,
-    service_id: &ServiceId,
+    invocation_id: &InvocationId,
     journal_index: u32,
 ) -> Result<Option<JournalEntry>> {
-    let key = JournalKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone())
-        .journal_index(journal_index);
+    let key = write_journal_entry_key(invocation_id, journal_index);
 
     storage.get_blocking(key, move |_k, v| {
         if v.is_none() {
@@ -89,13 +79,12 @@ fn get_journal_entry<S: StorageAccess>(
 
 fn get_journal<S: StorageAccess>(
     storage: &mut S,
-    service_id: &ServiceId,
+    invocation_id: &InvocationId,
     journal_length: EntryIndex,
 ) -> Vec<Result<(EntryIndex, JournalEntry)>> {
     let key = JournalKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone());
+        .partition_key(invocation_id.partition_key())
+        .invocation_uuid(invocation_id.invocation_uuid());
 
     let mut n = 0;
     storage.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, v| {
@@ -121,10 +110,10 @@ fn get_journal<S: StorageAccess>(
 
 fn delete_journal<S: StorageAccess>(
     storage: &mut S,
-    service_id: &ServiceId,
+    invocation_id: &InvocationId,
     journal_length: EntryIndex,
 ) {
-    let mut key = write_journal_entry_key(service_id, 0);
+    let mut key = write_journal_entry_key(invocation_id, 0);
     let k = &mut key;
     for journal_index in 0..journal_length {
         k.journal_index = Some(journal_index);
@@ -135,59 +124,57 @@ fn delete_journal<S: StorageAccess>(
 impl ReadOnlyJournalTable for RocksDBStorage {
     async fn get_journal_entry(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         journal_index: u32,
     ) -> Result<Option<JournalEntry>> {
-        get_journal_entry(self, service_id, journal_index)
+        get_journal_entry(self, invocation_id, journal_index)
     }
 
     fn get_journal(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
-        stream::iter(get_journal(self, service_id, journal_length))
+        stream::iter(get_journal(self, invocation_id, journal_length))
     }
 }
 
 impl<'a> ReadOnlyJournalTable for RocksDBTransaction<'a> {
     async fn get_journal_entry(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         journal_index: u32,
     ) -> Result<Option<JournalEntry>> {
-        get_journal_entry(self, service_id, journal_index)
+        get_journal_entry(self, invocation_id, journal_index)
     }
 
     fn get_journal(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
-        stream::iter(get_journal(self, service_id, journal_length))
+        stream::iter(get_journal(self, invocation_id, journal_length))
     }
 }
 
 impl<'a> JournalTable for RocksDBTransaction<'a> {
     async fn put_journal_entry(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         journal_index: u32,
         journal_entry: JournalEntry,
     ) {
-        put_journal_entry(self, service_id, journal_index, journal_entry)
+        put_journal_entry(self, invocation_id, journal_index, journal_entry)
     }
 
-    async fn delete_journal(&mut self, service_id: &ServiceId, journal_length: EntryIndex) {
-        delete_journal(self, service_id, journal_length)
+    async fn delete_journal(&mut self, invocation_id: &InvocationId, journal_length: EntryIndex) {
+        delete_journal(self, invocation_id, journal_length)
     }
 }
 
 #[derive(Debug)]
 pub struct OwnedJournalRow {
-    pub partition_key: PartitionKey,
-    pub service: ByteString,
-    pub service_key: Bytes,
+    pub invocation_id: InvocationId,
     pub journal_index: u32,
     pub journal_entry: JournalEntry,
 }
@@ -206,15 +193,14 @@ impl RocksDBStorage {
             let journal_entry = JournalEntry::try_from(journal_entry)
                 .expect("journal entry must convert from proto");
             OwnedJournalRow {
-                partition_key: journal_key
-                    .partition_key
-                    .expect("journal key must have a partition key"),
-                service: journal_key
-                    .service_name
-                    .expect("journal key must have a service name"),
-                service_key: journal_key
-                    .service_key
-                    .expect("journal key must have a service key"),
+                invocation_id: InvocationId::new(
+                    journal_key
+                        .partition_key
+                        .expect("journal key must have a partition key"),
+                    journal_key
+                        .invocation_uuid
+                        .expect("journal key must have an invocation uuid"),
+                ),
                 journal_index: journal_key
                     .journal_index
                     .expect("journal key must have an index"),
@@ -229,10 +215,10 @@ mod tests {
     use crate::journal_table::write_journal_entry_key;
     use crate::keys::TableKey;
     use bytes::Bytes;
-    use restate_types::identifiers::ServiceId;
+    use restate_types::identifiers::{InvocationId, InvocationUuid};
 
-    fn journal_entry_key(service_id: &ServiceId, journal_index: u32) -> Bytes {
-        write_journal_entry_key(service_id, journal_index)
+    fn journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> Bytes {
+        write_journal_entry_key(invocation_id, journal_index)
             .serialize()
             .freeze()
     }
@@ -240,27 +226,29 @@ mod tests {
     #[test]
     fn journal_keys_sort_lex() {
         //
-        // across services
+        // across invocations
         //
         assert!(
-            journal_entry_key(&ServiceId::with_partition_key(1337, "svc-1", ""), 0)
-                < journal_entry_key(&ServiceId::with_partition_key(1337, "svc-2", ""), 0)
-        );
-        //
-        // same service across keys
-        //
-        assert!(
-            journal_entry_key(&ServiceId::with_partition_key(1337, "svc-1", "a"), 0)
-                < journal_entry_key(&ServiceId::with_partition_key(1337, "svc-1", "b"), 0)
+            journal_entry_key(
+                &InvocationId::new(1337, InvocationUuid::from_parts(0, 1)),
+                0
+            ) < journal_entry_key(
+                &InvocationId::new(1337, InvocationUuid::from_parts(0, 2)),
+                0
+            )
         );
         //
         // within the same service and key
         //
-        let mut previous_key =
-            journal_entry_key(&ServiceId::with_partition_key(1337, "svc-1", "key-a"), 0);
+        let mut previous_key = journal_entry_key(
+            &InvocationId::new(1337, InvocationUuid::from_parts(0, 1)),
+            0,
+        );
         for i in 1..300 {
-            let current_key =
-                journal_entry_key(&ServiceId::with_partition_key(1337, "svc-1", "key-a"), i);
+            let current_key = journal_entry_key(
+                &InvocationId::new(1337, InvocationUuid::from_parts(0, 1)),
+                i,
+            );
             assert!(previous_key < current_key);
             previous_key = current_key;
         }

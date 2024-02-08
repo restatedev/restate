@@ -28,10 +28,11 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 pub mod deduplication_table;
 pub mod fsm_table;
 pub mod inbox_table;
+pub mod invocation_status_table;
 pub mod journal_table;
 pub mod outbox_table;
+pub mod service_status_table;
 pub mod state_table;
-pub mod status_table;
 pub mod timer_table;
 
 pub trait Storage {
@@ -44,7 +45,8 @@ pub trait Storage {
 
 pub trait Transaction:
     state_table::StateTable
-    + status_table::StatusTable
+    + invocation_status_table::InvocationStatusTable
+    + service_status_table::ServiceStatusTable
     + inbox_table::InboxTable
     + outbox_table::OutboxTable
     + deduplication_table::DeduplicationTable

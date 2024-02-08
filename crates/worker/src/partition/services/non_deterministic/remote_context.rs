@@ -55,7 +55,7 @@ use tracing::{debug, instrument, trace, warn};
 #[derive(Serialize, Deserialize, Debug)]
 enum InvocationStatus {
     Executing {
-        invocation_uuid: InvocationUuid,
+        virtual_invocation_id: InvocationId,
         stream_id: String,
         retention_period_sec: u32,
     },
@@ -104,12 +104,11 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
     // Please note: this method doesn't take in account the current state transitions
     async fn load_journal(
         &mut self,
-        service_id: &ServiceId,
-    ) -> Result<Option<(InvocationUuid, JournalMetadata, Vec<EnrichedRawEntry>)>, InvocationError>
-    {
-        if let Some((invocation_uuid, journal_metadata)) = self
+        invocation_id: &InvocationId,
+    ) -> Result<Option<(JournalMetadata, Vec<EnrichedRawEntry>)>, InvocationError> {
+        if let Some(journal_metadata) = self
             .state_reader
-            .read_virtual_journal_metadata(service_id)
+            .read_virtual_journal_metadata(invocation_id)
             .await
             .map_err(InvocationError::internal)?
         {
@@ -118,7 +117,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 vec.insert(
                     i as usize,
                     self.state_reader
-                        .read_virtual_journal_entry(service_id, i)
+                        .read_virtual_journal_entry(invocation_id, i)
                         .await
                         .map_err(InvocationError::internal)?
                         .ok_or_else(|| {
@@ -126,7 +125,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         })?,
                 );
             }
-            Ok(Some((invocation_uuid, journal_metadata, vec)))
+            Ok(Some((journal_metadata, vec)))
         } else {
             Ok(None)
         }
@@ -139,7 +138,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         stream_id: &str,
         retention_period_sec: u32,
         virtual_journal_length: EntryIndex,
-        virtual_journal_fid: &FullInvocationId,
+        virtual_journal_id: &InvocationId,
         journal_span_context: ServiceInvocationSpanContext,
         header: MessageHeader,
         message: ProtocolMessage,
@@ -171,8 +170,13 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 Ok(())
             }
             ProtocolMessage::End(_) => {
-                self.complete_invocation(operation_id, retention_period_sec, virtual_journal_length)
-                    .await
+                self.complete_invocation(
+                    operation_id,
+                    retention_period_sec,
+                    virtual_journal_length,
+                    virtual_journal_id,
+                )
+                .await
             }
             ProtocolMessage::UnparsedEntry(entry) => {
                 self.handle_entry(
@@ -180,7 +184,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     header
                         .requires_ack()
                         .expect("Entry message supports requires_ack"),
-                    virtual_journal_fid,
+                    virtual_journal_id,
                     journal_span_context,
                     entry,
                 )
@@ -193,7 +197,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         &mut self,
         entry_index: EntryIndex,
         requires_ack: bool,
-        virtual_journal_fid: &FullInvocationId,
+        virtual_journal_id: &InvocationId,
         journal_span_context: ServiceInvocationSpanContext,
         entry: PlainRawEntry,
     ) -> Result<(), InvocationError> {
@@ -277,9 +281,9 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         fid: fid.clone(),
                         method_name: request.method_name,
                         argument: request.parameter,
-                        source: Source::Service(virtual_journal_fid.clone()),
+                        source: Source::Service(self.generate_virtual_fid(virtual_journal_id)),
                         response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
-                            caller: virtual_journal_fid.clone(),
+                            caller: self.generate_virtual_fid(virtual_journal_id),
                             entry_index,
                         }),
                         span_context: span_context.clone(),
@@ -326,7 +330,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         fid.clone(),
                         request.method_name.into(),
                         request.parameter,
-                        Source::Service(virtual_journal_fid.clone()),
+                        Source::Service(self.generate_virtual_fid(virtual_journal_id)),
                         None,
                         invoke_time.into(),
                         entry_index,
@@ -336,7 +340,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         fid: fid.clone(),
                         method_name: request.method_name,
                         argument: request.parameter,
-                        source: Source::Service(virtual_journal_fid.clone()),
+                        source: Source::Service(self.generate_virtual_fid(virtual_journal_id)),
                         response_sink: None,
                         span_context: span_context.clone(),
                     }))
@@ -410,7 +414,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             self.enqueue_protocol_message(ProtocolMessage::new_entry_ack(entry_index))
                 .await?;
         }
-        self.store_journal_entry(self.journal_service_id(), entry_index, enriched_entry);
+        self.store_journal_entry(virtual_journal_id.clone(), entry_index, enriched_entry);
         Ok(())
     }
 
@@ -497,14 +501,14 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         operation_id: &str,
         retention_period_sec: u32,
         virtual_journal_length: EntryIndex,
+        virtual_journal_id: &InvocationId,
     ) -> Result<(), InvocationError> {
         let expiry_time = SystemTime::now() + Duration::from_secs(retention_period_sec as u64);
-        let journal_service_id = self.journal_service_id();
 
         // Load the result from the journal's last entry
         let output_stream_entry_index = virtual_journal_length - 1;
         let entry = self
-            .read_journal_entry(&journal_service_id, output_stream_entry_index)
+            .read_journal_entry(virtual_journal_id, output_stream_entry_index)
             .await?
             .ok_or_else(|| {
                 InvocationError::internal(format!(
@@ -531,7 +535,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             }),
         };
 
-        self.transition_to_done(journal_service_id, get_result_response)
+        self.transition_to_done(virtual_journal_id, get_result_response)
             .await?;
 
         self.schedule_cleanup(operation_id, expiry_time, virtual_journal_length);
@@ -543,6 +547,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         &mut self,
         retention_period_sec: u32,
         err: InvocationError,
+        virtual_journal_id: &InvocationId,
     ) -> Result<(), InvocationError> {
         let expiry_time = SystemTime::now() + Duration::from_secs(retention_period_sec as u64);
 
@@ -554,7 +559,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             })),
         };
 
-        self.transition_to_done(self.journal_service_id(), get_result_response)
+        self.transition_to_done(virtual_journal_id, get_result_response)
             .await?;
 
         // Schedule the cleanup
@@ -572,7 +577,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
 
     async fn transition_to_done(
         &mut self,
-        journal_service_id: ServiceId,
+        virtual_journal_id: &InvocationId,
         get_result_response: GetResultResponse,
     ) -> Result<(), InvocationError> {
         // Save the done state
@@ -582,8 +587,8 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         )?;
 
         // Cleanup the journal
-        if let Some((_, journal_meta)) = self.load_journal_metadata(&journal_service_id).await? {
-            self.drop_journal(journal_service_id, journal_meta.length)
+        if let Some(journal_meta) = self.load_journal_metadata(virtual_journal_id).await? {
+            self.drop_journal(virtual_journal_id, journal_meta.length)
         }
 
         // Close pending recv and get result
@@ -601,10 +606,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         timer_index: EntryIndex,
     ) {
         self.delay_invoke(
-            FullInvocationId::with_service_id(
-                self.full_invocation_id.service_id.clone(),
-                InvocationUuid::new(),
-            ),
+            FullInvocationId::generate(self.full_invocation_id.service_id.clone()),
             "Cleanup".to_string(),
             CleanupRequest {
                 operation_id: operation_id.to_string(),
@@ -632,10 +634,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         // TODO the timer support doesn't have any way to delete pending timers,
         //  and it's unclear whether writing a timer with same id will overwrite the previous one.
         self.delay_invoke(
-            FullInvocationId::with_service_id(
-                self.full_invocation_id.service_id.clone(),
-                InvocationUuid::new(),
-            ),
+            FullInvocationId::generate(self.full_invocation_id.service_id.clone()),
             "InternalOnInactivityTimer".to_string(),
             InactivityTimeoutTimerRequest {
                 operation_id: operation_id.to_string(),
@@ -673,18 +672,20 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             )
             .map_err(InvocationError::internal)?;
 
-        Ok(FullInvocationId::generate(
+        Ok(FullInvocationId::generate(ServiceId::new(
             request.service_name.clone(),
             service_key,
-        ))
+        )))
     }
 
-    fn journal_service_id(&self) -> ServiceId {
-        // We use the same service key of the remote context to make sure the partition key is the same
-        ServiceId::new(
-            EMBEDDED_HANDLER_JOURNAL,
-            self.full_invocation_id.service_id.key.clone(),
-        )
+    fn generate_virtual_fid(&self, invocation_id: &InvocationId) -> FullInvocationId {
+        FullInvocationId {
+            service_id: ServiceId::new(
+                EMBEDDED_HANDLER_JOURNAL,
+                self.full_invocation_id.service_id.key.clone(),
+            ),
+            invocation_uuid: invocation_id.invocation_uuid(),
+        }
     }
 }
 
@@ -704,12 +705,14 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         request: StartRequest,
         response_serializer: ResponseSerializer<StartResponse>,
     ) -> Result<(), InvocationError> {
-        if let Some(InvocationStatus::Done(get_result_response)) = self.load_state(&STATUS).await? {
+        let current_status = self.load_state(&STATUS).await?;
+
+        if let Some(InvocationStatus::Done(get_result_response)) = &current_status {
             trace!("The result is already available, returning the known result");
             // Response is already here, so we're good, we simply send it back
             self.reply_to_caller(response_serializer.serialize_success(StartResponse {
                 invocation_status: Some(start_response::InvocationStatus::Completed(
-                    get_result_response,
+                    get_result_response.clone(),
                 )),
                 ..StartResponse::default()
             }));
@@ -723,12 +726,17 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
             .await?;
 
         // Make sure we have a journal
-        let journal_service_id = self.journal_service_id();
-        let (invocation_uuid, length, journal_entries) =
-            if let Some((invocation_uuid, journal_metadata, journal_entries)) =
-                self.load_journal(&journal_service_id).await?
+        let (virtual_invocation_id, length, journal_entries) =
+            if let Some(InvocationStatus::Executing {
+                virtual_invocation_id,
+                ..
+            }) = current_status
             {
-                (invocation_uuid, journal_metadata.length, journal_entries)
+                let (journal_meta, journal_entries) = self
+                    .load_journal(&virtual_invocation_id)
+                    .await?
+                    .expect("There must be a journal available");
+                (virtual_invocation_id, journal_meta.length, journal_entries)
             } else {
                 // If there isn't any journal, let's create one
                 let input_entry = EnrichedRawEntry::new(
@@ -737,10 +745,12 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                         .into_inner()
                         .1,
                 );
-                let invocation_uuid = InvocationUuid::new();
+                let invocation_id = InvocationId::new(
+                    self.full_invocation_id.partition_key(),
+                    InvocationUuid::new(),
+                );
                 self.create_journal(
-                    journal_service_id.clone(),
-                    invocation_uuid,
+                    invocation_id.clone(),
                     self.span_context.clone(),
                     NotificationTarget {
                         service: self.full_invocation_id.service_id.clone(),
@@ -751,15 +761,15 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                         method: REMOTE_CONTEXT_INTERNAL_ON_KILL_METHOD_NAME.to_string(),
                     },
                 );
-                self.store_journal_entry(journal_service_id, 0, input_entry.clone());
-                (invocation_uuid, 1, vec![input_entry])
+                self.store_journal_entry(invocation_id.clone(), 0, input_entry.clone());
+                (invocation_id, 1, vec![input_entry])
             };
 
         // We're now the leading client, let's write the status
         self.set_state(
             &STATUS,
             &InvocationStatus::Executing {
-                invocation_uuid,
+                virtual_invocation_id: virtual_invocation_id.clone(),
                 stream_id: request.stream_id,
                 retention_period_sec: if request.retention_period_sec != 0 {
                     request.retention_period_sec
@@ -770,16 +780,14 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         )?;
 
         // Let's create the messages and write them to a buffer
-        let invocation_id =
-            InvocationId::new(self.full_invocation_id.partition_key(), invocation_uuid);
         let encoder = Encoder::new(RESTATE_SERVICE_PROTOCOL_VERSION);
         let mut stream_buffer = BytesMut::new();
         encoder
             .encode_to_buf_mut(
                 &mut stream_buffer,
                 ProtocolMessage::new_start_message(
-                    Bytes::copy_from_slice(&invocation_id.to_bytes()),
-                    invocation_id.to_string(),
+                    Bytes::copy_from_slice(&virtual_invocation_id.to_bytes()),
+                    virtual_invocation_id.to_string(),
                     length,
                     true, // TODO add eager state
                     iter::empty(),
@@ -820,11 +828,11 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         response_serializer: ResponseSerializer<SendResponse>,
     ) -> Result<(), InvocationError> {
         let status = self.load_state_or_fail(&STATUS).await?;
-        let retention_period_sec = match status {
+        let (retention_period_sec, virtual_invocation_id) = match status {
             InvocationStatus::Executing {
                 stream_id,
                 retention_period_sec,
-                ..
+                virtual_invocation_id,
             } => {
                 if stream_id != request.stream_id {
                     self.reply_to_caller(response_serializer.serialize_success(SendResponse {
@@ -832,7 +840,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                     }));
                     return Ok(());
                 }
-                retention_period_sec
+                (retention_period_sec, virtual_invocation_id)
             }
             InvocationStatus::Done { .. } => {
                 self.reply_to_caller(response_serializer.serialize_success(SendResponse {
@@ -845,13 +853,10 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         self.reset_inactivity_timer(&request.operation_id, &request.stream_id)
             .await?;
 
-        let journal_service_id = self.journal_service_id();
-        let (journal_uuid, mut journal_metadata) = self
-            .load_journal_metadata(&journal_service_id)
+        let mut journal_metadata = self
+            .load_journal_metadata(&virtual_invocation_id)
             .await?
             .ok_or_else(|| InvocationError::internal("There must be a journal at this point"))?;
-        let virtual_journal_fid =
-            FullInvocationId::with_service_id(journal_service_id, journal_uuid);
 
         for (message_header, message) in decode_messages(request.messages)
             .map_err(|e| InvocationError::new(UserErrorCode::FailedPrecondition, e))?
@@ -861,7 +866,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 &request.stream_id,
                 retention_period_sec,
                 journal_metadata.length,
-                &virtual_journal_fid,
+                &virtual_invocation_id,
                 journal_metadata.span_context.clone(),
                 message_header,
                 message,
@@ -1000,16 +1005,20 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         _request: CleanupRequest,
         response_serializer: ResponseSerializer<()>,
     ) -> Result<(), InvocationError> {
+        if let Some(InvocationStatus::Executing {
+            virtual_invocation_id,
+            ..
+        }) = self.load_state(&STATUS).await?
+        {
+            if let Some(journal_meta) = self.load_journal_metadata(&virtual_invocation_id).await? {
+                self.drop_journal(&virtual_invocation_id, journal_meta.length)
+            }
+        }
+
         self.clear_state(&STATUS);
         self.clear_state(&PENDING_RECV_STREAM);
         self.clear_state(&PENDING_RECV_SINK);
         self.clear_state(&PENDING_GET_RESULT_SINKS);
-
-        // We still need to drop the journal here, because cleanup might have been invoked from outside.
-        let journal_service_id = self.journal_service_id();
-        if let Some((_, journal_meta)) = self.load_journal_metadata(&journal_service_id).await? {
-            self.drop_journal(journal_service_id, journal_meta.length)
-        }
 
         self.reply_to_caller(response_serializer.serialize_success(()));
         Ok(())
@@ -1023,8 +1032,11 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
     ) -> Result<(), InvocationError> {
         match self.load_state(&STATUS).await? {
             Some(InvocationStatus::Executing {
-                invocation_uuid, ..
-            }) if invocation_uuid.to_bytes().as_slice() == request.invocation_uuid => {
+                virtual_invocation_id,
+                ..
+            }) if virtual_invocation_id.invocation_uuid().to_bytes()
+                == request.invocation_uuid[..] =>
+            {
                 self.enqueue_protocol_message(ProtocolMessage::from(Completion::new(
                     request.entry_index,
                     match request.result.ok_or_else(|| {
@@ -1044,11 +1056,12 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 .await?;
             }
             Some(InvocationStatus::Executing {
-                invocation_uuid, ..
+                virtual_invocation_id,
+                ..
             }) => {
                 debug!(
                     "Discarding response received with fid {:?} because the journal has a different invocation_uuid: {} != {}.",
-                    self.full_invocation_id, invocation_uuid, InvocationUuid::from_slice(&request.invocation_uuid).unwrap()
+                    self.full_invocation_id, virtual_invocation_id, InvocationUuid::from_slice(&request.invocation_uuid).unwrap()
                 );
             }
             _ => {
@@ -1118,18 +1131,22 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         response_serializer: ResponseSerializer<()>,
     ) -> Result<(), InvocationError> {
         if let Some(InvocationStatus::Executing {
-            invocation_uuid,
+            virtual_invocation_id,
             retention_period_sec,
             ..
         }) = self.load_state(&STATUS).await?
         {
-            if invocation_uuid.to_bytes().as_slice() == request.invocation_uuid {
-                self.kill_invocation(retention_period_sec, KILLED_INVOCATION_ERROR)
-                    .await?;
+            if virtual_invocation_id.invocation_uuid().to_bytes() == request.invocation_uuid[..] {
+                self.kill_invocation(
+                    retention_period_sec,
+                    KILLED_INVOCATION_ERROR,
+                    &virtual_invocation_id,
+                )
+                .await?;
             } else {
                 trace!(
                     "Ignoring kill because invocation uuid don't match: {:?} != {:?}",
-                    invocation_uuid.to_bytes(),
+                    virtual_invocation_id.to_bytes(),
                     request.invocation_uuid
                 )
             }
@@ -1318,12 +1335,7 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(BuiltinServiceEffect::CreateJournal {
-                    service_id: property!(
-                        ServiceId.partition_key(),
-                        eq(remote_context_service_id.partition_key())
-                    )
-                })),
+                contains(pat!(BuiltinServiceEffect::CreateJournal { .. })),
                 contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
                     IngressResponse {
                         full_invocation_id: eq(fid),
@@ -1480,6 +1492,14 @@ mod tests {
     #[test(tokio::test)]
     async fn new_invocation_start_replay_existing_journal() {
         let mut ctx = TestInvocationContext::new(REMOTE_CONTEXT_SERVICE_NAME);
+        ctx.state_mut().set(
+            &STATUS,
+            InvocationStatus::Executing {
+                virtual_invocation_id: InvocationId::mock_random(),
+                stream_id: "my-old-stream".to_string(),
+                retention_period_sec: u32::MAX,
+            },
+        );
         ctx.state_mut()
             .append_journal_entry(Entry::poll_input_stream(Bytes::copy_from_slice(b"123")))
             .append_journal_entry(Entry::clear_state(Bytes::copy_from_slice(b"abc")));
@@ -1912,11 +1932,17 @@ mod tests {
             .into(),
             |ctx, _, _| {
                 let response = response.clone();
-                let (invocation_uuid, _, _) = ctx.state().assert_has_journal();
+                ctx.state().assert_has_journal();
                 ctx.state_mut().complete_entry(Completion::new(
                     1,
                     CompletionResult::Success(response.clone()),
                 ));
+                let_assert!(
+                    InvocationStatus::Executing {
+                        virtual_invocation_id,
+                        ..
+                    } = ctx.state().assert_has_state(&STATUS)
+                );
 
                 async move {
                     // Invoke internal_on_response to complete the request
@@ -1924,7 +1950,7 @@ mod tests {
                         ctx.internal_on_completion(
                             JournalCompletionNotificationRequest {
                                 entry_index: 1,
-                                invocation_uuid: invocation_uuid.into(),
+                                invocation_uuid: virtual_invocation_id.invocation_uuid().into(),
                                 result: Some(
                                     journal_completion_notification_request::Result::Success(
                                         response,
@@ -2495,8 +2521,6 @@ mod tests {
             )),
         );
         ctx.state_mut()
-            .append_journal_entry(Entry::poll_input_stream(Bytes::from_static(b"123")));
-        ctx.state_mut()
             .set(&USER_STATE, Bytes::copy_from_slice(b"123"));
         let _ = ctx
             .invoke(|ctx| {
@@ -2654,14 +2678,24 @@ mod tests {
         );
 
         // Get invocation_uuid
-        let (invocation_uuid, _, _) = ctx.state().assert_has_journal();
+        ctx.state().assert_has_journal();
+        let_assert!(
+            InvocationStatus::Executing {
+                virtual_invocation_id,
+                ..
+            } = ctx.state().assert_has_state(&STATUS)
+        );
 
         // Kill request
         let (_, effects) = ctx
             .invoke(|ctx| {
                 ctx.internal_on_kill(
                     KillNotificationRequest {
-                        invocation_uuid: invocation_uuid.to_bytes().to_vec().into(),
+                        invocation_uuid: virtual_invocation_id
+                            .invocation_uuid()
+                            .to_bytes()
+                            .to_vec()
+                            .into(),
                     },
                     Default::default(),
                 )

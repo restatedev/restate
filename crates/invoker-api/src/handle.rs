@@ -27,6 +27,8 @@ pub enum InvokeInputJournal {
     CachedJournal(JournalMetadata, Vec<PlainRawEntry>),
 }
 
+// TODO We can remove FullInvocationId awareness from the invoker completely
+
 pub trait ServiceHandle {
     type Future: Future<Output = Result<(), NotRunningError>>;
 

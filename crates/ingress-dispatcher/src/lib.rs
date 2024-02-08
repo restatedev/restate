@@ -14,7 +14,7 @@ use prost::Message;
 use restate_pb::restate::Event;
 use restate_schema_api::subscription::{EventReceiverServiceInstanceType, Sink, Subscription};
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{FullInvocationId, InvocationUuid, WithPartitionKey};
+use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext, SpanRelation};
 use restate_types::message::MessageIndex;
 use restate_types::GenerationalNodeId;
@@ -186,7 +186,7 @@ impl IngressRequest {
         } = subscription.sink();
 
         // Generate fid
-        let target_fid = FullInvocationId::generate(
+        let target_fid = FullInvocationId::generate(ServiceId::new(
             &**name,
             // TODO This should probably live somewhere and be unified with the rest of the key extraction logic
             match instance_type {
@@ -208,7 +208,7 @@ impl IngressRequest {
                 }
                 EventReceiverServiceInstanceType::Singleton => Bytes::new(),
             },
-        );
+        ));
 
         // Generate span context
         let span_context = ServiceInvocationSpanContext::start(&target_fid, related_span);
@@ -222,8 +222,10 @@ impl IngressRequest {
 
         Ok(if let Some(proxying_key) = proxying_key {
             // For keyed events, we dispatch them through the Proxy service, to avoid scattering the offset info throughout all the partitions
-            let proxy_fid =
-                FullInvocationId::generate(restate_pb::PROXY_SERVICE_NAME, proxying_key);
+            let proxy_fid = FullInvocationId::generate(ServiceId::new(
+                restate_pb::PROXY_SERVICE_NAME,
+                proxying_key,
+            ));
 
             (
                 IngressRequest {

@@ -14,12 +14,11 @@ use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::pb::protocol::SleepEntryMessage;
 use restate_storage_api::inbox_table::SequenceNumberInboxEntry;
-use restate_storage_api::status_table::{JournalMetadata, StatusTimestamps};
+use restate_storage_api::invocation_status_table::{JournalMetadata, StatusTimestamps};
 use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
 use restate_test_util::{assert_eq, let_assert};
 use restate_types::errors::UserErrorCode;
-use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::EntryResult;
 use restate_types::journal::{CompleteAwakeableEntry, Entry};
 
@@ -28,18 +27,19 @@ use crate::partition::state_machine::effects::Effect;
 
 #[derive(Default)]
 struct StateReaderMock {
-    invocations: HashMap<ServiceId, InvocationStatus>,
+    services: HashMap<ServiceId, ServiceStatus>,
     inboxes: HashMap<ServiceId, Vec<SequenceNumberInboxEntry>>,
-    journals: HashMap<ServiceId, Vec<JournalEntry>>,
+    invocations: HashMap<InvocationId, InvocationStatus>,
+    journals: HashMap<InvocationId, Vec<JournalEntry>>,
 }
 
 impl StateReaderMock {
     pub fn mock_invocation_metadata(
         journal_length: u32,
-        invocation_uuid: InvocationUuid,
+        service_id: ServiceId,
     ) -> InvocationMetadata {
         InvocationMetadata {
-            invocation_uuid,
+            service_id,
             journal_metadata: JournalMetadata {
                 length: journal_length,
                 span_context: ServiceInvocationSpanContext::empty(),
@@ -48,33 +48,52 @@ impl StateReaderMock {
         }
     }
 
-    fn register_invoked_status(&mut self, fid: FullInvocationId, journal: Vec<JournalEntry>) {
-        let invocation_uuid = fid.invocation_uuid;
+    fn lock_service(&mut self, service_id: ServiceId) {
+        self.services
+            .insert(service_id, ServiceStatus::Locked(InvocationUuid::new()));
+    }
 
+    fn register_invoked_status_and_locked(
+        &mut self,
+        fid: FullInvocationId,
+        journal: Vec<JournalEntry>,
+    ) {
+        let invocation_id = InvocationId::from(&fid);
+        let service_id = fid.service_id;
+
+        self.services.insert(
+            service_id.clone(),
+            ServiceStatus::Locked(invocation_id.invocation_uuid()),
+        );
         self.register_invocation_status(
-            fid,
+            invocation_id,
             InvocationStatus::Invoked(Self::mock_invocation_metadata(
                 u32::try_from(journal.len()).unwrap(),
-                invocation_uuid,
+                service_id,
             )),
             journal,
         );
     }
 
-    fn register_suspended_status(
+    fn register_suspended_status_and_locked(
         &mut self,
         fid: FullInvocationId,
         waiting_for_completed_entries: impl IntoIterator<Item = EntryIndex>,
         journal: Vec<JournalEntry>,
     ) {
-        let invocation_uuid = fid.invocation_uuid;
+        let invocation_id = InvocationId::from(&fid);
+        let service_id = fid.service_id;
 
+        self.services.insert(
+            service_id.clone(),
+            ServiceStatus::Locked(invocation_id.invocation_uuid()),
+        );
         self.register_invocation_status(
-            fid,
+            invocation_id,
             InvocationStatus::Suspended {
                 metadata: Self::mock_invocation_metadata(
                     u32::try_from(journal.len()).unwrap(),
-                    invocation_uuid,
+                    service_id,
                 ),
                 waiting_for_completed_entries: HashSet::from_iter(waiting_for_completed_entries),
             },
@@ -82,18 +101,16 @@ impl StateReaderMock {
         );
     }
 
-    fn register_virtual_status(
+    fn register_virtual_status_and_locked(
         &mut self,
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
         completion_notification_target: NotificationTarget,
         kill_notification_target: NotificationTarget,
         journal: Vec<JournalEntry>,
     ) {
-        let invocation_uuid = fid.invocation_uuid;
         self.register_invocation_status(
-            fid,
+            invocation_id,
             InvocationStatus::Virtual {
-                invocation_uuid,
                 journal_metadata: JournalMetadata {
                     length: u32::try_from(journal.len()).unwrap(),
                     span_context: ServiceInvocationSpanContext::empty(),
@@ -108,14 +125,13 @@ impl StateReaderMock {
 
     fn register_invocation_status(
         &mut self,
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
         invocation_status: InvocationStatus,
         journal: Vec<JournalEntry>,
     ) {
-        let service_id = fid.service_id.clone();
-        self.invocations.insert(fid.service_id, invocation_status);
-
-        self.journals.insert(service_id, journal);
+        self.invocations
+            .insert(invocation_id.clone(), invocation_status);
+        self.journals.insert(invocation_id, journal);
     }
 
     fn enqueue_into_inbox(&mut self, service_id: ServiceId, inbox_entry: SequenceNumberInboxEntry) {
@@ -133,31 +149,23 @@ impl StateReaderMock {
 }
 
 impl StateReader for StateReaderMock {
-    async fn get_invocation_status(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> StorageResult<InvocationStatus> {
-        Ok(self.invocations.get(service_id).cloned().unwrap())
+    async fn get_service_status(&mut self, service_id: &ServiceId) -> StorageResult<ServiceStatus> {
+        Ok(self
+            .services
+            .get(service_id)
+            .cloned()
+            .unwrap_or(ServiceStatus::Unlocked))
     }
 
-    async fn resolve_invocation_status_from_invocation_id(
+    async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
-    ) -> StorageResult<(FullInvocationId, InvocationStatus)> {
-        let (service_id, status) = self
+    ) -> StorageResult<InvocationStatus> {
+        Ok(self
             .invocations
-            .iter()
-            .find(|(service_id, status)| {
-                service_id.partition_key() == invocation_id.partition_key()
-                    && status.invocation_uuid().unwrap() == invocation_id.invocation_uuid()
-            })
-            .map(|(service_id, status)| (service_id.clone(), status.clone()))
-            .unwrap_or((ServiceId::new("", ""), InvocationStatus::default()));
-
-        Ok((
-            FullInvocationId::with_service_id(service_id, invocation_id.invocation_uuid()),
-            status,
-        ))
+            .get(invocation_id)
+            .cloned()
+            .unwrap_or(InvocationStatus::Free))
     }
 
     fn get_inboxed_invocation(
@@ -188,7 +196,7 @@ impl StateReader for StateReaderMock {
 
     async fn is_entry_resumable(
         &mut self,
-        _service_id: &ServiceId,
+        _invocation_id: &InvocationId,
         _entry_index: EntryIndex,
     ) -> StorageResult<bool> {
         todo!()
@@ -208,7 +216,7 @@ impl StateReader for StateReaderMock {
 
     async fn load_completion_result(
         &mut self,
-        _service_id: &ServiceId,
+        _invocation_id: &InvocationId,
         _entry_index: EntryIndex,
     ) -> StorageResult<Option<CompletionResult>> {
         todo!()
@@ -216,10 +224,10 @@ impl StateReader for StateReaderMock {
 
     fn get_journal(
         &mut self,
-        service_id: &ServiceId,
+        invocation_id: &InvocationId,
         length: EntryIndex,
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry), StorageError>> + Send {
-        let journal = self.journals.get(service_id);
+        let journal = self.journals.get(invocation_id);
 
         let cloned_journal: Vec<JournalEntry> = journal
             .map(|journal| {
@@ -274,7 +282,7 @@ async fn awakeable_with_success() {
         },
     });
 
-    state_reader.register_invoked_status(
+    state_reader.register_invoked_status_and_locked(
         sid_caller.clone(),
         vec![JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Awakeable {
@@ -329,7 +337,7 @@ async fn awakeable_with_failure() {
         },
     });
 
-    state_reader.register_invoked_status(
+    state_reader.register_invoked_status_and_locked(
         sid_caller.clone(),
         vec![JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Awakeable {
@@ -374,7 +382,7 @@ async fn send_response_using_invocation_id() {
         result: ResponseResult::Success(Bytes::from_static(b"hello")),
     });
 
-    state_reader.register_invoked_status(fid.clone(), vec![]);
+    state_reader.register_invoked_status_and_locked(fid.clone(), vec![]);
 
     state_machine
         .on_apply(cmd, &mut effects, &mut state_reader)
@@ -384,7 +392,7 @@ async fn send_response_using_invocation_id() {
         effects.into_inner(),
         all!(
             contains(pat!(Effect::StoreCompletion {
-                full_invocation_id: eq(fid.clone()),
+                invocation_id: eq(InvocationId::from(&fid)),
                 completion: pat!(Completion { entry_index: eq(1) })
             })),
             contains(pat!(Effect::ForwardCompletion {
@@ -400,13 +408,13 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
     let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
 
     let mut effects = Effects::default();
-    let mut state_reader = StateReaderMock::default();
-    let fid = FullInvocationId::generate("svc", "key");
-    let inboxed_fid = FullInvocationId::generate("svc", "key");
+    let mut state_mock = StateReaderMock::default();
+
+    let inboxed_fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
     let caller_fid = FullInvocationId::mock_random();
 
-    state_reader.register_invoked_status(fid, vec![]);
-    state_reader.enqueue_into_inbox(
+    state_mock.lock_service(ServiceId::new("svc", "key"));
+    state_mock.enqueue_into_inbox(
         inboxed_fid.service_id.clone(),
         SequenceNumberInboxEntry {
             inbox_sequence_number: 0,
@@ -427,7 +435,7 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
                 inboxed_fid.clone(),
             ))),
             &mut effects,
-            &mut state_reader,
+            &mut state_mock,
         )
         .await?;
 
@@ -469,7 +477,7 @@ async fn kill_call_tree() -> Result<(), Error> {
     let background_fid = FullInvocationId::mock_random();
     let finished_call_fid = FullInvocationId::mock_random();
 
-    state_reader.register_invoked_status(
+    state_reader.register_invoked_status_and_locked(
         fid.clone(),
         vec![
             uncompleted_invoke_entry(call_fid.clone()),
@@ -495,7 +503,7 @@ async fn kill_call_tree() -> Result<(), Error> {
         all!(
             contains(pat!(Effect::AbortInvocation(eq(fid.clone())))),
             contains(pat!(Effect::DropJournalAndPopInbox {
-                service_id: eq(fid.service_id.clone()),
+                full_invocation_id: eq(fid.clone()),
             })),
             contains(terminate_invocation_outbox_message_matcher(
                 call_fid,
@@ -574,7 +582,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     let background_fid = FullInvocationId::mock_random();
     let finished_call_fid = FullInvocationId::mock_random();
 
-    state_reader.register_invoked_status(
+    state_reader.register_invoked_status_and_locked(
         fid.clone(),
         create_termination_journal(
             call_fid.clone(),
@@ -630,7 +638,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         background_fid.clone(),
         finished_call_fid.clone(),
     );
-    state_reader.register_suspended_status(fid.clone(), vec![3, 4, 5, 6], journal);
+    state_reader.register_suspended_status_and_locked(fid.clone(), vec![3, 4, 5, 6], journal);
 
     command_interpreter
         .on_apply(
@@ -654,7 +662,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
             store_canceled_completion_matcher(6),
             delete_timer(5),
             pat!(Effect::ResumeService {
-                service_id: eq(fid.service_id),
+                invocation_id: eq(InvocationId::from(fid)),
             }),
         ]
     );
@@ -684,8 +692,8 @@ async fn cancel_virtual_invocation() -> Result<(), Error> {
         method: "kill".to_owned(),
     };
 
-    state_reader.register_virtual_status(
-        fid.clone(),
+    state_reader.register_virtual_status_and_locked(
+        InvocationId::from(&fid),
         completion_notification_target,
         kill_notification_target,
         create_termination_journal(

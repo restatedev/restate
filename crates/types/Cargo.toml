@@ -14,7 +14,6 @@ mocks = ["rand"]
 serde = ["dep:serde", "dep:serde_with", "enumset/serde"]
 serde_schema = ["serde", "dep:schemars"]
 tonic_conversions = ["dep:tonic"]
-test-utils = []
 
 [dependencies]
 restate-base64-util = { workspace = true }

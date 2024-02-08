@@ -174,44 +174,6 @@ impl InvocationUuid {
     pub fn to_bytes(&self) -> [u8; Self::SIZE_IN_BYTES] {
         self.0.to_bytes()
     }
-
-    #[cfg(feature = "test-utils")]
-    /// Craft an invocation id from raw parts. Should be used only in tests.
-    pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
-        Self(Ulid::from_parts(timestamp_ms, random))
-    }
-
-    #[cfg(feature = "test-utils")]
-    /// Craft an invocation id from raw parts. Should be used only in tests.
-    pub fn from_timestamp(timestamp_ms: u64) -> Self {
-        use std::time::{Duration, SystemTime};
-
-        Self(Ulid::from_datetime(
-            SystemTime::UNIX_EPOCH + Duration::from_millis(timestamp_ms),
-        ))
-    }
-
-    #[cfg(feature = "test-utils")]
-    /// Craft an invocation id from raw parts. Should be used only in tests.
-    pub fn as_raw_parts(&self) -> (u64, u128) {
-        (self.0.timestamp_ms(), self.0.random())
-    }
-
-    #[cfg(feature = "test-utils")]
-    /// Increment the random part of the id, useful for testing purposes
-    pub fn increment_random(mut self) -> Self {
-        // this is called from tests, it's the caller responsibility to check if
-        // we are not overflowing the random part;
-        self.0 = self.0.increment().expect("ulid overflow");
-        self
-    }
-
-    #[cfg(feature = "test-utils")]
-    /// Increment the random part of the id, useful for testing purposes
-    pub fn increment_timestamp(self) -> Self {
-        let (ts, random) = self.as_raw_parts();
-        Self::from_parts(ts + 1, random)
-    }
 }
 
 impl Default for InvocationUuid {
@@ -323,7 +285,7 @@ impl WithPartitionKey for ServiceId {
 /// InvocationId is a unique identifier of the invocation,
 /// including enough routing information for the network component
 /// to route requests to the correct partition processors.
-#[derive(Eq, Hash, PartialEq, Clone, Debug)]
+#[derive(Eq, Hash, PartialEq, Clone, Debug, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "serde",
     derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
@@ -342,6 +304,13 @@ impl InvocationId {
         Self {
             partition_key,
             inner: invocation_uuid.into(),
+        }
+    }
+
+    pub const fn from_parts(partition_key: PartitionKey, invocation_uuid: InvocationUuid) -> Self {
+        Self {
+            partition_key,
+            inner: invocation_uuid,
         }
     }
 
@@ -466,22 +435,29 @@ impl FullInvocationId {
     pub fn new(
         service_name: impl Into<ByteString>,
         key: impl Into<Bytes>,
-        invocation_id: impl Into<InvocationUuid>,
-    ) -> Self {
-        Self::with_service_id(ServiceId::new(service_name, key), invocation_id)
-    }
-
-    pub fn generate(service_name: impl Into<ByteString>, key: impl Into<Bytes>) -> Self {
-        Self::with_service_id(ServiceId::new(service_name, key), InvocationUuid::new())
-    }
-
-    pub fn with_service_id(
-        service_id: ServiceId,
-        invocation_id: impl Into<InvocationUuid>,
+        invocation_uuid: impl Into<InvocationUuid>,
     ) -> Self {
         Self {
+            service_id: ServiceId::new(service_name, key),
+            invocation_uuid: invocation_uuid.into(),
+        }
+    }
+
+    pub fn generate(service_id: ServiceId) -> Self {
+        Self {
             service_id,
-            invocation_uuid: invocation_id.into(),
+            invocation_uuid: InvocationUuid::new(),
+        }
+    }
+
+    pub fn combine(service_id: ServiceId, invocation_id: InvocationId) -> Self {
+        debug_assert_eq!(
+            service_id.partition_key, invocation_id.partition_key,
+            "Cannot combine ServiceId and InvocationId with different partition keys."
+        );
+        Self {
+            service_id,
+            invocation_uuid: invocation_id.invocation_uuid(),
         }
     }
 
@@ -685,6 +661,41 @@ mod mocks {
     use rand::distributions::{Alphanumeric, DistString};
     use rand::Rng;
 
+    impl InvocationUuid {
+        /// Craft an invocation id from raw parts. Should be used only in tests.
+        pub fn from_timestamp(timestamp_ms: u64) -> Self {
+            use std::time::{Duration, SystemTime};
+
+            Self(Ulid::from_datetime(
+                SystemTime::UNIX_EPOCH + Duration::from_millis(timestamp_ms),
+            ))
+        }
+
+        /// Craft an invocation id from raw parts. Should be used only in tests.
+        pub fn as_raw_parts(&self) -> (u64, u128) {
+            (self.0.timestamp_ms(), self.0.random())
+        }
+
+        /// Increment the random part of the id, useful for testing purposes
+        pub fn increment_random(mut self) -> Self {
+            // this is called from tests, it's the caller responsibility to check if
+            // we are not overflowing the random part;
+            self.0 = self.0.increment().expect("ulid overflow");
+            self
+        }
+
+        /// Increment the random part of the id, useful for testing purposes
+        pub fn increment_timestamp(self) -> Self {
+            let (ts, random) = self.as_raw_parts();
+            Self::from_parts(ts + 1, random)
+        }
+
+        /// Craft an invocation id from raw parts. Should be used only in tests.
+        pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
+            Self(Ulid::from_parts(timestamp_ms, random))
+        }
+    }
+
     impl InvocationId {
         pub fn mock_random() -> Self {
             Self::new(
@@ -694,15 +705,20 @@ mod mocks {
         }
     }
 
-    impl FullInvocationId {
+    impl ServiceId {
         pub fn mock_random() -> Self {
             Self::new(
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
                 Bytes::copy_from_slice(
                     &rand::thread_rng().sample::<[u8; 32], _>(rand::distributions::Standard),
                 ),
-                InvocationUuid::new(),
             )
+        }
+    }
+
+    impl FullInvocationId {
+        pub fn mock_random() -> Self {
+            Self::generate(ServiceId::mock_random())
         }
     }
 }
