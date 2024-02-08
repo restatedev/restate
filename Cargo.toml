@@ -64,6 +64,7 @@ restate-timer = { path = "crates/timer" }
 restate-timer-queue = { path = "crates/timer-queue" }
 restate-tracing-instrumentation = { path = "crates/tracing-instrumentation" }
 restate-types = { path = "crates/types" }
+restate-wal-protocol = { path = "crates/wal-protocol" }
 restate-worker = { path = "crates/worker" }
 restate-worker-api = { path = "crates/worker-api" }
 
