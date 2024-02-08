@@ -20,6 +20,7 @@ pub mod errors;
 pub mod identifiers;
 pub mod invocation;
 pub mod journal;
+pub mod logs;
 pub mod message;
 pub mod nodes_config;
 pub mod retries;
