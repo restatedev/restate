@@ -5717,6 +5717,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-wal-protocol"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bincode",
+ "bytes",
+ "bytestring",
+ "codederror",
+ "derive_builder",
+ "derive_more",
+ "drain",
+ "enum-map",
+ "googletest",
+ "once_cell",
+ "restate-invoker-api",
+ "restate-storage-api",
+ "restate-test-util",
+ "restate-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "static_assertions",
+ "strum 0.26.1",
+ "strum_macros 0.26.1",
+ "test-log",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-test",
+]
+
+[[package]]
 name = "restate-worker"
 version = "0.8.0"
 dependencies = [
