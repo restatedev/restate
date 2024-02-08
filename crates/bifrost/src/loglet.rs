@@ -13,8 +13,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use enum_map::Enum;
 
+use restate_types::logs::{Lsn, Payload, SequenceNumber};
+
 use crate::metadata::LogletParams;
-use crate::{Error, LogRecord, Lsn, Options, Payload, SequenceNumber};
+use crate::{Error, LogRecord, LsnExt, Options};
 
 /// An enum with the list of supported loglet providers.
 /// For each variant we must have a corresponding implementation of the
