@@ -13,12 +13,12 @@ mod options;
 pub mod worker;
 
 use codederror::CodedError;
-use futures::future::OptionFuture;
+use futures::TryFutureExt;
 use restate_types::NodeId;
 use std::convert::Infallible;
 use std::str::FromStr;
 use std::time::Duration;
-use tokio::task::JoinError;
+use tokio::task::{JoinError, JoinSet};
 use tonic::codegen::http::uri::InvalidUri;
 use tonic::transport::{Channel, Uri};
 use tracing::{info, instrument};
@@ -57,15 +57,9 @@ pub enum Error {
     #[error("failed to attach to cluster at '{0}': {1}")]
     #[code(unknown)]
     Attachment(Uri, tonic::Status),
-    #[error("component '{0}' panicked: {1}")]
+    #[error("node component panicked: {0}")]
     #[code(unknown)]
-    Panic(&'static str, JoinError),
-}
-
-impl Error {
-    fn panic(component: &'static str, err: JoinError) -> Self {
-        Error::Panic(component, err)
-    }
+    ComponentPanic(JoinError),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -139,53 +133,56 @@ impl Node {
 
         let (component_shutdown_signal, component_shutdown_watch) = drain::channel();
 
-        let mut node_ctrl_handle =
-            tokio::spawn(self.node_ctrl.run(component_shutdown_watch.clone()));
-        let mut cluster_controller_handle: OptionFuture<_> = self
-            .cluster_controller_role
-            .map(|cluster_controller| {
-                tokio::spawn(cluster_controller.run(component_shutdown_watch.clone()))
-            })
-            .into();
+        let mut component_set: JoinSet<Result<&'static str, Error>> = JoinSet::new();
+
+        component_set.spawn(
+            self.node_ctrl
+                .run(component_shutdown_watch.clone())
+                .map_ok(|_| "node-ctrl")
+                .map_err(Error::NodeCtrlService),
+        );
+        self.cluster_controller_role.map(|cluster_controller| {
+            component_set.spawn(
+                cluster_controller
+                    .run(component_shutdown_watch.clone())
+                    .map_ok(|_| "cluster-controller-role")
+                    .map_err(Error::Controller),
+            )
+        });
 
         tokio::select! {
             _ = &mut shutdown_signal => {
                 drop(component_shutdown_watch);
-                let _ = tokio::join!(component_shutdown_signal.drain(), cluster_controller_handle, node_ctrl_handle);
+                component_shutdown_signal.drain().await;
+                component_set.shutdown().await;
                 return Ok(());
             },
-            Some(cluster_controller_result) = &mut cluster_controller_handle => {
-                cluster_controller_result.map_err(|err| Error::panic("cluster controller role", err))??;
-                panic!("Unexpected termination of cluster controller role.");
-            },
-            result = &mut node_ctrl_handle => {
-                result.map_err(|err| Error::panic("node-ctrl", err))??;
-                panic!("Unexpected termination of node ctrl service.");
-            },
+            Some(component_result) = component_set.join_next() => {
+                let component_name = component_result.map_err(Error::ComponentPanic)??;
+                panic!("Unexpected termination of '{component_name}'");
+            }
             attachment_result = Self::attach_node(self.node_id, self.cluster_controller_endpoint) => {
                 attachment_result?
             }
         }
 
-        let mut worker_handle = tokio::spawn(self.worker_role.run(component_shutdown_watch));
+        component_set.spawn(
+            self.worker_role
+                .run(component_shutdown_watch)
+                .map_ok(|_| "worker-role")
+                .map_err(Error::Worker),
+        );
 
         tokio::select! {
             _ = shutdown_signal => {
                 info!("Shutting node down");
-                let _ = tokio::join!(component_shutdown_signal.drain(), worker_handle, cluster_controller_handle, node_ctrl_handle);
+                component_shutdown_signal.drain().await;
+                component_set.shutdown().await;
             },
-            worker_result = &mut worker_handle => {
-                worker_result.map_err(|err| Error::panic("worker role", err))??;
-                panic!("Unexpected termination of worker role.");
-            },
-            Some(cluster_controller_result) = &mut cluster_controller_handle => {
-                cluster_controller_result.map_err(|err| Error::panic("cluster controller role", err))??;
-                panic!("Unexpected termination of cluster controller role.");
-            },
-            result = &mut node_ctrl_handle => {
-                result.map_err(|err| Error::panic("node-ctrl", err))??;
-                panic!("Unexpected termination of node ctrl service.");
-            },
+            Some(component_result) = component_set.join_next() => {
+                let component_name = component_result.map_err(Error::ComponentPanic)??;
+                panic!("Unexpected termination of '{component_name}'");
+            }
         }
 
         Ok(())
