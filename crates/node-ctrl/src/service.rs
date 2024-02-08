@@ -23,8 +23,8 @@ use tracing::info;
 use crate::handler::cluster_controller::ClusterControllerHandler;
 use crate::handler::node_ctrl::NodeCtrlHandler;
 use restate_node_ctrl_proto::cluster_controller::cluster_controller_server::ClusterControllerServer;
-use restate_node_ctrl_proto::proto::node_ctrl_server::NodeCtrlServer;
-use restate_node_ctrl_proto::{cluster_controller, proto};
+use restate_node_ctrl_proto::node_ctrl::node_ctrl_server::NodeCtrlServer;
+use restate_node_ctrl_proto::{cluster_controller, node_ctrl};
 
 use crate::multiplex::MultiplexService;
 use crate::state::HandlerStateBuilder;
@@ -104,7 +104,7 @@ impl NodeCtrlService {
         };
 
         let tonic_reflection_service = reflection_service_builder
-            .register_encoded_file_descriptor_set(proto::FILE_DESCRIPTOR_SET)
+            .register_encoded_file_descriptor_set(node_ctrl::FILE_DESCRIPTOR_SET)
             .build()?;
 
         // Build the NodeCtrl grpc service

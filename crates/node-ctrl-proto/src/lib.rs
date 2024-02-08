@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod proto {
+pub mod node_ctrl {
     #![allow(warnings)]
     #![allow(clippy::all)]
     #![allow(unknown_lints)]

@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::state::HandlerState;
-use restate_node_ctrl_proto::proto::node_ctrl_server::NodeCtrl;
-use restate_node_ctrl_proto::proto::{BifrostVersion, IdentResponse, NodeStatus};
+use restate_node_ctrl_proto::node_ctrl::node_ctrl_server::NodeCtrl;
+use restate_node_ctrl_proto::node_ctrl::{BifrostVersion, IdentResponse, NodeStatus};
 use tonic::{Request, Response, Status};
 
 // -- GRPC Service Handlers --
