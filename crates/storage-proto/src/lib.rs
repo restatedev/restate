@@ -43,17 +43,17 @@ pub mod storage {
                 FullInvocationId, InboxEntry, InvocationResolutionResult, InvocationStatus,
                 JournalEntry, JournalMeta, KvPair, MaybeFullInvocationId, OutboxMessage,
                 ResponseResult, ServiceId, ServiceInvocation, ServiceInvocationResponseSink,
-                SocketAddr, Source, SpanContext, SpanRelation, StateMutation, Timer,
+                Source, SpanContext, SpanRelation, StateMutation, Timer,
             };
             use anyhow::anyhow;
             use bytes::{Buf, Bytes};
             use bytestring::ByteString;
             use opentelemetry_api::trace::TraceState;
             use restate_storage_api::StorageError;
-            use restate_types::identifiers::IngressDispatcherId;
             use restate_types::invocation::{InvocationTermination, TerminationFlavor};
             use restate_types::journal::enriched::AwakeableEnrichmentResult;
             use restate_types::time::MillisSinceEpoch;
+            use restate_types::GenerationalNodeId;
             use std::collections::HashSet;
             use std::str::FromStr;
 
@@ -937,16 +937,13 @@ pub mod storage {
                             )
                         }
                         ResponseSink::Ingress(ingress) => {
-                            let ingress_dispatcher_id =
-                                IngressDispatcherId(std::net::SocketAddr::try_from(
-                                    ingress
-                                        .socket_addr
-                                        .ok_or(ConversionError::missing_field("socket_addr"))?,
-                                )?);
+                            let proto_id = ingress
+                                .node_id
+                                .ok_or(ConversionError::missing_field("node_id"))?;
 
                             Some(
                                 restate_types::invocation::ServiceInvocationResponseSink::Ingress(
-                                    ingress_dispatcher_id,
+                                    GenerationalNodeId::new(proto_id.id, proto_id.generation),
                                 ),
                             )
                         }
@@ -987,9 +984,9 @@ pub mod storage {
                             entry_index,
                             caller: Some(FullInvocationId::from(caller)),
                         }),
-                        Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id)) => {
+                        Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress(node_id)) => {
                             ResponseSink::Ingress(Ingress {
-                                socket_addr: Some(SocketAddr::from(ingress_dispatcher_id.0)),
+                                node_id: Some(super::GenerationalNodeId::from(node_id)),
                             })
                         },
                         Some(
@@ -1010,46 +1007,18 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<SocketAddr> for std::net::SocketAddr {
-                type Error = ConversionError;
-
-                fn try_from(value: SocketAddr) -> Result<Self, Self::Error> {
-                    let port = u16::try_from(value.port).map_err(ConversionError::invalid_data)?;
-                    let ip = try_bytes_to_ip_addr(value.ip)?;
-
-                    Ok(std::net::SocketAddr::new(ip, port))
-                }
-            }
-
-            impl From<std::net::SocketAddr> for SocketAddr {
-                fn from(value: std::net::SocketAddr) -> Self {
-                    SocketAddr {
-                        port: u32::from(value.port()),
-                        ip: ip_addr_to_bytes(value.ip()),
+            impl From<GenerationalNodeId> for super::GenerationalNodeId {
+                fn from(value: GenerationalNodeId) -> Self {
+                    super::GenerationalNodeId {
+                        id: value.raw_id(),
+                        generation: value.raw_generation(),
                     }
                 }
             }
 
-            fn try_bytes_to_ip_addr(bytes: Bytes) -> Result<std::net::IpAddr, ConversionError> {
-                if bytes.len() == 4 {
-                    let mut octets = [0; 4];
-                    octets.copy_from_slice(bytes.as_ref());
-                    Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::from(octets)))
-                } else if bytes.len() == 16 {
-                    let mut octets = [0; 16];
-                    octets.copy_from_slice(bytes.as_ref());
-                    Ok(std::net::IpAddr::V6(std::net::Ipv6Addr::from(octets)))
-                } else {
-                    Err(ConversionError::invalid_data(anyhow!(
-                        "valid ip address has 4 or 16 bytes"
-                    )))
-                }
-            }
-
-            fn ip_addr_to_bytes(ip_addr: std::net::IpAddr) -> Bytes {
-                match ip_addr {
-                    std::net::IpAddr::V4(ip) => Bytes::copy_from_slice(&ip.octets()),
-                    std::net::IpAddr::V6(ip) => Bytes::copy_from_slice(&ip.octets()),
+            impl From<super::GenerationalNodeId> for GenerationalNodeId {
+                fn from(value: super::GenerationalNodeId) -> Self {
+                    GenerationalNodeId::new(value.id, value.generation)
                 }
             }
 
@@ -1495,13 +1464,10 @@ pub mod storage {
                                             ConversionError::missing_field("full_invocation_id"),
                                         )?,
                                     )?,
-                                ingress_dispatcher_id: IngressDispatcherId(
-                                    std::net::SocketAddr::try_from(
-                                        ingress_response
-                                            .socket_addr
-                                            .ok_or(ConversionError::missing_field("socket_addr"))?,
-                                    )?,
-                                ),
+                                to_node_id: ingress_response
+                                    .ingress_node_id
+                                    .ok_or(ConversionError::missing_field("ingress_node_id"))?
+                                    .into(),
                                 response: restate_types::invocation::ResponseResult::try_from(
                                     ingress_response
                                         .response_result
@@ -1565,7 +1531,7 @@ pub mod storage {
                             },
                         ),
                         restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
-                            ingress_dispatcher_id,
+                            to_node_id: node_id,
                             full_invocation_id,
                             response,
                         } => {
@@ -1573,7 +1539,7 @@ pub mod storage {
                                 full_invocation_id: Some(FullInvocationId::from(
                                     full_invocation_id,
                                 )),
-                                socket_addr: Some(SocketAddr::from(ingress_dispatcher_id.0)),
+                                ingress_node_id: Some(node_id.into()),
                                 response_result: Some(ResponseResult::from(response)),
                             })
                         }

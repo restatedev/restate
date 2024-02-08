@@ -11,11 +11,12 @@
 use crate::partition::shuffle::state_machine::StateMachine;
 use async_channel::{TryRecvError, TrySendError};
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, PartitionId, PeerId};
+use restate_types::identifiers::{FullInvocationId, PartitionId, PeerId};
 use restate_types::invocation::{
     InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
 };
 use restate_types::message::{AckKind, MessageIndex};
+use restate_types::GenerationalNodeId;
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -61,7 +62,7 @@ pub(crate) enum PartitionProcessorMessage {
 
 #[derive(Debug, Clone)]
 pub(crate) struct IngressResponse {
-    pub(crate) _ingress_dispatcher_id: IngressDispatcherId,
+    pub(crate) _to_node_id: GenerationalNodeId,
     pub(crate) full_invocation_id: FullInvocationId,
     pub(crate) response: ResponseResult,
 }
@@ -111,11 +112,11 @@ impl From<OutboxMessage> for ShuffleMessageDestination {
     fn from(value: OutboxMessage) -> Self {
         match value {
             OutboxMessage::IngressResponse {
-                ingress_dispatcher_id: ingress_id,
+                to_node_id,
                 full_invocation_id,
                 response,
             } => ShuffleMessageDestination::Ingress(IngressResponse {
-                _ingress_dispatcher_id: ingress_id,
+                _to_node_id: to_node_id,
                 full_invocation_id,
                 response,
             }),

@@ -10,10 +10,11 @@
 
 use crate::partition::services::non_deterministic::Effects as NBISEffects;
 use crate::partition::types::{InvokerEffect, TimerValue};
-use restate_types::identifiers::{IngressDispatcherId, PartitionId, PeerId};
+use restate_types::identifiers::{PartitionId, PeerId};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use restate_types::message::{AckKind, MessageIndex};
 use restate_types::state_mut::ExternalStateMutation;
+use restate_types::GenerationalNodeId;
 
 /// Envelope for [`partition::Command`] that might require an explicit acknowledge.
 #[derive(Debug)]
@@ -68,7 +69,7 @@ pub enum DeduplicationSource {
         seq_number: MessageIndex,
     },
     Ingress {
-        ingress_dispatcher_id: IngressDispatcherId,
+        from_node_id: GenerationalNodeId,
         // String used to distinguish between different seq_numbers indexes produced by the ingress
         source_id: String,
         seq_number: MessageIndex,
@@ -89,12 +90,12 @@ impl DeduplicationSource {
     }
 
     pub fn ingress(
-        ingress_dispatcher_id: IngressDispatcherId,
+        from_node_id: GenerationalNodeId,
         source_id: String,
         seq_number: MessageIndex,
     ) -> Self {
         DeduplicationSource::Ingress {
-            ingress_dispatcher_id,
+            from_node_id,
             source_id,
             seq_number,
         }
@@ -111,11 +112,11 @@ impl DeduplicationSource {
                 kind: AckKind::Acknowledge(seq_number),
             }),
             DeduplicationSource::Ingress {
-                ingress_dispatcher_id,
+                from_node_id,
                 seq_number,
                 source_id,
             } => AckResponse::Ingress(IngressAckResponse {
-                _ingress_dispatcher_id: ingress_dispatcher_id,
+                _from_node_id: from_node_id,
                 dedup_source: Some(source_id),
                 kind: AckKind::Acknowledge(seq_number),
             }),
@@ -136,11 +137,11 @@ impl DeduplicationSource {
                 },
             }),
             DeduplicationSource::Ingress {
-                ingress_dispatcher_id,
+                from_node_id: node_id,
                 seq_number,
                 source_id,
             } => AckResponse::Ingress(IngressAckResponse {
-                _ingress_dispatcher_id: ingress_dispatcher_id,
+                _from_node_id: node_id,
                 dedup_source: Some(source_id),
                 kind: AckKind::Duplicate {
                     seq_number,
@@ -154,15 +155,15 @@ impl DeduplicationSource {
 #[derive(Debug)]
 pub enum AckTarget {
     Ingress {
-        ingress_dispatcher_id: IngressDispatcherId,
+        node_id: GenerationalNodeId,
         seq_number: MessageIndex,
     },
 }
 
 impl AckTarget {
-    pub fn ingress(ingress_dispatcher_id: IngressDispatcherId, seq_number: MessageIndex) -> Self {
+    pub fn ingress(node_id: GenerationalNodeId, seq_number: MessageIndex) -> Self {
         AckTarget::Ingress {
-            ingress_dispatcher_id,
+            node_id,
             seq_number,
         }
     }
@@ -170,10 +171,10 @@ impl AckTarget {
     pub fn acknowledge(self) -> AckResponse {
         match self {
             AckTarget::Ingress {
-                ingress_dispatcher_id,
+                node_id,
                 seq_number,
             } => AckResponse::Ingress(IngressAckResponse {
-                _ingress_dispatcher_id: ingress_dispatcher_id,
+                _from_node_id: node_id,
                 dedup_source: None,
                 kind: AckKind::Acknowledge(seq_number),
             }),
@@ -195,7 +196,7 @@ pub struct ShuffleDeduplicationResponse {
 
 #[derive(Debug)]
 pub struct IngressAckResponse {
-    pub(crate) _ingress_dispatcher_id: IngressDispatcherId,
+    pub(crate) _from_node_id: GenerationalNodeId,
     pub(crate) dedup_source: Option<String>,
     pub(crate) kind: AckKind,
 }
