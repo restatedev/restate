@@ -14,7 +14,7 @@ pub mod worker;
 
 use codederror::CodedError;
 use futures::future::OptionFuture;
-use restate_types::identifiers::NodeId;
+use restate_types::NodeId;
 use std::convert::Infallible;
 use std::str::FromStr;
 use std::time::Duration;
