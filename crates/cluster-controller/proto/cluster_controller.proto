@@ -12,6 +12,7 @@ service ClusterController {
 // todo: move into shared proto file
 message NodeId {
   uint32 id = 1;
+  optional uint32 generation = 2;
 }
 
 message AttachmentRequest {

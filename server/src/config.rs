@@ -35,7 +35,7 @@ pub use restate_tracing_instrumentation::{
     OptionsBuilderError as ObservabilityOptionsBuilderError, TracingOptions, TracingOptionsBuilder,
     TracingOptionsBuilderError,
 };
-use restate_types::identifiers::NodeId;
+use restate_types::PlainNodeId;
 
 /// # Restate configuration file
 ///
@@ -53,7 +53,7 @@ use restate_types::identifiers::NodeId;
 #[cfg_attr(feature = "options_schema", schemars(default))]
 #[builder(default)]
 pub struct Configuration {
-    pub node_id: NodeId,
+    pub node_id: PlainNodeId,
 
     /// # Shutdown grace timeout
     ///
@@ -80,7 +80,7 @@ pub struct Configuration {
 impl Default for Configuration {
     fn default() -> Self {
         Self {
-            node_id: NodeId::from(0),
+            node_id: PlainNodeId::from(1),
             shutdown_grace_period: Duration::from_secs(60).into(),
             observability: Default::default(),
             tokio_runtime: Default::default(),

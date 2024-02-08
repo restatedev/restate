@@ -22,6 +22,7 @@ use restate_node::{
 use restate_server::config::ConfigurationBuilder;
 use restate_server::Configuration;
 use restate_types::retries::RetryPolicy;
+use restate_types::PlainNodeId;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
@@ -71,8 +72,12 @@ pub fn spawn_restate(
     let (signal, drain) = drain::channel();
 
     let node_handle = rt.block_on(async move {
-        let node = Node::new(0, ClusterControllerLocation::Local, config.node)
-            .expect("Restate node must build");
+        let node = Node::new(
+            PlainNodeId::from(1),
+            ClusterControllerLocation::Local,
+            config.node,
+        )
+        .expect("Restate node must build");
         tokio::task::spawn(node.run(drain))
     });
 

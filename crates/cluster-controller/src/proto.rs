@@ -17,14 +17,17 @@ tonic::include_proto!("dev.restate.cluster_controller");
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     tonic::include_file_descriptor_set!("cluster_controller_descriptor");
 
-impl From<NodeId> for restate_types::identifiers::NodeId {
+impl From<NodeId> for restate_types::NodeId {
     fn from(node_id: NodeId) -> Self {
-        restate_types::identifiers::NodeId::from(node_id.id)
+        restate_types::NodeId::new(node_id.id, node_id.generation)
     }
 }
 
-impl From<restate_types::identifiers::NodeId> for NodeId {
-    fn from(node_id: restate_types::identifiers::NodeId) -> Self {
-        NodeId { id: node_id.into() }
+impl From<restate_types::NodeId> for NodeId {
+    fn from(node_id: restate_types::NodeId) -> Self {
+        NodeId {
+            id: node_id.id().into(),
+            generation: node_id.as_generational().map(|g| g.generation()),
+        }
     }
 }
