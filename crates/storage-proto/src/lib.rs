@@ -22,7 +22,7 @@ pub mod storage {
         pub mod pb_conversion {
             use crate::storage::v1::enriched_entry_header::{
                 Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable, Custom,
-                GetState, Invoke, OutputStream, PollInputStream, SetState, Sleep,
+                GetState, GetStateKeys, Invoke, OutputStream, PollInputStream, SetState, Sleep,
             };
             use crate::storage::v1::invocation_status::{Free, Invoked, Suspended, Virtual};
             use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
@@ -1197,6 +1197,11 @@ pub mod storage {
                             restate_types::journal::enriched::EnrichedEntryHeader::ClearAllState {
                             }
                         }
+                        enriched_entry_header::Kind::GetStateKeys(get_state_keys) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::GetStateKeys {
+                                is_completed: get_state_keys.is_completed,
+                            }
+                        }
                         enriched_entry_header::Kind::Sleep(sleep) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::Sleep {
                                                             is_completed: sleep.is_completed,
@@ -1276,6 +1281,9 @@ pub mod storage {
                         }
                         restate_types::journal::enriched::EnrichedEntryHeader::ClearState{..} => {
                             enriched_entry_header::Kind::ClearState(ClearState {})
+                        }
+                        restate_types::journal::enriched::EnrichedEntryHeader::GetStateKeys { is_completed, .. } => {
+                            enriched_entry_header::Kind::GetStateKeys(GetStateKeys { is_completed })
                         }
                         restate_types::journal::enriched::EnrichedEntryHeader::ClearAllState{..} => {
                             enriched_entry_header::Kind::ClearAllState(ClearAllState {})

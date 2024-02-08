@@ -110,6 +110,9 @@ pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
     },
     SetState,
     ClearState,
+    GetStateKeys {
+        is_completed: bool,
+    },
     ClearAllState,
     Sleep {
         is_completed: bool,
@@ -143,6 +146,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::SetState { .. } => None,
             EntryHeader::ClearState { .. } => None,
             EntryHeader::ClearAllState => None,
+            EntryHeader::GetStateKeys { is_completed, .. } => Some(*is_completed),
             EntryHeader::Sleep { is_completed, .. } => Some(*is_completed),
             EntryHeader::Invoke { is_completed, .. } => Some(*is_completed),
             EntryHeader::BackgroundInvoke { .. } => None,
@@ -159,6 +163,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::GetState { is_completed, .. } => *is_completed = true,
             EntryHeader::SetState { .. } => {}
             EntryHeader::ClearState { .. } => {}
+            EntryHeader::GetStateKeys { is_completed, .. } => *is_completed = true,
             EntryHeader::ClearAllState => {}
             EntryHeader::Sleep { is_completed, .. } => *is_completed = true,
             EntryHeader::Invoke { is_completed, .. } => *is_completed = true,
@@ -176,6 +181,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::GetState { .. } => EntryType::GetState,
             EntryHeader::SetState { .. } => EntryType::SetState,
             EntryHeader::ClearState { .. } => EntryType::ClearState,
+            EntryHeader::GetStateKeys { .. } => EntryType::GetStateKeys,
             EntryHeader::ClearAllState => EntryType::ClearAllState,
             EntryHeader::Sleep { .. } => EntryType::Sleep,
             EntryHeader::Invoke { .. } => EntryType::Invoke,
@@ -195,6 +201,9 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::GetState { is_completed } => EntryHeader::GetState { is_completed },
             EntryHeader::SetState {} => EntryHeader::SetState {},
             EntryHeader::ClearState {} => EntryHeader::ClearState {},
+            EntryHeader::GetStateKeys { is_completed } => {
+                EntryHeader::GetStateKeys { is_completed }
+            }
             EntryHeader::ClearAllState => EntryHeader::ClearAllState,
             EntryHeader::Sleep { is_completed } => EntryHeader::Sleep { is_completed },
             EntryHeader::Invoke { is_completed, .. } => EntryHeader::Invoke {
@@ -241,6 +250,8 @@ pub enum ErrorKind {
 
 pub trait RawEntryCodec {
     fn serialize_as_unary_input_entry(input_message: Bytes) -> enriched::EnrichedRawEntry;
+
+    fn serialize_get_state_keys_completion(keys: Vec<Bytes>) -> CompletionResult;
 
     fn deserialize(entry_type: EntryType, entry_value: Bytes) -> Result<Entry, RawEntryCodecError>;
 

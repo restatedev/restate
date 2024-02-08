@@ -37,6 +37,7 @@ pub enum MessageType {
     GetStateEntry,
     SetStateEntry,
     ClearStateEntry,
+    GetStateKeysEntry,
     ClearAllStateEntry,
     SleepEntry,
     InvokeEntry,
@@ -60,6 +61,7 @@ impl MessageType {
             MessageType::GetStateEntry => MessageKind::State,
             MessageType::SetStateEntry => MessageKind::State,
             MessageType::ClearStateEntry => MessageKind::State,
+            MessageType::GetStateKeysEntry => MessageKind::State,
             MessageType::ClearAllStateEntry => MessageKind::State,
             MessageType::SleepEntry => MessageKind::Syscall,
             MessageType::InvokeEntry => MessageKind::Syscall,
@@ -75,6 +77,7 @@ impl MessageType {
             self,
             MessageType::PollInputStreamEntry
                 | MessageType::GetStateEntry
+                | MessageType::GetStateKeysEntry
                 | MessageType::SleepEntry
                 | MessageType::InvokeEntry
                 | MessageType::AwakeableEntry
@@ -105,6 +108,7 @@ const GET_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0800;
 const SET_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0801;
 const CLEAR_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0802;
 const CLEAR_ALL_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0803;
+const GET_STATE_KEYS_ENTRY_MESSAGE_TYPE: u16 = 0x0804;
 const SLEEP_ENTRY_MESSAGE_TYPE: u16 = 0x0C00;
 const INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C01;
 const BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C02;
@@ -126,6 +130,7 @@ impl From<MessageType> for MessageTypeId {
             MessageType::SetStateEntry => SET_STATE_ENTRY_MESSAGE_TYPE,
             MessageType::ClearStateEntry => CLEAR_STATE_ENTRY_MESSAGE_TYPE,
             MessageType::ClearAllStateEntry => CLEAR_ALL_STATE_ENTRY_MESSAGE_TYPE,
+            MessageType::GetStateKeysEntry => GET_STATE_KEYS_ENTRY_MESSAGE_TYPE,
             MessageType::SleepEntry => SLEEP_ENTRY_MESSAGE_TYPE,
             MessageType::InvokeEntry => INVOKE_ENTRY_MESSAGE_TYPE,
             MessageType::BackgroundInvokeEntry => BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE,
@@ -156,6 +161,7 @@ impl TryFrom<MessageTypeId> for MessageType {
             GET_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetStateEntry),
             SET_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::SetStateEntry),
             CLEAR_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::ClearStateEntry),
+            GET_STATE_KEYS_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetStateKeysEntry),
             CLEAR_ALL_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::ClearAllStateEntry),
             SLEEP_ENTRY_MESSAGE_TYPE => Ok(MessageType::SleepEntry),
             INVOKE_ENTRY_MESSAGE_TYPE => Ok(MessageType::InvokeEntry),

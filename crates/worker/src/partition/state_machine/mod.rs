@@ -507,6 +507,47 @@ mod tests {
         Ok(())
     }
 
+    #[test(tokio::test)]
+    async fn get_state_keys() -> TestResult {
+        let mut state_machine = MockStateMachine::default();
+        let fid = mock_start_invocation(&mut state_machine).await;
+
+        // Mock some state
+        let mut txn = state_machine.rocksdb_storage.transaction();
+        txn.put_user_state(&fid.service_id, b"key1", b"value1")
+            .await;
+        txn.put_user_state(&fid.service_id, b"key2", b"value2")
+            .await;
+        txn.commit().await.unwrap();
+
+        let actions = state_machine
+            .apply(Command::Invoker(InvokerEffect {
+                full_invocation_id: fid.clone(),
+                kind: InvokerEffectKind::JournalEntry {
+                    entry_index: 1,
+                    entry: ProtobufRawEntryCodec::serialize_enriched(Entry::get_state_keys(None)),
+                },
+            }))
+            .await;
+
+        // At this point we expect the completion to be forwarded to the invoker
+        assert_that!(
+            actions,
+            contains(pat!(Action::ForwardCompletion {
+                full_invocation_id: eq(fid.clone()),
+                completion: eq(Completion::new(
+                    1,
+                    ProtobufRawEntryCodec::serialize_get_state_keys_completion(vec![
+                        Bytes::copy_from_slice(b"key1"),
+                        Bytes::copy_from_slice(b"key2"),
+                    ])
+                ))
+            }))
+        );
+
+        state_machine.shutdown().await
+    }
+
     mod virtual_invocation {
         use super::*;
 

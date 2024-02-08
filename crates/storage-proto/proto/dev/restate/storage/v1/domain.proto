@@ -226,6 +226,10 @@ message EnrichedEntryHeader {
     message ClearState {
     }
 
+    message GetStateKeys {
+        bool is_completed = 1;
+    }
+
     message ClearAllState {
     }
 
@@ -262,6 +266,7 @@ message EnrichedEntryHeader {
         SetState set_state = 4;
         ClearState clear_state = 5;
         ClearAllState clear_all_state = 12;
+        GetStateKeys get_state_keys = 13;
         Sleep sleep = 6;
         Invoke invoke = 7;
         BackgroundCall background_call = 8;

@@ -51,6 +51,14 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
         )
     }
 
+    fn serialize_get_state_keys_completion(keys: Vec<Bytes>) -> CompletionResult {
+        CompletionResult::Success(
+            protocol::get_state_keys_entry_message::StateKeys { keys }
+                .encode_to_vec()
+                .into(),
+        )
+    }
+
     fn deserialize(
         entry_type: EntryType,
         mut entry_value: Bytes,
@@ -64,6 +72,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
             SetState,
             ClearState,
             ClearAllState,
+            GetStateKeys,
             Sleep,
             Invoke,
             BackgroundInvoke,
@@ -125,17 +134,18 @@ mod mocks {
     use crate::awakeable_id::AwakeableIdentifier;
     use crate::pb::protocol::{
         awakeable_entry_message, complete_awakeable_entry_message, get_state_entry_message,
-        invoke_entry_message, output_stream_entry_message, AwakeableEntryMessage,
-        BackgroundInvokeEntryMessage, ClearAllStateEntryMessage, ClearStateEntryMessage,
-        CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage, InvokeEntryMessage,
-        OutputStreamEntryMessage, PollInputStreamEntryMessage, SetStateEntryMessage,
+        get_state_keys_entry_message, invoke_entry_message, output_stream_entry_message,
+        AwakeableEntryMessage, BackgroundInvokeEntryMessage, ClearAllStateEntryMessage,
+        ClearStateEntryMessage, CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage,
+        GetStateKeysEntryMessage, InvokeEntryMessage, OutputStreamEntryMessage,
+        PollInputStreamEntryMessage, SetStateEntryMessage,
     };
     use restate_types::journal::enriched::{
         AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
     };
     use restate_types::journal::{
-        AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateResult,
-        PollInputStreamEntry,
+        AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateKeysEntry,
+        GetStateKeysResult, GetStateResult, PollInputStreamEntry,
     };
 
     impl ProtobufRawEntryCodec {
@@ -293,6 +303,12 @@ mod mocks {
                     EnrichedEntryHeader::ClearAllState {},
                     ClearAllStateEntryMessage {}.encode_to_vec().into(),
                 ),
+                Entry::GetStateKeys(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::GetStateKeys {
+                        is_completed: entry.is_completed(),
+                    },
+                    Self::serialize_get_state_keys_entry(entry),
+                ),
                 Entry::Awakeable(entry) => EnrichedRawEntry::new(
                     EnrichedEntryHeader::Awakeable {
                         is_completed: entry.is_completed(),
@@ -313,6 +329,26 @@ mod mocks {
                     }
                     EntryResult::Failure(code, reason) => {
                         poll_input_stream_entry_message::Result::Failure(Failure {
+                            code: code.into(),
+                            message: reason.to_string(),
+                        })
+                    }
+                }),
+            }
+            .encode_to_vec()
+            .into()
+        }
+
+        fn serialize_get_state_keys_entry(GetStateKeysEntry { value }: GetStateKeysEntry) -> Bytes {
+            GetStateKeysEntryMessage {
+                result: value.map(|v| match v {
+                    GetStateKeysResult::Result(keys) => {
+                        get_state_keys_entry_message::Result::Value(
+                            get_state_keys_entry_message::StateKeys { keys },
+                        )
+                    }
+                    GetStateKeysResult::Failure(code, reason) => {
+                        get_state_keys_entry_message::Result::Failure(Failure {
                             code: code.into(),
                             message: reason.to_string(),
                         })
