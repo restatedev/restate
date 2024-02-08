@@ -103,7 +103,7 @@ mod tests {
     use restate_storage_api::inbox_table::InboxTable;
     use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
     use restate_storage_api::outbox_table::OutboxTable;
-    use restate_storage_api::state_table::ReadOnlyStateTable;
+    use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
     use restate_storage_api::status_table::{
         InvocationMetadata, JournalMetadata, NotificationTarget, ReadOnlyStatusTable,
     };
@@ -470,6 +470,43 @@ mod tests {
         Ok(())
     }
 
+    #[test(tokio::test)]
+    async fn clear_all_user_states() -> anyhow::Result<()> {
+        let service_id = ServiceId::new("MySvc", "my-key");
+
+        let mut state_machine = MockStateMachine::default();
+
+        // Fill with some state the service K/V store
+        let mut txn = state_machine.rocksdb_storage.transaction();
+        txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")
+            .await;
+        txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")
+            .await;
+        txn.commit().await.unwrap();
+
+        let fid =
+            mock_start_invocation_with_service_id(&mut state_machine, service_id.clone()).await;
+
+        state_machine
+            .apply(Command::Invoker(InvokerEffect {
+                full_invocation_id: fid.clone(),
+                kind: InvokerEffectKind::JournalEntry {
+                    entry_index: 1,
+                    entry: ProtobufRawEntryCodec::serialize_enriched(Entry::clear_all_state()),
+                },
+            }))
+            .await;
+
+        let states: Vec<restate_storage_api::Result<(Bytes, Bytes)>> = state_machine
+            .rocksdb_storage
+            .get_all_user_states(&service_id)
+            .collect()
+            .await;
+        assert_that!(states, empty());
+
+        Ok(())
+    }
+
     mod virtual_invocation {
         use super::*;
 
@@ -702,8 +739,11 @@ mod tests {
         }
     }
 
-    async fn mock_start_invocation(state_machine: &mut MockStateMachine) -> FullInvocationId {
-        let fid = FullInvocationId::generate("MySvc", Bytes::default());
+    async fn mock_start_invocation_with_service_id(
+        state_machine: &mut MockStateMachine,
+        service_id: ServiceId,
+    ) -> FullInvocationId {
+        let fid = FullInvocationId::with_service_id(service_id, InvocationUuid::new());
 
         let actions = state_machine
             .apply(Command::Invocation(ServiceInvocation {
@@ -725,5 +765,13 @@ mod tests {
         );
 
         fid
+    }
+
+    async fn mock_start_invocation(state_machine: &mut MockStateMachine) -> FullInvocationId {
+        mock_start_invocation_with_service_id(
+            state_machine,
+            ServiceId::new("MySvc", Bytes::default()),
+        )
+        .await
     }
 }

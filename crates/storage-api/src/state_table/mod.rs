@@ -40,4 +40,9 @@ pub trait StateTable: ReadOnlyStateTable {
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> impl Future<Output = ()> + Send;
+
+    fn delete_all_user_state(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = Result<()>> + Send;
 }

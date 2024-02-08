@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::assert_stream_eq;
+use crate::{assert_stream_eq, storage_test_environment};
 use bytes::Bytes;
-use restate_storage_api::state_table::StateTable;
+use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::ServiceId;
@@ -108,4 +108,41 @@ pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
     let mut txn = rocksdb.transaction();
     verify_delete(&mut txn).await;
     verify_prefix_scan_after_delete(&mut txn).await;
+}
+
+#[tokio::test]
+async fn test_delete_all() {
+    let (mut rocksdb, close) = storage_test_environment();
+
+    let mut txn = rocksdb.transaction();
+
+    populate_data(&mut txn).await;
+    txn.commit().await.expect("should not fail");
+
+    // Do delete all
+    let mut txn = rocksdb.transaction();
+    txn.delete_all_user_state(&ServiceId::with_partition_key(1337, "svc-1", "key-1"))
+        .await
+        .unwrap();
+    txn.commit().await.expect("should not fail");
+
+    // No more state for key-1
+    let mut txn = rocksdb.transaction();
+    assert_stream_eq(
+        txn.get_all_user_states(&ServiceId::with_partition_key(1337, "svc-1", "key-1")),
+        vec![],
+    )
+    .await;
+
+    // key-2 should be untouched
+    assert!(txn
+        .get_user_state(
+            &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
+            &Bytes::from_static(b"k2"),
+        )
+        .await
+        .expect("should not fail")
+        .is_some());
+
+    close.await;
 }

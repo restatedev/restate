@@ -143,6 +143,11 @@ pub trait StateStorage {
         key: &Bytes,
     ) -> impl Future<Output = StorageResult<()>> + Send;
 
+    fn clear_all_state(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = StorageResult<()>> + Send;
+
     // Timer
     fn store_timer(
         &mut self,
@@ -289,6 +294,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 service_id, key, ..
             } => {
                 state_storage.clear_state(&service_id, &key).await?;
+            }
+            Effect::ClearAllState { service_id, .. } => {
+                state_storage.clear_all_state(&service_id).await?;
             }
             Effect::RegisterTimer { timer_value, .. } => {
                 state_storage

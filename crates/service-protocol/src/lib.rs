@@ -104,6 +104,14 @@ mod pb_into {
         }
     }
 
+    impl TryFrom<ClearAllStateEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(_: ClearAllStateEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::ClearAllState)
+        }
+    }
+
     impl TryFrom<SleepEntryMessage> for Entry {
         type Error = &'static str;
 

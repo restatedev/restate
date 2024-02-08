@@ -63,6 +63,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
             GetState,
             SetState,
             ClearState,
+            ClearAllState,
             Sleep,
             Invoke,
             BackgroundInvoke,
@@ -125,9 +126,9 @@ mod mocks {
     use crate::pb::protocol::{
         awakeable_entry_message, complete_awakeable_entry_message, get_state_entry_message,
         invoke_entry_message, output_stream_entry_message, AwakeableEntryMessage,
-        BackgroundInvokeEntryMessage, ClearStateEntryMessage, CompleteAwakeableEntryMessage,
-        Failure, GetStateEntryMessage, InvokeEntryMessage, OutputStreamEntryMessage,
-        PollInputStreamEntryMessage, SetStateEntryMessage,
+        BackgroundInvokeEntryMessage, ClearAllStateEntryMessage, ClearStateEntryMessage,
+        CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage, InvokeEntryMessage,
+        OutputStreamEntryMessage, PollInputStreamEntryMessage, SetStateEntryMessage,
     };
     use restate_types::journal::enriched::{
         AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
@@ -196,6 +197,10 @@ mod mocks {
                     ClearStateEntryMessage { key: entry.key }
                         .encode_to_vec()
                         .into(),
+                ),
+                Entry::ClearAllState => PlainRawEntry::new(
+                    PlainEntryHeader::ClearAllState {},
+                    ClearAllStateEntryMessage {}.encode_to_vec().into(),
                 ),
                 Entry::Invoke(entry) => PlainRawEntry::new(
                     PlainEntryHeader::Invoke {
@@ -283,6 +288,10 @@ mod mocks {
                     ClearStateEntryMessage { key: entry.key }
                         .encode_to_vec()
                         .into(),
+                ),
+                Entry::ClearAllState => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::ClearAllState {},
+                    ClearAllStateEntryMessage {}.encode_to_vec().into(),
                 ),
                 Entry::Awakeable(entry) => EnrichedRawEntry::new(
                     EnrichedEntryHeader::Awakeable {

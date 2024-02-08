@@ -86,6 +86,11 @@ pub(crate) enum Effect {
         span_context: ServiceInvocationSpanContext,
         key: Bytes,
     },
+    ClearAllState {
+        service_id: ServiceId,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
+    },
 
     // Timers
     RegisterTimer {
@@ -394,6 +399,22 @@ impl Effect {
                     restate.state.key = ?key,
                     "Effect: Clear state"
                 )
+            }
+            Effect::ClearAllState {
+                service_id,
+                invocation_id,
+                span_context,
+            } => {
+                info_span_if_leader!(
+                    is_leader,
+                    span_context.is_sampled(),
+                    span_context.as_parent(),
+                    "clear_all_state",
+                    rpc.service = %service_id.service_name,
+                    restate.invocation.id = %invocation_id,
+                );
+
+                debug_if_leader!(is_leader, "Effect: Clear all state")
             }
             Effect::RegisterTimer {
                 timer_value,
@@ -721,6 +742,19 @@ impl Effects {
             invocation_id,
             span_context,
             key,
+        })
+    }
+
+    pub(crate) fn clear_all_state(
+        &mut self,
+        service_id: ServiceId,
+        invocation_id: InvocationId,
+        span_context: ServiceInvocationSpanContext,
+    ) {
+        self.effects.push(Effect::ClearAllState {
+            service_id,
+            invocation_id,
+            span_context,
         })
     }
 

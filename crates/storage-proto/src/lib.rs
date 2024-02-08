@@ -21,8 +21,8 @@ pub mod storage {
         #[cfg(feature = "conversion")]
         pub mod pb_conversion {
             use crate::storage::v1::enriched_entry_header::{
-                Awakeable, BackgroundCall, ClearState, CompleteAwakeable, Custom, GetState, Invoke,
-                OutputStream, PollInputStream, SetState, Sleep,
+                Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable, Custom,
+                GetState, Invoke, OutputStream, PollInputStream, SetState, Sleep,
             };
             use crate::storage::v1::invocation_status::{Free, Invoked, Suspended, Virtual};
             use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
@@ -1192,6 +1192,10 @@ pub mod storage {
                         enriched_entry_header::Kind::ClearState(_) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::ClearState {
                                                         }
+                        },
+                        enriched_entry_header::Kind::ClearAllState(_) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::ClearAllState {
+                            }
                         }
                         enriched_entry_header::Kind::Sleep(sleep) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::Sleep {
@@ -1272,6 +1276,9 @@ pub mod storage {
                         }
                         restate_types::journal::enriched::EnrichedEntryHeader::ClearState{..} => {
                             enriched_entry_header::Kind::ClearState(ClearState {})
+                        }
+                        restate_types::journal::enriched::EnrichedEntryHeader::ClearAllState{..} => {
+                            enriched_entry_header::Kind::ClearAllState(ClearAllState {})
                         }
                         restate_types::journal::enriched::EnrichedEntryHeader::Sleep { is_completed, .. } => {
                             enriched_entry_header::Kind::Sleep(Sleep { is_completed })
