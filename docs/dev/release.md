@@ -18,6 +18,11 @@ In order to keep the versioning of our artifacts simple, we're currently followi
 
 This release policy applies to all the aforementioned artifacts.
 
+## Pre-release
+
+Before releasing, make sure all the issues tagged with release-blocker have either been solved, or PRs are ready to solve them:
+https://github.com/issues?q=is%3Aopen+org%3Arestatedev+label%3Arelease-blocker
+
 ## Release order
 
 When performing a full release of all the artifacts, this order should be followed:
@@ -28,9 +33,9 @@ When performing a full release of all the artifacts, this order should be follow
 1. [Java SDK](https://github.com/restatedev/sdk-java/blob/main/development/release.md)
 1. [Typescript SDK](https://github.com/restatedev/sdk-typescript#releasing-the-package) and [Node template generator](https://github.com/restatedev/node-template-generator#releasing)
 1. Execute a manual run of the [e2e tests](https://github.com/restatedev/e2e/actions/workflows/e2e.yaml) to check everything works fine.
-1. [CKD](https://github.com/restatedev/cdk) (might require a release if the server's API changed)
+1. [CDK](https://github.com/restatedev/cdk) (might require a release if the server's API changed)
 1. [Examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
-1. [Documentation](https://github.com/restatedev/documentation#releasing-the-documentation) and [Tour](https://github.com/restatedev/tour-of-restate-typescript#releasing)
+1. [Documentation](https://github.com/restatedev/documentation#releasing-the-documentation)
 
 ## Post release
 
