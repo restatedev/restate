@@ -437,7 +437,8 @@ mod tests {
 
     use crate::partition::services::tests::MockStateReader;
     use futures::future::LocalBoxFuture;
-    use restate_types::identifiers::{IngressDispatcherId, InvocationUuid};
+    use restate_types::identifiers::InvocationUuid;
+    use restate_types::GenerationalNodeId;
 
     impl MockStateReader {
         pub(super) fn apply_effects(&mut self, effects: &[Effect]) {
@@ -498,7 +499,7 @@ mod tests {
                 state_reader: Default::default(),
                 schemas: Default::default(),
                 response_sink: Some(ServiceInvocationResponseSink::Ingress(
-                    IngressDispatcherId::mock(),
+                    GenerationalNodeId::new(1, 1),
                 )),
             }
         }

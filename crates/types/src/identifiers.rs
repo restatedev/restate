@@ -106,10 +106,6 @@ impl Default for SubscriptionId {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, derive_more::Display, derive_more::FromStr)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct IngressDispatcherId(pub std::net::SocketAddr);
-
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.
 pub type PartitionKey = u64;
@@ -687,12 +683,6 @@ mod mocks {
 
     use rand::distributions::{Alphanumeric, DistString};
     use rand::Rng;
-
-    impl IngressDispatcherId {
-        pub fn mock() -> Self {
-            Self("127.0.0.1:8080".parse().unwrap())
-        }
-    }
 
     impl InvocationId {
         pub fn mock_random() -> Self {
