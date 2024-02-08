@@ -10,7 +10,7 @@
 
 use crate::proto::cluster_controller_server::ClusterController;
 use crate::proto::{AttachmentRequest, AttachmentResponse};
-use restate_types::identifiers::NodeId;
+use restate_types::NodeId;
 use tonic::{async_trait, Request, Response, Status};
 use tracing::debug;
 
@@ -28,10 +28,8 @@ impl ClusterController for Handler {
         &self,
         request: Request<AttachmentRequest>,
     ) -> Result<Response<AttachmentResponse>, Status> {
-        debug!(
-            "Register node '{}'",
-            NodeId::from(request.into_inner().node_id.expect("node_id must be set"))
-        );
+        let node_id = request.into_inner().node_id.expect("node_id must be set");
+        debug!("Register node '{}'", NodeId::from(node_id));
         Ok(Response::new(AttachmentResponse {}))
     }
 }
