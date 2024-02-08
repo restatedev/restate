@@ -11,6 +11,7 @@ publish = false
 default = []
 
 [dependencies]
+restate-pb = { workspace = true, features = ["common"] }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true, optional = true }

@@ -1,0 +1,17 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+package dev.restate.common;
+
+message NodeId {
+  uint32 id = 1;
+  optional uint32 generation = 2;
+}

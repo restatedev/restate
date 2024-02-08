@@ -347,6 +347,7 @@ fn main() -> std::io::Result<()> {
                 "proto/dev/restate/internal/services.proto",
                 "proto/dev/restate/events.proto",
                 "proto/dev/restate/internal/messages.proto",
+                "proto/dev/restate/common/common.proto",
             ],
             &["proto"],
         )?;
