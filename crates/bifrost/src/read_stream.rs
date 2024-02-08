@@ -10,8 +10,10 @@
 
 use std::sync::Arc;
 
+use restate_types::logs::{LogId, Lsn};
+
 use crate::bifrost::BifrostInner;
-use crate::{Error, LogId, LogRecord, Lsn};
+use crate::{Error, LogRecord};
 
 pub struct LogReadStream {
     inner: Arc<BifrostInner>,
@@ -79,20 +81,22 @@ mod tests {
 
     use super::*;
 
-    use crate::loglet::ProviderKind;
-    use crate::Options;
     use googletest::prelude::*;
-
     use tokio::task::JoinHandle;
     use tracing::info;
     use tracing_test::traced_test;
+
+    use restate_types::logs::Payload;
+
+    use crate::loglet::ProviderKind;
+    use crate::Options;
 
     #[tokio::test]
     #[traced_test]
     async fn test_basic_readstream() -> Result<()> {
         // start a simple bifrost service with 5 logs.
         let num_partitions = 5;
-        let read_after = Lsn(5);
+        let read_after = Lsn::from(5);
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         let bifrost_opts = Options {
@@ -117,12 +121,12 @@ mod tests {
         let reader_bg_handle: JoinHandle<Result<()>> = tokio::spawn(async move {
             for i in 1..=5 {
                 let record = reader.read_next().await?;
-                let expected_lsn = Lsn::from(i + read_after.0);
+                let expected_lsn = Lsn::from(i) + read_after;
                 info!(?record, "read record");
                 assert_eq!(expected_lsn, record.offset);
                 assert_eq!(
-                    format!("record{}", expected_lsn.0),
-                    record.record.into_payload_unchecked().into_string()
+                    Payload::from(format!("record{}", expected_lsn)),
+                    record.record.into_payload_unchecked()
                 );
                 assert_eq!(expected_lsn, reader.current_read_pointer());
             }

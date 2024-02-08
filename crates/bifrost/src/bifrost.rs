@@ -18,14 +18,13 @@ use std::sync::{Arc, Mutex};
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
 
+use restate_types::logs::{LogId, LogsVersion, Lsn, Payload, SequenceNumber};
+
 use crate::loglet::{LogletBase, LogletProvider, LogletWrapper, ProviderKind};
 use crate::metadata::Logs;
 use crate::options::Options;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
-use crate::{
-    create_static_metadata, Error, FindTailAttributes, LogId, LogReadStream, LogRecord, Lsn,
-    Payload, SequenceNumber, Version,
-};
+use crate::{create_static_metadata, Error, FindTailAttributes, LogReadStream, LogRecord};
 
 /// Bifrost is Restate's durable interconnect system
 ///
@@ -82,7 +81,7 @@ impl Bifrost {
     }
 
     /// The version of the currently loaded metadata
-    pub fn metadata_version(&self) -> Version {
+    pub fn metadata_version(&self) -> LogsVersion {
         self.inner.log_metadata.lock().unwrap().version
     }
 
@@ -252,6 +251,7 @@ mod tests {
     use crate::loglets::memory_loglet::MemoryLogletProvider;
     use googletest::prelude::*;
 
+    use restate_types::logs::SequenceNumber;
     use tracing::info;
     use tracing_test::traced_test;
 
@@ -278,7 +278,7 @@ mod tests {
             // Append a record to memory
             let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
             info!(%lsn, "Appended record to log");
-            assert_eq!(Lsn(i), lsn);
+            assert_eq!(Lsn::from(i), lsn);
             max_lsn = lsn;
         }
 
@@ -296,7 +296,7 @@ mod tests {
                 .append(LogId::from(0), Payload::default())
                 .await?;
             info!(%lsn, "Appended record to log");
-            assert_eq!(max_lsn + Lsn(1), lsn);
+            assert_eq!(max_lsn + Lsn::from(1), lsn);
             max_lsn = lsn;
         }
 
@@ -304,15 +304,15 @@ mod tests {
         let lsn = clean_bifrost_clone
             .append(LogId::from(0), Payload::default())
             .await?;
-        assert_eq!(max_lsn + Lsn(1), lsn);
+        assert_eq!(max_lsn + Lsn::from(1), lsn);
         max_lsn = lsn;
 
         // Writes to a another log doesn't impact existing
         let lsn = bifrost.append(LogId::from(3), Payload::default()).await?;
-        assert_eq!(Lsn(1), lsn);
+        assert_eq!(Lsn::from(1), lsn);
 
         let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
-        assert_eq!(max_lsn + Lsn(1), lsn);
+        assert_eq!(max_lsn + Lsn::from(1), lsn);
         max_lsn = lsn;
 
         let tail = bifrost
@@ -361,7 +361,7 @@ mod tests {
 
         let start = tokio::time::Instant::now();
         let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
-        assert_eq!(Lsn(1), lsn);
+        assert_eq!(Lsn::from(1), lsn);
         // The append was properly delayed
         assert_eq!(delay, start.elapsed());
 
