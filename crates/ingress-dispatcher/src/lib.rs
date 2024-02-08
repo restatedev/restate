@@ -14,9 +14,10 @@ use prost::Message;
 use restate_pb::restate::Event;
 use restate_schema_api::subscription::{EventReceiverServiceInstanceType, Sink, Subscription};
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{FullInvocationId, IngressDispatcherId, InvocationUuid, PeerId};
+use restate_types::identifiers::{FullInvocationId, InvocationUuid, PeerId};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext, SpanRelation};
 use restate_types::message::{AckKind, MessageIndex};
+use restate_types::GenerationalNodeId;
 use std::fmt::Display;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -317,7 +318,7 @@ impl IngressDispatcherInput {
 pub enum IngressDispatcherOutput {
     Invocation {
         service_invocation: ServiceInvocation,
-        ingress_dispatcher_id: IngressDispatcherId,
+        from_node_id: GenerationalNodeId,
         deduplication_source: Option<String>,
         msg_index: MessageIndex,
     },
@@ -333,13 +334,13 @@ pub struct AckResponse {
 impl IngressDispatcherOutput {
     pub fn service_invocation(
         service_invocation: ServiceInvocation,
-        ingress_dispatcher_id: IngressDispatcherId,
+        from_node_id: GenerationalNodeId,
         deduplication_source: Option<String>,
         msg_index: MessageIndex,
     ) -> Self {
         Self::Invocation {
             service_invocation,
-            ingress_dispatcher_id,
+            from_node_id,
             deduplication_source,
             msg_index,
         }
