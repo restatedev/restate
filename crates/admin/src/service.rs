@@ -13,7 +13,6 @@ use std::sync::Arc;
 use axum::error_handling::HandleErrorLayer;
 use futures::FutureExt;
 use http::StatusCode;
-use restate_bifrost::Bifrost;
 use tower::ServiceBuilder;
 
 use restate_meta::MetaHandle;
@@ -28,16 +27,14 @@ pub struct AdminService {
     opts: Options,
     schemas: Schemas,
     meta_handle: MetaHandle,
-    _bifrost: Bifrost,
 }
 
 impl AdminService {
-    pub fn new(opts: Options, schemas: Schemas, meta_handle: MetaHandle, bifrost: Bifrost) -> Self {
+    pub fn new(opts: Options, schemas: Schemas, meta_handle: MetaHandle) -> Self {
         Self {
             opts,
             schemas,
             meta_handle,
-            _bifrost: bifrost,
         }
     }
 
