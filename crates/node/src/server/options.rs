@@ -10,21 +10,20 @@
 
 use std::net::SocketAddr;
 
+use crate::server::service::NodeServer;
 use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_storage_rocksdb::RocksDBStorage;
 use serde_with::serde_as;
 
-use crate::service::NodeCtrlService;
-
-/// # Node ctrl service options
+/// # Node server options
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "options_schema", schemars(rename = "NodeCtrlOptions"))]
+#[cfg_attr(feature = "options_schema", schemars(rename = "NodeServerOptions"))]
 #[cfg_attr(feature = "options_schema", schemars(default))]
 pub struct Options {
-    /// Address to bind for the Node ctrl Service.
+    /// Address to bind for the Node server.
     pub bind_address: SocketAddr,
 
     /// Timeout for idle histograms.
@@ -54,7 +53,7 @@ impl Options {
         self,
         worker: Option<(RocksDBStorage, Bifrost)>,
         cluster_controller: Option<ClusterControllerHandle>,
-    ) -> NodeCtrlService {
-        NodeCtrlService::new(self, worker, cluster_controller)
+    ) -> NodeServer {
+        NodeServer::new(self, worker, cluster_controller)
     }
 }

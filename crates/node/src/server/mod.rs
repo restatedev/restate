@@ -1,4 +1,4 @@
-// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -13,8 +13,8 @@ mod metrics;
 mod multiplex;
 mod options;
 mod prometheus_helpers;
-pub mod service;
+mod service;
 mod state;
 
-pub use crate::options::{Options, OptionsBuilder, OptionsBuilderError};
-pub use service::Error;
+pub use options::Options;
+pub use service::{Error, NodeServer};

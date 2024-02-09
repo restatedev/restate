@@ -12,7 +12,7 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use metrics_tracing_context::TracingContextLayer;
 use metrics_util::{layers::Layer, MetricKindMask};
 
-use crate::Options;
+use crate::server::Options;
 
 /// The set of labels that are allowed to be extracted from tracing context to be used in metrics.
 /// Be mindful when adding new labels, the number of time series(es) is directly propotional

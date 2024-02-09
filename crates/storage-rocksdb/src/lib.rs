@@ -367,7 +367,7 @@ fn cf_options(opts: &Options, cache: Option<Cache>) -> rocksdb::Options {
 }
 
 impl RocksDBStorage {
-    /// Returns the raw rocksdb handle, this should only be used for node-ctrl operations that
+    /// Returns the raw rocksdb handle, this should only be used for server operations that
     /// require direct access to rocksdb.
     pub fn inner(&self) -> Arc<DB> {
         self.db.clone()

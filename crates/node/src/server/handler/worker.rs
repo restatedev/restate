@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use restate_bifrost::Bifrost;
-use restate_node_ctrl_proto::worker::worker_server::Worker;
-use restate_node_ctrl_proto::worker::BifrostVersion;
+use restate_node_services::worker::worker_server::Worker;
+use restate_node_services::worker::BifrostVersion;
 use tonic::{Request, Response, Status};
 
 // -- GRPC Service Handlers --

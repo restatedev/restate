@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::server;
 use enumset::EnumSet;
 use restate_types::nodes_config::{NetworkAddress, Role};
 use restate_types::PlainNodeId;
@@ -24,7 +25,7 @@ pub struct Options {
 
     pub meta: restate_meta::Options,
     pub worker: restate_worker::Options,
-    pub node_ctrl: restate_node_ctrl::Options,
+    pub server: server::Options,
     pub admin: restate_admin::Options,
     pub bifrost: restate_bifrost::Options,
     pub cluster_controller: restate_cluster_controller::Options,
@@ -46,7 +47,7 @@ impl Default for Options {
             node_id: PlainNodeId::from(1),
             meta: Default::default(),
             worker: Default::default(),
-            node_ctrl: Default::default(),
+            server: Default::default(),
             admin: Default::default(),
             bifrost: Default::default(),
             cluster_controller: Default::default(),

@@ -22,11 +22,11 @@ use restate_storage_rocksdb::{TableKind, DB};
 use rocksdb::statistics::{Histogram, Ticker};
 use rocksdb::AsColumnFamilyRef;
 
-use crate::prometheus_helpers::{
+use crate::server::prometheus_helpers::{
     format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
     format_rocksdb_stat_ticker_for_prometheus, MetricUnit,
 };
-use crate::state::HandlerState;
+use crate::server::state::HandlerState;
 
 static ROCKSDB_TICKERS: &[Ticker] = &[
     Ticker::BlockCacheDataBytesInsert,

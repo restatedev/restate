@@ -1223,7 +1223,7 @@ where
             }
             EnrichedEntryHeader::Awakeable { is_completed, .. } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
-                // Check the awakeable_completion_received_before_entry test in state_machine/mod.rs for more details
+                // Check the awakeable_completion_received_before_entry test in state_machine/server for more details
 
                 // If completion is already here, let's merge it and forward it.
                 if let Some(completion_result) = state

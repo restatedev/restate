@@ -19,42 +19,44 @@ use restate_storage_rocksdb::RocksDBStorage;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use crate::handler::cluster_controller::ClusterControllerHandler;
-use crate::handler::node_ctrl::NodeCtrlHandler;
-use crate::handler::worker::WorkerHandler;
-use restate_node_ctrl_proto::cluster_controller::cluster_controller_server::ClusterControllerServer;
-use restate_node_ctrl_proto::node_ctrl::node_ctrl_server::NodeCtrlServer;
-use restate_node_ctrl_proto::worker::worker_server::WorkerServer;
-use restate_node_ctrl_proto::{cluster_controller, node_ctrl, worker};
+use crate::server::handler;
+use crate::server::handler::cluster_controller::ClusterControllerHandler;
+use crate::server::handler::node_ctrl::NodeCtrlHandler;
+use crate::server::handler::worker::WorkerHandler;
+use crate::server::metrics::install_global_prometheus_recorder;
+use restate_node_services::cluster_controller::cluster_controller_server::ClusterControllerServer;
+use restate_node_services::node_ctrl::node_ctrl_server::NodeCtrlServer;
+use restate_node_services::worker::worker_server::WorkerServer;
+use restate_node_services::{cluster_controller, node_ctrl, worker};
 
-use crate::multiplex::MultiplexService;
-use crate::state::HandlerStateBuilder;
-use crate::Options;
+use crate::server::multiplex::MultiplexService;
+use crate::server::options::Options;
+use crate::server::state::HandlerStateBuilder;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
-    #[error("failed binding to address '{address}' specified in 'node_ctrl.bind_address'")]
+    #[error("failed binding to address '{address}' specified in 'server.bind_address'")]
     #[code(restate_errors::RT0004)]
     Binding {
         address: SocketAddr,
         #[source]
         source: hyper::Error,
     },
-    #[error("error while running node-ctrl service: {0}")]
+    #[error("error while running server service: {0}")]
     #[code(unknown)]
     Running(hyper::Error),
-    #[error("error while running node-ctrl server grpc reflection service: {0}")]
+    #[error("error while running server server grpc reflection service: {0}")]
     #[code(unknown)]
     Grpc(#[from] tonic_reflection::server::Error),
 }
 
-pub struct NodeCtrlService {
+pub struct NodeServer {
     opts: Options,
     worker: Option<(RocksDBStorage, Bifrost)>,
     cluster_controller: Option<ClusterControllerHandle>,
 }
 
-impl NodeCtrlService {
+impl NodeServer {
     pub fn new(
         opts: Options,
         worker: Option<(RocksDBStorage, Bifrost)>,
@@ -76,9 +78,7 @@ impl NodeCtrlService {
         }
 
         if !self.opts.disable_prometheus {
-            state_builder.prometheus_handle(Some(
-                crate::metrics::install_global_prometheus_recorder(&self.opts),
-            ));
+            state_builder.prometheus_handle(Some(install_global_prometheus_recorder(&self.opts)));
         }
 
         let shared_state = state_builder.build().expect("should be infallible");
@@ -90,8 +90,8 @@ impl NodeCtrlService {
 
         // -- HTTP service (for prometheus et al.)
         let router = axum::Router::new()
-            .route("/metrics", get(crate::handler::render_metrics))
-            .route("/rocksdb-stats", get(crate::handler::rocksdb_stats))
+            .route("/metrics", get(handler::render_metrics))
+            .route("/rocksdb-stats", get(handler::rocksdb_stats))
             .with_state(shared_state)
             .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
             .fallback(handler_404);
@@ -139,7 +139,7 @@ impl NodeCtrlService {
         info!(
             net.host.addr = %server.local_addr().ip(),
             net.host.port = %server.local_addr().port(),
-            "Node-ctrl service listening"
+            "Node server listening"
         );
 
         // Wait server graceful shutdown

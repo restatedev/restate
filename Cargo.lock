@@ -5232,40 +5232,12 @@ dependencies = [
 name = "restate-node"
 version = "0.8.0"
 dependencies = [
- "codederror",
- "derive_builder",
- "drain",
- "enumset",
- "futures",
- "http",
- "restate-admin",
- "restate-bifrost",
- "restate-cluster-controller",
- "restate-meta",
- "restate-node-ctrl",
- "restate-node-ctrl-proto",
- "restate-storage-rocksdb",
- "restate-types",
- "restate-worker",
- "schemars",
- "serde",
- "serde_with",
- "thiserror",
- "tokio",
- "tonic 0.10.2",
- "tower",
- "tracing",
-]
-
-[[package]]
-name = "restate-node-ctrl"
-version = "0.8.0"
-dependencies = [
  "async-trait",
  "axum",
  "codederror",
  "derive_builder",
  "drain",
+ "enumset",
  "futures",
  "http",
  "humantime",
@@ -5274,18 +5246,22 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-tracing-context",
  "metrics-util",
+ "restate-admin",
  "restate-bifrost",
  "restate-cluster-controller",
  "restate-errors",
- "restate-node-ctrl-proto",
+ "restate-meta",
+ "restate-node-services",
  "restate-storage-rocksdb",
  "restate-types",
+ "restate-worker",
  "rocksdb",
  "schemars",
  "serde",
  "serde_json",
  "serde_with",
  "thiserror",
+ "tokio",
  "tonic 0.10.2",
  "tonic-reflection",
  "tower",
@@ -5294,7 +5270,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate-node-ctrl-proto"
+name = "restate-node-services"
 version = "0.8.0"
 dependencies = [
  "anyhow",
@@ -5419,7 +5395,6 @@ dependencies = [
  "restate-fs-util",
  "restate-meta",
  "restate-node",
- "restate-node-ctrl",
  "restate-storage-rocksdb",
  "restate-tracing-instrumentation",
  "restate-types",

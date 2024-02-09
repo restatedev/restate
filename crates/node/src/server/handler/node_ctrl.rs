@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_node_ctrl_proto::node_ctrl::node_ctrl_server::NodeCtrl;
-use restate_node_ctrl_proto::node_ctrl::{IdentResponse, NodeStatus};
+use restate_node_services::node_ctrl::node_ctrl_server::NodeCtrl;
+use restate_node_services::node_ctrl::{IdentResponse, NodeStatus};
 use tonic::{Request, Response, Status};
 
 // -- GRPC Service Handlers --

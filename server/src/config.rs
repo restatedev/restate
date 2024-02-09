@@ -26,7 +26,6 @@ pub use restate_meta::{
     Options as MetaOptions, OptionsBuilder as MetaOptionsBuilder,
     OptionsBuilderError as MetaOptionsBuilderError,
 };
-pub use restate_node_ctrl::Options as NodeCtrlOptions;
 use restate_storage_rocksdb::TableKind;
 pub use restate_tracing_instrumentation::{
     LogOptions, LogOptionsBuilder, LogOptionsBuilderError, Options as ObservabilityOptions,

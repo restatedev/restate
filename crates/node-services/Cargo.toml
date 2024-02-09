@@ -1,5 +1,5 @@
 [package]
-name = "restate-node-ctrl-proto"
+name = "restate-node-services"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

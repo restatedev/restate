@@ -10,6 +10,7 @@
 
 pub mod cluster_controller;
 mod options;
+mod server;
 pub mod worker;
 
 use codederror::CodedError;
@@ -23,13 +24,13 @@ use tower::service_fn;
 use tracing::{info, instrument, warn};
 
 use crate::cluster_controller::ClusterControllerRole;
+use crate::server::NodeServer;
 use crate::worker::WorkerRole;
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
-use restate_node_ctrl::service::NodeCtrlService;
-use restate_node_ctrl_proto::cluster_controller::cluster_controller_client::ClusterControllerClient;
-use restate_node_ctrl_proto::cluster_controller::AttachmentRequest;
+use restate_node_services::cluster_controller::cluster_controller_client::ClusterControllerClient;
+use restate_node_services::cluster_controller::AttachmentRequest;
 use restate_types::nodes_config::{NetworkAddress, Role};
 use restate_types::retries::RetryPolicy;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
@@ -52,7 +53,7 @@ pub enum Error {
     NodeCtrlService(
         #[from]
         #[code]
-        restate_node_ctrl::Error,
+        server::Error,
     ),
     #[error("invalid cluster controller address: {0}")]
     #[code(unknown)]
@@ -84,7 +85,7 @@ pub struct Node {
 
     cluster_controller_role: Option<ClusterControllerRole>,
     worker_role: Option<WorkerRole>,
-    node_ctrl: NodeCtrlService,
+    server: NodeServer,
 }
 
 impl Node {
@@ -101,7 +102,7 @@ impl Node {
             None
         };
 
-        let node_ctrl = options.node_ctrl.build(
+        let server = options.server.build(
             worker_role
                 .as_ref()
                 .map(|worker| (worker.rocksdb_storage().clone(), worker.bifrost_handle())),
@@ -120,7 +121,7 @@ impl Node {
 
             cluster_controller_address
         } else if cluster_controller_role.is_some() {
-            NetworkAddress::DnsName(format!("127.0.0.1:{}", node_ctrl.port()))
+            NetworkAddress::DnsName(format!("127.0.0.1:{}", server.port()))
         } else {
             return Err(BuildError::UnknownClusterController);
         };
@@ -130,7 +131,7 @@ impl Node {
             cluster_controller_address,
             cluster_controller_role,
             worker_role,
-            node_ctrl,
+            server,
         })
     }
 
@@ -144,9 +145,9 @@ impl Node {
         let mut component_set: JoinSet<Result<&'static str, Error>> = JoinSet::new();
 
         component_set.spawn(
-            self.node_ctrl
+            self.server
                 .run(component_shutdown_watch.clone())
-                .map_ok(|_| "node-ctrl")
+                .map_ok(|_| "server")
                 .map_err(Error::NodeCtrlService),
         );
 

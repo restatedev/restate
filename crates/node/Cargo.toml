@@ -13,7 +13,6 @@ options_schema = [
     "dep:schemars",
     "restate-admin/options_schema",
     "restate-meta/options_schema",
-    "restate-node-ctrl/options_schema",
     "restate-worker/options_schema",
     "restate-cluster-controller/options_schema"]
 
@@ -22,24 +21,36 @@ options_schema = [
 restate-admin = { workspace = true }
 restate-bifrost = { workspace = true }
 restate-cluster-controller = { workspace = true }
+restate-errors = { workspace = true }
 restate-meta = { workspace = true }
-restate-node-ctrl = { workspace = true }
-restate-node-ctrl-proto = { workspace = true }
+restate-node-services = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
 
+async-trait = { workspace = true }
+axum = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
+humantime = { workspace = true }
+hyper = { workspace = true, features = ["full"] }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { version = "0.13", default-features = false, features = ["async-runtime"] }
+metrics-tracing-context = { version = "0.15.0" }
+metrics-util = { version = "0.16.0" }
+rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tonic-reflection = { workspace = true }
 tower = { workspace = true }
+tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
