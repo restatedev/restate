@@ -31,3 +31,13 @@ pub mod cluster_controller {
     pub const FILE_DESCRIPTOR_SET: &[u8] =
         tonic::include_file_descriptor_set!("cluster_controller_descriptor");
 }
+
+pub mod worker {
+    #![allow(warnings)]
+    #![allow(clippy::all)]
+    #![allow(unknown_lints)]
+
+    tonic::include_proto!("dev.restate.worker");
+
+    pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("worker_descriptor");
+}

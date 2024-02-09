@@ -13,7 +13,6 @@ use std::net::SocketAddr;
 use axum::routing::get;
 use codederror::CodedError;
 use futures::FutureExt;
-use http::Uri;
 use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -22,9 +21,11 @@ use tracing::info;
 
 use crate::handler::cluster_controller::ClusterControllerHandler;
 use crate::handler::node_ctrl::NodeCtrlHandler;
+use crate::handler::worker::WorkerHandler;
 use restate_node_ctrl_proto::cluster_controller::cluster_controller_server::ClusterControllerServer;
 use restate_node_ctrl_proto::node_ctrl::node_ctrl_server::NodeCtrlServer;
-use restate_node_ctrl_proto::{cluster_controller, node_ctrl};
+use restate_node_ctrl_proto::worker::worker_server::WorkerServer;
+use restate_node_ctrl_proto::{cluster_controller, node_ctrl, worker};
 
 use crate::multiplex::MultiplexService;
 use crate::state::HandlerStateBuilder;
@@ -49,22 +50,19 @@ pub enum Error {
 
 pub struct NodeCtrlService {
     opts: Options,
-    rocksdb_storage: Option<RocksDBStorage>,
-    bifrost: Bifrost,
+    worker: Option<(RocksDBStorage, Bifrost)>,
     cluster_controller: Option<ClusterControllerHandle>,
 }
 
 impl NodeCtrlService {
     pub fn new(
         opts: Options,
-        rocksdb_storage: Option<RocksDBStorage>,
-        bifrost: Bifrost,
+        worker: Option<(RocksDBStorage, Bifrost)>,
         cluster_controller: Option<ClusterControllerHandle>,
     ) -> Self {
         Self {
             opts,
-            rocksdb_storage,
-            bifrost,
+            worker,
             cluster_controller,
         }
     }
@@ -72,8 +70,10 @@ impl NodeCtrlService {
     pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
         // Configure Metric Exporter
         let mut state_builder = HandlerStateBuilder::default();
-        state_builder.rocksdb_storage(self.rocksdb_storage);
-        state_builder.bifrost(self.bifrost);
+
+        if let Some((rocksdb, _)) = self.worker.as_ref() {
+            state_builder.rocksdb_storage(Some(rocksdb.clone()));
+        }
 
         if !self.opts.disable_prometheus {
             state_builder.prometheus_handle(Some(
@@ -81,7 +81,8 @@ impl NodeCtrlService {
             ));
         }
 
-        let shared_state = state_builder.build().unwrap();
+        let shared_state = state_builder.build().expect("should be infallible");
+
         // Trace layer
         let span_factory = tower_http::trace::DefaultMakeSpan::new()
             .include_headers(true)
@@ -91,40 +92,41 @@ impl NodeCtrlService {
         let router = axum::Router::new()
             .route("/metrics", get(crate::handler::render_metrics))
             .route("/rocksdb-stats", get(crate::handler::rocksdb_stats))
-            .with_state(shared_state.clone())
+            .with_state(shared_state)
             .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
             .fallback(handler_404);
 
         // -- GRPC Service Setup
-        let reflection_service_builder = if self.cluster_controller.is_some() {
-            tonic_reflection::server::Builder::configure()
-                .register_encoded_file_descriptor_set(cluster_controller::FILE_DESCRIPTOR_SET)
-        } else {
-            tonic_reflection::server::Builder::configure()
-        };
+        let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(node_ctrl::FILE_DESCRIPTOR_SET);
 
-        let tonic_reflection_service = reflection_service_builder
-            .register_encoded_file_descriptor_set(node_ctrl::FILE_DESCRIPTOR_SET)
-            .build()?;
+        if self.cluster_controller.is_some() {
+            reflection_service_builder = reflection_service_builder
+                .register_encoded_file_descriptor_set(cluster_controller::FILE_DESCRIPTOR_SET);
+        }
 
-        // Build the NodeCtrl grpc service
-        let grpc = if self.cluster_controller.is_some() {
-            tonic::transport::Server::builder()
-                .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
-                .add_service(NodeCtrlServer::new(NodeCtrlHandler::new(shared_state)))
-                .add_service(ClusterControllerServer::new(ClusterControllerHandler::new()))
-                .add_service(tonic_reflection_service)
-                .into_service()
-        } else {
-            tonic::transport::Server::builder()
-                .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
-                .add_service(NodeCtrlServer::new(NodeCtrlHandler::new(shared_state)))
-                .add_service(tonic_reflection_service)
-                .into_service()
-        };
+        if self.worker.is_some() {
+            reflection_service_builder = reflection_service_builder
+                .register_encoded_file_descriptor_set(worker::FILE_DESCRIPTOR_SET);
+        }
+
+        let mut server_builder = tonic::transport::Server::builder()
+            .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
+            .add_service(NodeCtrlServer::new(NodeCtrlHandler::new()))
+            .add_service(reflection_service_builder.build()?);
+
+        if self.cluster_controller.is_some() {
+            server_builder = server_builder
+                .add_service(ClusterControllerServer::new(ClusterControllerHandler::new()));
+        }
+
+        if let Some((_, bifrost)) = self.worker {
+            server_builder =
+                server_builder.add_service(WorkerServer::new(WorkerHandler::new(bifrost)));
+        }
 
         // Multiplex both grpc and http based on content-type
-        let service = MultiplexService::new(router, grpc);
+        let service = MultiplexService::new(router, server_builder.into_service());
 
         // Bind and serve
         let server = hyper::Server::try_bind(&self.opts.bind_address)
@@ -147,13 +149,8 @@ impl NodeCtrlService {
             .map_err(Error::Running)
     }
 
-    pub fn endpoint(&self) -> Uri {
-        Uri::builder()
-            .scheme("http")
-            .authority(self.opts.bind_address.to_string())
-            .path_and_query("/")
-            .build()
-            .expect("should be valid uri")
+    pub fn port(&self) -> u16 {
+        self.opts.bind_address.port()
     }
 }
 

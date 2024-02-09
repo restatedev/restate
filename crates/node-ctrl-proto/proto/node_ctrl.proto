@@ -1,3 +1,12 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
@@ -16,12 +25,6 @@ enum NodeStatus {
 service NodeCtrl {
   // Get identity information from this node.
   rpc GetIdent(google.protobuf.Empty) returns (IdentResponse);
-  // Get the current known version of bifrost metadata on this node
-  rpc GetBifrostVersion(google.protobuf.Empty) returns (BifrostVersion);
-}
-
-message BifrostVersion {
-  uint64 version = 1;
 }
 
 message IdentResponse {

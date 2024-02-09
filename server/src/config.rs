@@ -10,7 +10,7 @@
 
 use figment::providers::{Env, Format, Serialized, Yaml};
 use figment::Figment;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::ops::Div;
 use std::path::Path;
@@ -26,7 +26,6 @@ pub use restate_meta::{
     Options as MetaOptions, OptionsBuilder as MetaOptionsBuilder,
     OptionsBuilderError as MetaOptionsBuilderError,
 };
-use restate_node::ClusterControllerLocation;
 pub use restate_node_ctrl::Options as NodeCtrlOptions;
 use restate_storage_rocksdb::TableKind;
 pub use restate_tracing_instrumentation::{
@@ -35,7 +34,6 @@ pub use restate_tracing_instrumentation::{
     OptionsBuilderError as ObservabilityOptionsBuilderError, TracingOptions, TracingOptionsBuilder,
     TracingOptionsBuilderError,
 };
-use restate_types::PlainNodeId;
 
 /// # Restate configuration file
 ///
@@ -53,8 +51,6 @@ use restate_types::PlainNodeId;
 #[cfg_attr(feature = "options_schema", schemars(default))]
 #[builder(default)]
 pub struct Configuration {
-    pub node_id: PlainNodeId,
-
     /// # Shutdown grace timeout
     ///
     /// This timeout is used when shutting down the various Restate components to drain all the internal queues.
@@ -68,23 +64,14 @@ pub struct Configuration {
 
     #[serde(flatten)]
     pub node: restate_node::Options,
-
-    /// Configures the cluster controller endpoint. Options are:
-    ///
-    /// * "Local": Cluster controller will be run locally
-    /// * [Address]: Specifying the remote address of the cluster controller
-    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
-    pub cluster_controller_endpoint: ClusterControllerEndpoint,
 }
 
 impl Default for Configuration {
     fn default() -> Self {
         Self {
-            node_id: PlainNodeId::from(1),
             shutdown_grace_period: Duration::from_secs(60).into(),
             observability: Default::default(),
             tokio_runtime: Default::default(),
-            cluster_controller_endpoint: ClusterControllerEndpoint::Local,
             node: Default::default(),
         }
     }
@@ -199,51 +186,5 @@ impl Configuration {
             .extract()?;
 
         Ok(figment)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ClusterControllerEndpoint {
-    Local,
-    Remote(String),
-}
-
-impl Serialize for ClusterControllerEndpoint {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            ClusterControllerEndpoint::Local => serializer.serialize_str("local"),
-            ClusterControllerEndpoint::Remote(address) => serializer.serialize_str(address),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for ClusterControllerEndpoint {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-
-        let result = if value.to_lowercase() == "local" {
-            ClusterControllerEndpoint::Local
-        } else {
-            ClusterControllerEndpoint::Remote(value)
-        };
-
-        Ok(result)
-    }
-}
-
-impl From<ClusterControllerEndpoint> for ClusterControllerLocation {
-    fn from(value: ClusterControllerEndpoint) -> Self {
-        match value {
-            ClusterControllerEndpoint::Local => ClusterControllerLocation::Local,
-            ClusterControllerEndpoint::Remote(address) => {
-                ClusterControllerLocation::Remote(address)
-            }
-        }
     }
 }

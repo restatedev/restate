@@ -52,10 +52,9 @@ impl Default for Options {
 impl Options {
     pub fn build(
         self,
-        rocksdb_storage: Option<RocksDBStorage>,
-        bifrost: Bifrost,
+        worker: Option<(RocksDBStorage, Bifrost)>,
         cluster_controller: Option<ClusterControllerHandle>,
     ) -> NodeCtrlService {
-        NodeCtrlService::new(self, rocksdb_storage, bifrost, cluster_controller)
+        NodeCtrlService::new(self, worker, cluster_controller)
     }
 }

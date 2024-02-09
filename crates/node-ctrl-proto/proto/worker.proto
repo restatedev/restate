@@ -9,20 +9,15 @@
 
 syntax = "proto3";
 
-import "dev/restate/common/common.proto";
+import "google/protobuf/empty.proto";
 
-package dev.restate.cluster_controller;
+package dev.restate.worker;
 
-service ClusterController {
-  // Attach node at cluster controller
-  rpc AttachNode(AttachmentRequest) returns (AttachmentResponse);
+service Worker {
+  // Get the current known version of bifrost metadata on this node
+  rpc GetBifrostVersion(google.protobuf.Empty) returns (BifrostVersion);
 }
 
-message AttachmentRequest {
-  dev.restate.common.NodeId node_id = 1;
+message BifrostVersion {
+  uint64 version = 1;
 }
-
-message AttachmentResponse {
-}
-
-

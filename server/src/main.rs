@@ -138,7 +138,7 @@ fn main() {
             config.node.worker.storage_path().into()
         ).await.expect("Error when trying to wipe the configured storage path");
 
-        let node = Node::new(config.node_id, config.cluster_controller_endpoint.into(), config.node);
+        let node = Node::new(config.node);
 
         if let Err(err) = node {
             handle_error(err);

@@ -8,17 +8,50 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use enumset::EnumSet;
+use restate_types::nodes_config::{NetworkAddress, Role};
+use restate_types::PlainNodeId;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, derive_builder::Builder)]
+#[serde_as]
+#[derive(Clone, Debug, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(default))]
 #[builder(default)]
 pub struct Options {
+    pub node_id: PlainNodeId,
+
     pub meta: restate_meta::Options,
     pub worker: restate_worker::Options,
     pub node_ctrl: restate_node_ctrl::Options,
     pub admin: restate_admin::Options,
     pub bifrost: restate_bifrost::Options,
     pub cluster_controller: restate_cluster_controller::Options,
+
+    /// Defines the roles which this Restate node should run
+    #[cfg_attr(feature = "options_schema", schemars(with = "Vec<String>"))]
+    pub roles: EnumSet<Role>,
+
+    /// Configures the cluster controller address. If it is not specified, then this
+    /// node needs to run the cluster controller
+    #[serde_as(as = "serde_with::NoneAsEmptyString")]
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
+    pub cluster_controller_address: Option<NetworkAddress>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            node_id: PlainNodeId::from(1),
+            meta: Default::default(),
+            worker: Default::default(),
+            node_ctrl: Default::default(),
+            admin: Default::default(),
+            bifrost: Default::default(),
+            cluster_controller: Default::default(),
+            roles: Role::Worker | Role::ClusterController,
+            cluster_controller_address: None,
+        }
+    }
 }

@@ -12,7 +12,9 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::str::FromStr;
 
 use enumset::{EnumSet, EnumSetType};
 
@@ -31,6 +33,7 @@ pub enum NodesConfigError {
 // PartialEq+Eq+Clone+Copy are implemented by EnumSetType
 #[derive(Debug, Hash, EnumSetType, derive_more::Display)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", enumset(serialize_repr = "list"))]
 pub enum Role {
     Worker,
     ClusterController,
@@ -101,14 +104,17 @@ impl NodeConfig {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, derive_more::Display)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NetworkAddress {
     /// Unix domain socket
+    #[display(fmt = "unix:{}", _0)]
     Uds(String),
     /// TCP socket address
+    #[display(fmt = "{}", _0)]
     TcpSocketAddr(SocketAddr),
     /// Hostname or host:port pair, or any unrecognizable string.
+    #[display(fmt = "{}", _0)]
     DnsName(String),
 }
 
@@ -126,6 +132,14 @@ impl From<&str> for NetworkAddress {
                 Err(_) => NetworkAddress::DnsName(s.to_owned()),
             }
         }
+    }
+}
+
+impl FromStr for NetworkAddress {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(NetworkAddress::from(s))
     }
 }
 

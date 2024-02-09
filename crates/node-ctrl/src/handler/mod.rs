@@ -10,6 +10,7 @@
 
 pub mod cluster_controller;
 pub mod node_ctrl;
+pub mod worker;
 
 use std::fmt::Write;
 use std::iter::once;

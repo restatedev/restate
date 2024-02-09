@@ -15,14 +15,13 @@ use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
-use restate_node::{ClusterControllerLocation, Node};
+use restate_node::Node;
 use restate_node::{
     MetaOptionsBuilder, NodeOptionsBuilder, RocksdbOptionsBuilder, WorkerOptionsBuilder,
 };
 use restate_server::config::ConfigurationBuilder;
 use restate_server::Configuration;
 use restate_types::retries::RetryPolicy;
-use restate_types::PlainNodeId;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
@@ -72,12 +71,7 @@ pub fn spawn_restate(
     let (signal, drain) = drain::channel();
 
     let node_handle = rt.block_on(async move {
-        let node = Node::new(
-            PlainNodeId::from(1),
-            ClusterControllerLocation::Local,
-            config.node,
-        )
-        .expect("Restate node must build");
+        let node = Node::new(config.node).expect("Restate node must build");
         tokio::task::spawn(node.run(drain))
     });
 

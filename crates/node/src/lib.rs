@@ -14,14 +14,13 @@ pub mod worker;
 
 use codederror::CodedError;
 use futures::TryFutureExt;
-use restate_types::NodeId;
-use std::convert::Infallible;
-use std::str::FromStr;
+use restate_types::{NodeId, PlainNodeId};
 use std::time::Duration;
+use tokio::net::UnixStream;
 use tokio::task::{JoinError, JoinSet};
-use tonic::codegen::http::uri::InvalidUri;
-use tonic::transport::{Channel, Uri};
-use tracing::{info, instrument};
+use tonic::transport::{Channel, Endpoint, Uri};
+use tower::service_fn;
+use tracing::{info, instrument, warn};
 
 use crate::cluster_controller::ClusterControllerRole;
 use crate::worker::WorkerRole;
@@ -31,6 +30,7 @@ pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_node_ctrl::service::NodeCtrlService;
 use restate_node_ctrl_proto::cluster_controller::cluster_controller_client::ClusterControllerClient;
 use restate_node_ctrl_proto::cluster_controller::AttachmentRequest;
+use restate_types::nodes_config::{NetworkAddress, Role};
 use restate_types::retries::RetryPolicy;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
 
@@ -54,9 +54,12 @@ pub enum Error {
         #[code]
         restate_node_ctrl::Error,
     ),
+    #[error("invalid cluster controller address: {0}")]
+    #[code(unknown)]
+    InvalidClusterControllerAddress(http::Error),
     #[error("failed to attach to cluster at '{0}': {1}")]
     #[code(unknown)]
-    Attachment(Uri, tonic::Status),
+    Attachment(NetworkAddress, tonic::Status),
     #[error("node component panicked: {0}")]
     #[code(unknown)]
     ComponentPanic(JoinError),
@@ -70,56 +73,61 @@ pub enum BuildError {
         #[code]
         worker::WorkerRoleBuildError,
     ),
-    #[error("invalid controller endpoint: {0}")]
+    #[error("node neither runs cluster controller nor its address has been configured")]
     #[code(unknown)]
-    InvalidControllerEndpoint(#[from] InvalidUri),
+    UnknownClusterController,
 }
 
 pub struct Node {
-    node_id: NodeId,
-    cluster_controller_endpoint: Uri,
+    node_id: PlainNodeId,
+    cluster_controller_address: NetworkAddress,
 
     cluster_controller_role: Option<ClusterControllerRole>,
-    worker_role: WorkerRole,
+    worker_role: Option<WorkerRole>,
     node_ctrl: NodeCtrlService,
 }
 
 impl Node {
-    pub fn new(
-        node_id: impl Into<NodeId>,
-        cluster_controller_location: ClusterControllerLocation,
-        options: Options,
-    ) -> Result<Self, BuildError> {
-        let cluster_controller_role = if let ClusterControllerLocation::Local =
-            cluster_controller_location
-        {
+    pub fn new(options: Options) -> Result<Self, BuildError> {
+        let cluster_controller_role = if options.roles.contains(Role::ClusterController) {
             Some(ClusterControllerRole::try_from(options.clone()).expect("should be infallible"))
         } else {
             None
         };
 
-        let worker_role = WorkerRole::try_from(options.clone())?;
+        let worker_role = if options.roles.contains(Role::Worker) {
+            Some(WorkerRole::try_from(options.clone())?)
+        } else {
+            None
+        };
 
         let node_ctrl = options.node_ctrl.build(
-            Some(worker_role.rocksdb_storage().clone()),
-            worker_role.bifrost_handle(),
+            worker_role
+                .as_ref()
+                .map(|worker| (worker.rocksdb_storage().clone(), worker.bifrost_handle())),
             cluster_controller_role
                 .as_ref()
                 .map(|cluster_controller| cluster_controller.handle()),
         );
 
-        let cluster_controller_endpoint =
-            if let ClusterControllerLocation::Remote(cluster_controller_address) =
-                cluster_controller_location
-            {
-                cluster_controller_address.parse()?
-            } else {
-                node_ctrl.endpoint()
-            };
+        let cluster_controller_address = if let Some(cluster_controller_address) =
+            options.cluster_controller_address
+        {
+            if cluster_controller_role.is_some() {
+                warn!("This node is running the cluster controller but has also a remote cluster controller address configured. \
+                This indicates a potential misconfiguration. Trying to connect to the remote cluster controller.");
+            }
+
+            cluster_controller_address
+        } else if cluster_controller_role.is_some() {
+            NetworkAddress::DnsName(format!("127.0.0.1:{}", node_ctrl.port()))
+        } else {
+            return Err(BuildError::UnknownClusterController);
+        };
 
         Ok(Node {
-            node_id: node_id.into(),
-            cluster_controller_endpoint,
+            node_id: options.node_id,
+            cluster_controller_address,
             cluster_controller_role,
             worker_role,
             node_ctrl,
@@ -141,14 +149,15 @@ impl Node {
                 .map_ok(|_| "node-ctrl")
                 .map_err(Error::NodeCtrlService),
         );
-        self.cluster_controller_role.map(|cluster_controller| {
+
+        if let Some(cluster_controller_role) = self.cluster_controller_role {
             component_set.spawn(
-                cluster_controller
+                cluster_controller_role
                     .run(component_shutdown_watch.clone())
                     .map_ok(|_| "cluster-controller-role")
                     .map_err(Error::Controller),
-            )
-        });
+            );
+        }
 
         tokio::select! {
             _ = &mut shutdown_signal => {
@@ -161,17 +170,21 @@ impl Node {
                 let component_name = component_result.map_err(Error::ComponentPanic)??;
                 panic!("Unexpected termination of '{component_name}'");
             }
-            attachment_result = Self::attach_node(self.node_id, self.cluster_controller_endpoint) => {
+            attachment_result = Self::attach_node(self.node_id, self.cluster_controller_address) => {
                 attachment_result?
             }
         }
 
-        component_set.spawn(
-            self.worker_role
-                .run(component_shutdown_watch)
-                .map_ok(|_| "worker-role")
-                .map_err(Error::Worker),
-        );
+        if let Some(worker_role) = self.worker_role {
+            component_set.spawn(
+                worker_role
+                    .run(component_shutdown_watch)
+                    .map_ok(|_| "worker-role")
+                    .map_err(Error::Worker),
+            );
+        } else {
+            drop(component_shutdown_watch);
+        }
 
         tokio::select! {
             _ = shutdown_signal => {
@@ -188,13 +201,18 @@ impl Node {
         Ok(())
     }
 
-    async fn attach_node(node_id: NodeId, cluster_controller_endpoint: Uri) -> Result<(), Error> {
-        info!("Attach to cluster at '{cluster_controller_endpoint}'");
-        let channel = Channel::builder(cluster_controller_endpoint.clone())
-            .connect_timeout(Duration::from_secs(5))
-            .connect_lazy();
+    async fn attach_node(
+        node_id: PlainNodeId,
+        cluster_controller_address: NetworkAddress,
+    ) -> Result<(), Error> {
+        info!("Attach to cluster controller at '{cluster_controller_address}'");
+
+        let channel = Self::create_channel_from_network_address(&cluster_controller_address)
+            .map_err(Error::InvalidClusterControllerAddress)?;
+
         let cc_client = ClusterControllerClient::new(channel);
 
+        let node_id = NodeId::from(node_id);
         RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
             .retry_operation(|| async {
                 cc_client
@@ -205,32 +223,49 @@ impl Node {
                     .await
             })
             .await
-            .map_err(|err| Error::Attachment(cluster_controller_endpoint, err))?;
+            .map_err(|err| Error::Attachment(cluster_controller_address, err))?;
 
         Ok(())
     }
-}
 
-/// Specifying where the cluster controller runs. Options are:
-///
-/// * Local: Spawning the controller as part of this process
-/// * Remote: The controller runs on a remote host
-#[derive(Debug)]
-pub enum ClusterControllerLocation {
-    Local,
-    Remote(String),
-}
-
-impl FromStr for ClusterControllerLocation {
-    type Err = Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let result = if s.to_lowercase() == "local" {
-            ClusterControllerLocation::Local
-        } else {
-            ClusterControllerLocation::Remote(s.to_string())
+    fn create_channel_from_network_address(
+        cluster_controller_address: &NetworkAddress,
+    ) -> Result<Channel, http::Error> {
+        let channel = match cluster_controller_address {
+            NetworkAddress::Uds(uds_path) => {
+                let uds_path = uds_path.clone();
+                // dummy endpoint required to specify an uds connector, it is not used anywhere
+                Endpoint::try_from("/")
+                    .expect("/ should be a valid Uri")
+                    .connect_with_connector_lazy(service_fn(move |_: Uri| {
+                        UnixStream::connect(uds_path.clone())
+                    }))
+            }
+            NetworkAddress::TcpSocketAddr(socket_addr) => {
+                let uri = Self::create_uri(socket_addr)?;
+                Self::create_lazy_channel_from_uri(uri)
+            }
+            NetworkAddress::DnsName(dns_name) => {
+                let uri = Self::create_uri(dns_name)?;
+                Self::create_lazy_channel_from_uri(uri)
+            }
         };
+        Ok(channel)
+    }
 
-        Ok(result)
+    fn create_uri(authority: impl ToString) -> Result<Uri, http::Error> {
+        Uri::builder()
+            // todo: Make the scheme configurable
+            .scheme("http")
+            .authority(authority.to_string())
+            .path_and_query("/")
+            .build()
+    }
+
+    fn create_lazy_channel_from_uri(uri: Uri) -> Channel {
+        // todo: Make the channel settings configurable
+        Channel::builder(uri)
+            .connect_timeout(Duration::from_secs(5))
+            .connect_lazy()
     }
 }

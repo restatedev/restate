@@ -5235,6 +5235,7 @@ dependencies = [
  "codederror",
  "derive_builder",
  "drain",
+ "enumset",
  "futures",
  "http",
  "restate-admin",
@@ -5248,9 +5249,11 @@ dependencies = [
  "restate-worker",
  "schemars",
  "serde",
+ "serde_with",
  "thiserror",
  "tokio",
  "tonic 0.10.2",
+ "tower",
  "tracing",
 ]
 
@@ -5405,6 +5408,7 @@ dependencies = [
  "codederror",
  "derive_builder",
  "drain",
+ "enumset",
  "figment",
  "futures-util",
  "humantime",

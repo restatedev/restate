@@ -8,20 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::state::HandlerState;
 use restate_node_ctrl_proto::node_ctrl::node_ctrl_server::NodeCtrl;
-use restate_node_ctrl_proto::node_ctrl::{BifrostVersion, IdentResponse, NodeStatus};
+use restate_node_ctrl_proto::node_ctrl::{IdentResponse, NodeStatus};
 use tonic::{Request, Response, Status};
 
 // -- GRPC Service Handlers --
-pub struct NodeCtrlHandler {
-    #[allow(dead_code)]
-    state: HandlerState,
-}
+pub struct NodeCtrlHandler {}
 
 impl NodeCtrlHandler {
-    pub fn new(state: HandlerState) -> Self {
-        Self { state }
+    pub fn new() -> Self {
+        Self {}
     }
 }
 
@@ -31,16 +27,6 @@ impl NodeCtrl for NodeCtrlHandler {
         // STUB IMPLEMENTATION
         return Ok(Response::new(IdentResponse {
             status: NodeStatus::Alive.into(),
-        }));
-    }
-
-    async fn get_bifrost_version(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<BifrostVersion>, Status> {
-        let version = self.state.bifrost.metadata_version();
-        return Ok(Response::new(BifrostVersion {
-            version: version.into(),
         }));
     }
 }
