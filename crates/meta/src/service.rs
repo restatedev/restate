@@ -22,12 +22,11 @@ use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use restate_schema_api::deployment::{DeliveryOptions, DeploymentMetadata};
 use restate_schema_api::service::ServiceMetadata;
-use restate_schema_api::subscription::{Subscription, SubscriptionResolver};
+use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_service_protocol::discovery::{DiscoverEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::retries::RetryPolicy;
-use restate_worker_api::SubscriptionController;
 
 use restate_service_client::{Endpoint, ServiceClient};
 
@@ -192,12 +191,13 @@ impl MetaHandle {
 
 // -- Service implementation
 
-pub struct MetaService<Storage> {
+pub struct MetaService<Storage, SV> {
     schemas: Schemas,
 
     service_discovery: ServiceDiscovery,
 
     storage: Storage,
+    subscription_validator: SV,
 
     handle: MetaHandle,
     api_cmd_rx: UnboundedCommandReceiver<MetaHandleRequest, MetaHandleResponse>,
@@ -205,13 +205,15 @@ pub struct MetaService<Storage> {
     reloaded: bool,
 }
 
-impl<Storage> MetaService<Storage>
+impl<Storage, SV> MetaService<Storage, SV>
 where
     Storage: MetaStorage,
+    SV: SubscriptionValidator,
 {
     pub fn new(
         schemas: Schemas,
         storage: Storage,
+        subscription_validator: SV,
         service_discovery_retry_policy: RetryPolicy,
         client: ServiceClient,
     ) -> Self {
@@ -221,6 +223,7 @@ where
             schemas,
             service_discovery: ServiceDiscovery::new(service_discovery_retry_policy, client),
             storage,
+            subscription_validator,
             handle: MetaHandle(api_cmd_tx),
             api_cmd_rx,
             reloaded: false,
@@ -239,11 +242,7 @@ where
         self.reload_schemas().await
     }
 
-    pub async fn run(
-        mut self,
-        drain: drain::Watch,
-        worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
-    ) -> Result<(), Error> {
+    pub async fn run(mut self, drain: drain::Watch) -> Result<(), Error> {
         debug_assert!(
             self.reloaded,
             "The Meta service was not init-ed before running it"
@@ -251,12 +250,6 @@ where
 
         let shutdown = drain.signaled();
         tokio::pin!(shutdown);
-
-        // The reason we reload subscriptions here and not in init() is because
-        // reload_subscriptions writes to a bounded channel read by the worker.
-        // If the worker is not running, this could deadlock when reaching the channel capacity.
-        // While here, we're safe to assume the worker is running and will read from that channel.
-        self.reload_subscriptions(&worker_handle).await;
 
         loop {
             tokio::select! {
@@ -283,13 +276,13 @@ where
                                 })
                         ),
                         MetaHandleRequest::CreateSubscription { id, source, sink, metadata } => MetaHandleResponse::CreateSubscription(
-                            self.create_subscription(id, source, sink, metadata, worker_handle.clone()).await
+                            self.create_subscription(id, source, sink, metadata).await
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
                         ),
                         MetaHandleRequest::DeleteSubscription { subscription_id } => MetaHandleResponse::DeleteSubscription(
-                            self.delete_subscription(subscription_id, worker_handle.clone()).await
+                            self.delete_subscription(subscription_id).await
                                 .map_err(|e| {
                                     warn_it!(e); e
                                 })
@@ -312,19 +305,6 @@ where
         self.schemas.apply_updates(update_commands)?;
         self.reloaded = true;
         Ok(())
-    }
-
-    async fn reload_subscriptions(
-        &mut self,
-        worker_handle: &(impl restate_worker_api::Handle + Send + Sync + 'static),
-    ) {
-        for subscription in self.schemas.list_subscriptions(&[]) {
-            // If the worker is closing, we can ignore this
-            let _ = worker_handle
-                .subscription_controller_handle()
-                .start_subscription(subscription)
-                .await;
-        }
     }
 
     async fn discover_deployment(
@@ -402,7 +382,6 @@ where
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
-        worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
     ) -> Result<Subscription, Error> {
         info!(restate.subscription.source = %source, restate.subscription.sink = %sink, "Create subscription");
 
@@ -412,31 +391,19 @@ where
             source,
             sink,
             metadata,
-            worker_handle.subscription_controller_handle(),
+            &self.subscription_validator,
         )?;
         self.store_and_apply_updates(vec![update_command]).await?;
-        let _ = worker_handle
-            .subscription_controller_handle()
-            .start_subscription(sub.clone())
-            .await;
 
         Ok(sub)
     }
 
-    async fn delete_subscription(
-        &mut self,
-        id: SubscriptionId,
-        worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
-    ) -> Result<(), Error> {
+    async fn delete_subscription(&mut self, id: SubscriptionId) -> Result<(), Error> {
         info!(restate.subscription.id = %id, "Delete subscription");
 
         // Compute the diff and propagate updates
         let update_command = self.schemas.compute_remove_subscription(id)?;
         self.store_and_apply_updates(vec![update_command]).await?;
-        let _ = worker_handle
-            .subscription_controller_handle()
-            .stop_subscription(id)
-            .await;
 
         Ok(())
     }

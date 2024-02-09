@@ -20,6 +20,7 @@ use axum::http::StatusCode;
 use axum::{http, Json};
 use okapi_operation::*;
 use restate_types::identifiers::SubscriptionId;
+use restate_worker_api::SubscriptionController;
 
 /// Create subscription.
 #[openapi(
@@ -40,7 +41,10 @@ use restate_types::identifiers::SubscriptionId;
 pub async fn create_subscription<W>(
     State(state): State<AdminServiceState<W>>,
     #[request_body(required = true)] Json(payload): Json<CreateSubscriptionRequest>,
-) -> Result<impl axum::response::IntoResponse, MetaApiError> {
+) -> Result<impl axum::response::IntoResponse, MetaApiError>
+where
+    W: restate_worker_api::Handle,
+{
     let subscription = state
         .meta_handle()
         .create_subscription(
@@ -50,6 +54,12 @@ pub async fn create_subscription<W>(
             payload.sink,
             payload.options,
         )
+        .await?;
+
+    state
+        .worker_handle()
+        .subscription_controller_handle()
+        .start_subscription(subscription.clone())
         .await?;
 
     Ok((
@@ -162,10 +172,19 @@ pub async fn list_subscriptions<W>(
 pub async fn delete_subscription<W>(
     State(state): State<AdminServiceState<W>>,
     Path(subscription_id): Path<SubscriptionId>,
-) -> Result<StatusCode, MetaApiError> {
+) -> Result<StatusCode, MetaApiError>
+where
+    W: restate_worker_api::Handle,
+{
     state
         .meta_handle()
         .delete_subscription(subscription_id)
+        .await?;
+
+    state
+        .worker_handle()
+        .subscription_controller_handle()
+        .stop_subscription(subscription_id)
         .await?;
 
     Ok(StatusCode::ACCEPTED)

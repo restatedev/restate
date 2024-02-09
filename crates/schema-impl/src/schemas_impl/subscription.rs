@@ -7,7 +7,7 @@ impl SchemasInner {
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
-        validator: V,
+        validator: &V,
     ) -> Result<(Subscription, SchemasUpdateCommand), SchemasUpdateError> {
         // generate id if not provided
         let id = id.unwrap_or_default();
