@@ -13,8 +13,12 @@ use codederror::CodedError;
 use restate_admin::service::AdminService;
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_meta::{FileMetaStorage, MetaService};
+use restate_schema_api::subscription::SubscriptionResolver;
+use restate_schema_impl::Schemas;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_worker::Worker;
+use restate_worker::{KafkaIngressOptions, Worker};
+use restate_worker_api::Handle;
+use restate_worker_api::SubscriptionController;
 use tracing::info;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -72,7 +76,7 @@ pub enum WorkerRoleBuildError {
 
 pub struct WorkerRole {
     admin: AdminService,
-    meta: MetaService<FileMetaStorage>,
+    meta: MetaService<FileMetaStorage, KafkaIngressOptions>,
     worker: Worker,
     bifrost: BifrostService,
 }
@@ -93,17 +97,15 @@ impl WorkerRole {
 
         // Init the meta. This will reload the schemas in memory.
         self.meta.init().await?;
+        let schemas = self.meta.schemas();
 
         let worker_command_tx = self.worker.worker_command_tx();
         let storage_query_context = self.worker.storage_query_context().clone();
 
-        let mut meta_handle = tokio::spawn(
-            self.meta
-                .run(inner_shutdown_watch.clone(), worker_command_tx.clone()),
-        );
+        let mut meta_handle = tokio::spawn(self.meta.run(inner_shutdown_watch.clone()));
         let mut admin_handle = tokio::spawn(self.admin.run(
             inner_shutdown_watch.clone(),
-            worker_command_tx,
+            worker_command_tx.clone(),
             Some(storage_query_context),
         ));
 
@@ -111,6 +113,13 @@ impl WorkerRole {
         let mut bifrost_handle = self.bifrost.start(inner_shutdown_watch.clone()).await?;
 
         let mut worker_handle = tokio::spawn(self.worker.run(inner_shutdown_watch));
+
+        // The reason we reload subscriptions here is because
+        // reload_subscriptions writes to a bounded channel read by the worker.
+        // If the worker is not running, this could deadlock when reaching the channel capacity.
+        // While here, we're safe to assume the worker is running and will read from that channel.
+        Self::reload_subscriptions(schemas, worker_command_tx.subscription_controller_handle())
+            .await;
 
         tokio::select! {
             _ = shutdown_signal => {
@@ -137,6 +146,15 @@ impl WorkerRole {
 
         Ok(())
     }
+
+    async fn reload_subscriptions(
+        schemas: Schemas,
+        worker_command_tx: impl SubscriptionController + Send + Sync + Sized,
+    ) {
+        for subscription in schemas.list_subscriptions(&[]) {
+            let _ = worker_command_tx.start_subscription(subscription).await;
+        }
+    }
 }
 
 impl TryFrom<Options> for WorkerRole {
@@ -144,7 +162,7 @@ impl TryFrom<Options> for WorkerRole {
 
     fn try_from(options: Options) -> Result<Self, Self::Error> {
         let bifrost = options.bifrost.build(options.worker.partitions);
-        let meta = options.meta.build()?;
+        let meta = options.meta.build(options.worker.kafka.clone())?;
         let admin = options.admin.build(meta.schemas(), meta.meta_handle());
         let worker = options.worker.build(meta.schemas(), bifrost.handle())?;
 

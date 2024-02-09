@@ -244,7 +244,7 @@ impl Schemas {
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
-        validator: V,
+        validator: &V,
     ) -> Result<(Subscription, SchemasUpdateCommand), SchemasUpdateError> {
         self.0
             .load()

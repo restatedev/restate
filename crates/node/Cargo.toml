@@ -24,9 +24,12 @@ restate-cluster-controller = { workspace = true }
 restate-errors = { workspace = true }
 restate-meta = { workspace = true }
 restate-node-services = { workspace = true }
+restate-schema-api = { workspace = true }
+restate-schema-impl = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
+restate-worker-api = { workspace = true }
 
 async-trait = { workspace = true }
 axum = { workspace = true }

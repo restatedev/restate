@@ -110,7 +110,7 @@ pub struct Options {
     storage_query_postgres: StorageQueryPostgresOptions,
     storage_rocksdb: RocksdbOptions,
     ingress_grpc: IngressOptions,
-    kafka: KafkaIngressOptions,
+    pub kafka: KafkaIngressOptions,
     invoker: InvokerOptions,
     partition_processor: partition::Options,
 
