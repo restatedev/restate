@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod cluster_controller;
 mod options;
+mod roles;
 mod server;
-pub mod worker;
 
 use codederror::CodedError;
 use futures::TryFutureExt;
@@ -23,9 +22,8 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 use tracing::{info, instrument, warn};
 
-use crate::cluster_controller::ClusterControllerRole;
+use crate::roles::{ClusterControllerRole, WorkerRole};
 use crate::server::NodeServer;
-use crate::worker::WorkerRole;
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
@@ -41,13 +39,13 @@ pub enum Error {
     Worker(
         #[from]
         #[code]
-        worker::WorkerRoleError,
+        roles::WorkerRoleError,
     ),
     #[error("controller failed: {0}")]
     Controller(
         #[from]
         #[code]
-        cluster_controller::ClusterControllerRoleError,
+        roles::ClusterControllerRoleError,
     ),
     #[error("node ctrl service failed: {0}")]
     NodeCtrlService(
@@ -72,7 +70,7 @@ pub enum BuildError {
     Worker(
         #[from]
         #[code]
-        worker::WorkerRoleBuildError,
+        roles::WorkerRoleBuildError,
     ),
     #[error("node neither runs cluster controller nor its address has been configured")]
     #[code(unknown)]
