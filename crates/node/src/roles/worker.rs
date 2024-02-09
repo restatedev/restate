@@ -145,9 +145,7 @@ impl TryFrom<Options> for WorkerRole {
     fn try_from(options: Options) -> Result<Self, Self::Error> {
         let bifrost = options.bifrost.build(options.worker.partitions);
         let meta = options.meta.build()?;
-        let admin = options
-            .admin
-            .build(meta.schemas(), meta.meta_handle(), bifrost.handle());
+        let admin = options.admin.build(meta.schemas(), meta.meta_handle());
         let worker = options.worker.build(meta.schemas(), bifrost.handle())?;
 
         Ok(WorkerRole {
