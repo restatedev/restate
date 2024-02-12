@@ -48,4 +48,16 @@ impl Options {
     pub fn build(self, num_partitions: u64) -> BifrostService {
         BifrostService::new(self, num_partitions)
     }
+
+    #[cfg(any(test, feature = "memory_loglet"))]
+    pub fn memory() -> Self {
+        let mut providers_config = EnumMap::default();
+        let kind = ProviderKind::Memory;
+        providers_config[kind] = provider_default_config(kind);
+
+        Self {
+            default_provider: ProviderKind::Memory,
+            providers_config,
+        }
+    }
 }

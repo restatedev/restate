@@ -113,6 +113,9 @@ where
             }
             PlainEntryHeader::SetState {} => EnrichedEntryHeader::SetState {},
             PlainEntryHeader::ClearState {} => EnrichedEntryHeader::ClearState {},
+            PlainEntryHeader::GetStateKeys { is_completed } => {
+                EnrichedEntryHeader::GetStateKeys { is_completed }
+            }
             PlainEntryHeader::ClearAllState => EnrichedEntryHeader::ClearAllState {},
             PlainEntryHeader::Sleep { is_completed } => EnrichedEntryHeader::Sleep { is_completed },
             PlainEntryHeader::Invoke { is_completed, .. } => {

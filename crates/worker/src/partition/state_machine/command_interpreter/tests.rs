@@ -202,6 +202,10 @@ impl StateReader for StateReaderMock {
         todo!()
     }
 
+    async fn load_state_keys(&mut self, _: &ServiceId) -> StorageResult<Vec<Bytes>> {
+        todo!()
+    }
+
     async fn load_completion_result(
         &mut self,
         _service_id: &ServiceId,

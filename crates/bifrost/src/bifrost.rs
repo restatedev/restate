@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
+#[cfg(any(test, feature = "memory_loglet"))]
+use tokio::task::JoinHandle;
 
 use restate_types::logs::{LogId, LogsVersion, Lsn, Payload, SequenceNumber};
 
@@ -39,6 +41,26 @@ pub struct Bifrost {
 impl Bifrost {
     pub(crate) fn new(inner: Arc<BifrostInner>) -> Self {
         Self { inner }
+    }
+
+    #[cfg(any(test, feature = "memory_loglet"))]
+    pub async fn new_in_memory(
+        num_logs: u64,
+        shutdown_watch: drain::Watch,
+    ) -> (Self, JoinHandle<Result<(), Error>>) {
+        //let (shutdown_signal, shutdown_watch) = drain::channel();
+
+        let bifrost_svc = Options::memory().build(num_logs);
+        let bifrost = bifrost_svc.handle();
+
+        // start bifrost service in the background
+        (
+            bifrost,
+            bifrost_svc
+                .start(shutdown_watch)
+                .await
+                .expect("in memory loglet must start"),
+        )
     }
 
     /// Appends a single record to a log. The log id must exist, otherwise the
@@ -261,17 +283,10 @@ mod tests {
         // start a simple bifrost service with 5 logs.
         let num_partitions = 5;
         let (shutdown_signal, shutdown_watch) = drain::channel();
+        let (mut bifrost, svc_handle) =
+            Bifrost::new_in_memory(num_partitions, shutdown_watch).await;
 
-        let bifrost_opts = Options {
-            default_provider: ProviderKind::Memory,
-            ..Options::default()
-        };
-        let bifrost_svc = bifrost_opts.build(num_partitions);
-        let mut bifrost = bifrost_svc.handle();
         let mut clean_bifrost_clone = bifrost.clone();
-
-        // start bifrost service in the background
-        let svc_handle = bifrost_svc.start(shutdown_watch).await?;
 
         let mut max_lsn = Lsn::INVALID;
         for i in 1..=5 {

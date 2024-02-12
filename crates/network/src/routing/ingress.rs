@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::routing::{lookup_target_peer, send_to_shuffle};
+use crate::routing::send_to_shuffle;
 use crate::{
-    ConsensusOrShuffleTarget, PartitionTable, PartitionTableError, TargetConsensusOrShuffle,
+    ConsensusOrShuffleTarget, FindPartition, PartitionTableError, TargetConsensusOrShuffle,
     TargetShuffle,
 };
 use restate_types::identifiers::PeerId;
 use restate_types::identifiers::WithPartitionKey;
-use restate_types::message::PeerTarget;
+use restate_types::message::PartitionTarget;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -29,12 +29,12 @@ pub(super) enum IngressRouterError<C> {
     #[error("failed resolving target peer: {0}")]
     TargetPeerResolution(#[from] PartitionTableError),
     #[error("failed forwarding message: {0}")]
-    ForwardingMessage(#[from] SendError<PeerTarget<C>>),
+    ForwardingMessage(#[from] SendError<PartitionTarget<C>>),
 }
 
 pub(super) struct IngressRouter<I, ItoC, ItoS, C, S, P> {
     receiver: mpsc::Receiver<I>,
-    consensus_tx: mpsc::Sender<PeerTarget<C>>,
+    consensus_tx: mpsc::Sender<PartitionTarget<C>>,
     shuffle_txs: Arc<Mutex<HashMap<PeerId, mpsc::Sender<S>>>>,
     partition_table: P,
 
@@ -47,11 +47,11 @@ where
     I: TargetConsensusOrShuffle<ItoC, ItoS>,
     ItoS: TargetShuffle + Into<S> + Debug,
     ItoC: WithPartitionKey + Into<C> + Debug,
-    P: PartitionTable,
+    P: FindPartition,
 {
     pub(super) fn new(
         receiver: mpsc::Receiver<I>,
-        consensus_tx: mpsc::Sender<PeerTarget<C>>,
+        consensus_tx: mpsc::Sender<PartitionTarget<C>>,
         shuffle_txs: Arc<Mutex<HashMap<PeerId, mpsc::Sender<S>>>>,
         partition_table: P,
     ) -> Self {
@@ -67,15 +67,17 @@ where
 
     pub(super) async fn run(mut self) -> Result<(), IngressRouterError<C>> {
         while let Some(message) = self.receiver.recv().await {
-            match message.target() {
+            match message.into_target() {
                 ConsensusOrShuffleTarget::Consensus(message) => {
-                    let target_peer = lookup_target_peer(&message, &self.partition_table).await?;
+                    let target_partition_id = self
+                        .partition_table
+                        .find_partition_id(message.partition_key())?;
 
                     trace!(?message, "Forwarding ingress message to consensus.");
 
                     self.consensus_tx
-                        .send((target_peer, message.into()))
-                        .await?
+                        .send((target_partition_id, message.into()))
+                        .await?;
                 }
                 ConsensusOrShuffleTarget::Shuffle(message) => {
                     send_to_shuffle(message, &self.shuffle_txs).await;

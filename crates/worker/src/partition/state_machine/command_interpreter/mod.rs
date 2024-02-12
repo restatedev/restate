@@ -83,6 +83,11 @@ pub trait StateReader {
         key: &Bytes,
     ) -> impl Future<Output = StorageResult<Option<Bytes>>> + Send;
 
+    fn load_state_keys(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = StorageResult<Vec<Bytes>>> + Send;
+
     fn load_completion_result(
         &mut self,
         service_id: &ServiceId,
@@ -1092,6 +1097,22 @@ where
                     InvocationId::from(&full_invocation_id),
                     invocation_metadata.journal_metadata.span_context.clone(),
                 );
+            }
+            EnrichedEntryHeader::GetStateKeys { is_completed, .. } => {
+                if !is_completed {
+                    // Load state and write completion
+                    let value = state
+                        .load_state_keys(&full_invocation_id.service_id)
+                        .await?;
+                    let completion_result = Codec::serialize_get_state_keys_completion(value);
+                    Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+
+                    // We can already forward the completion
+                    effects.forward_completion(
+                        full_invocation_id.clone(),
+                        Completion::new(entry_index, completion_result),
+                    );
+                }
             }
             EnrichedEntryHeader::Sleep { is_completed, .. } => {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");

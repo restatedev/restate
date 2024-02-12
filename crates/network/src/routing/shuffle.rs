@@ -8,12 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::routing::lookup_target_peer;
 use crate::{
-    ConsensusOrIngressTarget, PartitionTable, PartitionTableError, TargetConsensusOrIngress,
+    ConsensusOrIngressTarget, FindPartition, PartitionTableError, TargetConsensusOrIngress,
 };
 use restate_types::identifiers::WithPartitionKey;
-use restate_types::message::PeerTarget;
+use restate_types::message::PartitionTarget;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use tokio::sync::mpsc;
@@ -25,7 +24,7 @@ pub(super) enum ShuffleRouterError<C, I> {
     #[error("failed resolving target peer: {0}")]
     TargetPeerResolution(#[from] PartitionTableError),
     #[error("failed routing message to consensus: {0}")]
-    RoutingToConsensus(SendError<PeerTarget<C>>),
+    RoutingToConsensus(SendError<PartitionTarget<C>>),
     #[error("failed routing message to ingress: {0}")]
     RoutingToIngress(SendError<I>),
 }
@@ -39,7 +38,7 @@ pub(super) struct ShuffleRouter<
     P,
 > {
     receiver: mpsc::Receiver<ShuffleMsg>,
-    consensus_tx: mpsc::Sender<PeerTarget<ConsensusMsg>>,
+    consensus_tx: mpsc::Sender<PartitionTarget<ConsensusMsg>>,
     ingress_tx: mpsc::Sender<IngressMsg>,
     partition_table: P,
 
@@ -53,11 +52,11 @@ where
     ShuffleMsg: TargetConsensusOrIngress<ShuffleToCon, ShuffleToIngress>,
     ShuffleToCon: WithPartitionKey + Into<ConsensusMsg> + Debug,
     ShuffleToIngress: Into<IngressMsg> + Debug,
-    P: PartitionTable,
+    P: FindPartition,
 {
     pub(super) fn new(
         receiver: mpsc::Receiver<ShuffleMsg>,
-        consensus_tx: mpsc::Sender<PeerTarget<ConsensusMsg>>,
+        consensus_tx: mpsc::Sender<PartitionTarget<ConsensusMsg>>,
         ingress_tx: mpsc::Sender<IngressMsg>,
         partition_table: P,
     ) -> Self {
@@ -73,14 +72,16 @@ where
 
     pub(super) async fn run(mut self) -> Result<(), ShuffleRouterError<ConsensusMsg, IngressMsg>> {
         while let Some(message) = self.receiver.recv().await {
-            match message.target() {
+            match message.into_target() {
                 ConsensusOrIngressTarget::Consensus(msg) => {
-                    let target_peer = lookup_target_peer(&msg, &self.partition_table).await?;
+                    let target_partition_id = self
+                        .partition_table
+                        .find_partition_id(msg.partition_key())?;
 
-                    trace!(target_peer, message = ?msg, "Routing shuffle message to consensus.");
+                    trace!(target_partition_id, message = ?msg, "Routing shuffle message to consensus.");
 
                     self.consensus_tx
-                        .send((target_peer, msg.into()))
+                        .send((target_partition_id, msg.into()))
                         .await
                         .map_err(ShuffleRouterError::RoutingToConsensus)?
                 }

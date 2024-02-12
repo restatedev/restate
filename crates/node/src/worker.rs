@@ -11,9 +11,9 @@
 use crate::Options;
 use codederror::CodedError;
 use restate_admin::service::AdminService;
-use restate_bifrost::BifrostService;
+use restate_bifrost::{Bifrost, BifrostService};
 use restate_meta::{FileMetaStorage, MetaService};
-use restate_node_ctrl::service::NodeCtrlService;
+use restate_storage_rocksdb::RocksDBStorage;
 use restate_worker::Worker;
 use tracing::info;
 
@@ -31,12 +31,6 @@ pub enum WorkerRoleError {
         #[code]
         restate_meta::Error,
     ),
-    #[error("node ctrl service failed: {0}")]
-    NodeCtrlService(
-        #[from]
-        #[code]
-        restate_node_ctrl::Error,
-    ),
     #[error("worker failed: {0}")]
     Worker(
         #[from]
@@ -52,9 +46,6 @@ pub enum WorkerRoleError {
     #[error("meta panicked: {0}")]
     #[code(unknown)]
     MetaPanic(tokio::task::JoinError),
-    #[error("node ctrl service panicked: {0}")]
-    #[code(unknown)]
-    NodeCtrlPanic(tokio::task::JoinError),
     #[error("worker panicked: {0}")]
     #[code(unknown)]
     WorkerPanic(tokio::task::JoinError),
@@ -82,12 +73,19 @@ pub enum WorkerRoleBuildError {
 pub struct WorkerRole {
     admin: AdminService,
     meta: MetaService<FileMetaStorage>,
-    node_ctrl: NodeCtrlService,
     worker: Worker,
     bifrost: BifrostService,
 }
 
 impl WorkerRole {
+    pub fn rocksdb_storage(&self) -> &RocksDBStorage {
+        self.worker.rocksdb_storage()
+    }
+
+    pub fn bifrost_handle(&self) -> Bifrost {
+        self.bifrost.handle()
+    }
+
     pub async fn run(mut self, shutdown_watch: drain::Watch) -> Result<(), WorkerRoleError> {
         let shutdown_signal = shutdown_watch.signaled();
 
@@ -99,7 +97,6 @@ impl WorkerRole {
         let worker_command_tx = self.worker.worker_command_tx();
         let storage_query_context = self.worker.storage_query_context().clone();
 
-        let mut node_ctrl_handle = tokio::spawn(self.node_ctrl.run(inner_shutdown_watch.clone()));
         let mut meta_handle = tokio::spawn(
             self.meta
                 .run(inner_shutdown_watch.clone(), worker_command_tx.clone()),
@@ -118,7 +115,7 @@ impl WorkerRole {
         tokio::select! {
             _ = shutdown_signal => {
                 info!("Stopping worker role");
-                let _ = tokio::join!(inner_shutdown_signal.drain(), admin_handle, meta_handle, worker_handle, node_ctrl_handle, bifrost_handle);
+                let _ = tokio::join!(inner_shutdown_signal.drain(), admin_handle, meta_handle, worker_handle, bifrost_handle);
             },
             result = &mut meta_handle => {
                 result.map_err(WorkerRoleError::MetaPanic)??;
@@ -132,10 +129,6 @@ impl WorkerRole {
                 result.map_err(WorkerRoleError::WorkerPanic)??;
                 panic!("Unexpected termination of worker.");
             }
-            result = &mut node_ctrl_handle => {
-                result.map_err(WorkerRoleError::NodeCtrlPanic)??;
-                panic!("Unexpected termination of node ctrl service.");
-            },
             result = &mut bifrost_handle => {
                 result.map_err(WorkerRoleError::BifrostPanic)??;
                 panic!("Unexpected termination of bifrost service.");
@@ -156,14 +149,10 @@ impl TryFrom<Options> for WorkerRole {
             .admin
             .build(meta.schemas(), meta.meta_handle(), bifrost.handle());
         let worker = options.worker.build(meta.schemas(), bifrost.handle())?;
-        let node_ctrl = options
-            .node_ctrl
-            .build(Some(worker.rocksdb_storage().clone()), bifrost.handle());
 
         Ok(WorkerRole {
             admin,
             meta,
-            node_ctrl,
             worker,
             bifrost,
         })

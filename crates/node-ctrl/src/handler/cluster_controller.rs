@@ -8,22 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::proto::cluster_controller_server::ClusterController;
-use crate::proto::{AttachmentRequest, AttachmentResponse};
+use restate_node_ctrl_proto::cluster_controller::cluster_controller_server::ClusterController;
+use restate_node_ctrl_proto::cluster_controller::{AttachmentRequest, AttachmentResponse};
 use restate_types::NodeId;
 use tonic::{async_trait, Request, Response, Status};
 use tracing::debug;
 
-pub struct Handler {}
+pub struct ClusterControllerHandler {}
 
-impl Handler {
+impl ClusterControllerHandler {
     pub fn new() -> Self {
-        Handler {}
+        ClusterControllerHandler {}
     }
 }
 
 #[async_trait]
-impl ClusterController for Handler {
+impl ClusterController for ClusterControllerHandler {
     async fn attach_node(
         &self,
         request: Request<AttachmentRequest>,

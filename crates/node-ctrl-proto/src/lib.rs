@@ -8,12 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod proto {
+use restate_pb::restate::common;
+
+pub mod node_ctrl {
     #![allow(warnings)]
     #![allow(clippy::all)]
     #![allow(unknown_lints)]
+
     tonic::include_proto!("dev.restate.node_ctrl");
 
     pub const FILE_DESCRIPTOR_SET: &[u8] =
         tonic::include_file_descriptor_set!("node_ctrl_descriptor");
+}
+
+pub mod cluster_controller {
+    #![allow(warnings)]
+    #![allow(clippy::all)]
+    #![allow(unknown_lints)]
+
+    tonic::include_proto!("dev.restate.cluster_controller");
+
+    pub const FILE_DESCRIPTOR_SET: &[u8] =
+        tonic::include_file_descriptor_set!("cluster_controller_descriptor");
 }

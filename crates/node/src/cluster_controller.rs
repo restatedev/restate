@@ -10,8 +10,8 @@
 
 use crate::Options;
 use codederror::CodedError;
+use restate_cluster_controller::ClusterControllerHandle;
 use std::convert::Infallible;
-use tonic::transport::Uri;
 use tracing::info;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -26,11 +26,14 @@ pub enum ClusterControllerRoleError {
 
 #[derive(Debug)]
 pub struct ClusterControllerRole {
-    endpoint: Uri,
     controller: restate_cluster_controller::Service,
 }
 
 impl ClusterControllerRole {
+    pub fn handle(&self) -> ClusterControllerHandle {
+        self.controller.handle()
+    }
+
     pub async fn run(self, shutdown_watch: drain::Watch) -> Result<(), ClusterControllerRoleError> {
         info!("Running cluster controller role");
 
@@ -55,25 +58,13 @@ impl ClusterControllerRole {
 
         Ok(())
     }
-
-    pub fn controller_endpoint(&self) -> &Uri {
-        &self.endpoint
-    }
 }
 
 impl TryFrom<Options> for ClusterControllerRole {
     type Error = Infallible;
 
     fn try_from(options: Options) -> Result<Self, Self::Error> {
-        let endpoint = Uri::builder()
-            .scheme("http")
-            .authority(options.cluster_controller.bind_address.to_string())
-            .path_and_query("/")
-            .build()
-            .expect("uri should be valid");
-
         Ok(ClusterControllerRole {
-            endpoint,
             controller: restate_cluster_controller::Service::new(options.cluster_controller),
         })
     }

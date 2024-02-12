@@ -9,17 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::future;
 
 use test_log::test;
 use tokio::sync::mpsc;
 
-use restate_types::identifiers::WithPartitionKey;
+use restate_types::identifiers::{PartitionId, WithPartitionKey};
 use restate_types::identifiers::{PartitionKey, PeerId};
-use restate_types::message::PeerTarget;
+use restate_types::message::PartitionTarget;
 
 use crate::{
-    ConsensusOrIngressTarget, ConsensusOrShuffleTarget, Network, NetworkHandle, PartitionTable,
+    ConsensusOrIngressTarget, ConsensusOrShuffleTarget, FindPartition, Network, NetworkHandle,
     PartitionTableError, ShuffleOrIngressTarget, TargetConsensusOrIngress,
     TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress,
 };
@@ -27,12 +26,13 @@ use crate::{
 #[derive(Debug, Default, Clone)]
 struct MockPartitionTable;
 
-impl PartitionTable for MockPartitionTable {
-    type Future = future::Ready<Result<PeerId, PartitionTableError>>;
-
-    fn partition_key_to_target_peer(&self, _partition_key: PartitionKey) -> Self::Future {
-        let peer_id = 0;
-        future::ready(Ok(peer_id))
+impl FindPartition for MockPartitionTable {
+    fn find_partition_id(
+        &self,
+        _partition_key: PartitionKey,
+    ) -> Result<PartitionId, PartitionTableError> {
+        let partition_id = 0;
+        Ok(partition_id)
     }
 }
 
@@ -64,7 +64,7 @@ enum ShuffleOut {
 }
 
 impl TargetConsensusOrIngress<ConsensusMsg, IngressMsg> for ShuffleOut {
-    fn target(self) -> ConsensusOrIngressTarget<ConsensusMsg, IngressMsg> {
+    fn into_target(self) -> ConsensusOrIngressTarget<ConsensusMsg, IngressMsg> {
         match self {
             ShuffleOut::Consensus(msg) => ConsensusOrIngressTarget::Consensus(msg),
             ShuffleOut::Ingress(msg) => ConsensusOrIngressTarget::Ingress(msg),
@@ -79,7 +79,7 @@ enum IngressOut {
 }
 
 impl TargetConsensusOrShuffle<ConsensusMsg, ShuffleMsg> for IngressOut {
-    fn target(self) -> ConsensusOrShuffleTarget<ConsensusMsg, ShuffleMsg> {
+    fn into_target(self) -> ConsensusOrShuffleTarget<ConsensusMsg, ShuffleMsg> {
         match self {
             IngressOut::Consensus(msg) => ConsensusOrShuffleTarget::Consensus(msg),
             IngressOut::Shuffle(msg) => ConsensusOrShuffleTarget::Shuffle(msg),
@@ -94,7 +94,7 @@ enum PPOut {
 }
 
 impl TargetShuffleOrIngress<ShuffleMsg, IngressMsg> for PPOut {
-    fn target(self) -> ShuffleOrIngressTarget<ShuffleMsg, IngressMsg> {
+    fn into_target(self) -> ShuffleOrIngressTarget<ShuffleMsg, IngressMsg> {
         match self {
             PPOut::Shuffle(msg) => ShuffleOrIngressTarget::Shuffle(msg),
             PPOut::Ingress(msg) => ShuffleOrIngressTarget::Ingress(msg),
@@ -120,7 +120,7 @@ type MockNetwork = Network<
 
 fn mock_network() -> (
     MockNetwork,
-    mpsc::Receiver<PeerTarget<ConsensusMsg>>,
+    mpsc::Receiver<PartitionTarget<ConsensusMsg>>,
     mpsc::Receiver<IngressMsg>,
 ) {
     let (consensus_tx, consensus_rx) = mpsc::channel(1);

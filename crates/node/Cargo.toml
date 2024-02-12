@@ -9,7 +9,13 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars", "restate-admin/options_schema", "restate-meta/options_schema", "restate-node-ctrl/options_schema", "restate-worker/options_schema", "restate-cluster-controller/options_schema"]
+options_schema = [
+    "dep:schemars",
+    "restate-admin/options_schema",
+    "restate-meta/options_schema",
+    "restate-node-ctrl/options_schema",
+    "restate-worker/options_schema",
+    "restate-cluster-controller/options_schema"]
 
 [dependencies]
 
@@ -18,6 +24,8 @@ restate-bifrost = { workspace = true }
 restate-cluster-controller = { workspace = true }
 restate-meta = { workspace = true }
 restate-node-ctrl = { workspace = true }
+restate-node-ctrl-proto = { workspace = true }
+restate-storage-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
 

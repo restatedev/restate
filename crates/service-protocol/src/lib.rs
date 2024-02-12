@@ -104,6 +104,23 @@ mod pb_into {
         }
     }
 
+    impl TryFrom<GetStateKeysEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(msg: GetStateKeysEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::GetStateKeys(GetStateKeysEntry {
+                value: msg.result.map(|v| match v {
+                    get_state_keys_entry_message::Result::Value(b) => {
+                        GetStateKeysResult::Result(b.keys)
+                    }
+                    get_state_keys_entry_message::Result::Failure(failure) => {
+                        GetStateKeysResult::Failure(failure.code.into(), failure.message.into())
+                    }
+                }),
+            }))
+        }
+    }
+
     impl TryFrom<ClearAllStateEntryMessage> for Entry {
         type Error = &'static str;
 

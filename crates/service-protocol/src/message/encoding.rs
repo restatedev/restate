@@ -294,6 +294,9 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
         },
         MessageType::SetStateEntry => PlainEntryHeader::SetState {},
         MessageType::ClearStateEntry => PlainEntryHeader::ClearState {},
+        MessageType::GetStateKeysEntry => PlainEntryHeader::GetStateKeys {
+            is_completed: expect_flag!(message_header, completed),
+        },
         MessageType::ClearAllStateEntry => PlainEntryHeader::ClearAllState {},
         MessageType::SleepEntry => PlainEntryHeader::Sleep {
             is_completed: expect_flag!(message_header, completed),
@@ -322,6 +325,7 @@ fn raw_header_to_message_type(entry_header: &PlainEntryHeader) -> MessageType {
         PlainEntryHeader::GetState { .. } => MessageType::GetStateEntry,
         PlainEntryHeader::SetState { .. } => MessageType::SetStateEntry,
         PlainEntryHeader::ClearState { .. } => MessageType::ClearStateEntry,
+        PlainEntryHeader::GetStateKeys { .. } => MessageType::GetStateKeysEntry,
         PlainEntryHeader::ClearAllState { .. } => MessageType::ClearAllStateEntry,
         PlainEntryHeader::Sleep { .. } => MessageType::SleepEntry,
         PlainEntryHeader::Invoke { .. } => MessageType::InvokeEntry,

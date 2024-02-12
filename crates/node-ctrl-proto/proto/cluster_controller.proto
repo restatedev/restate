@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-import "google/protobuf/empty.proto";
+import "dev/restate/common/common.proto";
 
 package dev.restate.cluster_controller;
 
@@ -9,14 +9,8 @@ service ClusterController {
   rpc AttachNode(AttachmentRequest) returns (AttachmentResponse);
 }
 
-// todo: move into shared proto file
-message NodeId {
-  uint32 id = 1;
-  optional uint32 generation = 2;
-}
-
 message AttachmentRequest {
-  NodeId node_id = 1;
+  dev.restate.common.NodeId node_id = 1;
 }
 
 message AttachmentResponse {

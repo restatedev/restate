@@ -18,6 +18,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(out_dir.join("node_ctrl_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["./proto/node_ctrl.proto"], &["proto"])?;
+        .compile(&["./proto/node_ctrl.proto"], &["proto", "../pb/proto"])?;
+
+    tonic_build::configure()
+        .bytes(["."])
+        .file_descriptor_set_path(out_dir.join("cluster_controller_descriptor.bin"))
+        // allow older protobuf compiler to be used
+        .protoc_arg("--experimental_allow_proto3_optional")
+        .compile(
+            &["./proto/cluster_controller.proto"],
+            &["proto", "../pb/proto"],
+        )?;
     Ok(())
 }

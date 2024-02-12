@@ -61,6 +61,30 @@ pub mod restate {
             }
         }
     }
+
+    #[cfg(feature = "common")]
+    pub mod common {
+        #![allow(warnings)]
+        #![allow(clippy::all)]
+        #![allow(unknown_lints)]
+
+        include!(concat!(env!("OUT_DIR"), "/dev.restate.common.rs"));
+
+        impl From<NodeId> for restate_types::NodeId {
+            fn from(node_id: NodeId) -> Self {
+                restate_types::NodeId::new(node_id.id, node_id.generation)
+            }
+        }
+
+        impl From<restate_types::NodeId> for NodeId {
+            fn from(node_id: restate_types::NodeId) -> Self {
+                NodeId {
+                    id: node_id.id().into(),
+                    generation: node_id.as_generational().map(|g| g.generation()),
+                }
+            }
+        }
+    }
 }
 
 pub static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {

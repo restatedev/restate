@@ -10,10 +10,10 @@
 
 //! This module defines types used for the internal messaging between Restate components.
 
-use crate::identifiers::PeerId;
+use crate::identifiers::PartitionId;
 
 /// Wrapper that extends a message with its target peer to which the message should be sent.
-pub type PeerTarget<Msg> = (PeerId, Msg);
+pub type PartitionTarget<Msg> = (PartitionId, Msg);
 
 /// Index type used messages in the runtime
 pub type MessageIndex = u64;
