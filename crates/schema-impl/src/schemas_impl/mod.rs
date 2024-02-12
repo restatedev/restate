@@ -46,6 +46,48 @@ pub(crate) struct SchemasInner {
     pub(crate) proto_symbols: ProtoSymbols,
 }
 
+impl SchemasInner {
+    pub fn apply_updates(
+        &mut self,
+        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
+    ) -> Result<(), SchemasUpdateError> {
+        for cmd in updates {
+            match cmd {
+                SchemasUpdateCommand::InsertDeployment {
+                    deployment_id,
+                    metadata,
+                    services,
+                    descriptor_pool,
+                } => {
+                    self.apply_insert_deployment(
+                        deployment_id,
+                        metadata,
+                        services,
+                        descriptor_pool,
+                    )?;
+                }
+                SchemasUpdateCommand::RemoveDeployment { deployment_id } => {
+                    self.apply_remove_deployment(deployment_id)?;
+                }
+                SchemasUpdateCommand::RemoveService { name, revision } => {
+                    self.apply_remove_service(name, revision)?;
+                }
+                SchemasUpdateCommand::ModifyService { name, public } => {
+                    self.apply_modify_service(name, public)?;
+                }
+                SchemasUpdateCommand::AddSubscription(sub) => {
+                    self.apply_add_subscription(sub)?;
+                }
+                SchemasUpdateCommand::RemoveSubscription(sub_id) => {
+                    self.apply_remove_subscription(sub_id)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct MethodSchemas {
     descriptor: MethodDescriptor,

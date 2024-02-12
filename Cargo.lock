@@ -5233,6 +5233,7 @@ version = "0.8.0"
 dependencies = [
  "async-trait",
  "axum",
+ "bincode",
  "codederror",
  "derive_builder",
  "drain",

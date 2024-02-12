@@ -30,7 +30,7 @@ use restate_types::retries::RetryPolicy;
 
 use restate_service_client::{Endpoint, ServiceClient};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct MetaHandle(UnboundedCommandSender<MetaHandleRequest, MetaHandleResponse>);
 
 /// Whether to force the registration of an existing endpoint or not
@@ -191,6 +191,7 @@ impl MetaHandle {
 
 // -- Service implementation
 
+#[derive(Debug)]
 pub struct MetaService<Storage, SV> {
     schemas: Schemas,
 
@@ -236,6 +237,10 @@ where
 
     pub fn meta_handle(&self) -> MetaHandle {
         self.handle.clone()
+    }
+
+    pub fn schema_reader(&self) -> Storage::Reader {
+        self.storage.create_reader()
     }
 
     pub async fn init(&mut self) -> Result<(), Error> {

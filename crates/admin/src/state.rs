@@ -41,8 +41,10 @@ impl<W> AdminServiceState<W> {
     pub fn schemas(&self) -> &Schemas {
         &self.schemas
     }
+}
 
-    pub fn worker_handle(&self) -> &W {
-        &self.worker_handle
+impl<W: Clone> AdminServiceState<W> {
+    pub fn worker_handle(&self) -> W {
+        self.worker_handle.clone()
     }
 }

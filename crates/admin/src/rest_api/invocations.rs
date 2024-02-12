@@ -71,7 +71,7 @@ pub async fn delete_invocation<W>(
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
 ) -> Result<StatusCode, MetaApiError>
 where
-    W: restate_worker_api::Handle + Send,
+    W: restate_worker_api::Handle + Clone + Send,
 {
     let invocation_id = invocation_id
         .parse::<InvocationId>()

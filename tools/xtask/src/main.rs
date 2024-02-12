@@ -41,8 +41,6 @@ fn generate_default_config() -> anyhow::Result<()> {
 struct Mock;
 
 impl restate_worker_api::Handle for Mock {
-    type SubscriptionControllerHandle = Mock;
-
     async fn terminate_invocation(
         &self,
         _: InvocationTermination,
@@ -53,10 +51,6 @@ impl restate_worker_api::Handle for Mock {
     async fn external_state_mutation(&self, _mutation: ExternalStateMutation) -> Result<(), Error> {
         Ok(())
     }
-
-    fn subscription_controller_handle(&self) -> Self::SubscriptionControllerHandle {
-        Mock
-    }
 }
 
 impl restate_worker_api::SubscriptionController for Mock {
@@ -65,6 +59,13 @@ impl restate_worker_api::SubscriptionController for Mock {
     }
 
     async fn stop_subscription(&self, _: SubscriptionId) -> Result<(), restate_worker_api::Error> {
+        Ok(())
+    }
+
+    async fn update_subscriptions(
+        &self,
+        _: Vec<Subscription>,
+    ) -> Result<(), restate_worker_api::Error> {
         Ok(())
     }
 }

@@ -23,7 +23,7 @@ use okapi_operation::*;
 
 use crate::state::AdminServiceState;
 
-pub fn create_router<W: restate_worker_api::Handle + Send + Sync + 'static>(
+pub fn create_router<W: restate_worker_api::Handle + Clone + Send + Sync + 'static>(
     state: AdminServiceState<W>,
 ) -> axum::Router<()> {
     // Setup the router

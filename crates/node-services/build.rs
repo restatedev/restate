@@ -36,5 +36,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
         .compile(&["./proto/worker.proto"], &["proto", "../pb/proto"])?;
+
+    tonic_build::configure()
+        .bytes(["."])
+        .file_descriptor_set_path(out_dir.join("schema_descriptor.bin"))
+        // allow older protobuf compiler to be used
+        .protoc_arg("--experimental_allow_proto3_optional")
+        .compile(&["./proto/schema.proto"], &["proto", "../pb/proto"])?;
+
     Ok(())
 }

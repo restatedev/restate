@@ -15,6 +15,7 @@ use codederror::CodedError;
 use futures::FutureExt;
 use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
+use restate_meta::FileMetaReader;
 use restate_storage_rocksdb::RocksDBStorage;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -22,12 +23,15 @@ use tracing::info;
 use crate::server::handler;
 use crate::server::handler::cluster_controller::ClusterControllerHandler;
 use crate::server::handler::node_ctrl::NodeCtrlHandler;
+use crate::server::handler::schema::SchemaHandler;
 use crate::server::handler::worker::WorkerHandler;
 use crate::server::metrics::install_global_prometheus_recorder;
 use restate_node_services::cluster_controller::cluster_controller_server::ClusterControllerServer;
 use restate_node_services::node_ctrl::node_ctrl_server::NodeCtrlServer;
+use restate_node_services::schema::schema_server::SchemaServer;
 use restate_node_services::worker::worker_server::WorkerServer;
-use restate_node_services::{cluster_controller, node_ctrl, worker};
+use restate_node_services::{cluster_controller, node_ctrl, schema, worker};
+use restate_worker::WorkerCommandSender;
 
 use crate::server::multiplex::MultiplexService;
 use crate::server::options::Options;
@@ -52,15 +56,15 @@ pub enum Error {
 
 pub struct NodeServer {
     opts: Options,
-    worker: Option<(RocksDBStorage, Bifrost)>,
-    cluster_controller: Option<ClusterControllerHandle>,
+    worker: Option<WorkerDependencies>,
+    cluster_controller: Option<ClusterControllerDependencies>,
 }
 
 impl NodeServer {
     pub fn new(
         opts: Options,
-        worker: Option<(RocksDBStorage, Bifrost)>,
-        cluster_controller: Option<ClusterControllerHandle>,
+        worker: Option<WorkerDependencies>,
+        cluster_controller: Option<ClusterControllerDependencies>,
     ) -> Self {
         Self {
             opts,
@@ -73,7 +77,7 @@ impl NodeServer {
         // Configure Metric Exporter
         let mut state_builder = HandlerStateBuilder::default();
 
-        if let Some((rocksdb, _)) = self.worker.as_ref() {
+        if let Some(WorkerDependencies { rocksdb, .. }) = self.worker.as_ref() {
             state_builder.rocksdb_storage(Some(rocksdb.clone()));
         }
 
@@ -102,7 +106,8 @@ impl NodeServer {
 
         if self.cluster_controller.is_some() {
             reflection_service_builder = reflection_service_builder
-                .register_encoded_file_descriptor_set(cluster_controller::FILE_DESCRIPTOR_SET);
+                .register_encoded_file_descriptor_set(cluster_controller::FILE_DESCRIPTOR_SET)
+                .register_encoded_file_descriptor_set(schema::FILE_DESCRIPTOR_SET);
         }
 
         if self.worker.is_some() {
@@ -115,14 +120,22 @@ impl NodeServer {
             .add_service(NodeCtrlServer::new(NodeCtrlHandler::new()))
             .add_service(reflection_service_builder.build()?);
 
-        if self.cluster_controller.is_some() {
+        if let Some(ClusterControllerDependencies { schema_reader, .. }) = self.cluster_controller {
             server_builder = server_builder
-                .add_service(ClusterControllerServer::new(ClusterControllerHandler::new()));
+                .add_service(ClusterControllerServer::new(ClusterControllerHandler::new()))
+                .add_service(SchemaServer::new(SchemaHandler::new(schema_reader)));
         }
 
-        if let Some((_, bifrost)) = self.worker {
-            server_builder =
-                server_builder.add_service(WorkerServer::new(WorkerHandler::new(bifrost)));
+        if let Some(WorkerDependencies {
+            bifrost,
+            worker_cmd_tx,
+            ..
+        }) = self.worker
+        {
+            server_builder = server_builder.add_service(WorkerServer::new(WorkerHandler::new(
+                bifrost,
+                worker_cmd_tx,
+            )));
         }
 
         // Multiplex both grpc and http based on content-type
@@ -160,4 +173,41 @@ async fn handler_404() -> (http::StatusCode, &'static str) {
         http::StatusCode::NOT_FOUND,
         "Are you lost? Maybe visit https://restate.dev instead!",
     )
+}
+
+pub struct WorkerDependencies {
+    rocksdb: RocksDBStorage,
+    bifrost: Bifrost,
+    worker_cmd_tx: WorkerCommandSender,
+}
+
+impl WorkerDependencies {
+    pub fn new(
+        rocksdb: RocksDBStorage,
+        bifrost: Bifrost,
+        worker_cmd_tx: WorkerCommandSender,
+    ) -> Self {
+        WorkerDependencies {
+            rocksdb,
+            bifrost,
+            worker_cmd_tx,
+        }
+    }
+}
+
+pub struct ClusterControllerDependencies {
+    _cluster_controller_handle: ClusterControllerHandle,
+    schema_reader: FileMetaReader,
+}
+
+impl ClusterControllerDependencies {
+    pub fn new(
+        cluster_controller_handle: ClusterControllerHandle,
+        schema_reader: FileMetaReader,
+    ) -> Self {
+        ClusterControllerDependencies {
+            _cluster_controller_handle: cluster_controller_handle,
+            schema_reader,
+        }
+    }
 }

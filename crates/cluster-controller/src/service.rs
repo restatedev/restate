@@ -25,14 +25,16 @@ pub struct Service {
 }
 
 // todo: Replace with proper handle
-pub type ClusterControllerHandle = ();
+pub struct ClusterControllerHandle;
 
 impl Service {
     pub fn new(options: Options) -> Self {
         Service { options }
     }
 
-    pub fn handle(&self) -> ClusterControllerHandle {}
+    pub fn handle(&self) -> ClusterControllerHandle {
+        ClusterControllerHandle
+    }
 
     pub async fn run(self, shutdown_watch: drain::Watch) -> Result<(), Error> {
         let _ = shutdown_watch.signaled().await;

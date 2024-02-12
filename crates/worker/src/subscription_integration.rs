@@ -11,7 +11,7 @@
 use restate_ingress_kafka::SubscriptionCommandSender;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_types::identifiers::SubscriptionId;
-use restate_worker_api::SubscriptionController;
+use restate_worker_api::{Error, SubscriptionController};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -39,22 +39,28 @@ impl SubscriptionValidator for SubscriptionControllerHandle {
 }
 
 impl SubscriptionController for SubscriptionControllerHandle {
-    async fn start_subscription(
-        &self,
-        subscription: Subscription,
-    ) -> Result<(), restate_worker_api::Error> {
+    async fn start_subscription(&self, subscription: Subscription) -> Result<(), Error> {
         self.1
             .send(restate_ingress_kafka::Command::StartSubscription(
                 subscription,
             ))
             .await
-            .map_err(|_| restate_worker_api::Error::Unreachable)
+            .map_err(|_| Error::Unreachable)
     }
 
-    async fn stop_subscription(&self, id: SubscriptionId) -> Result<(), restate_worker_api::Error> {
+    async fn stop_subscription(&self, id: SubscriptionId) -> Result<(), Error> {
         self.1
             .send(restate_ingress_kafka::Command::StopSubscription(id))
             .await
-            .map_err(|_| restate_worker_api::Error::Unreachable)
+            .map_err(|_| Error::Unreachable)
+    }
+
+    async fn update_subscriptions(&self, subscriptions: Vec<Subscription>) -> Result<(), Error> {
+        self.1
+            .send(restate_ingress_kafka::Command::UpdateSubscriptions(
+                subscriptions,
+            ))
+            .await
+            .map_err(|_| Error::Unreachable)
     }
 }
