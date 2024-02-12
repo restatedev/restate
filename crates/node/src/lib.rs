@@ -24,7 +24,7 @@ use tower::service_fn;
 use tracing::{info, warn};
 
 use crate::roles::{ClusterControllerRole, WorkerRole};
-use crate::server::NodeServer;
+use crate::server::{ClusterControllerDependencies, NodeServer, WorkerDependencies};
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
@@ -75,6 +75,12 @@ pub enum BuildError {
         #[code]
         roles::WorkerRoleBuildError,
     ),
+    #[error("building cluster controller failed: {0}")]
+    ClusterController(
+        #[from]
+        #[code]
+        roles::ClusterControllerRoleBuildError,
+    ),
     #[error("node neither runs cluster controller nor its address has been configured")]
     #[code(unknown)]
     UnknownClusterController,
@@ -93,7 +99,7 @@ impl Node {
     pub fn new(options: Options) -> Result<Self, BuildError> {
         let opts = options.clone();
         let cluster_controller_role = if options.roles.contains(Role::ClusterController) {
-            Some(ClusterControllerRole::try_from(options.clone()).expect("should be infallible"))
+            Some(ClusterControllerRole::try_from(options.clone())?)
         } else {
             None
         };
@@ -105,12 +111,19 @@ impl Node {
         };
 
         let server = options.server.build(
-            worker_role
-                .as_ref()
-                .map(|worker| (worker.rocksdb_storage().clone(), worker.bifrost_handle())),
-            cluster_controller_role
-                .as_ref()
-                .map(|cluster_controller| cluster_controller.handle()),
+            worker_role.as_ref().map(|worker| {
+                WorkerDependencies::new(
+                    worker.rocksdb_storage().clone(),
+                    worker.bifrost_handle(),
+                    worker.worker_command_tx(),
+                )
+            }),
+            cluster_controller_role.as_ref().map(|cluster_controller| {
+                ClusterControllerDependencies::new(
+                    cluster_controller.handle(),
+                    cluster_controller.schema_reader(),
+                )
+            }),
         );
 
         let cluster_controller_address = if let Some(cluster_controller_address) =
@@ -180,7 +193,11 @@ impl Node {
         if let Some(worker_role) = self.worker_role {
             component_set.spawn(
                 worker_role
-                    .run(component_shutdown_watch)
+                    .run(
+                        NodeId::my_node_node()
+                            .expect("my NodeId should be set after attaching to cluster"),
+                        component_shutdown_watch,
+                    )
                     .map_ok(|_| "worker-role")
                     .map_err(Error::Worker),
             );

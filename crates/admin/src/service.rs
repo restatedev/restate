@@ -23,6 +23,7 @@ use tracing::info;
 use crate::{rest_api, state, storage_query};
 use crate::{Error, Options};
 
+#[derive(Debug)]
 pub struct AdminService {
     opts: Options,
     schemas: Schemas,

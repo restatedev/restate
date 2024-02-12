@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::schemas_impl::SchemasInner;
 use arc_swap::ArcSwap;
 use http::Uri;
 use prost_reflect::{DescriptorPool, ServiceDescriptor};
@@ -268,38 +269,23 @@ impl Schemas {
         updates: impl IntoIterator<Item = SchemasUpdateCommand>,
     ) -> Result<(), SchemasUpdateError> {
         let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
-        for cmd in updates {
-            match cmd {
-                SchemasUpdateCommand::InsertDeployment {
-                    deployment_id,
-                    metadata,
-                    services,
-                    descriptor_pool,
-                } => {
-                    schemas_inner.apply_insert_deployment(
-                        deployment_id,
-                        metadata,
-                        services,
-                        descriptor_pool,
-                    )?;
-                }
-                SchemasUpdateCommand::RemoveDeployment { deployment_id } => {
-                    schemas_inner.apply_remove_deployment(deployment_id)?;
-                }
-                SchemasUpdateCommand::RemoveService { name, revision } => {
-                    schemas_inner.apply_remove_service(name, revision)?;
-                }
-                SchemasUpdateCommand::ModifyService { name, public } => {
-                    schemas_inner.apply_modify_service(name, public)?;
-                }
-                SchemasUpdateCommand::AddSubscription(sub) => {
-                    schemas_inner.apply_add_subscription(sub)?;
-                }
-                SchemasUpdateCommand::RemoveSubscription(sub_id) => {
-                    schemas_inner.apply_remove_subscription(sub_id)?;
-                }
-            }
-        }
+        schemas_inner.apply_updates(updates)?;
+        self.0.store(Arc::new(schemas_inner));
+
+        Ok(())
+    }
+
+    /// Overwrites the existing schema registry with the provided schema updates
+    /// This method will update the internal pointer to the in-memory schema registry,
+    /// propagating the changes to every component consuming it.
+    ///
+    /// IMPORTANT: This method is not thread safe! This method should be called only by a single thread.
+    pub fn overwrite(
+        &self,
+        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
+    ) -> Result<(), SchemasUpdateError> {
+        let mut schemas_inner = SchemasInner::default();
+        schemas_inner.apply_updates(updates)?;
         self.0.store(Arc::new(schemas_inner));
 
         Ok(())

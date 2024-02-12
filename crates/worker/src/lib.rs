@@ -80,10 +80,12 @@ pub use restate_storage_query_datafusion::{
     OptionsBuilderError as StorageQueryDatafusionOptionsBuilderError,
 };
 
+use crate::subscription_integration::SubscriptionControllerHandle;
 pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
+pub use services::WorkerCommandSender;
 
 type PartitionProcessorCommand = partition::StateMachineAckCommand;
 type ConsensusCommand = restate_consensus::Command<PartitionProcessorCommand>;
@@ -398,8 +400,12 @@ impl Worker {
         ((peer_id, command_tx), processor)
     }
 
-    pub fn worker_command_tx(&self) -> impl restate_worker_api::Handle + Clone + Send + Sync {
+    pub fn worker_command_tx(&self) -> WorkerCommandSender {
         self.services.worker_command_tx()
+    }
+
+    pub fn subscription_controller_handle(&self) -> SubscriptionControllerHandle {
+        self.services.subscription_controller_handler()
     }
 
     pub fn storage_query_context(&self) -> &QueryContext {

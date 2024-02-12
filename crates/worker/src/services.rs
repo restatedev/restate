@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::subscription_integration;
-
 use crate::partition::{StateMachineAckCommand, StateMachineCommand};
+use crate::subscription_integration::SubscriptionControllerHandle;
 use restate_consensus::ProposalSender;
 use restate_network::PartitionTableError;
 use restate_types::identifiers::WithPartitionKey;
@@ -30,24 +29,15 @@ enum WorkerCommand {
 #[derive(Debug, Clone)]
 pub struct WorkerCommandSender {
     command_tx: mpsc::Sender<WorkerCommand>,
-    subscription_controller_handle: subscription_integration::SubscriptionControllerHandle,
 }
 
 impl WorkerCommandSender {
-    fn new(
-        command_tx: mpsc::Sender<WorkerCommand>,
-        subscription_controller_handle: subscription_integration::SubscriptionControllerHandle,
-    ) -> Self {
-        Self {
-            command_tx,
-            subscription_controller_handle,
-        }
+    fn new(command_tx: mpsc::Sender<WorkerCommand>) -> Self {
+        Self { command_tx }
     }
 }
 
 impl restate_worker_api::Handle for WorkerCommandSender {
-    type SubscriptionControllerHandle = subscription_integration::SubscriptionControllerHandle;
-
     async fn terminate_invocation(
         &self,
         invocation_termination: InvocationTermination,
@@ -67,10 +57,6 @@ impl restate_worker_api::Handle for WorkerCommandSender {
             .await
             .map_err(|_| restate_worker_api::Error::Unreachable)
     }
-
-    fn subscription_controller_handle(&self) -> Self::SubscriptionControllerHandle {
-        self.subscription_controller_handle.clone()
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -88,6 +74,7 @@ pub(crate) struct Services<PartitionTable> {
     partition_table: PartitionTable,
 
     command_tx: WorkerCommandSender,
+    subscription_controller_handle: SubscriptionControllerHandle,
 }
 
 impl<PartitionTable> Services<PartitionTable>
@@ -96,7 +83,7 @@ where
 {
     pub(crate) fn new(
         proposal_tx: ProposalSender<PartitionTarget<StateMachineAckCommand>>,
-        subscription_controller_handle: subscription_integration::SubscriptionControllerHandle,
+        subscription_controller_handle: SubscriptionControllerHandle,
         partition_table: PartitionTable,
         channel_size: usize,
     ) -> Self {
@@ -104,7 +91,8 @@ where
 
         Self {
             command_rx,
-            command_tx: WorkerCommandSender::new(command_tx, subscription_controller_handle),
+            command_tx: WorkerCommandSender::new(command_tx),
+            subscription_controller_handle,
             proposal_tx,
             partition_table,
         }
@@ -112,6 +100,10 @@ where
 
     pub(crate) fn worker_command_tx(&self) -> WorkerCommandSender {
         self.command_tx.clone()
+    }
+
+    pub(crate) fn subscription_controller_handler(&self) -> SubscriptionControllerHandle {
+        self.subscription_controller_handle.clone()
     }
 
     pub(crate) async fn run(self, shutdown_watch: drain::Watch) -> Result<(), Error> {

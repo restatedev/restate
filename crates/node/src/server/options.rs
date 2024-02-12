@@ -10,10 +10,7 @@
 
 use std::net::SocketAddr;
 
-use crate::server::service::NodeServer;
-use restate_bifrost::Bifrost;
-use restate_cluster_controller::ClusterControllerHandle;
-use restate_storage_rocksdb::RocksDBStorage;
+use crate::server::service::{ClusterControllerDependencies, NodeServer, WorkerDependencies};
 use serde_with::serde_as;
 
 /// # Node server options
@@ -51,8 +48,8 @@ impl Default for Options {
 impl Options {
     pub fn build(
         self,
-        worker: Option<(RocksDBStorage, Bifrost)>,
-        cluster_controller: Option<ClusterControllerHandle>,
+        worker: Option<WorkerDependencies>,
+        cluster_controller: Option<ClusterControllerDependencies>,
     ) -> NodeServer {
         NodeServer::new(self, worker, cluster_controller)
     }

@@ -22,7 +22,7 @@ pub use restate_service_client::{
     OptionsBuilderError as LambdaClientOptionsBuilderError,
 };
 pub use service::{ApplyMode, Force, MetaHandle, MetaService};
-pub use storage::{FileMetaStorage, MetaStorage};
+pub use storage::{FileMetaReader, FileMetaStorage, MetaReader, MetaStorage};
 
 use std::time::Duration;
 

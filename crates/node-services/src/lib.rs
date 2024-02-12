@@ -41,3 +41,13 @@ pub mod worker {
 
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("worker_descriptor");
 }
+
+pub mod schema {
+    #![allow(warnings)]
+    #![allow(clippy::all)]
+    #![allow(unknown_lints)]
+
+    tonic::include_proto!("dev.restate.schema");
+
+    pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("schema_descriptor");
+}

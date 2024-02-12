@@ -129,7 +129,7 @@ pub async fn modify_service_state<W>(
     }): Json<ModifyServiceStateRequest>,
 ) -> Result<StatusCode, MetaApiError>
 where
-    W: restate_worker_api::Handle + Send,
+    W: restate_worker_api::Handle + Clone + Send,
 {
     let service_id = ServiceId::new(service_name, service_key);
 

@@ -11,6 +11,7 @@
 use super::consumer_task::MessageSender;
 use super::options::Options;
 use super::*;
+use std::collections::HashSet;
 
 use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use rdkafka::error::KafkaError;
@@ -25,6 +26,7 @@ use tokio::sync::mpsc;
 pub enum Command {
     StartSubscription(Subscription),
     StopSubscription(SubscriptionId),
+    UpdateSubscriptions(Vec<Subscription>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -75,7 +77,8 @@ impl Service {
                 Some(cmd) = self.commands_rx.recv() => {
                     match cmd {
                         Command::StartSubscription(sub) => self.handle_start_subscription(sub, &mut task_orchestrator),
-                        Command::StopSubscription(sub_id) => self.handle_stop_subscription(sub_id, &mut task_orchestrator)
+                        Command::StopSubscription(sub_id) => self.handle_stop_subscription(sub_id, &mut task_orchestrator),
+                        Command::UpdateSubscriptions(subscriptions) => self.handle_update_subscriptions(subscriptions, &mut task_orchestrator),
                     }
                 }
                 _ = task_orchestrator.poll(), if !task_orchestrator.is_empty() => {},
@@ -136,6 +139,27 @@ impl Service {
         task_orchestrator: &mut TaskOrchestrator,
     ) {
         task_orchestrator.stop(subscription_id);
+    }
+
+    fn handle_update_subscriptions(
+        &mut self,
+        subscriptions: Vec<Subscription>,
+        task_orchestrator: &mut TaskOrchestrator,
+    ) {
+        let mut running_subscriptions: HashSet<_> =
+            task_orchestrator.running_subscriptions().cloned().collect();
+
+        for subscription in subscriptions {
+            if !running_subscriptions.contains(&subscription.id()) {
+                self.handle_start_subscription(subscription, task_orchestrator);
+            } else {
+                running_subscriptions.remove(&subscription.id());
+            }
+        }
+
+        for subscription_id in running_subscriptions {
+            self.handle_stop_subscription(subscription_id, task_orchestrator);
+        }
     }
 }
 
@@ -322,6 +346,10 @@ mod task_orchestrator {
             // This will close all the channels
             self.running_tasks_to_subscriptions.clear();
             self.tasks.shutdown().await;
+        }
+
+        pub(super) fn running_subscriptions(&self) -> impl Iterator<Item = &SubscriptionId> {
+            self.subscription_id_to_task_state.keys()
         }
     }
 }

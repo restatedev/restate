@@ -16,8 +16,24 @@ package dev.restate.worker;
 service Worker {
   // Get the current known version of bifrost metadata on this node
   rpc GetBifrostVersion(google.protobuf.Empty) returns (BifrostVersion);
+
+  // Terminate the specified invocation
+  rpc TerminateInvocation(TerminationRequest) returns (google.protobuf.Empty);
+
+  // Mutate the specified state
+  rpc MutateState(StateMutationRequest) returns (google.protobuf.Empty);
 }
 
 message BifrostVersion {
   uint64 version = 1;
+}
+
+message TerminationRequest {
+  // todo: Replace with proper protobuf
+  bytes invocation_termination = 1;
+}
+
+message StateMutationRequest {
+  // todo: Replace with proper protobuf
+  bytes state_mutation = 1;
 }

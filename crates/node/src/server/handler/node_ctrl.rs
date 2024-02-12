@@ -14,7 +14,6 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::NodeId;
 use tonic::{Request, Response, Status};
 
-// -- GRPC Service Handlers --
 pub struct NodeCtrlHandler {}
 
 impl NodeCtrlHandler {

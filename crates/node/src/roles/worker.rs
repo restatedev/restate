@@ -10,31 +10,23 @@
 
 use crate::Options;
 use codederror::CodedError;
-use restate_admin::service::AdminService;
+use futures::TryFutureExt;
 use restate_bifrost::{Bifrost, BifrostService};
-use restate_meta::{FileMetaStorage, MetaService};
+use restate_node_services::schema::FetchSchemasRequest;
 use restate_schema_api::subscription::SubscriptionResolver;
-use restate_schema_impl::Schemas;
+use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_worker::{KafkaIngressOptions, Worker};
-use restate_worker_api::Handle;
+use restate_types::NodeId;
+use restate_worker::{Worker, WorkerCommandSender};
 use restate_worker_api::SubscriptionController;
-use tracing::info;
+use std::time::Duration;
+use tokio::task::JoinSet;
+use tonic::transport::Channel;
+use tracing::subscriber::NoSubscriber;
+use tracing::{debug, info};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum WorkerRoleError {
-    #[error("admin service failed: {0}")]
-    AdminService(
-        #[from]
-        #[code]
-        restate_admin::Error,
-    ),
-    #[error("meta failed: {0}")]
-    MetaService(
-        #[from]
-        #[code]
-        restate_meta::Error,
-    ),
     #[error("worker failed: {0}")]
     Worker(
         #[from]
@@ -44,18 +36,21 @@ pub enum WorkerRoleError {
     #[error("bifrost failed: {0}")]
     #[code(unknown)]
     Bifrost(#[from] restate_bifrost::Error),
-    #[error("admin panicked: {0}")]
+    #[error("component panicked: {0}")]
     #[code(unknown)]
-    AdminPanic(tokio::task::JoinError),
-    #[error("meta panicked: {0}")]
+    ComponentPanic(tokio::task::JoinError),
+    #[error("failed decoding grpc payload: {0}")]
     #[code(unknown)]
-    MetaPanic(tokio::task::JoinError),
-    #[error("worker panicked: {0}")]
+    DecodeError(#[from] bincode::error::DecodeError),
+    #[error("failed updating schemas: {0}")]
+    Schema(
+        #[from]
+        #[code]
+        restate_schema_impl::SchemasUpdateError,
+    ),
+    #[error("failed updating subscriptions: {0}")]
     #[code(unknown)]
-    WorkerPanic(tokio::task::JoinError),
-    #[error("bifrost panicked: {0}")]
-    #[code(unknown)]
-    BifrostPanic(tokio::task::JoinError),
+    Subscription(#[from] restate_worker_api::Error),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -75,8 +70,7 @@ pub enum WorkerRoleBuildError {
 }
 
 pub struct WorkerRole {
-    admin: AdminService,
-    meta: MetaService<FileMetaStorage, KafkaIngressOptions>,
+    schemas: Schemas,
     worker: Worker,
     bifrost: BifrostService,
 }
@@ -90,70 +84,123 @@ impl WorkerRole {
         self.bifrost.handle()
     }
 
-    pub async fn run(mut self, shutdown_watch: drain::Watch) -> Result<(), WorkerRoleError> {
+    pub fn worker_command_tx(&self) -> WorkerCommandSender {
+        self.worker.worker_command_tx()
+    }
+
+    pub async fn run(
+        self,
+        _node_id: NodeId,
+        shutdown_watch: drain::Watch,
+    ) -> Result<(), WorkerRoleError> {
         let shutdown_signal = shutdown_watch.signaled();
 
         let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
 
-        // Init the meta. This will reload the schemas in memory.
-        self.meta.init().await?;
-        let schemas = self.meta.schemas();
+        // todo: only run subscriptions on node 0 once being distributed
+        let subscription_controller = Some(self.worker.subscription_controller_handle());
 
-        let worker_command_tx = self.worker.worker_command_tx();
-        let storage_query_context = self.worker.storage_query_context().clone();
-
-        let mut meta_handle = tokio::spawn(self.meta.run(inner_shutdown_watch.clone()));
-        let mut admin_handle = tokio::spawn(self.admin.run(
-            inner_shutdown_watch.clone(),
-            worker_command_tx.clone(),
-            Some(storage_query_context),
-        ));
+        let mut component_set = JoinSet::new();
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
-        let mut bifrost_handle = self.bifrost.start(inner_shutdown_watch.clone()).await?;
+        let mut bifrost_join_handle = self.bifrost.start(inner_shutdown_watch.clone()).await?;
 
-        let mut worker_handle = tokio::spawn(self.worker.run(inner_shutdown_watch));
-
-        // The reason we reload subscriptions here is because
-        // reload_subscriptions writes to a bounded channel read by the worker.
-        // If the worker is not running, this could deadlock when reaching the channel capacity.
-        // While here, we're safe to assume the worker is running and will read from that channel.
-        Self::reload_subscriptions(schemas, worker_command_tx.subscription_controller_handle())
-            .await;
+        component_set.spawn(
+            self.worker
+                .run(inner_shutdown_watch)
+                .map_ok(|_| "worker")
+                .map_err(WorkerRoleError::Worker),
+        );
+        component_set.spawn(
+            Self::reload_schemas(
+                subscription_controller,
+                self.schemas,
+                // todo: make this configurable
+                Channel::builder("http://127.0.0.1:5122/".parse().expect("valid uri"))
+                    .connect_lazy(),
+            )
+            .map_ok(|_| "schema-update"),
+        );
 
         tokio::select! {
             _ = shutdown_signal => {
                 info!("Stopping worker role");
-                let _ = tokio::join!(inner_shutdown_signal.drain(), admin_handle, meta_handle, worker_handle, bifrost_handle);
+                inner_shutdown_signal.drain().await;
+                // ignoring result because we are shutting down
+                let _ = tokio::join!(component_set.shutdown(), bifrost_join_handle);
             },
-            result = &mut meta_handle => {
-                result.map_err(WorkerRoleError::MetaPanic)??;
-                panic!("Unexpected termination of meta.");
-            },
-            result = &mut admin_handle => {
-                result.map_err(WorkerRoleError::AdminPanic)??;
-                panic!("Unexpected termination of admin.");
-            },
-            result = &mut worker_handle => {
-                result.map_err(WorkerRoleError::WorkerPanic)??;
-                panic!("Unexpected termination of worker.");
+            Some(component_result) = component_set.join_next() => {
+                let component_name = component_result.map_err(WorkerRoleError::ComponentPanic)??;
+                panic!("Unexpected termination of component '{component_name}'");
             }
-            result = &mut bifrost_handle => {
-                result.map_err(WorkerRoleError::BifrostPanic)??;
-                panic!("Unexpected termination of bifrost service.");
-            },
+            bifrost_result = &mut bifrost_join_handle => {
+                bifrost_result.map_err(WorkerRoleError::ComponentPanic)??;
+                panic!("Unexpected termination of bifrost service");
+            }
         }
 
         Ok(())
     }
 
-    async fn reload_subscriptions(
+    async fn reload_schemas<SC>(
+        subscription_controller: Option<SC>,
         schemas: Schemas,
-        worker_command_tx: impl SubscriptionController + Send + Sync + Sized,
-    ) {
-        for subscription in schemas.list_subscriptions(&[]) {
-            let _ = worker_command_tx.start_subscription(subscription).await;
+        schema_channel: Channel,
+    ) -> Result<(), WorkerRoleError>
+    where
+        SC: SubscriptionController + Clone + Send + Sync,
+    {
+        // todo: make this configurable
+        let mut fetch_interval = tokio::time::interval(Duration::from_secs(5));
+        let mut schema_grpc_client =
+            restate_node_services::schema::schema_client::SchemaClient::new(schema_channel);
+
+        loop {
+            fetch_interval.tick().await;
+
+            debug!("Trying to fetch schema information");
+
+            let result = schema_grpc_client
+                // todo introduce schema version information to avoid fetching and overwriting the schema information
+                //  over and over again
+                .fetch_schemas(FetchSchemasRequest {})
+                .await;
+            match result {
+                Ok(response) => {
+                    let (schema_updates, _) =
+                        bincode::serde::decode_from_slice::<Vec<SchemasUpdateCommand>, _>(
+                            &response.into_inner().schemas,
+                            bincode::config::standard(),
+                        )?;
+
+                    // hack to suppress repeated logging of schema registrations
+                    // todo: Fix it
+                    tracing::subscriber::with_default(NoSubscriber::new(), || {
+                        schemas.overwrite(schema_updates)
+                    })?;
+
+                    if let Some(subscription_controller) = subscription_controller.as_ref() {
+                        Self::update_subscriptions(&schemas, subscription_controller.clone())
+                            .await?;
+                    }
+                }
+                Err(err) => {
+                    debug!("Failed fetching schema information: {err}")
+                }
+            };
         }
+    }
+
+    async fn update_subscriptions(
+        schemas: &Schemas,
+        subscription_controller: impl SubscriptionController + Send + Sync,
+    ) -> Result<(), WorkerRoleError> {
+        let subscriptions = schemas.list_subscriptions(&[]);
+        subscription_controller
+            .update_subscriptions(subscriptions)
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -162,13 +209,11 @@ impl TryFrom<Options> for WorkerRole {
 
     fn try_from(options: Options) -> Result<Self, Self::Error> {
         let bifrost = options.bifrost.build(options.worker.partitions);
-        let meta = options.meta.build(options.worker.kafka.clone())?;
-        let admin = options.admin.build(meta.schemas(), meta.meta_handle());
-        let worker = options.worker.build(meta.schemas(), bifrost.handle())?;
+        let schemas = Schemas::default();
+        let worker = options.worker.build(schemas.clone(), bifrost.handle())?;
 
         Ok(WorkerRole {
-            admin,
-            meta,
+            schemas,
             worker,
             bifrost,
         })

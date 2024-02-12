@@ -10,8 +10,17 @@
 
 use crate::Options;
 use codederror::CodedError;
+use futures::TryFutureExt;
+use restate_admin::service::AdminService;
 use restate_cluster_controller::ClusterControllerHandle;
-use std::convert::Infallible;
+use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
+use restate_node_services::worker::{StateMutationRequest, TerminationRequest};
+use restate_types::invocation::InvocationTermination;
+use restate_types::state_mut::ExternalStateMutation;
+use restate_worker::KafkaIngressOptions;
+use restate_worker_api::{Error, Handle};
+use tokio::task::{JoinError, JoinSet};
+use tonic::transport::Channel;
 use tracing::info;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -22,11 +31,38 @@ pub enum ClusterControllerRoleError {
         #[code]
         restate_cluster_controller::Error,
     ),
+    #[error("cluster controller role component panicked: {0}")]
+    #[code(unknown)]
+    ComponentPanic(#[from] JoinError),
+    #[error("admin component failed: {0}")]
+    Admin(
+        #[from]
+        #[code]
+        restate_admin::Error,
+    ),
+    #[error("meta component failed: {0}")]
+    Meta(
+        #[from]
+        #[code]
+        restate_meta::Error,
+    ),
+}
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum ClusterControllerRoleBuildError {
+    #[error("failed creating meta: {0}")]
+    Meta(
+        #[from]
+        #[code]
+        restate_meta::BuildError,
+    ),
 }
 
 #[derive(Debug)]
 pub struct ClusterControllerRole {
     controller: restate_cluster_controller::Service,
+    admin: AdminService,
+    meta: MetaService<FileMetaStorage, KafkaIngressOptions>,
 }
 
 impl ClusterControllerRole {
@@ -34,24 +70,64 @@ impl ClusterControllerRole {
         self.controller.handle()
     }
 
-    pub async fn run(self, shutdown_watch: drain::Watch) -> Result<(), ClusterControllerRoleError> {
+    pub fn schema_reader(&self) -> FileMetaReader {
+        self.meta.schema_reader()
+    }
+
+    pub async fn run(
+        mut self,
+        shutdown_watch: drain::Watch,
+    ) -> Result<(), ClusterControllerRoleError> {
         info!("Running cluster controller role");
 
         let shutdown_signal = shutdown_watch.signaled();
         let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
 
-        let controller_fut = self.controller.run(inner_shutdown_watch);
-        tokio::pin!(controller_fut);
+        let mut component_set = JoinSet::new();
+
+        // Init the meta. This will reload the schemas in memory.
+        self.meta
+            .init()
+            .await
+            .map_err(ClusterControllerRoleError::Meta)?;
+
+        component_set.spawn(
+            self.meta
+                .run(inner_shutdown_watch.clone())
+                .map_ok(|_| "meta-service")
+                .map_err(ClusterControllerRoleError::Meta),
+        );
+
+        component_set.spawn(
+            self.controller
+                .run(inner_shutdown_watch.clone())
+                .map_ok(|_| "cluster-controller")
+                .map_err(ClusterControllerRoleError::ClusterController),
+        );
+
+        // todo: Make address configurable
+        let worker_handle = GrpcWorkerHandle::new(
+            Channel::builder("http://127.0.0.1:5122/".parse().expect("valid uri")).connect_lazy(),
+        );
+
+        component_set.spawn(
+            self.admin
+                .run(inner_shutdown_watch, worker_handle, None)
+                .map_ok(|_| "admin")
+                .map_err(ClusterControllerRoleError::Admin),
+        );
 
         tokio::select! {
             _ = shutdown_signal => {
-                info!("Stopping controller role");
+                info!("Stopping cluster controller role");
                 // ignore result because we are shutting down
-                let _ = tokio::join!(inner_shutdown_signal.drain(), controller_fut);
+                inner_shutdown_signal.drain().await;
+                component_set.shutdown().await;
             },
-            controller_result = &mut controller_fut => {
-                controller_result?;
-                panic!("Unexpected termination of controller");
+            Some(component_result) = component_set.join_next() => {
+                let component_name = component_result.map_err(ClusterControllerRoleError::ComponentPanic)??;
+                panic!("Unexpected termination of cluster controller role component '{component_name}'");
+
             }
 
         }
@@ -61,11 +137,65 @@ impl ClusterControllerRole {
 }
 
 impl TryFrom<Options> for ClusterControllerRole {
-    type Error = Infallible;
+    type Error = ClusterControllerRoleBuildError;
 
     fn try_from(options: Options) -> Result<Self, Self::Error> {
+        let meta = options.meta.build(options.worker.kafka.clone())?;
+        let admin = options.admin.build(meta.schemas(), meta.meta_handle());
+
         Ok(ClusterControllerRole {
             controller: restate_cluster_controller::Service::new(options.cluster_controller),
+            admin,
+            meta,
         })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GrpcWorkerHandle {
+    grpc_client: restate_node_services::worker::worker_client::WorkerClient<Channel>,
+}
+
+impl GrpcWorkerHandle {
+    fn new(channel: Channel) -> Self {
+        GrpcWorkerHandle {
+            grpc_client: restate_node_services::worker::worker_client::WorkerClient::new(channel),
+        }
+    }
+}
+
+impl Handle for GrpcWorkerHandle {
+    async fn terminate_invocation(
+        &self,
+        invocation_termination: InvocationTermination,
+    ) -> Result<(), Error> {
+        let invocation_termination =
+            bincode::serde::encode_to_vec(invocation_termination, bincode::config::standard())
+                .expect("serialization should work");
+
+        self.grpc_client
+            .clone()
+            .terminate_invocation(TerminationRequest {
+                invocation_termination: invocation_termination.into(),
+            })
+            .await
+            .map(|resp| resp.into_inner())
+            // todo: Proper error handling
+            .map_err(|_err| Error::Unreachable)
+    }
+
+    async fn external_state_mutation(&self, mutation: ExternalStateMutation) -> Result<(), Error> {
+        let state_mutation = bincode::serde::encode_to_vec(mutation, bincode::config::standard())
+            .expect("serialization should work");
+
+        self.grpc_client
+            .clone()
+            .mutate_state(StateMutationRequest {
+                state_mutation: state_mutation.into(),
+            })
+            .await
+            .map(|resp| resp.into_inner())
+            // todo: Proper error handling
+            .map_err(|_err| Error::Unreachable)
     }
 }

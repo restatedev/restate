@@ -31,25 +31,45 @@ pub enum MetaStorageError {
     Io(#[from] io::Error),
     #[error("generic serde error: {0}. This is probably a runtime bug")]
     Encode(#[from] bincode::error::EncodeError),
-    #[error("generic serde error: {0}. This is probably a runtime bug")]
-    Decode(#[from] bincode::error::DecodeError),
     #[error("generic descriptor error: {0}. This is probably a runtime bug")]
     Descriptor(#[from] prost_reflect::DescriptorError),
     #[error("task error when writing to disk: {0}. This is probably a runtime bug")]
     Join(#[from] tokio::task::JoinError),
+    #[error("failed reading meta information: {0}")]
+    Reading(#[from] MetaReaderError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MetaReaderError {
+    #[error("generic io error: {0}")]
+    Io(#[from] io::Error),
     #[error("file ending with .restate has a bad filename: {0}. This is probably a runtime bug")]
     BadFilename(PathBuf),
+    #[error("task error when reading from disk: {0}. This is probably a runtime bug")]
+    Join(#[from] tokio::task::JoinError),
+    #[error("error decoding stored meta data: {0}. This is probably a runtime bug")]
+    Decode(#[from] bincode::error::DecodeError),
+}
+
+pub trait MetaReader {
+    fn read(
+        &self,
+    ) -> impl Future<Output = Result<Vec<SchemasUpdateCommand>, MetaReaderError>> + Send;
 }
 
 pub trait MetaStorage {
+    type Reader: MetaReader;
+
+    fn reload(
+        &mut self,
+    ) -> impl Future<Output = Result<Vec<SchemasUpdateCommand>, MetaStorageError>> + Send;
+
     fn store(
         &mut self,
         commands: Vec<SchemasUpdateCommand>,
     ) -> impl Future<Output = Result<(), MetaStorageError>> + Send;
 
-    fn reload(
-        &mut self,
-    ) -> impl Future<Output = Result<Vec<SchemasUpdateCommand>, MetaStorageError>> + Send;
+    fn create_reader(&self) -> Self::Reader;
 }
 
 // --- File based implementation of MetaStorage, using bincode
@@ -73,6 +93,69 @@ pub enum BuildError {
 }
 
 const RESTATE_EXTENSION: &str = "restate";
+
+#[derive(Debug, Clone)]
+pub struct FileMetaReader {
+    root_path: PathBuf,
+}
+
+impl FileMetaReader {
+    fn new(path: PathBuf) -> FileMetaReader {
+        FileMetaReader { root_path: path }
+    }
+
+    async fn load(&self) -> Result<(usize, Vec<SchemasUpdateCommand>), MetaReaderError> {
+        // Try to create a dir, in case it doesn't exist
+        restate_fs_util::create_dir_all_if_doesnt_exists(&self.root_path).await?;
+
+        // Find all the metadata files in the root path directory, parse the index and then sort them by index
+        let mut read_dir = tokio::fs::read_dir(&self.root_path).await?;
+        let mut metadata_files = vec![];
+        let mut next_file_index = 0;
+        while let Some(dir_entry) = read_dir.next_entry().await? {
+            if dir_entry
+                .path()
+                .extension()
+                .and_then(|os_str| os_str.to_str())
+                == Some(RESTATE_EXTENSION)
+            {
+                let index: usize = dir_entry
+                    .path()
+                    .file_stem()
+                    .expect("If there is an extension, there must be a file stem")
+                    .to_string_lossy()
+                    .parse()
+                    .map_err(|_| MetaReaderError::BadFilename(dir_entry.path()))?;
+
+                // Make sure self.next_file_index = max(self.next_file_index, index + 1)
+                next_file_index = next_file_index.max(index + 1);
+                metadata_files.push((dir_entry.path(), index));
+            }
+        }
+        metadata_files.sort_by(|a, b| a.1.cmp(&b.1));
+
+        // We use blocking spawn to use bincode::decode_from_std_read
+        let updates = tokio::task::spawn_blocking(move || {
+            let mut schemas_updates = vec![];
+
+            for (metadata_file_path, _) in metadata_files {
+                // Metadata_file_path is the json metadata descriptor
+                trace!("Reloading metadata file {}", metadata_file_path.display());
+
+                let mut file = std::fs::File::open(metadata_file_path)?;
+
+                let commands_file: CommandsFile =
+                    bincode::serde::decode_from_std_read(&mut file, bincode::config::standard())?;
+                schemas_updates.extend(commands_file.0);
+            }
+
+            Result::<Vec<SchemasUpdateCommand>, MetaReaderError>::Ok(schemas_updates)
+        })
+        .await?;
+
+        Ok((next_file_index, updates?))
+    }
+}
 
 #[derive(Debug)]
 pub struct FileMetaStorage {
@@ -149,13 +232,32 @@ impl FileMetaStorage {
             Ok(())
         }
     }
+
+    pub fn as_reader(&self) -> FileMetaReader {
+        FileMetaReader::new(self.root_path.clone())
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(transparent)]
 struct CommandsFile(Vec<SchemasUpdateCommand>);
 
+impl MetaReader for FileMetaReader {
+    async fn read(&self) -> Result<Vec<SchemasUpdateCommand>, MetaReaderError> {
+        let (_, updates) = self.load().await?;
+        Ok(updates)
+    }
+}
+
 impl MetaStorage for FileMetaStorage {
+    type Reader = FileMetaReader;
+
+    async fn reload(&mut self) -> Result<Vec<SchemasUpdateCommand>, MetaStorageError> {
+        let (next_file_index, updates) = self.as_reader().load().await?;
+        self.next_file_index = next_file_index;
+        Ok(updates)
+    }
+
     async fn store(&mut self, commands: Vec<SchemasUpdateCommand>) -> Result<(), MetaStorageError> {
         let file_path = self
             .root_path
@@ -178,55 +280,8 @@ impl MetaStorage for FileMetaStorage {
         Ok(())
     }
 
-    async fn reload(&mut self) -> Result<Vec<SchemasUpdateCommand>, MetaStorageError> {
-        let root_path = self.root_path.clone();
-
-        // Try to create a dir, in case it doesn't exist
-        restate_fs_util::create_dir_all_if_doesnt_exists(&root_path).await?;
-
-        // Find all the metadata files in the root path directory, parse the index and then sort them by index
-        let mut read_dir = tokio::fs::read_dir(root_path).await?;
-        let mut metadata_files = vec![];
-        while let Some(dir_entry) = read_dir.next_entry().await? {
-            if dir_entry
-                .path()
-                .extension()
-                .and_then(|os_str| os_str.to_str())
-                == Some(RESTATE_EXTENSION)
-            {
-                let index: usize = dir_entry
-                    .path()
-                    .file_stem()
-                    .expect("If there is an extension, there must be a file stem")
-                    .to_string_lossy()
-                    .parse()
-                    .map_err(|_| MetaStorageError::BadFilename(dir_entry.path()))?;
-
-                // Make sure self.next_file_index = max(self.next_file_index, index + 1)
-                self.next_file_index = self.next_file_index.max(index + 1);
-                metadata_files.push((dir_entry.path(), index));
-            }
-        }
-        metadata_files.sort_by(|a, b| a.1.cmp(&b.1));
-
-        // We use blocking spawn to use bincode::decode_from_std_read
-        tokio::task::spawn_blocking(move || {
-            let mut schemas_updates = vec![];
-
-            for (metadata_file_path, _) in metadata_files {
-                // Metadata_file_path is the json metadata descriptor
-                trace!("Reloading metadata file {}", metadata_file_path.display());
-
-                let mut file = std::fs::File::open(metadata_file_path)?;
-
-                let commands_file: CommandsFile =
-                    bincode::serde::decode_from_std_read(&mut file, bincode::config::standard())?;
-                schemas_updates.extend(commands_file.0);
-            }
-
-            Result::<Vec<SchemasUpdateCommand>, MetaStorageError>::Ok(schemas_updates)
-        })
-        .await?
+    fn create_reader(&self) -> Self::Reader {
+        self.as_reader()
     }
 }
 
