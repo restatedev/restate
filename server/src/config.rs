@@ -140,8 +140,6 @@ impl Configuration {
     ) -> Result<Self, Error> {
         let figment = Figment::from(Serialized::defaults(default_configuration));
 
-        println!("{:#?}", figment);
-
         // get memory options separately, and use them to set certain defaults
         let memory: MemoryOptions = Figment::from(Serialized::defaults(MemoryOptions::default()))
             .merge(Env::prefixed("MEMORY_").split("__"))
