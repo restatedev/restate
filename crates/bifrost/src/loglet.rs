@@ -36,14 +36,14 @@ use crate::{Error, LogRecord, LsnExt, Options};
 pub enum ProviderKind {
     /// A file-backed loglet.
     File,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "memory_loglet"))]
     Memory,
 }
 
 pub fn provider_default_config(kind: ProviderKind) -> serde_json::Value {
     match kind {
         ProviderKind::File => crate::loglets::file_loglet::default_config(),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "memory_loglet"))]
         ProviderKind::Memory => crate::loglets::memory_loglet::default_config(),
     }
 }
@@ -51,7 +51,7 @@ pub fn provider_default_config(kind: ProviderKind) -> serde_json::Value {
 pub fn create_provider(kind: ProviderKind, options: &Options) -> Arc<dyn LogletProvider> {
     match kind {
         ProviderKind::File => crate::loglets::file_loglet::FileLogletProvider::new(options),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "memory_loglet"))]
         ProviderKind::Memory => crate::loglets::memory_loglet::MemoryLogletProvider::new(),
     }
 }

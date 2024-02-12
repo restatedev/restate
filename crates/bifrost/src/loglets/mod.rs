@@ -9,5 +9,5 @@
 // by the Apache License, Version 2.0.
 
 pub mod file_loglet;
-#[cfg(test)]
+#[cfg(any(test, feature = "memory_loglet"))]
 pub mod memory_loglet;

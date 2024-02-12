@@ -35,6 +35,7 @@ pub struct MemoryLogletProvider {
     init_delay: Option<Duration>,
 }
 
+#[allow(dead_code)]
 impl MemoryLogletProvider {
     pub fn new() -> Arc<Self> {
         Arc::default()
