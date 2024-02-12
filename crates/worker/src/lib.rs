@@ -33,7 +33,7 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{PartitionKey, PeerId};
-use restate_types::message::PeerTarget;
+use restate_types::message::PartitionTarget;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 use std::ops::RangeInclusive;
@@ -87,7 +87,7 @@ pub use restate_storage_query_postgres::{
 
 type PartitionProcessorCommand = partition::StateMachineAckCommand;
 type ConsensusCommand = restate_consensus::Command<PartitionProcessorCommand>;
-type ConsensusMsg = PeerTarget<PartitionProcessorCommand>;
+type ConsensusMsg = PartitionTarget<PartitionProcessorCommand>;
 type PartitionProcessor = partition::PartitionProcessor<
     ProtobufRawEntryCodec,
     InvokerChannelServiceHandle,

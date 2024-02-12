@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_errors::NotRunningError;
-use restate_types::identifiers::{PartitionKey, PeerId};
+use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::future::Future;
 use tokio::sync::mpsc;
@@ -62,7 +62,7 @@ pub enum ConsensusOrIngressTarget<C, I> {
 pub trait TargetConsensusOrIngress<C, I> {
     /// Returns the target of a message. It can either be an ingress
     /// or the consensus module.
-    fn target(self) -> ConsensusOrIngressTarget<C, I>;
+    fn into_target(self) -> ConsensusOrIngressTarget<C, I>;
 }
 
 pub enum ConsensusOrShuffleTarget<C, S> {
@@ -74,7 +74,7 @@ pub enum ConsensusOrShuffleTarget<C, S> {
 pub trait TargetConsensusOrShuffle<C, S> {
     /// Returns the target of a message. It can either be the consensus module
     /// or a shuffle
-    fn target(self) -> ConsensusOrShuffleTarget<C, S>;
+    fn into_target(self) -> ConsensusOrShuffleTarget<C, S>;
 }
 
 /// Trait for messages that are sent to a shuffle component or an ingress
@@ -85,15 +85,16 @@ pub enum ShuffleOrIngressTarget<S, I> {
 
 pub trait TargetShuffleOrIngress<S, I> {
     /// Returns the target of a message. It can either be a shuffle or an ingress.
-    fn target(self) -> ShuffleOrIngressTarget<S, I>;
+    fn into_target(self) -> ShuffleOrIngressTarget<S, I>;
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot find target peer for partition key {0}")]
 pub struct PartitionTableError(PartitionKey);
 
-pub trait PartitionTable {
-    type Future: Future<Output = Result<PeerId, PartitionTableError>>;
-
-    fn partition_key_to_target_peer(&self, partition_key: PartitionKey) -> Self::Future;
+pub trait FindPartition {
+    fn find_partition_id(
+        &self,
+        partition_key: PartitionKey,
+    ) -> Result<PartitionId, PartitionTableError>;
 }

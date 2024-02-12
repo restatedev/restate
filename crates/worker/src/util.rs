@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_types::identifiers::PeerId;
-use restate_types::message::PeerTarget;
+use restate_types::message::PartitionTarget;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 
@@ -17,7 +17,7 @@ use tokio::sync::mpsc::error::SendError;
 #[derive(Debug)]
 pub(super) struct IdentitySender<T> {
     id: PeerId,
-    sender: mpsc::Sender<PeerTarget<T>>,
+    sender: mpsc::Sender<PartitionTarget<T>>,
 }
 
 impl<T> Clone for IdentitySender<T> {
@@ -30,7 +30,7 @@ impl<T> Clone for IdentitySender<T> {
 }
 
 impl<T> IdentitySender<T> {
-    pub(super) fn new(id: PeerId, sender: mpsc::Sender<PeerTarget<T>>) -> Self {
+    pub(super) fn new(id: PeerId, sender: mpsc::Sender<PartitionTarget<T>>) -> Self {
         Self { id, sender }
     }
 

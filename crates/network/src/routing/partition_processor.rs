@@ -58,7 +58,7 @@ where
 
     pub(super) async fn run(mut self) -> Result<(), PartitionProcessorRouterError<IngressMsg>> {
         while let Some(message) = self.receiver.recv().await {
-            match message.target() {
+            match message.into_target() {
                 ShuffleOrIngressTarget::Shuffle(msg) => {
                     send_to_shuffle(msg, &self.shuffle_txs).await
                 }

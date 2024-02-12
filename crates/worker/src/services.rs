@@ -15,7 +15,7 @@ use restate_consensus::ProposalSender;
 use restate_network::PartitionTableError;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation::InvocationTermination;
-use restate_types::message::PeerTarget;
+use restate_types::message::PartitionTarget;
 use restate_types::state_mut::ExternalStateMutation;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -84,7 +84,7 @@ pub enum Error {
 pub(crate) struct Services<PartitionTable> {
     command_rx: mpsc::Receiver<WorkerCommand>,
 
-    proposal_tx: ProposalSender<PeerTarget<StateMachineAckCommand>>,
+    proposal_tx: ProposalSender<PartitionTarget<StateMachineAckCommand>>,
     partition_table: PartitionTable,
 
     command_tx: WorkerCommandSender,
@@ -92,10 +92,10 @@ pub(crate) struct Services<PartitionTable> {
 
 impl<PartitionTable> Services<PartitionTable>
 where
-    PartitionTable: restate_network::PartitionTable,
+    PartitionTable: restate_network::FindPartition,
 {
     pub(crate) fn new(
-        proposal_tx: ProposalSender<PeerTarget<StateMachineAckCommand>>,
+        proposal_tx: ProposalSender<PartitionTarget<StateMachineAckCommand>>,
         subscription_controller_handle: subscription_integration::SubscriptionControllerHandle,
         partition_table: PartitionTable,
         channel_size: usize,
@@ -136,18 +136,16 @@ where
                 Some(command) = command_rx.recv() => {
                     match command {
                         WorkerCommand::ExternalStateMutation(mutation) => {
-                            let target_peer_id = partition_table
-                                .partition_key_to_target_peer(mutation.service_id.partition_key())
-                                .await?;
+                            let target_partition_id = partition_table
+                                .find_partition_id(mutation.service_id.partition_key())?;
                             let msg = StateMachineAckCommand::no_ack(StateMachineCommand::ExternalStateMutation(mutation));
-                            proposal_tx.send((target_peer_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
+                            proposal_tx.send((target_partition_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
                         },
                         WorkerCommand::TerminateInvocation(invocation_termination) => {
-                            let target_peer_id = partition_table
-                                .partition_key_to_target_peer(invocation_termination.maybe_fid.partition_key())
-                                .await?;
+                            let target_partition_id = partition_table
+                                .find_partition_id(invocation_termination.maybe_fid.partition_key())?;
                             let msg = StateMachineAckCommand::no_ack(StateMachineCommand::TerminateInvocation(invocation_termination));
-                            proposal_tx.send((target_peer_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
+                            proposal_tx.send((target_partition_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
                         }
                     }
                 }
