@@ -13,7 +13,7 @@ use crate::sender::StateMachineSender;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use restate_types::identifiers::{LeaderEpoch, PeerId};
-use restate_types::message::PeerTarget;
+use restate_types::message::PartitionTarget;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use tokio::sync::mpsc;
@@ -43,16 +43,16 @@ pub struct Consensus<Cmd> {
     cmd_logs: HashMap<PeerId, CommandLog<Cmd>>,
 
     /// Receiver of proposals from all associated state machines
-    proposal_rx: mpsc::Receiver<PeerTarget<Cmd>>,
+    proposal_rx: mpsc::Receiver<PartitionTarget<Cmd>>,
 
     /// Receiver of incoming raft messages
-    raft_rx: mpsc::Receiver<PeerTarget<Cmd>>,
+    raft_rx: mpsc::Receiver<PartitionTarget<Cmd>>,
 
     /// Sender for outgoing raft messages
-    _raft_tx: mpsc::Sender<PeerTarget<Cmd>>,
+    _raft_tx: mpsc::Sender<PartitionTarget<Cmd>>,
 
     // used to create the ProposalSenders
-    proposal_tx: mpsc::Sender<PeerTarget<Cmd>>,
+    proposal_tx: mpsc::Sender<PartitionTarget<Cmd>>,
 }
 
 impl<Cmd> Consensus<Cmd>
@@ -60,8 +60,8 @@ where
     Cmd: Debug + Send + Sync + 'static,
 {
     pub fn new(
-        raft_rx: mpsc::Receiver<PeerTarget<Cmd>>,
-        raft_tx: mpsc::Sender<PeerTarget<Cmd>>,
+        raft_rx: mpsc::Receiver<PartitionTarget<Cmd>>,
+        raft_tx: mpsc::Sender<PartitionTarget<Cmd>>,
         proposal_channel_size: usize,
     ) -> Self {
         let (proposal_tx, proposal_rx) = mpsc::channel(proposal_channel_size);
@@ -75,7 +75,7 @@ where
         }
     }
 
-    pub fn create_proposal_sender(&self) -> ProposalSender<PeerTarget<Cmd>> {
+    pub fn create_proposal_sender(&self) -> ProposalSender<PartitionTarget<Cmd>> {
         self.proposal_tx.clone()
     }
 

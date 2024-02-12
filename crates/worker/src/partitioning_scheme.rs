@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures::future;
-use restate_network::{PartitionTable, PartitionTableError};
-use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
+use restate_network::{FindPartition, PartitionTableError};
+use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone)]
@@ -69,16 +68,17 @@ impl FixedConsecutivePartitions {
     }
 }
 
-impl PartitionTable for FixedConsecutivePartitions {
-    type Future = future::Ready<Result<PeerId, PartitionTableError>>;
-
-    fn partition_key_to_target_peer(&self, partition_key: PartitionKey) -> Self::Future {
+impl FindPartition for FixedConsecutivePartitions {
+    fn find_partition_id(
+        &self,
+        partition_key: PartitionKey,
+    ) -> Result<PartitionId, PartitionTableError> {
         let partition_id = FixedConsecutivePartitions::partition_key_to_partition_id(
             self.num_partitions,
             partition_key,
         );
 
-        future::ready(Ok(partition_id))
+        Ok(partition_id)
     }
 }
 
@@ -98,7 +98,7 @@ impl Partitioner {
 }
 
 impl Iterator for Partitioner {
-    type Item = (PeerId, RangeInclusive<PartitionKey>);
+    type Item = (PartitionId, RangeInclusive<PartitionKey>);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.next_partition_id < self.num_partitions {
@@ -122,8 +122,8 @@ mod tests {
     use test_log::test;
 
     use crate::partitioning_scheme::{FixedConsecutivePartitions, Partitioner};
-    use restate_network::PartitionTable;
-    use restate_types::identifiers::{PartitionKey, PeerId};
+    use restate_network::FindPartition;
+    use restate_types::identifiers::{PartitionId, PartitionKey};
 
     #[test]
     fn partitioner_produces_consecutive_ranges() {
@@ -153,13 +153,11 @@ mod tests {
     }
 
     impl FixedConsecutivePartitions {
-        async fn unchecked_partition_key_to_target_peer(
+        fn unchecked_partition_key_to_target_peer(
             &self,
             partition_key: PartitionKey,
-        ) -> PeerId {
-            self.partition_key_to_target_peer(partition_key)
-                .await
-                .unwrap()
+        ) -> PartitionId {
+            self.find_partition_id(partition_key).unwrap()
         }
     }
 
@@ -169,18 +167,14 @@ mod tests {
         let partition_table = FixedConsecutivePartitions::new(num_partitions);
         let partitioner = partition_table.partitioner();
 
-        for (peer_id, partition_range) in partitioner {
+        for (partition_id, partition_range) in partitioner {
             assert_eq!(
-                partition_table
-                    .unchecked_partition_key_to_target_peer(*partition_range.start())
-                    .await,
-                peer_id
+                partition_table.unchecked_partition_key_to_target_peer(*partition_range.start()),
+                partition_id
             );
             assert_eq!(
-                partition_table
-                    .unchecked_partition_key_to_target_peer(*partition_range.end())
-                    .await,
-                peer_id
+                partition_table.unchecked_partition_key_to_target_peer(*partition_range.end()),
+                partition_id
             );
         }
     }

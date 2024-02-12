@@ -13,12 +13,12 @@ use crate::routing::ingress::IngressRouter;
 use crate::routing::partition_processor::PartitionProcessorRouter;
 use crate::routing::shuffle::ShuffleRouter;
 use crate::{
-    NetworkCommand, PartitionTable, PartitionTableError, TargetConsensusOrIngress,
-    TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress, UnboundedNetworkHandle,
+    NetworkCommand, TargetConsensusOrIngress, TargetConsensusOrShuffle, TargetShuffle,
+    TargetShuffleOrIngress, UnboundedNetworkHandle,
 };
 use restate_types::identifiers::PeerId;
 use restate_types::identifiers::WithPartitionKey;
-use restate_types::message::PeerTarget;
+use restate_types::message::PartitionTarget;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -31,7 +31,7 @@ mod ingress;
 mod partition_processor;
 mod shuffle;
 
-pub type ConsensusSender<T> = mpsc::Sender<PeerTarget<T>>;
+pub type ConsensusSender<T> = mpsc::Sender<PartitionTarget<T>>;
 
 pub type IngressSender<T> = mpsc::Sender<T>;
 
@@ -75,10 +75,10 @@ pub struct Network<
     PartitionTable,
 > {
     /// Receiver for messages from the consensus module
-    consensus_in_rx: mpsc::Receiver<PeerTarget<ConsensusMsg>>,
+    consensus_in_rx: mpsc::Receiver<PartitionTarget<ConsensusMsg>>,
 
     /// Sender for messages to the consensus module
-    consensus_tx: mpsc::Sender<PeerTarget<ConsensusMsg>>,
+    consensus_tx: mpsc::Sender<PartitionTarget<ConsensusMsg>>,
 
     network_command_rx: mpsc::UnboundedReceiver<NetworkCommand<ShuffleIn>>,
 
@@ -93,7 +93,7 @@ pub struct Network<
     partition_table: PartitionTable,
 
     // used for creating the ConsensusSender
-    consensus_in_tx: mpsc::Sender<PeerTarget<ConsensusMsg>>,
+    consensus_in_tx: mpsc::Sender<PartitionTarget<ConsensusMsg>>,
 
     // used for creating the network handle
     network_command_tx: mpsc::UnboundedSender<NetworkCommand<ShuffleIn>>,
@@ -156,10 +156,10 @@ where
     PPOut: TargetShuffleOrIngress<PPToShuffle, PPToIngress>,
     PPToShuffle: TargetShuffle + Into<ShuffleIn> + Debug,
     PPToIngress: Into<IngressIn> + Debug,
-    PartitionTable: crate::PartitionTable + Clone,
+    PartitionTable: crate::FindPartition + Clone,
 {
     pub fn new(
-        consensus_tx: mpsc::Sender<PeerTarget<ConsensusMsg>>,
+        consensus_tx: mpsc::Sender<PartitionTarget<ConsensusMsg>>,
         ingress_tx: mpsc::Sender<IngressIn>,
         partition_table: PartitionTable,
         channel_size: usize,
@@ -305,15 +305,6 @@ where
             .err()
             .unwrap_or(TerminationCause::Unexpected)
     }
-}
-
-async fn lookup_target_peer(
-    msg: &impl WithPartitionKey,
-    partition_table: &impl PartitionTable,
-) -> Result<PeerId, PartitionTableError> {
-    partition_table
-        .partition_key_to_target_peer(msg.partition_key())
-        .await
 }
 
 async fn send_to_shuffle<M: TargetShuffle + Into<S> + Debug, S>(

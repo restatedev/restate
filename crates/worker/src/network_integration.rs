@@ -45,7 +45,7 @@ mod ingress_integration {
     impl TargetConsensusOrShuffle<IngressToConsensus, IngressToShuffle>
         for restate_ingress_dispatcher::IngressDispatcherOutput
     {
-        fn target(self) -> ConsensusOrShuffleTarget<IngressToConsensus, IngressToShuffle> {
+        fn into_target(self) -> ConsensusOrShuffleTarget<IngressToConsensus, IngressToShuffle> {
             match self {
                 restate_ingress_dispatcher::IngressDispatcherOutput::Invocation {
                     service_invocation,
@@ -213,7 +213,7 @@ mod shuffle_integration {
     }
 
     impl TargetConsensusOrIngress<ShuffleToConsensus, ShuffleToIngress> for shuffle::ShuffleOutput {
-        fn target(self) -> ConsensusOrIngressTarget<ShuffleToConsensus, ShuffleToIngress> {
+        fn into_target(self) -> ConsensusOrIngressTarget<ShuffleToConsensus, ShuffleToIngress> {
             let (shuffle_id, partition_id, msg_index, target) = self.into_inner();
 
             match target {
@@ -280,7 +280,7 @@ mod partition_integration {
             partition::StateMachineIngressAckResponse,
         > for partition::StateMachineAckResponse
     {
-        fn target(
+        fn into_target(
             self,
         ) -> ShuffleOrIngressTarget<
             partition::StateMachineShuffleDeduplicationResponse,
