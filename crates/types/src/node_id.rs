@@ -8,6 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#[cfg(test)]
+use arc_swap::ArcSwap;
+use once_cell::sync::OnceCell;
+
+#[cfg(not(test))]
+static MY_NODE_ID: OnceCell<NodeId> = OnceCell::new();
+#[cfg(test)]
+static MY_NODE_ID: OnceCell<ArcSwap<NodeId>> = OnceCell::new();
+
 /// A generational node identifier. Nodes with the same ID but different generations
 /// represent the same node across different instances (restarts) of its lifetime.
 ///
@@ -51,6 +60,32 @@ impl NodeId {
             Some(generation) => Self::new_generational(id, generation),
             None => Self::new_plain(id),
         }
+    }
+
+    #[cfg(not(test))]
+    pub fn my_node_node() -> Option<NodeId> {
+        MY_NODE_ID.get().copied()
+    }
+
+    #[cfg(test)]
+    pub fn my_node_node() -> Option<NodeId> {
+        MY_NODE_ID.get().map(|n| n.load().as_ref().clone())
+    }
+
+    #[cfg(not(test))]
+    pub fn set_as_my_node_id(self) {
+        debug_assert!(self.as_generational().is_some());
+        if let Err(e) = MY_NODE_ID.set(self) {
+            panic!("My NodeId can only be set once, it's already set to {}", e);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn set_as_my_node_id(self) {
+        use std::sync::Arc;
+
+        let n = MY_NODE_ID.get_or_init(|| ArcSwap::from_pointee(self));
+        n.store(Arc::new(self))
     }
 
     pub fn new_plain(id: u32) -> NodeId {

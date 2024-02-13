@@ -5664,6 +5664,7 @@ name = "restate-types"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "base62",
  "base64 0.21.7",
  "bytes",
@@ -5674,6 +5675,7 @@ dependencies = [
  "http",
  "humantime",
  "num-traits",
+ "once_cell",
  "opentelemetry_api",
  "rand",
  "restate-base64-util",

@@ -11,7 +11,6 @@
 use crate::server;
 use enumset::EnumSet;
 use restate_types::nodes_config::{NetworkAddress, Role};
-use restate_types::PlainNodeId;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -21,7 +20,7 @@ use serde_with::serde_as;
 #[cfg_attr(feature = "options_schema", schemars(default))]
 #[builder(default)]
 pub struct Options {
-    pub node_id: PlainNodeId,
+    pub node_name: String,
 
     pub meta: restate_meta::Options,
     pub worker: restate_worker::Options,
@@ -44,7 +43,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Options {
-            node_id: PlainNodeId::from(1),
+            node_name: "LocalNode".to_owned(),
             meta: Default::default(),
             worker: Default::default(),
             server: Default::default(),
