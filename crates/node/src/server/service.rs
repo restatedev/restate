@@ -12,7 +12,6 @@ use std::net::SocketAddr;
 
 use axum::routing::get;
 use codederror::CodedError;
-use futures::FutureExt;
 use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -69,7 +68,7 @@ impl NodeServer {
         }
     }
 
-    pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
+    pub async fn run(self) -> Result<(), anyhow::Error> {
         // Configure Metric Exporter
         let mut state_builder = HandlerStateBuilder::default();
 
@@ -142,11 +141,14 @@ impl NodeServer {
             "Node server listening"
         );
 
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        Err(anyhow::anyhow!("I want to crash!"))
+
         // Wait server graceful shutdown
-        server
-            .with_graceful_shutdown(drain.signaled().map(|_| ()))
-            .await
-            .map_err(Error::Running)
+        // server
+        //     .with_graceful_shutdown(crate::task_center::shutdown_watcher())
+        //     .await
+        // .map_err(Error::Running)
     }
 
     pub fn port(&self) -> u16 {

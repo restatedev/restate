@@ -11,6 +11,7 @@
 use clap::Parser;
 use codederror::CodedError;
 use restate_errors::fmt::RestateCode;
+use restate_node::task_center::TaskCenter;
 use restate_server::build_info;
 use restate_server::Configuration;
 use restate_tracing_instrumentation::TracingGuard;
@@ -19,6 +20,7 @@ use std::ops::Div;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
+use tracing::error;
 use tracing::{info, trace, warn};
 
 mod signal;
@@ -135,26 +137,30 @@ fn main() {
         WipeMode::wipe(
             cli_args.wipe.as_ref(),
             config.node.meta.storage_path().into(),
-            config.node.worker.storage_path().into()
-        ).await.expect("Error when trying to wipe the configured storage path");
+            config.node.worker.storage_path().into(),
+        )
+        .await
+        .expect("Error when trying to wipe the configured storage path");
 
+        let task_center_watch = TaskCenter::watch_shutdown();
         let node = Node::new(config.node);
-
         if let Err(err) = node {
             handle_error(err);
         }
-        let node = node.unwrap();
-
-        let (shutdown_signal, shutdown_watch) = drain::channel();
-        let node = node.run(shutdown_watch);
-        tokio::pin!(node);
+        // We ignore errors since we will wait for shutdown below anyway.
+        // This starts node roles and the rest of the system async under tasks managed by
+        // the TaskCenter.
+        let _ = node.unwrap().boot();
 
         tokio::select! {
-            _ = signal::shutdown() => {
+            signal_name = signal::shutdown() => {
                 info!("Received shutdown signal.");
+                let signal_reason = format!("received signal {}", signal_name);
 
-                let shutdown_tasks = futures_util::future::join(shutdown_signal.drain(), node);
-                let shutdown_with_timeout = tokio::time::timeout(config.shutdown_grace_period.into(), shutdown_tasks);
+                let shutdown_with_timeout = tokio::time::timeout(
+                    config.shutdown_grace_period.into(),
+                    TaskCenter::shutdown_node(&signal_reason, 0)
+                );
 
                 // ignore the result because we are shutting down
                 let shutdown_result = shutdown_with_timeout.await;
@@ -165,17 +171,21 @@ fn main() {
                     info!("Restate has been gracefully shut down.");
                 }
             },
-            result = &mut node => {
-                if let Err(err) = result {
-                    handle_error(err);
-                } else {
-                    panic!("Unexpected termination of restate application. Please contact the Restate developers.");
-                }
-            }
-        }
+            _ = task_center_watch => {
+                // Shutdown was requested by task center and it has completed.
+            },
+        };
 
         shutdown_tracing(config.shutdown_grace_period.div(2), tracing_guard).await;
     });
+    let exit_code = TaskCenter::exit_code();
+    if exit_code != 0 {
+        error!("Restate terminated with exit code {}!", exit_code);
+    } else {
+        info!("Restate terminated");
+    }
+    // The process terminates with the task center requested exit code
+    std::process::exit(exit_code);
 }
 
 async fn shutdown_tracing(grace_period: Duration, tracing_guard: TracingGuard) {

@@ -49,6 +49,7 @@ serde_with = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.1" }
 

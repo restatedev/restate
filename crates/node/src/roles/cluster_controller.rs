@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::task_center::cancel_watcher;
 use crate::Options;
 use codederror::CodedError;
 use restate_cluster_controller::ClusterControllerHandle;
@@ -34,10 +35,10 @@ impl ClusterControllerRole {
         self.controller.handle()
     }
 
-    pub async fn run(self, shutdown_watch: drain::Watch) -> Result<(), ClusterControllerRoleError> {
+    pub async fn run(self) -> Result<(), anyhow::Error> {
         info!("Running cluster controller role");
 
-        let shutdown_signal = shutdown_watch.signaled();
+        let shutdown_signal = cancel_watcher();
         let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
 
         let controller_fut = self.controller.run(inner_shutdown_watch);
