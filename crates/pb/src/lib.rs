@@ -84,6 +84,16 @@ pub mod restate {
                 }
             }
         }
+
+        impl From<restate_types::PlainNodeId> for NodeId {
+            fn from(node_id: restate_types::PlainNodeId) -> Self {
+                let id: u32 = node_id.into();
+                NodeId {
+                    id,
+                    generation: None,
+                }
+            }
+        }
     }
 }
 

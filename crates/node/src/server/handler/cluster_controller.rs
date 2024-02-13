@@ -10,7 +10,6 @@
 
 use restate_node_services::cluster_controller::cluster_controller_server::ClusterController;
 use restate_node_services::cluster_controller::{AttachmentRequest, AttachmentResponse};
-use restate_types::NodeId;
 use tonic::{async_trait, Request, Response, Status};
 use tracing::debug;
 
@@ -28,8 +27,8 @@ impl ClusterController for ClusterControllerHandler {
         &self,
         request: Request<AttachmentRequest>,
     ) -> Result<Response<AttachmentResponse>, Status> {
-        let node_id = request.into_inner().node_id.expect("node_id must be set");
-        debug!("Register node '{}'", NodeId::from(node_id));
+        let node_name = request.into_inner().node_name;
+        debug!("Register node '{}'", node_name);
         Ok(Response::new(AttachmentResponse {}))
     }
 }
