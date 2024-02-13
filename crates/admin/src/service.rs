@@ -13,11 +13,12 @@ use std::sync::Arc;
 use axum::error_handling::HandleErrorLayer;
 use futures::FutureExt;
 use http::StatusCode;
+use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
 use restate_meta::MetaHandle;
+use restate_node_services::worker::worker_client::WorkerClient;
 use restate_schema_impl::Schemas;
-use restate_storage_query_datafusion::context::QueryContext;
 use tracing::info;
 
 use crate::{rest_api, state, storage_query};
@@ -43,7 +44,7 @@ impl AdminService {
         self,
         drain: drain::Watch,
         worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
-        query_context: Option<QueryContext>,
+        worker_grpc_client: Option<WorkerClient<Channel>>,
     ) -> Result<(), Error> {
         let rest_state =
             state::AdminServiceState::new(self.meta_handle, self.schemas, worker_handle);
@@ -51,8 +52,8 @@ impl AdminService {
         let router = axum::Router::new();
 
         // Stitch query http endpoint if enabled
-        let router = if let Some(query_context) = query_context {
-            let query_state = Arc::new(state::QueryServiceState { query_context });
+        let router = if let Some(worker_grpc_client) = worker_grpc_client {
+            let query_state = Arc::new(state::QueryServiceState { worker_grpc_client });
             // Merge storage query router
             router.merge(storage_query::create_router(query_state))
         } else {

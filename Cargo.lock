@@ -280,6 +280,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-flight"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d7f215461ad6346f2e4cc853e377d4e076d533e1ed78d327debe83023e3601f"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-cast",
+ "arrow-ipc",
+ "arrow-schema",
+ "base64 0.21.7",
+ "bytes",
+ "futures",
+ "paste",
+ "prost 0.12.3",
+ "tokio",
+ "tonic 0.10.2",
+]
+
+[[package]]
 name = "arrow-ipc"
 version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4629,6 +4649,7 @@ dependencies = [
 name = "restate-admin"
 version = "0.8.0"
 dependencies = [
+ "arrow-flight",
  "axum",
  "bincode",
  "bytes",
@@ -4648,13 +4669,13 @@ dependencies = [
  "restate-futures-util",
  "restate-meta",
  "restate-meta-rest-model",
+ "restate-node-services",
  "restate-pb",
  "restate-schema-api",
  "restate-schema-impl",
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
- "restate-storage-query-datafusion",
  "restate-test-util",
  "restate-types",
  "restate-worker-api",
@@ -4666,6 +4687,7 @@ dependencies = [
  "test-log",
  "thiserror",
  "tokio",
+ "tonic 0.10.2",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -5085,10 +5107,12 @@ dependencies = [
 name = "restate-node"
 version = "0.8.0"
 dependencies = [
+ "arrow-flight",
  "async-trait",
  "axum",
  "bincode",
  "codederror",
+ "datafusion",
  "derive_builder",
  "drain",
  "enumset",
@@ -5108,6 +5132,7 @@ dependencies = [
  "restate-node-services",
  "restate-schema-api",
  "restate-schema-impl",
+ "restate-storage-query-datafusion",
  "restate-storage-rocksdb",
  "restate-types",
  "restate-worker",

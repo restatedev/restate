@@ -26,14 +26,17 @@ restate-meta = { workspace = true }
 restate-node-services = { workspace = true }
 restate-schema-api = { workspace = true }
 restate-schema-impl = { workspace = true }
+restate-storage-query-datafusion = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
 restate-worker-api = { workspace = true }
 
+arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 codederror = { workspace = true }
+datafusion = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }
 enumset = { workspace = true }

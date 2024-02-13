@@ -12,7 +12,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-use datafusion::common::DataFusionError;
 use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
@@ -23,9 +22,9 @@ use serde::Serialize;
 /// This error is used by handlers to propagate API errors,
 /// and later converted to a response through the IntoResponse implementation
 #[derive(Debug, thiserror::Error)]
-pub enum StorageApiError {
-    #[error(transparent)]
-    DataFusionError(#[from] DataFusionError),
+pub enum StorageQueryError {
+    #[error("failed grpc: {0}")]
+    Tonic(#[from] tonic::Status),
 }
 
 /// # Error description response
@@ -36,7 +35,7 @@ struct ErrorDescriptionResponse {
     message: String,
 }
 
-impl IntoResponse for StorageApiError {
+impl IntoResponse for StorageQueryError {
     fn into_response(self) -> Response {
         let status_code = StatusCode::INTERNAL_SERVER_ERROR;
 
@@ -50,7 +49,7 @@ impl IntoResponse for StorageApiError {
     }
 }
 
-impl ToResponses for StorageApiError {
+impl ToResponses for StorageQueryError {
     fn generate(components: &mut Components) -> Result<Responses, Error> {
         let error_media_type =
             <Json<ErrorDescriptionResponse> as ToMediaTypes>::generate(components)?;
