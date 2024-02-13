@@ -5232,6 +5232,7 @@ dependencies = [
 name = "restate-node"
 version = "0.8.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "codederror",
@@ -5239,6 +5240,7 @@ dependencies = [
  "drain",
  "enumset",
  "futures",
+ "googletest",
  "http",
  "humantime",
  "hyper",
@@ -5246,6 +5248,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-tracing-context",
  "metrics-util",
+ "once_cell",
  "restate-admin",
  "restate-bifrost",
  "restate-cluster-controller",
@@ -5253,6 +5256,7 @@ dependencies = [
  "restate-meta",
  "restate-node-services",
  "restate-storage-rocksdb",
+ "restate-test-util",
  "restate-types",
  "restate-worker",
  "rocksdb",
@@ -5260,13 +5264,17 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "test-log",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tonic 0.10.2",
  "tonic-reflection",
  "tower",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
+ "tracing-test",
 ]
 
 [[package]]
@@ -5406,6 +5414,7 @@ dependencies = [
  "thiserror",
  "tikv-jemallocator",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-panic",
  "vergen",
