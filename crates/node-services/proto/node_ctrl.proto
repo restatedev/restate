@@ -10,6 +10,7 @@
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
+import "dev/restate/common/common.proto";
 
 package dev.restate.node_ctrl;
 
@@ -29,6 +30,8 @@ service NodeCtrl {
 
 message IdentResponse {
   NodeStatus status = 1;
+  dev.restate.common.NodeId node_id = 2;
+  uint32 nodes_config_version = 3;
 }
 
 

@@ -15,10 +15,14 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 
+use arc_swap::ArcSwapOption;
 use enumset::{EnumSet, EnumSetType};
 
 use crate::{GenerationalNodeId, NodeId, PlainNodeId};
+
+static CURRENT_CONFIG: ArcSwapOption<NodesConfiguration> = ArcSwapOption::const_empty();
 
 #[derive(Debug, thiserror::Error)]
 pub enum NodesConfigError {
@@ -47,7 +51,6 @@ pub enum Role {
     Eq,
     Ord,
     PartialOrd,
-    Default,
     derive_more::Display,
     derive_more::From,
     derive_more::Into,
@@ -57,13 +60,83 @@ pub enum Role {
 #[display(fmt = "v{}", _0)]
 pub struct ConfigVersion(u32);
 
+impl ConfigVersion {
+    pub const INVALID: ConfigVersion = ConfigVersion(0);
+    pub const MIN: ConfigVersion = ConfigVersion(1);
+}
+
+impl Default for ConfigVersion {
+    fn default() -> Self {
+        Self::MIN
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-struct NodesConfiguration {
+pub struct NodesConfiguration {
     version: ConfigVersion,
     nodes: HashMap<PlainNodeId, MaybeNode>,
     controllers: Vec<ControllerConfig>,
     name_lookup: HashMap<String, PlainNodeId>,
+}
+
+/// A type that allows updating the currently loaded configuration. This should
+/// be used with care to avoid racy concurrent updates.
+pub struct NodesConfigurationWriter {}
+
+impl NodesConfigurationWriter {
+    /// Silently ignore the config if it's older than existing.
+    /// Note that this is not meant to be called concurrently from multiple tasks, the system have
+    /// a single task responsible for setting updates.
+    ///
+    /// This not thread-safe.
+    pub fn set_as_current_if_newer(config: NodesConfiguration) {
+        let current = CURRENT_CONFIG.load_full();
+        match current {
+            None => {
+                CURRENT_CONFIG.store(Some(Arc::new(config)));
+            }
+            Some(current) if config.version > current.version => {
+                CURRENT_CONFIG.store(Some(Arc::new(config)));
+            }
+            Some(_) => { /* Do nothing, current is already newer */ }
+        }
+    }
+
+    /// Sets the configuration as current without any checks.
+    pub fn set_as_current_unconditional(config: NodesConfiguration) {
+        CURRENT_CONFIG.store(Some(Arc::new(config)));
+    }
+
+    #[cfg(test)]
+    pub fn unset_current() {
+        CURRENT_CONFIG.store(None);
+    }
+}
+
+impl NodesConfiguration {
+    /// The currently loaded nodes configuration. This returns None if no configuration
+    /// is loaded yet, this will be only the case before attaching to the controller
+    /// node on startup.
+    ///
+    /// After attaching, it's safe to unwrap this, or use current_unchecked() variant.
+    pub fn current() -> Option<Arc<NodesConfiguration>> {
+        CURRENT_CONFIG.load_full()
+    }
+
+    pub fn current_unchecked() -> Arc<NodesConfiguration> {
+        CURRENT_CONFIG.load_full().unwrap()
+    }
+
+    /// The currently loaded configuration version or ConfigVersion::INVALID if
+    /// no configuration is loaded yet.
+    pub fn current_version() -> ConfigVersion {
+        CURRENT_CONFIG
+            .load()
+            .as_ref()
+            .map(|config| config.version)
+            .unwrap_or(ConfigVersion::INVALID)
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, strum_macros::EnumIs)]
@@ -75,7 +148,7 @@ enum MaybeNode {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-struct NodeConfig {
+pub struct NodeConfig {
     pub name: String,
     pub current_generation: GenerationalNodeId,
     pub address: NetworkAddress,
@@ -84,7 +157,7 @@ struct NodeConfig {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-struct ControllerConfig {
+pub struct ControllerConfig {
     pub address: NetworkAddress,
 }
 
@@ -153,6 +226,15 @@ impl NodesConfiguration {
         }
     }
 
+    pub fn increment_version(&mut self) {
+        self.version += ConfigVersion(1);
+    }
+
+    #[cfg(test)]
+    pub fn set_version(&mut self, version: ConfigVersion) {
+        self.version = version;
+    }
+
     /// Insert or replace a node with a config.
     pub fn upsert_node(&mut self, node: NodeConfig) {
         debug_assert!(!node.name.is_empty());
@@ -165,8 +247,6 @@ impl NodesConfiguration {
         }
 
         self.name_lookup.insert(name, plain_id);
-
-        self.version += ConfigVersion(1);
     }
 
     /// Current version of the config
@@ -315,5 +395,42 @@ mod tests {
         let tcp: NetworkAddress = "127.0.0.1".into();
         assert_eq!(tcp, NetworkAddress::DnsName("127.0.0.1".to_string()));
         Ok(())
+    }
+
+    // test current set/get
+    #[test]
+    fn test_current_config() {
+        NodesConfigurationWriter::unset_current();
+
+        assert_eq!(
+            ConfigVersion::INVALID,
+            NodesConfiguration::current_version()
+        );
+
+        let mut config = NodesConfiguration::default();
+        let address: NetworkAddress = "unix:/tmp/my_socket".into();
+        let roles = EnumSet::only(Role::Worker);
+        let current_gen = GenerationalNodeId::new(1, 1);
+        let node = NodeConfig::new("node1".to_owned(), current_gen, address.clone(), roles);
+        config.upsert_node(node.clone());
+        config.increment_version();
+
+        assert_eq!(ConfigVersion(2), config.version);
+        NodesConfigurationWriter::set_as_current_unconditional(config.clone());
+        assert_eq!(ConfigVersion(2), NodesConfiguration::current_version());
+
+        // go back to version 1
+        config.set_version(ConfigVersion(1));
+
+        // current config is independent.
+        assert_eq!(ConfigVersion(2), NodesConfiguration::current_version());
+
+        // Do not allow going back in time.
+        NodesConfigurationWriter::set_as_current_if_newer(config.clone());
+        assert_eq!(ConfigVersion(2), NodesConfiguration::current_version());
+
+        // force
+        NodesConfigurationWriter::set_as_current_unconditional(config);
+        assert_eq!(ConfigVersion(1), NodesConfiguration::current_version());
     }
 }
