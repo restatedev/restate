@@ -11,6 +11,7 @@
 use clap::Parser;
 use codederror::CodedError;
 use restate_errors::fmt::RestateCode;
+use restate_node::task_center::TaskCenterFactory;
 use restate_server::build_info;
 use restate_server::Configuration;
 use restate_tracing_instrumentation::TracingGuard;
@@ -19,6 +20,7 @@ use std::ops::Div;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
+use tracing::error;
 use tracing::{info, trace, warn};
 
 mod signal;
@@ -106,76 +108,90 @@ fn main() {
         .build()
         .expect("failed to build Tokio runtime!");
 
-    runtime.block_on(async move {
-        // Apply tracing config globally
-        // We need to apply this first to log correctly
-        let tracing_guard = config
-            .observability
-            .init("Restate binary", std::process::id())
-            .expect("failed to instrument logging and tracing!");
+    let tc = TaskCenterFactory::create(runtime.handle().clone());
 
-        // Log panics as tracing errors if possible
-        let prev_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |panic_info| {
-            tracing_panic::panic_hook(panic_info);
-            // run original hook if any.
-            prev_hook(panic_info);
-        }));
+    runtime.block_on({
+        let tc = tc.clone();
+        async move {
+            // Apply tracing config globally
+            // We need to apply this first to log correctly
+            let tracing_guard = config
+                .observability
+                .init("Restate binary", std::process::id())
+                .expect("failed to instrument logging and tracing!");
 
-        info!("Starting Restate Server {}", build_info::build_info());
-        info!(
-            "Loading configuration file from {}",
-            cli_args.config_file.display()
-        );
-        info!(
-            "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
-            serde_yaml::to_string(&config).unwrap()
-        );
+            // Log panics as tracing errors if possible
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |panic_info| {
+                tracing_panic::panic_hook(panic_info);
+                // run original hook if any.
+                prev_hook(panic_info);
+            }));
 
-        WipeMode::wipe(
-            cli_args.wipe.as_ref(),
-            config.node.meta.storage_path().into(),
-            config.node.worker.storage_path().into()
-        ).await.expect("Error when trying to wipe the configured storage path");
+            info!("Starting Restate Server {}", build_info::build_info());
+            info!(
+                "Loading configuration file from {}",
+                cli_args.config_file.display()
+            );
+            info!(
+                "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
+                serde_yaml::to_string(&config).unwrap()
+            );
 
-        let node = Node::new(config.node);
+            WipeMode::wipe(
+                cli_args.wipe.as_ref(),
+                config.node.meta.storage_path().into(),
+                config.node.worker.storage_path().into(),
+            )
+            .await
+            .expect("Error when trying to wipe the configured storage path");
 
-        if let Err(err) = node {
-            handle_error(err);
-        }
-        let node = node.unwrap();
-
-        let (shutdown_signal, shutdown_watch) = drain::channel();
-        let node = node.run(shutdown_watch);
-        tokio::pin!(node);
-
-        tokio::select! {
-            _ = signal::shutdown() => {
-                info!("Received shutdown signal.");
-
-                let shutdown_tasks = futures_util::future::join(shutdown_signal.drain(), node);
-                let shutdown_with_timeout = tokio::time::timeout(config.shutdown_grace_period.into(), shutdown_tasks);
-
-                // ignore the result because we are shutting down
-                let shutdown_result = shutdown_with_timeout.await;
-
-                if shutdown_result.is_err() {
-                    warn!("Could not gracefully shut down Restate, terminating now.");
-                } else {
-                    info!("Restate has been gracefully shut down.");
-                }
-            },
-            result = &mut node => {
-                if let Err(err) = result {
-                    handle_error(err);
-                } else {
-                    panic!("Unexpected termination of restate application. Please contact the Restate developers.");
-                }
+            let task_center_watch = tc.watch_shutdown();
+            let node = Node::new(config.node);
+            if let Err(err) = node {
+                handle_error(err);
             }
-        }
+            // We ignore errors since we will wait for shutdown below anyway.
+            // This starts node roles and the rest of the system async under tasks managed by
+            // the TaskCenter.
+            let _ = node.unwrap().boot(&tc);
 
-        shutdown_tracing(config.shutdown_grace_period.div(2), tracing_guard).await;
+            tokio::select! {
+                signal_name = signal::shutdown() => {
+                    info!("Received shutdown signal.");
+                    let signal_reason = format!("received signal {}", signal_name);
+
+                    let shutdown_with_timeout = tokio::time::timeout(
+                        config.shutdown_grace_period.into(),
+                        tc.shutdown_node(&signal_reason, 0)
+                    );
+
+                    // ignore the result because we are shutting down
+                    let shutdown_result = shutdown_with_timeout.await;
+
+                    if shutdown_result.is_err() {
+                        warn!("Could not gracefully shut down Restate, terminating now.");
+                    } else {
+                        info!("Restate has been gracefully shut down.");
+                    }
+                },
+                _ = task_center_watch => {
+                    // Shutdown was requested by task center and it has completed.
+                },
+            };
+
+            shutdown_tracing(config.shutdown_grace_period.div(2), tracing_guard).await;
+        }
     });
+    let exit_code = tc.exit_code();
+    if exit_code != 0 {
+        error!("Restate terminated with exit code {}!", exit_code);
+    } else {
+        info!("Restate terminated");
+    }
+    drop(runtime);
+    // The process terminates with the task center requested exit code
+    std::process::exit(exit_code);
 }
 
 async fn shutdown_tracing(grace_period: Duration, tracing_guard: TracingGuard) {
