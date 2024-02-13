@@ -21,7 +21,8 @@ use serde_with::serde_as;
 #[cfg_attr(feature = "options_schema", schemars(default))]
 #[builder(default)]
 pub struct Options {
-    pub node_id: PlainNodeId,
+    pub node_name: String,
+    pub node_id: Option<PlainNodeId>,
 
     pub meta: restate_meta::Options,
     pub worker: restate_worker::Options,
@@ -44,7 +45,8 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Options {
-            node_id: PlainNodeId::from(1),
+            node_name: "LocalNode".to_owned(),
+            node_id: None,
             meta: Default::default(),
             worker: Default::default(),
             server: Default::default(),
