@@ -20,7 +20,7 @@ restate-service-protocol = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
-arrow = { version = "49.0.0", default-features = false, features = ["ipc", "prettyprint"] }
+arrow = { workspace = true, features = ["ipc", "prettyprint"] }
 bytes = { workspace = true }
 base64 = { workspace = true}
 chrono = { workspace = true }

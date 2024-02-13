@@ -59,6 +59,7 @@ impl<SMR: ServiceMetadataResolver + Debug + Sync + Send + 'static> RangeScanner
         let rows = self.0.list_services();
         stream_builder.spawn(async move {
             for_each_state(schema, tx, rows).await;
+            Ok(())
         });
         stream_builder.build()
     }

@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 
 use crate::table_util::compute_ordering;
-use datafusion::common::{DataFusionError, Statistics};
+use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
@@ -128,11 +128,15 @@ impl ExecutionPlan for GenericTableExecutionPlan {
 
     fn with_new_children(
         self: Arc<Self>,
-        _: Vec<Arc<dyn ExecutionPlan>>,
+        new_children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        Err(DataFusionError::Internal(format!(
-            "Children cannot be replaced in {self:?}"
-        )))
+        if !new_children.is_empty() {
+            return Err(DataFusionError::Internal(
+                "GenericTableExecutionPlan does not support children".to_owned(),
+            ));
+        }
+
+        Ok(self)
     }
 
     fn execute(
@@ -143,10 +147,6 @@ impl ExecutionPlan for GenericTableExecutionPlan {
         let range = 0..=PartitionKey::MAX;
         let stream = self.scanner.scan(range, self.projected_schema.clone());
         Ok(stream)
-    }
-
-    fn statistics(&self) -> Statistics {
-        Statistics::default()
     }
 }
 

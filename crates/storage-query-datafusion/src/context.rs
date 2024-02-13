@@ -59,14 +59,14 @@ impl QueryContext {
         //
         // build the state
         //
-        let mut state = SessionState::with_config_rt(session_config, runtime);
+        let mut state = SessionState::new_with_config_rt(session_config, runtime);
 
         state = state.add_analyzer_rule(Arc::new(
             analyzer::UseSymmetricHashJoinWhenPartitionKeyIsPresent::new(),
         ));
         state = state.add_physical_optimizer_rule(Arc::new(physical_optimizer::JoinRewrite::new()));
 
-        let ctx = SessionContext::with_state(state);
+        let ctx = SessionContext::new_with_state(state);
 
         Self {
             datafusion_context: ctx,

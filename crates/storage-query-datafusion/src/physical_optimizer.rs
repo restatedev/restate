@@ -51,6 +51,8 @@ impl PhysicalOptimizerRule for JoinRewrite {
                 hash_join.filter().cloned(),
                 hash_join.join_type(),
                 hash_join.null_equals_null(),
+                None,
+                None,
                 StreamJoinPartitionMode::Partitioned,
             ) else {
                 return Ok(Transformed::No(plan));

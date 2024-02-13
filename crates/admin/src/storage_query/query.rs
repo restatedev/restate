@@ -73,7 +73,7 @@ pub async fn query(
         stream.map(move |batch| {
             let converted_schema = converted_schema_cloned.clone();
             batch.and_then(|batch| {
-                convert_record_batch(converted_schema, batch).map_err(DataFusionError::ArrowError)
+                convert_record_batch(converted_schema, batch).map_err(DataFusionError::from)
             })
         }),
     );
@@ -85,7 +85,7 @@ pub async fn query(
 
     let mut stream_writer =
         StreamWriter::try_new(Vec::<u8>::new(), converted_schema.clone().as_ref())
-            .map_err(DataFusionError::ArrowError)
+            .map_err(DataFusionError::from)
             .map_err(StorageApiError::DataFusionError)?;
 
     let body = StreamBody::new(labelled_stream.map(

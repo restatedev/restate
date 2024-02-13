@@ -54,6 +54,7 @@ impl RangeScanner for StateScanner {
         let background_task = move || {
             let rows = db.all_states(range);
             for_each_state(schema, tx, rows);
+            Ok(())
         };
         stream_builder.spawn_blocking(background_task);
         stream_builder.build()
