@@ -30,7 +30,7 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 use okapi_operation::*;
-use restate_node_services::worker::StorageQuery;
+use restate_node_services::worker::StorageQueryRequest;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
@@ -65,7 +65,7 @@ pub async fn query(
     let mut worker_grpc_client = state.worker_grpc_client.clone();
 
     let response_stream = worker_grpc_client
-        .query_storage(StorageQuery {
+        .query_storage(StorageQueryRequest {
             query: payload.query,
         })
         .await?

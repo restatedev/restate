@@ -24,7 +24,7 @@ service Worker {
   rpc MutateState(StateMutationRequest) returns (google.protobuf.Empty);
 
   // Queries the storage of the worker and returns the result as a stream of responses
-  rpc QueryStorage(StorageQuery) returns (stream StorageQueryResponse);
+  rpc QueryStorage(StorageQueryRequest) returns (stream StorageQueryResponse);
 }
 
 message BifrostVersion {
@@ -41,7 +41,7 @@ message StateMutationRequest {
   bytes state_mutation = 1;
 }
 
-message StorageQuery {
+message StorageQueryRequest {
   string query = 1;
 }
 

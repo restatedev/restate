@@ -15,7 +15,7 @@ use futures::TryStreamExt;
 use restate_bifrost::Bifrost;
 use restate_node_services::worker::worker_server::Worker;
 use restate_node_services::worker::{
-    BifrostVersion, StateMutationRequest, StorageQuery, StorageQueryResponse, TerminationRequest,
+    BifrostVersion, StateMutationRequest, StorageQueryRequest, StorageQueryResponse, TerminationRequest,
 };
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_worker::WorkerCommandSender;
@@ -94,7 +94,7 @@ impl Worker for WorkerHandler {
 
     async fn query_storage(
         &self,
-        request: Request<StorageQuery>,
+        request: Request<StorageQueryRequest>,
     ) -> Result<Response<Self::QueryStorageStream>, Status> {
         let query = request.into_inner().query;
 

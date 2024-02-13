@@ -46,7 +46,7 @@ where
             )?;
 
         Ok(Response::new(FetchSchemasResponse {
-            schemas: serialized_updates.into(),
+            schemas_bin: serialized_updates.into(),
         }))
     }
 }
