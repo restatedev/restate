@@ -57,6 +57,7 @@ impl RangeScanner for InboxScanner {
             let mut transaction = db.transaction();
             let rows = transaction.all_inboxes(range);
             for_each_state(schema, tx, rows).await;
+            Ok(())
         };
         stream_builder.spawn(background_task);
         stream_builder.build()

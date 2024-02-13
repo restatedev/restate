@@ -59,6 +59,7 @@ impl<DMR: DeploymentResolver + Debug + Sync + Send + 'static> RangeScanner
         let rows = self.0.get_deployments();
         stream_builder.spawn(async move {
             for_each_state(schema, tx, rows).await;
+            Ok(())
         });
         stream_builder.build()
     }

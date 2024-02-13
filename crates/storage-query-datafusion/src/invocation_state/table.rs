@@ -54,6 +54,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> RangeScanner for S
         let background_task = async move {
             let rows = status.read_status(range).await;
             for_each_state(schema, tx, rows).await;
+            Ok(())
         };
         stream_builder.spawn(background_task);
         stream_builder.build()
