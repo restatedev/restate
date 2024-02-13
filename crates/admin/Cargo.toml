@@ -18,15 +18,16 @@ restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-meta = { workspace = true }
 restate-meta-rest-model = { workspace = true, features = ["schema"] }
+restate-node-services = { workspace = true }
 restate-pb = { workspace = true }
 restate-schema-api = { workspace = true, features = ["service", "deployment", "serde", "serde_schema"] }
 restate-schema-impl = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
-restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["serde", "serde_schema"] }
 restate-worker-api = { workspace = true }
 
+arrow-flight = { workspace = true }
 axum = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
@@ -47,6 +48,7 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tonic = { workspace = true }
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 

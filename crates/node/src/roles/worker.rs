@@ -15,6 +15,7 @@ use restate_bifrost::{Bifrost, BifrostService};
 use restate_node_services::schema::FetchSchemasRequest;
 use restate_schema_api::subscription::SubscriptionResolver;
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
+use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::NodeId;
 use restate_worker::{Worker, WorkerCommandSender};
@@ -86,6 +87,10 @@ impl WorkerRole {
 
     pub fn worker_command_tx(&self) -> WorkerCommandSender {
         self.worker.worker_command_tx()
+    }
+
+    pub fn storage_query_context(&self) -> &QueryContext {
+        self.worker.storage_query_context()
     }
 
     pub async fn run(

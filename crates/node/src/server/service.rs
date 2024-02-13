@@ -31,6 +31,7 @@ use restate_node_services::node_ctrl::node_ctrl_server::NodeCtrlServer;
 use restate_node_services::schema::schema_server::SchemaServer;
 use restate_node_services::worker::worker_server::WorkerServer;
 use restate_node_services::{cluster_controller, node_ctrl, schema, worker};
+use restate_storage_query_datafusion::context::QueryContext;
 use restate_worker::WorkerCommandSender;
 
 use crate::server::multiplex::MultiplexService;
@@ -129,12 +130,14 @@ impl NodeServer {
         if let Some(WorkerDependencies {
             bifrost,
             worker_cmd_tx,
+            query_context,
             ..
         }) = self.worker
         {
             server_builder = server_builder.add_service(WorkerServer::new(WorkerHandler::new(
                 bifrost,
                 worker_cmd_tx,
+                query_context,
             )));
         }
 
@@ -179,6 +182,7 @@ pub struct WorkerDependencies {
     rocksdb: RocksDBStorage,
     bifrost: Bifrost,
     worker_cmd_tx: WorkerCommandSender,
+    query_context: QueryContext,
 }
 
 impl WorkerDependencies {
@@ -186,11 +190,13 @@ impl WorkerDependencies {
         rocksdb: RocksDBStorage,
         bifrost: Bifrost,
         worker_cmd_tx: WorkerCommandSender,
+        query_context: QueryContext,
     ) -> Self {
         WorkerDependencies {
             rocksdb,
             bifrost,
             worker_cmd_tx,
+            query_context,
         }
     }
 }

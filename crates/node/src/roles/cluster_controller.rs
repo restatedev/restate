@@ -106,13 +106,19 @@ impl ClusterControllerRole {
         );
 
         // todo: Make address configurable
-        let worker_handle = GrpcWorkerHandle::new(
-            Channel::builder("http://127.0.0.1:5122/".parse().expect("valid uri")).connect_lazy(),
-        );
+        let worker_channel =
+            Channel::builder("http://127.0.0.1:5122/".parse().expect("valid uri")).connect_lazy();
+        let worker_handle = GrpcWorkerHandle::new(worker_channel.clone());
+        let worker_grpc_client =
+            restate_node_services::worker::worker_client::WorkerClient::new(worker_channel);
 
         component_set.spawn(
             self.admin
-                .run(inner_shutdown_watch, worker_handle, None)
+                .run(
+                    inner_shutdown_watch,
+                    worker_handle,
+                    Some(worker_grpc_client),
+                )
                 .map_ok(|_| "admin")
                 .map_err(ClusterControllerRoleError::Admin),
         );
