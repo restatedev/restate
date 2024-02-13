@@ -126,7 +126,7 @@ verify: lint test
 
 docker:
     # podman builds do not work without --platform set, even though it claims to default to host arch
-    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}'
+    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --load
 
 notice-file:
     cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2023 Restate Software, Inc., Restate GmbH <code@restate.dev>\n" && cat) > NOTICE
