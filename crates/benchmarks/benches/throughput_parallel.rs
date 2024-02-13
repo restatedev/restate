@@ -20,12 +20,13 @@ use rand::distributions::{Alphanumeric, DistString};
 use restate_benchmarks::counter::counter_client::CounterClient;
 use restate_benchmarks::counter::CounterAddRequest;
 use restate_benchmarks::{parse_benchmark_settings, BenchmarkSettings};
+use restate_node::task_center::TaskCenter;
 use tokio::runtime::Builder;
 use tonic::transport::Channel;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
     let config = restate_benchmarks::restate_configuration();
-    let (_rt, signal, app_handle) = restate_benchmarks::spawn_restate(config);
+    let _rt = restate_benchmarks::spawn_restate(config);
 
     let BenchmarkSettings {
         num_requests,
@@ -63,13 +64,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
             })
         });
 
-    current_thread_rt.block_on(async move {
-        signal.drain().await;
-        app_handle
-            .await
-            .expect("restate should not panic")
-            .expect("restate should not fail");
-    });
+    current_thread_rt.block_on(TaskCenter::shutdown_node("completed", 0));
 }
 
 async fn send_parallel_counter_requests(

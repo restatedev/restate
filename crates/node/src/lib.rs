@@ -11,14 +11,15 @@
 mod options;
 mod roles;
 mod server;
+pub mod task_center;
 
 use codederror::CodedError;
-use futures::TryFutureExt;
+use restate_types::tasks::TaskKind;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{NodeId, PlainNodeId};
 use std::time::Duration;
 use tokio::net::UnixStream;
-use tokio::task::{JoinError, JoinSet};
+use tokio::task::JoinError;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 use tracing::{info, warn};
@@ -135,67 +136,44 @@ impl Node {
         })
     }
 
-    pub async fn run(self, shutdown_watch: drain::Watch) -> Result<(), Error> {
-        let shutdown_signal = shutdown_watch.signaled();
-        tokio::pin!(shutdown_signal);
-
-        let (component_shutdown_signal, component_shutdown_watch) = drain::channel();
-
-        let mut component_set: JoinSet<Result<&'static str, Error>> = JoinSet::new();
-
-        component_set.spawn(
-            self.server
-                .run(component_shutdown_watch.clone())
-                .map_ok(|_| "server")
-                .map_err(Error::NodeCtrlService),
-        );
+    pub fn boot(self) -> Result<(), anyhow::Error> {
+        task_center::spawn(
+            TaskKind::Core,
+            "node-server",
+            None,
+            true, /* shutdown_node_on_failure */
+            self.server.run(),
+        )?;
 
         if let Some(cluster_controller_role) = self.cluster_controller_role {
-            component_set.spawn(
-                cluster_controller_role
-                    .run(component_shutdown_watch.clone())
-                    .map_ok(|_| "cluster-controller-role")
-                    .map_err(Error::Controller),
-            );
-        }
-
-        tokio::select! {
-            _ = &mut shutdown_signal => {
-                drop(component_shutdown_watch);
-                component_shutdown_signal.drain().await;
-                component_set.shutdown().await;
-                return Ok(());
-            },
-            Some(component_result) = component_set.join_next() => {
-                let component_name = component_result.map_err(Error::ComponentPanic)??;
-                panic!("Unexpected termination of '{component_name}'");
-            }
-            attachment_result = Self::attach_node(self.options, self.cluster_controller_address) => {
-                attachment_result?
-            }
+            task_center::spawn(
+                TaskKind::RoleRunner,
+                "cluster-controller-role",
+                None,
+                true, /* shutdown_node_on_failure */
+                cluster_controller_role.run(),
+            )?;
         }
 
         if let Some(worker_role) = self.worker_role {
-            component_set.spawn(
-                worker_role
-                    .run(component_shutdown_watch)
-                    .map_ok(|_| "worker-role")
-                    .map_err(Error::Worker),
-            );
-        } else {
-            drop(component_shutdown_watch);
-        }
-
-        tokio::select! {
-            _ = shutdown_signal => {
-                info!("Shutting node down");
-                component_shutdown_signal.drain().await;
-                component_set.shutdown().await;
-            },
-            Some(component_result) = component_set.join_next() => {
-                let component_name = component_result.map_err(Error::ComponentPanic)??;
-                panic!("Unexpected termination of '{component_name}'");
-            }
+            task_center::spawn(
+                TaskKind::Core,
+                "worker-init",
+                None,
+                /* shutdown_node_on_failure= */ true,
+                async {
+                    Self::attach_node(self.options, self.cluster_controller_address).await?;
+                    // Startup the worker
+                    let _ = task_center::spawn(
+                        TaskKind::RoleRunner,
+                        "worker-role",
+                        None,
+                        true, /* shutdown_node_on_failure */
+                        worker_role.run(),
+                    );
+                    Ok(())
+                },
+            )?;
         }
 
         Ok(())

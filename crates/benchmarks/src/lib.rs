@@ -10,7 +10,6 @@
 // by the Apache License, Version 2.0.
 
 //! Utilities for benchmarking the Restate runtime
-use drain::Signal;
 use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Body, Uri};
@@ -24,7 +23,6 @@ use restate_server::Configuration;
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use tokio::task::JoinHandle;
 
 pub mod counter {
     include!(concat!(env!("OUT_DIR"), "/counter.rs"));
@@ -60,22 +58,20 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
         .is_success(),);
 }
 
-pub fn spawn_restate(
-    config: Configuration,
-) -> (Runtime, Signal, JoinHandle<Result<(), restate_node::Error>>) {
+pub fn spawn_restate(config: Configuration) -> Runtime {
     let rt = config
         .tokio_runtime
         .build()
         .expect("Tokio runtime must build");
 
-    let (signal, drain) = drain::channel();
-
-    let node_handle = rt.block_on(async move {
-        let node = Node::new(config.node).expect("Restate node must build");
-        tokio::task::spawn(node.run(drain))
+    rt.block_on(async move {
+        Node::new(config.node)
+            .expect("Restate node must build")
+            .boot()
+            .expect("Restate node must boot");
     });
 
-    (rt, signal, node_handle)
+    rt
 }
 
 pub fn flamegraph_options<'a>() -> Options<'a> {
