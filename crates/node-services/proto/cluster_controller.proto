@@ -19,10 +19,8 @@ service ClusterController {
 }
 
 message AttachmentRequest {
-  dev.restate.common.NodeId node_id = 1;
+  string node_name = 1;
+  optional dev.restate.common.NodeId node_id = 2;
 }
 
-message AttachmentResponse {
-}
-
-
+message AttachmentResponse {}

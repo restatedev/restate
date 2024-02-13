@@ -14,13 +14,14 @@ mod server;
 
 use codederror::CodedError;
 use futures::TryFutureExt;
+use restate_types::time::MillisSinceEpoch;
 use restate_types::{NodeId, PlainNodeId};
 use std::time::Duration;
 use tokio::net::UnixStream;
 use tokio::task::{JoinError, JoinSet};
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
-use tracing::{info, instrument, warn};
+use tracing::{info, warn};
 
 use crate::roles::{ClusterControllerRole, WorkerRole};
 use crate::server::NodeServer;
@@ -29,7 +30,7 @@ pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_node_services::cluster_controller::cluster_controller_client::ClusterControllerClient;
 use restate_node_services::cluster_controller::AttachmentRequest;
-use restate_types::nodes_config::{NetworkAddress, Role};
+use restate_types::nodes_config::{NetworkAddress, NodeConfig, NodesConfiguration, Role};
 use restate_types::retries::RetryPolicy;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
 
@@ -78,7 +79,7 @@ pub enum BuildError {
 }
 
 pub struct Node {
-    node_id: PlainNodeId,
+    options: Options,
     cluster_controller_address: NetworkAddress,
 
     cluster_controller_role: Option<ClusterControllerRole>,
@@ -88,6 +89,7 @@ pub struct Node {
 
 impl Node {
     pub fn new(options: Options) -> Result<Self, BuildError> {
+        let opts = options.clone();
         let cluster_controller_role = if options.roles.contains(Role::ClusterController) {
             Some(ClusterControllerRole::try_from(options.clone()).expect("should be infallible"))
         } else {
@@ -125,7 +127,7 @@ impl Node {
         };
 
         Ok(Node {
-            node_id: options.node_id,
+            options: opts,
             cluster_controller_address,
             cluster_controller_role,
             worker_role,
@@ -133,7 +135,6 @@ impl Node {
         })
     }
 
-    #[instrument(level = "debug", skip_all, fields(node.id = %self.node_id))]
     pub async fn run(self, shutdown_watch: drain::Watch) -> Result<(), Error> {
         let shutdown_signal = shutdown_watch.signaled();
         tokio::pin!(shutdown_signal);
@@ -169,7 +170,7 @@ impl Node {
                 let component_name = component_result.map_err(Error::ComponentPanic)??;
                 panic!("Unexpected termination of '{component_name}'");
             }
-            attachment_result = Self::attach_node(self.node_id, self.cluster_controller_address) => {
+            attachment_result = Self::attach_node(self.options, self.cluster_controller_address) => {
                 attachment_result?
             }
         }
@@ -201,29 +202,63 @@ impl Node {
     }
 
     async fn attach_node(
-        node_id: PlainNodeId,
+        options: Options,
         cluster_controller_address: NetworkAddress,
     ) -> Result<(), Error> {
-        info!("Attach to cluster controller at '{cluster_controller_address}'");
+        info!(
+            "Attaching '{}' (insist on ID?={:?}) to cluster controller at '{cluster_controller_address}'",
+            options.node_name,
+            options.node_id,
+        );
 
         let channel = Self::create_channel_from_network_address(&cluster_controller_address)
             .map_err(Error::InvalidClusterControllerAddress)?;
 
         let cc_client = ClusterControllerClient::new(channel);
 
-        let node_id = NodeId::from(node_id);
-        RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
+        let _response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
             .retry_operation(|| async {
                 cc_client
                     .clone()
                     .attach_node(AttachmentRequest {
-                        node_id: Some(node_id.into()),
+                        node_id: options.node_id.map(Into::into),
+                        node_name: options.node_name.clone(),
                     })
                     .await
             })
             .await
             .map_err(|err| Error::Attachment(cluster_controller_address, err))?;
 
+        // todo: Generational NodeId should come from attachment result
+        let now = MillisSinceEpoch::now();
+        let my_node_id: NodeId = options
+            .node_id
+            .unwrap_or(PlainNodeId::from(1))
+            .with_generation(now.as_u64() as u32)
+            .into();
+        // We are attached, we can set our own NodeId.
+        my_node_id.set_as_my_node_id();
+        info!(
+            "Node attached to cluster controller. My Node ID is {}",
+            my_node_id
+        );
+        // Temporary: nodes configuration from current node.
+        let mut nodes_config = NodesConfiguration::default();
+        let address: NetworkAddress = NetworkAddress::TcpSocketAddr(options.server.bind_address);
+        let node = NodeConfig::new(
+            options.node_name,
+            my_node_id
+                .as_generational()
+                .expect("my NodeId is generational"),
+            address,
+            options.roles,
+        );
+        nodes_config.upsert_node(node);
+        nodes_config.set_as_current_unconditional();
+        info!(
+            "Loaded nodes configuration version {}",
+            NodesConfiguration::current_version()
+        );
         Ok(())
     }
 
