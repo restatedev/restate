@@ -25,6 +25,9 @@ service WorkerSvc {
 
   // Queries the storage of the worker and returns the result as a stream of responses
   rpc QueryStorage(StorageQueryRequest) returns (stream StorageQueryResponse);
+
+  // Updates the schema information on the worker node
+  rpc UpdateSchemas(UpdateSchemaRequest) returns (google.protobuf.Empty);
 }
 
 message BifrostVersion {
@@ -48,4 +51,8 @@ message StorageQueryRequest {
 message StorageQueryResponse {
   bytes header = 1;
   bytes data = 2;
+}
+
+message UpdateSchemaRequest {
+  bytes schema_bin = 1;
 }

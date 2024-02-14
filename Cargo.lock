@@ -7514,6 +7514,7 @@ dependencies = [
  "restate-admin",
  "restate-bifrost",
  "restate-meta",
+ "restate-node-services",
  "restate-schema-api",
  "restate-server",
  "restate-types",
@@ -7522,6 +7523,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tokio",
+ "tonic 0.10.2",
 ]
 
 [[package]]

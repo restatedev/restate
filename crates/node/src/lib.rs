@@ -117,6 +117,8 @@ impl Node {
                     worker.bifrost_handle(),
                     worker.worker_command_tx(),
                     worker.storage_query_context().clone(),
+                    worker.schemas(),
+                    worker.subscription_controller(),
                 )
             }),
             cluster_controller_role.as_ref().map(|cluster_controller| {

@@ -114,7 +114,7 @@ impl ClusterControllerRole {
 
         component_set.spawn(
             self.admin
-                .run(inner_shutdown_watch, worker_handle, Some(worker_svc_client))
+                .run(inner_shutdown_watch, worker_handle, worker_svc_client)
                 .map_ok(|_| "admin")
                 .map_err(ClusterControllerRoleError::Admin),
         );
@@ -143,7 +143,9 @@ impl TryFrom<Options> for ClusterControllerRole {
 
     fn try_from(options: Options) -> Result<Self, Self::Error> {
         let meta = options.meta.build(options.worker.kafka.clone())?;
-        let admin = options.admin.build(meta.schemas(), meta.meta_handle());
+        let admin = options
+            .admin
+            .build(meta.schemas(), meta.meta_handle(), meta.schema_reader());
 
         Ok(ClusterControllerRole {
             controller: restate_cluster_controller::Service::new(options.cluster_controller),

@@ -11,7 +11,7 @@
 use restate_schema_impl::SchemasUpdateError;
 use restate_service_protocol::discovery::ServiceDiscoveryError;
 
-use crate::storage::MetaStorageError;
+use crate::storage::{MetaReaderError, MetaStorageError};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum Error {
@@ -24,6 +24,9 @@ pub enum Error {
     #[error(transparent)]
     #[code(unknown)]
     Storage(#[from] MetaStorageError),
+    #[error(transparent)]
+    #[code(unknown)]
+    Reader(#[from] MetaReaderError),
     #[error(transparent)]
     #[code(unknown)]
     SchemaRegistry(#[from] SchemasUpdateError),

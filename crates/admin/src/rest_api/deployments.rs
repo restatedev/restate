@@ -19,6 +19,7 @@ use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::InvalidLambdaARN;
 
+use crate::rest_api::notify_worker_about_schema_changes;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -96,6 +97,8 @@ pub async fn create_deployment<W>(
         .meta_handle()
         .register_deployment(discover_endpoint, force, apply_changes)
         .await?;
+
+    notify_worker_about_schema_changes(state.schema_reader(), state.worker_svc_client()).await?;
 
     let response_body = RegisterDeploymentResponse {
         id: registration_result.deployment,
@@ -241,6 +244,8 @@ pub async fn delete_deployment<W>(
 ) -> Result<StatusCode, MetaApiError> {
     if let Some(true) = force {
         state.meta_handle().remove_deployment(deployment_id).await?;
+        notify_worker_about_schema_changes(state.schema_reader(), state.worker_svc_client())
+            .await?;
         Ok(StatusCode::ACCEPTED)
     } else {
         Ok(StatusCode::NOT_IMPLEMENTED)

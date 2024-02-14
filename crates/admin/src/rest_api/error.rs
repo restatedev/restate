@@ -43,6 +43,8 @@ pub enum MetaApiError {
     Meta(#[from] MetaError),
     #[error(transparent)]
     Worker(#[from] restate_worker_api::Error),
+    #[error(transparent)]
+    Generic(Error),
 }
 
 /// # Error description response

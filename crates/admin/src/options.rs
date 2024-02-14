@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_meta::MetaHandle;
+use restate_meta::{FileMetaReader, MetaHandle};
 use restate_schema_impl::Schemas;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -44,7 +44,12 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn build(self, schemas: Schemas, meta_handle: MetaHandle) -> AdminService {
-        AdminService::new(self, schemas, meta_handle)
+    pub fn build(
+        self,
+        schemas: Schemas,
+        meta_handle: MetaHandle,
+        schema_reader: FileMetaReader,
+    ) -> AdminService {
+        AdminService::new(self, schemas, meta_handle, schema_reader)
     }
 }

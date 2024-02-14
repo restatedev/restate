@@ -31,8 +31,9 @@ use restate_node_services::metadata::metadata_svc_server::MetadataSvcServer;
 use restate_node_services::node_ctrl::node_ctrl_svc_server::NodeCtrlSvcServer;
 use restate_node_services::worker::worker_svc_server::WorkerSvcServer;
 use restate_node_services::{cluster_controller, metadata, node_ctrl, worker};
+use restate_schema_impl::Schemas;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_worker::WorkerCommandSender;
+use restate_worker::{SubscriptionControllerHandle, WorkerCommandSender};
 
 use crate::server::multiplex::MultiplexService;
 use crate::server::options::Options;
@@ -133,6 +134,8 @@ impl NodeServer {
             bifrost,
             worker_cmd_tx,
             query_context,
+            schemas,
+            subscription_controller,
             ..
         }) = self.worker
         {
@@ -140,6 +143,8 @@ impl NodeServer {
                 bifrost,
                 worker_cmd_tx,
                 query_context,
+                schemas,
+                subscription_controller,
             )));
         }
 
@@ -185,6 +190,8 @@ pub struct WorkerDependencies {
     bifrost: Bifrost,
     worker_cmd_tx: WorkerCommandSender,
     query_context: QueryContext,
+    schemas: Schemas,
+    subscription_controller: Option<SubscriptionControllerHandle>,
 }
 
 impl WorkerDependencies {
@@ -193,12 +200,16 @@ impl WorkerDependencies {
         bifrost: Bifrost,
         worker_cmd_tx: WorkerCommandSender,
         query_context: QueryContext,
+        schemas: Schemas,
+        subscription_controller: Option<SubscriptionControllerHandle>,
     ) -> Self {
         WorkerDependencies {
             rocksdb,
             bifrost,
             worker_cmd_tx,
             query_context,
+            schemas,
+            subscription_controller,
         }
     }
 }

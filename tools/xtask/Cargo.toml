@@ -11,6 +11,7 @@ publish = false
 restate-admin = { workspace = true, features = ["options_schema"] }
 restate-bifrost = { workspace = true, features = ["options_schema"] }
 restate-meta = { workspace = true }
+restate-node-services = { workspace = true }
 restate-schema-api = { workspace = true, features = ["subscription"] }
 restate-server = { workspace = true, features = ["options_schema"] }
 restate-types = { workspace = true }
@@ -23,3 +24,4 @@ schemars = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
 tokio = { workspace = true }
+tonic = { workspace = true }

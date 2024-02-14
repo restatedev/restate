@@ -14,4 +14,4 @@ mod worker;
 pub use cluster_controller::{
     ClusterControllerRole, ClusterControllerRoleBuildError, ClusterControllerRoleError,
 };
-pub use worker::{WorkerRole, WorkerRoleBuildError, WorkerRoleError};
+pub use worker::{update_schemas, WorkerRole, WorkerRoleBuildError, WorkerRoleError};

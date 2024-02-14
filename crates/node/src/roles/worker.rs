@@ -19,7 +19,7 @@ use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::NodeId;
-use restate_worker::{Worker, WorkerCommandSender};
+use restate_worker::{SubscriptionControllerHandle, Worker, WorkerCommandSender};
 use restate_worker_api::SubscriptionController;
 use std::time::Duration;
 use tokio::task::JoinSet;
@@ -105,6 +105,14 @@ impl WorkerRole {
 
     pub fn storage_query_context(&self) -> &QueryContext {
         self.worker.storage_query_context()
+    }
+
+    pub fn schemas(&self) -> Schemas {
+        self.schemas.clone()
+    }
+
+    pub fn subscription_controller(&self) -> Option<SubscriptionControllerHandle> {
+        Some(self.worker.subscription_controller_handle())
     }
 
     pub async fn run(
@@ -219,7 +227,7 @@ impl WorkerRole {
         SC: SubscriptionController + Send + Sync,
     {
         let schema_updates = Self::fetch_schemas(metadata_svc_client).await?;
-        Self::update_schemas(schemas, subscription_controller, schema_updates).await?;
+        update_schemas(schemas, subscription_controller, schema_updates).await?;
 
         Ok(())
     }
@@ -239,29 +247,6 @@ impl WorkerRole {
         )?;
         Ok(schema_updates)
     }
-
-    async fn update_schemas<SC>(
-        schemas: &Schemas,
-        subscription_controller: Option<&SC>,
-        schema_updates: Vec<SchemasUpdateCommand>,
-    ) -> Result<(), SchemaError>
-    where
-        SC: SubscriptionController + Send + Sync,
-    {
-        // hack to suppress repeated logging of schema registrations
-        // todo: Fix it
-        tracing::subscriber::with_default(NoSubscriber::new(), || {
-            schemas.overwrite(schema_updates)
-        })?;
-
-        if let Some(subscription_controller) = subscription_controller {
-            let subscriptions = schemas.list_subscriptions(&[]);
-            subscription_controller
-                .update_subscriptions(subscriptions)
-                .await?;
-        }
-        Ok(())
-    }
 }
 
 impl TryFrom<Options> for WorkerRole {
@@ -278,4 +263,25 @@ impl TryFrom<Options> for WorkerRole {
             bifrost,
         })
     }
+}
+
+pub async fn update_schemas<SC>(
+    schemas: &Schemas,
+    subscription_controller: Option<&SC>,
+    schema_updates: Vec<SchemasUpdateCommand>,
+) -> Result<(), SchemaError>
+where
+    SC: SubscriptionController + Send + Sync,
+{
+    // hack to suppress repeated logging of schema registrations
+    // todo: Fix it
+    tracing::subscriber::with_default(NoSubscriber::new(), || schemas.overwrite(schema_updates))?;
+
+    if let Some(subscription_controller) = subscription_controller {
+        let subscriptions = schemas.list_subscriptions(&[]);
+        subscription_controller
+            .update_subscriptions(subscriptions)
+            .await?;
+    }
+    Ok(())
 }

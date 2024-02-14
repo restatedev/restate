@@ -18,8 +18,14 @@ mod methods;
 mod services;
 mod subscriptions;
 
+use crate::rest_api::error::MetaApiError;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
+use restate_meta::{FileMetaReader, MetaReader};
+use restate_node_services::worker::worker_svc_client::WorkerSvcClient;
+use restate_node_services::worker::UpdateSchemaRequest;
+use tonic::transport::Channel;
+use tracing::debug;
 
 use crate::state::AdminServiceState;
 
@@ -100,4 +106,31 @@ pub fn create_router<W: restate_worker_api::Handle + Clone + Send + Sync + 'stat
         )
         .expect("Error when building the OpenAPI specification")
         .with_state(state)
+}
+
+/// Notifies the worker about schema changes. This method is best-effort and will not fail if the worker
+/// could not be reached.
+async fn notify_worker_about_schema_changes(
+    schema_reader: &FileMetaReader,
+    mut worker_svc_client: WorkerSvcClient<Channel>,
+) -> Result<(), MetaApiError> {
+    let schema_updates = schema_reader
+        .read()
+        .await
+        .map_err(|err| MetaApiError::Meta(err.into()))?;
+
+    // don't fail if the worker is not reachable
+    let result = worker_svc_client
+        .update_schemas(UpdateSchemaRequest {
+            schema_bin: bincode::serde::encode_to_vec(schema_updates, bincode::config::standard())
+                .map_err(|err| MetaApiError::Generic(err.into()))?
+                .into(),
+        })
+        .await;
+
+    if let Err(err) = result {
+        debug!("Failed notifying worker about schema changes: {err}");
+    }
+
+    Ok(())
 }

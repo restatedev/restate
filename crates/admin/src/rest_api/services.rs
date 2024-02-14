@@ -15,6 +15,7 @@ use restate_meta_rest_model::services::*;
 use restate_pb::grpc::reflection::v1::FileDescriptorResponse;
 use restate_schema_api::service::ServiceMetadataResolver;
 
+use crate::rest_api::notify_worker_about_schema_changes;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
@@ -90,6 +91,8 @@ pub async fn modify_service<W>(
         .meta_handle()
         .modify_service(service_name.clone(), public)
         .await?;
+
+    notify_worker_about_schema_changes(state.schema_reader(), state.worker_svc_client()).await?;
 
     state
         .schemas()

@@ -16,7 +16,7 @@ use http::StatusCode;
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
-use restate_meta::MetaHandle;
+use restate_meta::{FileMetaReader, MetaHandle};
 use restate_node_services::worker::worker_svc_client::WorkerSvcClient;
 use restate_schema_impl::Schemas;
 use tracing::info;
@@ -29,14 +29,21 @@ pub struct AdminService {
     opts: Options,
     schemas: Schemas,
     meta_handle: MetaHandle,
+    schema_reader: FileMetaReader,
 }
 
 impl AdminService {
-    pub fn new(opts: Options, schemas: Schemas, meta_handle: MetaHandle) -> Self {
+    pub fn new(
+        opts: Options,
+        schemas: Schemas,
+        meta_handle: MetaHandle,
+        schema_reader: FileMetaReader,
+    ) -> Self {
         Self {
             opts,
             schemas,
             meta_handle,
+            schema_reader,
         }
     }
 
@@ -44,21 +51,18 @@ impl AdminService {
         self,
         drain: drain::Watch,
         worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
-        worker_svc_client: Option<WorkerSvcClient<Channel>>,
+        worker_svc_client: WorkerSvcClient<Channel>,
     ) -> Result<(), Error> {
-        let rest_state =
-            state::AdminServiceState::new(self.meta_handle, self.schemas, worker_handle);
+        let rest_state = state::AdminServiceState::new(
+            self.meta_handle,
+            self.schemas,
+            worker_handle,
+            worker_svc_client.clone(),
+            self.schema_reader,
+        );
 
-        let router = axum::Router::new();
-
-        // Stitch query http endpoint if enabled
-        let router = if let Some(worker_svc_client) = worker_svc_client {
-            let query_state = Arc::new(state::QueryServiceState { worker_svc_client });
-            // Merge storage query router
-            router.merge(storage_query::create_router(query_state))
-        } else {
-            router
-        };
+        let query_state = Arc::new(state::QueryServiceState { worker_svc_client });
+        let router = axum::Router::new().merge(storage_query::create_router(query_state));
 
         let router = router
             // Merge meta API router

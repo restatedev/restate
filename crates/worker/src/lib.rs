@@ -80,7 +80,7 @@ pub use restate_storage_query_datafusion::{
     OptionsBuilderError as StorageQueryDatafusionOptionsBuilderError,
 };
 
-use crate::subscription_integration::SubscriptionControllerHandle;
+pub use crate::subscription_integration::SubscriptionControllerHandle;
 pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,

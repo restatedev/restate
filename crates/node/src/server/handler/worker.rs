@@ -16,10 +16,11 @@ use restate_bifrost::Bifrost;
 use restate_node_services::worker::worker_svc_server::WorkerSvc;
 use restate_node_services::worker::{
     BifrostVersion, StateMutationRequest, StorageQueryRequest, StorageQueryResponse,
-    TerminationRequest,
+    TerminationRequest, UpdateSchemaRequest,
 };
+use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_worker::WorkerCommandSender;
+use restate_worker::{SubscriptionControllerHandle, WorkerCommandSender};
 use restate_worker_api::Handle;
 use tonic::{Request, Response, Status};
 
@@ -27,6 +28,8 @@ pub struct WorkerHandler {
     bifrost: Bifrost,
     worker_cmd_tx: WorkerCommandSender,
     query_context: QueryContext,
+    schemas: Schemas,
+    subscription_controller: Option<SubscriptionControllerHandle>,
 }
 
 impl WorkerHandler {
@@ -34,11 +37,15 @@ impl WorkerHandler {
         bifrost: Bifrost,
         worker_cmd_tx: WorkerCommandSender,
         query_context: QueryContext,
+        schemas: Schemas,
+        subscription_controller: Option<SubscriptionControllerHandle>,
     ) -> Self {
         Self {
             bifrost,
             worker_cmd_tx,
             query_context,
+            schemas,
+            subscription_controller,
         }
     }
 }
@@ -119,5 +126,29 @@ impl WorkerSvc for WorkerHandler {
                 .map_err(Status::from);
 
         Ok(Response::new(Box::pin(response_stream)))
+    }
+
+    async fn update_schemas(
+        &self,
+        request: Request<UpdateSchemaRequest>,
+    ) -> Result<Response<()>, Status> {
+        let (schema_updates, _) =
+            bincode::serde::decode_from_slice::<Vec<SchemasUpdateCommand>, _>(
+                &request.into_inner().schema_bin,
+                bincode::config::standard(),
+            )
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+        crate::roles::update_schemas(
+            &self.schemas,
+            self.subscription_controller.as_ref(),
+            schema_updates,
+        )
+        .await
+        .map_err(|err| {
+            Status::internal(format!("failed updating the schema information: {err}"))
+        })?;
+
+        Ok(Response::new(()))
     }
 }

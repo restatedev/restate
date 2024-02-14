@@ -10,6 +10,7 @@
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
+use restate_node_services::worker::worker_svc_client::WorkerSvcClient;
 use restate_schema_api::subscription::Subscription;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
@@ -19,6 +20,7 @@ use restate_worker_api::Error;
 use schemars::gen::SchemaSettings;
 use std::env;
 use std::time::Duration;
+use tonic::transport::{Channel, Uri};
 
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()
@@ -88,12 +90,17 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         "http://localhost:{}/openapi",
         admin_options.bind_address.port()
     );
-    let admin_service = admin_options.build(meta.schemas(), meta.meta_handle());
+    let admin_service =
+        admin_options.build(meta.schemas(), meta.meta_handle(), meta.schema_reader());
     meta.init().await.unwrap();
 
     // We start the Meta component, then download the openapi schema generated
     let (shutdown_signal, shutdown_watch) = drain::channel();
-    let join_handle = tokio::spawn(admin_service.run(shutdown_watch, Mock, None));
+    let join_handle = tokio::spawn(admin_service.run(
+        shutdown_watch,
+        Mock,
+        WorkerSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
+    ));
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)
         .retry_operation(|| async {

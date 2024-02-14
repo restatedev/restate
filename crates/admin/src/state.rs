@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 //
 
-use restate_meta::MetaHandle;
+use restate_meta::{FileMetaReader, MetaHandle};
 use restate_node_services::worker::worker_svc_client::WorkerSvcClient;
 use restate_schema_impl::Schemas;
 use tonic::transport::Channel;
@@ -19,6 +19,8 @@ pub struct AdminServiceState<W> {
     meta_handle: MetaHandle,
     schemas: Schemas,
     worker_handle: W,
+    worker_svc_client: WorkerSvcClient<Channel>,
+    schema_reader: FileMetaReader,
 }
 
 #[derive(Clone)]
@@ -27,11 +29,19 @@ pub struct QueryServiceState {
 }
 
 impl<W> AdminServiceState<W> {
-    pub fn new(meta_handle: MetaHandle, schemas: Schemas, worker_handle: W) -> Self {
+    pub fn new(
+        meta_handle: MetaHandle,
+        schemas: Schemas,
+        worker_handle: W,
+        worker_svc_client: WorkerSvcClient<Channel>,
+        schema_reader: FileMetaReader,
+    ) -> Self {
         Self {
             meta_handle,
             schemas,
             worker_handle,
+            worker_svc_client,
+            schema_reader,
         }
     }
 
@@ -41,6 +51,14 @@ impl<W> AdminServiceState<W> {
 
     pub fn schemas(&self) -> &Schemas {
         &self.schemas
+    }
+
+    pub fn worker_svc_client(&self) -> WorkerSvcClient<Channel> {
+        self.worker_svc_client.clone()
+    }
+
+    pub fn schema_reader(&self) -> &FileMetaReader {
+        &self.schema_reader
     }
 }
 
