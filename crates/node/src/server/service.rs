@@ -12,7 +12,6 @@ use std::net::SocketAddr;
 
 use axum::routing::get;
 use codederror::CodedError;
-use futures::FutureExt;
 use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -24,6 +23,7 @@ use crate::server::handler::cluster_controller::ClusterControllerHandler;
 use crate::server::handler::node_ctrl::NodeCtrlHandler;
 use crate::server::handler::worker::WorkerHandler;
 use crate::server::metrics::install_global_prometheus_recorder;
+use crate::task_center::cancellation_watcher;
 use restate_node_services::cluster_controller::cluster_controller_server::ClusterControllerServer;
 use restate_node_services::node_ctrl::node_ctrl_server::NodeCtrlServer;
 use restate_node_services::worker::worker_server::WorkerServer;
@@ -69,7 +69,7 @@ impl NodeServer {
         }
     }
 
-    pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
+    pub async fn run(self) -> Result<(), anyhow::Error> {
         // Configure Metric Exporter
         let mut state_builder = HandlerStateBuilder::default();
 
@@ -143,10 +143,10 @@ impl NodeServer {
         );
 
         // Wait server graceful shutdown
-        server
-            .with_graceful_shutdown(drain.signaled().map(|_| ()))
+        Ok(server
+            .with_graceful_shutdown(cancellation_watcher())
             .await
-            .map_err(Error::Running)
+            .map_err(Error::Running)?)
     }
 
     pub fn port(&self) -> u16 {

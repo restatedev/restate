@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::task_center::cancellation_watcher;
 use crate::Options;
 use codederror::CodedError;
 use restate_admin::service::AdminService;
@@ -86,9 +87,7 @@ impl WorkerRole {
         self.bifrost.handle()
     }
 
-    pub async fn run(mut self, shutdown_watch: drain::Watch) -> Result<(), WorkerRoleError> {
-        let shutdown_signal = shutdown_watch.signaled();
-
+    pub async fn run(mut self) -> Result<(), anyhow::Error> {
         let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
 
         // Init the meta. This will reload the schemas in memory.
@@ -113,7 +112,7 @@ impl WorkerRole {
         let mut worker_handle = tokio::spawn(self.worker.run(inner_shutdown_watch));
 
         tokio::select! {
-            _ = shutdown_signal => {
+            _ = cancellation_watcher() => {
                 info!("Stopping worker role");
                 let _ = tokio::join!(inner_shutdown_signal.drain(), admin_handle, meta_handle, worker_handle, bifrost_handle);
             },
