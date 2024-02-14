@@ -26,6 +26,7 @@ pub mod nodes_config;
 pub mod retries;
 pub mod state_mut;
 pub mod subscription;
+pub mod tasks;
 pub mod time;
 
 pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};

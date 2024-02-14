@@ -25,6 +25,7 @@ restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-types = { workspace = true, features = ["serde", "serde_schema"] }
 restate-worker-api = { workspace = true }
 
+anyhow = { workspace = true }
 bincode = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }

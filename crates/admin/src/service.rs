@@ -46,7 +46,7 @@ impl AdminService {
         drain: drain::Watch,
         worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
         query_context: Option<QueryContext>,
-    ) -> Result<(), Error> {
+    ) -> anyhow::Result<()> {
         let rest_state =
             state::AdminServiceState::new(self.meta_handle, self.schemas, worker_handle);
 
@@ -90,9 +90,9 @@ impl AdminService {
         );
 
         // Wait server graceful shutdown
-        server
+        Ok(server
             .with_graceful_shutdown(drain.signaled().map(|_| ()))
             .await
-            .map_err(Error::Running)
+            .map_err(Error::Running)?)
     }
 }
