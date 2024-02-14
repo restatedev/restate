@@ -13,7 +13,7 @@ import "google/protobuf/empty.proto";
 
 package dev.restate.worker;
 
-service Worker {
+service WorkerSvc {
   // Get the current known version of bifrost metadata on this node
   rpc GetBifrostVersion(google.protobuf.Empty) returns (BifrostVersion);
 

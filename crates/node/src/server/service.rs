@@ -26,10 +26,10 @@ use crate::server::handler::metadata::MetadataHandler;
 use crate::server::handler::node_ctrl::NodeCtrlHandler;
 use crate::server::handler::worker::WorkerHandler;
 use crate::server::metrics::install_global_prometheus_recorder;
-use restate_node_services::cluster_controller::cluster_controller_server::ClusterControllerServer;
+use restate_node_services::cluster_controller::cluster_controller_svc_server::ClusterControllerSvcServer;
 use restate_node_services::metadata::metadata_svc_server::MetadataSvcServer;
-use restate_node_services::node_ctrl::node_ctrl_server::NodeCtrlServer;
-use restate_node_services::worker::worker_server::WorkerServer;
+use restate_node_services::node_ctrl::node_ctrl_svc_server::NodeCtrlSvcServer;
+use restate_node_services::worker::worker_svc_server::WorkerSvcServer;
 use restate_node_services::{cluster_controller, metadata, node_ctrl, worker};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_worker::WorkerCommandSender;
@@ -118,12 +118,14 @@ impl NodeServer {
 
         let mut server_builder = tonic::transport::Server::builder()
             .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
-            .add_service(NodeCtrlServer::new(NodeCtrlHandler::new()))
+            .add_service(NodeCtrlSvcServer::new(NodeCtrlHandler::new()))
             .add_service(reflection_service_builder.build()?);
 
         if let Some(ClusterControllerDependencies { schema_reader, .. }) = self.cluster_controller {
             server_builder = server_builder
-                .add_service(ClusterControllerServer::new(ClusterControllerHandler::new()))
+                .add_service(ClusterControllerSvcServer::new(
+                    ClusterControllerHandler::new(),
+                ))
                 .add_service(MetadataSvcServer::new(MetadataHandler::new(schema_reader)));
         }
 
@@ -134,7 +136,7 @@ impl NodeServer {
             ..
         }) = self.worker
         {
-            server_builder = server_builder.add_service(WorkerServer::new(WorkerHandler::new(
+            server_builder = server_builder.add_service(WorkerSvcServer::new(WorkerHandler::new(
                 bifrost,
                 worker_cmd_tx,
                 query_context,

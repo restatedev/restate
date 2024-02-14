@@ -17,7 +17,7 @@ use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
 use restate_meta::MetaHandle;
-use restate_node_services::worker::worker_client::WorkerClient;
+use restate_node_services::worker::worker_svc_client::WorkerSvcClient;
 use restate_schema_impl::Schemas;
 use tracing::info;
 
@@ -44,7 +44,7 @@ impl AdminService {
         self,
         drain: drain::Watch,
         worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
-        worker_grpc_client: Option<WorkerClient<Channel>>,
+        worker_svc_client: Option<WorkerSvcClient<Channel>>,
     ) -> Result<(), Error> {
         let rest_state =
             state::AdminServiceState::new(self.meta_handle, self.schemas, worker_handle);
@@ -52,8 +52,8 @@ impl AdminService {
         let router = axum::Router::new();
 
         // Stitch query http endpoint if enabled
-        let router = if let Some(worker_grpc_client) = worker_grpc_client {
-            let query_state = Arc::new(state::QueryServiceState { worker_grpc_client });
+        let router = if let Some(worker_svc_client) = worker_svc_client {
+            let query_state = Arc::new(state::QueryServiceState { worker_svc_client });
             // Merge storage query router
             router.merge(storage_query::create_router(query_state))
         } else {

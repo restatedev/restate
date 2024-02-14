@@ -13,7 +13,7 @@ import "dev/restate/common/common.proto";
 
 package dev.restate.cluster_controller;
 
-service ClusterController {
+service ClusterControllerSvc {
   // Attach node at cluster controller
   rpc AttachNode(AttachmentRequest) returns (AttachmentResponse);
 }

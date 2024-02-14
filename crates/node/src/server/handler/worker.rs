@@ -13,7 +13,7 @@ use arrow_flight::error::FlightError;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
 use restate_bifrost::Bifrost;
-use restate_node_services::worker::worker_server::Worker;
+use restate_node_services::worker::worker_svc_server::WorkerSvc;
 use restate_node_services::worker::{
     BifrostVersion, StateMutationRequest, StorageQueryRequest, StorageQueryResponse,
     TerminationRequest,
@@ -44,7 +44,7 @@ impl WorkerHandler {
 }
 
 #[async_trait::async_trait]
-impl Worker for WorkerHandler {
+impl WorkerSvc for WorkerHandler {
     async fn get_bifrost_version(
         &self,
         _request: Request<()>,

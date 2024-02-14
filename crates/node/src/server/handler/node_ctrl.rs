@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_node_services::node_ctrl::node_ctrl_server::NodeCtrl;
+use restate_node_services::node_ctrl::node_ctrl_svc_server::NodeCtrlSvc;
 use restate_node_services::node_ctrl::{IdentResponse, NodeStatus};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::NodeId;
@@ -23,7 +23,7 @@ impl NodeCtrlHandler {
 }
 
 #[async_trait::async_trait]
-impl NodeCtrl for NodeCtrlHandler {
+impl NodeCtrlSvc for NodeCtrlHandler {
     async fn get_ident(&self, _request: Request<()>) -> Result<Response<IdentResponse>, Status> {
         // STUB IMPLEMENTATION
         return Ok(Response::new(IdentResponse {

@@ -62,7 +62,7 @@ pub async fn query(
     State(state): State<Arc<QueryServiceState>>,
     #[request_body(required = true)] Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, StorageQueryError> {
-    let mut worker_grpc_client = state.worker_grpc_client.clone();
+    let mut worker_grpc_client = state.worker_svc_client.clone();
 
     let response_stream = worker_grpc_client
         .query_storage(StorageQueryRequest {

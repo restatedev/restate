@@ -23,7 +23,7 @@ enum NodeStatus {
   SHUTTING_DOWN = 3;
 }
 
-service NodeCtrl {
+service NodeCtrlSvc {
   // Get identity information from this node.
   rpc GetIdent(google.protobuf.Empty) returns (IdentResponse);
 }

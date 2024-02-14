@@ -10,7 +10,7 @@
 //
 
 use restate_meta::MetaHandle;
-use restate_node_services::worker::worker_client::WorkerClient;
+use restate_node_services::worker::worker_svc_client::WorkerSvcClient;
 use restate_schema_impl::Schemas;
 use tonic::transport::Channel;
 
@@ -23,7 +23,7 @@ pub struct AdminServiceState<W> {
 
 #[derive(Clone)]
 pub struct QueryServiceState {
-    pub worker_grpc_client: WorkerClient<Channel>,
+    pub worker_svc_client: WorkerSvcClient<Channel>,
 }
 
 impl<W> AdminServiceState<W> {

@@ -28,7 +28,7 @@ use crate::server::{ClusterControllerDependencies, NodeServer, WorkerDependencie
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
-use restate_node_services::cluster_controller::cluster_controller_client::ClusterControllerClient;
+use restate_node_services::cluster_controller::cluster_controller_svc_client::ClusterControllerSvcClient;
 use restate_node_services::cluster_controller::AttachmentRequest;
 use restate_types::nodes_config::{
     NetworkAddress, NodeConfig, NodesConfiguration, NodesConfigurationWriter, Role,
@@ -234,7 +234,7 @@ impl Node {
         let channel = Self::create_channel_from_network_address(&cluster_controller_address)
             .map_err(Error::InvalidClusterControllerAddress)?;
 
-        let cc_client = ClusterControllerClient::new(channel);
+        let cc_client = ClusterControllerSvcClient::new(channel);
 
         let _response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
             .retry_operation(|| async {
