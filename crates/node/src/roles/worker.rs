@@ -236,7 +236,7 @@ impl WorkerRole {
             .await?;
 
         let (schema_updates, _) = bincode::serde::decode_from_slice::<Vec<SchemasUpdateCommand>, _>(
-            &response.into_inner().schemas,
+            &response.into_inner().schemas_bin,
             bincode::config::standard(),
         )?;
         Ok(schema_updates)
