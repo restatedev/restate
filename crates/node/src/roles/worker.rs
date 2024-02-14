@@ -12,6 +12,7 @@ use crate::Options;
 use codederror::CodedError;
 use futures::TryFutureExt;
 use restate_bifrost::{Bifrost, BifrostService};
+use restate_node_services::schema::schema_client::SchemaClient;
 use restate_node_services::schema::FetchSchemasRequest;
 use restate_schema_api::subscription::SubscriptionResolver;
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
@@ -40,11 +41,24 @@ pub enum WorkerRoleError {
     #[error("component panicked: {0}")]
     #[code(unknown)]
     ComponentPanic(tokio::task::JoinError),
+    #[error(transparent)]
+    Schema(
+        #[from]
+        #[code]
+        SchemaError,
+    ),
+}
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum SchemaError {
+    #[error("failed to fetch schema updates: {0}")]
+    #[code(unknown)]
+    Fetch(#[from] tonic::Status),
     #[error("failed decoding grpc payload: {0}")]
     #[code(unknown)]
-    DecodeError(#[from] bincode::error::DecodeError),
+    Decode(#[from] bincode::error::DecodeError),
     #[error("failed updating schemas: {0}")]
-    Schema(
+    Update(
         #[from]
         #[code]
         restate_schema_impl::SchemasUpdateError,
@@ -110,21 +124,31 @@ impl WorkerRole {
         // Ensures bifrost has initial metadata synced up before starting the worker.
         let mut bifrost_join_handle = self.bifrost.start(inner_shutdown_watch.clone()).await?;
 
+        // todo: make this configurable
+        let channel =
+            Channel::builder("http://127.0.0.1:5122/".parse().expect("valid uri")).connect_lazy();
+        let mut schema_grpc_client = SchemaClient::new(channel);
+
+        // Try fetching the latest schema information
+        Self::ignore_fetch_error(
+            Self::fetch_and_update_schemas(
+                &self.schemas,
+                subscription_controller.as_ref(),
+                &mut schema_grpc_client,
+            )
+            .await,
+        )?;
+
         component_set.spawn(
             self.worker
                 .run(inner_shutdown_watch)
                 .map_ok(|_| "worker")
                 .map_err(WorkerRoleError::Worker),
         );
+
         component_set.spawn(
-            Self::reload_schemas(
-                subscription_controller,
-                self.schemas,
-                // todo: make this configurable
-                Channel::builder("http://127.0.0.1:5122/".parse().expect("valid uri"))
-                    .connect_lazy(),
-            )
-            .map_ok(|_| "schema-update"),
+            Self::reload_schemas(subscription_controller, self.schemas, schema_grpc_client)
+                .map_ok(|_| "schema-update"),
         );
 
         tokio::select! {
@@ -150,61 +174,94 @@ impl WorkerRole {
     async fn reload_schemas<SC>(
         subscription_controller: Option<SC>,
         schemas: Schemas,
-        schema_channel: Channel,
+        mut schema_grpc_client: SchemaClient<Channel>,
     ) -> Result<(), WorkerRoleError>
     where
         SC: SubscriptionController + Clone + Send + Sync,
     {
         // todo: make this configurable
         let mut fetch_interval = tokio::time::interval(Duration::from_secs(5));
-        let mut schema_grpc_client =
-            restate_node_services::schema::schema_client::SchemaClient::new(schema_channel);
 
         loop {
             fetch_interval.tick().await;
 
             debug!("Trying to fetch schema information");
 
-            let result = schema_grpc_client
-                // todo introduce schema version information to avoid fetching and overwriting the schema information
-                //  over and over again
-                .fetch_schemas(FetchSchemasRequest {})
-                .await;
-            match result {
-                Ok(response) => {
-                    let (schema_updates, _) =
-                        bincode::serde::decode_from_slice::<Vec<SchemasUpdateCommand>, _>(
-                            &response.into_inner().schemas,
-                            bincode::config::standard(),
-                        )?;
-
-                    // hack to suppress repeated logging of schema registrations
-                    // todo: Fix it
-                    tracing::subscriber::with_default(NoSubscriber::new(), || {
-                        schemas.overwrite(schema_updates)
-                    })?;
-
-                    if let Some(subscription_controller) = subscription_controller.as_ref() {
-                        Self::update_subscriptions(&schemas, subscription_controller.clone())
-                            .await?;
-                    }
-                }
-                Err(err) => {
-                    debug!("Failed fetching schema information: {err}")
-                }
-            };
+            Self::ignore_fetch_error(
+                Self::fetch_and_update_schemas(
+                    &schemas,
+                    subscription_controller.as_ref(),
+                    &mut schema_grpc_client,
+                )
+                .await,
+            )?;
         }
     }
 
-    async fn update_subscriptions(
+    fn ignore_fetch_error(result: Result<(), SchemaError>) -> Result<(), SchemaError> {
+        if let Err(err) = result {
+            match err {
+                SchemaError::Fetch(err) => {
+                    debug!("Failed fetching schema information: {err}. Retrying.");
+                }
+                SchemaError::Decode(_) | SchemaError::Update(_) | SchemaError::Subscription(_) => {
+                    Err(err)?
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn fetch_and_update_schemas<SC>(
         schemas: &Schemas,
-        subscription_controller: impl SubscriptionController + Send + Sync,
-    ) -> Result<(), WorkerRoleError> {
-        let subscriptions = schemas.list_subscriptions(&[]);
-        subscription_controller
-            .update_subscriptions(subscriptions)
+        subscription_controller: Option<&SC>,
+        schema_grpc_client: &mut SchemaClient<Channel>,
+    ) -> Result<(), SchemaError>
+    where
+        SC: SubscriptionController + Send + Sync,
+    {
+        let schema_updates = Self::fetch_schemas(schema_grpc_client).await?;
+        Self::update_schemas(schemas, subscription_controller, schema_updates).await?;
+
+        Ok(())
+    }
+
+    async fn fetch_schemas(
+        schema_grpc_client: &mut SchemaClient<Channel>,
+    ) -> Result<Vec<SchemasUpdateCommand>, SchemaError> {
+        let response = schema_grpc_client
+            // todo introduce schema version information to avoid fetching and overwriting the schema information
+            //  over and over again
+            .fetch_schemas(FetchSchemasRequest {})
             .await?;
 
+        let (schema_updates, _) = bincode::serde::decode_from_slice::<Vec<SchemasUpdateCommand>, _>(
+            &response.into_inner().schemas,
+            bincode::config::standard(),
+        )?;
+        Ok(schema_updates)
+    }
+
+    async fn update_schemas<SC>(
+        schemas: &Schemas,
+        subscription_controller: Option<&SC>,
+        schema_updates: Vec<SchemasUpdateCommand>,
+    ) -> Result<(), SchemaError>
+    where
+        SC: SubscriptionController + Send + Sync,
+    {
+        // hack to suppress repeated logging of schema registrations
+        // todo: Fix it
+        tracing::subscriber::with_default(NoSubscriber::new(), || {
+            schemas.overwrite(schema_updates)
+        })?;
+
+        if let Some(subscription_controller) = subscription_controller {
+            let subscriptions = schemas.list_subscriptions(&[]);
+            subscription_controller
+                .update_subscriptions(subscriptions)
+                .await?;
+        }
         Ok(())
     }
 }
