@@ -27,7 +27,9 @@ restate-node-services = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
+restate-task-center = { workspace = true }
 
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 codederror = { workspace = true }
@@ -42,6 +44,7 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { version = "0.13", default-features = false, features = ["async-runtime"] }
 metrics-tracing-context = { version = "0.15.0" }
 metrics-util = { version = "0.16.0" }
+once_cell = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -49,8 +52,18 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tonic = { workspace = true }
 tonic-reflection = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+restate-test-util = { workspace = true }
+
+googletest = { workspace = true }
+test-log = { workspace = true }
+tracing-test = { version = "0.2.4" }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

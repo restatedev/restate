@@ -32,11 +32,11 @@ restate-admin = { path = "crates/admin" }
 restate-base64-util = { path = "crates/base64-util" }
 restate-benchmarks = { path = "crates/benchmarks" }
 restate-bifrost = { path = "crates/bifrost" }
+restate-cluster-controller = { path = "crates/cluster-controller" }
 restate-consensus = { path = "crates/consensus" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
 restate-futures-util = { path = "crates/futures-util" }
-restate-cluster-controller = { path = "crates/cluster-controller" }
 restate-ingress-dispatcher = { path = "crates/ingress-dispatcher" }
 restate-ingress-grpc = { path = "crates/ingress-grpc" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
@@ -60,6 +60,7 @@ restate-storage-proto = { path = "crates/storage-proto" }
 restate-storage-query-datafusion = { path = "crates/storage-query-datafusion" }
 restate-storage-query-postgres = { path = "crates/storage-query-postgres" }
 restate-storage-rocksdb = { path = "crates/storage-rocksdb" }
+restate-task-center = { path = "crates/task-center" }
 restate-test-util = { path = "crates/test-util" }
 restate-timer = { path = "crates/timer" }
 restate-timer-queue = { path = "crates/timer-queue" }
