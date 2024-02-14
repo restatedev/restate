@@ -11,13 +11,14 @@
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::info;
 
-pub(super) async fn shutdown() {
+pub(super) async fn shutdown() -> &'static str {
     let signal = tokio::select! {
         () = await_signal(SignalKind::interrupt()) => "SIGINT",
         () = await_signal(SignalKind::terminate()) => "SIGTERM"
     };
 
-    info!(%signal, "Received signal, starting shutdown.")
+    info!(%signal, "Received signal, starting shutdown.");
+    signal
 }
 
 async fn await_signal(kind: SignalKind) {

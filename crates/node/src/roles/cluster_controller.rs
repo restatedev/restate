@@ -8,11 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Options;
-use codederror::CodedError;
-use restate_cluster_controller::ClusterControllerHandle;
 use std::convert::Infallible;
+
+use codederror::CodedError;
 use tracing::info;
+
+use restate_cluster_controller::ClusterControllerHandle;
+use restate_task_center::cancellation_watcher;
+
+use crate::Options;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum ClusterControllerRoleError {
@@ -34,10 +38,10 @@ impl ClusterControllerRole {
         self.controller.handle()
     }
 
-    pub async fn run(self, shutdown_watch: drain::Watch) -> Result<(), ClusterControllerRoleError> {
+    pub async fn run(self) -> Result<(), anyhow::Error> {
         info!("Running cluster controller role");
 
-        let shutdown_signal = shutdown_watch.signaled();
+        let shutdown_signal = cancellation_watcher();
         let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
 
         let controller_fut = self.controller.run(inner_shutdown_watch);
