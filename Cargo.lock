@@ -4775,6 +4775,7 @@ dependencies = [
 name = "restate-admin"
 version = "0.8.0"
 dependencies = [
+ "anyhow",
  "axum",
  "bincode",
  "bytes",
@@ -4840,6 +4841,7 @@ dependencies = [
  "rand",
  "restate-node",
  "restate-server",
+ "restate-task-center",
  "restate-types",
  "serde_json",
  "tempfile",
@@ -5232,6 +5234,7 @@ dependencies = [
 name = "restate-node"
 version = "0.8.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "codederror",
@@ -5239,6 +5242,7 @@ dependencies = [
  "drain",
  "enumset",
  "futures",
+ "googletest",
  "http",
  "humantime",
  "hyper",
@@ -5246,6 +5250,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-tracing-context",
  "metrics-util",
+ "once_cell",
  "restate-admin",
  "restate-bifrost",
  "restate-cluster-controller",
@@ -5253,6 +5258,8 @@ dependencies = [
  "restate-meta",
  "restate-node-services",
  "restate-storage-rocksdb",
+ "restate-task-center",
+ "restate-test-util",
  "restate-types",
  "restate-worker",
  "rocksdb",
@@ -5260,13 +5267,17 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "test-log",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tonic 0.10.2",
  "tonic-reflection",
  "tower",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
+ "tracing-test",
 ]
 
 [[package]]
@@ -5396,6 +5407,7 @@ dependencies = [
  "restate-meta",
  "restate-node",
  "restate-storage-rocksdb",
+ "restate-task-center",
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-worker",
@@ -5406,6 +5418,7 @@ dependencies = [
  "thiserror",
  "tikv-jemallocator",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-panic",
  "vergen",
@@ -5593,6 +5606,25 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "restate-task-center"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "googletest",
+ "restate-test-util",
+ "restate-types",
+ "static_assertions",
+ "test-log",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-test",
 ]
 
 [[package]]

@@ -14,6 +14,7 @@ frame-pointer = ["pprof/frame-pointer"]
 [dependencies]
 restate-node = { workspace = true }
 restate-server = { workspace = true }
+restate-task-center = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

@@ -243,7 +243,7 @@ where
         mut self,
         drain: drain::Watch,
         worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
-    ) -> Result<(), Error> {
+    ) -> anyhow::Result<()> {
         debug_assert!(
             self.reloaded,
             "The Meta service was not init-ed before running it"

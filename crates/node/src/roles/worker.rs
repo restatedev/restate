@@ -8,14 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Options;
 use codederror::CodedError;
+use tracing::info;
+
 use restate_admin::service::AdminService;
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_meta::{FileMetaStorage, MetaService};
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_task_center::{cancellation_watcher, task_center};
+use restate_types::tasks::TaskKind;
 use restate_worker::Worker;
-use tracing::info;
+
+use crate::Options;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum WorkerRoleError {
@@ -86,9 +90,7 @@ impl WorkerRole {
         self.bifrost.handle()
     }
 
-    pub async fn run(mut self, shutdown_watch: drain::Watch) -> Result<(), WorkerRoleError> {
-        let shutdown_signal = shutdown_watch.signaled();
-
+    pub async fn run(mut self) -> Result<(), anyhow::Error> {
         let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
 
         // Init the meta. This will reload the schemas in memory.
@@ -97,38 +99,43 @@ impl WorkerRole {
         let worker_command_tx = self.worker.worker_command_tx();
         let storage_query_context = self.worker.storage_query_context().clone();
 
-        let mut meta_handle = tokio::spawn(
+        task_center().spawn_child(
+            TaskKind::SystemService,
+            "meta-service",
+            None,
+            true, /* shutdown_node_on_failure */
             self.meta
                 .run(inner_shutdown_watch.clone(), worker_command_tx.clone()),
-        );
-        let mut admin_handle = tokio::spawn(self.admin.run(
-            inner_shutdown_watch.clone(),
-            worker_command_tx,
-            Some(storage_query_context),
-        ));
+        )?;
+
+        task_center().spawn_child(
+            TaskKind::SystemService,
+            "admin-service",
+            None,
+            true, /* shutdown_node_on_failure */
+            self.admin.run(
+                inner_shutdown_watch.clone(),
+                worker_command_tx,
+                Some(storage_query_context),
+            ),
+        )?;
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
         let mut bifrost_handle = self.bifrost.start(inner_shutdown_watch.clone()).await?;
 
-        let mut worker_handle = tokio::spawn(self.worker.run(inner_shutdown_watch));
+        task_center().spawn_child(
+            TaskKind::SystemService,
+            "worker-service",
+            None,
+            true, /* shutdown_node_on_failure */
+            self.worker.run(inner_shutdown_watch),
+        )?;
 
         tokio::select! {
-            _ = shutdown_signal => {
+            _ = cancellation_watcher() => {
                 info!("Stopping worker role");
-                let _ = tokio::join!(inner_shutdown_signal.drain(), admin_handle, meta_handle, worker_handle, bifrost_handle);
+                let _ = tokio::join!(inner_shutdown_signal.drain(), bifrost_handle);
             },
-            result = &mut meta_handle => {
-                result.map_err(WorkerRoleError::MetaPanic)??;
-                panic!("Unexpected termination of meta.");
-            },
-            result = &mut admin_handle => {
-                result.map_err(WorkerRoleError::AdminPanic)??;
-                panic!("Unexpected termination of admin.");
-            },
-            result = &mut worker_handle => {
-                result.map_err(WorkerRoleError::WorkerPanic)??;
-                panic!("Unexpected termination of worker.");
-            }
             result = &mut bifrost_handle => {
                 result.map_err(WorkerRoleError::BifrostPanic)??;
                 panic!("Unexpected termination of bifrost service.");

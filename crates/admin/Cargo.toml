@@ -27,6 +27,7 @@ restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["serde", "serde_schema"] }
 restate-worker-api = { workspace = true }
 
+anyhow = { workspace = true }
 axum = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
