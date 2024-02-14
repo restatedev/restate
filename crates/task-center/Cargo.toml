@@ -1,0 +1,30 @@
+[package]
+name = "restate-task-center"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-types = { workspace = true }
+
+anyhow = { workspace = true }
+static_assertions = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+
+
+[dev-dependencies]
+restate-test-util = { workspace = true }
+
+googletest = { workspace = true }
+test-log = { workspace = true }
+tracing-test = { version = "0.2.4" }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
