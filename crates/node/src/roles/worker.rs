@@ -12,8 +12,8 @@ use crate::Options;
 use codederror::CodedError;
 use futures::TryFutureExt;
 use restate_bifrost::{Bifrost, BifrostService};
-use restate_node_services::schema::schema_client::SchemaClient;
-use restate_node_services::schema::FetchSchemasRequest;
+use restate_node_services::metadata::metadata_svc_client::MetadataSvcClient;
+use restate_node_services::metadata::FetchSchemasRequest;
 use restate_schema_api::subscription::SubscriptionResolver;
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_storage_query_datafusion::context::QueryContext;
@@ -127,13 +127,13 @@ impl WorkerRole {
         // todo: make this configurable
         let channel =
             Channel::builder("http://127.0.0.1:5122/".parse().expect("valid uri")).connect_lazy();
-        let mut schema_grpc_client = SchemaClient::new(channel);
+        let mut metadata_svc_client = MetadataSvcClient::new(channel);
 
         // Fetch latest schema information and fail if this is not possible
         Self::fetch_and_update_schemas(
             &self.schemas,
             subscription_controller.as_ref(),
-            &mut schema_grpc_client,
+            &mut metadata_svc_client,
         )
         .await?;
 
@@ -145,7 +145,7 @@ impl WorkerRole {
         );
 
         component_set.spawn(
-            Self::reload_schemas(subscription_controller, self.schemas, schema_grpc_client)
+            Self::reload_schemas(subscription_controller, self.schemas, metadata_svc_client)
                 .map_ok(|_| "schema-update"),
         );
 
@@ -172,7 +172,7 @@ impl WorkerRole {
     async fn reload_schemas<SC>(
         subscription_controller: Option<SC>,
         schemas: Schemas,
-        mut schema_grpc_client: SchemaClient<Channel>,
+        mut metadata_svc_client: MetadataSvcClient<Channel>,
     ) -> Result<(), WorkerRoleError>
     where
         SC: SubscriptionController + Clone + Send + Sync,
@@ -189,7 +189,7 @@ impl WorkerRole {
                 Self::fetch_and_update_schemas(
                     &schemas,
                     subscription_controller.as_ref(),
-                    &mut schema_grpc_client,
+                    &mut metadata_svc_client,
                 )
                 .await,
             )?;
@@ -213,21 +213,21 @@ impl WorkerRole {
     async fn fetch_and_update_schemas<SC>(
         schemas: &Schemas,
         subscription_controller: Option<&SC>,
-        schema_grpc_client: &mut SchemaClient<Channel>,
+        metadata_svc_client: &mut MetadataSvcClient<Channel>,
     ) -> Result<(), SchemaError>
     where
         SC: SubscriptionController + Send + Sync,
     {
-        let schema_updates = Self::fetch_schemas(schema_grpc_client).await?;
+        let schema_updates = Self::fetch_schemas(metadata_svc_client).await?;
         Self::update_schemas(schemas, subscription_controller, schema_updates).await?;
 
         Ok(())
     }
 
     async fn fetch_schemas(
-        schema_grpc_client: &mut SchemaClient<Channel>,
+        metadata_svc_client: &mut MetadataSvcClient<Channel>,
     ) -> Result<Vec<SchemasUpdateCommand>, SchemaError> {
-        let response = schema_grpc_client
+        let response = metadata_svc_client
             // todo introduce schema version information to avoid fetching and overwriting the schema information
             //  over and over again
             .fetch_schemas(FetchSchemasRequest {})

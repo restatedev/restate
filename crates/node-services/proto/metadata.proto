@@ -11,9 +11,9 @@ syntax = "proto3";
 
 import "google/protobuf/empty.proto";
 
-package dev.restate.schema;
+package dev.restate.metadata;
 
-service Schema {
+service MetadataSvc {
   // Fetch the current schema information
   rpc FetchSchemas(FetchSchemasRequest) returns (FetchSchemasResponse);
 }

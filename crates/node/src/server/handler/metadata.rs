@@ -9,15 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use restate_meta::MetaReader;
-use restate_node_services::schema::schema_server::Schema;
-use restate_node_services::schema::{FetchSchemasRequest, FetchSchemasResponse};
+use restate_node_services::metadata::metadata_svc_server::MetadataSvc;
+use restate_node_services::metadata::{FetchSchemasRequest, FetchSchemasResponse};
 use tonic::{Request, Response, Status};
 
-pub struct SchemaHandler<S> {
+pub struct MetadataHandler<S> {
     schema_reader: S,
 }
 
-impl<S> SchemaHandler<S> {
+impl<S> MetadataHandler<S> {
     pub fn new(meta_reader: S) -> Self {
         Self {
             schema_reader: meta_reader,
@@ -26,7 +26,7 @@ impl<S> SchemaHandler<S> {
 }
 
 #[async_trait::async_trait]
-impl<S> Schema for SchemaHandler<S>
+impl<S> MetadataSvc for MetadataHandler<S>
 where
     S: MetaReader + Send + Sync + 'static,
 {

@@ -39,10 +39,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_build::configure()
         .bytes(["."])
-        .file_descriptor_set_path(out_dir.join("schema_descriptor.bin"))
+        .file_descriptor_set_path(out_dir.join("metadata_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["./proto/schema.proto"], &["proto", "../pb/proto"])?;
+        .compile(&["./proto/metadata.proto"], &["proto", "../pb/proto"])?;
 
     Ok(())
 }

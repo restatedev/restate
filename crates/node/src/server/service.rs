@@ -22,15 +22,15 @@ use tracing::info;
 
 use crate::server::handler;
 use crate::server::handler::cluster_controller::ClusterControllerHandler;
+use crate::server::handler::metadata::MetadataHandler;
 use crate::server::handler::node_ctrl::NodeCtrlHandler;
-use crate::server::handler::schema::SchemaHandler;
 use crate::server::handler::worker::WorkerHandler;
 use crate::server::metrics::install_global_prometheus_recorder;
 use restate_node_services::cluster_controller::cluster_controller_server::ClusterControllerServer;
+use restate_node_services::metadata::metadata_svc_server::MetadataSvcServer;
 use restate_node_services::node_ctrl::node_ctrl_server::NodeCtrlServer;
-use restate_node_services::schema::schema_server::SchemaServer;
 use restate_node_services::worker::worker_server::WorkerServer;
-use restate_node_services::{cluster_controller, node_ctrl, schema, worker};
+use restate_node_services::{cluster_controller, metadata, node_ctrl, worker};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_worker::WorkerCommandSender;
 
@@ -108,7 +108,7 @@ impl NodeServer {
         if self.cluster_controller.is_some() {
             reflection_service_builder = reflection_service_builder
                 .register_encoded_file_descriptor_set(cluster_controller::FILE_DESCRIPTOR_SET)
-                .register_encoded_file_descriptor_set(schema::FILE_DESCRIPTOR_SET);
+                .register_encoded_file_descriptor_set(metadata::FILE_DESCRIPTOR_SET);
         }
 
         if self.worker.is_some() {
@@ -124,7 +124,7 @@ impl NodeServer {
         if let Some(ClusterControllerDependencies { schema_reader, .. }) = self.cluster_controller {
             server_builder = server_builder
                 .add_service(ClusterControllerServer::new(ClusterControllerHandler::new()))
-                .add_service(SchemaServer::new(SchemaHandler::new(schema_reader)));
+                .add_service(MetadataSvcServer::new(MetadataHandler::new(schema_reader)));
         }
 
         if let Some(WorkerDependencies {

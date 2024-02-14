@@ -15,7 +15,8 @@ use futures::TryStreamExt;
 use restate_bifrost::Bifrost;
 use restate_node_services::worker::worker_server::Worker;
 use restate_node_services::worker::{
-    BifrostVersion, StateMutationRequest, StorageQueryRequest, StorageQueryResponse, TerminationRequest,
+    BifrostVersion, StateMutationRequest, StorageQueryRequest, StorageQueryResponse,
+    TerminationRequest,
 };
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_worker::WorkerCommandSender;

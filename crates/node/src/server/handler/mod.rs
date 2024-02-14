@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 pub mod cluster_controller;
+pub mod metadata;
 pub mod node_ctrl;
-pub mod schema;
 pub mod worker;
 
 use std::fmt::Write;
