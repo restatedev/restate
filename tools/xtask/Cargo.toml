@@ -14,6 +14,7 @@ restate-meta = { workspace = true }
 restate-node-services = { workspace = true }
 restate-schema-api = { workspace = true, features = ["subscription"] }
 restate-server = { workspace = true, features = ["options_schema"] }
+restate-task-center = { workspace = true, features = ["test-util"] }
 restate-types = { workspace = true }
 restate-worker-api = { workspace = true }
 

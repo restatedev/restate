@@ -12,6 +12,7 @@ use crate::partition::{StateMachineAckCommand, StateMachineCommand};
 use crate::subscription_integration::SubscriptionControllerHandle;
 use restate_consensus::ProposalSender;
 use restate_network::PartitionTableError;
+use restate_task_center::cancellation_watcher;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation::InvocationTermination;
 use restate_types::message::PartitionTarget;
@@ -106,7 +107,7 @@ where
         self.subscription_controller_handle.clone()
     }
 
-    pub(crate) async fn run(self, shutdown_watch: drain::Watch) -> Result<(), Error> {
+    pub(crate) async fn run(self) -> anyhow::Result<()> {
         let Self {
             mut command_rx,
             proposal_tx,
@@ -114,7 +115,7 @@ where
             ..
         } = self;
 
-        let shutdown_signal = shutdown_watch.signaled();
+        let shutdown_signal = cancellation_watcher();
         tokio::pin!(shutdown_signal);
 
         debug!("Running the worker services");

@@ -19,9 +19,10 @@ use restate_futures_util::pipe::{
 use restate_pb::restate::internal::{
     idempotent_invoke_response, IdempotentInvokeRequest, IdempotentInvokeResponse,
 };
+use restate_task_center::cancellation_watcher;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::{ServiceInvocationResponseSink, Source};
-use restate_types::GenerationalNodeId;
+use restate_types::{GenerationalNodeId, NodeId};
 use std::collections::HashMap;
 use std::future::poll_fn;
 use tokio::select;
@@ -40,8 +41,6 @@ pub struct Error(#[from] PipeError);
 ///
 /// To interact with the loop use [IngressDispatcherInputSender] and [ResponseRequester].
 pub struct Service {
-    my_node_id: GenerationalNodeId,
-
     // This channel can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
     server_rx: IngressRequestReceiver,
@@ -54,12 +53,11 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new(my_node_id: GenerationalNodeId, channel_size: usize) -> Service {
+    pub fn new(channel_size: usize) -> Service {
         let (input_tx, input_rx) = mpsc::channel(channel_size);
         let (server_tx, server_rx) = mpsc::unbounded_channel();
 
         Service {
-            my_node_id,
             input_rx,
             server_rx,
             input_tx,
@@ -69,19 +67,18 @@ impl Service {
 
     pub async fn run(
         self,
+        my_node_id: NodeId,
         output_tx: mpsc::Sender<IngressDispatcherOutput>,
-        drain: drain::Watch,
-    ) -> Result<(), Error> {
+    ) -> anyhow::Result<()> {
         debug!("Running the ResponseDispatcher");
 
         let Service {
-            my_node_id,
             server_rx,
             input_rx,
             ..
         } = self;
 
-        let shutdown = drain.signaled();
+        let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
 
         let pipe = Pipe::new(
@@ -94,7 +91,11 @@ impl Service {
 
         tokio::pin!(pipe);
 
-        let mut handler = DispatcherLoopHandler::new(my_node_id);
+        let mut handler = DispatcherLoopHandler::new(
+            my_node_id
+                .as_generational()
+                .expect("My node ID is generational"),
+        );
 
         loop {
             select! {
@@ -360,6 +361,7 @@ mod tests {
     use super::*;
 
     use googletest::{assert_that, pat};
+    use restate_task_center::{create_test_task_center, TaskKind};
     use test_log::test;
 
     use restate_test_util::{let_assert, matchers::*};
@@ -368,16 +370,23 @@ mod tests {
 
     #[test(tokio::test)]
     async fn test_closed_handler() {
+        let tc = create_test_task_center();
         let (output_tx, _output_rx) = mpsc::channel(2);
 
         let my_node_id = GenerationalNodeId::new(1, 1);
-        let ingress_dispatcher = Service::new(my_node_id, 1);
+        let ingress_dispatcher = Service::new(1);
         let input_sender = ingress_dispatcher.create_ingress_dispatcher_input_sender();
         let command_sender = ingress_dispatcher.create_ingress_request_sender();
 
         // Start the dispatcher loop
-        let (drain_signal, watch) = drain::channel();
-        let loop_handle = tokio::spawn(ingress_dispatcher.run(output_tx, watch));
+        let dispatcher_task = tc
+            .spawn(
+                TaskKind::SystemService,
+                "ingress-dispatcher",
+                None,
+                ingress_dispatcher.run(my_node_id.into(), output_tx),
+            )
+            .unwrap();
 
         // Ask for a response, then drop the receiver
         let fid = FullInvocationId::generate("MySvc", "MyKey");
@@ -402,22 +411,27 @@ mod tests {
             .unwrap();
 
         // Close and check it did not panic
-        drain_signal.drain().await;
-        loop_handle.await.unwrap().unwrap()
+        tc.cancel_task(dispatcher_task).unwrap().await.unwrap()
     }
 
     #[test(tokio::test)]
     async fn idempotent_invoke() {
+        let tc = create_test_task_center();
         let (output_tx, mut output_rx) = mpsc::channel(2);
 
         let my_node_id = GenerationalNodeId::new(1, 1);
-        let ingress_dispatcher = Service::new(my_node_id, 1);
+        let ingress_dispatcher = Service::new(1);
         let handler_tx = ingress_dispatcher.create_ingress_request_sender();
         let network_tx = ingress_dispatcher.create_ingress_dispatcher_input_sender();
 
         // Start the dispatcher loop
-        let (drain_signal, watch) = drain::channel();
-        tokio::spawn(ingress_dispatcher.run(output_tx, watch));
+        tc.spawn(
+            TaskKind::SystemService,
+            "ingress-dispatcher",
+            None,
+            ingress_dispatcher.run(my_node_id.into(), output_tx),
+        )
+        .unwrap();
 
         // Ask for a response, then drop the receiver
         let fid = FullInvocationId::generate("MySvc", "MyKey");
@@ -488,7 +502,5 @@ mod tests {
                 result: ok(eq(response))
             })
         );
-
-        drain_signal.drain().await;
     }
 }

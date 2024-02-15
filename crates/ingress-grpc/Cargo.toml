@@ -17,6 +17,7 @@ restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
 restate-pb = { workspace = true, features = ["restate-types"] }
 restate-schema-api = { workspace = true, features = ["json_conversion", "key_extraction" ,"proto_symbol", "service"]}
+restate-task-center = { workspace = true }
 restate-types = { workspace = true, features = ["tonic_conversions"] }
 
 # Encoding/Decoding
@@ -63,6 +64,7 @@ thiserror = { workspace = true }
 restate-ingress-dispatcher = { workspace = true, features = ["mocks"] }
 restate-pb = { workspace = true, features = ["mocks"] }
 restate-schema-impl = { workspace = true }
+restate-task-center = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["mocks"] }
 
