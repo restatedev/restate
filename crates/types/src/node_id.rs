@@ -82,12 +82,12 @@ impl NodeId {
     }
 
     #[cfg(not(test))]
-    pub fn my_node_node() -> Option<NodeId> {
+    pub fn my_node_id() -> Option<NodeId> {
         MY_NODE_ID.get().copied()
     }
 
     #[cfg(test)]
-    pub fn my_node_node() -> Option<NodeId> {
+    pub fn my_node_id() -> Option<NodeId> {
         MY_NODE_ID.get().map(|n| *n.load().as_ref())
     }
 
