@@ -31,7 +31,6 @@ use crate::TableKind::{
 };
 use bytes::BytesMut;
 use codederror::CodedError;
-use log::info;
 use restate_storage_api::{Storage, StorageError, Transaction};
 use rocksdb::Cache;
 use rocksdb::ColumnFamily;
@@ -202,6 +201,9 @@ pub enum BuildError {
     #[error("db contains incompatible storage format version '{0}'; supported version is '{STORAGE_FORMAT_VERSION}'")]
     #[code(restate_errors::RT0008)]
     IncompatibleStorageFormat(StorageFormatVersion),
+    #[error("db contains no storage format version")]
+    #[code(restate_errors::RT0009)]
+    MissingStorageFormatVersion,
 }
 
 impl BuildError {
@@ -496,11 +498,8 @@ impl RocksDBStorage {
                 .expect("The storage format version needs to be an u32.");
             u32::from_be_bytes(bytes)
         } else {
-            // if storage format version is not present, then the db must originate from
-            // Restate <= 0.7.0, write the version after the fact
-            info!("Opened RocksDB db w/o a version field present. This indicates that the data has been written with a Restate version <= 0.7.0. Assuming the format version to be 1.");
-            Self::write_storage_format_version(db, 1)?;
-            1
+            // if storage format version is not present, then the db must originate from Restate < 0.8
+            return Err(BuildError::MissingStorageFormatVersion);
         };
 
         if version != STORAGE_FORMAT_VERSION {
