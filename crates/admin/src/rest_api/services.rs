@@ -12,7 +12,7 @@ use super::error::*;
 use crate::state::AdminServiceState;
 
 use restate_meta_rest_model::services::*;
-use restate_pb::grpc::reflection::FileDescriptorResponse;
+use restate_pb::grpc::reflection::v1::FileDescriptorResponse;
 use restate_schema_api::service::ServiceMetadataResolver;
 
 use axum::extract::{Path, State};

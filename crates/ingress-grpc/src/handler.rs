@@ -16,7 +16,6 @@ use crate::metric_definitions::{
     INGRESS_REQUESTS, INGRESS_REQUEST_DURATION, REQUEST_ADMITTED, REQUEST_COMPLETED,
     REQUEST_DENIED_THROTTLE,
 };
-use crate::reflection::ServerReflectionService;
 use futures::future::{ok, BoxFuture};
 use futures::{FutureExt, TryFutureExt};
 use http::{Request, Response, StatusCode};
@@ -25,9 +24,10 @@ use hyper::Body as HyperBody;
 use metrics::{counter, histogram};
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
+use reflection::{v1, v1alpha};
 use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest, IngressRequestSender};
+use restate_pb::grpc;
 use restate_pb::grpc::health;
-use restate_pb::grpc::reflection::server_reflection_server::ServerReflectionServer;
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
@@ -50,8 +50,16 @@ where
 {
     json: JsonOptions,
     schemas: Schemas,
-    reflection_server:
-        GrpcWebService<ServerReflectionServer<ServerReflectionService<ProtoSymbols>>>,
+    reflection_server: GrpcWebService<
+        grpc::reflection::v1::server_reflection_server::ServerReflectionServer<
+            v1::ServerReflectionService<ProtoSymbols>,
+        >,
+    >,
+    reflection_server_v1alpha: GrpcWebService<
+        grpc::reflection::v1alpha::server_reflection_server::ServerReflectionServer<
+            v1alpha::ServerReflectionService<ProtoSymbols>,
+        >,
+    >,
     request_tx: IngressRequestSender,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
@@ -66,6 +74,7 @@ where
             json: self.json.clone(),
             schemas: self.schemas.clone(),
             reflection_server: self.reflection_server.clone(),
+            reflection_server_v1alpha: self.reflection_server_v1alpha.clone(),
             request_tx: self.request_tx.clone(),
             global_concurrency_semaphore: self.global_concurrency_semaphore.clone(),
         }
@@ -85,9 +94,16 @@ where
         Self {
             json,
             schemas: schemas.clone(),
-            reflection_server: GrpcWebLayer::new().layer(ServerReflectionServer::new(
-                ServerReflectionService(schemas),
-            )),
+            reflection_server: GrpcWebLayer::new().layer(
+                grpc::reflection::v1::server_reflection_server::ServerReflectionServer::new(
+                    v1::ServerReflectionService(schemas.clone()),
+                ),
+            ),
+            reflection_server_v1alpha: GrpcWebLayer::new().layer(
+                grpc::reflection::v1alpha::server_reflection_server::ServerReflectionServer::new(
+                    v1alpha::ServerReflectionService(schemas),
+                ),
+            ),
             request_tx,
             global_concurrency_semaphore,
         }
@@ -193,6 +209,21 @@ where
             }
             return self
                 .reflection_server
+                .call(req)
+                .map(|result| {
+                    result.map(|response| response.map(|b| b.map_err(Into::into).boxed_unsync()))
+                })
+                .map_err(BoxError::from)
+                .boxed();
+        }
+
+        if restate_pb::REFLECTION_SERVICE_NAME_V1ALPHA == service_name {
+            if matches!(protocol, Protocol::Connect) {
+                // Can't process reflection requests with connect
+                return ok(encode_http_status_code(StatusCode::UNSUPPORTED_MEDIA_TYPE)).boxed();
+            }
+            return self
+                .reflection_server_v1alpha
                 .call(req)
                 .map(|result| {
                     result.map(|response| response.map(|b| b.map_err(Into::into).boxed_unsync()))

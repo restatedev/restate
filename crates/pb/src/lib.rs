@@ -22,10 +22,19 @@ pub mod grpc {
         include!(concat!(env!("OUT_DIR"), "/grpc.health.v1.rs"));
     }
     pub mod reflection {
-        #![allow(warnings)]
-        #![allow(clippy::all)]
-        #![allow(unknown_lints)]
-        include!(concat!(env!("OUT_DIR"), "/grpc.reflection.v1alpha.rs"));
+        pub mod v1 {
+            #![allow(warnings)]
+            #![allow(clippy::all)]
+            #![allow(unknown_lints)]
+            include!(concat!(env!("OUT_DIR"), "/grpc.reflection.v1.rs"));
+        }
+
+        pub mod v1alpha {
+            #![allow(warnings)]
+            #![allow(clippy::all)]
+            #![allow(unknown_lints)]
+            include!(concat!(env!("OUT_DIR"), "/grpc.reflection.v1alpha.rs"));
+        }
     }
 }
 pub mod restate {
@@ -117,7 +126,8 @@ pub fn get_service(svc_name: &str) -> ServiceDescriptor {
 
 pub const INGRESS_SERVICE_NAME: &str = "dev.restate.Ingress";
 pub const AWAKEABLES_SERVICE_NAME: &str = "dev.restate.Awakeables";
-pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1alpha.ServerReflection";
+pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1.ServerReflection";
+pub const REFLECTION_SERVICE_NAME_V1ALPHA: &str = "grpc.reflection.v1alpha.ServerReflection";
 pub const HEALTH_SERVICE_NAME: &str = "grpc.health.v1.Health";
 pub const PROXY_SERVICE_NAME: &str = "dev.restate.internal.Proxy";
 pub const PROXY_PROXY_THROUGH_METHOD_NAME: &str = "ProxyThrough";

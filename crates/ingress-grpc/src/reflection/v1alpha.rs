@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! This module is a duplicate of v1.rs and should be removed once we
+//! drop support for grpc.reflection.v1alpha.ServerReflection
+//!
 //! This module is very similar to tonic-reflection and in some parts copied,
 //! but it differs in the fact that we have interior mutability
 //! https://github.com/hyperium/tonic/issues/1328
@@ -16,10 +19,10 @@
 
 use futures::Stream;
 use pin_project::pin_project;
-use restate_pb::grpc::reflection::server_reflection_request::MessageRequest;
-use restate_pb::grpc::reflection::server_reflection_response::MessageResponse;
-use restate_pb::grpc::reflection::server_reflection_server::*;
-use restate_pb::grpc::reflection::*;
+use restate_pb::grpc::reflection::v1alpha::server_reflection_request::MessageRequest;
+use restate_pb::grpc::reflection::v1alpha::server_reflection_response::MessageResponse;
+use restate_pb::grpc::reflection::v1alpha::server_reflection_server::*;
+use restate_pb::grpc::reflection::v1alpha::*;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
@@ -37,8 +40,6 @@ fn handle_request<ProtoSymbols: ProtoSymbolResolver>(
     proto_symbols: &ProtoSymbols,
     request: &MessageRequest,
 ) -> Result<MessageResponse, Status> {
-    use restate_pb::grpc::reflection::*;
-
     Ok(match request {
         MessageRequest::FileByFilename(f) => proto_symbols
             .get_file_descriptor(f)
@@ -70,7 +71,7 @@ fn handle_request<ProtoSymbols: ProtoSymbolResolver>(
                 service: proto_symbols
                     .list_services()
                     .into_iter()
-                    .map(|svc| restate_pb::grpc::reflection::ServiceResponse { name: svc })
+                    .map(|svc| restate_pb::grpc::reflection::v1alpha::ServiceResponse { name: svc })
                     .collect(),
             })
         }
@@ -112,7 +113,7 @@ impl<ProtoSymbols: ProtoSymbolResolver> Stream for ReflectionServiceStream<Proto
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ServerReflectionService<ProtoSymbols>(pub(super) ProtoSymbols);
+pub(crate) struct ServerReflectionService<ProtoSymbols>(pub(crate) ProtoSymbols);
 
 #[tonic::async_trait]
 impl<ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static> ServerReflection

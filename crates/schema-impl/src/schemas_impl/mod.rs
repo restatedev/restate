@@ -295,6 +295,11 @@ impl Default for SchemasInner {
             Visibility::Public,
         );
         register_built_in(
+            restate_pb::REFLECTION_SERVICE_NAME_V1ALPHA,
+            InstanceTypeMetadata::Unsupported,
+            Visibility::Public,
+        );
+        register_built_in(
             restate_pb::HEALTH_SERVICE_NAME,
             InstanceTypeMetadata::Unsupported,
             Visibility::Public,

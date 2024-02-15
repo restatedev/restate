@@ -341,6 +341,7 @@ fn main() -> std::io::Result<()> {
         .compile_protos(
             &[
                 "proto/grpc/health/v1/health.proto",
+                "proto/grpc/reflection/v1/reflection.proto",
                 "proto/grpc/reflection/v1alpha/reflection.proto",
                 "proto/dev/restate/ext.proto",
                 "proto/dev/restate/services.proto",
