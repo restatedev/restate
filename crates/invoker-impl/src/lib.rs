@@ -58,6 +58,7 @@ pub use options::{
     ServiceClientOptionsBuilderError,
 };
 use restate_service_client::ServiceClient;
+use restate_service_protocol::RESTATE_SERVICE_PROTOCOL_VERSION;
 
 use crate::metric_definitions::{
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
@@ -128,7 +129,7 @@ where
                 self.client.clone(),
                 partition,
                 fid,
-                0,
+                RESTATE_SERVICE_PROTOCOL_VERSION,
                 self.inactivity_timeout,
                 self.abort_timeout,
                 self.disable_eager_state,

@@ -10,6 +10,8 @@
 
 //! This crate contains the code-generated structs of [service-protocol](https://github.com/restatedev/service-protocol) and the codec to use them.
 
+pub const RESTATE_SERVICE_PROTOCOL_VERSION: u16 = 1;
+
 #[cfg(feature = "codec")]
 pub mod codec;
 #[cfg(feature = "discovery")]
