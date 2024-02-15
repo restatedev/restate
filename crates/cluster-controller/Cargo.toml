@@ -15,6 +15,7 @@ options_schema = ["dep:schemars"]
 restate-errors = { workspace = true }
 restate-types = { workspace = true }
 
+anyhow = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }

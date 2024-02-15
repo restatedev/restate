@@ -247,7 +247,7 @@ where
         self.reload_schemas().await
     }
 
-    pub async fn run(mut self, drain: drain::Watch) -> Result<(), Error> {
+    pub async fn run(mut self, drain: drain::Watch) -> anyhow::Result<()> {
         debug_assert!(
             self.reloaded,
             "The Meta service was not init-ed before running it"

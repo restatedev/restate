@@ -17,4 +17,4 @@ mod service;
 mod state;
 
 pub use options::Options;
-pub use service::{ClusterControllerDependencies, Error, NodeServer, WorkerDependencies};
+pub use service::{ClusterControllerDependencies, NodeServer, WorkerDependencies};

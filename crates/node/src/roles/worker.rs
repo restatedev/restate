@@ -8,9 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Options;
+use std::time::Duration;
+
 use codederror::CodedError;
-use futures::TryFutureExt;
+use tonic::transport::Channel;
+use tracing::subscriber::NoSubscriber;
+use tracing::{debug, info};
+
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_node_services::metadata::metadata_svc_client::MetadataSvcClient;
 use restate_node_services::metadata::FetchSchemasRequest;
@@ -18,14 +22,13 @@ use restate_schema_api::subscription::SubscriptionResolver;
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_task_center::TaskKind;
+use restate_task_center::{cancellation_watcher, task_center};
 use restate_types::NodeId;
 use restate_worker::{SubscriptionControllerHandle, Worker, WorkerCommandSender};
 use restate_worker_api::SubscriptionController;
-use std::time::Duration;
-use tokio::task::JoinSet;
-use tonic::transport::Channel;
-use tracing::subscriber::NoSubscriber;
-use tracing::{debug, info};
+
+use crate::Options;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum WorkerRoleError {
@@ -115,19 +118,11 @@ impl WorkerRole {
         Some(self.worker.subscription_controller_handle())
     }
 
-    pub async fn run(
-        self,
-        _node_id: NodeId,
-        shutdown_watch: drain::Watch,
-    ) -> Result<(), WorkerRoleError> {
-        let shutdown_signal = shutdown_watch.signaled();
-
+    pub async fn run(self, _node_id: NodeId) -> anyhow::Result<()> {
         let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
 
         // todo: only run subscriptions on node 0 once being distributed
         let subscription_controller = Some(self.worker.subscription_controller_handle());
-
-        let mut component_set = JoinSet::new();
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
         let mut bifrost_join_handle = self.bifrost.start(inner_shutdown_watch.clone()).await?;
@@ -145,29 +140,28 @@ impl WorkerRole {
         )
         .await?;
 
-        component_set.spawn(
-            self.worker
-                .run(inner_shutdown_watch)
-                .map_ok(|_| "worker")
-                .map_err(WorkerRoleError::Worker),
-        );
+        // todo: replace by watchdog
+        task_center().spawn_child(
+            TaskKind::MetadataBackgroundSync,
+            "schema-updater",
+            None,
+            Self::reload_schemas(subscription_controller, self.schemas, metadata_svc_client),
+        )?;
 
-        component_set.spawn(
-            Self::reload_schemas(subscription_controller, self.schemas, metadata_svc_client)
-                .map_ok(|_| "schema-update"),
-        );
+        task_center().spawn_child(
+            TaskKind::RoleRunner,
+            "worker-service",
+            None,
+            self.worker.run(inner_shutdown_watch),
+        )?;
 
         tokio::select! {
-            _ = shutdown_signal => {
+            _ = cancellation_watcher() => {
                 info!("Stopping worker role");
                 inner_shutdown_signal.drain().await;
                 // ignoring result because we are shutting down
-                let _ = tokio::join!(component_set.shutdown(), bifrost_join_handle);
+                let _ = tokio::join!(bifrost_join_handle);
             },
-            Some(component_result) = component_set.join_next() => {
-                let component_name = component_result.map_err(WorkerRoleError::ComponentPanic)??;
-                panic!("Unexpected termination of component '{component_name}'");
-            }
             bifrost_result = &mut bifrost_join_handle => {
                 bifrost_result.map_err(WorkerRoleError::ComponentPanic)??;
                 panic!("Unexpected termination of bifrost service");
@@ -181,7 +175,7 @@ impl WorkerRole {
         subscription_controller: Option<SC>,
         schemas: Schemas,
         mut metadata_svc_client: MetadataSvcClient<Channel>,
-    ) -> Result<(), WorkerRoleError>
+    ) -> anyhow::Result<()>
     where
         SC: SubscriptionController + Clone + Send + Sync,
     {
