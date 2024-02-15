@@ -17,6 +17,7 @@ use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use rdkafka::error::KafkaError;
 use restate_ingress_dispatcher::IngressRequestSender;
 use restate_schema_api::subscription::{Source, Subscription};
+use restate_task_center::cancellation_watcher;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
@@ -61,8 +62,8 @@ impl Service {
         self.commands_tx.clone()
     }
 
-    pub async fn run(mut self, drain: drain::Watch) {
-        let shutdown = drain.signaled();
+    pub async fn run(mut self) -> anyhow::Result<()> {
+        let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
 
         let mut task_orchestrator = TaskOrchestrator::new(RetryPolicy::exponential(
@@ -90,6 +91,7 @@ impl Service {
 
         // Wait for consumers to shutdown
         task_orchestrator.shutdown().await;
+        Ok(())
     }
 
     fn handle_start_subscription(

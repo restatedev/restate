@@ -4668,6 +4668,7 @@ dependencies = [
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
+ "restate-task-center",
  "restate-test-util",
  "restate-types",
  "restate-worker-api",
@@ -4732,6 +4733,7 @@ dependencies = [
  "enum-map",
  "googletest",
  "once_cell",
+ "restate-task-center",
  "restate-test-util",
  "restate-types",
  "schemars",
@@ -4808,6 +4810,7 @@ dependencies = [
  "drain",
  "futures",
  "restate-errors",
+ "restate-task-center",
  "restate-types",
  "schemars",
  "serde",
@@ -4874,6 +4877,7 @@ dependencies = [
 name = "restate-ingress-dispatcher"
 version = "0.8.0"
 dependencies = [
+ "anyhow",
  "bytes",
  "bytestring",
  "drain",
@@ -4882,6 +4886,7 @@ dependencies = [
  "restate-futures-util",
  "restate-pb",
  "restate-schema-api",
+ "restate-task-center",
  "restate-test-util",
  "restate-types",
  "test-log",
@@ -4919,6 +4924,7 @@ dependencies = [
  "restate-pb",
  "restate-schema-api",
  "restate-schema-impl",
+ "restate-task-center",
  "restate-test-util",
  "restate-types",
  "schemars",
@@ -4940,6 +4946,7 @@ dependencies = [
 name = "restate-ingress-kafka"
 version = "0.8.0"
 dependencies = [
+ "anyhow",
  "base64 0.21.7",
  "bytes",
  "derive_builder",
@@ -4953,6 +4960,7 @@ dependencies = [
  "restate-pb",
  "restate-schema-api",
  "restate-schema-impl",
+ "restate-task-center",
  "restate-test-util",
  "restate-timer-queue",
  "restate-types",
@@ -5008,6 +5016,7 @@ dependencies = [
  "restate-schema-api",
  "restate-service-client",
  "restate-service-protocol",
+ "restate-task-center",
  "restate-test-util",
  "restate-timer-queue",
  "restate-types",
@@ -5018,6 +5027,7 @@ dependencies = [
  "test-log",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -5048,6 +5058,7 @@ dependencies = [
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
+ "restate-task-center",
  "restate-test-util",
  "restate-types",
  "schemars",
@@ -5088,6 +5099,7 @@ dependencies = [
  "futures",
  "pin-project",
  "restate-errors",
+ "restate-task-center",
  "restate-test-util",
  "restate-types",
  "test-log",
@@ -5418,6 +5430,7 @@ dependencies = [
 name = "restate-storage-query-postgres"
 version = "0.8.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "bytestring",
@@ -5436,6 +5449,7 @@ dependencies = [
  "restate-storage-proto",
  "restate-storage-query-datafusion",
  "restate-storage-rocksdb",
+ "restate-task-center",
  "restate-types",
  "schemars",
  "serde",
@@ -5678,6 +5692,7 @@ dependencies = [
  "restate-storage-query-datafusion",
  "restate-storage-query-postgres",
  "restate-storage-rocksdb",
+ "restate-task-center",
  "restate-test-util",
  "restate-timer",
  "restate-types",
@@ -7549,6 +7564,7 @@ dependencies = [
  "restate-node-services",
  "restate-schema-api",
  "restate-server",
+ "restate-task-center",
  "restate-types",
  "restate-worker-api",
  "schemars",

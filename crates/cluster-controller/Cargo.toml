@@ -13,6 +13,7 @@ options_schema = ["dep:schemars"]
 
 [dependencies]
 restate-errors = { workspace = true }
+restate-task-center = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

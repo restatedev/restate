@@ -28,7 +28,7 @@ pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_node_services::cluster_controller::cluster_controller_svc_client::ClusterControllerSvcClient;
 use restate_node_services::cluster_controller::AttachmentRequest;
-use restate_task_center::{task_center, TaskCenter, TaskKind};
+use restate_task_center::{task_center, TaskKind};
 use restate_types::nodes_config::{
     NetworkAddress, NodeConfig, NodesConfiguration, NodesConfigurationWriter, Role,
 };
@@ -131,31 +131,35 @@ impl Node {
         })
     }
 
-    pub fn boot(self, tc: &TaskCenter) -> Result<(), anyhow::Error> {
-        tc.spawn(TaskKind::RpcServer, "node-server", None, self.server.run())?;
+    pub fn start(self) -> Result<(), anyhow::Error> {
+        let tc = task_center();
+        tc.spawn(
+            TaskKind::RpcServer,
+            "node-rpc-server",
+            None,
+            self.server.run(),
+        )?;
 
         if let Some(cluster_controller_role) = self.cluster_controller_role {
             tc.spawn(
-                TaskKind::RoleRunner,
-                "cluster-controller-role",
+                TaskKind::SystemBoot,
+                "cluster-controller-init",
                 None,
-                cluster_controller_role.run(),
+                cluster_controller_role.start(),
             )?;
         }
 
         if let Some(worker_role) = self.worker_role {
             tc.spawn(TaskKind::SystemBoot, "worker-init", None, async {
                 Self::attach_node(self.options, self.cluster_controller_address).await?;
-                // Startup the worker
-                task_center().spawn(
-                    TaskKind::RoleRunner,
-                    "worker-role",
-                    None,
-                    worker_role.run(
+                // MyNodeId should be set here.
+                // Startup the worker role.
+                worker_role
+                    .start(
                         NodeId::my_node_node()
                             .expect("my NodeId should be set after attaching to cluster"),
-                    ),
-                )?;
+                    )
+                    .await?;
                 Ok(())
             })?;
         }

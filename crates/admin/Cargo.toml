@@ -24,6 +24,7 @@ restate-schema-api = { workspace = true, features = ["service", "deployment", "s
 restate-schema-impl = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
+restate-task-center = { workspace = true }
 restate-types = { workspace = true, features = ["serde", "serde_schema"] }
 restate-worker-api = { workspace = true }
 

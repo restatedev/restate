@@ -16,6 +16,7 @@ use crate::{
     NetworkCommand, TargetConsensusOrIngress, TargetConsensusOrShuffle, TargetShuffle,
     TargetShuffleOrIngress, UnboundedNetworkHandle,
 };
+use restate_task_center::cancellation_watcher;
 use restate_types::identifiers::PeerId;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::message::PartitionTarget;
@@ -209,7 +210,7 @@ where
         self.partition_processor_tx.clone()
     }
 
-    pub async fn run(self, drain: drain::Watch) -> Result<(), RoutingError> {
+    pub async fn run(self) -> anyhow::Result<()> {
         let Network {
             consensus_in_rx,
             consensus_tx,
@@ -224,7 +225,7 @@ where
 
         debug!("Run network");
 
-        let shutdown = drain.signaled();
+        let shutdown = cancellation_watcher();
         let shuffles: Arc<Mutex<HashMap<PeerId, mpsc::Sender<ShuffleIn>>>> =
             Arc::new(Mutex::new(HashMap::new()));
 

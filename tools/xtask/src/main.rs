@@ -12,6 +12,7 @@ use anyhow::bail;
 use reqwest::header::ACCEPT;
 use restate_node_services::worker::worker_svc_client::WorkerSvcClient;
 use restate_schema_api::subscription::Subscription;
+use restate_task_center::{create_test_task_center, TaskKind};
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;
@@ -95,12 +96,16 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     meta.init().await.unwrap();
 
     // We start the Meta component, then download the openapi schema generated
-    let (shutdown_signal, shutdown_watch) = drain::channel();
-    let join_handle = tokio::spawn(admin_service.run(
-        shutdown_watch,
-        Mock,
-        WorkerSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
-    ));
+    let tc = create_test_task_center();
+    tc.spawn(
+        TaskKind::TestRunner,
+        "doc-gen",
+        None,
+        admin_service.run(
+            Mock,
+            WorkerSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
+        ),
+    )?;
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)
         .retry_operation(|| async {
@@ -118,8 +123,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
 
     println!("{}", res);
 
-    shutdown_signal.drain().await;
-    join_handle.await.unwrap().unwrap();
+    tc.shutdown_node("completed", 0).await;
 
     Ok(())
 }

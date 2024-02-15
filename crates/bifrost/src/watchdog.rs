@@ -12,12 +12,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use enum_map::Enum;
+use restate_task_center::cancellation_watcher;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::bifrost::BifrostInner;
 use crate::loglet::{LogletProvider, ProviderKind};
-use crate::Error;
 
 pub type WatchdogSender = tokio::sync::mpsc::UnboundedSender<WatchdogCommand>;
 type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;
@@ -64,8 +64,8 @@ impl Watchdog {
         }
     }
 
-    pub async fn run(mut self, drain: drain::Watch) -> Result<(), Error> {
-        let shutdown = drain.signaled();
+    pub async fn run(mut self) -> anyhow::Result<()> {
+        let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
         info!("Bifrost watchdog started");
 
@@ -127,6 +127,7 @@ impl Watchdog {
             );
             providers.shutdown().await;
         }
+        info!("Bifrost watchdog shutdown complete");
     }
 }
 

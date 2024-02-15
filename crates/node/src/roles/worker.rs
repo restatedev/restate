@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use codederror::CodedError;
 use tonic::transport::Channel;
+use tracing::debug;
 use tracing::subscriber::NoSubscriber;
-use tracing::{debug, info};
 
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_node_services::metadata::metadata_svc_client::MetadataSvcClient;
@@ -22,8 +22,8 @@ use restate_schema_api::subscription::SubscriptionResolver;
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_task_center::task_center;
 use restate_task_center::TaskKind;
-use restate_task_center::{cancellation_watcher, task_center};
 use restate_types::NodeId;
 use restate_worker::{SubscriptionControllerHandle, Worker, WorkerCommandSender};
 use restate_worker_api::SubscriptionController;
@@ -41,9 +41,6 @@ pub enum WorkerRoleError {
     #[error("bifrost failed: {0}")]
     #[code(unknown)]
     Bifrost(#[from] restate_bifrost::Error),
-    #[error("component panicked: {0}")]
-    #[code(unknown)]
-    ComponentPanic(tokio::task::JoinError),
     #[error(transparent)]
     Schema(
         #[from]
@@ -118,14 +115,12 @@ impl WorkerRole {
         Some(self.worker.subscription_controller_handle())
     }
 
-    pub async fn run(self, _node_id: NodeId) -> anyhow::Result<()> {
-        let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
-
+    pub async fn start(self, my_node_id: NodeId) -> anyhow::Result<()> {
         // todo: only run subscriptions on node 0 once being distributed
         let subscription_controller = Some(self.worker.subscription_controller_handle());
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
-        let mut bifrost_join_handle = self.bifrost.start(inner_shutdown_watch.clone()).await?;
+        self.bifrost.start().await?;
 
         // todo: make this configurable
         let channel =
@@ -152,21 +147,8 @@ impl WorkerRole {
             TaskKind::RoleRunner,
             "worker-service",
             None,
-            self.worker.run(inner_shutdown_watch),
+            self.worker.run(my_node_id),
         )?;
-
-        tokio::select! {
-            _ = cancellation_watcher() => {
-                info!("Stopping worker role");
-                inner_shutdown_signal.drain().await;
-                // ignoring result because we are shutting down
-                let _ = tokio::join!(bifrost_join_handle);
-            },
-            bifrost_result = &mut bifrost_join_handle => {
-                bifrost_result.map_err(WorkerRoleError::ComponentPanic)??;
-                panic!("Unexpected termination of bifrost service");
-            }
-        }
 
         Ok(())
     }
