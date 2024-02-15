@@ -32,6 +32,7 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, ProtocolMessage,
 };
+use restate_service_protocol::RESTATE_SERVICE_PROTOCOL_VERSION;
 use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext};
@@ -82,8 +83,6 @@ struct InvokeEntryContext {
 }
 
 const DEFAULT_RETENTION_PERIOD_SEC: u32 = 30 * 60;
-
-const PROTOCOL_VERSION: u16 = 0;
 
 const STREAM_TIMEOUT_SEC: u32 = 60;
 
@@ -458,7 +457,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         &mut self,
         msg: ProtocolMessage,
     ) -> Result<(), InvocationError> {
-        let encoder = Encoder::new(PROTOCOL_VERSION);
+        let encoder = Encoder::new(RESTATE_SERVICE_PROTOCOL_VERSION);
 
         if let Some((fid, recv_sink)) = self.pop_state(&PENDING_RECV_SINK).await? {
             trace!(restate.protocol.message = ?msg, "Sending message");
@@ -477,7 +476,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                 .await?
                 .unwrap_or_default();
 
-            let encoder = Encoder::new(PROTOCOL_VERSION);
+            let encoder = Encoder::new(RESTATE_SERVICE_PROTOCOL_VERSION);
             let mut new_pending_recv_stream =
                 BytesMut::with_capacity(pending_recv_stream.len() + encoder.encoded_len(&msg));
             new_pending_recv_stream.put(pending_recv_stream);
@@ -772,7 +771,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
         // Let's create the messages and write them to a buffer
         let invocation_id =
             InvocationId::new(self.full_invocation_id.partition_key(), invocation_uuid);
-        let encoder = Encoder::new(PROTOCOL_VERSION);
+        let encoder = Encoder::new(RESTATE_SERVICE_PROTOCOL_VERSION);
         let mut stream_buffer = BytesMut::new();
         encoder
             .encode_to_buf_mut(
@@ -1187,7 +1186,7 @@ mod tests {
     const USER_STATE: StateKey<Raw> = StateKey::new_raw("my-state");
 
     fn encode_messages(messages: Vec<ProtocolMessage>) -> Bytes {
-        let encoder = Encoder::new(PROTOCOL_VERSION);
+        let encoder = Encoder::new(RESTATE_SERVICE_PROTOCOL_VERSION);
 
         let mut buf = BytesMut::new();
         for msg in messages {
@@ -1201,7 +1200,7 @@ mod tests {
     }
 
     fn encode_entry_with_requires_ack(entry: PlainRawEntry) -> Bytes {
-        let encoder = Encoder::new(PROTOCOL_VERSION);
+        let encoder = Encoder::new(RESTATE_SERVICE_PROTOCOL_VERSION);
 
         let mut v = Vec::new();
         encoder
