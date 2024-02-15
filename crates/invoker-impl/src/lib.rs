@@ -64,6 +64,8 @@ use crate::metric_definitions::{
     TASK_OP_SUSPENDED,
 };
 
+const RESTATE_SERVICE_PROTOCOL_VERSION: u16 = 1;
+
 /// Internal error trait for the invoker errors
 trait InvokerError: std::error::Error {
     fn is_transient(&self) -> bool;
@@ -128,7 +130,7 @@ where
                 self.client.clone(),
                 partition,
                 fid,
-                0,
+                RESTATE_SERVICE_PROTOCOL_VERSION,
                 self.inactivity_timeout,
                 self.abort_timeout,
                 self.disable_eager_state,
