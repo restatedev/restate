@@ -156,7 +156,7 @@ impl Node {
                 // Startup the worker role.
                 worker_role
                     .start(
-                        NodeId::my_node_node()
+                        NodeId::my_node_id()
                             .expect("my NodeId should be set after attaching to cluster"),
                     )
                     .await?;
