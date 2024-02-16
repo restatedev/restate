@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::future::Future;
 
 use http::Uri;
+use restate_task_center::cancellation_watcher;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
@@ -247,13 +248,13 @@ where
         self.reload_schemas().await
     }
 
-    pub async fn run(mut self, drain: drain::Watch) -> anyhow::Result<()> {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         debug_assert!(
             self.reloaded,
             "The Meta service was not init-ed before running it"
         );
 
-        let shutdown = drain.signaled();
+        let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
 
         loop {

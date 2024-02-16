@@ -10,13 +10,13 @@
 
 use std::sync::Arc;
 
-use tokio::task::JoinHandle;
-use tracing::info;
+use anyhow::Context;
+use restate_task_center::{task_center, TaskKind};
 
 use crate::bifrost::BifrostInner;
 use crate::options::Options;
 use crate::watchdog::Watchdog;
-use crate::{Bifrost, Error};
+use crate::Bifrost;
 
 pub struct BifrostService {
     inner: Arc<BifrostInner>,
@@ -44,19 +44,25 @@ impl BifrostService {
     /// In this phase the system should wait until this is completed before
     /// continuing. For instance, a worker mark itself as `STARTING_UP` and not
     /// accept any requests until this is completed.
-    pub async fn start(self, drain: drain::Watch) -> Result<JoinHandle<Result<(), Error>>, Error> {
+    ///
+    /// This requires to run within a task_center context.
+    pub async fn start(self) -> anyhow::Result<()> {
         // Perform an initial metadata sync.
-        self.inner.sync_metadata().await?;
+        self.inner
+            .sync_metadata()
+            .await
+            .context("Initial bifrost metadata sync has failed!")?;
 
         // we spawn the watchdog as a task to ensure cancellation safety if the outer
         // future was dropped in the select loop.
-        let join_handle = tokio::spawn({
-            async {
-                self.watchdog.run(drain).await?;
-                info!("Bifrost watchdog shutdown complete");
-                Ok(())
-            }
-        });
-        Ok(join_handle)
+        task_center().spawn(
+            TaskKind::BifrostBackgroundHighPriority,
+            "bifrost-watchdog",
+            None,
+            self.watchdog.run(),
+        )?;
+
+        // Bifrost started!
+        Ok(())
     }
 }

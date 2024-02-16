@@ -10,6 +10,7 @@
 
 use std::fmt::Debug;
 
+use restate_task_center::{create_test_task_center, TaskKind};
 use test_log::test;
 use tokio::sync::mpsc;
 
@@ -148,14 +149,15 @@ fn mock_network() -> (
 
 #[test(tokio::test)]
 async fn no_consensus_message_is_dropped() {
+    let tc = create_test_task_center();
     let (network, mut consensus_rx, _ingress_rx) = mock_network();
 
     let network_handle = network.create_network_handle();
     let consensus_tx = network.create_consensus_sender();
 
-    let (shutdown_signal, shutdown_watch) = drain::channel();
-
-    let network_join_handle = tokio::spawn(network.run(shutdown_watch));
+    let networking_task = tc
+        .spawn(TaskKind::SystemService, "networking", None, network.run())
+        .unwrap();
 
     let msg_1 = (0, ConsensusMsg(0));
     let msg_2 = (0, ConsensusMsg(1));
@@ -172,8 +174,7 @@ async fn no_consensus_message_is_dropped() {
     assert_eq!(consensus_rx.recv().await.unwrap(), msg_2);
     assert_eq!(consensus_rx.recv().await.unwrap(), msg_3);
 
-    shutdown_signal.drain().await;
-    network_join_handle.await.unwrap().unwrap();
+    tc.cancel_task(networking_task).unwrap().await.unwrap();
 }
 
 #[test(tokio::test)]
@@ -323,10 +324,12 @@ async fn run_router_test<Input, Output>(
     Input: Debug + Copy,
     Output: PartialEq + Debug,
 {
+    let tc = create_test_task_center();
     let network_handle = network.create_network_handle();
 
-    let (shutdown_signal, shutdown_watch) = drain::channel();
-    let network_join_handle = tokio::spawn(network.run(shutdown_watch));
+    let networking_task = tc
+        .spawn(TaskKind::SystemService, "networking", None, network.run())
+        .unwrap();
 
     // we have to yield in order to process register shuffle message
     tokio::task::yield_now().await;
@@ -342,6 +345,5 @@ async fn run_router_test<Input, Output>(
         assert_eq!(rx.recv().await.unwrap(), output);
     }
 
-    shutdown_signal.drain().await;
-    network_join_handle.await.unwrap().unwrap();
+    tc.cancel_task(networking_task).unwrap().await.unwrap();
 }

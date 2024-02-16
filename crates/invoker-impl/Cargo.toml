@@ -20,6 +20,7 @@ restate-queue = { workspace = true }
 restate-schema-api = { workspace = true, features = ["deployment"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message"] }
+restate-task-center = { workspace = true }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true, features = ["serde"] }
 
@@ -48,6 +49,7 @@ tracing-opentelemetry = { workspace = true }
 restate-invoker-api = { workspace = true, features = ["mocks"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-service-protocol = { workspace = true, features = ["codec"] }
+restate-task-center = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true }
 
@@ -55,4 +57,5 @@ googletest = { workspace = true }
 prost = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
+tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true }

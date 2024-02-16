@@ -10,6 +10,7 @@
 
 use crate::options::Options;
 use codederror::CodedError;
+use restate_task_center::cancellation_watcher;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -36,8 +37,8 @@ impl Service {
         ClusterControllerHandle
     }
 
-    pub async fn run(self, shutdown_watch: drain::Watch) -> anyhow::Result<()> {
-        let _ = shutdown_watch.signaled().await;
+    pub async fn run(self) -> anyhow::Result<()> {
+        let _ = cancellation_watcher().await;
         Ok(())
     }
 }
