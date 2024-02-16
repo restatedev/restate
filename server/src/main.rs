@@ -154,7 +154,7 @@ fn main() {
             // We ignore errors since we will wait for shutdown below anyway.
             // This starts node roles and the rest of the system async under tasks managed by
             // the TaskCenter.
-            let _ = node.unwrap().boot(&tc);
+            let _ = tc.run_in_scope_sync("startup", None, || node.unwrap().start());
 
             tokio::select! {
                 signal_name = signal::shutdown() => {

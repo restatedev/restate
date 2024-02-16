@@ -11,8 +11,8 @@
 use std::sync::Arc;
 
 use axum::error_handling::HandleErrorLayer;
-use futures::FutureExt;
 use http::StatusCode;
+use restate_task_center::cancellation_watcher;
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
@@ -49,7 +49,6 @@ impl AdminService {
 
     pub async fn run(
         self,
-        drain: drain::Watch,
         worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
         worker_svc_client: WorkerSvcClient<Channel>,
     ) -> anyhow::Result<()> {
@@ -94,7 +93,7 @@ impl AdminService {
 
         // Wait server graceful shutdown
         Ok(server
-            .with_graceful_shutdown(drain.signaled().map(|_| ()))
+            .with_graceful_shutdown(cancellation_watcher())
             .await
             .map_err(Error::Running)?)
     }

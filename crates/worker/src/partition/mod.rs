@@ -51,7 +51,7 @@ pub(super) use types::TimerValue;
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle> {
     peer_id: PeerId,
-    partition_id: PartitionId,
+    pub partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
 
     timer_service_options: restate_timer::Options,
